@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "relaunch": "pkill -f 'target/debug/pet' 2>/dev/null; pkill -f 'pnpm tauri' 2>/dev/null; sleep 1 && pnpm tauri dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
