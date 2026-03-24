@@ -23,4 +23,5 @@ futures-util = "0.3"
 serde_yaml = "0.9"
 dirs = "6"
 chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
