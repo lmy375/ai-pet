@@ -1,4 +1,4 @@
-use std::env;
+use crate::commands::settings::get_settings;
 
 pub struct AiConfig {
     pub api_key: String,
@@ -7,15 +7,15 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
-    pub fn from_env() -> Result<Self, String> {
-        // Try loading .env from project root (parent of src-tauri)
-        let _ = dotenvy::from_filename("../.env").or_else(|_| dotenvy::dotenv());
+    pub fn from_settings() -> Result<Self, String> {
+        let settings = get_settings()?;
+        if settings.api_key.is_empty() {
+            return Err("API Key not configured. Open Settings to set it.".to_string());
+        }
         Ok(Self {
-            api_key: env::var("OPENAI_API_KEY")
-                .map_err(|_| "OPENAI_API_KEY environment variable not set".to_string())?,
-            base_url: env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-            model: env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
+            api_key: settings.api_key,
+            base_url: settings.api_base,
+            model: settings.model,
         })
     }
 }

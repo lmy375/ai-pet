@@ -19,7 +19,7 @@ export function ChatBubble({ message, visible }: Props) {
         background: "#ffffff",
         borderRadius: "16px",
         boxShadow: "none",
-        border: "1px solid #e0e0e0",
+        border: "1px solid #bae6fd",
         fontSize: "13px",
         lineHeight: "1.5",
         color: "#333",

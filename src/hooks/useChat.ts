@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 
 interface ChatMessage {
@@ -11,16 +11,23 @@ type StreamEvent =
   | { event: "done"; data: Record<string, never> }
   | { event: "error"; data: { message: string } };
 
-export function useChat() {
+export function useChat(systemPrompt: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "system",
-      content:
-        "你是一个可爱的二次元少女 AI 宠物，性格活泼开朗。请用简短可爱的方式回复，偶尔使用颜文字。回复控制在50字以内。",
-    },
+    { role: "system", content: systemPrompt },
   ]);
   const [currentResponse, setCurrentResponse] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const prevPrompt = useRef(systemPrompt);
+
+  // Reset conversation when system prompt changes
+  useEffect(() => {
+    if (prevPrompt.current !== systemPrompt) {
+      prevPrompt.current = systemPrompt;
+      setMessages([{ role: "system", content: systemPrompt }]);
+      setCurrentResponse("");
+      setIsLoading(false);
+    }
+  }, [systemPrompt]);
 
   const sendMessage = useCallback(
     async (content: string) => {
