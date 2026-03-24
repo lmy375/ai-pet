@@ -1,16 +1,18 @@
 import { useRef, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { Live2DCharacter } from "./components/Live2DCharacter";
 import { ChatBubble } from "./components/ChatBubble";
 import { ChatPanel } from "./components/ChatPanel";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
+import { useSettings } from "./hooks/useSettings";
 
 function App() {
-  const { isLoading, sendMessage, displayMessage, showBubble } = useChat();
+  const { settings, soul, loaded } = useSettings();
+  const { isLoading, sendMessage, displayMessage, showBubble } = useChat(soul);
   const modelRef = useRef<any>(null);
-  const { minimized, handleActivity } = useAutoHide();
-  const dragInfo = useRef({ x: 0, y: 0, time: 0 });
+  const { hidden, handleMouseEnter } = useAutoHide();
 
   const handleModelReady = useCallback((model: any) => {
     modelRef.current = model;
@@ -18,90 +20,105 @@ function App() {
 
   const handleSend = useCallback(
     (msg: string) => {
-      handleActivity();
       sendMessage(msg);
     },
-    [sendMessage, handleActivity],
+    [sendMessage],
   );
 
   const handleDrag = (e: React.MouseEvent) => {
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "INPUT" || tag === "BUTTON" || tag === "TEXTAREA") return;
     e.preventDefault();
-    dragInfo.current = { x: e.screenX, y: e.screenY, time: Date.now() };
     getCurrentWindow().startDragging();
   };
 
-  const handleClick = (e: React.MouseEvent) => {
-    if (!minimized) return;
-    const d = dragInfo.current;
-    const dx = Math.abs(e.screenX - d.x);
-    const dy = Math.abs(e.screenY - d.y);
-    const dt = Date.now() - d.time;
-    if (dx < 5 && dy < 5 && dt < 300) {
-      handleActivity();
-    }
+  const openPanel = () => {
+    invoke("open_panel").catch(console.error);
   };
+
+  if (!loaded) return null;
 
   return (
     <div
       onMouseDown={handleDrag}
-      onMouseMove={minimized ? undefined : handleActivity}
-      onClick={handleClick}
+      onMouseEnter={handleMouseEnter}
       style={{
         width: "100%",
         height: "100vh",
         background: "transparent",
         userSelect: "none",
         position: "relative",
+        overflow: "hidden",
       }}
     >
-      {/* Minimized: show bubble at bottom-right corner */}
-      {minimized && (
+      {/* Tab indicator — visible strip when hidden */}
+      {hidden && (
         <div
           style={{
             position: "absolute",
-            bottom: "8px",
-            right: "8px",
-            width: "32px",
-            height: "32px",
-            borderRadius: "50%",
-            background:
-              "radial-gradient(circle at 35% 35%, #c4b5fd, #7c4dff 60%, #5b21b6)",
-            boxShadow:
-              "0 0 10px rgba(124,77,255,0.5), 0 0 3px rgba(196,181,253,0.8) inset",
+            left: 0,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: "16px",
+            height: "50px",
+            background: "linear-gradient(180deg, #7dd3fc 0%, #38bdf8 50%, #0ea5e9 100%)",
+            borderRadius: "10px 0 0 10px",
+            boxShadow: "-2px 0 8px rgba(56,189,248,0.3)",
+            zIndex: 50,
             cursor: "pointer",
-            animation: "pulse 2s ease-in-out infinite",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
           }}
-        />
+        >
+          <div
+            style={{
+              width: "0",
+              height: "0",
+              borderTop: "6px solid transparent",
+              borderBottom: "6px solid transparent",
+              borderRight: "6px solid rgba(255,255,255,0.8)",
+            }}
+          />
+        </div>
       )}
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { transform: scale(1); opacity: 0.9; }
-          50% { transform: scale(1.08); opacity: 1; }
-        }
-      `}</style>
 
-      {/* Full view - always mounted, just hidden with opacity */}
-      <div
-        style={{
-          opacity: minimized ? 0 : 1,
-          pointerEvents: minimized ? "none" : "auto",
-          transition: "opacity 0.2s ease",
-          width: "100%",
-          height: "100%",
-          position: "absolute",
-          top: 0,
-          left: 0,
-        }}
-      >
-        <ChatBubble message={displayMessage} visible={showBubble} />
-        <Live2DCharacter
-          modelPath="/models/miku/miku.model3.json"
-          onModelReady={handleModelReady}
-        />
-        <ChatPanel onSend={handleSend} isLoading={isLoading} />
-      </div>
+      {/* Panel button (gear) */}
+      {!hidden && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            openPanel();
+          }}
+          style={{
+            position: "absolute",
+            top: "8px",
+            right: "8px",
+            width: "24px",
+            height: "24px",
+            borderRadius: "50%",
+            background: "rgba(255,255,255,0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            zIndex: 20,
+            fontSize: "14px",
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          ⚙
+        </div>
+      )}
+
+      <ChatBubble message={displayMessage} visible={showBubble && !hidden} />
+      <Live2DCharacter
+        key={settings.live_2d_model_path}
+        modelPath={settings.live_2d_model_path}
+        onModelReady={handleModelReady}
+      />
+      {!hidden && <ChatPanel onSend={handleSend} isLoading={isLoading} />}
     </div>
   );
 }

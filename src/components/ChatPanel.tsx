@@ -52,7 +52,7 @@ export function ChatPanel({ onSend, isLoading }: Props) {
           padding: "8px 16px",
           borderRadius: "20px",
           border: "none",
-          background: isLoading ? "#ccc" : "#7c4dff",
+          background: isLoading ? "#ccc" : "#0ea5e9",
           color: "white",
           cursor: isLoading ? "default" : "pointer",
           fontSize: "14px",
