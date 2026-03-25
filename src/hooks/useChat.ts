@@ -51,17 +51,18 @@ export function useChat(systemPrompt: string) {
           setCurrentResponse(accumulated);
           setToolStatus("");
         } else if (event.event === "toolStart") {
-          setToolStatus(`🔧 ${event.data.name}...`);
-          // Reset accumulated for next LLM round
+          // Reset for next LLM round
           accumulated = "";
           setCurrentResponse("");
         } else if (event.event === "toolResult") {
           setToolStatus(`✅ ${event.data.name} done`);
         } else if (event.event === "done") {
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: accumulated },
-          ]);
+          if (accumulated.trim()) {
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: accumulated },
+            ]);
+          }
           setCurrentResponse("");
           setToolStatus("");
           setIsLoading(false);
@@ -89,8 +90,7 @@ export function useChat(systemPrompt: string) {
   const lastAssistantMsg = [...messages]
     .reverse()
     .find((m) => m.role === "assistant");
-  const displayMessage =
-    toolStatus || currentResponse || lastAssistantMsg?.content || "";
+  const displayMessage = currentResponse || lastAssistantMsg?.content || "";
   const showBubble = isLoading || !!lastAssistantMsg;
 
   return {
