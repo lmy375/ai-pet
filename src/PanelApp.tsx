@@ -1,13 +1,17 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { PanelSettings } from "./components/panel/PanelSettings";
 import { PanelChat } from "./components/panel/PanelChat";
-import { PanelDebug } from "./components/panel/PanelDebug";
 
-const TABS = ["设置", "聊天", "调试"] as const;
+const TABS = ["设置", "聊天"] as const;
 type Tab = (typeof TABS)[number];
 
 export function PanelApp() {
   const [activeTab, setActiveTab] = useState<Tab>("设置");
+
+  const openDebugWindow = () => {
+    invoke("open_debug").catch(console.error);
+  };
 
   return (
     <div style={{ width: "100%", height: "100vh", display: "flex", flexDirection: "column", background: "#f8fafc" }}>
@@ -33,13 +37,29 @@ export function PanelApp() {
             {tab}
           </button>
         ))}
+        <button
+          onClick={openDebugWindow}
+          style={{
+            padding: "12px 16px",
+            border: "none",
+            borderBottom: "2px solid transparent",
+            background: "transparent",
+            color: "#64748b",
+            fontWeight: 400,
+            fontSize: "14px",
+            cursor: "pointer",
+            transition: "all 0.2s",
+          }}
+          title="在新窗口中打开调试日志"
+        >
+          调试 ↗
+        </button>
       </div>
 
       {/* Tab content */}
       <div style={{ flex: 1, overflow: "hidden" }}>
         {activeTab === "设置" && <PanelSettings />}
         {activeTab === "聊天" && <PanelChat />}
-        {activeTab === "调试" && <PanelDebug />}
       </div>
     </div>
   );

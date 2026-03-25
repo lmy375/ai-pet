@@ -20,6 +20,7 @@ pub fn run() {
             commands::settings::get_soul,
             commands::settings::save_soul,
             commands::window::open_panel,
+            commands::window::open_debug,
             commands::debug::get_logs,
             commands::debug::append_log,
             commands::debug::clear_logs,
