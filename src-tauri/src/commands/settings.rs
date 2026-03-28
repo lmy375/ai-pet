@@ -1,6 +1,40 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Transport type: "stdio", "sse", or "http"
+    #[serde(default = "default_transport")]
+    pub transport: String,
+    /// Command to spawn (stdio transport)
+    #[serde(default)]
+    pub command: String,
+    /// Arguments for the command (stdio transport)
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// URL endpoint (sse/http transport)
+    #[serde(default)]
+    pub url: String,
+    /// Custom HTTP headers (sse/http transport)
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Environment variables for the process (stdio transport)
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// Whether this server is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_transport() -> String {
+    "stdio".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -12,6 +46,8 @@ pub struct AppSettings {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
 fn default_model_path() -> String {
@@ -33,6 +69,7 @@ impl Default for AppSettings {
             api_base: default_api_base(),
             api_key: String::new(),
             model: default_model(),
+            mcp_servers: HashMap::new(),
         }
     }
 }

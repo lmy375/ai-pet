@@ -1,11 +1,22 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+export interface McpServerConfig {
+  transport: "stdio" | "sse" | "http";
+  command: string;
+  args: string[];
+  url: string;
+  headers: Record<string, string>;
+  env: Record<string, string>;
+  enabled: boolean;
+}
+
 export interface AppSettings {
   live_2d_model_path: string;
   api_base: string;
   api_key: string;
   model: string;
+  mcp_servers: Record<string, McpServerConfig>;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -13,6 +24,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_base: "https://api.openai.com/v1",
   api_key: "",
   model: "gpt-4o-mini",
+  mcp_servers: {},
 };
 
 export function useSettings() {
