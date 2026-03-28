@@ -39,7 +39,8 @@ export function LlmLogView() {
             return raw as LlmLogEntry;
           } catch { return null; }
         })
-        .filter((e): e is LlmLogEntry => e !== null && !!e.request_time);
+        .filter((e): e is LlmLogEntry => e !== null && !!e.request_time)
+        .reverse();
       setEntries(parsed);
     } catch (e) {
       console.error("Failed to fetch LLM logs:", e);
@@ -54,7 +55,7 @@ export function LlmLogView() {
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop = 0;
     }
   }, [entries.length]);
 
