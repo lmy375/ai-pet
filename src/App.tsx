@@ -83,42 +83,13 @@ function App() {
         </div>
       )}
 
-      {/* Panel button (gear) */}
-      {!hidden && (
-        <div
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            openPanel();
-          }}
-          style={{
-            position: "absolute",
-            top: "8px",
-            right: "8px",
-            width: "24px",
-            height: "24px",
-            borderRadius: "50%",
-            background: "rgba(255,255,255,0.7)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            zIndex: 20,
-            fontSize: "14px",
-            backdropFilter: "blur(4px)",
-          }}
-        >
-          ⚙
-        </div>
-      )}
-
       <ChatBubble message={displayMessage} visible={showBubble && !hidden} />
       <Live2DCharacter
         key={settings.live_2d_model_path}
         modelPath={settings.live_2d_model_path}
         onModelReady={handleModelReady}
       />
-      {!hidden && <ChatPanel onSend={handleSend} isLoading={isLoading} />}
+      {!hidden && <ChatPanel onSend={handleSend} isLoading={isLoading} onOpenPanel={openPanel} />}
     </div>
   );
 }
