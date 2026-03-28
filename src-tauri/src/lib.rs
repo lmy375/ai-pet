@@ -48,6 +48,11 @@ pub fn run() {
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,
+            commands::session::list_sessions,
+            commands::session::load_session,
+            commands::session::save_session,
+            commands::session::create_session,
+            commands::session::delete_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
