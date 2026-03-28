@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::commands::debug::LogStore;
+use crate::commands::debug::{write_llm_log, LogStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
+use crate::mcp::McpManagerStore;
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
 
@@ -31,7 +32,18 @@ pub enum StreamEvent {
     Error { message: String },
 }
 
-/// Make a streaming LLM request; returns (collected_text, tool_calls)
+/// Result from a streaming LLM request
+struct LlmResult {
+    text: String,
+    tool_calls: Vec<serde_json::Value>,
+    request_time: String,
+    first_token_time: Option<String>,
+    done_time: String,
+    first_token_latency_ms: Option<i64>,
+    total_latency_ms: i64,
+}
+
+/// Make a streaming LLM request; returns LlmResult with timing info
 async fn stream_llm_request(
     client: &reqwest::Client,
     url: &str,
@@ -39,7 +51,11 @@ async fn stream_llm_request(
     body: &serde_json::Value,
     on_event: &Channel<StreamEvent>,
     ctx: &ToolContext,
-) -> Result<(String, Vec<serde_json::Value>), String> {
+) -> Result<LlmResult, String> {
+    let request_time = chrono::Local::now();
+    let request_time_str = request_time.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    let request_instant = std::time::Instant::now();
+
     let response = client
         .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -68,6 +84,8 @@ async fn stream_llm_request(
     let mut collected_text = String::new();
     let mut tool_calls_map: std::collections::HashMap<i64, (String, String, String)> =
         std::collections::HashMap::new();
+    let mut first_token_instant: Option<std::time::Instant> = None;
+    let mut first_token_time_str: Option<String> = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
@@ -82,6 +100,12 @@ async fn stream_llm_request(
                     break;
                 }
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                    // Record first token time on the first meaningful data chunk
+                    if first_token_instant.is_none() {
+                        first_token_instant = Some(std::time::Instant::now());
+                        first_token_time_str = Some(chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string());
+                    }
+
                     let delta = &parsed["choices"][0]["delta"];
 
                     if let Some(text) = delta["content"].as_str() {
@@ -115,6 +139,13 @@ async fn stream_llm_request(
         }
     }
 
+    let done_instant = std::time::Instant::now();
+    let done_time_str = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+
+    let first_token_latency_ms = first_token_instant
+        .map(|ft| (ft - request_instant).as_millis() as i64);
+    let total_latency_ms = (done_instant - request_instant).as_millis() as i64;
+
     let mut tool_calls: Vec<(i64, serde_json::Value)> = tool_calls_map
         .into_iter()
         .map(|(idx, (id, name, args))| {
@@ -131,7 +162,15 @@ async fn stream_llm_request(
     tool_calls.sort_by_key(|(idx, _)| *idx);
     let tool_calls: Vec<serde_json::Value> = tool_calls.into_iter().map(|(_, v)| v).collect();
 
-    Ok((collected_text, tool_calls))
+    Ok(LlmResult {
+        text: collected_text,
+        tool_calls,
+        request_time: request_time_str,
+        first_token_time: first_token_time_str,
+        done_time: done_time_str,
+        first_token_latency_ms,
+        total_latency_ms,
+    })
 }
 
 #[tauri::command]
@@ -140,6 +179,7 @@ pub async fn chat(
     on_event: Channel<StreamEvent>,
     log_store: State<'_, LogStore>,
     shell_store: State<'_, ShellStore>,
+    mcp_store: State<'_, McpManagerStore>,
 ) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
 
@@ -153,7 +193,12 @@ pub async fn chat(
         .unwrap_or_default();
     ctx.log(&format!("Chat request: model={}, user=\"{}\"", config.model, user_msg));
 
-    let registry = ToolRegistry::new();
+    // Get MCP tool definitions
+    let mcp_defs = {
+        let mcp_manager = mcp_store.lock().await;
+        mcp_manager.definitions()
+    };
+    let registry = ToolRegistry::new(mcp_defs);
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let tools = registry.definitions();
@@ -189,18 +234,37 @@ pub async fn chat(
         });
 
         ctx.log(&format!("POST {}", url));
-        let (text, tool_calls) =
+        let result =
             stream_llm_request(&client, &url, &config.api_key, &body, &on_event, &ctx).await?;
 
-        if tool_calls.is_empty() {
-            ctx.log(&format!("Final response ({} chars)", text.len()));
+        // Write LLM request/response to llm.log with timing
+        write_llm_log(
+            round,
+            &body,
+            &result.text,
+            &result.tool_calls,
+            &result.request_time,
+            result.first_token_time.as_deref(),
+            &result.done_time,
+            result.first_token_latency_ms,
+            result.total_latency_ms,
+        );
+
+        if result.tool_calls.is_empty() {
+            ctx.log(&format!("Final response ({} chars, TTFT={}ms, total={}ms)",
+                result.text.len(),
+                result.first_token_latency_ms.unwrap_or(-1),
+                result.total_latency_ms,
+            ));
             let _ = on_event.send(StreamEvent::Done {});
             return Ok(());
         }
 
-        ctx.log(&format!("Tool calls: {}", tool_calls.len()));
+        ctx.log(&format!("Tool calls: {}", result.tool_calls.len()));
 
         // Add assistant message with tool_calls
+        let text = result.text;
+        let tool_calls = result.tool_calls;
         let mut assistant_msg = serde_json::json!({
             "role": "assistant",
             "content": if text.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(text) },
@@ -208,7 +272,7 @@ pub async fn chat(
         assistant_msg["tool_calls"] = serde_json::json!(tool_calls);
         conv_messages.push(assistant_msg);
 
-        // Execute each tool call via registry
+        // Execute each tool call via registry or MCP manager
         for tc in &tool_calls {
             let tc_id = tc["id"].as_str().unwrap_or("");
             let tc_name = tc["function"]["name"].as_str().unwrap_or("");
@@ -219,7 +283,20 @@ pub async fn chat(
                 arguments: tc_args.to_string(),
             });
 
-            let result = registry.execute(tc_name, tc_args, &ctx).await;
+            let result = if registry.is_mcp_tool(tc_name) {
+                // Route to MCP manager
+                ctx.log(&format!("MCP tool call: {}({})", tc_name, tc_args));
+                let args_value: serde_json::Value =
+                    serde_json::from_str(tc_args).unwrap_or(serde_json::Value::Null);
+                let mcp_manager = mcp_store.lock().await;
+                match mcp_manager.call_tool(tc_name, args_value).await {
+                    Ok(r) => r,
+                    Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+                }
+            } else {
+                // Built-in tool
+                registry.execute(tc_name, tc_args, &ctx).await
+            };
 
             ctx.log(&format!("Tool result [{}]: {} chars", tc_name, result.len()));
 

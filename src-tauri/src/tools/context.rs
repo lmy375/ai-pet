@@ -1,4 +1,4 @@
-use crate::commands::debug::LogStore;
+use crate::commands::debug::{write_log, LogStore};
 use crate::commands::shell::ShellStore;
 
 /// Shared context passed to all tools during execution
@@ -19,12 +19,6 @@ impl ToolContext {
     }
 
     pub fn log(&self, msg: &str) {
-        let mut logs = self.log_store.0.lock().unwrap();
-        let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push(format!("[{}] {}", ts, msg));
-        if logs.len() > 500 {
-            let drain = logs.len() - 500;
-            logs.drain(0..drain);
-        }
+        write_log(&self.log_store.0, msg);
     }
 }
