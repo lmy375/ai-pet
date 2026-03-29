@@ -11,12 +11,19 @@ export interface McpServerConfig {
   enabled: boolean;
 }
 
+export interface TelegramConfig {
+  bot_token: string;
+  allowed_username: string;
+  enabled: boolean;
+}
+
 export interface AppSettings {
   live_2d_model_path: string;
   api_base: string;
   api_key: string;
   model: string;
   mcp_servers: Record<string, McpServerConfig>;
+  telegram: TelegramConfig;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -25,6 +32,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_key: "",
   model: "gpt-4o-mini",
   mcp_servers: {},
+  telegram: { bot_token: "", allowed_username: "", enabled: false },
 };
 
 export function useSettings() {

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
+#[derive(Clone)]
 pub struct LogStore(pub Arc<Mutex<Vec<String>>>);
 
 /// Return the log directory: ~/.config/pet/logs/

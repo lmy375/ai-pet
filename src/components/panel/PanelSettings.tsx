@@ -10,6 +10,11 @@ interface McpStatus {
   error: string | null;
 }
 
+interface TelegramStatus {
+  running: boolean;
+  error: string | null;
+}
+
 const emptyMcpServer = (transport: McpServerConfig["transport"] = "stdio"): McpServerConfig => ({
   transport,
   command: "",
@@ -27,6 +32,7 @@ export function PanelSettings() {
     api_key: "",
     model: "",
     mcp_servers: {},
+    telegram: { bot_token: "", allowed_username: "", enabled: false },
   });
   const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -35,16 +41,22 @@ export function PanelSettings() {
   const [mcpStatuses, setMcpStatuses] = useState<McpStatus[]>([]);
   const [reconnecting, setReconnecting] = useState(false);
   const [newServerName, setNewServerName] = useState("");
+  const [telegramStatus, setTelegramStatus] = useState<TelegramStatus>({ running: false, error: null });
+  const [telegramReconnecting, setTelegramReconnecting] = useState(false);
+  const [viewMode, setViewMode] = useState<"form" | "raw">("form");
+  const [rawYaml, setRawYaml] = useState("");
 
   useEffect(() => {
     Promise.all([
       invoke<AppSettings>("get_settings"),
       invoke<string>("get_soul"),
       invoke<McpStatus[]>("get_mcp_status"),
-    ]).then(([s, soulContent, statuses]) => {
+      invoke<TelegramStatus>("get_telegram_status"),
+    ]).then(([s, soulContent, statuses, tgStatus]) => {
       setForm(s);
       setSoul(soulContent);
       setMcpStatuses(statuses);
+      setTelegramStatus(tgStatus);
       setLoaded(true);
     });
   }, []);
@@ -107,6 +119,42 @@ export function PanelSettings() {
     setNewServerName("");
   };
 
+  const switchToRaw = async () => {
+    try {
+      const raw = await invoke<string>("get_config_raw");
+      setRawYaml(raw);
+      setViewMode("raw");
+      setMessage("");
+    } catch (e: any) {
+      setMessage(`加载配置文件失败: ${e}`);
+    }
+  };
+
+  const switchToForm = async () => {
+    try {
+      const s = await invoke<AppSettings>("get_settings");
+      setForm(s);
+      setViewMode("form");
+      setMessage("");
+    } catch (e: any) {
+      setMessage(`加载配置失败: ${e}`);
+    }
+  };
+
+  const handleSaveRaw = async () => {
+    setSaving(true);
+    setMessage("");
+    try {
+      await invoke("save_config_raw", { content: rawYaml });
+      await invoke("save_soul", { content: soul });
+      setMessage("保存成功！重启宠物窗口后生效。");
+    } catch (e: any) {
+      setMessage(`保存失败: ${e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (!loaded) return <div style={containerStyle}>加载中...</div>;
 
   const serverEntries = Object.entries(form.mcp_servers);
@@ -115,6 +163,93 @@ export function PanelSettings() {
 
   return (
     <div style={containerStyle}>
+      {/* View mode toggle */}
+      <div style={{ display: "flex", gap: "4px", marginBottom: "16px", background: "#e2e8f0", borderRadius: "8px", padding: "3px" }}>
+        <button
+          onClick={viewMode === "raw" ? switchToForm : undefined}
+          style={{
+            flex: 1,
+            padding: "6px 0",
+            borderRadius: "6px",
+            border: "none",
+            background: viewMode === "form" ? "#fff" : "transparent",
+            color: viewMode === "form" ? "#1e293b" : "#64748b",
+            fontWeight: viewMode === "form" ? 600 : 400,
+            fontSize: "13px",
+            cursor: viewMode === "form" ? "default" : "pointer",
+            transition: "all 0.2s",
+          }}
+        >
+          表单
+        </button>
+        <button
+          onClick={viewMode === "form" ? switchToRaw : undefined}
+          style={{
+            flex: 1,
+            padding: "6px 0",
+            borderRadius: "6px",
+            border: "none",
+            background: viewMode === "raw" ? "#fff" : "transparent",
+            color: viewMode === "raw" ? "#1e293b" : "#64748b",
+            fontWeight: viewMode === "raw" ? 600 : 400,
+            fontSize: "13px",
+            cursor: viewMode === "raw" ? "default" : "pointer",
+            transition: "all 0.2s",
+          }}
+        >
+          源码
+        </button>
+      </div>
+
+      {viewMode === "raw" ? (
+        <>
+          {/* Raw YAML editor */}
+          <div style={sectionStyle}>
+            <h4 style={sectionTitle}>config.yaml</h4>
+            <textarea
+              value={rawYaml}
+              onChange={(e) => setRawYaml(e.target.value)}
+              style={{
+                ...inputStyle,
+                fontFamily: "monospace",
+                fontSize: "12px",
+                lineHeight: "1.6",
+                resize: "vertical",
+                minHeight: "300px",
+                whiteSpace: "pre",
+                overflowWrap: "normal",
+                overflowX: "auto",
+              }}
+              spellCheck={false}
+            />
+          </div>
+
+          {/* SOUL */}
+          <div style={sectionStyle}>
+            <h4 style={sectionTitle}>系统提示词 (SOUL.md)</h4>
+            <textarea
+              value={soul}
+              onChange={(e) => setSoul(e.target.value)}
+              rows={6}
+              style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", lineHeight: "1.5" }}
+              placeholder="输入 AI 角色设定..."
+            />
+          </div>
+
+          {/* Save */}
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "8px" }}>
+            <button onClick={handleSaveRaw} disabled={saving} style={btnStyle}>
+              {saving ? "保存中..." : "保存"}
+            </button>
+            {message && (
+              <span style={{ fontSize: "13px", color: message.includes("失败") ? "#ef4444" : "#22c55e" }}>
+                {message}
+              </span>
+            )}
+          </div>
+        </>
+      ) : (
+      <>
       {/* Live2D */}
       <div style={sectionStyle}>
         <h4 style={sectionTitle}>Live2D 模型</h4>
@@ -219,6 +354,84 @@ export function PanelSettings() {
         </div>
       </div>
 
+      {/* Telegram Bot */}
+      <div style={sectionStyle}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+          <h4 style={{ ...sectionTitle, margin: 0 }}>
+            Telegram Bot
+            <span style={{
+              fontWeight: 400,
+              fontSize: "11px",
+              marginLeft: "8px",
+              color: telegramStatus.running ? "#22c55e" : telegramStatus.error ? "#ef4444" : "#94a3b8",
+            }}>
+              {telegramStatus.running ? "运行中" : telegramStatus.error ? "连接失败" : "未启动"}
+            </span>
+          </h4>
+          <button
+            onClick={async () => {
+              setTelegramReconnecting(true);
+              setMessage("");
+              try {
+                await invoke("save_settings", { settings: form });
+                const status = await invoke<TelegramStatus>("reconnect_telegram");
+                setTelegramStatus(status);
+                if (status.error) {
+                  setMessage(`Telegram 连接失败: ${status.error}`);
+                } else if (status.running) {
+                  setMessage("Telegram Bot 已连接");
+                } else {
+                  setMessage("Telegram Bot 已停止");
+                }
+              } catch (e: any) {
+                setMessage(`Telegram 操作失败: ${e}`);
+              } finally {
+                setTelegramReconnecting(false);
+              }
+            }}
+            disabled={telegramReconnecting}
+            style={{
+              ...btnSmallStyle,
+              background: telegramReconnecting ? "#94a3b8" : "#0ea5e9",
+            }}
+          >
+            {telegramReconnecting ? "连接中..." : "保存并连接"}
+          </button>
+        </div>
+
+        {telegramStatus.error && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px", fontSize: "12px", color: "#dc2626" }}>
+            {telegramStatus.error}
+          </div>
+        )}
+
+        <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
+          <input
+            type="checkbox"
+            checked={form.telegram?.enabled ?? false}
+            onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, bot_token: form.telegram?.bot_token ?? "", allowed_username: form.telegram?.allowed_username ?? "", enabled: e.target.checked } })}
+          />
+          启用 Telegram Bot
+        </label>
+
+        <label style={labelStyle}>Bot Token</label>
+        <input
+          type="password"
+          value={form.telegram?.bot_token ?? ""}
+          onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, allowed_username: form.telegram?.allowed_username ?? "", bot_token: e.target.value } })}
+          style={{ ...inputStyle, marginBottom: "8px", fontFamily: "monospace", fontSize: "12px" }}
+          placeholder="123456789:ABCdefGhI..."
+        />
+
+        <label style={labelStyle}>允许的用户名</label>
+        <input
+          value={form.telegram?.allowed_username ?? ""}
+          onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, bot_token: form.telegram?.bot_token ?? "", allowed_username: e.target.value } })}
+          style={{ ...inputStyle, fontFamily: "monospace", fontSize: "12px" }}
+          placeholder="@username (留空则允许所有人)"
+        />
+      </div>
+
       {/* SOUL */}
       <div style={sectionStyle}>
         <h4 style={sectionTitle}>系统提示词 (SOUL.md)</h4>
@@ -242,6 +455,8 @@ export function PanelSettings() {
           </span>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

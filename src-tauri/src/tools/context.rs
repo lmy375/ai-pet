@@ -8,6 +8,10 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    pub fn new(log_store: LogStore, shell_store: ShellStore) -> Self {
+        Self { shell_store, log_store }
+    }
+
     pub fn from_states(
         log_store: &tauri::State<'_, LogStore>,
         shell_store: &tauri::State<'_, ShellStore>,

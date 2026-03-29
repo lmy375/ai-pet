@@ -30,4 +30,6 @@ rmcp = { version = "1.2", features = [
     "transport-streamable-http-client-reqwest",
     "reqwest",
 ] }
+teloxide = { version = "0.13", features = ["macros"] }
+log = "0.4"
 

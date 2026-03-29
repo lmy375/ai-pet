@@ -36,6 +36,16 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TelegramConfig {
+    #[serde(default)]
+    pub bot_token: String,
+    #[serde(default)]
+    pub allowed_username: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_model_path")]
@@ -48,6 +58,8 @@ pub struct AppSettings {
     pub model: String,
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+    #[serde(default)]
+    pub telegram: TelegramConfig,
 }
 
 fn default_model_path() -> String {
@@ -70,6 +82,7 @@ impl Default for AppSettings {
             api_key: String::new(),
             model: default_model(),
             mcp_servers: HashMap::new(),
+            telegram: TelegramConfig::default(),
         }
     }
 }
@@ -127,6 +140,32 @@ pub fn get_soul() -> Result<String, String> {
     }
     fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read SOUL.md: {}", e))
+}
+
+#[tauri::command]
+pub fn get_config_raw() -> Result<String, String> {
+    let path = config_path()?;
+    if !path.exists() {
+        let default_settings = AppSettings::default();
+        return serde_yaml::to_string(&default_settings)
+            .map_err(|e| format!("Failed to serialize default config: {}", e));
+    }
+    fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read config: {}", e))
+}
+
+#[tauri::command]
+pub fn save_config_raw(content: String) -> Result<(), String> {
+    // Validate YAML parses as AppSettings before saving
+    let _: AppSettings = serde_yaml::from_str(&content)
+        .map_err(|e| format!("YAML 解析失败: {}", e))?;
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    fs::write(&path, &content)
+        .map_err(|e| format!("Failed to write config: {}", e))
 }
 
 #[tauri::command]
