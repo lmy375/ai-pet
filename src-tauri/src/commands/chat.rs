@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -32,6 +33,58 @@ pub enum StreamEvent {
     Error { message: String },
 }
 
+/// Abstraction for chat event delivery — allows both Tauri streaming and non-streaming callers.
+pub trait ChatEventSink: Send + Sync {
+    fn send_chunk(&self, text: &str);
+    fn send_tool_start(&self, name: &str, arguments: &str);
+    fn send_tool_result(&self, name: &str, result: &str);
+    fn send_done(&self);
+    fn send_error(&self, message: &str);
+}
+
+/// Implementation for Tauri's Channel (used by the frontend streaming path).
+impl ChatEventSink for Channel<StreamEvent> {
+    fn send_chunk(&self, text: &str) {
+        let _ = self.send(StreamEvent::Chunk { text: text.to_string() });
+    }
+    fn send_tool_start(&self, name: &str, arguments: &str) {
+        let _ = self.send(StreamEvent::ToolStart { name: name.to_string(), arguments: arguments.to_string() });
+    }
+    fn send_tool_result(&self, name: &str, result: &str) {
+        let _ = self.send(StreamEvent::ToolResult { name: name.to_string(), result: result.to_string() });
+    }
+    fn send_done(&self) {
+        let _ = self.send(StreamEvent::Done {});
+    }
+    fn send_error(&self, message: &str) {
+        let _ = self.send(StreamEvent::Error { message: message.to_string() });
+    }
+}
+
+/// A sink that collects the final assistant text (for non-streaming callers like Telegram).
+pub struct CollectingSink {
+    text: Mutex<String>,
+}
+
+impl CollectingSink {
+    pub fn new() -> Self {
+        Self { text: Mutex::new(String::new()) }
+    }
+    pub fn take_text(&self) -> String {
+        std::mem::take(&mut *self.text.lock().unwrap())
+    }
+}
+
+impl ChatEventSink for CollectingSink {
+    fn send_chunk(&self, text: &str) {
+        self.text.lock().unwrap().push_str(text);
+    }
+    fn send_tool_start(&self, _name: &str, _arguments: &str) {}
+    fn send_tool_result(&self, _name: &str, _result: &str) {}
+    fn send_done(&self) {}
+    fn send_error(&self, _message: &str) {}
+}
+
 /// Result from a streaming LLM request
 struct LlmResult {
     text: String,
@@ -49,7 +102,7 @@ async fn stream_llm_request(
     url: &str,
     api_key: &str,
     body: &serde_json::Value,
-    on_event: &Channel<StreamEvent>,
+    sink: &dyn ChatEventSink,
     ctx: &ToolContext,
 ) -> Result<LlmResult, String> {
     let request_time = chrono::Local::now();
@@ -75,7 +128,7 @@ async fn stream_llm_request(
         let text = response.text().await.unwrap_or_default();
         let msg = format!("API error {}: {}", status, text);
         ctx.log(&format!("ERROR: {}", msg));
-        let _ = on_event.send(StreamEvent::Error { message: msg.clone() });
+        sink.send_error(&msg);
         return Err(msg);
     }
 
@@ -111,9 +164,7 @@ async fn stream_llm_request(
                     if let Some(text) = delta["content"].as_str() {
                         if !text.is_empty() {
                             collected_text.push_str(text);
-                            let _ = on_event.send(StreamEvent::Chunk {
-                                text: text.to_string(),
-                            });
+                            sink.send_chunk(text);
                         }
                     }
 
@@ -173,18 +224,15 @@ async fn stream_llm_request(
     })
 }
 
-#[tauri::command]
-pub async fn chat(
+/// Run the full LLM chat pipeline with tool calling. Returns final assistant text.
+/// This is the core logic shared by the Tauri command and Telegram bot.
+pub async fn run_chat_pipeline(
     messages: Vec<ChatMessage>,
-    on_event: Channel<StreamEvent>,
-    log_store: State<'_, LogStore>,
-    shell_store: State<'_, ShellStore>,
-    mcp_store: State<'_, McpManagerStore>,
-) -> Result<(), String> {
-    let config = AiConfig::from_settings()?;
-
-    let ctx = ToolContext::from_states(&log_store, &shell_store);
-
+    sink: &dyn ChatEventSink,
+    config: &AiConfig,
+    mcp_store: &McpManagerStore,
+    ctx: &ToolContext,
+) -> Result<String, String> {
     let user_msg = messages
         .iter()
         .rev()
@@ -235,7 +283,7 @@ pub async fn chat(
 
         ctx.log(&format!("POST {}", url));
         let result =
-            stream_llm_request(&client, &url, &config.api_key, &body, &on_event, &ctx).await?;
+            stream_llm_request(&client, &url, &config.api_key, &body, sink, ctx).await?;
 
         // Write LLM request/response to llm.log with timing
         write_llm_log(
@@ -256,8 +304,8 @@ pub async fn chat(
                 result.first_token_latency_ms.unwrap_or(-1),
                 result.total_latency_ms,
             ));
-            let _ = on_event.send(StreamEvent::Done {});
-            return Ok(());
+            sink.send_done();
+            return Ok(result.text);
         }
 
         ctx.log(&format!("Tool calls: {}", result.tool_calls.len()));
@@ -278,10 +326,7 @@ pub async fn chat(
             let tc_name = tc["function"]["name"].as_str().unwrap_or("");
             let tc_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
 
-            let _ = on_event.send(StreamEvent::ToolStart {
-                name: tc_name.to_string(),
-                arguments: tc_args.to_string(),
-            });
+            sink.send_tool_start(tc_name, tc_args);
 
             let result = if registry.is_mcp_tool(tc_name) {
                 // Route to MCP manager
@@ -295,15 +340,12 @@ pub async fn chat(
                 }
             } else {
                 // Built-in tool
-                registry.execute(tc_name, tc_args, &ctx).await
+                registry.execute(tc_name, tc_args, ctx).await
             };
 
             ctx.log(&format!("Tool result [{}]: {} chars", tc_name, result.len()));
 
-            let _ = on_event.send(StreamEvent::ToolResult {
-                name: tc_name.to_string(),
-                result: result.clone(),
-            });
+            sink.send_tool_result(tc_name, &result);
 
             conv_messages.push(serde_json::json!({
                 "role": "tool",
@@ -314,4 +356,19 @@ pub async fn chat(
 
         round += 1;
     }
+}
+
+#[tauri::command]
+pub async fn chat(
+    messages: Vec<ChatMessage>,
+    on_event: Channel<StreamEvent>,
+    log_store: State<'_, LogStore>,
+    shell_store: State<'_, ShellStore>,
+    mcp_store: State<'_, McpManagerStore>,
+) -> Result<(), String> {
+    let config = AiConfig::from_settings()?;
+    let ctx = ToolContext::from_states(&log_store, &shell_store);
+    let mcp = mcp_store.inner().clone();
+    run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await?;
+    Ok(())
 }

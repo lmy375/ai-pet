@@ -76,6 +76,7 @@ impl ShellTask {
     }
 }
 
+#[derive(Clone)]
 pub struct ShellStore(pub Arc<Mutex<HashMap<String, ShellTask>>>);
 
 #[derive(Serialize)]
