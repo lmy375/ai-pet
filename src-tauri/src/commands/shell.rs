@@ -1,16 +1,15 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use serde::Serialize;
 use tauri::State;
 
-const MAX_OUTPUT: usize = 4096;
-const TIMEOUT_SECS: u64 = 30;
-const SHELL_DIR: &str = "/tmp/pet/shell";
+pub const MAX_OUTPUT: usize = 32768;
+pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+pub const MAX_TIMEOUT_MS: u64 = 600_000;
+pub const SHELL_DIR: &str = "/tmp/pet/shell";
 
 // --- Types ---
 
@@ -96,12 +95,22 @@ pub struct ShellResult {
 
 // --- Shared helper ---
 
-fn read_with_truncation(path: &PathBuf) -> (String, bool) {
+/// Find the nearest valid UTF-8 char boundary at or after `pos`.
+pub fn ceil_char_boundary(s: &str, pos: usize) -> usize {
+    let mut i = pos;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+pub fn read_with_truncation(path: &PathBuf) -> (String, bool) {
     let content = std::fs::read_to_string(path).unwrap_or_default();
     if content.len() <= MAX_OUTPUT {
         (content, false)
     } else {
-        let tail = &content[content.len() - MAX_OUTPUT..];
+        let start = ceil_char_boundary(&content, content.len() - MAX_OUTPUT);
+        let tail = &content[start..];
         let truncated = format!(
             "--- truncated ({} bytes total), full output: {} ---\n{}",
             content.len(),
@@ -139,7 +148,7 @@ fn build_shell_result(task_id: &str, task: &ShellTask) -> ShellResult {
     }
 }
 
-fn cleanup_old_tasks(map: &mut HashMap<String, ShellTask>) {
+pub fn cleanup_old_tasks(map: &mut HashMap<String, ShellTask>) {
     let cutoff = Local::now() - chrono::Duration::hours(1);
     let to_remove: Vec<String> = map
         .iter()
@@ -159,87 +168,6 @@ fn cleanup_old_tasks(map: &mut HashMap<String, ShellTask>) {
 }
 
 // --- Commands ---
-
-#[tauri::command]
-pub async fn execute_shell(
-    command: String,
-    store: State<'_, ShellStore>,
-) -> Result<ShellResult, String> {
-    let task_id = uuid::Uuid::new_v4().to_string();
-
-    // Ensure output directory exists
-    std::fs::create_dir_all(SHELL_DIR).map_err(|e| format!("Failed to create {}: {}", SHELL_DIR, e))?;
-
-    let stdout_path = PathBuf::from(format!("{}/{}.stdout", SHELL_DIR, task_id));
-    let stderr_path = PathBuf::from(format!("{}/{}.stderr", SHELL_DIR, task_id));
-
-    // Open files for process output redirection
-    let stdout_file = std::fs::File::create(&stdout_path)
-        .map_err(|e| format!("Failed to create stdout file: {}", e))?;
-    let stderr_file = std::fs::File::create(&stderr_path)
-        .map_err(|e| format!("Failed to create stderr file: {}", e))?;
-
-    // Spawn the process
-    let mut child = tokio::process::Command::new("bash")
-        .arg("-c")
-        .arg(&command)
-        .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-        .map_err(|e| format!("Failed to spawn process: {}", e))?;
-
-    let pid = child.id().unwrap_or(0);
-    let now = Local::now();
-    let task = ShellTask::new(pid, stdout_path.clone(), stderr_path.clone(), now);
-
-    // Insert task and cleanup old ones
-    {
-        let mut map = store.0.lock().unwrap();
-        cleanup_old_tasks(&mut map);
-        map.insert(task_id.clone(), task);
-    }
-
-    // Wait with timeout
-    let store_arc = store.0.clone();
-    let tid = task_id.clone();
-
-    match tokio::time::timeout(Duration::from_secs(TIMEOUT_SECS), child.wait()).await {
-        Ok(Ok(exit_status)) => {
-            // Completed within timeout
-            let mut map = store_arc.lock().unwrap();
-            if let Some(t) = map.get_mut(&tid) {
-                t.mark_finished(exit_status.code());
-            }
-            let result = build_shell_result(&tid, map.get(&tid).unwrap());
-            Ok(result)
-        }
-        Ok(Err(e)) => {
-            // Process error
-            let mut map = store_arc.lock().unwrap();
-            if let Some(t) = map.get_mut(&tid) {
-                t.mark_finished(Some(-1));
-            }
-            Err(format!("Process error: {}", e))
-        }
-        Err(_) => {
-            // Timeout — spawn background waiter
-            let store_bg = store_arc.clone();
-            let tid_bg = tid.clone();
-            tokio::spawn(async move {
-                let exit = child.wait().await;
-                let mut map = store_bg.lock().unwrap();
-                if let Some(t) = map.get_mut(&tid_bg) {
-                    t.mark_finished(exit.ok().and_then(|s| s.code()));
-                }
-            });
-
-            // Return current state
-            let map = store_arc.lock().unwrap();
-            let result = build_shell_result(&tid, map.get(&tid).unwrap());
-            Ok(result)
-        }
-    }
-}
 
 #[tauri::command]
 pub fn check_shell_status(

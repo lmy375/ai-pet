@@ -51,12 +51,15 @@ export function PanelSettings() {
       invoke<AppSettings>("get_settings"),
       invoke<string>("get_soul"),
       invoke<McpStatus[]>("get_mcp_status"),
-      invoke<TelegramStatus>("get_telegram_status"),
+      invoke<TelegramStatus>("get_telegram_status").catch(() => ({ running: false, error: null }) as TelegramStatus),
     ]).then(([s, soulContent, statuses, tgStatus]) => {
       setForm(s);
       setSoul(soulContent);
       setMcpStatuses(statuses);
       setTelegramStatus(tgStatus);
+      setLoaded(true);
+    }).catch((e) => {
+      console.error("Failed to load settings:", e);
       setLoaded(true);
     });
   }, []);
