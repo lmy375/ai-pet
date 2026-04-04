@@ -1,4 +1,5 @@
-use super::shell_tools::{CheckShellStatusTool, ExecuteShellTool};
+use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
+use super::shell_tools::{BashTool, CheckShellStatusTool};
 use super::tool::Tool;
 use super::context::ToolContext;
 
@@ -15,8 +16,11 @@ impl ToolRegistry {
     /// Create registry with built-in tools and optional MCP tool definitions
     pub fn new(mcp_definitions: Vec<serde_json::Value>) -> Self {
         let tools: Vec<Box<dyn Tool>> = vec![
-            Box::new(ExecuteShellTool),
+            Box::new(BashTool),
             Box::new(CheckShellStatusTool),
+            Box::new(ReadFileTool),
+            Box::new(WriteFileTool),
+            Box::new(EditFileTool),
         ];
         let mcp_tool_names: Vec<String> = mcp_definitions
             .iter()

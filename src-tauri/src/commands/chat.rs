@@ -11,6 +11,34 @@ use crate::mcp::McpManagerStore;
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
 
+/// System prompt for tool usage best practices, injected into every chat pipeline request.
+const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
+
+你可以使用以下工具来帮助用户完成任务。请遵循以下原则：
+
+## 工具选择
+- 读取文件内容：使用 read_file，**不要**用 bash 运行 cat/head/tail/sed
+- 修改现有文件：使用 edit_file，**不要**用 bash 运行 sed/awk
+- 创建新文件或完全重写文件：使用 write_file，**不要**用 bash 运行 echo 重定向或 cat heredoc
+- bash 工具仅用于真正需要 shell 执行的系统命令（如 git、npm、cargo、curl、ls、find 等）
+
+## 文件操作原则
+- 在修改文件之前，先用 read_file 阅读文件内容，确保了解当前状态
+- 优先使用 edit_file 修改文件，它只修改需要变更的部分，比 write_file 更安全
+- 仅在创建新文件或需要完全重写时使用 write_file
+- 使用 edit_file 时，确保 old_string 在文件中是唯一的；如果不唯一，提供更多上下文使其唯一
+
+## bash 使用原则
+- 工作目录在多次调用间不会保持，请使用绝对路径或设置 working_directory 参数
+- 对于长时间运行的命令，设置合适的 timeout 或使用 run_in_background: true
+- 后台命令通过 check_shell_status 轮询结果
+
+## 一般原则
+- 保持回复简洁直接
+- 不要创建不必要的文件
+- 不要在未阅读的情况下修改代码
+- 一次可以调用多个工具，如果它们之间没有依赖关系"#;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -268,6 +296,21 @@ pub async fn run_chat_pipeline(
             msg
         })
         .collect();
+
+    // Inject tool usage system prompt after the first system message
+    let tool_prompt_msg = serde_json::json!({
+        "role": "system",
+        "content": TOOL_USAGE_PROMPT,
+    });
+    // Insert after position 0 (after SOUL.md system message) if messages exist, else at 0
+    let insert_pos = if !conv_messages.is_empty()
+        && conv_messages[0]["role"].as_str() == Some("system")
+    {
+        1
+    } else {
+        0
+    };
+    conv_messages.insert(insert_pos, tool_prompt_msg);
 
     // Tool calling loop (unlimited rounds)
     let mut round = 0usize;
