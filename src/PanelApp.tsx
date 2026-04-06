@@ -2,8 +2,9 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelSettings } from "./components/panel/PanelSettings";
 import { PanelChat } from "./components/panel/PanelChat";
+import { PanelMemory } from "./components/panel/PanelMemory";
 
-const TABS = ["设置", "聊天"] as const;
+const TABS = ["设置", "聊天", "记忆"] as const;
 type Tab = (typeof TABS)[number];
 
 export function PanelApp() {
@@ -60,6 +61,7 @@ export function PanelApp() {
       <div style={{ flex: 1, overflow: "hidden" }}>
         {activeTab === "设置" && <PanelSettings />}
         {activeTab === "聊天" && <PanelChat />}
+        {activeTab === "记忆" && <PanelMemory />}
       </div>
     </div>
   );
