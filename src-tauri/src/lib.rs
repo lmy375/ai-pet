@@ -83,6 +83,9 @@ pub fn run() {
             commands::session::delete_session,
             commands::telegram::get_telegram_status,
             commands::telegram::reconnect_telegram,
+            commands::memory::memory_list,
+            commands::memory::memory_search,
+            commands::memory::memory_edit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
