@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod mcp;
+mod proactive;
 mod telegram;
 mod tools;
 
@@ -21,6 +22,7 @@ pub fn run() {
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
+        .manage(proactive::new_interaction_clock())
         .setup(|app| {
             // Initialize MCP servers from config on app start
             let mcp_store = app.state::<mcp::McpManagerStore>().inner().clone();
@@ -57,6 +59,10 @@ pub fn run() {
                     }
                 }
             });
+
+            // Start proactive engagement loop (reads settings each tick).
+            proactive::spawn(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

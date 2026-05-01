@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
@@ -78,6 +79,26 @@ export function useChat(systemPrompt: string) {
       setIsLoading(false);
     }
   }, [systemPrompt]);
+
+  // Listen for proactive (pet-initiated) messages — backend already persisted them.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await listen<{ text: string; timestamp: string }>(
+        "proactive-message",
+        (event) => {
+          const text = event.payload.text;
+          if (!text) return;
+          const assistantMsg: ChatMessage = { role: "assistant", content: text };
+          setMessages((prev) => [...prev, assistantMsg]);
+          itemsRef.current = [...itemsRef.current, { type: "assistant", content: text }];
+        },
+      );
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const saveSession = useCallback(
     async (msgs: ChatMessage[], items: ChatItem[]) => {
