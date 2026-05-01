@@ -8,6 +8,7 @@ use crate::commands::debug::{write_llm_log, LogStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
+use crate::proactive::InteractionClockStore;
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
 
@@ -408,10 +409,15 @@ pub async fn chat(
     log_store: State<'_, LogStore>,
     shell_store: State<'_, ShellStore>,
     mcp_store: State<'_, McpManagerStore>,
+    interaction_clock: State<'_, InteractionClockStore>,
 ) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
     let ctx = ToolContext::from_states(&log_store, &shell_store);
     let mcp = mcp_store.inner().clone();
-    run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await?;
+    let clock = interaction_clock.inner().clone();
+    clock.touch().await;
+    let result = run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await;
+    clock.touch().await;
+    result?;
     Ok(())
 }

@@ -47,6 +47,36 @@ pub struct TelegramConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProactiveConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// How often the background loop wakes up to consider speaking, in seconds.
+    #[serde(default = "default_proactive_interval")]
+    pub interval_seconds: u64,
+    /// Required idle time since last interaction before pet may speak, in seconds.
+    #[serde(default = "default_proactive_idle_threshold")]
+    pub idle_threshold_seconds: u64,
+}
+
+fn default_proactive_interval() -> u64 {
+    300
+}
+
+fn default_proactive_idle_threshold() -> u64 {
+    900
+}
+
+impl Default for ProactiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_seconds: default_proactive_interval(),
+            idle_threshold_seconds: default_proactive_idle_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_model_path")]
     pub live_2d_model_path: String,
@@ -60,6 +90,8 @@ pub struct AppSettings {
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
     pub telegram: TelegramConfig,
+    #[serde(default)]
+    pub proactive: ProactiveConfig,
 }
 
 fn default_model_path() -> String {
@@ -83,6 +115,7 @@ impl Default for AppSettings {
             model: default_model(),
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),
+            proactive: ProactiveConfig::default(),
         }
     }
 }
