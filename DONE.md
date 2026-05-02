@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 62：手动触发 consolidate 命令 + 按钮
+- 后端 `consolidate.rs` 加 `#[tauri::command] pub async fn trigger_consolidate(app) -> Result<String, String>`：
+  - 计算 `total_memory_items`（不走 min_total_items gate——手动想 always 跑）
+  - 调 `run_consolidation(&app, total)`
+  - 返一个状态字符串"Consolidation finished in N ms (M items at start)"
+- lib.rs `tauri::generate_handler!` 注册。
+- 前端 `PanelMemory.tsx`：
+  - 加 `consolidating: boolean` state + `handleConsolidate` async 处理函数。
+  - 搜索工具栏右侧加紫色"立即整理"按钮（`#8b5cf6`），运行中变灰禁用且文字"整理中…"。tooltip 解释"立即让 LLM 检查并整理记忆（合并重复 / 删过期 todo / 清 stale reminder），不必等定时触发。"。
+  - 完成后调 `loadIndex()` 重新拉 memory 索引，让用户立即看到结果。
+- tsc + 137 tests 双过；零 warning。
+- 现在用户在 panel 添加了一批新 memory 后，不需要等 6 小时定时触发，按一下按钮就能立刻让宠物整理一遍。
+
 ## 2026-05-03 — Iter 61：stale_reminder_hours 配置化
 - `MemoryConsolidateConfig` 加 `stale_reminder_hours: u64`（默认 24），归到 consolidate 配置而非 ProactiveConfig（虽然 TODO 说 ProactiveConfig，但 sweep 在 consolidate 跑、用 consolidate 的 settings 更一致）。
 - `default_stale_reminder_hours()` 返 24，与上一版硬编码值相同——升级现有 config.yaml 不会引起行为变化。

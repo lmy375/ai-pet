@@ -35,6 +35,7 @@ export function PanelMemory() {
     isNew: boolean;
   } | null>(null);
   const [message, setMessage] = useState("");
+  const [consolidating, setConsolidating] = useState(false);
 
   const loadIndex = async () => {
     try {
@@ -63,6 +64,20 @@ export function PanelMemory() {
       setSearchResults(results);
     } catch (e: any) {
       setMessage(`搜索失败: ${e}`);
+    }
+  };
+
+  const handleConsolidate = async () => {
+    setConsolidating(true);
+    setMessage("正在整理记忆，请稍候…");
+    try {
+      const status = await invoke<string>("trigger_consolidate");
+      setMessage(status);
+      await loadIndex();
+    } catch (e: any) {
+      setMessage(`整理失败: ${e}`);
+    } finally {
+      setConsolidating(false);
     }
   };
 
@@ -158,6 +173,18 @@ export function PanelMemory() {
             清除
           </button>
         )}
+        <button
+          style={{
+            ...s.btn,
+            background: consolidating ? "#94a3b8" : "#8b5cf6",
+            color: "#fff",
+          }}
+          onClick={handleConsolidate}
+          disabled={consolidating}
+          title="立即让 LLM 检查并整理记忆（合并重复 / 删过期 todo / 清 stale reminder），不必等定时触发。"
+        >
+          {consolidating ? "整理中…" : "立即整理"}
+        </button>
       </div>
 
       {/* Search results */}
