@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 87：proactive_rules 重构为基于 label 的单一事实源
+- `proactive_rules` 内的 8 条 contextual 规则原本各有自己的 `if` 分支，条件和 helper 里的 `if` 重复（icebreaker 条件 `< 3` 写两处、chatty 条件 `> 0 && >= threshold` 写两处...）。Iter 87 让 `proactive_rules` 先调 helper 取 label 列表，然后 `for label in env+data` 用 `match *label { ... }` 选规则文本——条件检查只剩 helper 一处。
+- 加了 unknown label 的 fallback：`other => format!("- **[{}]**: (规则文本待补)", other)`，避免未来 helper 加 label 但忘记加 match arm 时直接 panic 或丢失规则；测试断言活跃 label 路径不应出现该 fallback。
+- 2 个新单测：`proactive_rules_contextual_count_matches_label_count`（全部 8 条 contextual 触发时 rules.len() == 6 base + 5 env + 3 data = 14；无 fallback）+ `proactive_rules_baseline_only_pushes_always_on_rules`（neutral inputs 只剩 6 条 always-on）——两端 lock 住 base + contextual 数量。
+- 现有 18+ 个 prompt 测试保持原行为，无需修改：每条 contextual 规则的关键字（"你和用户还不熟"、"今天已经聊了不少"等）仍出现在 push 出来的字符串里。
+- 改动的本质是从"两份并行的条件实现"→"helper 算出哪些 label 活跃，proactive_rules 只翻译 label 到文本"。增加新规则现在是 1）改 helper 加 label 2）改 match 加 arm，两步都靠测试 mantain 一致性。
+- 175 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 86：环境性规则也进入 active_prompt_rules 与 decision log
 - 新纯函数 `pub fn active_environmental_rule_labels(wake_back, first_mood, pre_quiet, reminders_due, has_plan: bool) -> Vec<&'static str>` 返回 `["wake-back"|"first-mood"|"pre-quiet"|"reminders"|"plan"]` 子集，按 proactive_rules firing 顺序。
 - `active_data_driven_rule_labels` 文档串改为说明它和 environmental 互补。
