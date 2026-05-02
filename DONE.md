@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 2：环境感知（前台 app/窗口标题）
+- 新增 `src-tauri/src/tools/system_tools.rs`，定义 `GetActiveWindowTool`：
+  - macOS 下用 `osascript` + System Events 拿当前 frontmost 进程名 + 前窗口标题。
+  - 失败时返回 JSON 错误并提示开启 Accessibility 权限。
+  - 非 macOS 平台返回明确的 unsupported 错误。
+- `tools/mod.rs` 暴露 `system_tools` 模块；`registry.rs` 把 `GetActiveWindowTool` 注册到内置工具列表。
+- `proactive.rs` 的主动开口提示更新：明确告诉 LLM 在开口前可以先调 `get_active_window` 让话题贴合当下，并补充 `memory_search` 翻用户偏好。
+- 现场验证 `osascript` 在该机器上可正常返回 `App|Window` 形式，无需额外授权（取决于具体 app）。
+- cargo check 通过（仍是两条与本次无关的预存 warning）。
+
 ## 2026-05-01 — Iter 1：主动开口骨架
 - 在 `AppSettings` 加入 `ProactiveConfig`（enabled / interval_seconds=300 / idle_threshold_seconds=900），默认关闭。
 - 新增 `src-tauri/src/proactive.rs`：

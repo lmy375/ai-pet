@@ -1,6 +1,7 @@
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
 use super::memory_tools::{MemoryEditTool, MemoryListTool, MemorySearchTool};
 use super::shell_tools::{BashTool, CheckShellStatusTool};
+use super::system_tools::GetActiveWindowTool;
 use super::tool::Tool;
 use super::context::ToolContext;
 
@@ -25,6 +26,7 @@ impl ToolRegistry {
             Box::new(MemoryListTool),
             Box::new(MemorySearchTool),
             Box::new(MemoryEditTool),
+            Box::new(GetActiveWindowTool),
         ];
         let mcp_tool_names: Vec<String> = mcp_definitions
             .iter()

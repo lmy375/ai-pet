@@ -4,7 +4,6 @@
 每次迭代尽量小、可见、可测。
 
 ## 下一迭代候选（优先级从高到低）
-- [ ] Iter 2：macOS 前台 app/窗口标题作为新工具，让宠物"看到"用户在干嘛。先用 AppleScript 或 `frontmost process` 简单实现，注册为内置工具供 LLM 主动查询。
 - [ ] Iter 3：键盘鼠标空闲时长检测（CGEventSourceSecondsSinceLastEventType），加入主动判断条件——idle 阈值改成"距上次互动 ≥ N 分钟 **且** 用户键鼠空闲 ≥ M 秒"，避免在用户正打字时打断。
 - [ ] Iter 4：宠物当下情绪/状态写入 memory（如 `current_mood` 条目），主动 prompt 中作为 context；说话后 LLM 自行更新。
 - [ ] Iter 5：主动发言节奏控制——cooldown / 用户未回应不再连续主动开口；上一条 proactive 没有用户回应前不再触发。
