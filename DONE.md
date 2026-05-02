@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 59：reminder 支持绝对日期格式
+- 新 `pub enum ReminderTarget { TodayHour(u8, u8), Absolute(NaiveDateTime) }`：把"今天 HH:MM"和"特定日期 HH:MM"做成显式两态。
+- `parse_reminder_prefix` 重构：先尝试 `YYYY-MM-DD HH:MM`（含空格），失败再退到 `HH:MM`。返回 `Option<(ReminderTarget, String)>`。
+- `is_reminder_due` 重构：签名改为 `(&ReminderTarget, NaiveDateTime now, window_minutes) -> bool`：
+  - Absolute → 简单 `now - dt` 在 [0, window] 内
+  - TodayHour → 先比 today's HH:MM；不在 due window 时再尝试 yesterday's HH:MM 处理跨午夜 wrap
+- 新 `pub fn format_target(&ReminderTarget) -> String`：TodayHour=`HH:MM`，Absolute=`YYYY-MM-DD HH:MM`，给 prompt + panel 共用。
+- `build_reminders_hint` 签名改为接 `NaiveDateTime`，统一时间锚。
+- `get_pending_reminders` / `PendingReminder.time` 用 `format_target` 输出，自动支持两种格式。
+- `inject_mood_note::reminder_section` 大幅扩写：教 LLM 三种场景（今天 HH:MM / 跨天 YYYY-MM-DD HH:MM / 相对时间 → 自己换算成绝对）。
+- 测试重构：旧 5 个 today + 5 个 due → 新 11 个（today/Absolute 解析 + TodayHour due 5 + Absolute due 4）。新 test 用 `ndt(y, m, d, h, m)` helper 构造 NaiveDateTime。
+- 总测试 128 + 5（净增）= **133 个**，全过；cargo + tsc 双过；零 warning。
+- 现在「明天 9 点开会」这类话也能存得住了——LLM 把它换算成 `[remind: 2026-05-04 09:00] 开会`，到那个时刻 proactive 自动捞出来。
+
 ## 2026-05-03 — Iter 58：PanelDebug 显示 todo 类 reminder 候选
 - 后端：
   - 新 `pub struct PendingReminder { time, topic, title, due_now }`（serde::Serialize）
