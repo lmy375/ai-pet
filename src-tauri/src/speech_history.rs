@@ -86,6 +86,14 @@ pub fn strip_timestamp(line: &str) -> &str {
     line.split_once(' ').map(|(_, rest)| rest).unwrap_or(line)
 }
 
+/// Tauri command exposing the most recent N speech entries to the panel UI. Each entry
+/// is the raw "<ts> <text>" line — the frontend strips the timestamp itself for display
+/// flexibility (could show as relative time later). Default n=10 if not supplied.
+#[tauri::command]
+pub async fn get_recent_speeches(n: Option<usize>) -> Vec<String> {
+    recent_speeches(n.unwrap_or(10)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

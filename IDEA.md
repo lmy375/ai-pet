@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 46 设计要点（已实现）
+- **timestamp 切片在前端做**：本可以让后端命令直接返 `{ time, text }` 结构。但保留 raw line + 前端 `slice(11, 16)` 取 `HH:MM` 让接口最简单（unstructured array），UI 改显示格式（比如想要相对时间 "刚才"/"5 分钟前"）也只是前端事。
+- **紫色与 Tag 同色系**：Cache 蓝色（外部 cache 维度）、Tag 紫色（mood/personality 维度）、Speech 紫色背景（mood/personality 维度）。颜色是 panel 里的"信息维度索引"——同色系意味着语义相近，用户视线扫一遍就能 group。
+- **HH:MM 而非完整 ISO**：长 timestamp 在窄 panel 里换行难看。`HH:MM` 5 字符足够区分"几分钟前 / 几小时前 / 跨日"。如果用户需要详细时间，hover tooltip 可以展开（暂未做）。
+- **fetchLogs 五路 Promise.all**：每秒 5 个 IPC 调用看起来多但都是廉价的（log array、几个 atomic、少量文件读）。改成 batch 命令 `get_panel_state()` 也是个选项，但目前每个 invoke 命令都对应单一 reader 概念，分开更清楚——加新 stat 直接加 invoke + state 一致。
+- **不加 reset/clear 按钮**：speech_history.log 本就是 trim-on-write 自我管理的，且用户清掉等于让宠物失忆——不该轻易做。如果要支持清零，应该在 Iter 47 顺手加一起处理（与 rotation 配套）。
+
 ## Iter 45 设计要点（已实现）
 - **独立文件而非 memory 条目**：考虑过把"最近发言"做成 `ai_insights/speech_history` 之类的 memory 条目让 LLM 自己 memory_edit 维护。但这是 deterministic 记录——每次说话就追加，不需要语义判断，不该让 LLM 决定。后端 owns 它，简单可靠，且不污染 memory 索引（用户面板看 memory 时不必看到一堆"我说过的话"）。
 - **跟 focus_history.log 同款架构**：append-only + size cap + parse 纯函数 + 公共目录路径。Iter 23 + 25 已经把这个模式调好；本次复用，时间预算大量花在 prompt 注入而不是基础设施。
