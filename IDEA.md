@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 78 设计要点（已实现）
+- **post-LLM 第二条决策而非塞进 Run**：本可以延迟 Run push 到 LLM 返回后，把 idle+chatty+outcome 拼成一条。但那破坏了"决策记录在 dispatch 前完成"的现有模式（注释明确说"Record before dispatching"），且会让 panel 看不到正在等 LLM 返回的 in-flight Run。改成两条独立 push 保留时序信号——用户能看到 Run 触发时间和 outcome 时间分别（隐含 LLM 用了多久）。
+- **CAPACITY=10 → 一次 gate 通过吃 2 行**：从 1 行涨到 2 行意味着可见决策窗口从 10 次 gate 评估变成 ~6.5 次。10 已经是 ring buffer cap，不会无限增长；6.5 次 gate 评估的窗口对调试而言够用（默认 5 分钟一次评估即覆盖最近半小时）。如果将来发现窗口不够再调 CAPACITY。
+- **chatty_mode_tag 抽成 pub fn**：本可以 inline 在 dispatch 里。但纯函数 Option 返回值清晰、好测，且未来如果 prompt 还有别的"软规则触发标签"（icebreaker / pre-quiet）想往 decision log 走，可以仿照模式扩展。
+- **"-" 占位 vs 不传 reason**：post-LLM push 的 reason 从来不为空——非活跃时填 `"-"` 单字符。这样前端 localizeReason 永远不需要判 empty，逻辑两支：`reason === "-"` vs 含 chatty 字符串。如果用空串前端要再判 `!reason || reason.trim() === ""` 啰嗦。
+- **三色 outcome**：`Spoke=#16a34a 深绿`（Run=#22c55e 浅绿的"成熟版"，表示已开口落地）/ `LlmSilent=#a855f7 紫`（mood/motion 配色家族，与紫色 motion chip 暗示"内部状态"概念）/ `LlmError=#dc2626 红`（与 quiet-soon 共用红色，表示"异常需注意"）。三色和已有 Run/Skip/Silent 都不冲突。
+- **不破坏现有 Skip/Silent kind**：所有 gate 拦截的 kind 名字保持不变（disabled/quiet_hours/awaiting/cooldown/macOS Focus/idle_below_threshold），只是在 dispatched Run 后增加 LLM-outcome 行。前端 localizeReason 老 case 不动，新 if-block 在 Skip 之前加一组三个 kind。
+
 ## Iter 77 设计要点（已实现）
 - **复用 ToneSnapshot 而非新加 command**：本可以加 `get_chatty_day_threshold` 单独命令。但 ToneSnapshot 已经在 fetchLogs 的 Promise.all 里被调，加字段几乎零成本。设计哲学是 "信号同源"：宠物决策依赖的全部信号 → 一个 snapshot → 同时给 LLM(prompt) 和给用户(panel)，两边视图永不分叉。
 - **派生在前端而非后端**：本可以在后端算 `restraining: bool` 直接给前端。但前端要 threshold 数字本身（写进 hover 文案 "已超过 5"），所以 raw threshold 必须传。既然传了就 derive 在前端——后端不背业务展示概念。

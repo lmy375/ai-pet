@@ -288,6 +288,18 @@ fn push_if_nonempty(sections: &mut Vec<String>, s: &str) {
     }
 }
 
+/// Format a compact "chatty mode" annotation for the decision log, e.g. `chatty=5/5`.
+/// Returns `None` when the threshold is 0 (rule disabled) or when today's count is below
+/// it — in those cases tagging would be noise. Pure / testable so we don't drift between
+/// the gate-side push and the post-LLM push.
+pub fn chatty_mode_tag(today: u64, threshold: u64) -> Option<String> {
+    if threshold == 0 || today < threshold {
+        None
+    } else {
+        Some(format!("chatty={}/{}", today, threshold))
+    }
+}
+
 /// Snapshot of all the "conversational tone" signals the proactive prompt currently
 /// uses. Exposed via `get_tone_snapshot` so the panel can render the same info the LLM
 /// would see — handy for debugging "why did the pet say *that* right now?".
@@ -743,6 +755,12 @@ pub fn spawn(app: AppHandle) {
                 .state::<crate::decision_log::DecisionLogStore>()
                 .inner()
                 .clone();
+            // Pull soft-rule context once so we can tag both the gate decision and the
+            // post-LLM outcome with the same numbers — keeps the decision log explainable
+            // when the pet stays silent because of a prompt-level rule rather than a gate.
+            let chatty_today = crate::speech_history::today_speech_count().await;
+            let chatty_threshold = settings.proactive.chatty_day_threshold;
+            let chatty_tag = chatty_mode_tag(chatty_today, chatty_threshold);
             match &action {
                 LoopAction::Silent { reason } => {
                     decisions.push("Silent", (*reason).to_string());
@@ -751,16 +769,18 @@ pub fn spawn(app: AppHandle) {
                     decisions.push("Skip", reason.clone());
                 }
                 LoopAction::Run { idle_seconds, input_idle_seconds } => {
-                    decisions.push(
-                        "Run",
-                        format!(
-                            "idle={}s, input_idle={}",
-                            idle_seconds,
-                            input_idle_seconds
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "?".to_string()),
-                        ),
+                    let mut reason = format!(
+                        "idle={}s, input_idle={}",
+                        idle_seconds,
+                        input_idle_seconds
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "?".to_string()),
                     );
+                    if let Some(t) = &chatty_tag {
+                        reason.push_str(", ");
+                        reason.push_str(t);
+                    }
+                    decisions.push("Run", reason);
                 }
             }
 
@@ -771,8 +791,14 @@ pub fn spawn(app: AppHandle) {
                     write_log(&log_store.0, &reason);
                 }
                 LoopAction::Run { idle_seconds, input_idle_seconds } => {
-                    if let Err(e) = run_proactive_turn(&app, idle_seconds, input_idle_seconds).await
-                    {
+                    let outcome = run_proactive_turn(&app, idle_seconds, input_idle_seconds).await;
+                    let outcome_reason = chatty_tag.clone().unwrap_or_else(|| "-".to_string());
+                    match &outcome {
+                        Ok(Some(_)) => decisions.push("Spoke", outcome_reason),
+                        Ok(None) => decisions.push("LlmSilent", outcome_reason),
+                        Err(e) => decisions.push("LlmError", format!("{} ({})", e, outcome_reason)),
+                    }
+                    if let Err(e) = outcome {
                         eprintln!("Proactive turn failed: {}", e);
                     }
                 }
@@ -1306,6 +1332,24 @@ mod prompt_tests {
         inputs.today_speech_count = 9999;
         let rules = proactive_rules(&inputs);
         assert!(!rules.iter().any(|r| r.contains("今天已经聊了不少")));
+    }
+
+    #[test]
+    fn chatty_mode_tag_disabled_when_threshold_zero() {
+        assert_eq!(chatty_mode_tag(0, 0), None);
+        assert_eq!(chatty_mode_tag(99, 0), None);
+    }
+
+    #[test]
+    fn chatty_mode_tag_below_threshold_is_none() {
+        assert_eq!(chatty_mode_tag(0, 5), None);
+        assert_eq!(chatty_mode_tag(4, 5), None);
+    }
+
+    #[test]
+    fn chatty_mode_tag_at_or_above_threshold_formats() {
+        assert_eq!(chatty_mode_tag(5, 5), Some("chatty=5/5".to_string()));
+        assert_eq!(chatty_mode_tag(7, 5), Some("chatty=7/5".to_string()));
     }
 
     #[test]
