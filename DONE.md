@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 32：cache 统计接进 PanelDebug
+- `panel/PanelDebug.tsx` 加 `interface CacheStats { turns, total_hits, total_calls }` + 同名 React state（默认 0/0/0）。
+- 把原本只 fetch 一次 logs 的 `fetchLogs` 改为 `Promise.all([get_logs, get_cache_stats])`，1 秒 polling 一并获取。
+- 工具栏右侧（"X 条日志" 计数前）插一段统计 span：`Cache H/T (P%) · N turns`，蓝色 + 等宽字体，total_calls=0 时不渲染避免初始空数据闪烁。
+- 鼠标 hover 显示中文 tooltip 解释口语化含义（不全员都懂术语）。
+- 不引新依赖，纯样式 + 已暴露的 Tauri 命令。
+- tsc --noEmit 通过。
+- 后续 Iter 33 处理 LogStore 长时间运行的内存上限。
+
 ## 2026-05-02 — Iter 31：cache 统计的解析 + Tauri 命令
 - 新纯函数 `parse_cache_summary(&str) -> Option<(u64, u64)>`：从 `"... Tool cache summary: H/T hits (P%)"` 提取 (hits, total)，不匹配返 None。剥离独立函数让单测无需 mock LogStore。
 - 新 `pub struct CacheStats { turns, total_hits, total_calls }`（serde::Serialize），供 frontend 消费。

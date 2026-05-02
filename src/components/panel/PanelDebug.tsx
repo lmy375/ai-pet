@@ -2,15 +2,30 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+interface CacheStats {
+  turns: number;
+  total_hits: number;
+  total_calls: number;
+}
+
 export function PanelDebug() {
   const [logs, setLogs] = useState<string[]>([]);
+  const [cacheStats, setCacheStats] = useState<CacheStats>({
+    turns: 0,
+    total_hits: 0,
+    total_calls: 0,
+  });
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = async () => {
     try {
-      const result = await invoke<string[]>("get_logs");
+      const [result, stats] = await Promise.all([
+        invoke<string[]>("get_logs"),
+        invoke<CacheStats>("get_cache_stats"),
+      ]);
       setLogs(result);
+      setCacheStats(stats);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -64,6 +79,21 @@ export function PanelDebug() {
           DevTools
         </button>
         <span style={{ flex: 1 }} />
+        {cacheStats.total_calls > 0 && (
+          <span
+            style={{
+              fontSize: "12px",
+              color: "#0ea5e9",
+              alignSelf: "center",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+            title={`${cacheStats.turns} 次 LLM turn 中累计触发了 ${cacheStats.total_calls} 次环境工具调用，其中 ${cacheStats.total_hits} 次命中缓存`}
+          >
+            Cache {cacheStats.total_hits}/{cacheStats.total_calls} (
+            {Math.round((cacheStats.total_hits / cacheStats.total_calls) * 100)}
+            %) · {cacheStats.turns} turns
+          </span>
+        )}
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>
           {logs.length} 条日志
         </span>
