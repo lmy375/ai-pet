@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 76：CHATTY_DAY_THRESHOLD 升级为 settings.proactive.chatty_day_threshold
+- `ProactiveConfig` 新字段 `chatty_day_threshold: u64`（带 `#[serde(default)]` + `default_chatty_day_threshold() = 5`），现有 settings.json 升级时自动补默认值。
+- `PromptInputs.chatty_day_threshold: u64` 替代 Iter 75 的 `pub const CHATTY_DAY_THRESHOLD`，整个常量删除。`proactive_rules` 检查 `threshold > 0 && today_count >= threshold`：0 显式关闭整条规则。
+- `run_proactive_turn` 新读 `chatty_day_threshold` 透传到 PromptInputs；fallback 到 5（settings 读失败时）。
+- `useSettings.ts` 的 `ProactiveConfig` interface + `DEFAULT_SETTINGS` 同步加字段。`PanelSettings.tsx` 在主动开口区域底部加 `PanelNumberField`：「今天主动开口达到此数后变克制（0 = 关闭）」。
+- 测试更新：`base_inputs` 加默认 `chatty_day_threshold: 5`；既有 chatty_day 测试改用 inputs 字段而非常量。新增 2 个测试：`chatty_day_rule_disabled_when_threshold_zero`（threshold=0 时 count=9999 也不触发）+ `chatty_day_threshold_is_user_tunable`（自定义 10 时 9 不触发 / 10 触发，验证用户配置真的生效）。
+- ProactiveConfig literal 测试 fixture 也补字段。
+- 150 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 75：今日开口数喂回 prompt，触发"今天已经聊了不少"克制规则
 - `PromptInputs` 新字段 `today_speech_count: u64`；新 `pub const CHATTY_DAY_THRESHOLD: u64 = 5`。
 - `proactive_rules` 末尾加新条件规则：当 `today_speech_count >= CHATTY_DAY_THRESHOLD`，push "今天已经聊了 N 次了。除非有真正值得说的新信号（用户刚回来、有到期提醒、明显环境变化），优先**保持安静**（用 `<silent_marker>`）；要说也只说极简一句"。规则里塞了真实数字让 LLM 知道处于多深。
