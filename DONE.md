@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 23：focus 切换历史持久化到磁盘
+- 新模块 `src-tauri/src/focus_tracker.rs`：
+  - 后台 tokio 任务，每 60 秒 polls `focus_status()`。
+  - in-memory `last_status: Option<FocusStatus>`；用纯函数 `classify_transition(prev, curr)` 判定要不要写日志。
+  - 检测到事件时往 `~/.config/pet/focus_history.log` 追加一行：`<ISO 8601 时间> on:work` / `off` / `switch:personal`。
+  - 路径用 `dirs::config_dir().join("pet/focus_history.log")`，与 memory 目录同根。
+  - format 故意简单（一行一事件、空格分隔），grep / awk 都能直接读，不需要 JSON 解析器。
+- `classify_transition` 4 种状态：第一次观察 inactive 不写、第一次观察 active 写 `on:NAME`、active↔inactive 翻转、active 期间换 mode 写 `switch:NEW`。同状态返 None。
+- 7 个新单元测试覆盖每个 case + 空 name 退化为 `on:`。
+- `lib.rs` 加 `mod focus_tracker;`，setup 末尾 `focus_tracker::spawn(app.handle().clone())`，与 proactive / consolidate 并列启动。
+- 总测试 36 + 7 = **43 个**，全过。
+- cargo check 通过，零 warning。
+- 后续 Iter 24 让 consolidate 知道这个文件存在并主动总结。
+
 ## 2026-05-02 — Iter 22：focus mode 名字注入 proactive prompt
 - `focus_mode.rs` 重构：
   - 新 `FocusStatus { active: bool, name: Option<String> }`（derive Debug/Clone/PartialEq/Eq）。

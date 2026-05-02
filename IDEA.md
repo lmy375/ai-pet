@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 23 设计要点（已实现）
+- **磁盘日志而非 memory 条目**：本来想用现有 memory 系统（`general/focus_history` 条目，detail_path 文件追加）。但 memory_edit 的 update 是整文件覆写不是追加，每次写 100 KB 历史不合适；而且 memory 索引应该是"宠物已经知道的事实"，不是"原始事件流"。日志文件 + 一条总结性 memory 条目（Iter 24 由 consolidate 写入）的两层结构更干净。
+- **append 不读旧内容**：tracker 只关心 prev 和 curr 两个状态，不需要回放整个历史。这意味着重启后 last 是 None，第一次观察可能丢一个连续状态点——但 `first_observation_inactive_logs_nothing` 这条规则刚好让"启动时没开 focus"不留无意义记录；如果启动时正在 focus，会写一条 `on:xxx` 算作"我重启时这个状态在持续"，可接受。
+- **classify_transition 是纯函数**：状态机就 4 种 case，写成纯函数后单测覆盖每条 + 空 name 退化共 7 case。日后调整规则（比如想忽略 < 30s 的瞬态切换）只动这一个函数 + 加测。
+- **POLL_INTERVAL 60s 是平衡点**：1s 太频（每天 86400 次 IO 浪费）；5min 又会丢短时切换。60s 一天 1440 次 polls，对本就闲置的 tokio runtime 完全可承受。
+- **不加 enabled 配置**：tracker 的 IO 成本 = 每分钟一次小 JSON 解析 + 至多一行写入。除非用户极度在意日志文件存在（隐私担忧），否则不需要开关。和 proactive/consolidate 那种会调 LLM 的 opt-in 不同。
+- **后续 Iter 24 衔接**：本迭代只产数据。让 consolidate 主动读取并总结是分开的工作——保持每个 iter 单一职责，方便回滚。
+
 ## Iter 22 设计要点（已实现）
 - **拆 IO 与解析**：和 mood/gate 同一套路。`parse_focus_status(&Value)` 是纯函数（输入 Value 输出 FocusStatus），`focus_status()` 是异步外壳负责读盘。这样测试 6 个 case 不用 mock 文件系统。
 - **嵌套 and_then 而非 unwrap**：JSON 路径 `data[0].storeAssertionRecords[0].assertionDetails.assertionDetailsModeIdentifier` 5 层深，每层都可能缺失（macOS 版本差异）。`Option::and_then` 链是最简洁的"任一层失败就降级到 None"方式。
