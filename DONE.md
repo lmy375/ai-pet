@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 39：proactive 决策 reason 中文化
+- `PanelDebug.tsx` 加 `localizeReason(kind, reason)` 辅助：
+  - Silent 三个 key 一对一映射："disabled" → "已禁用 (proactive.enabled = false)"，"quiet_hours" → "安静时段内"，"idle_below_threshold" → "用户活跃时间未到阈值"。
+  - Skip 先剥掉 "Proactive: skip — " 前缀（plumbing 噪音），再按 startsWith 翻译几个已知短语：awaiting user reply / cooldown / user active / macOS Focus，保留动态数字。
+  - Run 不动（已经结构化）。
+  - 未识别 fallback 到原字符串——未来后端加新 reason，UI 退化为英文显示而不是空白。
+- 决策行渲染时 `{localizeReason(d.kind, d.reason)}` 替换原始 `{d.reason}`。
+- 选前端映射而非后端中文化的理由：reason 字符串是稳定 key，让后端只输出语义；UI 决定语言。日后加英文界面只需扩 localize 表，后端不动。
+- tsc --noEmit 干净；后端零改动。
+- 现在面板"最近主动开口判断"区域中文用户一眼能懂：`19:32:14 Skip 等待用户回复上一条主动消息`。
+
 ## 2026-05-02 — Iter 38：proactive 决策记录 + 面板显示
 - 后端：
   - `LoopAction::Silent` 改为 `Silent { reason: &'static str }`，3 处返回点分别给"disabled" / "quiet_hours" / "idle_below_threshold"。已有测试和 spawn 内 match arm 同步更新。
