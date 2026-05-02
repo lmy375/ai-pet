@@ -797,9 +797,14 @@ pub fn spawn(app: AppHandle) {
                         .state::<crate::commands::debug::ProcessCountersStore>()
                         .inner()
                         .llm_outcome;
+                    let env_tool_counters = &app
+                        .state::<crate::commands::debug::ProcessCountersStore>()
+                        .inner()
+                        .env_tool;
                     match &outcome {
                         Ok(o) if o.reply.is_some() => {
                             outcome_counters.spoke.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            env_tool_counters.record_spoke(&o.tools);
                             let mut reason = chatty_part.clone();
                             if !o.tools.is_empty() {
                                 reason.push_str(&format!(", tools={}", o.tools.join("+")));

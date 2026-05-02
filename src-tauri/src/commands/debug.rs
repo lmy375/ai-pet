@@ -82,6 +82,67 @@ pub fn new_llm_outcome_counters() -> LlmOutcomeCountersStore {
     Arc::new(LlmOutcomeCounters::default())
 }
 
+/// Per-tool atomic counters tracking how often the LLM consulted each environment-aware
+/// tool before speaking. `spoke_total` denominator + `spoke_with_any` numerator give the
+/// "环境感知率" — what fraction of Spoke turns hit at least one env tool. Per-tool sub
+/// counts let the tooltip show "weather 3 / window 7 / events 0" so prompt-tuners can
+/// see *which* tool the model is ignoring.
+#[derive(Default)]
+pub struct EnvToolCounters {
+    /// Total Spoke turns counted (denominator).
+    pub spoke_total: AtomicU64,
+    /// Spoke turns where the LLM invoked at least one env-awareness tool.
+    pub spoke_with_any: AtomicU64,
+    pub active_window: AtomicU64,
+    pub weather: AtomicU64,
+    pub upcoming_events: AtomicU64,
+    pub memory_search: AtomicU64,
+}
+
+impl EnvToolCounters {
+    /// Bump per-tool counters and the spoke aggregates given the list of tool names the
+    /// LLM invoked this turn. Unrecognized tools (mutating ones, MCP, anything outside
+    /// the env-aware whitelist) are ignored — the rate denominator only counts Spoke
+    /// turns regardless. Pure-ish (touches atomics only) so caller doesn't need to clone
+    /// the names list out.
+    pub fn record_spoke(&self, tools: &[String]) {
+        self.spoke_total.fetch_add(1, Ordering::Relaxed);
+        let mut any = false;
+        for name in tools {
+            match name.as_str() {
+                "get_active_window" => {
+                    self.active_window.fetch_add(1, Ordering::Relaxed);
+                    any = true;
+                }
+                "get_weather" => {
+                    self.weather.fetch_add(1, Ordering::Relaxed);
+                    any = true;
+                }
+                "get_upcoming_events" => {
+                    self.upcoming_events.fetch_add(1, Ordering::Relaxed);
+                    any = true;
+                }
+                "memory_search" => {
+                    self.memory_search.fetch_add(1, Ordering::Relaxed);
+                    any = true;
+                }
+                _ => {}
+            }
+        }
+        if any {
+            self.spoke_with_any.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
+pub type EnvToolCountersStore = Arc<EnvToolCounters>;
+
+#[cfg(test)]
+pub fn new_env_tool_counters() -> EnvToolCountersStore {
+    Arc::new(EnvToolCounters::default())
+}
+
 /// Container for every per-process counter group the panel surfaces. Bundling them as a
 /// single Tauri State keeps `ToolContext` stable when we add a new metric: one field, one
 /// `app.state::<ProcessCountersStore>()` lookup, no plumbing through 5 callsites and
@@ -92,6 +153,7 @@ pub struct ProcessCounters {
     pub cache: CacheCounters,
     pub mood_tag: MoodTagCounters,
     pub llm_outcome: LlmOutcomeCounters,
+    pub env_tool: EnvToolCounters,
 }
 
 pub type ProcessCountersStore = Arc<ProcessCounters>;
@@ -282,6 +344,42 @@ pub fn reset_llm_outcome_stats(counters: State<'_, ProcessCountersStore>) {
     counters.llm_outcome.error.store(0, Ordering::Relaxed);
 }
 
+#[derive(serde::Serialize)]
+pub struct EnvToolStats {
+    pub spoke_total: u64,
+    pub spoke_with_any: u64,
+    pub active_window: u64,
+    pub weather: u64,
+    pub upcoming_events: u64,
+    pub memory_search: u64,
+}
+
+#[tauri::command]
+pub fn get_env_tool_stats(counters: State<'_, ProcessCountersStore>) -> EnvToolStats {
+    let e = &counters.env_tool;
+    EnvToolStats {
+        spoke_total: e.spoke_total.load(Ordering::Relaxed),
+        spoke_with_any: e.spoke_with_any.load(Ordering::Relaxed),
+        active_window: e.active_window.load(Ordering::Relaxed),
+        weather: e.weather.load(Ordering::Relaxed),
+        upcoming_events: e.upcoming_events.load(Ordering::Relaxed),
+        memory_search: e.memory_search.load(Ordering::Relaxed),
+    }
+}
+
+/// Zero out the env-tool counters. Useful after changing the proactive prompt to see if
+/// LLM tool-calling behavior shifts.
+#[tauri::command]
+pub fn reset_env_tool_stats(counters: State<'_, ProcessCountersStore>) {
+    let e = &counters.env_tool;
+    e.spoke_total.store(0, Ordering::Relaxed);
+    e.spoke_with_any.store(0, Ordering::Relaxed);
+    e.active_window.store(0, Ordering::Relaxed);
+    e.weather.store(0, Ordering::Relaxed);
+    e.upcoming_events.store(0, Ordering::Relaxed);
+    e.memory_search.store(0, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{new_cache_counters, write_log, MAX_LOG_LINES};
@@ -368,6 +466,48 @@ mod tests {
         assert_eq!(c.spoke.load(Ordering::Relaxed), 0);
         assert_eq!(c.silent.load(Ordering::Relaxed), 0);
         assert_eq!(c.error.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn env_tool_record_spoke_with_known_tools_bumps_counters() {
+        let c = super::new_env_tool_counters();
+        c.record_spoke(&["get_active_window".to_string(), "get_weather".to_string()]);
+        assert_eq!(c.spoke_total.load(Ordering::Relaxed), 1);
+        assert_eq!(c.spoke_with_any.load(Ordering::Relaxed), 1);
+        assert_eq!(c.active_window.load(Ordering::Relaxed), 1);
+        assert_eq!(c.weather.load(Ordering::Relaxed), 1);
+        assert_eq!(c.upcoming_events.load(Ordering::Relaxed), 0);
+        assert_eq!(c.memory_search.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn env_tool_record_spoke_without_env_tools_only_bumps_total() {
+        let c = super::new_env_tool_counters();
+        // Only mutating / non-env tools — should count as a spoke turn but no env coverage.
+        c.record_spoke(&["memory_edit".to_string(), "bash".to_string()]);
+        assert_eq!(c.spoke_total.load(Ordering::Relaxed), 1);
+        assert_eq!(c.spoke_with_any.load(Ordering::Relaxed), 0);
+        assert_eq!(c.active_window.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn env_tool_record_spoke_empty_tools_only_bumps_total() {
+        let c = super::new_env_tool_counters();
+        c.record_spoke(&[]);
+        assert_eq!(c.spoke_total.load(Ordering::Relaxed), 1);
+        assert_eq!(c.spoke_with_any.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn env_tool_counters_accumulate_across_calls() {
+        let c = super::new_env_tool_counters();
+        c.record_spoke(&["get_weather".to_string()]);
+        c.record_spoke(&["get_weather".to_string(), "memory_search".to_string()]);
+        c.record_spoke(&[]);
+        assert_eq!(c.spoke_total.load(Ordering::Relaxed), 3);
+        assert_eq!(c.spoke_with_any.load(Ordering::Relaxed), 2);
+        assert_eq!(c.weather.load(Ordering::Relaxed), 2);
+        assert_eq!(c.memory_search.load(Ordering::Relaxed), 1);
     }
 
     #[test]
