@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 52：约束段抽成 proactive_rules()
+- 新 `pub fn proactive_rules() -> Vec<String>`：6 条 prompt 约束（silent marker 用法 / 单句话 / 工具说明 / 工具去重 / 心情更新规范）一次性 push 到 Vec，每条以 "- " bullet 开头。
+- `build_proactive_prompt` 里把"约束："header 之后的 6 行 push（含 inline format!）替换成 `s.extend(proactive_rules())`，本体减 16 行。
+- 3 个新单测：
+  - `rules_count_and_format`：6 条且每条以 "- " 起头——加新规则要更新计数，pin 住该决定。
+  - `rules_interpolate_constants`：SILENT_MARKER / MOOD_CATEGORY / MOOD_TITLE / 4 个 motion tag 都在 joined 文本中。
+  - `rules_appear_in_full_prompt`：build_proactive_prompt 输出包含每一条 rule，确保未来 builder 不会"漏接" rules。
+- 总测试 102 + 3 = **105 个**，全过；cargo + tsc 双过；零 warning。
+- 后续 Iter 53 可以让 `proactive_rules` 接受 `&PromptInputs` 按上下文动态加减规则——前提是这次抽好了。
+
 ## 2026-05-03 — Iter 51：proactive prompt 改 builder 模式
 - 新 `pub struct PromptInputs<'a>` 9 字段（time / period / idle_minutes / input_hint / cadence_hint / mood_hint / focus_hint / wake_hint / speech_hint）。3 个固定段直接 push，3 个可选段通过 `push_if_nonempty` 跳过空值。
 - 新 `pub fn build_proactive_prompt(&PromptInputs) -> String`：用 `Vec<String>` + `join("\n")` 装配。约束段、motion 规则段都从 format! 模板 inline 提到这里，每段 1 行 push。
