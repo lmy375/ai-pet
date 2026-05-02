@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 28：环境感知工具的 per-tick 缓存
+- `ToolRegistry` 加 `cache: TokioMutex<HashMap<String, String>>` 字段；构造函数都通过新私有 `with_tools` 走，统一初始化空缓存。
+- 新常量 `CACHEABLE_TOOLS = &["get_active_window", "get_weather", "get_upcoming_events"]`：只读环境感知工具白名单。注释明确警告"never add mutating tools"。
+- `execute(name, args, ctx)`：若 name 在白名单，构造 cache_key = `name|args`；命中直接返回 + 写一条 "Tool cache hit" 日志；未命中执行后存入。
+- 缓存生命周期 = ToolRegistry 生命周期 = 一次 LLM turn（pipeline 每次重建）。自然 tick-scoped，无需手动清空。
+- 4 个新测试（用 `CountingTool` 内部 mock）：
+  - `cacheable_tool_called_once_for_same_args` — 同参 2 次调用，underlying tool 只跑 1 次
+  - `cacheable_tool_different_args_re_executes` — 不同参分开计数
+  - `non_cacheable_tool_always_executes` — `memory_edit` 3 次都执行
+  - `unknown_tool_returns_error_and_does_not_cache` — 不会缓存错误
+- 私有 `fn with_tools(tools, mcp) -> Self` 让测试直接注入 mock 工具列表，不破坏 `new()` 的固定 11 工具签名。
+- 总测试 49 + 4 = **53 个**，全过。
+- cargo check 通过，零 warning。
+
 ## 2026-05-02 — Iter 27：抽共享 NumberField 组件
 - 新文件 `src/components/common/NumberField.tsx`：通用 `<input type="number">` 包装，含 NaN 守护和 onChange 类型转换。`labelStyle` / `inputStyle` 作为 props 注入，让两个 panel 各自保留视觉差异。
 - `SettingsPanel.tsx` 删本地 `NumberField`，改成一层薄 wrapper：`function NumberField(props) { return <SharedNumberField {...props} labelStyle={labelStyle} inputStyle={inputStyle} /> }`。8 处调用 site 一字未改。
