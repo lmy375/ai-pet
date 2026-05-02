@@ -252,6 +252,10 @@ pub struct ToneSnapshot {
     pub wake_seconds_ago: Option<u64>,
     pub mood_text: Option<String>,
     pub mood_motion: Option<String>,
+    /// Minutes until configured quiet hours kick in, when within the 15-min look-ahead.
+    /// Lets the panel show "距安静时段 N 分钟" so the user can see why the pet is
+    /// suddenly winding down.
+    pub pre_quiet_minutes: Option<u64>,
 }
 
 #[tauri::command]
@@ -259,7 +263,9 @@ pub async fn get_tone_snapshot(
     clock: tauri::State<'_, InteractionClockStore>,
     wake: tauri::State<'_, crate::wake_detector::WakeDetectorStore>,
 ) -> Result<ToneSnapshot, String> {
-    let hour = chrono::Local::now().hour() as u8;
+    let now = chrono::Local::now();
+    let hour = now.hour() as u8;
+    let minute = now.minute() as u8;
     let snap = clock.snapshot().await;
     let cadence_min = snap.since_last_proactive_seconds.map(|s| s / 60);
     let cadence = cadence_min.map(|m| idle_tier(m).to_string());
@@ -268,6 +274,15 @@ pub async fn get_tone_snapshot(
         Some((t, m)) => (Some(t), m),
         None => (None, None),
     };
+    let pre_quiet_minutes = get_settings().ok().and_then(|s| {
+        minutes_until_quiet_start(
+            hour,
+            minute,
+            s.proactive.quiet_hours_start,
+            s.proactive.quiet_hours_end,
+            15,
+        )
+    });
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -275,6 +290,7 @@ pub async fn get_tone_snapshot(
         wake_seconds_ago: wake_ago,
         mood_text,
         mood_motion,
+        pre_quiet_minutes,
     })
 }
 

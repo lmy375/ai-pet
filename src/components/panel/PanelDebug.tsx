@@ -27,6 +27,7 @@ interface ToneSnapshot {
   wake_seconds_ago: number | null;
   mood_text: string | null;
   mood_motion: string | null;
+  pre_quiet_minutes: number | null;
 }
 
 export function PanelDebug() {
@@ -225,6 +226,11 @@ export function PanelDebug() {
           {tone.wake_seconds_ago !== null && tone.wake_seconds_ago <= 600 && (
             <span title="刚检测到 wake-from-sleep" style={{ color: "#0891b2" }}>
               ☀ wake {tone.wake_seconds_ago}s
+            </span>
+          )}
+          {tone.pre_quiet_minutes !== null && (
+            <span title="距离配置的 quiet hours 开始时间" style={{ color: "#dc2626" }}>
+              🌙 距安静时段 {tone.pre_quiet_minutes}m
             </span>
           )}
           {tone.mood_motion && (

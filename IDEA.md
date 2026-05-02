@@ -30,6 +30,12 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 55 设计要点（已实现）
+- **复用 minutes_until_quiet_start**：Iter 54 写好的纯函数直接 reuse，不重写。`get_tone_snapshot` 和 `run_proactive_turn` 都调它，保证 panel 显示和 prompt 看到的一致——单一数据源。
+- **红色 🌙 颜色**：tone strip 现有 Cache 蓝、Tag 紫、wake 蓝、period 灰。新加的 pre-quiet 用红色 / 月亮 emoji 区分"快到了"的紧迫感。颜色编码越多越要谨慎，但目前只有 5 个独立段落，红色 alert 仍可读。
+- **不写新单测**：minutes_until_quiet_start 已被 7 个 case 覆盖；ToneSnapshot 字段添加是数据 plumbing，cargo check 抓签名错；前端是 ts 类型对齐，tsc 抓拼写错。"加新字段"性质改动靠类型系统兜底足够。
+- **plumbing 进度**：从 prompt 加 hint → builder 加 input → 命令 expose → panel 渲染，这个 4 步链路其实从 Iter 50 起就建立了。新加一种 tone signal 已经稳定走这个 pattern，第 N+1 个 signal 会几乎"配方化"。
+
 ## Iter 54 设计要点（已实现）
 - **跨日 wrap-around 用 `+ 24 × 60`**：和 in_quiet_hours 同一思路。如果 quiet_start 今天已过（比如 quiet=8-22 + now=23:00），下次 quiet_start 是明天 8:00 = 24×60-23×60+8×60 = 540 分钟。look_ahead 远超 15 → 自然 None。简单且对所有分布通用。
 - **strict `<=` 而非 `<`**：测试 `at_window_edge_15_min` 显式约定 15 分钟时仍触发。设计上"恰好到 look_ahead"算"快到了"更自然。如果改 `<` 会让 22:45 这种正好阈值的场景反复落入"刚错过窗口"的不一致状态。

@@ -2,6 +2,13 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 55：ToneSnapshot 加 pre_quiet_minutes 进 panel
+- 后端 `ToneSnapshot` 加 `pre_quiet_minutes: Option<u64>` 字段；`get_tone_snapshot` 读 `get_settings()` 算 quiet hours start，调 `minutes_until_quiet_start` 取分钟（look_ahead=15）。
+- 前端 `PanelDebug.tsx` interface 同步加字段；tone strip 在 wake 之后加红色 🌙 段：「距安静时段 N 分钟」，仅 Some 时渲染。
+- 颜色 #dc2626（红）和 wake 蓝、Cache 蓝、Tag 紫做区分——红色暗示"快到了"是收尾信号。
+- 117 tests + tsc 双过；零 warning。
+- 现在 panel 一眼能看出宠物为啥突然变温柔——"距安静时段 8 分钟"对应 prompt 注入了"快进入安静时段"规则，调试链路从 prompt → 行为完整可视。
+
 ## 2026-05-03 — Iter 54：临近 quiet hours 注入"收尾"规则
 - 新纯函数 `pub fn minutes_until_quiet_start(now_hour, now_minute, quiet_start, quiet_end, look_ahead_minutes) -> Option<u64>`：
   - quiet_start == quiet_end → None（gate 关闭）
