@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 48 设计要点（已实现）
+- **心跳间隔推断 vs NSWorkspace**：原 TODO 提到可走 NSWorkspace 通知或 Swift sidecar。心跳推断的优势：(a) 跨平台（Linux suspend、容器调度器同样工作）；(b) 零 macOS-specific 代码或 plist 配置；(c) 一个纯函数 + Mutex 可全测。代价是阈值需要调，且热挂起+冷恢复 < 阈值的事件会漏。但宠物业务逻辑能容忍漏检，强信号准确比检全更重要。
+- **阈值 = 2× 正常 sleep**：proactive 默认 interval 300s。阈值设 600s = 2× 给 jitter 余地。如果哪天用户把 interval 改到 600s+，阈值需要相应提升——目前没做动态阈值，写死保持简单。Iter 49 如果要根据 wake 调 gate，可能要顺手让阈值跟 settings 联动。
+- **Instant 的 `checked_sub` 测试技巧**：`Instant::now() - Duration::from_secs(N)` 在大多数运行时是 valid（boot time 远早于 600s 前）。但安全起见用 `checked_sub` + `expect`。这让单测能控制"prev"和"now"两个时间点而不需要 thread::sleep。
+- **wake_hint 用秒数描述**：「大约 N 秒前刚从休眠唤醒」让 LLM 知道时间感（10 秒前 vs 8 分钟前的招呼语调不同）。但秒数粒度对人不友好——如果是 350 秒，可能要换成"5 分钟"。当前不做格式化，让 LLM 自己解读 raw 数字；以后嫌不自然再加 humanize 函数。
+- **observation 在 spawn 顶部**：放在 `let settings = ...` 之前还是之后？放之前能在 settings 错误重试时也心跳，但 wake 通常不发生在那里。放 settings 之后、evaluate_loop_tick 之前最安全——确保每次 normal tick 都心跳一次，且不被 settings 错误干扰。最终选了放最靠近 evaluate 处。
+- **不影响 gate**：仅 informational。理由：(a) "刚 wake" 不一定 == "用户回来了"——也可能是闭盖在沙发上手抖按了一下；(b) gate 改动会让 wake 后宠物立刻发声，频繁 wake 用户（如手提开合）会被打扰。把 gate 升级留给 Iter 49 慎重决定。
+
 ## Iter 47 设计要点（已实现）
 - **rule of two 触发抽取**：通常我等 rule of three，但这里特殊——focus_tracker 的 rotation 已经写得很泛化（path + max_bytes 两个参数，没什么 module-specific 的逻辑），且 speech_history 的需求是字面同款。第二个 caller 出现就是把它抬上来的最佳时机；等第三个出现时，rotation 已经是 well-known util，新 caller 的开发者会期待它存在。
 - **测试搬家而非复制**：focus_tracker 的 6 个 rotation 测试整体迁到 log_rotation，原位置删除留 comment "搬家了"。这种"测试随实现走"是 Rust mod system 的自然结果；测试覆盖度没变，单一来源更易维护。

@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 48：wake-from-sleep 检测 + prompt 注入
+- 新模块 `src-tauri/src/wake_detector.rs`：
+  - 纯函数 `detect_wake(prev: Option<Instant>, now: Instant, threshold) -> Option<Duration>`，可单测无需 sleep。
+  - `pub struct WakeDetector { last_observation, last_wake_at }` + `observe()` / `last_wake_seconds_ago()` async API。
+  - 5 单测覆盖：first observation / 小间隔 / 正好阈值 / 越过阈值 / 时钟倒退（防御性 None）。
+- 阈值 `WAKE_GAP_THRESHOLD_SECS = 600`：proactive 默认 sleep 300s；阈值 > sleep × 2 避免常规调度抖动误触。
+- `WakeDetectorStore = Arc<WakeDetector>` + `new_wake_detector()`，lib.rs 注册。
+- 跨平台思路（不用 NSWorkspace）：spawn loop 每次 iteration 在顶部 `observe()` 心跳，间隔异常 = 进程被挂起 = 系统休眠。日志写一行 "wake-from-sleep detected (gap Ns)"。
+- `run_proactive_turn` 在 mood/focus_hint 之后注入 `wake_hint`：若 last_wake 在 ≤ 10 分钟内，prompt 多一句"用户的电脑在大约 N 秒前刚从休眠唤醒，看起来 ta 离开桌子一会儿后才回来"。LLM 可以挑欢迎回来的话题。
+- 总测试 85 + 5 = **90 个**，全过；cargo + tsc 双过；零 warning。
+- 是 informational 注入，不动 gate——避免每次午休都被宠物欢迎回来打断。Iter 49 探索把 wake 升级为 gate 强信号。
+
 ## 2026-05-03 — Iter 47：log_rotation 抽公共 util
 - 新模块 `src-tauri/src/log_rotation.rs`：
   - `pub fn rotated_path(&Path) -> PathBuf`（OsString append `.1`，避开 with_extension 替换扩展的陷阱）

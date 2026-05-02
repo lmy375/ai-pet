@@ -300,6 +300,22 @@ pub fn spawn(app: AppHandle) {
             };
             let interval = settings.proactive.interval_seconds.max(60);
 
+            // Heartbeat — if the gap since the last iteration is unexpectedly large the
+            // process was likely suspended (laptop closed / system sleep). The detector
+            // remembers the wake timestamp; run_proactive_turn looks it up to inject a
+            // "welcome back" hint into the prompt.
+            let wake_detector = app
+                .state::<crate::wake_detector::WakeDetectorStore>()
+                .inner()
+                .clone();
+            if let Some(gap) = wake_detector.observe().await {
+                let log_store = app.state::<LogStore>().inner().clone();
+                write_log(
+                    &log_store.0,
+                    &format!("Proactive: wake-from-sleep detected (gap {}s)", gap.as_secs()),
+                );
+            }
+
             let action = evaluate_loop_tick(&app, &settings).await;
             // Record before dispatching so even paths that immediately sleep are visible
             // in the panel — the entire point of this log is "why didn't anything happen".
@@ -395,6 +411,25 @@ async fn run_proactive_turn(
         }
     };
 
+    // If the proactive loop noticed a sleep gap recently (≤ 10 minutes ago), surface it
+    // so the LLM can choose a "welcome back" register. Strong signal that the user was
+    // physically away rather than just idle at the desk.
+    let wake_hint = {
+        let detector = app
+            .state::<crate::wake_detector::WakeDetectorStore>()
+            .inner()
+            .clone();
+        match detector.last_wake_seconds_ago().await {
+            Some(secs) if secs <= 600 => {
+                format!(
+                    "（用户的电脑在大约 {} 秒前刚从休眠唤醒，看起来 ta 离开桌子一会儿后才回来。）",
+                    secs
+                )
+            }
+            _ => String::new(),
+        }
+    };
+
     // Pull the pet's recent proactive lines from a dedicated history file so the model
     // doesn't repeat itself. Independent of session messages — survives session resets
     // and chat.max_context_messages trimming.
@@ -433,6 +468,7 @@ async fn run_proactive_turn(
 {cadence_hint}\n\n\
 {mood_hint}\n\
 {focus_hint}\n\
+{wake_hint}\n\
 {speech_hint}\n\
 请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
 约束：\n\
@@ -449,6 +485,7 @@ async fn run_proactive_turn(
         cadence_hint = cadence_hint,
         mood_hint = mood_hint,
         focus_hint = focus_hint,
+        wake_hint = wake_hint,
         speech_hint = speech_hint,
         silent = SILENT_MARKER,
         mood_cat = MOOD_CATEGORY,
