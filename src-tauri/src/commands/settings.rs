@@ -83,6 +83,37 @@ fn default_proactive_cooldown() -> u64 {
     1800
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConsolidateConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// How often the consolidation loop runs, in hours.
+    #[serde(default = "default_consolidate_interval")]
+    pub interval_hours: u64,
+    /// Skip consolidation if total memory items across all categories is below this. Avoids
+    /// burning tokens to "tidy up" an empty index.
+    #[serde(default = "default_consolidate_min_items")]
+    pub min_total_items: usize,
+}
+
+fn default_consolidate_interval() -> u64 {
+    6
+}
+
+fn default_consolidate_min_items() -> usize {
+    12
+}
+
+impl Default for MemoryConsolidateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_hours: default_consolidate_interval(),
+            min_total_items: default_consolidate_min_items(),
+        }
+    }
+}
+
 impl Default for ProactiveConfig {
     fn default() -> Self {
         Self {
@@ -111,6 +142,8 @@ pub struct AppSettings {
     pub telegram: TelegramConfig,
     #[serde(default)]
     pub proactive: ProactiveConfig,
+    #[serde(default)]
+    pub memory_consolidate: MemoryConsolidateConfig,
 }
 
 fn default_model_path() -> String {
@@ -135,6 +168,7 @@ impl Default for AppSettings {
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),
             proactive: ProactiveConfig::default(),
+            memory_consolidate: MemoryConsolidateConfig::default(),
         }
     }
 }
