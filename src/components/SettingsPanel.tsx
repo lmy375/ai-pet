@@ -168,6 +168,19 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
             }
           />
         </div>
+        <label style={checkboxRow}>
+          <input
+            type="checkbox"
+            checked={form.proactive.respect_focus_mode}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                proactive: { ...form.proactive, respect_focus_mode: e.target.checked },
+              })
+            }
+          />
+          <span>开启 macOS 勿扰/Focus 时不打扰</span>
+        </label>
 
         <div style={groupHeaderStyle}>记忆整理 (Consolidate)</div>
 

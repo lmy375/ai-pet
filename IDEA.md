@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 21 设计要点（已实现）
+- **读 Assertions.json 而不是 osascript / shortcuts**：考虑过 `osascript -e 'tell application "System Events" ...'` 但 System Events 没有 focus 状态字段；考虑过 `shortcuts run "GetFocus"` 但需要用户先创建 shortcut；最终选 `~/Library/DoNotDisturb/DB/Assertions.json`，是 macOS 自己写的真相源，read-only 一次足够。代价：(a) Sonoma 之前路径或格式可能不同；(b) 文件可能无权限读（但极少见，通常用户级访问没问题）。
+- **`Option<bool>` 三态而非 bool**：`Some(true)`=肯定 active；`Some(false)`=肯定不在；`None`=不知道（非 macOS、文件缺失、解析失败）。让 gate 逻辑能区分"不确定"和"确定不"——前者必须 fail open（不阻塞），不然非 macOS 用户永远卡死。和 input_idle 的 None 处理思路一致。
+- **respect_focus_mode 默认 true**：用户的"勿扰"是非常明确的信号，宠物默认就该尊重。比 quiet_hours 默认值更确定——quiet_hours 是猜的（用户可能是夜猫子），focus 是用户主动按下的。
+- **Skip vs Silent**：focus 通常不会持续整夜（用户用完会关），所以频率没夜里那么高，日志记录有审计价值（"哎，那个时间段宠物为啥没说话？哦原来开了 focus"）。和 quiet_hours 用 Silent 形成对照。
+- **懒读文件**：`if cfg.respect_focus_mode { focus_mode_active().await }`，关闭设置时跳过文件 IO。这种"只在需要时检查"的优化在 evaluate_loop_tick 里有意义，因为它每 5 分钟左右跑一次。
+- **测试覆盖三态 × 两设置**：4 case 完整覆盖（active+respect / active+!respect / inactive / unknown）；fail-open 行为是测试里最重要的不变量。
+- **未实测**：跟 calendar 一样无法在本会话拿用户真实 focus 状态。代码层面 cargo + tests 通过；运行时验证留待用户实机。
+
 ## Iter 20 设计要点（已实现）
 - **`hour` 注入而非函数内取**：`evaluate_pre_input_idle` 加参数 `hour: u8` 而不是内部 `chrono::Local::now()`。原因：测试要能控制时间。也避免 evaluate 函数变成"impure"（调系统时钟相当于隐式 IO）。`evaluate_loop_tick` 真要跑时再取小时。
 - **`start == end` 表示关闭**：避免再加一个 `enabled` 布尔。约定上"00–00"是空区间，自然代表"无安静时段"。这是个能学的 UX 约定，且测试可见。
