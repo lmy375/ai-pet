@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 63 设计要点（已实现）
+- **绕过 evaluate_loop_tick 直调 run_proactive_turn**：手动 trigger 的语义就是"我现在要它开口"，跑一遍 gate 然后 silent 是徒劳。所以直接 skip evaluate，从 run_proactive_turn 起步。代价：手动触发的 turn 不会被 decision_log 记录（因为那是 spawn loop 在 evaluate 后做的）；但 LogStore 会记 "Proactive: speaking ..." 行，可追溯。
+- **保留真实 idle/input_idle 值**：本可以传 0 和 None（"假装用户刚活跃"），但保留真实值让 prompt 看到的 cadence_hint / input_hint 是真的——demo 时用户能看到真实状态，调 prompt 时也是真实输入。仅 gate 被绕过，prompt 内容仍真实。
+- **绿色按钮配色**：DevTools 橙、整理紫、开口绿。三按钮三色让"运行 X 操作"的视觉模式互不混淆。绿色暗示"开口/说话"是日常正向 action（橙色暗示"调试"，紫色暗示"重活"），有色彩心智暗示。
+- **不在 toolbar 显示 status**：返回的 "finished in N ms" 暂时丢掉。Iter 64 列了让它显示——这次只先打通触发链路，避免一次性改太多。
+- **不写新单测**：trigger 是 thin wrapper；run_proactive_turn 调 LLM 不便单测；前端只是 invoke + state，cargo + tsc 抓签名错。
+- **手动 vs 定时 turn 的统计影响**：trigger 触发的 turn 也会更新 cache_counters / mood_tag_counters（因为 run_proactive_turn 末尾还是会 read_mood_for_event + log_cache_summary）。这是有意的——"手动触发"也是真实 LLM 调用，理应纳入统计。如果要排除，得加一个"is_manual"标记往下传，复杂度暴增。先不做。
+
 ## Iter 62 设计要点（已实现）
 - **绕过 min_total_items gate**：定时触发会检查 `total < cfg.min_total_items` 跳过空索引，但手动触发一定是用户故意要跑——可能就是想验证当前 prompt 工作。所以 `trigger_consolidate` 直接调 `run_consolidation` 不走 gate。
 - **不绕过 cfg.enabled 检查**：实际上用户即使 disabled = true 想手动跑也合理 (debugging without 留 cron 跑)。当前实现也不检查 cfg.enabled——`run_consolidation` 本身不依赖那个字段。OK by side effect。

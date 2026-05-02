@@ -303,6 +303,24 @@ pub fn get_pending_reminders() -> Vec<PendingReminder> {
     out
 }
 
+/// Force a proactive turn right now, bypassing the gates (awaiting / cooldown / idle /
+/// quiet hours / focus / input-idle). Real values are still passed through into the
+/// prompt so the LLM sees the actual idle stats. Used by panel "fire now" / demo flows
+/// and for prompt iteration without waiting for natural conditions.
+#[tauri::command]
+pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, String> {
+    let clock = app.state::<InteractionClockStore>().inner().clone();
+    let snap = clock.snapshot().await;
+    let input_idle = crate::input_idle::user_input_idle_seconds().await;
+    let started = std::time::Instant::now();
+    run_proactive_turn(&app, snap.idle_seconds, input_idle).await?;
+    Ok(format!(
+        "Proactive turn finished in {} ms (idle={}s)",
+        started.elapsed().as_millis(),
+        snap.idle_seconds
+    ))
+}
+
 #[tauri::command]
 pub async fn get_tone_snapshot(
     clock: tauri::State<'_, InteractionClockStore>,

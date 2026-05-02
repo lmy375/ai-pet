@@ -53,6 +53,7 @@ export function PanelDebug() {
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
+  const [triggeringProactive, setTriggeringProactive] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -109,6 +110,17 @@ export function PanelDebug() {
     setMoodTagStats({ with_tag: 0, without_tag: 0, no_mood: 0 });
   };
 
+  const handleTriggerProactive = async () => {
+    setTriggeringProactive(true);
+    try {
+      await invoke<string>("trigger_proactive_turn");
+    } catch (e) {
+      console.error("trigger_proactive_turn failed:", e);
+    } finally {
+      setTriggeringProactive(false);
+    }
+  };
+
   const handleOpenDevTools = async () => {
     try {
       // Open devtools for the current webview
@@ -133,6 +145,18 @@ export function PanelDebug() {
       <div style={{ display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid #e2e8f0", background: "#fff" }}>
         <button onClick={fetchLogs} style={toolBtnStyle}>刷新</button>
         <button onClick={handleClear} style={toolBtnStyle}>清空</button>
+        <button
+          onClick={handleTriggerProactive}
+          disabled={triggeringProactive}
+          title="绕过 idle/cooldown/quiet/focus 等闸门，立刻让宠物跑一次主动开口检查（用于测试 prompt 或现场 demo）。"
+          style={{
+            ...toolBtnStyle,
+            background: triggeringProactive ? "#94a3b8" : "#10b981",
+            color: "#fff",
+          }}
+        >
+          {triggeringProactive ? "开口中…" : "立即开口"}
+        </button>
         <button onClick={handleOpenDevTools} style={{ ...toolBtnStyle, background: "#f59e0b", color: "#fff" }}>
           DevTools
         </button>
