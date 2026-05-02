@@ -73,11 +73,10 @@ pub fn read_mood_for_event(
     source: &str,
 ) -> (Option<String>, Option<String>) {
     let parsed = read_current_mood_parsed();
+    let counters = &ctx.process_counters.mood_tag;
     match &parsed {
         Some((text, None)) if !text.trim().is_empty() => {
-            ctx.mood_tag_counters
-                .without_tag
-                .fetch_add(1, Ordering::Relaxed);
+            counters.without_tag.fetch_add(1, Ordering::Relaxed);
             write_log(
                 &ctx.log_store.0,
                 &format!(
@@ -87,17 +86,15 @@ pub fn read_mood_for_event(
             );
         }
         Some((_, Some(_))) => {
-            ctx.mood_tag_counters
-                .with_tag
-                .fetch_add(1, Ordering::Relaxed);
+            counters.with_tag.fetch_add(1, Ordering::Relaxed);
         }
         Some((_, None)) => {
             // Mood was present but text was empty/whitespace — treat as no_mood for stats
             // since the model didn't really write anything.
-            ctx.mood_tag_counters.no_mood.fetch_add(1, Ordering::Relaxed);
+            counters.no_mood.fetch_add(1, Ordering::Relaxed);
         }
         None => {
-            ctx.mood_tag_counters.no_mood.fetch_add(1, Ordering::Relaxed);
+            counters.no_mood.fetch_add(1, Ordering::Relaxed);
         }
     }
     match parsed {

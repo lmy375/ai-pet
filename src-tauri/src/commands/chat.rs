@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::commands::debug::{write_llm_log, CacheCountersStore, LogStore, MoodTagCountersStore};
+use crate::commands::debug::{write_llm_log, LogStore, ProcessCountersStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
@@ -473,16 +473,10 @@ pub async fn chat(
     shell_store: State<'_, ShellStore>,
     mcp_store: State<'_, McpManagerStore>,
     interaction_clock: State<'_, InteractionClockStore>,
-    cache_counters: State<'_, CacheCountersStore>,
-    mood_tag_counters: State<'_, MoodTagCountersStore>,
+    process_counters: State<'_, ProcessCountersStore>,
 ) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
-    let ctx = ToolContext::from_states(
-        &log_store,
-        &shell_store,
-        &cache_counters,
-        &mood_tag_counters,
-    );
+    let ctx = ToolContext::from_states(&log_store, &shell_store, &process_counters);
     let mcp = mcp_store.inner().clone();
     let clock = interaction_clock.inner().clone();
     // Inbound user message — clears the "awaiting reply to previous proactive" flag so the

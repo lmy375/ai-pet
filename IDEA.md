@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 42 设计要点（已实现）
+- **嵌套 struct 而非 newtype**：本可以让 ProcessCounters 是各种 atomic 的扁平堆叠（`pub turns: AtomicU64` / `pub hits: AtomicU64` / `pub mood_with_tag: AtomicU64` ...）。但这会丢失"cache 维度"、"mood_tag 维度"的语义层级——日后再加 third 组 metrics 时，扁平命名会冲突或啰嗦。嵌套子 struct 的代价是访问稍长（`counters.cache.turns` vs `counters.cache_turns`），收益是分组语义清晰。
+- **暂留旧 type alias 给测试**：完全删 `CacheCountersStore` / `new_cache_counters()` 也行（测试改用 `new_process_counters().cache`），但要重写 5 个测试。`#[cfg(test)] pub` 是更小的改动——production 不见、测试可见、零 warning。规模到时（Iter 50+ 出现第三个 counter group 时）再考虑彻底删。
+- **counters 默认初始化全 0**：`Default::default()` for ProcessCounters 自动给 cache / mood_tag 都 zero AtomicU64。不需要写显式构造器。
+- **Tauri 命令签名统一**：4 个 stats 命令现在都 `State<ProcessCountersStore>`，前端只需要一个 invoke 类型——以后加新 stats 命令也走这条 State。前端 fetchLogs 的 Promise.all 还是分别调 4 个命令；如果想要一个 mega-stats 命令也可以，但现在分开让 RPC 边界对应 UI 边界更直观。
+- **5-callsite plumbing 是真问题不是想象**：Iter 34（cache）和 Iter 40（mood_tag）两次都重做完全相同的 11 文件改动，第三次（如果是 token_usage）会让我开始 reflexively 抗拒加新 counter。这次合并后第三组 counter ≈ 5 行：1 sub-struct + 1 default + 1 get 命令 + 1 reset 命令 + 1 panel 渲染。值。
+- **每次 LLM turn 这里没新 IO**：reorganize 不引入 perf 退化。`Arc<ProcessCounters>` clone 等同于之前两个 Arc clone 之和（指针 + ref count），不慢不快。
+
 ## Iter 41 设计要点（已实现）
 - **复制 cache reset 模式**：Iter 35 已建立 reset 按钮的 UX 标准（小号低对比、乐观更新前端 state、tooltip 解释）。本次直接复用——保持两个 reset 按钮在工具栏旁同等视觉权重，让用户一目了然知道两条统计可独立重置。
 - **不抽公共 reset 组件**：考虑过把"reset 按钮 + state"抽成 `<ResetableStat />` 组件，现在两份逻辑几乎重复。但 cache 和 mood_tag 的渲染细节（颜色、tooltip 文案、显示格式）差异让抽象需要太多 props，得不偿失。第三个 reset 出现时再考虑——这是 Iter 42 的合并方向自带的优化机会。

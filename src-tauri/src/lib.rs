@@ -11,7 +11,7 @@ mod proactive;
 mod telegram;
 mod tools;
 
-use commands::debug::{log_dir, new_cache_counters, new_mood_tag_counters, LogStore};
+use commands::debug::{log_dir, new_process_counters, LogStore};
 use commands::shell::ShellStore;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,8 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
-        .manage(new_cache_counters())
-        .manage(new_mood_tag_counters())
+        .manage(new_process_counters())
         .manage(decision_log::new_decision_log())
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
@@ -38,12 +37,8 @@ pub fn run() {
             let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
             let log_store = app.state::<LogStore>().inner().clone();
             let shell_store = app.state::<ShellStore>().inner().clone();
-            let cache_counters = app
-                .state::<commands::debug::CacheCountersStore>()
-                .inner()
-                .clone();
-            let mood_tag_counters = app
-                .state::<commands::debug::MoodTagCountersStore>()
+            let process_counters = app
+                .state::<commands::debug::ProcessCountersStore>()
                 .inner()
                 .clone();
             let app_handle_for_tg = app.handle().clone();
@@ -66,8 +61,7 @@ pub fn run() {
                         mcp_clone,
                         log_store,
                         shell_store,
-                        cache_counters,
-                        mood_tag_counters,
+                        process_counters,
                         app_handle_for_tg,
                     )
                     .await

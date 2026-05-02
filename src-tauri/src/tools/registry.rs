@@ -141,9 +141,9 @@ impl ToolRegistry {
             "Tool cache summary: {}/{} hits ({}%)",
             hits, total, pct
         ));
-        ctx.cache_counters.turns.fetch_add(1, Ordering::Relaxed);
-        ctx.cache_counters.hits.fetch_add(hits, Ordering::Relaxed);
-        ctx.cache_counters.calls.fetch_add(total, Ordering::Relaxed);
+        ctx.process_counters.cache.turns.fetch_add(1, Ordering::Relaxed);
+        ctx.process_counters.cache.hits.fetch_add(hits, Ordering::Relaxed);
+        ctx.process_counters.cache.calls.fetch_add(total, Ordering::Relaxed);
     }
 }
 
@@ -285,9 +285,9 @@ mod tests {
         reg.execute("get_weather", "{}", &ctx).await;
         reg.execute("get_weather", "{}", &ctx).await;
         reg.log_cache_summary(&ctx);
-        assert_eq!(ctx.cache_counters.turns.load(Ordering::SeqCst), 1);
-        assert_eq!(ctx.cache_counters.hits.load(Ordering::SeqCst), 2);
-        assert_eq!(ctx.cache_counters.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(ctx.process_counters.cache.turns.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.process_counters.cache.hits.load(Ordering::SeqCst), 2);
+        assert_eq!(ctx.process_counters.cache.calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
@@ -296,8 +296,8 @@ mod tests {
         let reg = ToolRegistry::with_tools(vec![], vec![]);
         let ctx = fresh_ctx();
         reg.log_cache_summary(&ctx);
-        assert_eq!(ctx.cache_counters.turns.load(Ordering::SeqCst), 0);
-        assert_eq!(ctx.cache_counters.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.process_counters.cache.turns.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.process_counters.cache.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
