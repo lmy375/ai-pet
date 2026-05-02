@@ -307,6 +307,10 @@ pub struct ToneSnapshot {
     /// Lifetime count of proactive utterances, persisted in `speech_count.txt`.
     /// Doesn't saturate — used both by the icebreaker rule (< 3) and by the panel chip.
     pub proactive_count: u64,
+    /// User-configured chatty-day threshold (`settings.proactive.chatty_day_threshold`).
+    /// Surfaced so the panel can compare today's count against it and visually mark when
+    /// the pet has crossed into "克制模式". 0 means the rule is disabled.
+    pub chatty_day_threshold: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -394,6 +398,10 @@ pub async fn get_tone_snapshot(
         )
     });
     let proactive_count = crate::speech_history::lifetime_speech_count().await;
+    let chatty_day_threshold = get_settings()
+        .ok()
+        .map(|s| s.proactive.chatty_day_threshold)
+        .unwrap_or(5);
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -403,6 +411,7 @@ pub async fn get_tone_snapshot(
         mood_motion,
         pre_quiet_minutes,
         proactive_count,
+        chatty_day_threshold,
     })
 }
 

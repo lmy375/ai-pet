@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 77 设计要点（已实现）
+- **复用 ToneSnapshot 而非新加 command**：本可以加 `get_chatty_day_threshold` 单独命令。但 ToneSnapshot 已经在 fetchLogs 的 Promise.all 里被调，加字段几乎零成本。设计哲学是 "信号同源"：宠物决策依赖的全部信号 → 一个 snapshot → 同时给 LLM(prompt) 和给用户(panel)，两边视图永不分叉。
+- **派生在前端而非后端**：本可以在后端算 `restraining: bool` 直接给前端。但前端要 threshold 数字本身（写进 hover 文案 "已超过 5"），所以 raw threshold 必须传。既然传了就 derive 在前端——后端不背业务展示概念。
+- **互斥而非叠加显示**：原来"破冰阶段"+"今日聊得多"理论上可以同时存在（破冰期一天突然爆出一堆主动开口），但破冰是 `lifetime < 3` 维度，克制是 `today >= threshold` 维度，两个 badge 同时挂在右边视觉拥挤。约定优先克制（更紧迫，行为正在被改），破冰让位。
+- **pill 形而非纯色文字**：克制模式比破冰更 actionable（用户看到马上理解"我可以去 settings 调"），用 pill + 边框让它更接近"提示框"质感而不是普通 label。色用 #ea580c（橙）+ #fff7ed（浅橙背景）+ #fed7aa（中橙边）三色构成，是 tailwind orange-500/50/200 标准搭配，确保在白底上对比度过关。
+- **fallback=5 与 run_proactive_turn 同步**：两处必须一致——否则 panel 显示 "克制模式" 但 LLM 实际没看到该规则（或反之）。设了硬编码 5 两处都是同一个数字，未来如果改默认值要两处一起改。可以提取共享常量但目前只两处复制成本低、明显，留着不重构。
+- **IIFE pattern**：`{(() => { ... })()}` 直接在 JSX 里跑函数派生本地状态。本可以提取成 `restraining` const 在组件 body，但那个值只在卡片 JSX 里用一次，IIFE 把作用域局部化更紧凑——读者看 JSX 就能找到逻辑。
+
 ## Iter 76 设计要点（已实现）
 - **从 const 升级到 settings 字段**：Iter 75 的 `CHATTY_DAY_THRESHOLD = 5` 是占位常量，标记位置。Iter 76 拆出来后 const 完全删除——不留死代码。Threshold 现在两路：用户从 panel 改 / serde default 兜底。
 - **0 显式关闭语义**：`threshold > 0 && today_count >= threshold` 而非简单 `today_count >= threshold`。如果只走第二个，当 threshold=0 时 today=0 也会触发——首句话就被骂"今天已经聊了 0 次"，nonsense。0 表示"我永远不希望这个克制规则触发"，明确写进 PromptInputs 的 doc。
