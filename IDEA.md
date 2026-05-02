@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 33a 设计要点（已实现）
+- **TODO 描述错了，先纠正**：原 TODO 说 LogStore 是 unbounded，但读代码发现已有 500 行硬限。这种"基于记忆而非阅读源码"的 TODO 错误偶尔会出现。修正记录在 DONE.md 让以后看 TODO 流水的人不会困惑。
+- **常量化魔法数**：5000 直接换 500 不算改进；命名 + doc comment 才是。`MAX_LOG_LINES` 让阅读者一眼明白意图，doc comment 量化说明 "5000 ≈ 几百个 turn"。
+- **5000 不是 10000**：原 TODO 建议 10000。但 `Vec::drain(0..n)` 是 O(n+m)（n 是 drain 数，m 是剩余），cap 越大单次溢出越大也越贵。5000 平衡内存（~几 MB）和裁剪 cost。
+- **on-disk 不限制**：app.log 是磁盘文件，os 层面不会因为它涨到几百 MB 就 OOM；用户也可以 `tail -f` 看完整历史。in-memory cap 主要保护进程 RSS，不该把磁盘也限。
+- **拆分 Iter 33**：原 TODO 包了两件事——cap + cache 累计独立。后者要改 ToolContext 签名 + 4 个 caller，太大单 iter。拆 33a/34 让每个 commit 单一职责。
+- **drain 测试覆盖边界**：`MAX_LOG_LINES + 50` 这种刚溢出的情况比 +1 更能暴露 off-by-one。验证 newest 和 oldest 分别正确，比"len == cap"更有信息量。
+
 ## Iter 32 设计要点（已实现）
 - **复用现有 polling 周期**：PanelDebug 已经每 1 秒 fetch 一次日志，`get_cache_stats` 也搭这个频率不需要单独的 setInterval。`Promise.all` 让两个 IPC 并行而不是串行——同样的整体延迟。
 - **total_calls=0 时不渲染**：UI 初始打开 + 还没跑过任何 LLM turn 时，渲染 "Cache 0/0 (NaN%)" 既丑也无信息量。`{total > 0 && <span>...</span>}` 一行守卫掉。

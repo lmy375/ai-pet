@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 33a：LogStore size cap 提升 + 命名 + 测试
+- 发现：原 TODO 写"unbounded Vec<String>"是错的——`write_log` 已有硬编码 500 行 cap，但偏小（≈ 25 个 LLM turn 就溢出）。
+- 把魔法数 500 提为 `pub const MAX_LOG_LINES: usize = 5000`（约几百 turn / 一段会话量），加 doc comment 说明 trade-off。
+- `write_log` 用常量替换硬编码值。逻辑不变（`drain(0..overflow)`）。
+- 新增 2 个单测在 `commands::debug::tests`：
+  - `write_log_caps_at_max_lines`：写 MAX+50 条，验证 buffer 停在 cap，最新行保留、最老的 50 行被丢。
+  - `write_log_under_cap_is_pure_append`：3 条不触发 cap，顺序保持。
+- on-disk app.log 不受 cap 影响（注释说明）；磁盘文件由用户/操作系统侧管理。
+- 拆分 Iter 33 的两半：本次只做 cap，atomic 累计统计列为 Iter 34（涉及 Tauri State + ToolContext 改动较多）。
+- 总测试 60 + 2 = **62 个**，全过；cargo check 零 warning。
+
 ## 2026-05-02 — Iter 32：cache 统计接进 PanelDebug
 - `panel/PanelDebug.tsx` 加 `interface CacheStats { turns, total_hits, total_calls }` + 同名 React state（默认 0/0/0）。
 - 把原本只 fetch 一次 logs 的 `fetchLogs` 改为 `Promise.all([get_logs, get_cache_stats])`，1 秒 polling 一并获取。

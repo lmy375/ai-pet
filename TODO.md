@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，对照 debug 日志里的"missing [motion: X] prefix"出现率判断要不要再改 prompt。
-- [ ] Iter 33：把 LogStore 当前的 unbounded `Vec<String>` 加上 size cap（保留最近 N 行，比如 10000），避免长时间运行 OOM。同时让 `get_cache_stats` 即便日志被裁剪也仍然准（也许把累计统计搬到独立 atomic 而非依赖日志解析）。
+- [ ] Iter 34：把 cache 累计统计搬到独立的 `CacheCountersStore`（AtomicU64 三元组）作为 Tauri State，让 `get_cache_stats` 不再依赖 log 解析——这样即便 LogStore 5000 行 cap 触发了旧 summary 行也丢了，统计仍然准。（Iter 33 拆分项）
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。
