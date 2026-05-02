@@ -137,6 +137,71 @@ enum LoopAction {
     },
 }
 
+/// All the variable bits that go into the proactive prompt. Kept as a single struct so
+/// the builder function has a clean signature and tests can inject specific values
+/// without threading 9 individual arguments.
+pub struct PromptInputs<'a> {
+    pub time: &'a str,
+    pub period: &'a str,
+    pub idle_minutes: u64,
+    pub input_hint: &'a str,
+    pub cadence_hint: &'a str,
+    pub mood_hint: &'a str,
+    /// Empty string when the gate isn't applicable (no focus active, no recent wake,
+    /// no prior speeches). Builder skips empty optional sections automatically.
+    pub focus_hint: &'a str,
+    pub wake_hint: &'a str,
+    pub speech_hint: &'a str,
+}
+
+/// Assemble the proactive prompt from a Vec of sections rather than a giant `format!()`.
+/// Adding a new optional hint is now: (a) extend `PromptInputs`, (b) push it via
+/// `push_if_nonempty`. No template / arg-list edits scattered across the function.
+pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
+    let mut s: Vec<String> = Vec::with_capacity(20);
+    s.push("[系统提示·主动开口检查]".into());
+    s.push(String::new());
+    s.push(format!(
+        "现在是 {}（{}）。距离上次和用户互动已经过去约 {} 分钟。{}",
+        inputs.time, inputs.period, inputs.idle_minutes, inputs.input_hint
+    ));
+    s.push(inputs.cadence_hint.to_string());
+    s.push(String::new());
+    s.push(inputs.mood_hint.to_string());
+    push_if_nonempty(&mut s, inputs.focus_hint);
+    push_if_nonempty(&mut s, inputs.wake_hint);
+    push_if_nonempty(&mut s, inputs.speech_hint);
+    s.push(String::new());
+    s.push(
+        "请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。".into()
+    );
+    s.push(String::new());
+    s.push("约束：".into());
+    s.push(format!(
+        "- 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{}`，不要其他任何文字。",
+        SILENT_MARKER
+    ));
+    s.push(format!(
+        "- 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{}`。",
+        SILENT_MARKER
+    ));
+    s.push("- 只说一句话，简短自然，像伙伴一样。".into());
+    s.push("- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_upcoming_events`（看用户接下来几小时有没有日程，可用于提醒类话题，记得日程是私人内容不要原样念出）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。".into());
+    s.push("- 这三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）每次调用都有真实的 IO 成本，并且**同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果**——所以一次足够了，不要为了「再确认一下」反复调，相信首次返回值直接做判断。".into());
+    s.push(format!(
+        "- **决定开口后**：请用 `memory_edit` 更新 `{cat}` 类别下 `{title}` 的记忆（不存在就 `create`，存在就 `update`）。description 必须以这种格式开头：`[motion: X] 你此刻的心情和想法`，其中 X 是你想做的 Live2D 动作分组，从这四个里选一个：`Tap`（开心/活泼/兴奋）、`Flick`（想分享/有兴致/活力）、`Flick3`（焦虑/烦躁/不安）、`Idle`（平静/低落/累/沉静）。前缀后面才是自由文字。例：`[motion: Tap] 看用户在专心写代码，有点替他高兴`。沉默时无需更新。",
+        cat = MOOD_CATEGORY,
+        title = MOOD_TITLE,
+    ));
+    s.join("\n")
+}
+
+fn push_if_nonempty(sections: &mut Vec<String>, s: &str) {
+    if !s.trim().is_empty() {
+        sections.push(s.to_string());
+    }
+}
+
 /// Snapshot of all the "conversational tone" signals the proactive prompt currently
 /// uses. Exposed via `get_tone_snapshot` so the panel can render the same info the LLM
 /// would see — handy for debugging "why did the pet say *that* right now?".
@@ -531,36 +596,18 @@ async fn run_proactive_turn(
     };
 
     let period = period_of_day(now_local.hour() as u8);
-
-    let prompt = format!(
-        "[系统提示·主动开口检查]\n\n\
-现在是 {time}（{period}）。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\
-{cadence_hint}\n\n\
-{mood_hint}\n\
-{focus_hint}\n\
-{wake_hint}\n\
-{speech_hint}\n\
-请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
-约束：\n\
-- 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{silent}`，不要其他任何文字。\n\
-- 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{silent}`。\n\
-- 只说一句话，简短自然，像伙伴一样。\n\
-- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_upcoming_events`（看用户接下来几小时有没有日程，可用于提醒类话题，记得日程是私人内容不要原样念出）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。\n\
-- 这三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）每次调用都有真实的 IO 成本，并且**同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果**——所以一次足够了，不要为了「再确认一下」反复调，相信首次返回值直接做判断。\n\
-- **决定开口后**：请用 `memory_edit` 更新 `{mood_cat}` 类别下 `{mood_title}` 的记忆（不存在就 `create`，存在就 `update`）。description 必须以这种格式开头：`[motion: X] 你此刻的心情和想法`，其中 X 是你想做的 Live2D 动作分组，从这四个里选一个：`Tap`（开心/活泼/兴奋）、`Flick`（想分享/有兴致/活力）、`Flick3`（焦虑/烦躁/不安）、`Idle`（平静/低落/累/沉静）。前缀后面才是自由文字。例：`[motion: Tap] 看用户在专心写代码，有点替他高兴`。沉默时无需更新。",
-        time = now_local.format("%Y-%m-%d %H:%M"),
-        period = period,
-        minutes = idle_minutes,
-        input_hint = input_hint,
-        cadence_hint = cadence_hint,
-        mood_hint = mood_hint,
-        focus_hint = focus_hint,
-        wake_hint = wake_hint,
-        speech_hint = speech_hint,
-        silent = SILENT_MARKER,
-        mood_cat = MOOD_CATEGORY,
-        mood_title = MOOD_TITLE,
-    );
+    let time_str = now_local.format("%Y-%m-%d %H:%M").to_string();
+    let prompt = build_proactive_prompt(&PromptInputs {
+        time: &time_str,
+        period,
+        idle_minutes,
+        input_hint: &input_hint,
+        cadence_hint: &cadence_hint,
+        mood_hint: &mood_hint,
+        focus_hint: &focus_hint,
+        wake_hint: &wake_hint,
+        speech_hint: &speech_hint,
+    });
 
     // Ensure system message anchors the conversation; build a temporary message list.
     if messages.is_empty() {
@@ -633,6 +680,84 @@ fn persist_assistant_message(session_id: &str, text: &str) -> Result<(), String>
         .push(serde_json::json!({ "type": "assistant", "content": text }));
     sess.updated_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
     session::save_session(sess)
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    fn base_inputs<'a>() -> PromptInputs<'a> {
+        PromptInputs {
+            time: "2026-05-03 14:30",
+            period: "下午",
+            idle_minutes: 20,
+            input_hint: "用户键鼠空闲约 60 秒。",
+            cadence_hint: "距上次你主动开口约 8 分钟（刚说过话，话题还热）。",
+            mood_hint: "你上次记录的心情/状态：「平静」。",
+            focus_hint: "",
+            wake_hint: "",
+            speech_hint: "",
+        }
+    }
+
+    #[test]
+    fn prompt_includes_required_sections() {
+        let p = build_proactive_prompt(&base_inputs());
+        assert!(p.starts_with("[系统提示·主动开口检查]"));
+        assert!(p.contains("2026-05-03 14:30"));
+        assert!(p.contains("下午"));
+        assert!(p.contains("20 分钟"));
+        assert!(p.contains("用户键鼠空闲约 60 秒"));
+        assert!(p.contains("刚说过话"));
+        assert!(p.contains("「平静」"));
+        assert!(p.contains("约束："));
+        assert!(p.contains("[motion: Tap]"));
+    }
+
+    #[test]
+    fn empty_optional_hints_skip_their_lines() {
+        let p = build_proactive_prompt(&base_inputs());
+        // None of the conditional hint markers should appear when their inputs are blank.
+        assert!(!p.contains("Focus 模式"));
+        assert!(!p.contains("从休眠唤醒"));
+        assert!(!p.contains("最近主动说过的几句话"));
+        // And no leading/trailing/double blank from skipped sections — the focus point
+        // is that join("\n") doesn't produce stray empty lines for skipped optionals.
+        assert!(!p.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn focus_hint_renders_when_provided() {
+        let mut inputs = base_inputs();
+        inputs.focus_hint = "用户当前开着 macOS Focus 模式：「work」。";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("「work」"));
+    }
+
+    #[test]
+    fn wake_hint_renders_when_provided() {
+        let mut inputs = base_inputs();
+        inputs.wake_hint = "（用户的电脑在大约 60 秒前刚从休眠唤醒。）";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("从休眠唤醒"));
+    }
+
+    #[test]
+    fn speech_hint_with_bullets_passes_through_verbatim() {
+        let mut inputs = base_inputs();
+        let bullets = "你最近主动说过的几句话（旧→新），开口前看一眼避免重复：\n· 早上好啊\n· 加油码代码";
+        inputs.speech_hint = bullets;
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("早上好啊"));
+        assert!(p.contains("加油码代码"));
+    }
+
+    #[test]
+    fn mood_category_and_title_interpolated() {
+        let p = build_proactive_prompt(&base_inputs());
+        assert!(p.contains(MOOD_CATEGORY));
+        assert!(p.contains(MOOD_TITLE));
+    }
 }
 
 #[cfg(test)]

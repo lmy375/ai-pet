@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 51 设计要点（已实现）
+- **`Vec<String>` 而非 `String::push_str`**：考虑过 `let mut s = String::new(); s.push_str(...); s.push('\n');`。Vec + join 优势：(a) push_if_nonempty 可单独跳过；(b) 调试时 `dbg!(&sections)` 看 layout 一目了然；(c) 不用手写 newline，join 帮忙。代价是分配多一些（每段一个 String alloc），prompt 调用一秒级别频率，可忽略。
+- **PromptInputs 而非 9 个独立参数**：单一函数签名 9 个 borrow lifetime 让调用方读起来糟糕。Struct 把它们打包，调用站显式 `PromptInputs { ... }` 字段写法 self-documenting。`'a` lifetime 显式标注让编译器把 borrow 关系算得清楚。
+- **build_proactive_prompt pub for tests**：为了让 prompt_tests mod 能直接调，把 builder 升 pub。Tauri command 没暴露，只是 mod-level 可见。如果担心暴露过度可以加 `pub(crate)`，目前 `pub` 一致最简。
+- **mood_hint 必出 vs focus/wake/speech 可选**：mood 在 bootstrap 时给 fallback 文案"还没记录过..."，永远非空。focus/wake/speech 在 inactive/无 wake/无历史时返回空 string。`push_if_nonempty` 显式区分这两类。
+- **测试只比 contains 不比完整字符串**：prompt 完整字符串 ~1.5KB 中文。逐字 assert 太脆弱（任何措辞调整都让测试爆炸）。`assert!(p.contains("xx"))` 检关键内容存在即可，未来局部调整 prompt wording 不必更新测试。
+- **避免 `\n\n\n` regression test**：原 format! 里 `{focus_hint}\n` 在 focus_hint 为空时会留下空行。本 builder 的 push_if_nonempty 跳过 → 不会有空行。专门写 `assert!(!p.contains("\n\n\n"))` 让未来若有人误用 push 跳过断言会 fail。
+- **不动 inject_mood_note 等其他 prompt**：reactive chat / consolidate 各有自己的 prompt 构造，结构更简单（1-2 段），抽 builder 收益不显著。本次只动 proactive。Iter 52 之后若 reactive prompt 也膨胀再考虑。
+
 ## Iter 50 设计要点（已实现）
 - **一个命令而非多个**：本可以让 panel 调三个命令（cadence、wake、mood）独立拉。但 ToneSnapshot 把它们打包成一次 IPC，更原子（多个独立调用之间状态可能漂动）、更便宜（一次轮询 vs 三次）。代价：加新信号要改 struct + 命令 + 前端 interface 三处——但每秒 1 次调用，单调用便宜，权衡好。
 - **复用而非重新算**：`get_tone_snapshot` 直接调 `period_of_day` / `idle_tier` / `read_current_mood_parsed` / `last_wake_seconds_ago` —— prompt 也调这些。"两个消费者用同一份数据"是设计目标，避免 panel 显示一个值、prompt 用另一个的尴尬。
