@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 44：cadence hint 让 proactive 切换对话基调
+- 新 `pub fn idle_tier(minutes: u64) -> &'static str` 在 proactive.rs，5 档：
+  - 0–15 分：「刚说过话，话题还热」
+  - 16–60 分：「聊过一会儿了」
+  - 61–360 分（≤ 6 小时）：「几小时没说话」
+  - 361–1440 分（≤ 一天）：「已经隔了大半天」
+  - 1441+：「上次聊已经是昨天或更早」
+- run_proactive_turn 在 mood_hint 之后再 `clock.snapshot().await` 取 `since_last_proactive_seconds`，构造 cadence_hint：「距上次你主动开口约 N 分钟（{tier}）。」none 时给 first-time 文案。
+- prompt 模板紧贴 `{minutes}` 后多一行 `{cadence_hint}`，让 LLM 同时看到"距用户互动多久"和"距自己上次开口多久"——前者是 idle 状态，后者是对话节奏。
+- 与 idle_minutes 区分：idle_minutes 计入用户上次任何动作；cadence 只算上一次 proactive。前者决定 gate，后者决定语气。
+- 测试 `mod cadence_tests` 14 个 case：每档代表分钟 + 每个 boundary 两侧（15/16/60/61/360/361/1440/1441）。
+- 总测试 74 + 2（按 mod 算）= **76 个**，全过；cargo + tsc 双过；零 warning。
+
 ## 2026-05-03 — Iter 43：proactive prompt 加 time-of-day 语义
 - 新 `pub fn period_of_day(hour: u8) -> &'static str` 在 proactive.rs：把 0–23 小时映射成中文时段词（清晨 / 上午 / 中午 / 下午 / 傍晚 / 晚上 / 深夜）。边界按中文日常说法：5–7 清晨，8–10 上午，11–12 中午，13–16 下午，17–18 傍晚，19–21 晚上，22–4 深夜。
 - run_proactive_turn prompt 头部从 `"现在是 {time}"` 升到 `"现在是 {time}（{period}）"`——多 1 列开销可忽略，给 LLM 一个语义抓手能让它说"傍晚的咖啡"而不是"15:47 的咖啡"。

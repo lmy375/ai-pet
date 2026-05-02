@@ -137,6 +137,20 @@ enum LoopAction {
     },
 }
 
+/// Map an elapsed-minutes count (since the pet last spoke proactively) to a Chinese
+/// "cadence" label. Lets the LLM shift register from "continuing a thread" through
+/// "checking back in" to "haven't talked in ages" without doing the math itself.
+/// Boundaries are conversational, not strict — 16 minutes is still "聊过一会儿".
+pub fn idle_tier(minutes: u64) -> &'static str {
+    match minutes {
+        0..=15 => "刚说过话，话题还热",
+        16..=60 => "聊过一会儿了",
+        61..=360 => "几小时没说话",
+        361..=1440 => "已经隔了大半天",
+        _ => "上次聊已经是昨天或更早",
+    }
+}
+
 /// Map a 24-hour clock value (0–23) to a Chinese period-of-day label. Used in the
 /// proactive prompt so the LLM can riff on time-of-day vibes ("早上的咖啡时间到了") rather
 /// than just seeing a numeric timestamp. Boundaries match common Chinese conversational
@@ -370,6 +384,17 @@ async fn run_proactive_turn(
         _ => "（还没有记录过你自己的心情/状态。这是第一次。）".to_string(),
     };
 
+    // Distance since the pet last spoke proactively — different from idle_seconds (which
+    // resets on any interaction). Lets the LLM pick a register: continuation vs. casual
+    // check-in vs. "haven't talked in ages".
+    let cadence_hint = {
+        let snap = clock.snapshot().await;
+        match snap.since_last_proactive_seconds.map(|s| s / 60) {
+            Some(m) => format!("距上次你主动开口约 {} 分钟（{}）。", m, idle_tier(m)),
+            None => "你还没有主动开过口，这是第一次。".to_string(),
+        }
+    };
+
     // Surface the user's active Focus mode (if any) so the pet can speak around it. This
     // path normally only runs when the user has unset `respect_focus_mode` — otherwise the
     // gate would have skipped before we got here.
@@ -385,7 +410,8 @@ async fn run_proactive_turn(
 
     let prompt = format!(
         "[系统提示·主动开口检查]\n\n\
-现在是 {time}（{period}）。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\n\
+现在是 {time}（{period}）。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\
+{cadence_hint}\n\n\
 {mood_hint}\n\
 {focus_hint}\n\
 请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
@@ -400,6 +426,7 @@ async fn run_proactive_turn(
         period = period,
         minutes = idle_minutes,
         input_hint = input_hint,
+        cadence_hint = cadence_hint,
         mood_hint = mood_hint,
         focus_hint = focus_hint,
         silent = SILENT_MARKER,
@@ -475,6 +502,33 @@ fn persist_assistant_message(session_id: &str, text: &str) -> Result<(), String>
         .push(serde_json::json!({ "type": "assistant", "content": text }));
     sess.updated_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
     session::save_session(sess)
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use super::idle_tier;
+
+    #[test]
+    fn each_tier_has_a_representative_minute() {
+        assert_eq!(idle_tier(0), "刚说过话，话题还热");
+        assert_eq!(idle_tier(8), "刚说过话，话题还热");
+        assert_eq!(idle_tier(30), "聊过一会儿了");
+        assert_eq!(idle_tier(120), "几小时没说话");
+        assert_eq!(idle_tier(720), "已经隔了大半天");
+        assert_eq!(idle_tier(2000), "上次聊已经是昨天或更早");
+    }
+
+    #[test]
+    fn boundaries_land_on_expected_side() {
+        assert_eq!(idle_tier(15), "刚说过话，话题还热");
+        assert_eq!(idle_tier(16), "聊过一会儿了");
+        assert_eq!(idle_tier(60), "聊过一会儿了");
+        assert_eq!(idle_tier(61), "几小时没说话");
+        assert_eq!(idle_tier(360), "几小时没说话");
+        assert_eq!(idle_tier(361), "已经隔了大半天");
+        assert_eq!(idle_tier(1440), "已经隔了大半天");
+        assert_eq!(idle_tier(1441), "上次聊已经是昨天或更早");
+    }
 }
 
 #[cfg(test)]
