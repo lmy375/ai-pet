@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 36：chat 历史 trim 配置化 + 桌面 chat 默认上限
+- 新 `pub struct ChatConfig { max_context_messages: usize }`（默认 50）加到 `AppSettings.chat`。
+- `AiConfig` 也加 `max_context_messages: usize` 字段，从 settings.chat 复制；这样 chat 命令拿 config 时直接看得到。
+- `commands/chat::trim_to_context(messages, max)` 纯函数：保留所有前导 system 消息，drain 中间最老的非 system 直到 history ≤ max。`max=0` 关闭，short history 直返。
+- chat 命令在 `inject_mood_note` 之前调一次 trim——之前桌面 chat 完全靠 frontend 提交全量历史，长会话会无限膨胀 token。
+- telegram bot：删掉硬编码 `MAX_CONTEXT_MESSAGES = 50` 常量；改读 `AiConfig::from_settings().max_context_messages`，与桌面 chat 共用同一 trim 函数。原 telegram 那段 raw `Vec<Value>` 切片逻辑改为先转 ChatMessage 再 trim，少一份重复。
+- 5 个新单测覆盖 trim：max=0 不动 / 短于 cap 不动 / 标准裁剪 / 多个前导 system 都保留 / 完全无 system。
+- 前端：`useSettings.ts` 加 `ChatConfig` interface + `chat` 字段 + DEFAULT_SETTINGS 默认；`PanelSettings.tsx` 初值也补，TS 类型对齐。
+- 总测试 62 + 5 = **67 个**，全过；cargo + tsc 双过；零 warning。
+- UI 输入控件留作 Iter 37（后端就位即可，UI 拆开提交）。
+
 ## 2026-05-02 — Iter 35：reset cache 统计按钮
 - 后端：`commands/debug.rs` 加 `pub fn reset_cache_stats(counters: State<CacheCountersStore>)`，三个 `store(0, Relaxed)`。注释把 "mirrors clear_logs" 写明，让读者立刻知道意图。
 - 注册到 `lib.rs` `tauri::generate_handler!`。

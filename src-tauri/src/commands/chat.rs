@@ -22,6 +22,32 @@ pub struct ChatDonePayload {
     pub timestamp: String,
 }
 
+/// Trim conversation history to at most `max` user/assistant messages, preserving the
+/// leading system messages (SOUL.md and any other anchors). When `max == 0` the gate is
+/// disabled and the input is returned untouched. When the history is shorter than `max`
+/// the input is also returned untouched.
+///
+/// Symmetric with the previous telegram-only logic, but generalized so the desktop chat
+/// path can apply the same cap and prevent unbounded token growth on long conversations.
+pub fn trim_to_context(mut messages: Vec<ChatMessage>, max: usize) -> Vec<ChatMessage> {
+    if max == 0 {
+        return messages;
+    }
+    // Find the boundary: index of the first non-system message.
+    let first_non_system = messages
+        .iter()
+        .position(|m| m.role != "system")
+        .unwrap_or(messages.len());
+    let history_len = messages.len() - first_non_system;
+    if history_len <= max {
+        return messages;
+    }
+    // Drop the oldest user/assistant messages; keep `max` newest plus all leading systems.
+    let drop_count = history_len - max;
+    messages.drain(first_non_system..first_non_system + drop_count);
+    messages
+}
+
 /// Insert a transient system message carrying the pet's current mood and a nudge to update
 /// it after replying. Inserted right after the leading system block so it sits next to
 /// SOUL.md but before any conversation history. Callers (chat tauri command, telegram bot)
@@ -456,7 +482,10 @@ pub async fn chat(
     // Inbound user message — clears the "awaiting reply to previous proactive" flag so the
     // proactive loop can fire again later.
     clock.mark_user_message().await;
-    let augmented = inject_mood_note(messages);
+    // Trim the inbound history to the configured cap before mood injection, so unbounded
+    // frontend-side message arrays don't blow up token costs on long conversations.
+    let trimmed = trim_to_context(messages, config.max_context_messages);
+    let augmented = inject_mood_note(trimmed);
     let result = run_chat_pipeline(augmented, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
@@ -475,4 +504,83 @@ pub async fn chat(
     let _ = app.emit("chat-done", payload);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        serde_json::from_value(serde_json::json!({
+            "role": role,
+            "content": content,
+        }))
+        .unwrap()
+    }
+
+    fn roles(msgs: &[ChatMessage]) -> Vec<&str> {
+        msgs.iter().map(|m| m.role.as_str()).collect()
+    }
+
+    #[test]
+    fn trim_zero_disables_gate() {
+        let msgs = vec![
+            msg("system", "soul"),
+            msg("user", "hi"),
+            msg("assistant", "hi"),
+        ];
+        let out = trim_to_context(msgs.clone(), 0);
+        assert_eq!(out.len(), msgs.len(), "max=0 should leave input alone");
+    }
+
+    #[test]
+    fn trim_below_cap_is_no_op() {
+        let msgs = vec![msg("system", "soul"), msg("user", "hi"), msg("assistant", "hi")];
+        let out = trim_to_context(msgs.clone(), 10);
+        assert_eq!(out.len(), msgs.len());
+    }
+
+    #[test]
+    fn trim_drops_oldest_history_keeps_system() {
+        // 1 system + 6 user/assistant pairs = 13 total, history = 12. With max=4 we keep
+        // system + the last 4 messages.
+        let mut msgs = vec![msg("system", "soul")];
+        for i in 0..6 {
+            msgs.push(msg("user", &format!("u{}", i)));
+            msgs.push(msg("assistant", &format!("a{}", i)));
+        }
+        let out = trim_to_context(msgs, 4);
+        assert_eq!(out.len(), 5, "system + 4 history");
+        assert_eq!(out[0].role, "system");
+        // Last 4 should be u4, a4, u5, a5.
+        assert_eq!(roles(&out[1..]), vec!["user", "assistant", "user", "assistant"]);
+    }
+
+    #[test]
+    fn trim_preserves_multiple_leading_systems() {
+        let msgs = vec![
+            msg("system", "soul"),
+            msg("system", "mood"),
+            msg("user", "u1"),
+            msg("assistant", "a1"),
+            msg("user", "u2"),
+            msg("assistant", "a2"),
+        ];
+        let out = trim_to_context(msgs, 2);
+        assert_eq!(out.len(), 4, "2 systems + 2 history");
+        assert_eq!(roles(&out), vec!["system", "system", "user", "assistant"]);
+    }
+
+    #[test]
+    fn trim_with_no_system_messages() {
+        let msgs = vec![
+            msg("user", "u1"),
+            msg("assistant", "a1"),
+            msg("user", "u2"),
+            msg("assistant", "a2"),
+        ];
+        let out = trim_to_context(msgs, 2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(roles(&out), vec!["user", "assistant"]);
+    }
 }

@@ -34,6 +34,10 @@ export interface MemoryConsolidateConfig {
   min_total_items: number;
 }
 
+export interface ChatConfig {
+  max_context_messages: number;
+}
+
 export interface AppSettings {
   live_2d_model_path: string;
   api_base: string;
@@ -43,6 +47,7 @@ export interface AppSettings {
   telegram: TelegramConfig;
   proactive: ProactiveConfig;
   memory_consolidate: MemoryConsolidateConfig;
+  chat: ChatConfig;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -66,6 +71,9 @@ const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     interval_hours: 6,
     min_total_items: 12,
+  },
+  chat: {
+    max_context_messages: 50,
   },
 };
 

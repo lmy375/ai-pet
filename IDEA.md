@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 36 设计要点（已实现）
+- **trim 在后端而非 frontend**：让 useChat 保留全量历史用于 UI 展示（用户能滚回看完整对话），但发给后端时 backend 自己截断。这样"显示" vs "上下文" 解耦：前者是 UX，后者是经济性。
+- **保留 N 条 + 头部 systems**：前导 system 消息（SOUL.md + 任何 mood/policy 注入）必须留——它们是人格基础。trim 只动中间的 user/assistant。"前导"定义为"从 0 开始连续的 system"，第一条非 system 之后再有 system 也算 history（telegram bot 的 inject_mood_note 就是这种情况，但 inject 是 trim 之后做的，所以测试不需要覆盖这种）。
+- **跨 desktop/telegram 共享 trim_to_context**：先把 telegram 切片逻辑泛化到 `Vec<ChatMessage>`，让两条路径都调同一函数。代价：telegram 多一次 Value→ChatMessage 转换，但 50 条左右数据量可忽略。收益：以后再加新对话入口（discord、web 等）零成本接入。
+- **0 == 关闭**：和 quiet_hours 同款约定。`max=0` 有意义——用户偏好"我自己控制 frontend 历史长度，后端别动"。比加 `enabled: bool` 字段干净。
+- **AiConfig 加 max_context 而不是 chat 命令直接读 settings**：AiConfig 是"跑 LLM 需要的全部参数"的集合。把 trim cap 也归为这一层，后续 telegram / consolidate / proactive 任何地方建 AiConfig 都自动拿到，不需要每条路径都从 settings 单独读。
+- **测试结构 5 case**：每个测试一个语义，不堆叠 assertion。`trim_zero_disables_gate` / `trim_below_cap_is_no_op` / `trim_drops_oldest_history_keeps_system` / `trim_preserves_multiple_leading_systems` / `trim_with_no_system_messages`——读 test 名字就能 derive 行为。
+- **UI 拆 Iter 37 单独提交**：本 commit 已经动了 settings struct + 2 处后端 + 2 处前端类型，再加 UI 控件会让 diff 太杂。后端就位前提下，UI 是简单 NumberField + 一行 wiring。
+
 ## Iter 35 设计要点（已实现）
 - **乐观更新前端 state**：`handleResetCacheStats` 调 invoke 后立刻 `setCacheStats({0, 0, 0})`，不等 1 秒 polling 间隔。这是常见 UX：用户点重置看到数字归零，否则会怀疑"按钮坏了？"。Tauri 命令返回 ok 后下次 polling 会重新读，校对一致——零风险乐观更新。
 - **按钮和统计共生于 inline-flex**：把按钮放进与 Cache span 同一个 inline-flex 容器，间距 6px。这样按钮自然"属于"那段统计，而不是漂在工具栏里。重置按钮只有 cache 显示时才出现（已有 `total_calls > 0` 守卫覆盖整段）。

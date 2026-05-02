@@ -137,6 +137,27 @@ impl Default for MemoryConsolidateConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatConfig {
+    /// Maximum number of trailing user/assistant messages sent to the LLM. Leading system
+    /// messages (SOUL.md, mood note) are always preserved. Caps token cost on long
+    /// conversations without dropping persona context. Set to 0 to disable trimming.
+    #[serde(default = "default_chat_max_context")]
+    pub max_context_messages: usize,
+}
+
+fn default_chat_max_context() -> usize {
+    50
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            max_context_messages: default_chat_max_context(),
+        }
+    }
+}
+
 impl Default for ProactiveConfig {
     fn default() -> Self {
         Self {
@@ -170,6 +191,8 @@ pub struct AppSettings {
     pub proactive: ProactiveConfig,
     #[serde(default)]
     pub memory_consolidate: MemoryConsolidateConfig,
+    #[serde(default)]
+    pub chat: ChatConfig,
 }
 
 fn default_model_path() -> String {
@@ -195,6 +218,7 @@ impl Default for AppSettings {
             telegram: TelegramConfig::default(),
             proactive: ProactiveConfig::default(),
             memory_consolidate: MemoryConsolidateConfig::default(),
+            chat: ChatConfig::default(),
         }
     }
 }

@@ -4,6 +4,8 @@ pub struct AiConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// Maximum trailing user/assistant messages sent to the LLM. 0 disables trimming.
+    pub max_context_messages: usize,
 }
 
 impl AiConfig {
@@ -16,6 +18,7 @@ impl AiConfig {
             api_key: settings.api_key,
             base_url: settings.api_base,
             model: settings.model,
+            max_context_messages: settings.chat.max_context_messages,
         })
     }
 }
