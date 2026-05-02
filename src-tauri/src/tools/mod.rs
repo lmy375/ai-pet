@@ -6,6 +6,7 @@ pub mod file_tools;
 pub mod memory_tools;
 pub mod system_tools;
 pub mod weather_tool;
+pub mod calendar_tool;
 
 pub use context::ToolContext;
 pub use registry::ToolRegistry;
