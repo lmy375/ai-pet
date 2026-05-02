@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 49：wake event 软化 cooldown / idle 阈值
+- 新常量 `WAKE_GRACE_WINDOW_SECS = 600`、辅助 `wake_recent(Option<u64>) -> bool`，用 `matches!` 表达 ≤600s 即生效。
+- `evaluate_pre_input_idle` 签名加 `wake_seconds_ago: Option<u64>` 参数（第 5 个）；in-grace 时：
+  - **cooldown gate**：直接跳过（`wake_soft && ...` 短路）。理由：wake 后用户大概率离开过桌子，"刚说过话别再说"的语义不再成立。
+  - **idle gate**：`(raw_threshold / 2).max(60)`。比如默认 900s 减半到 450s；用户回来 7.5 分钟就够。floor 60s 防御过度软化。
+- awaiting / quiet_hours / focus_mode 这三道 **不软化** —— 是用户显式偏好，wake 不该越权。
+- evaluate_loop_tick 在 evaluate 前调 `WakeDetectorStore.last_wake_seconds_ago().await` 取参数。
+- 现有 12+ 测试 callsite 全部加第 5 参 `None`（不关心 wake）。
+- 新增 6 个 wake gate 测试覆盖：
+  - cooldown 在 grace 内被跳过 / grace 过期后照常生效
+  - idle threshold 被减半 / 减半后仍 floor 60s
+  - awaiting 不被 wake 软化
+  - quiet_hours 不被 wake 软化
+- 总测试 90 + 6 = **96 个**，全过；cargo + tsc 双过；零 warning。
+- 完整意义：现在用户开盖回来宠物会更主动；但夜里、focus 下、宠物刚说过没回应时仍尊重边界。
+
 ## 2026-05-03 — Iter 48：wake-from-sleep 检测 + prompt 注入
 - 新模块 `src-tauri/src/wake_detector.rs`：
   - 纯函数 `detect_wake(prev: Option<Instant>, now: Instant, threshold) -> Option<Duration>`，可单测无需 sleep。

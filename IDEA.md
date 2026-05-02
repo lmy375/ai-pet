@@ -30,6 +30,23 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 49 设计要点（已实现）
+- **软化哪些 / 不软化哪些**：核心设计决策。cooldown 和 idle threshold 都是"避免打扰"的时间约束——而 wake 已经标记"用户离开过桌子大概率回来了"，这两个约束的本意不再适用，软化。awaiting / quiet_hours / focus_mode 是用户偏好或社交礼貌（"我没回应你，你别接着说"），wake 不该绕过它们。决策表：
+  | gate | 软化 | 理由 |
+  |---|---|---|
+  | enabled | ✗ | 用户显式关掉 |
+  | awaiting | ✗ | 礼貌/响应等待，与时间无关 |
+  | cooldown | ✓ | 避免连续打扰，但 wake 后状态已变 |
+  | quiet_hours | ✗ | 用户睡觉时间偏好，wake 偶发不应突破 |
+  | focus_mode | ✗ | 用户正在专注，wake 不暗示该打扰 |
+  | idle threshold | ✓ | "用户该静一会儿"前提是用户在桌前；wake 推翻前提 |
+  | input_idle | ✗ | 用户活跃在键盘 = 不该插话，wake 已恢复无关 |
+- **idle 减半而非清零**：清零（threshold=0）会让用户开盖瞬间宠物就喊"欢迎"——可能用户只是查个时间又关上。减半到 ≥60s 给用户至少 1 分钟"重新进入工作"时间，再开口。
+- **floor 60s 是 idle gate 自带的**：原 gate 已 `cfg.idle_threshold_seconds.max(60)`。软化时再 `(raw / 2).max(60)` 重申一遍，避免用户调 idle=120 时 wake 让它变 60（可接受）vs 调 idle=30 时 wake 让它变 30 (=15 max 60 = 60，本来就被原 max 拉上来，这里再加防御)。
+- **wake_recent 用 matches! 而非 if let**：matches! 一行表达"在窗口内"，可读性更好。`Option<u64>` + 上限比较是这种模式的典型用法。
+- **测试用 grace 边界 600/700**：选 700 而非 601 测试 "刚出 grace"，让 boundary 假设不依赖严格 strict-vs-inclusive 的精确边界（grace_recent 是 `<=`）。
+- **6 case 覆盖每个软化 + 不软化**：3 软化测试（cooldown 跳/不跳、idle 减半、idle floor）+ 3 不软化测试（awaiting / quiet）。每个决策矩阵格子都有测试 keep us honest if 未来 someone 想"也软化 quiet_hours"。
+
 ## Iter 48 设计要点（已实现）
 - **心跳间隔推断 vs NSWorkspace**：原 TODO 提到可走 NSWorkspace 通知或 Swift sidecar。心跳推断的优势：(a) 跨平台（Linux suspend、容器调度器同样工作）；(b) 零 macOS-specific 代码或 plist 配置；(c) 一个纯函数 + Mutex 可全测。代价是阈值需要调，且热挂起+冷恢复 < 阈值的事件会漏。但宠物业务逻辑能容忍漏检，强信号准确比检全更重要。
 - **阈值 = 2× 正常 sleep**：proactive 默认 interval 300s。阈值设 600s = 2× 给 jitter 余地。如果哪天用户把 interval 改到 600s+，阈值需要相应提升——目前没做动态阈值，写死保持简单。Iter 49 如果要根据 wake 调 gate，可能要顺手让阈值跟 settings 联动。
