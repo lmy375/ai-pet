@@ -17,6 +17,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::commands::chat::{run_chat_pipeline, ChatMessage, CollectingSink};
 use crate::commands::debug::{write_log, LogStore};
+use crate::commands::memory;
 use crate::commands::session;
 use crate::commands::settings::{get_settings, get_soul};
 use crate::commands::shell::ShellStore;
@@ -24,6 +25,12 @@ use crate::config::AiConfig;
 use crate::input_idle::user_input_idle_seconds;
 use crate::mcp::McpManagerStore;
 use crate::tools::ToolContext;
+
+/// Memory category + title where the pet's evolving mood/state is stored. Read on every
+/// proactive turn for context, and the LLM is instructed to update it via `memory_edit`
+/// after speaking so personality state persists across iterations.
+const MOOD_CATEGORY: &str = "ai_insights";
+const MOOD_TITLE: &str = "current_mood";
 
 /// Tracks the last interaction time. Updated whenever the user sends a message
 /// or the pet speaks (proactively or reactively).
@@ -146,18 +153,29 @@ async fn run_proactive_turn(
         None => "（无法读取键鼠空闲信息。）".to_string(),
     };
 
+    let mood_hint = match read_current_mood() {
+        Some(m) if !m.trim().is_empty() => format!("你上次记录的心情/状态：「{}」。", m.trim()),
+        _ => "（还没有记录过你自己的心情/状态。这是第一次。）".to_string(),
+    };
+
     let prompt = format!(
-        "[系统提示·主动开口检查]\n\n现在是 {time}。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\n\
+        "[系统提示·主动开口检查]\n\n\
+现在是 {time}。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\n\
+{mood_hint}\n\n\
 请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
 约束：\n\
 - 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{silent}`，不要其他任何文字。\n\
 - 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{silent}`。\n\
 - 只说一句话，简短自然，像伙伴一样。\n\
-- 必要时可以调用工具：`get_active_window` 看看用户在用什么 app（开口前优先调一次，让话题更贴合当下），`memory_search` 翻一下记忆里相关的用户偏好。",
+- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`memory_search`（翻一下用户偏好）。\n\
+- **决定开口后**：请用 `memory_edit` 更新 `{mood_cat}` 类别下 `{mood_title}` 的记忆（不存在就 `create`，存在就 `update`）。description 用一句话写下你此刻的心情、最近在想什么、对用户的牵挂——这样下次主动开口时你能记得自己刚才的状态，让人格保持连贯。沉默时无需更新。",
         time = now_local.format("%Y-%m-%d %H:%M"),
         minutes = idle_minutes,
         input_hint = input_hint,
+        mood_hint = mood_hint,
         silent = SILENT_MARKER,
+        mood_cat = MOOD_CATEGORY,
+        mood_title = MOOD_TITLE,
     );
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -198,6 +216,19 @@ async fn run_proactive_turn(
     let _ = app.emit("proactive-message", payload);
 
     Ok(())
+}
+
+/// Read the pet's current mood/state from memory (`ai_insights/current_mood`). Returns the
+/// item's description if present, otherwise `None`. The LLM bootstraps this on first
+/// proactive turn via `memory_edit` — we never write it from Rust to keep the source of
+/// truth in the model's hands.
+fn read_current_mood() -> Option<String> {
+    let index = memory::memory_list(Some(MOOD_CATEGORY.to_string())).ok()?;
+    let cat = index.categories.get(MOOD_CATEGORY)?;
+    cat.items
+        .iter()
+        .find(|i| i.title == MOOD_TITLE)
+        .map(|i| i.description.clone())
 }
 
 /// Load the most recent session's messages (without the proactive prompt). Returns

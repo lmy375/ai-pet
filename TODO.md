@@ -4,7 +4,6 @@
 每次迭代尽量小、可见、可测。
 
 ## 下一迭代候选（优先级从高到低）
-- [ ] Iter 4：宠物当下情绪/状态写入 memory（如 `current_mood` 条目），主动 prompt 中作为 context；说话后 LLM 自行更新。
 - [ ] Iter 5：主动发言节奏控制——cooldown / 用户未回应不再连续主动开口；上一条 proactive 没有用户回应前不再触发。
 - [ ] Iter 6：定期记忆 consolidate（合并、去重、过期），后台每 N 小时跑一次。
 - [ ] Iter 7：日历 / 天气 / 系统通知集成（MCP 或新工具）。
