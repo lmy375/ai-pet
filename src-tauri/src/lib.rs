@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod consolidate;
 mod input_idle;
 mod mcp;
 mod proactive;
@@ -63,6 +64,9 @@ pub fn run() {
 
             // Start proactive engagement loop (reads settings each tick).
             proactive::spawn(app.handle().clone());
+
+            // Start memory consolidation loop (long-period, opt-in).
+            consolidate::spawn(app.handle().clone());
 
             Ok(())
         })
