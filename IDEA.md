@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 45 设计要点（已实现）
+- **独立文件而非 memory 条目**：考虑过把"最近发言"做成 `ai_insights/speech_history` 之类的 memory 条目让 LLM 自己 memory_edit 维护。但这是 deterministic 记录——每次说话就追加，不需要语义判断，不该让 LLM 决定。后端 owns 它，简单可靠，且不污染 memory 索引（用户面板看 memory 时不必看到一堆"我说过的话"）。
+- **跟 focus_history.log 同款架构**：append-only + size cap + parse 纯函数 + 公共目录路径。Iter 23 + 25 已经把这个模式调好；本次复用，时间预算大量花在 prompt 注入而不是基础设施。
+- **trim on-write 而非 rotation**：focus_history 用 1MB rotation 到 `.1`。speech_history 写频率更低（每次主动开口一次），且只关心"最近 N 条"，不需要保留 rolling 多份历史。每次 write 前 trim 到 50 条更简单且 always-bounded。
+- **`SPEECH_HISTORY_CAP=50` vs `RECENT_HINT_COUNT=5`**：保留 50 是给未来预留——比如 panel 想显示最近 20 条、或 consolidate 阶段想分析"宠物总说啥"。当前 prompt 只用 5。如果只为 5 把 cap 设到 5，将来扩展功能要回来改。
+- **strip_timestamp 把 ts 从 prompt 显示中剥离**：cadence_hint 已经给了"距上次主动 N 分钟"，再让 LLM 看到每条的 ISO 时间是冗余 noise。让 prompt 里只显示纯文本 bullets。
+- **空 history 不渲染**：第一次 / 文件丢失时 speech_hint 是空串，prompt 不增加无意义占位。LLM 不会被"（你最近什么都没说）"这种空陈述分心。
+- **best-effort write**：record_speech 吞 IO 错误。原因和 focus_tracker 同款——这个记录是 "nice to have"，宠物的核心说话流程不该因为 disk full 而断。
+- **测试先行**：parse_recent 7 个 case 是这次开发最先写的部分（无 IO 简单）；之后写 record_speech_inner 时心里有底——读出去的形状是已知的。
+
 ## Iter 44 设计要点（已实现）
 - **5 档而非 3 档**：考虑过简化到"刚才 / 一会儿 / 很久"。但 60–360 分（一两小时到大半天）和 361–1440 分（半天到一天）实际感觉差异挺大——前者还能直接接话题，后者需要"重新打招呼"。多一档没什么成本。1440+ 单独一档则覆盖跨日情形，让宠物有"昨天那个事..."的开场可能。
 - **idle_minutes 与 since_last_proactive 都给**：本可以替换 idle_minutes，但两者语义不同，都给 LLM 让它自己判断重要性更稳。例：用户主动找过宠物聊天（idle_minutes=2），但宠物自己上次主动开口是 4 小时前——cadence 还是「几小时没说话」基调，与 idle 一致；但如果反过来用户活跃宠物却很久没主动开口，cadence 也能反映出来。
