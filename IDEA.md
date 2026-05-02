@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 24 设计要点（已实现）
+- **存在性检查决定是否注入**：consolidate prompt 是有限注意力。让 LLM 看到一段"读这个文件"的指令，但文件其实不存在，模型只会困惑——可能会去 read_file，得到空内容或错误，然后在总结里写一句"focus 数据不足"，浪费 tokens。`focus_history_hint()` 用 `path.exists()` 短路返空串，让 prompt 在新装环境保持简洁。
+- **绝对路径而非 `~`**：tilde 由 shell 展开，但 read_file 是 Rust 端调用，不会走 shell。给 LLM 看实际可用的绝对路径（如 `/Users/moon/Library/Application Support/pet/focus_history.log`）能减少一次试错。
+- **建议而非强制**：prompt 用"建议你用 read_file"、"如果数据足以总结...就 memory_edit"、"数据太少就先放着"这种条件化语言，给 LLM 判断空间。强制读+总结会让早期数据稀疏时也产生信息量低的 memory 条目。
+- **明确价值取向**：`"一条结论性 memory 比一千行原始日志更有用"` 是给 LLM 的目标函数。不写它，LLM 可能把整段日志原样塞进 detail_content，反而让 memory 系统膨胀。这种"教 LLM 怎么判断"的 prompt 工程比纯描述任务更值。
+- **路径计算用 `dirs::config_dir`**：与 focus_tracker 写入路径同源，保证一定能匹配。如果两边写不同 path，Iter 24 会指向一个永远不存在的位置——所以两边都用同一个库函数最稳。
+- **闭环 Iter 23+24**：原始事件流 → 周期性总结 → 结论性 memory。这是个常见模式（log + summarizer），未来如果加更多事件流（active_window 历史、interaction 频率），可以套用同一架构。
+
 ## Iter 23 设计要点（已实现）
 - **磁盘日志而非 memory 条目**：本来想用现有 memory 系统（`general/focus_history` 条目，detail_path 文件追加）。但 memory_edit 的 update 是整文件覆写不是追加，每次写 100 KB 历史不合适；而且 memory 索引应该是"宠物已经知道的事实"，不是"原始事件流"。日志文件 + 一条总结性 memory 条目（Iter 24 由 consolidate 写入）的两层结构更干净。
 - **append 不读旧内容**：tracker 只关心 prev 和 curr 两个状态，不需要回放整个历史。这意味着重启后 last 是 None，第一次观察可能丢一个连续状态点——但 `first_observation_inactive_logs_nothing` 这条规则刚好让"启动时没开 focus"不留无意义记录；如果启动时正在 focus，会写一条 `on:xxx` 算作"我重启时这个状态在持续"，可接受。

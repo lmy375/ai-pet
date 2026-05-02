@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 24：consolidate prompt 引导 LLM 读 focus history
+- `consolidate.rs` 新增 `fn focus_history_hint() -> String`：检查 `~/.config/pet/focus_history.log` 是否存在，存在则返回一段 prompt 片段（绝对路径 + 格式示例 + 操作建议），不存在/无 config_dir 则返回空串。
+- consolidation prompt 模板加 `{focus_log_hint}` 占位符，紧贴"特殊保护"段之后、"原则保守"之前。
+- prompt 片段明确告诉 LLM：
+  - 用 `read_file` 或 `bash tail -n 200` 读
+  - 数据足以总结长期模式时（如 "用户每天工作 focus 平均 N 小时"），用 `memory_edit` 写到 `user_profile`
+  - "一条结论性 memory 比一千行原始日志更有用"
+  - 数据 < 一周就先放着
+- 文件不存在时空字符串：避免对没有 macOS focus 文件的环境刷出"读这个不存在的文件"指令。
+- cargo check 通过、43 个 test 全过、零 warning。
+- 完成 Iter 23 + 24 的两层结构闭环：tracker 写原始事件流 → consolidate 让 LLM 周期性把流压成结论。
+
 ## 2026-05-02 — Iter 23：focus 切换历史持久化到磁盘
 - 新模块 `src-tauri/src/focus_tracker.rs`：
   - 后台 tokio 任务，每 60 秒 polls `focus_status()`。

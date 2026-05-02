@@ -77,6 +77,10 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     let index_json = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("serialize index: {e}"))?;
 
+    // Only nudge the LLM toward the focus_history.log file when it actually exists — no
+    // point asking it to read a path that's empty on a fresh install or non-macOS host.
+    let focus_log_hint = focus_history_hint();
+
     let prompt = format!(
         "[系统提示·记忆整理]\n\n\
 作为 AI 桌面宠物，你正在做后台记忆维护——这次没有用户互动，只是回顾一下你存的记忆。\n\n\
@@ -87,10 +91,12 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
 3. **太琐碎**：完全没有保留价值的（例如随口一句话被记下），删除。\n\
 4. **可以补充细节**：如果某条记忆 description 太短、可以扩展但需要查更多上下文，可以用 `memory_edit update` 加入更完整的 detail_content。\n\n\
 **特殊保护**：`ai_insights/current_mood` 是宠物当前的心情状态，绝对不要删除——可以适当 update 让 description 更准确，但务必保留这条记录、且 description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头格式。\n\n\
+{focus_log_hint}\
 原则：**保守**。如果不确定一条记忆是否还有价值，就保留。**不要为了整理而整理**——如果索引看起来已经清爽，就什么都不做并输出 `<noop>`。\n\n\
 工作完成后，简短总结你做了什么（合并了几条 / 删了几条 / 没改动）。不需要客气，只要事实。",
         total = total_before,
         index = index_json,
+        focus_log_hint = focus_log_hint,
     );
 
     let messages: Vec<ChatMessage> = vec![
@@ -149,4 +155,25 @@ fn total_memory_items() -> usize {
         Ok(idx) => idx.categories.values().map(|c| c.items.len()).sum(),
         Err(_) => 0,
     }
+}
+
+/// Build the optional consolidation prompt fragment that points the LLM at the focus
+/// history log. Returns an empty string when the file doesn't exist (fresh install / no
+/// transitions logged yet / non-macOS) so the prompt stays clean. Otherwise returns a
+/// short paragraph with the absolute path, the format, and what to do with it.
+fn focus_history_hint() -> String {
+    let Some(path) = dirs::config_dir().map(|d| d.join("pet").join("focus_history.log")) else {
+        return String::new();
+    };
+    if !path.exists() {
+        return String::new();
+    }
+    let path_str = path.to_string_lossy();
+    format!(
+        "**长周期信号**：磁盘上有一份 macOS Focus 模式切换历史 `{path}`，每行一条事件，格式如：\n\
+```\n2026-05-02T11:55:00+08:00 on:work\n2026-05-02T12:30:00+08:00 off\n2026-05-02T13:00:00+08:00 switch:personal\n```\n\
+建议你用 `read_file` 工具读一下（或用 bash 跑 `tail -n 200`）；如果数据足以总结出长期模式（如\"用户每天工作 focus 平均 N 小时\"、\"周末几乎不开 focus\"），把结论用 `memory_edit create` 或 `update` 写到 `user_profile` 类别下。一条结论性 memory 比一千行原始日志更有用。如果数据太少（< 一周），就先放着。\n\n\
+",
+        path = path_str
+    )
 }
