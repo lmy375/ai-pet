@@ -8,6 +8,12 @@ interface CacheStats {
   total_calls: number;
 }
 
+interface ProactiveDecision {
+  timestamp: string;
+  kind: string;
+  reason: string;
+}
+
 export function PanelDebug() {
   const [logs, setLogs] = useState<string[]>([]);
   const [cacheStats, setCacheStats] = useState<CacheStats>({
@@ -15,17 +21,20 @@ export function PanelDebug() {
     total_hits: 0,
     total_calls: 0,
   });
+  const [decisions, setDecisions] = useState<ProactiveDecision[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = async () => {
     try {
-      const [result, stats] = await Promise.all([
+      const [result, stats, dec] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
+        invoke<ProactiveDecision[]>("get_proactive_decisions"),
       ]);
       setLogs(result);
       setCacheStats(stats);
+      setDecisions(dec);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -123,6 +132,34 @@ export function PanelDebug() {
         </span>
       </div>
 
+      {/* Recent proactive decisions — answers "why didn't the pet say anything?" */}
+      {decisions.length > 0 && (
+        <div
+          style={{
+            padding: "8px 16px",
+            borderBottom: "1px solid #e2e8f0",
+            background: "#f8fafc",
+            fontSize: "11px",
+            fontFamily: "'SF Mono', 'Menlo', monospace",
+            maxHeight: "120px",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ color: "#64748b", marginBottom: "4px", fontFamily: "inherit", fontSize: "12px" }}>
+            最近 {decisions.length} 次主动开口判断（最新在底部）
+          </div>
+          {decisions.map((d, i) => (
+            <div key={i} style={{ display: "flex", gap: "8px" }}>
+              <span style={{ color: "#94a3b8" }}>{d.timestamp.slice(11)}</span>
+              <span style={{ color: kindColor(d.kind), fontWeight: 600, minWidth: "44px" }}>
+                {d.kind}
+              </span>
+              <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>{d.reason}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Log output */}
       <div
         ref={scrollRef}
@@ -154,6 +191,19 @@ export function PanelDebug() {
       </div>
     </div>
   );
+}
+
+function kindColor(kind: string): string {
+  switch (kind) {
+    case "Run":
+      return "#22c55e";
+    case "Skip":
+      return "#f59e0b";
+    case "Silent":
+      return "#94a3b8";
+    default:
+      return "#475569";
+  }
 }
 
 const toolBtnStyle: React.CSSProperties = {

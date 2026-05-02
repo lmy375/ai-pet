@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 38 设计要点（已实现）
+- **`Silent { reason: &'static str }` 而非 String**：silent 的原因都是固定枚举值（"disabled" / "quiet_hours" / "idle_below_threshold"），用 static str 零分配。Skip 才用 String 因为它有动态信息（cooldown 还差几秒）。这种"按需选择存储成本"细致但值得。
+- **决定记录在 dispatch 之前**：先记录、再 dispatch。如果先 dispatch（特别是 Run 路径会跑 LLM 几秒），到记录时 timestamp 就漂了；记录失败也可能让 dispatch 提前继续。先记录顺序更可靠，对 Silent/Skip 也无延迟。
+- **VecDeque + push_back / pop_front**：ring buffer 标准实现。`while len > CAP { pop_front }` 在 push 后判，比 `if len == CAP { pop_front } push_back` 更不容易踩 off-by-one。
+- **CAP=10 而非 5**：原 TODO 说 5。但 ring buffer 在 panel 上只占小高度（120px），10 条提供更多上下文（一小时左右数据 / 看到 cooldown 后等多久 Run）。代价 ≈ 10 * 100 字节 = 1KB，可忽略。
+- **kindColor 三色编码**：Run 绿（"成功打通了！"），Skip 橙（"有原因不说"），Silent 灰（"安静"）。颜色直接映射到"用户最想关心的程度"——Skip 中的 reason 通常是用户能配置的（cooldown 等），Run 是用户期望的，Silent 是常态。
+- **未给前端做中文映射**：reason 字符串原样显示。`disabled` / `quiet_hours` 对中文用户不那么友好。Iter 39 列了，但需要决定：(a) 后端直接给中文；(b) 前端建一份 mapping。后者更灵活但翻一份重复，前者简单但耦合。
+- **不修改 LogStore，不与 logs 重叠**：决策 buffer 是独立的 ring，跟 LogStore 完全平行。LogStore 是 5000 行流水（详细但要 grep），决策 ring 是 10 条精炼（一眼即懂）。两个不同读者用例。
+
 ## Iter 37 设计要点（已实现）
 - **空白占位让两列网格不踩空**：单字段套两列网格 (`twoColRow`) 看起来奇怪——左边一列右边一列空。用 `<div style={{ flex: 1 }} />` 占位让 NumberField 不被拉满整行，保留与上面 ProactiveConfig 网格的视觉对齐。这种"留白也是 layout 决策"的小用心。
 - **0 = 不限**：约定继承自 trim 后端实现（`max == 0` 早 return）。Label 必须把这点直说，否则用户会以为 0 = "禁用 chat 历史"，意思相反。

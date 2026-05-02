@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，对照 debug 日志里的"missing [motion: X] prefix"出现率判断要不要再改 prompt。
-- [ ] Iter 38：让前端能展示"上次主动开口被 X 闸跳过"——在 panel 加一段最近 5 次 proactive tick 的判断结果（Run / Silent / Skip(reason)），方便用户调试为什么宠物不说话。当前只在日志里能看到，分散且不直观。
+- [ ] Iter 39：把 LoopAction Silent 的常量 reason 也通过 `pub const` 暴露出来给前端用——目前 reason 字符串是硬编码 "disabled"/"quiet_hours"/"idle_below_threshold"，前端 UI 要显示中文"已禁用"/"安静时段"等需要重复一份映射。或者后端就出中文文案。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。
