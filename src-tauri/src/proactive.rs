@@ -117,6 +117,82 @@ pub struct ProactiveMessage {
 
 const SILENT_MARKER: &str = "<silent>";
 
+/// What the proactive loop should do this tick. Each variant maps to one outer-loop branch:
+/// `Silent` skips quietly, `Skip` logs the reason, `Run` triggers a real proactive turn.
+enum LoopAction {
+    /// No log, just sleep — used when proactive is disabled or the user simply hasn't been
+    /// idle long enough yet (the common case, not interesting).
+    Silent,
+    /// Log the reason then sleep — guard fired (awaiting / cooldown / user-active).
+    Skip(String),
+    /// All gates passed; fire a proactive turn with these idle stats.
+    Run {
+        idle_seconds: u64,
+        input_idle_seconds: Option<u64>,
+    },
+}
+
+/// Evaluate every gate in priority order and return the action this tick should take. Pure
+/// dispatch — does not sleep, log, or call the LLM. Caller threads the result into the
+/// outer loop's single `tokio::time::sleep` and `write_log` calls.
+async fn evaluate_loop_tick(
+    app: &AppHandle,
+    settings: &crate::commands::settings::AppSettings,
+) -> LoopAction {
+    let cfg = &settings.proactive;
+    if !cfg.enabled {
+        return LoopAction::Silent;
+    }
+
+    let clock = app.state::<InteractionClockStore>().inner().clone();
+    let snap = clock.snapshot().await;
+
+    // Gate 1: a real friend doesn't keep talking when ignored.
+    if snap.awaiting_user_reply {
+        return LoopAction::Skip(
+            "Proactive: skip — awaiting user reply to previous proactive message".into(),
+        );
+    }
+
+    // Gate 2: cooldown since the last proactive utterance, regardless of user idle.
+    if let Some(since) = snap.since_last_proactive_seconds {
+        if cfg.cooldown_seconds > 0 && since < cfg.cooldown_seconds {
+            return LoopAction::Skip(format!(
+                "Proactive: skip — cooldown ({}s < {}s)",
+                since, cfg.cooldown_seconds
+            ));
+        }
+    }
+
+    // Gate 3: minimum quiet time since last interaction. Below threshold = silent skip
+    // (this is the common idle-yet case, not worth logging on every tick).
+    let threshold = cfg.idle_threshold_seconds.max(60);
+    if snap.idle_seconds < threshold {
+        return LoopAction::Silent;
+    }
+
+    // Gate 4: don't interrupt while the user is actively at the keyboard/mouse. 0 disables
+    // the gate; non-macOS returns None and we proceed (rely on idle-time gate only).
+    let input_idle = user_input_idle_seconds().await;
+    let input_ok = match (cfg.input_idle_seconds, input_idle) {
+        (0, _) => true,
+        (_, Some(secs)) => secs >= cfg.input_idle_seconds,
+        (_, None) => true,
+    };
+    if !input_ok {
+        return LoopAction::Skip(format!(
+            "Proactive: skip — user active (input_idle={}s < {}s)",
+            input_idle.unwrap_or(0),
+            cfg.input_idle_seconds
+        ));
+    }
+
+    LoopAction::Run {
+        idle_seconds: snap.idle_seconds,
+        input_idle_seconds: input_idle,
+    }
+}
+
 /// Spawn the background engagement loop. Reads settings on every tick so changes take effect
 /// without a restart. Honors `proactive.enabled`; sleeps a short fallback interval when disabled.
 pub fn spawn(app: AppHandle) {
@@ -132,71 +208,19 @@ pub fn spawn(app: AppHandle) {
                     continue;
                 }
             };
-
             let interval = settings.proactive.interval_seconds.max(60);
 
-            if !settings.proactive.enabled {
-                tokio::time::sleep(Duration::from_secs(interval)).await;
-                continue;
-            }
-
-            let threshold = settings.proactive.idle_threshold_seconds.max(60);
-            let input_idle_min = settings.proactive.input_idle_seconds;
-            let cooldown = settings.proactive.cooldown_seconds;
-            let clock = app.state::<InteractionClockStore>().inner().clone();
-            let snap = clock.snapshot().await;
-            let log_store = app.state::<LogStore>().inner().clone();
-
-            // Gate 1: if the previous proactive utterance hasn't been replied to, stay quiet.
-            // A real friend doesn't keep talking when ignored.
-            if snap.awaiting_user_reply {
-                write_log(
-                    &log_store.0,
-                    "Proactive: skip — awaiting user reply to previous proactive message",
-                );
-                tokio::time::sleep(Duration::from_secs(interval)).await;
-                continue;
-            }
-
-            // Gate 2: cooldown since the last proactive utterance, regardless of idle.
-            if let (Some(since), min) = (snap.since_last_proactive_seconds, cooldown) {
-                if min > 0 && since < min {
-                    write_log(
-                        &log_store.0,
-                        &format!(
-                            "Proactive: skip — cooldown ({}s < {}s)",
-                            since, min
-                        ),
-                    );
-                    tokio::time::sleep(Duration::from_secs(interval)).await;
-                    continue;
+            match evaluate_loop_tick(&app, &settings).await {
+                LoopAction::Silent => {}
+                LoopAction::Skip(reason) => {
+                    let log_store = app.state::<LogStore>().inner().clone();
+                    write_log(&log_store.0, &reason);
                 }
-            }
-
-            if snap.idle_seconds >= threshold {
-                // Don't interrupt if the user is actively at the keyboard/mouse.
-                // A value of 0 disables this gate; on non-macOS we get None and
-                // proceed (fall back to interaction-time check only).
-                let input_idle = user_input_idle_seconds().await;
-                let input_ok = match (input_idle_min, input_idle) {
-                    (0, _) => true,
-                    (_, Some(secs)) => secs >= input_idle_min,
-                    (_, None) => true,
-                };
-
-                if input_ok {
-                    if let Err(e) = run_proactive_turn(&app, snap.idle_seconds, input_idle).await {
+                LoopAction::Run { idle_seconds, input_idle_seconds } => {
+                    if let Err(e) = run_proactive_turn(&app, idle_seconds, input_idle_seconds).await
+                    {
                         eprintln!("Proactive turn failed: {}", e);
                     }
-                } else {
-                    let secs = input_idle.unwrap_or(0);
-                    write_log(
-                        &log_store.0,
-                        &format!(
-                            "Proactive: skip — user active (input_idle={}s < {}s)",
-                            secs, input_idle_min
-                        ),
-                    );
                 }
             }
 
