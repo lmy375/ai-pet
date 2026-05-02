@@ -9,7 +9,7 @@ use crate::commands::chat::{
     inject_mood_note, run_chat_pipeline, trim_to_context, ChatDonePayload, ChatMessage,
     CollectingSink,
 };
-use crate::commands::debug::{CacheCountersStore, LogStore};
+use crate::commands::debug::{CacheCountersStore, LogStore, MoodTagCountersStore};
 use crate::commands::session;
 use crate::commands::settings::{get_soul, TelegramConfig};
 use crate::commands::shell::ShellStore;
@@ -30,6 +30,7 @@ struct HandlerState {
     log_store: LogStore,
     shell_store: ShellStore,
     cache_counters: CacheCountersStore,
+    mood_tag_counters: MoodTagCountersStore,
     /// Messages for the dedicated Telegram session (kept in memory for fast access).
     session_messages: TokioMutex<Vec<serde_json::Value>>,
     session_id: String,
@@ -48,6 +49,7 @@ impl TelegramBot {
         log_store: LogStore,
         shell_store: ShellStore,
         cache_counters: CacheCountersStore,
+        mood_tag_counters: MoodTagCountersStore,
         app: AppHandle,
     ) -> Result<Self, String> {
         let bot = Bot::new(&config.bot_token);
@@ -64,6 +66,7 @@ impl TelegramBot {
             log_store,
             shell_store,
             cache_counters,
+            mood_tag_counters,
             session_messages: TokioMutex::new(messages),
             session_id,
             app,
@@ -176,6 +179,7 @@ async fn handle_message(
                 state.log_store.clone(),
                 state.shell_store.clone(),
                 state.cache_counters.clone(),
+                state.mood_tag_counters.clone(),
             );
             let sink = CollectingSink::new();
             match run_chat_pipeline(chat_messages, &sink, &config, &state.mcp_store, &ctx).await {
@@ -183,7 +187,7 @@ async fn handle_message(
                     // Emit chat-done with the post-turn mood snapshot so the desktop pet's
                     // Live2D motion reflects state changes even when the user was chatting
                     // via Telegram. Same payload shape as the chat tauri command.
-                    let (mood, motion) = read_mood_for_event(&state.log_store, "Telegram");
+                    let (mood, motion) = read_mood_for_event(&ctx, "Telegram");
                     let payload = ChatDonePayload {
                         mood,
                         motion,

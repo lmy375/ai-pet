@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 40：[motion: X] 前缀遵守率统计
+- 后端：
+  - 新 `MoodTagCounters { with_tag, without_tag, no_mood: AtomicU64 }` + `MoodTagCountersStore` + `new_mood_tag_counters()` 在 commands/debug.rs。
+  - 新 Tauri 命令 `get_mood_tag_stats`（lib.rs 注册）。
+  - `ToolContext` 加 `mood_tag_counters: MoodTagCountersStore` 字段，`new` / `from_states` / `for_test` 都更新。
+  - `mood::read_mood_for_event` 签名从 `(&LogStore, &str)` 改为 `(&ToolContext, &str)`，内部按解析结果 bump 三个 atomic 之一。
+  - 4 个 callsite（proactive / chat / telegram / consolidate）改用 ctx 参数；ToolContext::new 各处补第 4 参数。
+  - lib.rs `.manage(new_mood_tag_counters())` + 注册命令。reconnect_telegram + TelegramBot::start + HandlerState 全程透传。
+  - 1 个新单测 `mood_tag_counters_default_to_zero_and_accumulate`。
+- 前端 PanelDebug：
+  - 新 interface `MoodTagStats`，新 state，fetchLogs 四路 Promise.all 一并取。
+  - 工具栏在 cache stats 后加紫色 Tag 统计："Tag H/T (P%)"，hover tooltip 解释含义；total=0 时不渲染。
+- 总测试 70 + 1 = **71 个**，全过；cargo + tsc 双过。
+- 现在不需要交互式跑就能从 panel 看 LLM 守不守约：H/T 比例稳定接近 100% 就说明 prompt 工作得好；显著低于则需要回炉调 prompt（替代了 Iter 12b 需要交互的实测）。
+
 ## 2026-05-02 — Iter 39：proactive 决策 reason 中文化
 - `PanelDebug.tsx` 加 `localizeReason(kind, reason)` 辅助：
   - Silent 三个 key 一对一映射："disabled" → "已禁用 (proactive.enabled = false)"，"quiet_hours" → "安静时段内"，"idle_below_threshold" → "用户活跃时间未到阈值"。

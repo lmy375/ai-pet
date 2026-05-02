@@ -7,8 +7,11 @@
 //! All four LLM entry points (proactive, chat, telegram, consolidate) consume mood
 //! through these helpers so behavior stays symmetric.
 
-use crate::commands::debug::{write_log, LogStore};
+use std::sync::atomic::Ordering;
+
+use crate::commands::debug::write_log;
 use crate::commands::memory;
+use crate::tools::ToolContext;
 
 /// Memory category + title where the pet's evolving mood/state is stored. Read on every
 /// LLM turn for context, and the model is instructed to update it via `memory_edit` so
@@ -60,24 +63,41 @@ pub fn parse_mood_string(raw: &str) -> (String, Option<String>) {
 }
 
 /// Shared post-turn mood read used by every LLM entry point (proactive, chat, telegram,
-/// consolidate). Reads the current mood, parses the optional `[motion: X]` prefix, and
-/// emits a single line of compliance telemetry when the prefix is missing. `source` is
-/// the human-readable label that prefixes the log line so the user can tell which
-/// pipeline produced the warning.
+/// consolidate). Reads the current mood, parses the optional `[motion: X]` prefix, emits
+/// a compliance log line when the prefix is missing, and bumps the process-wide
+/// `MoodTagCounters` so the panel can display a cumulative format-adherence ratio.
+/// `source` is the human-readable label that prefixes the log line so the user can tell
+/// which pipeline produced the warning.
 pub fn read_mood_for_event(
-    log_store: &LogStore,
+    ctx: &ToolContext,
     source: &str,
 ) -> (Option<String>, Option<String>) {
     let parsed = read_current_mood_parsed();
-    if let Some((text, None)) = &parsed {
-        if !text.trim().is_empty() {
+    match &parsed {
+        Some((text, None)) if !text.trim().is_empty() => {
+            ctx.mood_tag_counters
+                .without_tag
+                .fetch_add(1, Ordering::Relaxed);
             write_log(
-                &log_store.0,
+                &ctx.log_store.0,
                 &format!(
                     "{}: mood missing [motion: X] prefix — frontend will fall back to keyword match",
                     source
                 ),
             );
+        }
+        Some((_, Some(_))) => {
+            ctx.mood_tag_counters
+                .with_tag
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        Some((_, None)) => {
+            // Mood was present but text was empty/whitespace — treat as no_mood for stats
+            // since the model didn't really write anything.
+            ctx.mood_tag_counters.no_mood.fetch_add(1, Ordering::Relaxed);
+        }
+        None => {
+            ctx.mood_tag_counters.no_mood.fetch_add(1, Ordering::Relaxed);
         }
     }
     match parsed {

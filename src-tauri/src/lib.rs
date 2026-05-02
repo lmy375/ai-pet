@@ -11,7 +11,7 @@ mod proactive;
 mod telegram;
 mod tools;
 
-use commands::debug::{log_dir, new_cache_counters, LogStore};
+use commands::debug::{log_dir, new_cache_counters, new_mood_tag_counters, LogStore};
 use commands::shell::ShellStore;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,6 +27,7 @@ pub fn run() {
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(new_cache_counters())
+        .manage(new_mood_tag_counters())
         .manage(decision_log::new_decision_log())
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
@@ -39,6 +40,10 @@ pub fn run() {
             let shell_store = app.state::<ShellStore>().inner().clone();
             let cache_counters = app
                 .state::<commands::debug::CacheCountersStore>()
+                .inner()
+                .clone();
+            let mood_tag_counters = app
+                .state::<commands::debug::MoodTagCountersStore>()
                 .inner()
                 .clone();
             let app_handle_for_tg = app.handle().clone();
@@ -62,6 +67,7 @@ pub fn run() {
                         log_store,
                         shell_store,
                         cache_counters,
+                        mood_tag_counters,
                         app_handle_for_tg,
                     )
                     .await
@@ -102,6 +108,7 @@ pub fn run() {
             commands::debug::get_llm_logs,
             commands::debug::get_cache_stats,
             commands::debug::reset_cache_stats,
+            commands::debug::get_mood_tag_stats,
             decision_log::get_proactive_decisions,
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
