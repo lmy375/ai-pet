@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 80 设计要点（已实现）
+- **复用 ProcessCounters container pattern**：第 3 个 sub-struct（cache/mood_tag/llm_outcome）用同一模式：AtomicU64 + 工厂 + Stats serde 结构 + get_/reset_ 命令对。每加一个新指标，机械地复制粘贴改名字即可。这种"同形复制"反而比抽象出 trait 更易读——具体类型里能直接看到字段含义。
+- **bump 在 dispatch 处，不在 run_proactive_turn 内部**：`run_proactive_turn` 不知道 ProcessCounters 的存在（它接 AppHandle 但通过 state 访问也行）。但放在 dispatch 处的好处是：它已经在做完全相同的 outcome 分类（`Ok(Some) / Ok(None) / Err`）来 push decision log；同位置 fetch_add 让 atomic 和 decision log 永不分叉，未来想加新 outcome 状态（如 `LlmTimeout`）一处改全到位。
+- **沉默率而非开口率**：UI 显示 "LLM沉默 N/M" 而非 "LLM开口 N/M"。两者数学等价但语义重点不同：用户关心的是"为什么这么沉默"——沉默是异常事件，开口是默认期望。沉默数字直接出现在 chip 上比 100% - 开口率% 心理算账少一步。
+- **临界点切橙色 = silent+error > spoke**：即沉默和失败合起来超过开口数。这是个朴素阈值（50%）。本可以用 30% 或 60%，但 50% 是"已经不正常"的最直白门槛——一半以上的 LLM 调用没换来对话，prompt 必然有问题。
+- **error 也算入沉默率分母**：error 是 LLM 调用失败（网络/API），技术上不是"主动沉默"。但用户视角"宠物没说话"——失败和沉默都是同样后果。把 error 算进总数让 chip 不需要分两个比例。
+- **chip 仅在 total > 0 才渲染**：与 Cache / Tag chip 同策略。否则首次启动每个 chip 都显示 0/0% 拥挤工具栏；发生过即出现，零次时藏起来。
+- **不持久化跨重启**：与 cache/mood_tag 一致，atomic 是 process-wide。如果用户重启就清零；这不是 lifetime stat（那个 speech_count.txt 是文件持久），是 session 内的 prompt 调试反馈。重启清零等于"开始新 session 看 prompt 现在表现如何"，符合调优场景。
+
 ## Iter 79 设计要点（已实现）
 - **bump 而非按 kind 归档**：本可以让 Run + outcome 合并成一个 entry（用 `outcome: Option<String>` 字段后填）。但那破坏了 Iter 78 的"Record before dispatching"时序——in-flight 的 Run 对 panel 不可见。简单 bump CAPACITY 是对 Iter 78 设计的最小妥协。
 - **16 而非 20**：每 Run 占 2 行，10 → 16 给出 8 完整 cycle。20 给 10 完整 cycle 也行，但 panel 即使升 maxHeight 也不要"决策列表喧宾夺主"——它是"为什么沉默"的辅助信息，主屏要留给 toolbar/stats/tone strip。

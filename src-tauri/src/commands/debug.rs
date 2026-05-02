@@ -59,6 +59,29 @@ pub fn new_mood_tag_counters() -> MoodTagCountersStore {
     Arc::new(MoodTagCounters::default())
 }
 
+/// Counters tracking the LLM-side outcome of every dispatched proactive Run. Lets the
+/// panel show "LLM 沉默率 X/Y" — the share of gate-cleared turns where the model still
+/// returned the silent marker. Spikes here usually mean the prompt is too restrictive
+/// (e.g. chatty_day_threshold too low) and the user can tune it accordingly. Distinct
+/// from gate-side stats because gate decisions never reach the LLM at all.
+#[derive(Default)]
+pub struct LlmOutcomeCounters {
+    /// LLM produced a non-silent reply (the pet actually spoke).
+    pub spoke: AtomicU64,
+    /// LLM returned the silent marker or empty reply.
+    pub silent: AtomicU64,
+    /// LLM call errored out (network / API failure / parse error).
+    pub error: AtomicU64,
+}
+
+#[cfg(test)]
+pub type LlmOutcomeCountersStore = Arc<LlmOutcomeCounters>;
+
+#[cfg(test)]
+pub fn new_llm_outcome_counters() -> LlmOutcomeCountersStore {
+    Arc::new(LlmOutcomeCounters::default())
+}
+
 /// Container for every per-process counter group the panel surfaces. Bundling them as a
 /// single Tauri State keeps `ToolContext` stable when we add a new metric: one field, one
 /// `app.state::<ProcessCountersStore>()` lookup, no plumbing through 5 callsites and
@@ -68,6 +91,7 @@ pub fn new_mood_tag_counters() -> MoodTagCountersStore {
 pub struct ProcessCounters {
     pub cache: CacheCounters,
     pub mood_tag: MoodTagCounters,
+    pub llm_outcome: LlmOutcomeCounters,
 }
 
 pub type ProcessCountersStore = Arc<ProcessCounters>;
@@ -232,6 +256,32 @@ pub fn reset_mood_tag_stats(counters: State<'_, ProcessCountersStore>) {
     counters.mood_tag.no_mood.store(0, Ordering::Relaxed);
 }
 
+#[derive(serde::Serialize)]
+pub struct LlmOutcomeStats {
+    pub spoke: u64,
+    pub silent: u64,
+    pub error: u64,
+}
+
+#[tauri::command]
+pub fn get_llm_outcome_stats(counters: State<'_, ProcessCountersStore>) -> LlmOutcomeStats {
+    LlmOutcomeStats {
+        spoke: counters.llm_outcome.spoke.load(Ordering::Relaxed),
+        silent: counters.llm_outcome.silent.load(Ordering::Relaxed),
+        error: counters.llm_outcome.error.load(Ordering::Relaxed),
+    }
+}
+
+/// Zero out the process-wide LLM-outcome counters. Mirrors the cache/mood-tag reset
+/// commands so the user can measure rejection ratios over a fresh window after tweaking
+/// the prompt or chatty_day_threshold.
+#[tauri::command]
+pub fn reset_llm_outcome_stats(counters: State<'_, ProcessCountersStore>) {
+    counters.llm_outcome.spoke.store(0, Ordering::Relaxed);
+    counters.llm_outcome.silent.store(0, Ordering::Relaxed);
+    counters.llm_outcome.error.store(0, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{new_cache_counters, write_log, MAX_LOG_LINES};
@@ -290,6 +340,34 @@ mod tests {
         assert_eq!(c.with_tag.load(Ordering::Relaxed), 0);
         assert_eq!(c.without_tag.load(Ordering::Relaxed), 0);
         assert_eq!(c.no_mood.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn llm_outcome_counters_default_to_zero_and_accumulate() {
+        let c = super::new_llm_outcome_counters();
+        assert_eq!(c.spoke.load(Ordering::Relaxed), 0);
+        assert_eq!(c.silent.load(Ordering::Relaxed), 0);
+        assert_eq!(c.error.load(Ordering::Relaxed), 0);
+        c.spoke.fetch_add(4, Ordering::Relaxed);
+        c.silent.fetch_add(2, Ordering::Relaxed);
+        c.error.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(c.spoke.load(Ordering::Relaxed), 4);
+        assert_eq!(c.silent.load(Ordering::Relaxed), 2);
+        assert_eq!(c.error.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn llm_outcome_counters_can_be_reset_to_zero() {
+        let c = super::new_llm_outcome_counters();
+        c.spoke.fetch_add(9, Ordering::Relaxed);
+        c.silent.fetch_add(3, Ordering::Relaxed);
+        c.error.fetch_add(1, Ordering::Relaxed);
+        c.spoke.store(0, Ordering::Relaxed);
+        c.silent.store(0, Ordering::Relaxed);
+        c.error.store(0, Ordering::Relaxed);
+        assert_eq!(c.spoke.load(Ordering::Relaxed), 0);
+        assert_eq!(c.silent.load(Ordering::Relaxed), 0);
+        assert_eq!(c.error.load(Ordering::Relaxed), 0);
     }
 
     #[test]

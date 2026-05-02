@@ -20,6 +20,12 @@ interface MoodTagStats {
   no_mood: number;
 }
 
+interface LlmOutcomeStats {
+  spoke: number;
+  silent: number;
+  error: number;
+}
+
 interface PendingReminder {
   time: string;
   topic: string;
@@ -52,6 +58,11 @@ export function PanelDebug() {
     without_tag: 0,
     no_mood: 0,
   });
+  const [llmOutcomeStats, setLlmOutcomeStats] = useState<LlmOutcomeStats>({
+    spoke: 0,
+    silent: 0,
+    error: 0,
+  });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
   const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
@@ -64,7 +75,7 @@ export function PanelDebug() {
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
@@ -74,6 +85,7 @@ export function PanelDebug() {
         invoke<PendingReminder[]>("get_pending_reminders"),
         invoke<number>("get_lifetime_speech_count"),
         invoke<number>("get_today_speech_count"),
+        invoke<LlmOutcomeStats>("get_llm_outcome_stats"),
       ]);
       setLogs(result);
       setCacheStats(stats);
@@ -84,6 +96,7 @@ export function PanelDebug() {
       setReminders(reminderList);
       setLifetimeSpeechCount(lifetime);
       setTodaySpeechCount(today);
+      setLlmOutcomeStats(llmOut);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -117,6 +130,11 @@ export function PanelDebug() {
   const handleResetMoodTagStats = async () => {
     await invoke("reset_mood_tag_stats");
     setMoodTagStats({ with_tag: 0, without_tag: 0, no_mood: 0 });
+  };
+
+  const handleResetLlmOutcomeStats = async () => {
+    await invoke("reset_llm_outcome_stats");
+    setLlmOutcomeStats({ spoke: 0, silent: 0, error: 0 });
   };
 
   const handleTriggerProactive = async () => {
@@ -247,6 +265,47 @@ export function PanelDebug() {
             <button
               onClick={handleResetMoodTagStats}
               title="重置 [motion: X] 前缀遵守率统计"
+              style={{
+                fontSize: "10px",
+                padding: "2px 6px",
+                borderRadius: "4px",
+                border: "1px solid #cbd5e1",
+                background: "#fff",
+                color: "#64748b",
+                cursor: "pointer",
+              }}
+            >
+              重置
+            </button>
+          </span>
+        )}
+        {llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <span
+              style={{
+                fontSize: "12px",
+                color:
+                  llmOutcomeStats.silent + llmOutcomeStats.error >
+                  llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error
+                    ? "#ea580c"
+                    : "#7c3aed",
+                alignSelf: "center",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+              title={`gate 放行后的 LLM 决策: ${llmOutcomeStats.spoke} 次开口，${llmOutcomeStats.silent} 次沉默，${llmOutcomeStats.error} 次失败。沉默率高说明 prompt 偏克制（如 chatty_day_threshold 太低），可作为调优反馈。`}
+            >
+              LLM沉默 {llmOutcomeStats.silent}/
+              {llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error} (
+              {Math.round(
+                (llmOutcomeStats.silent /
+                  (llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error)) *
+                  100,
+              )}
+              %)
+            </span>
+            <button
+              onClick={handleResetLlmOutcomeStats}
+              title="重置 LLM 决策结果统计"
               style={{
                 fontSize: "10px",
                 padding: "2px 6px",
