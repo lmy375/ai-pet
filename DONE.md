@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 68：first-time 破冰 prompt 规则
+- 新 `pub async fn count_speeches() -> usize` 在 speech_history.rs：读 file 计非空行数，作 lifetime proactive utterance count（受 SPEECH_HISTORY_CAP=50 约束足以判断"前几次")。
+- `PromptInputs.proactive_history_count: usize` 新字段。
+- `proactive_rules` 加条件性规则（count < 3 时）："你和用户还不熟：你之前主动开口过 N 次（< 3 次的破冰阶段）。开口时偏向问一个简短、低压力的了解性问题（例如 ta 此刻的感受、当下在做什么、有没有最近喜欢的小事），别直接给建议或扔信息密集的话题。如果用户答了什么记得用 memory_edit create 写到 user_profile 类下方便日后用。"
+- run_proactive_turn 调 `crate::speech_history::count_speeches().await` 取真实 count 传 builder。
+- base_inputs 默认设 `proactive_history_count: 100` 让现有测试不被新规则误触发。
+- 2 个新单测：count=0 触发规则 + 规则文本含 "0 次"；count=3 不触发（threshold 边界）。
+- 总测试 139 + 2 = **141 个**，全过；cargo + tsc 双过；零 warning。
+- 现在新装宠物的前 3 次主动开口会显著克制——不会一上来就推荐什么事或翻 memory 给意见，而是先问简短问题了解用户。
+
 ## 2026-05-03 — Iter 67：daily_plan 自动过期 sweep
 - `MemoryConsolidateConfig` 加 `stale_plan_hours: u64`（默认 24）；与 `stale_reminder_hours` 平行字段。
 - 新 `pub fn sweep_stale_plan(now, cutoff_hours) -> bool` 在 consolidate.rs：读 ai_insights 类的 daily_plan 条目，`DateTime::parse_from_rfc3339(updated_at)` 算与 now 的 age；超过 cutoff 调 memory_edit delete。任意 IO/解析失败 → false（best-effort）。
