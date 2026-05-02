@@ -171,7 +171,18 @@ pub struct PromptInputs<'a> {
     /// speech_history.log). When small (< 3) the rules block adds an icebreaker hint so
     /// early conversations stay exploratory rather than info-dense.
     pub proactive_history_count: usize,
+    /// How many times the pet has spoken proactively *today* (local time, from the
+    /// speech_daily.json sidecar). When this gets high (≥ `CHATTY_DAY_THRESHOLD`) the
+    /// rules block adds a "go gentle today" hint so the pet doesn't keep piling on the
+    /// same user the same day.
+    pub today_speech_count: u64,
 }
+
+/// Threshold at which today_speech_count triggers the "be more selective today" rule.
+/// 5 chosen empirically — the gates already hold the pet to a few utterances/day in
+/// normal use, so 5 means "this has been an unusually chatty day, tone it down" without
+/// firing during a normal session.
+pub const CHATTY_DAY_THRESHOLD: u64 = 5;
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
 /// adding a rule is just `rules.push(...)` instead of squeezing a line into the middle
@@ -232,6 +243,12 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         rules.push(format!(
             "- **你和用户还不熟**：你之前主动开口过 {} 次（< 3 次的破冰阶段）。开口时偏向问一个简短、低压力的了解性问题（例如 ta 此刻的感受、当下在做什么、有没有最近喜欢的小事），别直接给建议或扔信息密集的话题。如果用户答了什么记得用 `memory_edit create` 写到 `user_profile` 类下方便日后用。",
             inputs.proactive_history_count
+        ));
+    }
+    if inputs.today_speech_count >= CHATTY_DAY_THRESHOLD {
+        rules.push(format!(
+            "- **今天已经聊了不少**：你今天已经主动开过 {} 次口了。除非有真正值得说的新信号（用户刚回来、有到期提醒、明显环境变化），优先**保持安静**（用 `{}`）；要说也只说极简一句，别再起新话题。",
+            inputs.today_speech_count, SILENT_MARKER
         ));
     }
     rules
@@ -872,6 +889,9 @@ async fn run_proactive_turn(
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
+    // Today's proactive count from the per-day sidecar — drives the "tone it down today"
+    // rule when above CHATTY_DAY_THRESHOLD.
+    let today_speech_count = crate::speech_history::today_speech_count().await;
 
     let pre_quiet_minutes = {
         let settings = get_settings().ok();
@@ -900,6 +920,7 @@ async fn run_proactive_turn(
         reminders_hint: &reminders_hint,
         plan_hint: &plan_hint,
         proactive_history_count,
+        today_speech_count,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1071,6 +1092,9 @@ mod prompt_tests {
             // Default well past the icebreaker threshold so existing tests stay at the
             // base 6 rule count; icebreaker tests bump this down explicitly.
             proactive_history_count: 100,
+            // Default below the chatty-day threshold so existing tests don't pick up the
+            // new rule; the chatty-day tests bump this above CHATTY_DAY_THRESHOLD.
+            today_speech_count: 0,
         }
     }
 
@@ -1236,6 +1260,24 @@ mod prompt_tests {
         inputs.proactive_history_count = 3;
         let rules = proactive_rules(&inputs);
         assert!(!rules.iter().any(|r| r.contains("你和用户还不熟")));
+    }
+
+    #[test]
+    fn chatty_day_rule_appears_at_or_above_threshold() {
+        let mut inputs = base_inputs();
+        inputs.today_speech_count = CHATTY_DAY_THRESHOLD;
+        let rules = proactive_rules(&inputs);
+        assert!(rules.iter().any(|r| r.contains("今天已经聊了不少")));
+        // The actual count must surface so the LLM knows where on the curve it sits.
+        assert!(rules.iter().any(|r| r.contains(&format!("{} 次", CHATTY_DAY_THRESHOLD))));
+    }
+
+    #[test]
+    fn chatty_day_rule_absent_below_threshold() {
+        let mut inputs = base_inputs();
+        inputs.today_speech_count = CHATTY_DAY_THRESHOLD - 1;
+        let rules = proactive_rules(&inputs);
+        assert!(!rules.iter().any(|r| r.contains("今天已经聊了不少")));
     }
 
     #[test]
