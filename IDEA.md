@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 86 设计要点（已实现）
+- **拆两个 helper 而非一个胖函数**：本可以让 active_data_driven_rule_labels 接 10 个参数同时返 8 个 label。但 data-driven（依赖 counter / 历史）和 environmental（依赖瞬时 state）是两类信号——拆开后调用者能根据需要单独使用，比如未来"只统计 prompt 里的纠偏规则数量"还能直接用 data_driven helper，不用再切片。
+- **chain + collect 而非 mut Vec push**：`env.iter().chain(data.iter()).copied().collect()` 一行表达组合意图。两边都是 Vec<&'static str>，链式拼接零拷贝直到 collect。
+- **wake_back 从 wake_ago<=600 派生**：阈值 600 秒（10 分钟）是 wake_hint 构造的硬编码值。本可以提取常量，但 wake_hint 在 run_proactive_turn 里也只用一次——重复 600 在两处比抽常量+import 简单。如果将来要再用第三处再考虑提取。
+- **first_mood = mood_text empty/None**：mood_text 在 ToneSnapshot 里已是 `Option<String>`。`map(empty).unwrap_or(true)` 一行覆盖两种 first_mood 情况：从未写过 (None) 或文本为空。
+- **reminders / plan 走 build_xxx_hint 而非 memory_list 直接读**：build_xxx_hint 已经包含解析 + 过滤过期 + 构造文本逻辑。把"是否非空"作为"规则是否会触发"的代理，逻辑和 proactive_rules 严格对齐——避免重复实现导致漂移。代价是这两次调用每次 panel poll（1Hz）都跑——memory IO 但 yaml 文件极小，可忽略。
+- **dispatch 重新计算 mood/wake/reminders/plan 而非传 ToneSnapshot 进来**：dispatch 早于 get_tone_snapshot 被调用（不同 entry path），共享一个"已计算的 ToneSnapshot"会需要不小的耦合。重新算的成本和单次 ToneSnapshot 一样，可接受。
+- **保持 firing 顺序的设计**：proactive_rules 内是 wake → first_mood → pre_quiet → reminders → plan → icebreaker → chatty → env-awareness。labels 顺序严格匹配。如果将来加新规则到 proactive_rules，更新对应 helper 的 push 顺序，单测会捕获漂移。
+- **未来想加 settings 控制 badge 显隐**：现在 8 条全显示——可能让"prompt: 5 条 hint"过于频繁出现。如果用户感觉吵，可以加 `panel.show_prompt_rules_badge_threshold`（默认 1，调高让 badge 只在更多规则时出现）。先看实际使用感受再决定。
+
 ## Iter 85 设计要点（已实现）
 - **dispatch 时一次性算 labels，所有 push 复用**：active_data_driven_rule_labels 调用时机有两个候选：dispatch 前（与 prompt 实际计算同步） 或在 run_proactive_turn 里返回。前者意味着 dispatch 自己读 atomic + speech_count；后者要把 labels 加进 ProactiveTurnOutcome。选 dispatch 时算的好处：Skip / Silent / Run / outcome 全分支统一，不依赖 LLM 是否被调用。
 - **append_tag 内联函数处理 "-" 占位**：reason 起始要么是 "chatty=..." 要么是 "-"。直接 `push_str(", rules=...")` 会得到 `"-, rules=icebreaker"` 不优雅。append_tag 检查若仍是 "-" 占位就先 clear——结果变成 "rules=icebreaker"。前端 strip "-, " 已经能 backwards-compat 处理两种格式。

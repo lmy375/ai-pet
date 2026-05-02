@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 86：环境性规则也进入 active_prompt_rules 与 decision log
+- 新纯函数 `pub fn active_environmental_rule_labels(wake_back, first_mood, pre_quiet, reminders_due, has_plan: bool) -> Vec<&'static str>` 返回 `["wake-back"|"first-mood"|"pre-quiet"|"reminders"|"plan"]` 子集，按 proactive_rules firing 顺序。
+- `active_data_driven_rule_labels` 文档串改为说明它和 environmental 互补。
+- `get_tone_snapshot`：新派生 5 个 boolean（wake_back from wake_ago<=600s / first_mood from mood text empty/None / pre_quiet from pre_quiet_minutes Some / reminders_due from build_reminders_hint / has_plan from build_plan_hint），调 environmental helper，与 data_driven 拼接（env first）写入 ToneSnapshot.active_prompt_rules。
+- 调度循环 dispatch 处也算同样组合，决定 `rules=...` tag 现在覆盖完整 8 条 prompt 规则集。事件回放可以看到任意 Run/Spoke/LlmSilent 当时哪些环境信号 + 哪些数据驱动信号同时影响 prompt。
+- 3 个新单测覆盖：empty / 5 个独立单触发 / 全开 firing 顺序锁定。
+- panel "prompt: N 条 hint" badge 现在最多可以显 8——之前永远 ≤ 3——更诚实反映 prompt 实际复杂度。tooltip 列出全部规则名（如 "wake-back、first-mood、icebreaker"）。
+- 173 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 85：active prompt rules 也透传到每条 decision log entry
 - 调度循环 dispatch 一次性 fetch lifetime_count + env_total + env_with_any，加上已有的 chatty_today / chatty_threshold，调 `active_data_driven_rule_labels` 算出此次 tick 哪些规则会激活。封成可选 `rules_tag = Some("rules=icebreaker+chatty")` 或 None。
 - Run 决策的 reason 末尾追加 `rules=...`：`Run idle=20s, input_idle=10s, chatty=5/5, rules=icebreaker+chatty`。
