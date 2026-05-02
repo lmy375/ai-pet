@@ -4,6 +4,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
+/// Maximum number of in-memory log lines retained in `LogStore`. Older lines are dropped
+/// when the buffer overflows. 5000 lines ≈ several hundred LLM turns at typical 10–30
+/// lines per turn — comfortably more than a session's worth, but still bounded so a
+/// long-running pet doesn't slowly leak. The on-disk app.log is not capped here.
+pub const MAX_LOG_LINES: usize = 5000;
+
 #[derive(Clone)]
 pub struct LogStore(pub Arc<Mutex<Vec<String>>>);
 
@@ -30,8 +36,8 @@ pub fn write_log(store: &Arc<Mutex<Vec<String>>>, message: &str) {
     {
         let mut logs = store.lock().unwrap();
         logs.push(line.clone());
-        if logs.len() > 500 {
-            let drain = logs.len() - 500;
+        if logs.len() > MAX_LOG_LINES {
+            let drain = logs.len() - MAX_LOG_LINES;
             logs.drain(0..drain);
         }
     }
@@ -152,7 +158,8 @@ pub fn get_cache_stats(store: State<'_, LogStore>) -> CacheStats {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_cache_summary;
+    use super::{parse_cache_summary, write_log, MAX_LOG_LINES};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn parses_canonical_summary_line() {
@@ -190,5 +197,38 @@ mod tests {
             None,
             "missing slash"
         );
+    }
+
+    // ---- write_log size cap ----
+
+    #[test]
+    fn write_log_caps_at_max_lines() {
+        let store = Arc::new(Mutex::new(Vec::<String>::new()));
+        // Write a few more than the cap. The on-disk side is best-effort and won't fail
+        // when log_dir() doesn't exist in CI, so this test only inspects the Vec.
+        let total = MAX_LOG_LINES + 50;
+        for i in 0..total {
+            write_log(&store, &format!("line {}", i));
+        }
+        let logs = store.lock().unwrap();
+        assert_eq!(logs.len(), MAX_LOG_LINES, "buffer must stay at cap");
+        // The 50 oldest were dropped; the most recent should be "line 5049".
+        let last = logs.last().expect("at least one entry");
+        assert!(last.contains(&format!("line {}", total - 1)), "newest preserved");
+        let first = logs.first().expect("at least one entry");
+        assert!(first.contains(&format!("line {}", total - MAX_LOG_LINES)),
+            "oldest in window is line {}, got: {}", total - MAX_LOG_LINES, first);
+    }
+
+    #[test]
+    fn write_log_under_cap_is_pure_append() {
+        let store = Arc::new(Mutex::new(Vec::<String>::new()));
+        write_log(&store, "first");
+        write_log(&store, "second");
+        write_log(&store, "third");
+        let logs = store.lock().unwrap();
+        assert_eq!(logs.len(), 3);
+        assert!(logs[0].contains("first"));
+        assert!(logs[2].contains("third"));
     }
 }
