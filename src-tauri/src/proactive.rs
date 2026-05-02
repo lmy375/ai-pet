@@ -121,7 +121,7 @@ async fn run_proactive_turn(app: &AppHandle, idle_seconds: u64) -> Result<(), St
 - 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{silent}`，不要其他任何文字。\n\
 - 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{silent}`。\n\
 - 只说一句话，简短自然，像伙伴一样。\n\
-- 必要时可以调用工具（比如读取记忆来了解用户）。",
+- 必要时可以调用工具：`get_active_window` 看看用户在用什么 app（开口前优先调一次，让话题更贴合当下），`memory_search` 翻一下记忆里相关的用户偏好。",
         time = now_local.format("%Y-%m-%d %H:%M"),
         minutes = idle_minutes,
         silent = SILENT_MARKER,
