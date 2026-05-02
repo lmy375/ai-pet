@@ -49,6 +49,9 @@ export function PanelSettings() {
       interval_hours: 6,
       min_total_items: 12,
     },
+    chat: {
+      max_context_messages: 50,
+    },
   });
   const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);

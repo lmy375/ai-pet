@@ -6,7 +6,8 @@ use teloxide::types::{ChatAction, Me};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::commands::chat::{
-    inject_mood_note, run_chat_pipeline, ChatDonePayload, ChatMessage, CollectingSink,
+    inject_mood_note, run_chat_pipeline, trim_to_context, ChatDonePayload, ChatMessage,
+    CollectingSink,
 };
 use crate::commands::debug::{CacheCountersStore, LogStore};
 use crate::commands::session;
@@ -38,7 +39,6 @@ struct HandlerState {
 }
 
 const TELEGRAM_SESSION_ID: &str = "telegram-bot";
-const MAX_CONTEXT_MESSAGES: usize = 50;
 const TELEGRAM_MSG_LIMIT: usize = 4096;
 
 impl TelegramBot {
@@ -147,21 +147,13 @@ async fn handle_message(
     // Build ChatMessage list from session history + new user message
     let user_msg = serde_json::json!({ "role": "user", "content": text });
 
-    let chat_messages = {
+    // Snapshot the full session, then let the shared trim/inject helpers prune to the
+    // configured context window. Keeps trim semantics identical between desktop and
+    // telegram paths.
+    let chat_messages: Vec<serde_json::Value> = {
         let mut session_msgs = state.session_messages.lock().await;
         session_msgs.push(user_msg);
-
-        // Build messages for LLM: system prompt + last N messages
-        let msgs = &*session_msgs;
-        let context_msgs: Vec<serde_json::Value> = if msgs.len() > MAX_CONTEXT_MESSAGES + 1 {
-            // Always include system message (first) + last N
-            let mut ctx = vec![msgs[0].clone()];
-            ctx.extend_from_slice(&msgs[msgs.len() - MAX_CONTEXT_MESSAGES..]);
-            ctx
-        } else {
-            msgs.clone()
-        };
-        context_msgs
+        session_msgs.clone()
     };
 
     // Convert to ChatMessage structs and inject the same mood-context system note that
@@ -171,6 +163,10 @@ async fn handle_message(
         .into_iter()
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect();
+    let max_context = AiConfig::from_settings()
+        .map(|c| c.max_context_messages)
+        .unwrap_or(50);
+    let chat_messages = trim_to_context(chat_messages, max_context);
     let chat_messages = inject_mood_note(chat_messages);
 
     // Run the LLM pipeline
