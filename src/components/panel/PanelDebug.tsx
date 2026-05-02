@@ -87,6 +87,7 @@ export function PanelDebug() {
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
+  const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -388,26 +389,72 @@ export function PanelDebug() {
           </span>
         )}
         {tone && tone.active_prompt_rules.length > 0 && (
-          <span
-            title={`prompt 当前正被以下 data-driven 规则影响：${tone.active_prompt_rules.join("、")}。每条规则会在 LLM 主动开口前注入 prompt 末尾，影响开口决策。`}
+          <button
+            onClick={() => setShowPromptHints((v) => !v)}
+            title={`点击展开/收起规则详情。当前活跃：${tone.active_prompt_rules.join("、")}`}
             style={{
               fontSize: "11px",
               color: "#fff",
-              background: "#7c3aed",
+              background: showPromptHints ? "#5b21b6" : "#7c3aed",
               padding: "2px 8px",
               borderRadius: "10px",
               alignSelf: "center",
               fontFamily: "'SF Mono', 'Menlo', monospace",
-              cursor: "default",
+              cursor: "pointer",
+              border: "none",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "4px",
             }}
           >
             prompt: {tone.active_prompt_rules.length} 条 hint
-          </span>
+            <span style={{ fontSize: "9px", opacity: 0.85 }}>
+              {showPromptHints ? "▾" : "▸"}
+            </span>
+          </button>
         )}
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>
           {logs.length} 条日志
         </span>
       </div>
+
+      {/* Inline expansion of the active prompt hints — only renders when the user has
+          clicked the badge. Each hint shows its title + a one-line plain-Chinese summary
+          of what the rule asks the LLM to do, sourced from PROMPT_RULE_DESCRIPTIONS. */}
+      {showPromptHints && tone && tone.active_prompt_rules.length > 0 && (
+        <div
+          style={{
+            padding: "8px 16px",
+            borderBottom: "1px solid #e2e8f0",
+            background: "#faf5ff",
+            fontSize: "12px",
+          }}
+        >
+          <div style={{ color: "#6b21a8", marginBottom: "4px", fontSize: "11px" }}>
+            当前 prompt 软规则 ({tone.active_prompt_rules.length})：
+          </div>
+          {tone.active_prompt_rules.map((label) => {
+            const desc = PROMPT_RULE_DESCRIPTIONS[label];
+            return (
+              <div key={label} style={{ display: "flex", gap: "8px", lineHeight: "1.5" }}>
+                <span
+                  style={{
+                    color: "#7c3aed",
+                    fontWeight: 600,
+                    minWidth: "84px",
+                    fontFamily: "'SF Mono', 'Menlo', monospace",
+                  }}
+                >
+                  {desc?.title ?? label}
+                </span>
+                <span style={{ color: "#475569", flex: 1 }}>
+                  {desc?.summary ?? `(label "${label}" 暂无中文描述)`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Prominent lifetime stats — single big number for the "we've talked N times" feel.
           Sourced from speech_count.txt sidecar (persisted across restarts). The same value
@@ -665,6 +712,49 @@ export function PanelDebug() {
     </div>
   );
 }
+
+/**
+ * Frontend-side translation of backend `active_prompt_rules` labels into a short
+ * Chinese title + one-line summary of what each rule does. Lives here rather than
+ * in the backend to keep all UI strings co-located with the panel; the backend's
+ * label set is the contract — adding a new label means adding a row here.
+ *
+ * Order doesn't matter; lookup is by label string.
+ */
+const PROMPT_RULE_DESCRIPTIONS: Record<string, { title: string; summary: string }> = {
+  "wake-back": {
+    title: "刚回桌",
+    summary: "用户的电脑刚从休眠唤醒；问候要简短克制，先轻打招呼。",
+  },
+  "first-mood": {
+    title: "首次开口",
+    summary: "还没有 mood 记忆条目；开口后用 memory_edit create 初始化。",
+  },
+  "pre-quiet": {
+    title: "近安静时段",
+    summary: "再过几分钟到夜里安静时段；语气往收尾靠，简短晚安/睡前关心。",
+  },
+  reminders: {
+    title: "到期提醒",
+    summary: "用户设置的 todo 到期了；自然带进开口里，并 memory_edit delete。",
+  },
+  plan: {
+    title: "今日计划",
+    summary: "ai_insights/daily_plan 有未完成项；优先推进一条并 update 进度。",
+  },
+  icebreaker: {
+    title: "破冰阶段",
+    summary: "之前主动开口 < 3 次；偏向问简短低压力的了解性问题。",
+  },
+  chatty: {
+    title: "今日克制",
+    summary: "今天已经聊得不少；除非有新信号否则保持安静或极简一句。",
+  },
+  "env-awareness": {
+    title: "环境感知低",
+    summary: "近几次开口很少看环境；本次先调 get_active_window 看用户在做啥。",
+  },
+};
 
 function kindColor(kind: string): string {
   switch (kind) {
