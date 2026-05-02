@@ -152,14 +152,18 @@ pub struct PromptInputs<'a> {
     pub focus_hint: &'a str,
     pub wake_hint: &'a str,
     pub speech_hint: &'a str,
+    /// True when the pet has never recorded a mood entry yet. Lets the rules block add a
+    /// "create instead of update" hint so the model bootstraps the file correctly.
+    pub is_first_mood: bool,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
 /// adding a rule is just `rules.push(...)` instead of squeezing a line into the middle
-/// of a giant template, and so future variants can conditionally include / skip rules
-/// (e.g. drop the env-tool dedup rule when no env tools are enabled).
-pub fn proactive_rules() -> Vec<String> {
-    let mut rules: Vec<String> = Vec::with_capacity(6);
+/// of a giant template. Rules are now context-aware: certain rules are added only when
+/// the corresponding PromptInputs flag/hint is set, so the LLM gets the most useful
+/// guidance for *this* moment instead of a static one-size-fits-all list.
+pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
+    let mut rules: Vec<String> = Vec::with_capacity(8);
     rules.push(format!(
         "- 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{}`，不要其他任何文字。",
         SILENT_MARKER
@@ -176,6 +180,20 @@ pub fn proactive_rules() -> Vec<String> {
         cat = MOOD_CATEGORY,
         title = MOOD_TITLE,
     ));
+
+    // ---- context-driven rules ----
+    if !inputs.wake_hint.trim().is_empty() {
+        rules.push(
+            "- **用户刚从离开桌子回来**：问候要简短克制，先轻打招呼或简短关心一句，不要立刻提日程/工作类信息密集的话题。"
+                .into(),
+        );
+    }
+    if inputs.is_first_mood {
+        rules.push(format!(
+            "- **第一次开口**：你还没有写过 `{}/{}` 记忆条目，开口后应当用 `memory_edit create` 而非 `update` 来初始化它（按上面格式）。",
+            MOOD_CATEGORY, MOOD_TITLE
+        ));
+    }
     rules
 }
 
@@ -202,7 +220,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     );
     s.push(String::new());
     s.push("约束：".into());
-    s.extend(proactive_rules());
+    s.extend(proactive_rules(inputs));
     s.join("\n")
 }
 
@@ -538,7 +556,9 @@ async fn run_proactive_turn(
         None => "（无法读取键鼠空闲信息。）".to_string(),
     };
 
-    let mood_hint = match read_current_mood_parsed() {
+    let mood_parsed = read_current_mood_parsed();
+    let is_first_mood = !matches!(&mood_parsed, Some((text, _)) if !text.trim().is_empty());
+    let mood_hint = match &mood_parsed {
         Some((text, _)) if !text.trim().is_empty() => {
             format!("你上次记录的心情/状态：「{}」。", text.trim())
         }
@@ -617,6 +637,7 @@ async fn run_proactive_turn(
         focus_hint: &focus_hint,
         wake_hint: &wake_hint,
         speech_hint: &speech_hint,
+        is_first_mood,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -707,6 +728,7 @@ mod prompt_tests {
             focus_hint: "",
             wake_hint: "",
             speech_hint: "",
+            is_first_mood: false,
         }
     }
 
@@ -773,7 +795,7 @@ mod prompt_tests {
 
     #[test]
     fn rules_count_and_format() {
-        let rules = proactive_rules();
+        let rules = proactive_rules(&base_inputs());
         assert_eq!(rules.len(), 6, "ladder change → update count + add a test");
         // Every rule is a bullet starting with "- ".
         for r in &rules {
@@ -783,7 +805,7 @@ mod prompt_tests {
 
     #[test]
     fn rules_interpolate_constants() {
-        let rules = proactive_rules();
+        let rules = proactive_rules(&base_inputs());
         let joined = rules.join("\n");
         assert!(joined.contains(SILENT_MARKER));
         assert!(joined.contains(MOOD_CATEGORY));
@@ -797,10 +819,45 @@ mod prompt_tests {
     #[test]
     fn rules_appear_in_full_prompt() {
         let p = build_proactive_prompt(&base_inputs());
-        let rules = proactive_rules();
+        let rules = proactive_rules(&base_inputs());
         for r in &rules {
             assert!(p.contains(r.as_str()), "rule missing from prompt: {:?}", r);
         }
+    }
+
+    // ---- context-driven rule additions ----
+
+    #[test]
+    fn wake_rule_appears_when_wake_hint_present() {
+        let mut inputs = base_inputs();
+        inputs.wake_hint = "（用户的电脑在大约 60 秒前刚从休眠唤醒。）";
+        let rules = proactive_rules(&inputs);
+        assert_eq!(rules.len(), 7, "base 6 + 1 wake-context rule");
+        assert!(rules.iter().any(|r| r.contains("用户刚从离开桌子回来")));
+    }
+
+    #[test]
+    fn first_mood_rule_appears_when_flagged() {
+        let mut inputs = base_inputs();
+        inputs.is_first_mood = true;
+        let rules = proactive_rules(&inputs);
+        assert_eq!(rules.len(), 7, "base 6 + 1 first-mood rule");
+        assert!(rules.iter().any(|r| r.contains("memory_edit create")));
+    }
+
+    #[test]
+    fn both_context_rules_can_coexist() {
+        let mut inputs = base_inputs();
+        inputs.wake_hint = "唤醒提示";
+        inputs.is_first_mood = true;
+        let rules = proactive_rules(&inputs);
+        assert_eq!(rules.len(), 8, "base 6 + 2 contextual rules");
+    }
+
+    #[test]
+    fn no_context_rules_with_default_inputs() {
+        let rules = proactive_rules(&base_inputs());
+        assert_eq!(rules.len(), 6, "no context-driven rules without their flags");
     }
 }
 

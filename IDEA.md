@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 53 设计要点（已实现）
+- **wake_hint 非空作为 wake-recent 信号**：本可以再加一个 `wake_recent: bool` 字段。但 wake_hint 已在 PromptInputs，且其非空恰好对应"在 grace 内"——派生信号不重复携带，DRY。代价：rules 函数读 hint 字符串而不读结构化 bool，但这只是 in-Rust 的小耦合，上下文清楚。
+- **is_first_mood 显式 bool 而非检 mood_hint 字符串**：mood_hint 在 first time 时是 "（还没记录...）"。可以 `mood_hint.contains("还没")` 检测。但那是脆弱耦合（有人改 hint 措辞会断），显式 bool 是契约。
+- **rule 添加而非替换**：考虑过让 wake context "用户刚回来，先简短问候" 替换基础 rule "只说一句话"。但替换会让"基础 6 条"语义飘移；追加更稳——LLM 看到所有适用规则，自己解决冲突（这两条本就一致）。
+- **Vec 容量预估为 8**：`Vec::with_capacity(8)`，base 6 + 最多 2 个 conditional。上限准确避免 reallocation；后续加新 conditional rule 要跟着调整 capacity 或忽视（reallocation 成本可忽略，但 with_capacity 是 documentation as code）。
+- **测试 baseline 锚点**：`no_context_rules_with_default_inputs` 验证 6 条这一基准——任何 base rules 增减都立刻让其他 4 个 conditional 测试同步打破。三层防护让"加新 rule 必须更新对应 count assertion"成为强制。
+- **不引枚举 / 不引 trait**：完全可以做 `enum RuleSource { Base, Wake, FirstMood, ... }` 让规则各自标 source。当前 2 条 conditional 的复杂度不值得。等 5+ 条时再考虑。
+- **PromptInputs 字段从 9 到 10**：每加一个 conditional 维度就多一字段。这种 struct 扩展是 builder 模式自然代价；好在加字段唯一影响是 `base_inputs()` 测试构造器多一行。
+
 ## Iter 52 设计要点（已实现）
 - **`Vec<String>` 而非 `Vec<&'static str>`**：原 TODO 想用 `&'static str` const 数组省分配。但其中 3 条规则用 `format!` 插值（SILENT_MARKER / MOOD_CATEGORY / MOOD_TITLE），编译期不可能形成 `&'static str`。混用 owned 和 borrowed 反而复杂；统一 `Vec<String>` 简单。每秒 < 1 次调用，6 个 String alloc 无足轻重。
 - **行 by 行 push 而非 vec! macro**：本可以用 `vec![format!(...), "…".into(), ...]`。但分批 push 调试更直观——加新规则时 `git diff` 显示一行 push，而 vec! 内插一行会让整段被识别为 "全改"，git blame 也更细。
