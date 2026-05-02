@@ -159,6 +159,9 @@ pub struct PromptInputs<'a> {
     /// look-ahead window (default 15 min). None means "not approaching quiet hours" —
     /// either disabled, already inside, or more than 15 min away.
     pub pre_quiet_minutes: Option<u64>,
+    /// Multi-line bullet list of user-set reminders that just came due, or empty.
+    /// Scanned from the `todo` memory category every proactive turn.
+    pub reminders_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -204,6 +207,12 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
             mins
         ));
     }
+    if !inputs.reminders_hint.trim().is_empty() {
+        rules.push(
+            "- **有到期的用户提醒**：上面 reminders 段列出的事项是用户之前明确让你提醒的，请把其中**最相关的一条**自然带进开口里（不要全念出来），并在开口后用 `memory_edit delete` 把已经提醒过的那条 todo 条目删掉，避免下次再提一遍。"
+                .into(),
+        );
+    }
     rules
 }
 
@@ -224,6 +233,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.focus_hint);
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
+    push_if_nonempty(&mut s, inputs.reminders_hint);
     s.push(String::new());
     s.push(
         "请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。".into()
@@ -322,6 +332,47 @@ pub fn period_of_day(hour: u8) -> &'static str {
         19..=21 => "晚上",
         _ => "深夜", // 22, 23, 0..=4
     }
+}
+
+/// Parse a "user-set reminder" prefix from a memory item's description. Convention:
+/// `[remind: HH:MM] topic words go here`. Returns `(hour, minute, topic_trimmed)` when
+/// the prefix parses cleanly, `None` otherwise. Only the today-style HH:MM form is
+/// supported in this iteration; date-qualified reminders are a future expansion.
+pub fn parse_reminder_prefix(desc: &str) -> Option<(u8, u8, String)> {
+    let trimmed = desc.trim_start();
+    let after_open = trimmed.strip_prefix("[remind:")?;
+    let close_idx = after_open.find(']')?;
+    let inside = after_open[..close_idx].trim();
+    let topic = after_open[close_idx + 1..].trim().to_string();
+    let (hh, mm) = inside.split_once(':')?;
+    let hour: u8 = hh.trim().parse().ok()?;
+    let minute: u8 = mm.trim().parse().ok()?;
+    if hour > 23 || minute > 59 || topic.is_empty() {
+        return None;
+    }
+    Some((hour, minute, topic))
+}
+
+/// Returns true if the reminder time is past `now` by no more than `window_minutes`.
+/// We don't fire reminders that are still in the future or that we missed by too much
+/// — the latter avoids re-spamming "8am wake-up" when the pet first runs at 11am.
+/// Wraps across midnight only when the gap is small enough to fit in `window_minutes`.
+pub fn is_reminder_due(
+    target_h: u8,
+    target_m: u8,
+    now_h: u8,
+    now_m: u8,
+    window_minutes: u64,
+) -> bool {
+    let now_total = now_h as i64 * 60 + now_m as i64;
+    let target_total = target_h as i64 * 60 + target_m as i64;
+    let mut delta = now_total - target_total;
+    if delta < 0 {
+        // Target hasn't happened yet today — only "due" if it was actually a few minutes
+        // ago across the midnight boundary (e.g. target 23:55 fired at 00:02).
+        delta += 24 * 60;
+    }
+    delta >= 0 && (delta as u64) < window_minutes
 }
 
 /// How many minutes until the next quiet-hours boundary, when that boundary is within
@@ -689,6 +740,14 @@ async fn run_proactive_turn(
 
     let period = period_of_day(now_local.hour() as u8);
     let time_str = now_local.format("%Y-%m-%d %H:%M").to_string();
+
+    // Scan the `todo` memory category for user-set reminders that have just come due.
+    // Each becomes a bullet `· HH:MM topic`. The whole hint is empty when nothing's due.
+    let reminders_hint = build_reminders_hint(
+        now_local.hour() as u8,
+        now_local.minute() as u8,
+    );
+
     let pre_quiet_minutes = {
         let settings = get_settings().ok();
         settings.and_then(|s| {
@@ -713,6 +772,7 @@ async fn run_proactive_turn(
         speech_hint: &speech_hint,
         is_first_mood,
         pre_quiet_minutes,
+        reminders_hint: &reminders_hint,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -764,6 +824,32 @@ async fn run_proactive_turn(
     Ok(())
 }
 
+/// Scan the `todo` memory category for items whose description starts with a reminder
+/// prefix (`[remind: HH:MM] topic`). Returns a multi-line bullet hint listing only the
+/// reminders that are *due now* (within the 30-minute window). Empty string when nothing
+/// is due — the builder skips the section entirely.
+fn build_reminders_hint(now_h: u8, now_m: u8) -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("todo".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("todo") else {
+        return String::new();
+    };
+    let mut lines = vec!["你有以下到期的用户提醒（请挑最相关的一条带进开口）：".to_string()];
+    for item in &cat.items {
+        if let Some((h, m, topic)) = parse_reminder_prefix(&item.description) {
+            if is_reminder_due(h, m, now_h, now_m, 30) {
+                lines.push(format!("· {:02}:{:02} {}（条目标题: {}）", h, m, topic, item.title));
+            }
+        }
+    }
+    if lines.len() == 1 {
+        String::new()
+    } else {
+        lines.join("\n")
+    }
+}
+
 /// Load the most recent session's messages (without the proactive prompt). Returns
 /// `(session_id, messages)` or `(None, [])` if none exists yet.
 fn load_active_session() -> (Option<String>, Vec<serde_json::Value>) {
@@ -805,6 +891,7 @@ mod prompt_tests {
             speech_hint: "",
             is_first_mood: false,
             pre_quiet_minutes: None,
+            reminders_hint: "",
         }
     }
 
@@ -937,12 +1024,87 @@ mod prompt_tests {
     }
 
     #[test]
+    fn reminders_rule_appears_when_hint_present() {
+        let mut inputs = base_inputs();
+        let bullet_text = "你有以下到期的用户提醒（请挑最相关的一条带进开口）：\n· 23:00 吃药（条目标题: meds）";
+        inputs.reminders_hint = bullet_text;
+        let rules = proactive_rules(&inputs);
+        assert_eq!(rules.len(), 7, "base 6 + 1 reminders rule");
+        assert!(rules.iter().any(|r| r.contains("memory_edit delete")));
+    }
+
+    #[test]
     fn pre_quiet_rule_appears_when_set() {
         let mut inputs = base_inputs();
         inputs.pre_quiet_minutes = Some(10);
         let rules = proactive_rules(&inputs);
         assert_eq!(rules.len(), 7);
         assert!(rules.iter().any(|r| r.contains("快进入安静时段") && r.contains("10 分钟")));
+    }
+}
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::{is_reminder_due, parse_reminder_prefix};
+
+    #[test]
+    fn parse_standard_form() {
+        let r = parse_reminder_prefix("[remind: 23:00] 吃药").unwrap();
+        assert_eq!(r, (23, 0, "吃药".to_string()));
+    }
+
+    #[test]
+    fn parse_tolerates_extra_whitespace() {
+        let r = parse_reminder_prefix("  [remind:  9:30  ]   去开会  ").unwrap();
+        assert_eq!(r, (9, 30, "去开会".to_string()));
+    }
+
+    #[test]
+    fn parse_rejects_empty_topic() {
+        assert!(parse_reminder_prefix("[remind: 12:00]").is_none());
+        assert!(parse_reminder_prefix("[remind: 12:00]   ").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_invalid_time() {
+        assert!(parse_reminder_prefix("[remind: 25:00] hi").is_none());
+        assert!(parse_reminder_prefix("[remind: 9:60] hi").is_none());
+        assert!(parse_reminder_prefix("[remind: x:y] hi").is_none());
+    }
+
+    #[test]
+    fn parse_no_prefix_returns_none() {
+        assert!(parse_reminder_prefix("just a regular note").is_none());
+        assert!(parse_reminder_prefix("[other] not a reminder").is_none());
+    }
+
+    #[test]
+    fn due_within_window() {
+        // target 12:00, now 12:05 → due (5 min past).
+        assert!(is_reminder_due(12, 0, 12, 5, 30));
+    }
+
+    #[test]
+    fn due_at_exact_target() {
+        assert!(is_reminder_due(12, 0, 12, 0, 30));
+    }
+
+    #[test]
+    fn not_due_yet_in_future() {
+        // target 12:00, now 11:55 → wraps to "23h 55m past" → not due.
+        assert!(!is_reminder_due(12, 0, 11, 55, 30));
+    }
+
+    #[test]
+    fn missed_too_far_ago_not_due() {
+        // target 8:00, now 11:00 → 3h past → outside 30-min window.
+        assert!(!is_reminder_due(8, 0, 11, 0, 30));
+    }
+
+    #[test]
+    fn midnight_wrap_due() {
+        // target 23:55, now 00:05 → 10 min past across midnight → due.
+        assert!(is_reminder_due(23, 55, 0, 5, 30));
     }
 }
 
