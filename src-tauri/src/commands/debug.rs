@@ -197,6 +197,16 @@ pub fn get_mood_tag_stats(counters: State<'_, MoodTagCountersStore>) -> MoodTagS
     }
 }
 
+/// Zero out the process-wide mood-tag counters. Mirrors `reset_cache_stats` so panel users
+/// can measure adherence over a fresh window (e.g. after tweaking the prompt to see if
+/// the model improves).
+#[tauri::command]
+pub fn reset_mood_tag_stats(counters: State<'_, MoodTagCountersStore>) {
+    counters.with_tag.store(0, Ordering::Relaxed);
+    counters.without_tag.store(0, Ordering::Relaxed);
+    counters.no_mood.store(0, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{new_cache_counters, write_log, MAX_LOG_LINES};
@@ -240,6 +250,21 @@ mod tests {
         assert_eq!(c.with_tag.load(Ordering::Relaxed), 3);
         assert_eq!(c.without_tag.load(Ordering::Relaxed), 1);
         assert_eq!(c.no_mood.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn mood_tag_counters_can_be_reset_to_zero() {
+        let c = super::new_mood_tag_counters();
+        c.with_tag.fetch_add(5, Ordering::Relaxed);
+        c.without_tag.fetch_add(2, Ordering::Relaxed);
+        c.no_mood.fetch_add(7, Ordering::Relaxed);
+        // Inline what reset_mood_tag_stats does — Tauri State wrapper is plumbing.
+        c.with_tag.store(0, Ordering::Relaxed);
+        c.without_tag.store(0, Ordering::Relaxed);
+        c.no_mood.store(0, Ordering::Relaxed);
+        assert_eq!(c.with_tag.load(Ordering::Relaxed), 0);
+        assert_eq!(c.without_tag.load(Ordering::Relaxed), 0);
+        assert_eq!(c.no_mood.load(Ordering::Relaxed), 0);
     }
 
     #[test]

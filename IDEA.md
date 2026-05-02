@@ -30,6 +30,11 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 41 设计要点（已实现）
+- **复制 cache reset 模式**：Iter 35 已建立 reset 按钮的 UX 标准（小号低对比、乐观更新前端 state、tooltip 解释）。本次直接复用——保持两个 reset 按钮在工具栏旁同等视觉权重，让用户一目了然知道两条统计可独立重置。
+- **不抽公共 reset 组件**：考虑过把"reset 按钮 + state"抽成 `<ResetableStat />` 组件，现在两份逻辑几乎重复。但 cache 和 mood_tag 的渲染细节（颜色、tooltip 文案、显示格式）差异让抽象需要太多 props，得不偿失。第三个 reset 出现时再考虑——这是 Iter 42 的合并方向自带的优化机会。
+- **inline-flex 包裹规律**：button 紧贴 stats span，display: inline-flex + gap: 6px。和 Cache 那段一字不差——刻意保持视觉对仗，让 panel 看起来"对称且整齐"。
+
 ## Iter 40 设计要点（已实现）
 - **取代 Iter 12b 的"实机交互测试"**：12b 一直挂着无法在自动化会话中完成。把"格式遵守率"做成 panel 一直可见的指标后，这个统计随着每次 LLM turn 自动累计，用户实机跑应用时打开 panel 就看到——比专门做一次"测试"更可持续，也消除了 12b 的存在意义（合并进 12b TODO）。
 - **三档统计而非两档**：除 with_tag / without_tag 还加 no_mood，因为"还没记录过 mood"是真实存在的常态（首次启动、第一次 proactive 之前）。这一档不参与 ratio 分母，避免初期"100% no_mood = 0% 命中率"的误导。

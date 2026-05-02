@@ -78,6 +78,11 @@ export function PanelDebug() {
     setCacheStats({ turns: 0, total_hits: 0, total_calls: 0 });
   };
 
+  const handleResetMoodTagStats = async () => {
+    await invoke("reset_mood_tag_stats");
+    setMoodTagStats({ with_tag: 0, without_tag: 0, no_mood: 0 });
+  };
+
   const handleOpenDevTools = async () => {
     try {
       // Open devtools for the current webview
@@ -141,22 +146,39 @@ export function PanelDebug() {
           </span>
         )}
         {moodTagStats.with_tag + moodTagStats.without_tag > 0 && (
-          <span
-            style={{
-              fontSize: "12px",
-              color: "#a855f7",
-              alignSelf: "center",
-              fontFamily: "'SF Mono', 'Menlo', monospace",
-            }}
-            title={`${moodTagStats.with_tag} 次心情写入带 [motion: X] 前缀，${moodTagStats.without_tag} 次缺失（前端走关键词 fallback）`}
-          >
-            Tag {moodTagStats.with_tag}/{moodTagStats.with_tag + moodTagStats.without_tag} (
-            {Math.round(
-              (moodTagStats.with_tag /
-                (moodTagStats.with_tag + moodTagStats.without_tag)) *
-                100,
-            )}
-            %)
+          <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <span
+              style={{
+                fontSize: "12px",
+                color: "#a855f7",
+                alignSelf: "center",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+              title={`${moodTagStats.with_tag} 次心情写入带 [motion: X] 前缀，${moodTagStats.without_tag} 次缺失（前端走关键词 fallback）`}
+            >
+              Tag {moodTagStats.with_tag}/{moodTagStats.with_tag + moodTagStats.without_tag} (
+              {Math.round(
+                (moodTagStats.with_tag /
+                  (moodTagStats.with_tag + moodTagStats.without_tag)) *
+                  100,
+              )}
+              %)
+            </span>
+            <button
+              onClick={handleResetMoodTagStats}
+              title="重置 [motion: X] 前缀遵守率统计"
+              style={{
+                fontSize: "10px",
+                padding: "2px 6px",
+                borderRadius: "4px",
+                border: "1px solid #cbd5e1",
+                background: "#fff",
+                color: "#64748b",
+                cursor: "pointer",
+              }}
+            >
+              重置
+            </button>
           </span>
         )}
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>

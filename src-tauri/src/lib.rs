@@ -109,6 +109,7 @@ pub fn run() {
             commands::debug::get_cache_stats,
             commands::debug::reset_cache_stats,
             commands::debug::get_mood_tag_stats,
+            commands::debug::reset_mood_tag_stats,
             decision_log::get_proactive_decisions,
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
