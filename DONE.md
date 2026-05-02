@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 35：reset cache 统计按钮
+- 后端：`commands/debug.rs` 加 `pub fn reset_cache_stats(counters: State<CacheCountersStore>)`，三个 `store(0, Relaxed)`。注释把 "mirrors clear_logs" 写明，让读者立刻知道意图。
+- 注册到 `lib.rs` `tauri::generate_handler!`。
+- 前端：`PanelDebug.tsx` 加 `handleResetCacheStats` 调 `invoke("reset_cache_stats")` 并立刻把 React state 也清零（避免 1 秒 polling 延迟）。
+- UI 调整：Cache 统计 span 包进 inline-flex 容器，旁边加一个小"重置"按钮，浅色描边、低调风格——重置 cache 不是常用操作不该抢眼。tooltip 解释"重置 cache 统计计数器"。
+- 加 1 个新单测 `cache_counters_can_be_reset_to_zero`：直接调 store(0) 验证语义；Tauri State 那层是 plumbing 不需要单独测。
+- 总测试 61 + 1 = **62 个**，全过；cargo check 零 warning；tsc --noEmit 干净。
+
 ## 2026-05-02 — Iter 34：cache 累计搬到 atomic Tauri State
 - 新 `pub struct CacheCounters { turns, hits, calls: AtomicU64 }` + `pub type CacheCountersStore = Arc<CacheCounters>` + `pub fn new_cache_counters()` 都在 `commands/debug.rs`。
 - `lib.rs` 注册到 Tauri State：`.manage(new_cache_counters())`；setup 里把 store 拷贝传进 telegram::start。

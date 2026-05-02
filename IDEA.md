@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 35 设计要点（已实现）
+- **乐观更新前端 state**：`handleResetCacheStats` 调 invoke 后立刻 `setCacheStats({0, 0, 0})`，不等 1 秒 polling 间隔。这是常见 UX：用户点重置看到数字归零，否则会怀疑"按钮坏了？"。Tauri 命令返回 ok 后下次 polling 会重新读，校对一致——零风险乐观更新。
+- **按钮和统计共生于 inline-flex**：把按钮放进与 Cache span 同一个 inline-flex 容器，间距 6px。这样按钮自然"属于"那段统计，而不是漂在工具栏里。重置按钮只有 cache 显示时才出现（已有 `total_calls > 0` 守卫覆盖整段）。
+- **小号低对比按钮**：fontSize 10 / 浅边框 / 灰色文字。重置 cache stats 是 nuanced 操作（不应该常做），按钮压低视觉权重防止用户手滑误点。和"清空"按钮（13px、灰底）的视觉级别不同——清空日志反而更日常。
+- **测试只验证语义不验证 Tauri 路由**：`cache_counters_can_be_reset_to_zero` 直接对 atomic store(0) 验证。Tauri 命令本身只是 plumbing（参数注入 + 调用函数），如果 plumbing 错了 cargo check 会先拦截。
+- **counters 用 `store` 而非 `swap`**：reset 不关心旧值。`store(0, Relaxed)` 是最便宜的写。`swap(0)` 会返回旧值——这里没人需要。
+- **UI 文字"重置"而非"清零"**：两者都行；"重置"听起来更"无副作用"，"清零"听起来更"破坏性"。前者更准确——这只是让计数器重新开始，不会影响其他状态。
+
 ## Iter 34 设计要点（已实现）
 - **删 parse_cache_summary 而非保留作 fallback**：考虑过把 atomic 当主路径，log 解析当 fallback。但两条路径意味着两套测试、两份语义对账，长期负担大。彻底切换 + 删旧路径，简单。Iter 17 那条"dead code 该删"原则的同款落地。
 - **field 加在 ToolContext，不引另一种参数传递**：本可以让 pipeline 多一个参数 `cache_counters: &CacheCountersStore`，避免改 ToolContext。但 4 个 caller 都要改 + 5 个 trait method + pipeline 签名 → 数百行 diff。把 counters 装进 ToolContext 才是真正"改一处管 5 处"。
