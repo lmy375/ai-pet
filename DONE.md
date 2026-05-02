@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 53：proactive_rules 按上下文动态加规则
+- `proactive_rules` 签名从 `() -> Vec<String>` 改为 `(&PromptInputs) -> Vec<String>`。
+- `PromptInputs` 加 `is_first_mood: bool` 字段——`run_proactive_turn` 从 `read_current_mood_parsed()` 派生；mood 第一次时 true。
+- 在 6 条 base rules 之后按条件 push：
+  - **wake context rule**：`!inputs.wake_hint.trim().is_empty()` 时插一条"用户刚从离开桌子回来：问候要简短克制，先轻打招呼或简短关心一句，不要立刻提日程/工作类信息密集的话题"。
+  - **first-mood rule**：`is_first_mood == true` 时插一条"第一次开口：你还没有写过 ai_insights/current_mood 记忆条目，开口后应当用 memory_edit create 而非 update 来初始化"。
+- builder 调用 `s.extend(proactive_rules(inputs))` 把 inputs 透传。
+- 现有 3 个 rules 测试全部更新为 `proactive_rules(&base_inputs())` 调用形式。
+- 4 个新单测：
+  - `wake_rule_appears_when_wake_hint_present`：wake_hint 非空 → 7 条规则。
+  - `first_mood_rule_appears_when_flagged`：is_first_mood=true → 7 条规则。
+  - `both_context_rules_can_coexist`：两个标志同时打开 → 8 条规则。
+  - `no_context_rules_with_default_inputs`：默认 base_inputs → 6 条规则（baseline 锚点）。
+- 总测试 105 + 4 = **109 个**，全过；cargo + tsc 双过；零 warning。
+- 现在 prompt 真正"按情况说话"：wake 时不机关炮提日程、第一次时模型知道走 create 而不是 update。
+
 ## 2026-05-03 — Iter 52：约束段抽成 proactive_rules()
 - 新 `pub fn proactive_rules() -> Vec<String>`：6 条 prompt 约束（silent marker 用法 / 单句话 / 工具说明 / 工具去重 / 心情更新规范）一次性 push 到 Vec，每条以 "- " bullet 开头。
 - `build_proactive_prompt` 里把"约束："header 之后的 6 行 push（含 inline format!）替换成 `s.extend(proactive_rules())`，本体减 16 行。
