@@ -12,36 +12,68 @@ import { listen } from "@tauri-apps/api/event";
  */
 type MotionGroup = "Tap" | "Flick" | "Flick3" | "Idle";
 
+const VALID_GROUPS: ReadonlySet<MotionGroup> = new Set<MotionGroup>([
+  "Tap",
+  "Flick",
+  "Flick3",
+  "Idle",
+]);
+
 const HAPPY_KEYWORDS = ["开心", "兴奋", "愉快", "高兴", "期待", "喜欢", "好心情", "满足"];
 const ENERGETIC_KEYWORDS = ["想分享", "活泼", "想说", "兴致", "好奇", "热闹"];
 const RESTLESS_KEYWORDS = ["烦", "焦虑", "无聊", "急", "不安", "纠结"];
 const QUIET_KEYWORDS = ["低落", "难过", "担心", "想念", "平静", "沉静", "安静", "累"];
 
-function pickMotionGroup(mood: string | null | undefined): MotionGroup {
+/**
+ * Map a mood string to a motion group via keyword matching. Used as the fallback when the
+ * LLM's structured `[motion: X]` tag is missing or invalid.
+ */
+function pickMotionGroupFromMood(mood: string | null | undefined): MotionGroup {
   if (!mood) return "Idle";
   const m = mood.toLowerCase();
   if (HAPPY_KEYWORDS.some((k) => m.includes(k))) return "Tap";
   if (ENERGETIC_KEYWORDS.some((k) => m.includes(k))) return "Flick";
   if (RESTLESS_KEYWORDS.some((k) => m.includes(k))) return "Flick3";
   if (QUIET_KEYWORDS.some((k) => m.includes(k))) return "Idle";
-  // No keyword hit — play a Tap to give the proactive utterance a visible beat.
+  // No keyword hit — play a Tap to give the utterance a visible beat.
   return "Tap";
+}
+
+/**
+ * Pick a motion group, preferring an explicit tag from the LLM. Validates the tag against
+ * the model's known groups; an unknown tag is treated as missing and falls back to the
+ * keyword matcher.
+ */
+function pickMotionGroup(
+  motion: string | null | undefined,
+  mood: string | null | undefined,
+): MotionGroup {
+  if (motion && VALID_GROUPS.has(motion as MotionGroup)) {
+    return motion as MotionGroup;
+  }
+  return pickMotionGroupFromMood(mood);
 }
 
 interface ProactivePayload {
   text: string;
   timestamp: string;
   mood: string | null;
+  motion: string | null;
 }
 
 interface ChatDonePayload {
   mood: string | null;
+  motion: string | null;
   timestamp: string;
 }
 
-function triggerMotion(model: any, mood: string | null | undefined) {
+function triggerMotion(
+  model: any,
+  motion: string | null | undefined,
+  mood: string | null | undefined,
+) {
   if (!model) return;
-  const group = pickMotionGroup(mood);
+  const group = pickMotionGroup(motion, mood);
   try {
     // pixi-live2d-display: model.motion(group, index?, priority?). Priority 2 = NORMAL,
     // letting the motion play through but not interrupting a higher-priority one.
@@ -58,10 +90,10 @@ export function useMoodAnimation(modelRef: React.MutableRefObject<any>) {
     let unlistenChatDone: (() => void) | undefined;
     (async () => {
       unlistenProactive = await listen<ProactivePayload>("proactive-message", (event) => {
-        triggerMotion(modelRef.current, event.payload.mood);
+        triggerMotion(modelRef.current, event.payload.motion, event.payload.mood);
       });
       unlistenChatDone = await listen<ChatDonePayload>("chat-done", (event) => {
-        triggerMotion(modelRef.current, event.payload.mood);
+        triggerMotion(modelRef.current, event.payload.motion, event.payload.mood);
       });
     })();
     return () => {

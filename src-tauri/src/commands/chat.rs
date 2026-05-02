@@ -8,15 +8,16 @@ use crate::commands::debug::{write_llm_log, LogStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::{read_current_mood, InteractionClockStore};
+use crate::proactive::{read_current_mood_parsed, InteractionClockStore};
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
 
 /// Payload emitted to the frontend after a reactive chat turn finishes. Symmetric with
-/// `proactive-message` — the frontend uses `mood` to drive Live2D motion.
+/// `proactive-message` — the frontend uses `mood` and `motion` to drive Live2D.
 #[derive(Clone, Serialize)]
 pub struct ChatDonePayload {
     pub mood: Option<String>,
+    pub motion: Option<String>,
     pub timestamp: String,
 }
 
@@ -434,8 +435,13 @@ pub async fn chat(
     // Emit chat-done with current mood snapshot so the frontend can drive Live2D motion the
     // same way it does for proactive messages. Mood may be unchanged from before the turn —
     // reactive chats don't currently update it — but we still want motion feedback.
+    let (mood, motion) = match read_current_mood_parsed() {
+        Some((text, m)) => (Some(text), m),
+        None => (None, None),
+    };
     let payload = ChatDonePayload {
-        mood: read_current_mood(),
+        mood,
+        motion,
         timestamp: chrono::Local::now()
             .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string(),

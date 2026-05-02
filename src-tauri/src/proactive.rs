@@ -113,10 +113,12 @@ pub fn new_interaction_clock() -> InteractionClockStore {
 pub struct ProactiveMessage {
     pub text: String,
     pub timestamp: String,
-    /// Snapshot of `ai_insights/current_mood` *after* the LLM ran, so the frontend can drive
-    /// expression/motion changes without a separate memory read. None if the LLM hasn't
-    /// written one yet (e.g. very first proactive turn).
+    /// Snapshot of `ai_insights/current_mood` text (motion prefix stripped) after the LLM
+    /// ran. None if the LLM hasn't written one yet.
     pub mood: Option<String>,
+    /// Live2D motion group the LLM picked via the `[motion: X]` prefix in its mood update.
+    /// Frontend prefers this over keyword matching when present.
+    pub motion: Option<String>,
 }
 
 const SILENT_MARKER: &str = "<silent>";
@@ -235,8 +237,10 @@ async fn run_proactive_turn(
         None => "（无法读取键鼠空闲信息。）".to_string(),
     };
 
-    let mood_hint = match read_current_mood() {
-        Some(m) if !m.trim().is_empty() => format!("你上次记录的心情/状态：「{}」。", m.trim()),
+    let mood_hint = match read_current_mood_parsed() {
+        Some((text, _)) if !text.trim().is_empty() => {
+            format!("你上次记录的心情/状态：「{}」。", text.trim())
+        }
         _ => "（还没有记录过你自己的心情/状态。这是第一次。）".to_string(),
     };
 
@@ -250,7 +254,7 @@ async fn run_proactive_turn(
 - 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{silent}`。\n\
 - 只说一句话，简短自然，像伙伴一样。\n\
 - 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_upcoming_events`（看用户接下来几小时有没有日程，可用于提醒类话题，记得日程是私人内容不要原样念出）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。\n\
-- **决定开口后**：请用 `memory_edit` 更新 `{mood_cat}` 类别下 `{mood_title}` 的记忆（不存在就 `create`，存在就 `update`）。description 用一句话写下你此刻的心情、最近在想什么、对用户的牵挂——这样下次主动开口时你能记得自己刚才的状态，让人格保持连贯。沉默时无需更新。",
+- **决定开口后**：请用 `memory_edit` 更新 `{mood_cat}` 类别下 `{mood_title}` 的记忆（不存在就 `create`，存在就 `update`）。description 必须以这种格式开头：`[motion: X] 你此刻的心情和想法`，其中 X 是你想做的 Live2D 动作分组，从这四个里选一个：`Tap`（开心/活泼/兴奋）、`Flick`（想分享/有兴致/活力）、`Flick3`（焦虑/烦躁/不安）、`Idle`（平静/低落/累/沉静）。前缀后面才是自由文字。例：`[motion: Tap] 看用户在专心写代码，有点替他高兴`。沉默时无需更新。",
         time = now_local.format("%Y-%m-%d %H:%M"),
         minutes = idle_minutes,
         input_hint = input_hint,
@@ -292,13 +296,18 @@ async fn run_proactive_turn(
     clock.mark_proactive_spoken().await;
 
     // Re-read mood after the turn — if the LLM updated it via memory_edit, the file has been
-    // rewritten and we should ship the latest snapshot to the frontend.
-    let mood_after = read_current_mood();
+    // rewritten and we should ship the latest snapshot to the frontend. Parse the optional
+    // [motion: X] prefix so the frontend can drive Live2D directly from the model's pick.
+    let (mood_after, motion_after) = match read_current_mood_parsed() {
+        Some((text, motion)) => (Some(text), motion),
+        None => (None, None),
+    };
 
     let payload = ProactiveMessage {
         text: reply_trimmed.to_string(),
         timestamp: now_local.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
         mood: mood_after,
+        motion: motion_after,
     };
     let _ = app.emit("proactive-message", payload);
 
@@ -316,6 +325,27 @@ pub fn read_current_mood() -> Option<String> {
         .iter()
         .find(|i| i.title == MOOD_TITLE)
         .map(|i| i.description.clone())
+}
+
+/// Parse `current_mood` into (mood_text, motion_group). The LLM is instructed to write
+/// descriptions in the form `[motion: X] free-form text` where X is one of the Live2D
+/// motion group names. If the prefix is absent, motion is None and text is the raw value.
+///
+/// Returns None if no mood is recorded yet.
+pub fn read_current_mood_parsed() -> Option<(String, Option<String>)> {
+    let raw = read_current_mood()?;
+    let trimmed = raw.trim_start();
+    if let Some(after_open) = trimmed.strip_prefix("[motion:") {
+        if let Some(close_idx) = after_open.find(']') {
+            let motion = after_open[..close_idx].trim().to_string();
+            let text = after_open[close_idx + 1..].trim().to_string();
+            // Defend against empty or impossibly long tags from a confused model.
+            if !motion.is_empty() && motion.len() <= 16 {
+                return Some((text, Some(motion)));
+            }
+        }
+    }
+    Some((raw, None))
 }
 
 /// Load the most recent session's messages (without the proactive prompt). Returns
