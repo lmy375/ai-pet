@@ -65,6 +65,22 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
+/// Manually trigger a consolidation pass right now, regardless of the timer interval or
+/// the min-items gate. Returns a short status string for the panel to display ("done in
+/// N ms / swept K stale" or "skip — only N items"). The user typically uses this after
+/// adding many memories or to verify a prompt tweak without waiting hours.
+#[tauri::command]
+pub async fn trigger_consolidate(app: tauri::AppHandle) -> Result<String, String> {
+    let total = total_memory_items();
+    let started = std::time::Instant::now();
+    run_consolidation(&app, total).await?;
+    Ok(format!(
+        "Consolidation finished in {} ms ({} items at start)",
+        started.elapsed().as_millis(),
+        total,
+    ))
+}
+
 /// Build the consolidation prompt, run it through the chat pipeline so the LLM can call
 /// `memory_edit`, and log a before/after item count.
 async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), String> {

@@ -112,6 +112,7 @@ pub fn run() {
             speech_history::get_recent_speeches,
             proactive::get_tone_snapshot,
             proactive::get_pending_reminders,
+            consolidate::trigger_consolidate,
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,

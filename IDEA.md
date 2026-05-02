@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 62 设计要点（已实现）
+- **绕过 min_total_items gate**：定时触发会检查 `total < cfg.min_total_items` 跳过空索引，但手动触发一定是用户故意要跑——可能就是想验证当前 prompt 工作。所以 `trigger_consolidate` 直接调 `run_consolidation` 不走 gate。
+- **不绕过 cfg.enabled 检查**：实际上用户即使 disabled = true 想手动跑也合理 (debugging without 留 cron 跑)。当前实现也不检查 cfg.enabled——`run_consolidation` 本身不依赖那个字段。OK by side effect。
+- **status 字符串而非 ()**：Tauri 命令返回 `Result<String, _>` 让 panel 能直接 setMessage(status)。比起返 `()` + 让前端写死 "完成"，更准确显示真实耗时（用户能看到"6800 ms"知道 LLM 调用花了多久）。
+- **整理后 loadIndex() 刷新**：consolidate 改了 memory，panel 上展示的 cached index 会过期。reload 是 ms 级开销，立即给反馈值。
+- **紫色按钮**：与"重连 MCP"使用 `#8b5cf6` 一致——都是"运行某个长操作"的紫色 action。颜色 tongue 一致让用户视觉模式识别更稳。
+- **tooltip 解释"做啥"**：用户看到"立即整理"可能不知道具体涵盖什么。tooltip 写"合并重复 / 删过期 todo / 清 stale reminder"让他们决策时知道边界。
+- **不写新单测**：trigger_consolidate 是 thin wrapper 调 run_consolidation；后者本身没有便利的测试路径（需要 mock LLM）；前端是 invoke + setState 链路，cargo + tsc 兜住语法错。
+
 ## Iter 61 设计要点（已实现）
 - **归属 MemoryConsolidateConfig 而非 ProactiveConfig**：原 TODO 写 ProactiveConfig 但反思下来 sweep 是 consolidate 阶段做的、和 consolidate 的 enabled / interval_hours 等同源。把它放 ProactiveConfig 会让 settings.yaml 里 reminder 相关配置散落两处。"功能在哪跑，配置就在哪" 是更稳的归属规则。
 - **default 24 与硬编码同值**：升级用户的 config.yaml 没有 `stale_reminder_hours` 字段时 serde default 给 24 = 之前行为。零意外升级。

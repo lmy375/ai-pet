@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，配合 panel 里 Iter 40 加的 Tag 统计观察实际命中率，决定是否要再加强 prompt。
-- [ ] Iter 62：用户主动调"清理记忆"——加一个 Tauri 命令 + 面板按钮，让用户立即跑一次 consolidate（不必等 6 小时间隔），方便手动 housekeeping。当前只能等定时触发。
+- [ ] Iter 63：手动触发 proactive turn 的命令 + 按钮——和 Iter 62 对称，让用户在 panel 强行让宠物开口（绕过 idle/cooldown 等 gate）做 demo 或测试 prompt 效果。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。
