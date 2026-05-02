@@ -155,6 +155,10 @@ pub struct PromptInputs<'a> {
     /// True when the pet has never recorded a mood entry yet. Lets the rules block add a
     /// "create instead of update" hint so the model bootstraps the file correctly.
     pub is_first_mood: bool,
+    /// Minutes until the configured quiet-hours window starts, when within the
+    /// look-ahead window (default 15 min). None means "not approaching quiet hours" —
+    /// either disabled, already inside, or more than 15 min away.
+    pub pre_quiet_minutes: Option<u64>,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -192,6 +196,12 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         rules.push(format!(
             "- **第一次开口**：你还没有写过 `{}/{}` 记忆条目，开口后应当用 `memory_edit create` 而非 `update` 来初始化它（按上面格式）。",
             MOOD_CATEGORY, MOOD_TITLE
+        ));
+    }
+    if let Some(mins) = inputs.pre_quiet_minutes {
+        rules.push(format!(
+            "- **快进入安静时段**：再过约 {} 分钟就到夜里的安静时段了。语气要往收尾靠——简短的晚安/睡前关心比新话题合适。",
+            mins
         ));
     }
     rules
@@ -295,6 +305,42 @@ pub fn period_of_day(hour: u8) -> &'static str {
         17..=18 => "傍晚",
         19..=21 => "晚上",
         _ => "深夜", // 22, 23, 0..=4
+    }
+}
+
+/// How many minutes until the next quiet-hours boundary, when that boundary is within
+/// `look_ahead_minutes`. Returns `None` when:
+/// - quiet hours are disabled (start == end)
+/// - we're already inside the quiet window (then there's nothing to "approach")
+/// - the boundary is more than `look_ahead_minutes` away
+///
+/// Used to inject a "winding down for the night" rule into the prompt so the pet eases
+/// into the quiet window with a gentler tone instead of going from full chatter to a
+/// hard silent gate. Pure so tests can pin every interesting (now, start) combination.
+pub fn minutes_until_quiet_start(
+    now_hour: u8,
+    now_minute: u8,
+    quiet_start: u8,
+    quiet_end: u8,
+    look_ahead_minutes: u64,
+) -> Option<u64> {
+    if quiet_start == quiet_end {
+        return None;
+    }
+    if in_quiet_hours(now_hour, quiet_start, quiet_end) {
+        return None;
+    }
+    let now_total = now_hour as i32 * 60 + now_minute as i32;
+    let start_total = quiet_start as i32 * 60;
+    let mut delta = start_total - now_total;
+    if delta < 0 {
+        delta += 24 * 60; // next day's quiet_start
+    }
+    let delta_u = delta as u64;
+    if delta_u <= look_ahead_minutes {
+        Some(delta_u)
+    } else {
+        None
     }
 }
 
@@ -627,6 +673,18 @@ async fn run_proactive_turn(
 
     let period = period_of_day(now_local.hour() as u8);
     let time_str = now_local.format("%Y-%m-%d %H:%M").to_string();
+    let pre_quiet_minutes = {
+        let settings = get_settings().ok();
+        settings.and_then(|s| {
+            minutes_until_quiet_start(
+                now_local.hour() as u8,
+                now_local.minute() as u8,
+                s.proactive.quiet_hours_start,
+                s.proactive.quiet_hours_end,
+                15,
+            )
+        })
+    };
     let prompt = build_proactive_prompt(&PromptInputs {
         time: &time_str,
         period,
@@ -638,6 +696,7 @@ async fn run_proactive_turn(
         wake_hint: &wake_hint,
         speech_hint: &speech_hint,
         is_first_mood,
+        pre_quiet_minutes,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -729,6 +788,7 @@ mod prompt_tests {
             wake_hint: "",
             speech_hint: "",
             is_first_mood: false,
+            pre_quiet_minutes: None,
         }
     }
 
@@ -858,6 +918,63 @@ mod prompt_tests {
     fn no_context_rules_with_default_inputs() {
         let rules = proactive_rules(&base_inputs());
         assert_eq!(rules.len(), 6, "no context-driven rules without their flags");
+    }
+
+    #[test]
+    fn pre_quiet_rule_appears_when_set() {
+        let mut inputs = base_inputs();
+        inputs.pre_quiet_minutes = Some(10);
+        let rules = proactive_rules(&inputs);
+        assert_eq!(rules.len(), 7);
+        assert!(rules.iter().any(|r| r.contains("快进入安静时段") && r.contains("10 分钟")));
+    }
+}
+
+#[cfg(test)]
+mod pre_quiet_tests {
+    use super::minutes_until_quiet_start;
+
+    #[test]
+    fn within_window_returns_minutes() {
+        // 22:50 + quiet 23..7 → 10 min until quiet, look-ahead 15 → Some(10)
+        assert_eq!(minutes_until_quiet_start(22, 50, 23, 7, 15), Some(10));
+    }
+
+    #[test]
+    fn at_window_edge_15_min() {
+        assert_eq!(minutes_until_quiet_start(22, 45, 23, 7, 15), Some(15));
+    }
+
+    #[test]
+    fn outside_window_returns_none() {
+        // 16 min before — outside the 15-min look-ahead.
+        assert_eq!(minutes_until_quiet_start(22, 44, 23, 7, 15), None);
+    }
+
+    #[test]
+    fn already_in_quiet_returns_none() {
+        // 03:00 inside 23..7 quiet window.
+        assert_eq!(minutes_until_quiet_start(3, 0, 23, 7, 15), None);
+        // 23:30 also inside.
+        assert_eq!(minutes_until_quiet_start(23, 30, 23, 7, 15), None);
+    }
+
+    #[test]
+    fn disabled_when_start_equals_end() {
+        assert_eq!(minutes_until_quiet_start(22, 50, 0, 0, 15), None);
+    }
+
+    #[test]
+    fn same_day_window() {
+        // 13:55 + quiet 14..15 → 5 min.
+        assert_eq!(minutes_until_quiet_start(13, 55, 14, 15, 15), Some(5));
+    }
+
+    #[test]
+    fn past_today_uses_tomorrow() {
+        // 07:00 + quiet 23..7 → not in quiet (7 is exclusive end), and quiet_start
+        // tomorrow is 23:00, 16h away — way outside look-ahead.
+        assert_eq!(minutes_until_quiet_start(7, 0, 23, 7, 15), None);
     }
 }
 
