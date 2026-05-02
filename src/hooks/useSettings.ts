@@ -17,6 +17,20 @@ export interface TelegramConfig {
   enabled: boolean;
 }
 
+export interface ProactiveConfig {
+  enabled: boolean;
+  interval_seconds: number;
+  idle_threshold_seconds: number;
+  input_idle_seconds: number;
+  cooldown_seconds: number;
+}
+
+export interface MemoryConsolidateConfig {
+  enabled: boolean;
+  interval_hours: number;
+  min_total_items: number;
+}
+
 export interface AppSettings {
   live_2d_model_path: string;
   api_base: string;
@@ -24,6 +38,8 @@ export interface AppSettings {
   model: string;
   mcp_servers: Record<string, McpServerConfig>;
   telegram: TelegramConfig;
+  proactive: ProactiveConfig;
+  memory_consolidate: MemoryConsolidateConfig;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -33,6 +49,18 @@ const DEFAULT_SETTINGS: AppSettings = {
   model: "gpt-4o-mini",
   mcp_servers: {},
   telegram: { bot_token: "", allowed_username: "", enabled: false },
+  proactive: {
+    enabled: false,
+    interval_seconds: 300,
+    idle_threshold_seconds: 900,
+    input_idle_seconds: 60,
+    cooldown_seconds: 1800,
+  },
+  memory_consolidate: {
+    enabled: false,
+    interval_hours: 6,
+    min_total_items: 12,
+  },
 };
 
 export function useSettings() {

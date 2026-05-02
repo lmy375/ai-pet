@@ -43,8 +43,8 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
           background: "#fff",
           borderRadius: "12px",
           padding: "20px",
-          width: "260px",
-          maxHeight: "420px",
+          width: "300px",
+          maxHeight: "560px",
           overflowY: "auto",
           boxShadow: "0 4px 24px rgba(0,0,0,0.2)",
         }}
@@ -95,6 +95,96 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
           style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
         />
 
+        <div style={groupHeaderStyle}>主动开口 (Proactive)</div>
+
+        <label style={checkboxRow}>
+          <input
+            type="checkbox"
+            checked={form.proactive.enabled}
+            onChange={(e) =>
+              setForm({ ...form, proactive: { ...form.proactive, enabled: e.target.checked } })
+            }
+          />
+          <span>启用宠物主动跟我说话</span>
+        </label>
+
+        <div style={twoColRow}>
+          <NumberField
+            label="检查间隔 (秒)"
+            value={form.proactive.interval_seconds}
+            min={60}
+            onChange={(v) =>
+              setForm({ ...form, proactive: { ...form.proactive, interval_seconds: v } })
+            }
+          />
+          <NumberField
+            label="冷却 (秒)"
+            value={form.proactive.cooldown_seconds}
+            min={0}
+            onChange={(v) =>
+              setForm({ ...form, proactive: { ...form.proactive, cooldown_seconds: v } })
+            }
+          />
+        </div>
+        <div style={twoColRow}>
+          <NumberField
+            label="最少静默 (秒)"
+            value={form.proactive.idle_threshold_seconds}
+            min={60}
+            onChange={(v) =>
+              setForm({ ...form, proactive: { ...form.proactive, idle_threshold_seconds: v } })
+            }
+          />
+          <NumberField
+            label="键鼠空闲 (秒)"
+            value={form.proactive.input_idle_seconds}
+            min={0}
+            onChange={(v) =>
+              setForm({ ...form, proactive: { ...form.proactive, input_idle_seconds: v } })
+            }
+          />
+        </div>
+
+        <div style={groupHeaderStyle}>记忆整理 (Consolidate)</div>
+
+        <label style={checkboxRow}>
+          <input
+            type="checkbox"
+            checked={form.memory_consolidate.enabled}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, enabled: e.target.checked },
+              })
+            }
+          />
+          <span>启用后台记忆整理</span>
+        </label>
+        <div style={twoColRow}>
+          <NumberField
+            label="间隔 (小时)"
+            value={form.memory_consolidate.interval_hours}
+            min={1}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, interval_hours: v },
+              })
+            }
+          />
+          <NumberField
+            label="触发条目数"
+            value={form.memory_consolidate.min_total_items}
+            min={0}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, min_total_items: v },
+              })
+            }
+          />
+        </div>
+
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
           <button onClick={onClose} style={btnSecondaryStyle}>取消</button>
           <button onClick={handleSave} disabled={saving} style={btnPrimaryStyle}>
@@ -102,6 +192,34 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  min,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div style={{ flex: 1 }}>
+      <label style={labelStyle}>{label}</label>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          if (!Number.isNaN(n)) onChange(n);
+        }}
+        style={inputStyle}
+      />
     </div>
   );
 }
@@ -149,4 +267,32 @@ const btnSecondaryStyle: React.CSSProperties = {
   color: "#666",
   fontSize: "13px",
   cursor: "pointer",
+};
+
+const groupHeaderStyle: React.CSSProperties = {
+  marginTop: "18px",
+  marginBottom: "8px",
+  fontSize: "12px",
+  fontWeight: 600,
+  color: "#0ea5e9",
+  textTransform: "uppercase",
+  letterSpacing: "0.5px",
+  borderTop: "1px solid #eee",
+  paddingTop: "12px",
+};
+
+const checkboxRow: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  fontSize: "13px",
+  color: "#333",
+  marginBottom: "8px",
+  cursor: "pointer",
+};
+
+const twoColRow: React.CSSProperties = {
+  display: "flex",
+  gap: "8px",
+  marginBottom: "6px",
 };
