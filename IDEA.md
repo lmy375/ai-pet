@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 57 设计要点（已实现）
+- **拆 mood_section / reminder_section 而非内联**：单一长 body 也行，但拆成两段命名变量让代码更易读、未来想加第三段（"如果用户问明天日程"等）可以追加新 section + format!。这是把 mood note 也演化到 builder 模式的早期形态。
+- **格式约定写在 prompt 里 vs 写在 SOUL.md**：SOUL.md 是宠物的 persona 设定（性格），不该塞工具/格式约定。inject_mood_note 是工程性 system 提示，正合适 — 它已经在做 "教 LLM 怎么写 mood format"。新增 reminder format 自然延续。
+- **明确反例**："我说今晚要去吃饭"是闲聊不是提醒。如果 LLM 把每句"X 时间"都建 todo，会刷出几十条无效提醒。给反例 = 给 LLM 一个判断锚。
+- **不写测试**：纯字符串模板加段 + cargo 编译通过 + Iter 56 已经测了 parser 和 due 检查 + 56 的 builder 测试也覆盖了 hint 注入路径。再写一个"check inject_mood_note 输出含「[remind:」"是测试 string literal 自身存在，价值低。
+- **ASCII vs 中文引号坑第三次**：Iter 29 / 39 / 57 都中过同一个雷。下次写中文长字符串文本里若需要嵌引号，第一反应应该是「」`「」`，不是 `"..."`。在 IDEA 里写下来当 anchor。
+
 ## Iter 56 设计要点（已实现）
 - **`[remind: HH:MM]` 前缀约定，复用 todo 类别**：考虑过新建 `reminder` memory 类别，但那要改 memory.rs 的常量并不增加多少清晰度。复用 `todo` 类别，用 description 前缀做识别——和 `[motion: X]` mood 前缀同款思路（Iter 10 / 22）。memory_edit 已经能创建 todo，无需新工具。
 - **due window = 30 min**：宠物每 5 min 一次 proactive tick，30 min 给 6 个机会能命中。如果 < 5 min，主动开口的其他 gate（cooldown/idle）很容易让宠物错过；> 30 min 又会让早起报错过的提醒在中午冒出来诡异。30 min 是经验值，settings 可暴露但当前不暴露。
