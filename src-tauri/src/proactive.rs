@@ -282,9 +282,7 @@ pub struct PendingReminder {
 /// proactive loop will surface them next tick).
 #[tauri::command]
 pub fn get_pending_reminders() -> Vec<PendingReminder> {
-    let now = chrono::Local::now();
-    let now_h = now.hour() as u8;
-    let now_m = now.minute() as u8;
+    let now = chrono::Local::now().naive_local();
     let Ok(index) = crate::commands::memory::memory_list(Some("todo".to_string())) else {
         return vec![];
     };
@@ -293,12 +291,12 @@ pub fn get_pending_reminders() -> Vec<PendingReminder> {
     };
     let mut out = Vec::new();
     for item in &cat.items {
-        if let Some((h, m, topic)) = parse_reminder_prefix(&item.description) {
+        if let Some((target, topic)) = parse_reminder_prefix(&item.description) {
             out.push(PendingReminder {
-                time: format!("{:02}:{:02}", h, m),
+                time: format_target(&target),
                 topic,
                 title: item.title.clone(),
-                due_now: is_reminder_due(h, m, now_h, now_m, 30),
+                due_now: is_reminder_due(&target, now, 30),
             });
         }
     }
@@ -371,45 +369,78 @@ pub fn period_of_day(hour: u8) -> &'static str {
     }
 }
 
+/// What kind of time a parsed reminder is targeting. `TodayHour` is the lightweight form
+/// the user writes for "later today" (or "early tomorrow morning, before I sleep"); the
+/// due check wraps across midnight to support that. `Absolute` is the full date-qualified
+/// form the LLM should write when the user says "tomorrow 9am" / "in 2 days" — those
+/// can't be expressed by HH:MM alone.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReminderTarget {
+    TodayHour(u8, u8),
+    Absolute(chrono::NaiveDateTime),
+}
+
 /// Parse a "user-set reminder" prefix from a memory item's description. Convention:
-/// `[remind: HH:MM] topic words go here`. Returns `(hour, minute, topic_trimmed)` when
-/// the prefix parses cleanly, `None` otherwise. Only the today-style HH:MM form is
-/// supported in this iteration; date-qualified reminders are a future expansion.
-pub fn parse_reminder_prefix(desc: &str) -> Option<(u8, u8, String)> {
+///   - `[remind: HH:MM] topic`              — today (or wraps a few minutes past midnight)
+///   - `[remind: YYYY-MM-DD HH:MM] topic`   — specific moment (24-hour clock)
+/// Returns `(target, topic)` when the prefix parses cleanly, `None` otherwise.
+pub fn parse_reminder_prefix(desc: &str) -> Option<(ReminderTarget, String)> {
     let trimmed = desc.trim_start();
     let after_open = trimmed.strip_prefix("[remind:")?;
     let close_idx = after_open.find(']')?;
     let inside = after_open[..close_idx].trim();
     let topic = after_open[close_idx + 1..].trim().to_string();
+    if topic.is_empty() {
+        return None;
+    }
+    // Try the date-qualified form first: "YYYY-MM-DD HH:MM" — has a space inside.
+    if let Some((date_str, time_str)) = inside.split_once(' ') {
+        let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d").ok()?;
+        let time = chrono::NaiveTime::parse_from_str(time_str.trim(), "%H:%M").ok()?;
+        return Some((ReminderTarget::Absolute(date.and_time(time)), topic));
+    }
+    // Fall back to today-style HH:MM.
     let (hh, mm) = inside.split_once(':')?;
     let hour: u8 = hh.trim().parse().ok()?;
     let minute: u8 = mm.trim().parse().ok()?;
-    if hour > 23 || minute > 59 || topic.is_empty() {
+    if hour > 23 || minute > 59 {
         return None;
     }
-    Some((hour, minute, topic))
+    Some((ReminderTarget::TodayHour(hour, minute), topic))
 }
 
 /// Returns true if the reminder time is past `now` by no more than `window_minutes`.
-/// We don't fire reminders that are still in the future or that we missed by too much
-/// — the latter avoids re-spamming "8am wake-up" when the pet first runs at 11am.
-/// Wraps across midnight only when the gap is small enough to fit in `window_minutes`.
+/// We don't fire reminders that are still in the future or that we missed by too much.
+/// `TodayHour` form additionally wraps across midnight when the gap is small enough.
 pub fn is_reminder_due(
-    target_h: u8,
-    target_m: u8,
-    now_h: u8,
-    now_m: u8,
+    target: &ReminderTarget,
+    now: chrono::NaiveDateTime,
     window_minutes: u64,
 ) -> bool {
-    let now_total = now_h as i64 * 60 + now_m as i64;
-    let target_total = target_h as i64 * 60 + target_m as i64;
-    let mut delta = now_total - target_total;
-    if delta < 0 {
-        // Target hasn't happened yet today — only "due" if it was actually a few minutes
-        // ago across the midnight boundary (e.g. target 23:55 fired at 00:02).
-        delta += 24 * 60;
+    let window = chrono::Duration::minutes(window_minutes as i64);
+    let zero = chrono::Duration::zero();
+    match target {
+        ReminderTarget::Absolute(dt) => {
+            let delta = now - *dt;
+            delta >= zero && delta <= window
+        }
+        ReminderTarget::TodayHour(h, m) => {
+            let Some(today_t) = now
+                .date()
+                .and_hms_opt(*h as u32, *m as u32, 0)
+            else {
+                return false;
+            };
+            let delta = now - today_t;
+            if delta >= zero && delta <= window {
+                return true;
+            }
+            // Maybe target was yesterday's HH:MM and we're early in the new day.
+            let yesterday_t = today_t - chrono::Duration::days(1);
+            let yd = now - yesterday_t;
+            yd >= zero && yd <= window
+        }
     }
-    delta >= 0 && (delta as u64) < window_minutes
 }
 
 /// How many minutes until the next quiet-hours boundary, when that boundary is within
@@ -779,11 +810,8 @@ async fn run_proactive_turn(
     let time_str = now_local.format("%Y-%m-%d %H:%M").to_string();
 
     // Scan the `todo` memory category for user-set reminders that have just come due.
-    // Each becomes a bullet `· HH:MM topic`. The whole hint is empty when nothing's due.
-    let reminders_hint = build_reminders_hint(
-        now_local.hour() as u8,
-        now_local.minute() as u8,
-    );
+    // Each becomes a bullet line. The whole hint is empty when nothing's due.
+    let reminders_hint = build_reminders_hint(now_local.naive_local());
 
     let pre_quiet_minutes = {
         let settings = get_settings().ok();
@@ -862,10 +890,10 @@ async fn run_proactive_turn(
 }
 
 /// Scan the `todo` memory category for items whose description starts with a reminder
-/// prefix (`[remind: HH:MM] topic`). Returns a multi-line bullet hint listing only the
-/// reminders that are *due now* (within the 30-minute window). Empty string when nothing
-/// is due — the builder skips the section entirely.
-fn build_reminders_hint(now_h: u8, now_m: u8) -> String {
+/// prefix and are due now (within the 30-minute window). Returns a multi-line bullet
+/// hint, or empty string when nothing is due. `now` is injected so tests / call sites
+/// share the same time anchor for parsed Absolute targets.
+fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
     let Ok(index) = crate::commands::memory::memory_list(Some("todo".to_string())) else {
         return String::new();
     };
@@ -874,9 +902,10 @@ fn build_reminders_hint(now_h: u8, now_m: u8) -> String {
     };
     let mut lines = vec!["你有以下到期的用户提醒（请挑最相关的一条带进开口）：".to_string()];
     for item in &cat.items {
-        if let Some((h, m, topic)) = parse_reminder_prefix(&item.description) {
-            if is_reminder_due(h, m, now_h, now_m, 30) {
-                lines.push(format!("· {:02}:{:02} {}（条目标题: {}）", h, m, topic, item.title));
+        if let Some((target, topic)) = parse_reminder_prefix(&item.description) {
+            if is_reminder_due(&target, now, 30) {
+                let when = format_target(&target);
+                lines.push(format!("· {} {}（条目标题: {}）", when, topic, item.title));
             }
         }
     }
@@ -884,6 +913,15 @@ fn build_reminders_hint(now_h: u8, now_m: u8) -> String {
         String::new()
     } else {
         lines.join("\n")
+    }
+}
+
+/// Format a reminder target for display in prompt / panel. TodayHour shows just the
+/// HH:MM (compact, since context is "today"); Absolute spells out the full date.
+pub fn format_target(target: &ReminderTarget) -> String {
+    match target {
+        ReminderTarget::TodayHour(h, m) => format!("{:02}:{:02}", h, m),
+        ReminderTarget::Absolute(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
     }
 }
 
@@ -1082,24 +1120,40 @@ mod prompt_tests {
 
 #[cfg(test)]
 mod reminder_tests {
-    use super::{is_reminder_due, parse_reminder_prefix};
+    use super::{is_reminder_due, parse_reminder_prefix, ReminderTarget};
+    use chrono::{NaiveDate, NaiveDateTime};
+
+    fn ndt(y: i32, m: u32, d: u32, hh: u32, mm: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(hh, mm, 0).unwrap()
+    }
 
     #[test]
-    fn parse_standard_form() {
-        let r = parse_reminder_prefix("[remind: 23:00] 吃药").unwrap();
-        assert_eq!(r, (23, 0, "吃药".to_string()));
+    fn parse_today_form() {
+        let (target, topic) = parse_reminder_prefix("[remind: 23:00] 吃药").unwrap();
+        assert_eq!(target, ReminderTarget::TodayHour(23, 0));
+        assert_eq!(topic, "吃药");
+    }
+
+    #[test]
+    fn parse_absolute_form() {
+        let (target, topic) =
+            parse_reminder_prefix("[remind: 2026-05-04 09:00] 项目早会").unwrap();
+        assert_eq!(target, ReminderTarget::Absolute(ndt(2026, 5, 4, 9, 0)));
+        assert_eq!(topic, "项目早会");
     }
 
     #[test]
     fn parse_tolerates_extra_whitespace() {
-        let r = parse_reminder_prefix("  [remind:  9:30  ]   去开会  ").unwrap();
-        assert_eq!(r, (9, 30, "去开会".to_string()));
+        let (target, topic) =
+            parse_reminder_prefix("  [remind:  9:30  ]   去开会  ").unwrap();
+        assert_eq!(target, ReminderTarget::TodayHour(9, 30));
+        assert_eq!(topic, "去开会");
     }
 
     #[test]
     fn parse_rejects_empty_topic() {
         assert!(parse_reminder_prefix("[remind: 12:00]").is_none());
-        assert!(parse_reminder_prefix("[remind: 12:00]   ").is_none());
+        assert!(parse_reminder_prefix("[remind: 2026-05-04 09:00]").is_none());
     }
 
     #[test]
@@ -1107,6 +1161,8 @@ mod reminder_tests {
         assert!(parse_reminder_prefix("[remind: 25:00] hi").is_none());
         assert!(parse_reminder_prefix("[remind: 9:60] hi").is_none());
         assert!(parse_reminder_prefix("[remind: x:y] hi").is_none());
+        assert!(parse_reminder_prefix("[remind: 2026-13-01 09:00] hi").is_none());
+        assert!(parse_reminder_prefix("[remind: 2026-05-04 25:00] hi").is_none());
     }
 
     #[test]
@@ -1115,33 +1171,65 @@ mod reminder_tests {
         assert!(parse_reminder_prefix("[other] not a reminder").is_none());
     }
 
+    // ---- TodayHour due semantics ----
+
     #[test]
-    fn due_within_window() {
-        // target 12:00, now 12:05 → due (5 min past).
-        assert!(is_reminder_due(12, 0, 12, 5, 30));
+    fn today_hour_within_window() {
+        let target = ReminderTarget::TodayHour(12, 0);
+        assert!(is_reminder_due(&target, ndt(2026, 5, 3, 12, 5), 30));
     }
 
     #[test]
-    fn due_at_exact_target() {
-        assert!(is_reminder_due(12, 0, 12, 0, 30));
+    fn today_hour_at_exact_target() {
+        let target = ReminderTarget::TodayHour(12, 0);
+        assert!(is_reminder_due(&target, ndt(2026, 5, 3, 12, 0), 30));
     }
 
     #[test]
-    fn not_due_yet_in_future() {
-        // target 12:00, now 11:55 → wraps to "23h 55m past" → not due.
-        assert!(!is_reminder_due(12, 0, 11, 55, 30));
+    fn today_hour_future_not_due() {
+        let target = ReminderTarget::TodayHour(12, 0);
+        assert!(!is_reminder_due(&target, ndt(2026, 5, 3, 11, 55), 30));
     }
 
     #[test]
-    fn missed_too_far_ago_not_due() {
-        // target 8:00, now 11:00 → 3h past → outside 30-min window.
-        assert!(!is_reminder_due(8, 0, 11, 0, 30));
+    fn today_hour_too_far_past_not_due() {
+        let target = ReminderTarget::TodayHour(8, 0);
+        assert!(!is_reminder_due(&target, ndt(2026, 5, 3, 11, 0), 30));
     }
 
     #[test]
-    fn midnight_wrap_due() {
-        // target 23:55, now 00:05 → 10 min past across midnight → due.
-        assert!(is_reminder_due(23, 55, 0, 5, 30));
+    fn today_hour_wraps_midnight() {
+        // target 23:55 yesterday-relative; now 00:05 today → 10 min past → due.
+        let target = ReminderTarget::TodayHour(23, 55);
+        assert!(is_reminder_due(&target, ndt(2026, 5, 3, 0, 5), 30));
+    }
+
+    // ---- Absolute due semantics ----
+
+    #[test]
+    fn absolute_within_window() {
+        let target = ReminderTarget::Absolute(ndt(2026, 5, 4, 9, 0));
+        assert!(is_reminder_due(&target, ndt(2026, 5, 4, 9, 10), 30));
+    }
+
+    #[test]
+    fn absolute_future_not_due() {
+        let target = ReminderTarget::Absolute(ndt(2026, 5, 4, 9, 0));
+        assert!(!is_reminder_due(&target, ndt(2026, 5, 3, 23, 0), 30));
+    }
+
+    #[test]
+    fn absolute_far_past_not_due() {
+        let target = ReminderTarget::Absolute(ndt(2026, 5, 1, 9, 0));
+        assert!(!is_reminder_due(&target, ndt(2026, 5, 4, 9, 0), 30));
+    }
+
+    #[test]
+    fn absolute_does_not_wrap_midnight() {
+        // Absolute is anchored to a specific date — no wrap. 23:55 May 1 vs now 00:05 May 3
+        // is over a day late, must be False.
+        let target = ReminderTarget::Absolute(ndt(2026, 5, 1, 23, 55));
+        assert!(!is_reminder_due(&target, ndt(2026, 5, 3, 0, 5), 30));
     }
 }
 

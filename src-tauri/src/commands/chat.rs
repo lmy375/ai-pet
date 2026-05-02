@@ -65,7 +65,11 @@ pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     // Tell the model how to record a user-set reminder so the proactive loop can later
     // surface it. The format must match `parse_reminder_prefix` in proactive.rs:
     // todo / description starting with "[remind: HH:MM] topic". 24-hour clock.
-    let reminder_section = "\n\n[设置提醒的约定] 如果用户说类似「N 点提醒我做 X」「下午 5 点喊我下班」之类的话，请用 `memory_edit create` 在 `todo` 类别下新建一条 memory item：description 必须以 `[remind: HH:MM] X` 开头（HH 是 24 小时制 0–23），例如 description=`[remind: 23:00] 吃药`、title=`take_meds` 之类的简短标识。这样等到时间到了，主动开口循环会把这条提醒带出来给用户。其他的「我说今晚要...」这种闲聊不算提醒，不要乱建。";
+    let reminder_section = "\n\n[设置提醒的约定] 如果用户说类似「N 点提醒我做 X」「下午 5 点喊我下班」「30 分钟后叫我休息」「明天早上 9 点开会」之类的话，请用 `memory_edit create` 在 `todo` 类别下新建一条 memory item：\n\
+- 今天内的提醒：description 以 `[remind: HH:MM] X` 开头（HH 是 24 小时制 0–23）。例：description=`[remind: 23:00] 吃药`、title=`take_meds`。\n\
+- 跨天或具体日期：description 以 `[remind: YYYY-MM-DD HH:MM] X` 开头。例：description=`[remind: 2026-05-04 09:00] 项目早会`。\n\
+- 相对时间（「30 分钟后」「2 小时后」等）：你需要根据当前时间换算成绝对的 HH:MM（或日期时间），不要原样写「+30m」。\n\
+等时间到了，主动开口循环会把这条提醒带出来给用户。其他的「我说今晚要...」这种闲聊不算提醒，不要乱建。";
 
     let body = format!("{}{}", mood_section, reminder_section);
 

@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 59 设计要点（已实现）
+- **enum 而非 Option<NaiveDate>**：原本想用 `Option<NaiveDate>` 配 `(u8, u8)` —— 表示"无日期=今天，有日期=绝对"。但 enum `TodayHour` / `Absolute` 显式语义两态，match 时 caller 必须想清楚两种情况，避免 forget Some/None 心智负担。
+- **TodayHour 仍保留 wrap-midnight**：用户用简短形式时通常是"今晚的事"，"23:55"在凌晨 00:05 仍想触发是合理预期。Absolute 不 wrap——既然指定了具体日期，就不该越界。这两种语义差异写在 doc + 测试 (`absolute_does_not_wrap_midnight`) 里。
+- **不引入 [remind: +30m] 字面格式**：LLM 现在每次都看到 prompt 头部 "现在是 YYYY-MM-DD HH:MM"，让它做加法是合理责任分配。如果允许 `[remind: +30m]` 字面存储，每次 panel/prompt 读取还得算"这条是什么时候写的"——`created_at` metadata 可以提供，但增加了 parse 复杂度。让 LLM 在写入时换算成绝对时间是更简单的契约。
+- **NaiveDateTime 而非 DateTime<Local>**：本地时区变化时 NaiveDateTime 不会自动调整，但 reminder 是"绝对一个时刻在那儿"，时区问题不是考虑重点（本地 chrono::Local::now().naive_local() 转一下 caller 用 wall clock）。如果未来要跨时区考虑，再加 timezone 字段。
+- **提示词描述三种场景**：今天/跨天/相对，列了具体例子。LLM prompt 的清晰度更多靠"举例"而非长篇解释——"`[remind: 2026-05-04 09:00] 项目早会`"比"如果是某天早 9 点开会，使用包含日期的格式..."更直接。
+- **format_target 拉出来公用**：build_reminders_hint 和 get_pending_reminders 都需要"把 ReminderTarget 渲染成一行字符串"。抽出 helper 避免两处实现飘移。前端 panel 不再自己 split timestamp（之前是 ISO 字符串），直接渲染后端给的 `r.time` 就好。
+
 ## Iter 58 设计要点（已实现）
 - **复用 parse_reminder_prefix + is_reminder_due**：和 build_reminders_hint 同一函数，确保 panel 显示和 prompt scan 用同一种判断。"prompt 看到的是哪些 / panel 显示的是哪些" 这两个集合若用两套实现容易飘移。
 - **同时返回 due 和未来未 due**：build_reminders_hint 只给 due 的（要进 prompt），但 panel 想看完整列表（包括"已设但等几小时才到"的）。所以 get_pending_reminders 返全部解析得通的 reminders + 一个 due_now 标志，让前端决定怎么显示。
