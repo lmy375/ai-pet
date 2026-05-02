@@ -710,15 +710,12 @@ function localizeReason(kind: string, reason: string): string {
     }
   }
   if (kind === "LlmSilent") {
-    // "-" means soft rule wasn't active; the LLM chose silence on its own judgement.
+    // "-" means no soft tags applied; the LLM chose silence on its own judgement.
     return reason === "-" ? "LLM 自主选择沉默" : `LLM 沉默（${reason}）`;
   }
   if (kind === "Spoke") {
-    // reason layouts:
-    //   "-"                          → no chatty tag, no tools
-    //   "-, tools=X+Y"               → no chatty, tools used
-    //   "chatty=5/5"                 → chatty active, no tools
-    //   "chatty=5/5, tools=X+Y"      → both
+    // reason is a comma-separated tag bundle; "-" alone means "no tags". Strip a leading
+    // "-, " left over from chatty_part so the displayed body starts with real content.
     if (reason === "-") return "宠物开口";
     const cleaned = reason.replace(/^-, /, "");
     return `宠物开口（${cleaned}）`;

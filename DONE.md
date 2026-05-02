@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 85：active prompt rules 也透传到每条 decision log entry
+- 调度循环 dispatch 一次性 fetch lifetime_count + env_total + env_with_any，加上已有的 chatty_today / chatty_threshold，调 `active_data_driven_rule_labels` 算出此次 tick 哪些规则会激活。封成可选 `rules_tag = Some("rules=icebreaker+chatty")` 或 None。
+- Run 决策的 reason 末尾追加 `rules=...`：`Run idle=20s, input_idle=10s, chatty=5/5, rules=icebreaker+chatty`。
+- 后续 LLM outcome 三种 push（Spoke/LlmSilent/LlmError）也都带 `rules=...`：复用 inline 函数 `append_tag` 把多个 tag 用 ", " 连接，特殊处理 reason 起始的 "-" 占位（替换而非追加）。
+- Spoke 还会加 `tools=X+Y` 在 rules 之后，最终形如 `chatty=5/5, rules=icebreaker, tools=get_active_window`。LlmError 把 tag 串塞进括号 `error_msg (chatty=..., rules=...)`。
+- 前端 `localizeReason` Spoke/LlmSilent 都不需要单独 case rules——leading "-, " 仍然 strip，剩下的多个 tag 直接放进 "宠物开口（...）"中文外壳。"LLM 沉默（rules=icebreaker）" 也工作。
+- 现在事后回放任意一条 decision log entry，都能精确知道当时 prompt 的"软规则集"——配合 panel 已有的"prompt: N 条 hint"实时 badge，时间维度（历史回放）+ 空间维度（当下状态）双重可见。
+- 170 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 84：panel 工具栏 "prompt: N 条 hint" 紫色 pill badge
 - 新纯函数 `pub fn active_data_driven_rule_labels(...)` 返回 `["icebreaker"|"chatty"|"env-awareness"]` 子集，按 proactive_rules 内的 firing 顺序排列。仅覆盖"数据驱动"的 3 条规则；wake/first_mood/reminders/plan/pre_quiet 这些环境性 hint 由 panel 现有 chip 已展示，不重复。
 - `ToneSnapshot` 加 `active_prompt_rules: Vec<String>`；`get_tone_snapshot` 现在还要 `ProcessCountersStore` state（读 env_tool atomic）和 `today_speech_count`（读 speech_daily.json）。一次性把这三条规则的真实状态计算后塞 ToneSnapshot 里。
