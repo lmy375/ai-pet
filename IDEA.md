@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 47 设计要点（已实现）
+- **rule of two 触发抽取**：通常我等 rule of three，但这里特殊——focus_tracker 的 rotation 已经写得很泛化（path + max_bytes 两个参数，没什么 module-specific 的逻辑），且 speech_history 的需求是字面同款。第二个 caller 出现就是把它抬上来的最佳时机；等第三个出现时，rotation 已经是 well-known util，新 caller 的开发者会期待它存在。
+- **测试搬家而非复制**：focus_tracker 的 6 个 rotation 测试整体迁到 log_rotation，原位置删除留 comment "搬家了"。这种"测试随实现走"是 Rust mod system 的自然结果；测试覆盖度没变，单一来源更易维护。
+- **speech_history 加 size 上限是 defense in depth**：原来 50 条 line cap 在 LLM 守规矩时足够（正常一句话 ~50 字符 → 整个文件 < 5KB）。但 LLM 抽风（譬如 hallucinate 一个 5MB 的 JSON）一条就把文件撑爆。size cap 100KB 给"50 行 × 平均 2KB/行"留余地，正常使用永远不触发，异常时立刻兜底。
+- **rotate before read**：`record_speech_inner` 先 rotate 再 read 现有内容。如果反过来（先 read 再 rotate），oversized file 会被读进内存才被 rotate。先 rotate 让 read 看到的是空文件（rotation 后 path 不存在 → unwrap_or_default → 空字符串），少一次大读 IO。
+- **不为 speech_history 写新 rotation 测试**：log_rotation 的 6 个 case 已经把 rotation 行为测得很彻底。再写一份 speech_history-specific 的"我有调用 rotate"测试只是验证 plumbing，cargo check 已经把那点抓住。
+- **保持 net-zero test count 是良好信号**：单纯重构不该减测试覆盖。这次 -6 + 6 = 0，证明搬家完成度高。
+
 ## Iter 46 设计要点（已实现）
 - **timestamp 切片在前端做**：本可以让后端命令直接返 `{ time, text }` 结构。但保留 raw line + 前端 `slice(11, 16)` 取 `HH:MM` 让接口最简单（unstructured array），UI 改显示格式（比如想要相对时间 "刚才"/"5 分钟前"）也只是前端事。
 - **紫色与 Tag 同色系**：Cache 蓝色（外部 cache 维度）、Tag 紫色（mood/personality 维度）、Speech 紫色背景（mood/personality 维度）。颜色是 panel 里的"信息维度索引"——同色系意味着语义相近，用户视线扫一遍就能 group。

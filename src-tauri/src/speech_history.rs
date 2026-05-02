@@ -12,10 +12,16 @@
 
 use std::path::PathBuf;
 
+use crate::log_rotation::rotate_if_needed;
+
 /// Hard cap on retained entries. Far more than the prompt ever surfaces (5–10) — the
 /// extra slack lets future features (e.g. a panel "what did the pet say lately?" view)
 /// reach further back without re-architecting.
 const SPEECH_HISTORY_CAP: usize = 50;
+/// Byte ceiling — defense in depth on top of the line-count trim. A misbehaving LLM that
+/// emits a megabyte-long "single utterance" can't blow up the file: rotation kicks in
+/// and the next write starts a fresh log.
+const SPEECH_HISTORY_MAX_BYTES: u64 = 100_000;
 
 fn history_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("speech_history.log"))
@@ -35,6 +41,10 @@ async fn record_speech_inner(text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+    // Rotate first so an oversized file doesn't get re-read into memory before we replace
+    // it. After rotation the next read starts fresh; trimming to SPEECH_HISTORY_CAP still
+    // applies to the new generation.
+    let _ = rotate_if_needed(&path, SPEECH_HISTORY_MAX_BYTES).await;
     let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     let mut entries: Vec<String> = existing
         .lines()
