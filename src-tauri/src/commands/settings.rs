@@ -72,6 +72,10 @@ pub struct ProactiveConfig {
     /// End of the daily quiet window (exclusive), in 24-hour local time (0–23).
     #[serde(default = "default_quiet_hours_end")]
     pub quiet_hours_end: u8,
+    /// When true, the pet stays silent while macOS Focus / Do-Not-Disturb is engaged.
+    /// On non-macOS or when the Focus state file is unreadable, this gate is a no-op.
+    #[serde(default = "default_respect_focus_mode")]
+    pub respect_focus_mode: bool,
 }
 
 fn default_proactive_interval() -> u64 {
@@ -96,6 +100,10 @@ fn default_quiet_hours_start() -> u8 {
 
 fn default_quiet_hours_end() -> u8 {
     7
+}
+
+fn default_respect_focus_mode() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +147,7 @@ impl Default for ProactiveConfig {
             cooldown_seconds: default_proactive_cooldown(),
             quiet_hours_start: default_quiet_hours_start(),
             quiet_hours_end: default_quiet_hours_end(),
+            respect_focus_mode: default_respect_focus_mode(),
         }
     }
 }

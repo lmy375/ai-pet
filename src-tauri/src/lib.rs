@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod consolidate;
+mod focus_mode;
 mod input_idle;
 mod mcp;
 mod mood;

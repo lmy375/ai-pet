@@ -41,6 +41,7 @@ export function PanelSettings() {
       cooldown_seconds: 1800,
       quiet_hours_start: 23,
       quiet_hours_end: 7,
+      respect_focus_mode: true,
     },
     memory_consolidate: {
       enabled: false,
