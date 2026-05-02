@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 79 设计要点（已实现）
+- **bump 而非按 kind 归档**：本可以让 Run + outcome 合并成一个 entry（用 `outcome: Option<String>` 字段后填）。但那破坏了 Iter 78 的"Record before dispatching"时序——in-flight 的 Run 对 panel 不可见。简单 bump CAPACITY 是对 Iter 78 设计的最小妥协。
+- **16 而非 20**：每 Run 占 2 行，10 → 16 给出 8 完整 cycle。20 给 10 完整 cycle 也行，但 panel 即使升 maxHeight 也不要"决策列表喧宾夺主"——它是"为什么沉默"的辅助信息，主屏要留给 toolbar/stats/tone strip。
+- **U+2514 而非缩进 padding**：本可以给 outcome 行加 `paddingLeft`。但缩进对 mono 字体的对齐感不好，时间戳也跟着错位。`└ ` 是 mono 字符占 1 列，时间戳列宽度不变，连接关系靠字符语义而不是位置——更稳。
+- **maxHeight 120 → 200**：粗算每行 ~17px，120 显 ~7 行，200 显 ~12 行；新 cap 16 仍可能偶尔触发滚动（事件爆发期），但 200 足够覆盖正常使用。再大就开始挤压下面的 stats/reminders 区。
+- **测试不动**：3 个 decision_log 测试都通过 `CAPACITY` 常量参数化。我故意不去硬编码 10/16，让 cap 调整时测试零成本跟随。这是设计的好处之一。
+
 ## Iter 78 设计要点（已实现）
 - **post-LLM 第二条决策而非塞进 Run**：本可以延迟 Run push 到 LLM 返回后，把 idle+chatty+outcome 拼成一条。但那破坏了"决策记录在 dispatch 前完成"的现有模式（注释明确说"Record before dispatching"），且会让 panel 看不到正在等 LLM 返回的 in-flight Run。改成两条独立 push 保留时序信号——用户能看到 Run 触发时间和 outcome 时间分别（隐含 LLM 用了多久）。
 - **CAPACITY=10 → 一次 gate 通过吃 2 行**：从 1 行涨到 2 行意味着可见决策窗口从 10 次 gate 评估变成 ~6.5 次。10 已经是 ring buffer cap，不会无限增长；6.5 次 gate 评估的窗口对调试而言够用（默认 5 分钟一次评估即覆盖最近半小时）。如果将来发现窗口不够再调 CAPACITY。
