@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 30 设计要点（已实现）
+- **AtomicU64 + Relaxed**：cache 计数器不参与任何同步——它们只用于事后统计。Relaxed ordering 是最便宜的内存序，性能影响可忽略。Acquire/Release 这种关系性 ordering 在这里是无意义的负担。
+- **0/0 不打日志**：silent proactive tick（gate 先 short-circuit 没有跑 LLM）就完全不会走到 pipeline，那条路径根本碰不到 summary 行。但 LLM 跑了但模型没调任何 cacheable 工具的情况存在——这时也跳过 summary，避免日志噪音。
+- **summary 在成功分支而非 finally**：错误路径（pipeline 抛错）不需要 summary——错误本身就是日志重点，再叠一行命中率反而干扰。Final response 分支是"正常结束"的唯一返回点，加在那里覆盖正常路径就够。
+- **覆盖全调用者无需各自改**：`run_chat_pipeline` 是所有 4 条 LLM 路径的公共底座。改一处底座就够。这是 Iter 18 那种"guard 列表 + 单一 sleep"工程模式的同类好处——把横切关注点集中在 hub。
+- **cache_stats() pub 是为以后铺路**：现在没有 caller 用 `cache_stats()`，但暴露出来不增加 API 表面成本，且 Iter 31 设想的"面板可视化"会直接读它。比写完面板再回来加访问器更顺。
+
 ## Iter 29 设计要点（已实现）
 - **行为指引而非实现细节**：原 TODO 措辞是"告诉 LLM 重复调用会被 dedupe"，但 LLM 不需要知道我们怎么做的——它只需要知道做什么。改成"相信首次返回值"对模型更直接、不让它分心去推理工程层。这是 prompt 工程一个反复出现的原则。
 - **不在 reactive chat 同样加**：`inject_mood_note` 是反应式聊天的注入，那里用户可能间隔几分钟分两次问"现在天气怎样"——cache 已经过期、LLM 也理应 re-query。不加这条规则，让反应式 chat 保持灵活。

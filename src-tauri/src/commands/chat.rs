@@ -383,6 +383,7 @@ pub async fn run_chat_pipeline(
                 result.first_token_latency_ms.unwrap_or(-1),
                 result.total_latency_ms,
             ));
+            registry.log_cache_summary(ctx);
             sink.send_done();
             return Ok(result.text);
         }
