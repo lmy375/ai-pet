@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 13：Telegram 路径接 mood 注入 + chat-done emit
+- `commands/chat::inject_mood_note` 改 pub，让 telegram 复用，避免重写。
+- `telegram/bot.rs`：
+  - `HandlerState` 加 `app: AppHandle` 字段；`TelegramBot::start` 签名加 `app` 参数。
+  - 在 run_chat_pipeline 之前调 `inject_mood_note(chat_messages)`，与桌面 chat 命令完全对称。
+  - 跑完后 `read_current_mood_parsed` + emit `chat-done`（同一个 payload 结构 ChatDonePayload），desktop 前端的 useMoodAnimation 自动接住、做 Live2D 动作。
+  - 缺前缀也写一行日志，与桌面 chat 路径行文一致。
+- `lib.rs` setup 中创建 `app_handle_for_tg = app.handle().clone()`，传给 `TelegramBot::start`。
+- `commands/telegram::reconnect_telegram` 命令也加 `app: AppHandle` 参数并透传。
+- 这样三条入口（proactive / 桌面 chat / Telegram）行为统一：都读 mood 注入 prompt，都允许 LLM 用 `[motion: X]` 前缀更新，都 emit 事件让前端动画。
+- cargo check 通过（仍是两条与本次无关的预存 warning）。
+
 ## 2026-05-02 — Iter 12a：mood 解析单元测试 + 缺前缀监控
 - 重构：`read_current_mood_parsed` 拆成"读盘 + 解析"两层，新增 `parse_mood_string(raw: &str) -> (String, Option<String>)` 纯函数，无 IO 依赖、可单测。
 - `proactive` 模块加 `#[cfg(test)] mod tests`，覆盖 8 个边界：
