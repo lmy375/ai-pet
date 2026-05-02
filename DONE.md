@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 57：reactive chat 教 LLM reminder 格式
+- `commands/chat::inject_mood_note` 拆 body 为 `mood_section` + 新增 `reminder_section`：
+  - 明确告诉 LLM "如果用户说类似「N 点提醒我做 X」类话，请用 `memory_edit create` 在 `todo` 类别下创建 description 以 `[remind: HH:MM] X` 开头的条目"。
+  - 给具体例子（description=`[remind: 23:00] 吃药`、title=`take_meds`）减少 LLM 犹豫。
+  - 显式排除"我说今晚要..."这种闲聊，避免误把任何"今晚"句都建 todo。
+- 用 `format!("{}{}", mood_section, reminder_section)` 拼接两段。
+- 又一次踩 ASCII `"..."` 闭合 Rust 字符串的坑——Iter 29 / 39 都遇到过。换全角「...」。
+- 总测试 128（不变 — 改的是字符串模板，复用现有 inject_mood_note 调用路径）；cargo + tsc 双过；零 warning。
+- 现在 Iter 56 的 reminder 闭环完整：用户在 chat 里说话 → reactive chat 提示 LLM 写 todo → proactive 扫到 due → 注入 prompt 让 LLM 自然带出 → memory_edit delete 已用。
+
 ## 2026-05-03 — Iter 56：用户驱动的 manual 提醒
 - 新纯函数 `pub fn parse_reminder_prefix(desc) -> Option<(u8, u8, String)>` 解析 `[remind: HH:MM] topic` 格式，验证 hour ≤23 / minute ≤59 / topic 非空。
 - 新纯函数 `pub fn is_reminder_due(target_h, target_m, now_h, now_m, window_minutes) -> bool`：在 `[target, target+window)` 内为 due；处理跨午夜（target 23:55 / now 00:05 用 +24×60 wrap）；未来时间不算 due。

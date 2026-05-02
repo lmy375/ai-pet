@@ -54,13 +54,20 @@ pub fn trim_to_context(mut messages: Vec<ChatMessage>, max: usize) -> Vec<ChatMe
 /// augment only the in-memory list passed to the pipeline — persisted session storage is
 /// not affected.
 pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    let body = match read_current_mood_parsed() {
+    let mood_section = match read_current_mood_parsed() {
         Some((text, _)) if !text.trim().is_empty() => format!(
             "[宠物当前心情/状态] {}\n\n如果这次对话让你心情有变化，可以用 `memory_edit` 更新 `ai_insights/current_mood`，description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头（Tap=开心活泼，Flick=想分享有兴致，Flick3=焦虑烦躁，Idle=平静低落沉静）。心情没变就不用更新。",
             text.trim()
         ),
         _ => "[宠物当前心情/状态] 还没记录过。如果对话让你产生了某种心情，可以用 `memory_edit create` 新建 `ai_insights/current_mood`，description 以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头。没特别感受就先不写。".to_string(),
     };
+
+    // Tell the model how to record a user-set reminder so the proactive loop can later
+    // surface it. The format must match `parse_reminder_prefix` in proactive.rs:
+    // todo / description starting with "[remind: HH:MM] topic". 24-hour clock.
+    let reminder_section = "\n\n[设置提醒的约定] 如果用户说类似「N 点提醒我做 X」「下午 5 点喊我下班」之类的话，请用 `memory_edit create` 在 `todo` 类别下新建一条 memory item：description 必须以 `[remind: HH:MM] X` 开头（HH 是 24 小时制 0–23），例如 description=`[remind: 23:00] 吃药`、title=`take_meds` 之类的简短标识。这样等到时间到了，主动开口循环会把这条提醒带出来给用户。其他的「我说今晚要...」这种闲聊不算提醒，不要乱建。";
+
+    let body = format!("{}{}", mood_section, reminder_section);
 
     let note: ChatMessage = serde_json::from_value(serde_json::json!({
         "role": "system",
