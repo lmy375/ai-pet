@@ -52,6 +52,7 @@ interface ToneSnapshot {
   pre_quiet_minutes: number | null;
   proactive_count: number;
   chatty_day_threshold: number;
+  active_prompt_rules: string[];
 }
 
 export function PanelDebug() {
@@ -384,6 +385,23 @@ export function PanelDebug() {
             >
               重置
             </button>
+          </span>
+        )}
+        {tone && tone.active_prompt_rules.length > 0 && (
+          <span
+            title={`prompt 当前正被以下 data-driven 规则影响：${tone.active_prompt_rules.join("、")}。每条规则会在 LLM 主动开口前注入 prompt 末尾，影响开口决策。`}
+            style={{
+              fontSize: "11px",
+              color: "#fff",
+              background: "#7c3aed",
+              padding: "2px 8px",
+              borderRadius: "10px",
+              alignSelf: "center",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              cursor: "default",
+            }}
+          >
+            prompt: {tone.active_prompt_rules.length} 条 hint
           </span>
         )}
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>

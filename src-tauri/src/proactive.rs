@@ -290,6 +290,35 @@ pub fn env_awareness_low(spoke_total: u64, spoke_with_any: u64) -> bool {
     spoke_with_any * 100 < ENV_AWARENESS_LOW_RATE_PCT * spoke_total
 }
 
+/// Returns the labels for every *data-driven* contextual rule currently firing in the
+/// proactive prompt. "Data-driven" means rules whose firing depends on counters/history
+/// (icebreaker / chatty / env-awareness) — distinct from environmental hints like
+/// pre-quiet / wake-back / due-reminders that the panel already surfaces via dedicated
+/// chips. Used by the panel toolbar to show "prompt: N active hints" so users can see
+/// at a glance how much of the model's instruction set is being shaped by usage data.
+///
+/// Order matches the firing order in `proactive_rules` so a future "show in firing
+/// sequence" tooltip stays correct.
+pub fn active_data_driven_rule_labels(
+    proactive_history_count: usize,
+    today_speech_count: u64,
+    chatty_day_threshold: u64,
+    env_spoke_total: u64,
+    env_spoke_with_any: u64,
+) -> Vec<&'static str> {
+    let mut labels: Vec<&'static str> = Vec::with_capacity(3);
+    if proactive_history_count < 3 {
+        labels.push("icebreaker");
+    }
+    if chatty_day_threshold > 0 && today_speech_count >= chatty_day_threshold {
+        labels.push("chatty");
+    }
+    if env_awareness_low(env_spoke_total, env_spoke_with_any) {
+        labels.push("env-awareness");
+    }
+    labels
+}
+
 /// Assemble the proactive prompt from a Vec of sections rather than a giant `format!()`.
 /// Adding a new optional hint is now: (a) extend `PromptInputs`, (b) push it via
 /// `push_if_nonempty`. Adding a new constraint rule is one push in `proactive_rules`.
@@ -360,6 +389,11 @@ pub struct ToneSnapshot {
     /// Surfaced so the panel can compare today's count against it and visually mark when
     /// the pet has crossed into "克制模式". 0 means the rule is disabled.
     pub chatty_day_threshold: u64,
+    /// Labels for every data-driven contextual rule the proactive prompt currently has
+    /// active (e.g. `["icebreaker", "chatty"]`). Empty when no data-driven rule is firing
+    /// — the prompt is in its "neutral" state. Computed once on the backend so the panel
+    /// doesn't need to know each rule's threshold logic.
+    pub active_prompt_rules: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -425,6 +459,7 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
 pub async fn get_tone_snapshot(
     clock: tauri::State<'_, InteractionClockStore>,
     wake: tauri::State<'_, crate::wake_detector::WakeDetectorStore>,
+    counters: tauri::State<'_, crate::commands::debug::ProcessCountersStore>,
 ) -> Result<ToneSnapshot, String> {
     let now = chrono::Local::now();
     let hour = now.hour() as u8;
@@ -451,6 +486,24 @@ pub async fn get_tone_snapshot(
         .ok()
         .map(|s| s.proactive.chatty_day_threshold)
         .unwrap_or(5);
+    let today_count_for_rules = crate::speech_history::today_speech_count().await;
+    let env_counters_for_rules = &counters.inner().env_tool;
+    let env_total = env_counters_for_rules
+        .spoke_total
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let env_with_any = env_counters_for_rules
+        .spoke_with_any
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let active_prompt_rules: Vec<String> = active_data_driven_rule_labels(
+        proactive_count as usize,
+        today_count_for_rules,
+        chatty_day_threshold,
+        env_total,
+        env_with_any,
+    )
+    .into_iter()
+    .map(String::from)
+    .collect();
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -461,6 +514,7 @@ pub async fn get_tone_snapshot(
         pre_quiet_minutes,
         proactive_count,
         chatty_day_threshold,
+        active_prompt_rules,
     })
 }
 
@@ -1459,6 +1513,45 @@ mod prompt_tests {
         // Includes the actual numbers + threshold so the LLM has concrete signal.
         assert!(rules.iter().any(|r| r.contains("12 次")));
         assert!(rules.iter().any(|r| r.contains("get_active_window")));
+    }
+
+    #[test]
+    fn active_data_driven_rule_labels_empty_in_neutral_state() {
+        // Past icebreaker, below chatty threshold, no env-awareness data.
+        assert!(active_data_driven_rule_labels(100, 0, 5, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn active_data_driven_rule_labels_picks_up_each_rule_independently() {
+        // Only icebreaker.
+        assert_eq!(
+            active_data_driven_rule_labels(0, 0, 5, 0, 0),
+            vec!["icebreaker"],
+        );
+        // Only chatty.
+        assert_eq!(
+            active_data_driven_rule_labels(100, 5, 5, 0, 0),
+            vec!["chatty"],
+        );
+        // Only env-awareness.
+        assert_eq!(
+            active_data_driven_rule_labels(100, 0, 5, 12, 2),
+            vec!["env-awareness"],
+        );
+    }
+
+    #[test]
+    fn active_data_driven_rule_labels_combine_in_firing_order() {
+        // All three at once: should appear in the same order proactive_rules pushes them.
+        let labels = active_data_driven_rule_labels(0, 6, 5, 12, 1);
+        assert_eq!(labels, vec!["icebreaker", "chatty", "env-awareness"]);
+    }
+
+    #[test]
+    fn active_data_driven_rule_labels_zero_threshold_disables_chatty() {
+        // chatty threshold == 0 means the user opted out — even today_count=99 shouldn't
+        // surface the chatty label.
+        assert!(active_data_driven_rule_labels(100, 99, 0, 0, 0).is_empty());
     }
 
     #[test]
