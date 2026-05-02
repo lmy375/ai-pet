@@ -296,9 +296,10 @@ async fn run_proactive_turn(
     let mcp_store = app.state::<McpManagerStore>().inner().clone();
     let log_store = app.state::<LogStore>().inner().clone();
     let shell_store = app.state::<ShellStore>().inner().clone();
+    let cache_counters = app.state::<crate::commands::debug::CacheCountersStore>().inner().clone();
     let clock = app.state::<InteractionClockStore>().inner().clone();
 
-    let ctx = ToolContext::new(log_store, shell_store);
+    let ctx = ToolContext::new(log_store, shell_store, cache_counters);
 
     // Try to load the latest session so the proactive turn has the recent context. If none
     // exists yet, fall back to a system-only conversation.

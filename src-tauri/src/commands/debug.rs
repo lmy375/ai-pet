@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
@@ -12,6 +13,22 @@ pub const MAX_LOG_LINES: usize = 5000;
 
 #[derive(Clone)]
 pub struct LogStore(pub Arc<Mutex<Vec<String>>>);
+
+/// Process-wide cumulative cache counters. Incremented at the end of each LLM turn that
+/// fired any cacheable tool, so the panel's hit-ratio display stays accurate even after
+/// the in-memory log buffer wraps around its size cap.
+#[derive(Default)]
+pub struct CacheCounters {
+    pub turns: AtomicU64,
+    pub hits: AtomicU64,
+    pub calls: AtomicU64,
+}
+
+pub type CacheCountersStore = Arc<CacheCounters>;
+
+pub fn new_cache_counters() -> CacheCountersStore {
+    Arc::new(CacheCounters::default())
+}
 
 /// Return the log directory: ~/.config/pet/logs/
 pub fn log_dir() -> PathBuf {
@@ -125,78 +142,44 @@ pub struct CacheStats {
     pub total_calls: u64,
 }
 
-/// Pure parser — extracts (hits, total) from a single summary line in the form
-/// `"... Tool cache summary: <hits>/<total> hits (<pct>%)"`. Returns None if the line
-/// doesn't match. Extracted to a separate function so it can be unit-tested without
-/// touching the LogStore.
-pub fn parse_cache_summary(line: &str) -> Option<(u64, u64)> {
-    let body = line.split("Tool cache summary:").nth(1)?.trim();
-    let stat_segment = body.split_whitespace().next()?;
-    let (hits_str, total_str) = stat_segment.split_once('/')?;
-    let hits: u64 = hits_str.trim().parse().ok()?;
-    let total: u64 = total_str.trim().parse().ok()?;
-    Some((hits, total))
-}
-
 #[tauri::command]
-pub fn get_cache_stats(store: State<'_, LogStore>) -> CacheStats {
-    let logs = store.0.lock().unwrap();
-    let mut stats = CacheStats {
-        turns: 0,
-        total_hits: 0,
-        total_calls: 0,
-    };
-    for line in logs.iter() {
-        if let Some((hits, total)) = parse_cache_summary(line) {
-            stats.turns += 1;
-            stats.total_hits += hits;
-            stats.total_calls += total;
-        }
+pub fn get_cache_stats(counters: State<'_, CacheCountersStore>) -> CacheStats {
+    CacheStats {
+        turns: counters.turns.load(Ordering::Relaxed),
+        total_hits: counters.hits.load(Ordering::Relaxed),
+        total_calls: counters.calls.load(Ordering::Relaxed),
     }
-    stats
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_cache_summary, write_log, MAX_LOG_LINES};
+    use super::{new_cache_counters, write_log, MAX_LOG_LINES};
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
+    // ---- CacheCounters atomic accumulation ----
+
     #[test]
-    fn parses_canonical_summary_line() {
-        let line = "[12:34:56] Tool cache summary: 3/5 hits (60%)";
-        assert_eq!(parse_cache_summary(line), Some((3, 5)));
+    fn cache_counters_default_to_zero() {
+        let c = new_cache_counters();
+        assert_eq!(c.turns.load(Ordering::Relaxed), 0);
+        assert_eq!(c.hits.load(Ordering::Relaxed), 0);
+        assert_eq!(c.calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]
-    fn parses_zero_hits() {
-        let line = "Tool cache summary: 0/4 hits (0%)";
-        assert_eq!(parse_cache_summary(line), Some((0, 4)));
-    }
-
-    #[test]
-    fn parses_perfect_hit_ratio() {
-        let line = "Tool cache summary: 7/7 hits (100%)";
-        assert_eq!(parse_cache_summary(line), Some((7, 7)));
-    }
-
-    #[test]
-    fn ignores_unrelated_log_lines() {
-        assert_eq!(parse_cache_summary("Tool call: get_weather({})"), None);
-        assert_eq!(parse_cache_summary("LLM round 0 (3 messages)"), None);
-        assert_eq!(parse_cache_summary(""), None);
-    }
-
-    #[test]
-    fn rejects_malformed_numbers() {
-        assert_eq!(
-            parse_cache_summary("Tool cache summary: x/y hits (?%)"),
-            None,
-        );
-        assert_eq!(
-            parse_cache_summary("Tool cache summary: 3 hits"),
-            None,
-            "missing slash"
-        );
+    fn cache_counters_accumulate_independently_of_log_buffer() {
+        // The whole point of moving to atomics: even if 5000+ log lines were written and
+        // older summaries scrolled off, the counters keep the truth.
+        let c = new_cache_counters();
+        for _ in 0..3 {
+            c.turns.fetch_add(1, Ordering::Relaxed);
+            c.hits.fetch_add(2, Ordering::Relaxed);
+            c.calls.fetch_add(5, Ordering::Relaxed);
+        }
+        assert_eq!(c.turns.load(Ordering::Relaxed), 3);
+        assert_eq!(c.hits.load(Ordering::Relaxed), 6);
+        assert_eq!(c.calls.load(Ordering::Relaxed), 15);
     }
 
     // ---- write_log size cap ----

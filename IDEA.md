@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 34 设计要点（已实现）
+- **删 parse_cache_summary 而非保留作 fallback**：考虑过把 atomic 当主路径，log 解析当 fallback。但两条路径意味着两套测试、两份语义对账，长期负担大。彻底切换 + 删旧路径，简单。Iter 17 那条"dead code 该删"原则的同款落地。
+- **field 加在 ToolContext，不引另一种参数传递**：本可以让 pipeline 多一个参数 `cache_counters: &CacheCountersStore`，避免改 ToolContext。但 4 个 caller 都要改 + 5 个 trait method + pipeline 签名 → 数百行 diff。把 counters 装进 ToolContext 才是真正"改一处管 5 处"。
+- **`#[cfg(test)] for_test` 减小测试摩擦**：测试用 ToolContext 不需要 Tauri State。让 `for_test(log, shell)` 内部自动构造 fresh counters 比每个测试手动 `new_cache_counters()` 后传入更省事，且让 production 接口保持显式。
+- **Relaxed ordering 仍然够**：counters 没参与任何同步关系（reader 是 panel UI，writer 是 pipeline 末尾，没人靠 counter 状态做后续决策）。Relaxed 是最便宜的内存序。
+- **summary 0 case 不 bump**：和 Iter 30 同款决定——0 的 turn 不是真"有 cache 行为"的 turn，纳入会污染分母（"100 个 turn 50% 命中率" vs "30 个 turn 70% 命中率"，前者把没有缓存调用的 turn 也算上误导）。
+- **counters 永不 reset**：当前没 reset 接口。pet 重启会清零；运行期间无法手动归零。Iter 35 计划加按钮——用户长期跑会想看新窗口的统计。
+
 ## Iter 33a 设计要点（已实现）
 - **TODO 描述错了，先纠正**：原 TODO 说 LogStore 是 unbounded，但读代码发现已有 500 行硬限。这种"基于记忆而非阅读源码"的 TODO 错误偶尔会出现。修正记录在 DONE.md 让以后看 TODO 流水的人不会困惑。
 - **常量化魔法数**：5000 直接换 500 不算改进；命名 + doc comment 才是。`MAX_LOG_LINES` 让阅读者一眼明白意图，doc comment 量化说明 "5000 ≈ 几百个 turn"。

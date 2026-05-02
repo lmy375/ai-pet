@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，对照 debug 日志里的"missing [motion: X] prefix"出现率判断要不要再改 prompt。
-- [ ] Iter 34：把 cache 累计统计搬到独立的 `CacheCountersStore`（AtomicU64 三元组）作为 Tauri State，让 `get_cache_stats` 不再依赖 log 解析——这样即便 LogStore 5000 行 cap 触发了旧 summary 行也丢了，统计仍然准。（Iter 33 拆分项）
+- [ ] Iter 35：在 PanelDebug 加一个"重置 cache 统计"按钮调一个新的 `reset_cache_stats` Tauri 命令——长期跑下来用户会想清零看一段新窗口的命中率。clear_logs 已经有按钮，counters 也该有。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。

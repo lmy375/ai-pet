@@ -126,10 +126,10 @@ impl ToolRegistry {
         )
     }
 
-    /// Emit a single summary log line for the registry's cache activity. Caller invokes
-    /// this after the LLM pipeline completes so debug consumers can grep one line for
-    /// per-turn hit ratio. Suppresses output when no cacheable tool fired this turn —
-    /// no point logging "Tool cache: 0/0" on every silent proactive tick.
+    /// Emit a single summary log line and bump the process-wide cache counters. Caller
+    /// invokes this after the LLM pipeline completes. Suppresses output (and counter
+    /// increments) when no cacheable tool fired this turn — no point recording an empty
+    /// turn for either humans grepping logs or the ratio renderer.
     pub fn log_cache_summary(&self, ctx: &ToolContext) {
         let (hits, misses) = self.cache_stats();
         let total = hits + misses;
@@ -141,6 +141,9 @@ impl ToolRegistry {
             "Tool cache summary: {}/{} hits ({}%)",
             hits, total, pct
         ));
+        ctx.cache_counters.turns.fetch_add(1, Ordering::Relaxed);
+        ctx.cache_counters.hits.fetch_add(hits, Ordering::Relaxed);
+        ctx.cache_counters.calls.fetch_add(total, Ordering::Relaxed);
     }
 }
 
@@ -180,7 +183,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> ToolContext {
-        ToolContext::new(
+        ToolContext::for_test(
             LogStore(Arc::new(StdMutex::new(Vec::new()))),
             ShellStore(Arc::new(StdMutex::new(StdHashMap::new()))),
         )
@@ -265,6 +268,36 @@ mod tests {
         reg.execute("memory_edit", "{}", &ctx).await;
         // memory_edit is not on the whitelist — neither hit nor miss is recorded.
         assert_eq!(reg.cache_stats(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn log_cache_summary_bumps_atomic_counters() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let tool = Box::new(CountingTool {
+            name: "get_weather".to_string(),
+            calls: calls.clone(),
+        });
+        let reg = ToolRegistry::with_tools(vec![tool], vec![]);
+        let ctx = fresh_ctx();
+
+        // Same args 3 times → 1 miss + 2 hits.
+        reg.execute("get_weather", "{}", &ctx).await;
+        reg.execute("get_weather", "{}", &ctx).await;
+        reg.execute("get_weather", "{}", &ctx).await;
+        reg.log_cache_summary(&ctx);
+        assert_eq!(ctx.cache_counters.turns.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.cache_counters.hits.load(Ordering::SeqCst), 2);
+        assert_eq!(ctx.cache_counters.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn log_cache_summary_skips_when_no_cacheable_calls() {
+        // No execute() calls at all — summary must not bump counters.
+        let reg = ToolRegistry::with_tools(vec![], vec![]);
+        let ctx = fresh_ctx();
+        reg.log_cache_summary(&ctx);
+        assert_eq!(ctx.cache_counters.turns.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.cache_counters.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
