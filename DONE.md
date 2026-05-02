@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 64：trigger_proactive_turn 状态反馈
+- `PanelDebug.tsx` 加 `proactiveStatus: string` state；`handleTriggerProactive` 接住 invoke 返回的 status 字符串赋给 state；catch 失败也写进同一 state（带"触发失败"前缀）。
+- toolbar 在 DevTools 按钮后插条 status span：成功用 `#059669`（绿），失败用 `#dc2626`（红）；max-width 260px + ellipsis 截断长字符串，hover tooltip 看完整。
+- `setTimeout(setProactiveStatus(""), 8000)` 自动 8 秒清空——既给用户看的时间，又不让 toolbar 永远顶着 stale 状态。
+- 失败时立即把 console.error 也保留，给 DevTools 用户看完整错误栈。
+- 后端无改动；tsc 干净。
+- 现在按完"立即开口"在 toolbar 立刻看到"Proactive turn finished in 6800 ms (idle=900s)"，调试链路从触发到耗时都可见。
+
 ## 2026-05-03 — Iter 63：手动触发 proactive turn 命令 + 按钮
 - 后端 `proactive.rs` 加 `#[tauri::command] pub async fn trigger_proactive_turn(app)`：取 InteractionClock snap + user_input_idle_seconds，直接调 `run_proactive_turn(...)` 绕过 evaluate_loop_tick 所有闸门。返回 "Proactive turn finished in N ms (idle=Ks)"。
 - lib.rs 注册命令。

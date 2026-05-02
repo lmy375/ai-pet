@@ -54,6 +54,7 @@ export function PanelDebug() {
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
+  const [proactiveStatus, setProactiveStatus] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -112,12 +113,17 @@ export function PanelDebug() {
 
   const handleTriggerProactive = async () => {
     setTriggeringProactive(true);
+    setProactiveStatus("");
     try {
-      await invoke<string>("trigger_proactive_turn");
+      const status = await invoke<string>("trigger_proactive_turn");
+      setProactiveStatus(status);
     } catch (e) {
       console.error("trigger_proactive_turn failed:", e);
+      setProactiveStatus(`触发失败: ${e}`);
     } finally {
       setTriggeringProactive(false);
+      // Auto-clear after a few seconds so the toolbar doesn't stick on a stale message.
+      setTimeout(() => setProactiveStatus(""), 8000);
     }
   };
 
@@ -160,6 +166,22 @@ export function PanelDebug() {
         <button onClick={handleOpenDevTools} style={{ ...toolBtnStyle, background: "#f59e0b", color: "#fff" }}>
           DevTools
         </button>
+        {proactiveStatus && (
+          <span
+            style={{
+              fontSize: "12px",
+              color: proactiveStatus.startsWith("触发失败") ? "#dc2626" : "#059669",
+              alignSelf: "center",
+              maxWidth: "260px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={proactiveStatus}
+          >
+            {proactiveStatus}
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         {cacheStats.total_calls > 0 && (
           <span
