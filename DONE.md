@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 80：LLM 沉默率 atomic counters + panel 工具栏 chip
+- 新 `LlmOutcomeCounters { spoke, silent, error: AtomicU64 }` 加到 `ProcessCounters`，container pattern 与 cache/mood_tag 一致；零 plumbing 改动。
+- 新 Tauri commands `get_llm_outcome_stats` / `reset_llm_outcome_stats`；都注册到 invoke handler。
+- 调度循环 dispatch `LoopAction::Run` 后的 outcome 处理处一次性 fetch process_counters，按 Spoke/Silent/Error 分支 `fetch_add(1)` 与 push decision 同位置——保证 decision_log 看到的事件和 atomic 累计一致。
+- 前端：interface `LlmOutcomeStats { spoke, silent, error: number }`；fetchLogs Promise.all 数组加 `invoke("get_llm_outcome_stats")`；新 state + 重置 handler。
+- 工具栏 Tag chip 后插入"LLM沉默 N/M (X%)"：紫色 #7c3aed 默认；当 silent+error 占比超过半数（即 spoke 是少数），切橙色 #ea580c warning 提示 "prompt 太克制了"。tooltip 写明 "gate 放行后的 LLM 决策" 和 "可作为调优反馈"。重置按钮与 cache/tag 同款。
+- 2 个新单测覆盖 default 0 / accumulate / reset 三步。
+- 155 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 79：decision log CAPACITY 升 16，panel 视觉配对 Run+outcome
 - `decision_log::CAPACITY` 从 `10` → `16`。Iter 78 起每次 Run 触发会 push 两条（Run + LLM outcome），10 cap 仅给 5 个完整 cycle 的视野；16 给约 8 个 cycle，恢复 Iter 77 之前的工作集大小。
 - panel "最近决策" 列表对 `Spoke / LlmSilent / LlmError` 三个 outcome kind 的 kind 列前加 `└ ` tree 字符（U+2514 + 空格），让"这是上一个 Run 的后续"视觉自洽——不需要看时间戳就知道哪两行是一对。

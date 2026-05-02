@@ -108,6 +108,8 @@ pub fn run() {
             commands::debug::reset_cache_stats,
             commands::debug::get_mood_tag_stats,
             commands::debug::reset_mood_tag_stats,
+            commands::debug::get_llm_outcome_stats,
+            commands::debug::reset_llm_outcome_stats,
             decision_log::get_proactive_decisions,
             speech_history::get_recent_speeches,
             speech_history::get_lifetime_speech_count,

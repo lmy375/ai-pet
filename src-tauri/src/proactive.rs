@@ -793,10 +793,23 @@ pub fn spawn(app: AppHandle) {
                 LoopAction::Run { idle_seconds, input_idle_seconds } => {
                     let outcome = run_proactive_turn(&app, idle_seconds, input_idle_seconds).await;
                     let outcome_reason = chatty_tag.clone().unwrap_or_else(|| "-".to_string());
+                    let outcome_counters = &app
+                        .state::<crate::commands::debug::ProcessCountersStore>()
+                        .inner()
+                        .llm_outcome;
                     match &outcome {
-                        Ok(Some(_)) => decisions.push("Spoke", outcome_reason),
-                        Ok(None) => decisions.push("LlmSilent", outcome_reason),
-                        Err(e) => decisions.push("LlmError", format!("{} ({})", e, outcome_reason)),
+                        Ok(Some(_)) => {
+                            outcome_counters.spoke.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            decisions.push("Spoke", outcome_reason);
+                        }
+                        Ok(None) => {
+                            outcome_counters.silent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            decisions.push("LlmSilent", outcome_reason);
+                        }
+                        Err(e) => {
+                            outcome_counters.error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            decisions.push("LlmError", format!("{} ({})", e, outcome_reason));
+                        }
                     }
                     if let Err(e) = outcome {
                         eprintln!("Proactive turn failed: {}", e);
