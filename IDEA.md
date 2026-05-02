@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 71 设计要点（已实现）
+- **从 A 反转到 B**：Iter 70 选了 frontend-only 截断指示（A 方案，"50+"），Iter 71 走的是当时被推迟的 B 方案——独立持久 counter。两次决定不矛盾：A 适合验证用户在不在乎；现在已上线第三轮 panel chip 演化（69 加 chip → 70 加饱和提示 → 71 升级为真实累计），把"长跑用户能看到精确数"这个底层能力补全。
+- **文件 sidecar 而非 ProcessCounters atomic**：counter 必须跨重启活下来，否则用户每次开机都看到从 0 涨——比 50+ 还差。ProcessCounters 是进程内 State，重启清零，不达标。文件方案虽然不优雅但和 speech_history.log 同位置同 IO 模式，复杂度增量最小。如果将来加更多持久 counter，可以一次把它们迁到一个 .json 或 sqlite。
+- **bootstrap from count_speeches**：升级用户首次启动时 sidecar 不存在，回退读 speech_history.log 行数。意味着从 Iter 70 升级上来的用户能继续在原有 ≤50 基础上累计，而不是从 0 开始。第一次 bump 后 sidecar 永远存在，bootstrap 只生效一次——零长期开销。
+- **bump 在 record_speech_inner 末尾且 best-effort**：失败不影响 speech 写入。两条 IO 顺序是先写 speech_history（用户期望持久），再写 count（衍生信息）；若 count 写失败，下次启动 bootstrap 会重新对齐到 speech_history 行数（≤50 时仍准确，>50 时差额永远丢失但不致命）。
+- **删 proactive_count_capped 而非保留**：lifetime counter 不会饱和，flag 永远 false——前端死代码 + 多一个序列化字段。直接删 ToneSnapshot 字段 + interface 字段 + 渲染分支，比留着更干净。tooltip 改写为"持久化在 speech_count.txt"让用户知道这是真实累计，不需要解释饱和。
+- **不加新单测**：纯 IO 代码（read/write 单整数），逻辑量极少；rust 类型系统 + tsc + 既有 speech_history 测试 + cargo check 兜底。如果将来 bootstrap 或 bump 出 bug，加一个临时文件 round-trip 测试即可。
+
 ## Iter 70 设计要点（已实现）
 - **A vs B 选 A**：(A) `50+` 显示是 frontend-only 提示截断，零额外 state；(B) 独立 atomic 是 source-of-truth fix，多一组持久化考虑（不持久化重启就清零，反而误导）。当前用户最可能在前几次破冰阶段就放下来或换设备，长跑用户的精确累计需求弱。简单版本足够。如果将来真有人想用 lifetime stats 当成就，再走 B。
 - **bool 而非 sentinel value**：本可以让 backend 返 `Option<u64>` (None=capped) 或负数。但 `proactive_count_capped: bool` 字段名自解释；前端 `count + (capped ? "+" : "")` 一行渲染干净。

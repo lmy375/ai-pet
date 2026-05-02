@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 71：proactive_count 持久化 sidecar，告别 50 行 cap
+- 新增 `~/.config/pet/speech_count.txt` sidecar：单整数文件，每次 `record_speech_inner` 写完追加 `bump_lifetime_count()` 把它 +1（best-effort，IO 错误不挡 speech 主流程）。
+- `lifetime_speech_count() -> u64`：读 sidecar；文件缺失/损坏时 fallback 到 `count_speeches().await as u64` 作 bootstrap，让从 Iter 70 升级上来的现有用户首次访问不会回退到 0。第一次 bump 后 sidecar 永远存在，bootstrap 路径只走一次。
+- ToneSnapshot 改用 `lifetime_speech_count`，删掉 Iter 70 的 `proactive_count_capped: bool` 字段（持久 counter 不会饱和，标志已多余）。
+- 前端 `PanelDebug.tsx` interface 同步删 capped 字段；🤝 chip 简化：去掉 `+` 后缀和"已饱和"分支 tooltip，只保留破冰 / 普通两档。tooltip 文案改为"持久化在 speech_count.txt，跨重启不归零"，让用户知道它是真实累计。
+- Why sidecar file 而非 ProcessCounters atomic：counter 必须跨重启活下来；ProcessCounters 是进程内 State，下次启动归零，达不到"长跑用户看一共聊过多少次"的目标。文件写入和 speech_history.log 写入同位置同 IO 模式，复杂度增量极小。
+- cargo check + 141 tests + tsc 全过。
+
 ## 2026-05-03 — Iter 70：proactive_count 50+ 截断指示
 - speech_history.rs 的 `SPEECH_HISTORY_CAP` 从 private const 改为 `pub const`，让其他模块能比较检测饱和。
 - ToneSnapshot 加 `proactive_count_capped: bool`：`get_tone_snapshot` 计算 `count >= SPEECH_HISTORY_CAP` 决定。
