@@ -137,6 +137,44 @@ enum LoopAction {
     },
 }
 
+/// Snapshot of all the "conversational tone" signals the proactive prompt currently
+/// uses. Exposed via `get_tone_snapshot` so the panel can render the same info the LLM
+/// would see — handy for debugging "why did the pet say *that* right now?".
+#[derive(serde::Serialize)]
+pub struct ToneSnapshot {
+    pub period: String,
+    /// Cadence tier label, or None when this would be the pet's first proactive utterance.
+    pub cadence: Option<String>,
+    pub since_last_proactive_minutes: Option<u64>,
+    pub wake_seconds_ago: Option<u64>,
+    pub mood_text: Option<String>,
+    pub mood_motion: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_tone_snapshot(
+    clock: tauri::State<'_, InteractionClockStore>,
+    wake: tauri::State<'_, crate::wake_detector::WakeDetectorStore>,
+) -> Result<ToneSnapshot, String> {
+    let hour = chrono::Local::now().hour() as u8;
+    let snap = clock.snapshot().await;
+    let cadence_min = snap.since_last_proactive_seconds.map(|s| s / 60);
+    let cadence = cadence_min.map(|m| idle_tier(m).to_string());
+    let wake_ago = wake.last_wake_seconds_ago().await;
+    let (mood_text, mood_motion) = match crate::mood::read_current_mood_parsed() {
+        Some((t, m)) => (Some(t), m),
+        None => (None, None),
+    };
+    Ok(ToneSnapshot {
+        period: period_of_day(hour).to_string(),
+        cadence,
+        since_last_proactive_minutes: cadence_min,
+        wake_seconds_ago: wake_ago,
+        mood_text,
+        mood_motion,
+    })
+}
+
 /// Map an elapsed-minutes count (since the pet last spoke proactively) to a Chinese
 /// "cadence" label. Lets the LLM shift register from "continuing a thread" through
 /// "checking back in" to "haven't talked in ages" without doing the math itself.
