@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 45：宠物自言自语流持久化 + 反话题重复
+- 新模块 `src-tauri/src/speech_history.rs`：append-only 文件 `~/.config/pet/speech_history.log`，每行 `<ISO ts> <text>`（newline 平到 space）。
+- API：
+  - `pub async fn record_speech(text)` — append + trim 到 `SPEECH_HISTORY_CAP=50` 条，best-effort（IO error 吞掉）。
+  - `pub async fn recent_speeches(n)` — 读最近 n 条，oldest→newest 顺序。
+  - `pub fn parse_recent(content, n)` — 纯函数版便于单测。
+  - `pub fn strip_timestamp(line)` — 砍掉前缀只留正文，prompt 里渲染用。
+- `lib.rs` 加 `mod speech_history;`。
+- `proactive::run_proactive_turn` 在构造 prompt 阶段调 `recent_speeches(5).await`，把每条 strip_timestamp 后做成 bullets，注入新 `{speech_hint}` 占位（模板里紧跟 focus_hint 之后）。空时不渲染。
+- 在 `clock.mark_proactive_spoken()` 之后追加 `record_speech(reply_trimmed).await`，让本轮发言下次能被看到。
+- 9 个新单测覆盖：parse_recent 边界（empty/n=0/少于 n/正好 n/多于 n/空行）、strip_timestamp（标准/无空格）+ 文件层 round-trip 测试用 std::env::temp_dir() 自建唯一目录。
+- 总测试 76 + 9 = **85 个**，全过；cargo check 零 warning。
+- 现在宠物有了独立于 session 的"自我记忆"：即便用户切了新 session 或 chat.max_context_messages 把旧消息裁了，宠物仍知道自己上句说啥，避免连续两次"早上好咖啡"。
+
 ## 2026-05-03 — Iter 44：cadence hint 让 proactive 切换对话基调
 - 新 `pub fn idle_tier(minutes: u64) -> &'static str` 在 proactive.rs，5 档：
   - 0–15 分：「刚说过话，话题还热」

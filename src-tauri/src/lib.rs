@@ -8,6 +8,7 @@ mod input_idle;
 mod mcp;
 mod mood;
 mod proactive;
+mod speech_history;
 mod telegram;
 mod tools;
 

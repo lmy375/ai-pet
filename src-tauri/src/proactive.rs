@@ -395,6 +395,25 @@ async fn run_proactive_turn(
         }
     };
 
+    // Pull the pet's recent proactive lines from a dedicated history file so the model
+    // doesn't repeat itself. Independent of session messages — survives session resets
+    // and chat.max_context_messages trimming.
+    let speech_hint = {
+        let recent = crate::speech_history::recent_speeches(5).await;
+        if recent.is_empty() {
+            String::new()
+        } else {
+            let bullets: Vec<String> = recent
+                .iter()
+                .map(|line| format!("· {}", crate::speech_history::strip_timestamp(line)))
+                .collect();
+            format!(
+                "你最近主动说过的几句话（旧→新），开口前看一眼避免重复：\n{}",
+                bullets.join("\n")
+            )
+        }
+    };
+
     // Surface the user's active Focus mode (if any) so the pet can speak around it. This
     // path normally only runs when the user has unset `respect_focus_mode` — otherwise the
     // gate would have skipped before we got here.
@@ -414,6 +433,7 @@ async fn run_proactive_turn(
 {cadence_hint}\n\n\
 {mood_hint}\n\
 {focus_hint}\n\
+{speech_hint}\n\
 请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
 约束：\n\
 - 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{silent}`，不要其他任何文字。\n\
@@ -429,6 +449,7 @@ async fn run_proactive_turn(
         cadence_hint = cadence_hint,
         mood_hint = mood_hint,
         focus_hint = focus_hint,
+        speech_hint = speech_hint,
         silent = SILENT_MARKER,
         mood_cat = MOOD_CATEGORY,
         mood_title = MOOD_TITLE,
@@ -464,6 +485,9 @@ async fn run_proactive_turn(
     }
 
     clock.mark_proactive_spoken().await;
+    // Append to the dedicated speech history so the next proactive turn's prompt can
+    // surface this line back to the LLM and avoid repetition.
+    crate::speech_history::record_speech(reply_trimmed).await;
 
     // Re-read mood after the turn — if the LLM updated it via memory_edit, the file has been
     // rewritten and we should ship the latest snapshot to the frontend.
