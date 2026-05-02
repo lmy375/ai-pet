@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 50 设计要点（已实现）
+- **一个命令而非多个**：本可以让 panel 调三个命令（cadence、wake、mood）独立拉。但 ToneSnapshot 把它们打包成一次 IPC，更原子（多个独立调用之间状态可能漂动）、更便宜（一次轮询 vs 三次）。代价：加新信号要改 struct + 命令 + 前端 interface 三处——但每秒 1 次调用，单调用便宜，权衡好。
+- **复用而非重新算**：`get_tone_snapshot` 直接调 `period_of_day` / `idle_tier` / `read_current_mood_parsed` / `last_wake_seconds_ago` —— prompt 也调这些。"两个消费者用同一份数据"是设计目标，避免 panel 显示一个值、prompt 用另一个的尴尬。
+- **emoji 作为 type discriminator**：`⏱` time、`💬` cadence、`☀` wake、`★` motion、`☁` mood。比"period:" / "cadence:" 这种文字标签紧凑且自带语义。代价：emoji 渲染依赖系统字体（macOS / Windows / iTerm 都没问题，远程终端可能不行），但 panel 是 GUI 不是 terminal。
+- **wake 仅在 ≤600 内显示**：和 Iter 48 / 49 的 600s grace window 对齐——超过就是"早就 wake 过的事"，UI 不再炫耀。
+- **mood text 截断显示**：mood 可能很长（"看用户在写代码替他高兴，但担心他没吃午饭..."），整段塞 panel 一行会让其他段挤掉。`flex: 1 + ellipsis` 让它自适应宽度，hover tooltip 看完整。
+- **不写测试**：纯组装函数，没条件分支，依赖的 4 个 helper 都各自有测试。tsc 抓字段名错；cargo check 抓签名错；剩下的"渲染好不好看"是肉眼活，单测帮不上。
+
 ## Iter 49 设计要点（已实现）
 - **软化哪些 / 不软化哪些**：核心设计决策。cooldown 和 idle threshold 都是"避免打扰"的时间约束——而 wake 已经标记"用户离开过桌子大概率回来了"，这两个约束的本意不再适用，软化。awaiting / quiet_hours / focus_mode 是用户偏好或社交礼貌（"我没回应你，你别接着说"），wake 不该绕过它们。决策表：
   | gate | 软化 | 理由 |

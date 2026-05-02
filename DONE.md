@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 50：PanelDebug 显示对话基调摘要
+- 后端 `proactive.rs` 新增：
+  - `pub struct ToneSnapshot { period, cadence, since_last_proactive_minutes, wake_seconds_ago, mood_text, mood_motion }`（serde::Serialize）。
+  - `#[tauri::command] pub async fn get_tone_snapshot(InteractionClockStore, WakeDetectorStore)` —— 把所有 prompt 用到的"对话基调"信号一次性算出来。复用现有的 `period_of_day` / `idle_tier` / `read_current_mood_parsed` / `last_wake_seconds_ago`。
+  - `lib.rs` `tauri::generate_handler!` 注册 `get_tone_snapshot`。
+- 前端 `PanelDebug.tsx`：
+  - 新 interface `ToneSnapshot` + state；fetchLogs 6 路 Promise.all（多一路）。
+  - toolbar 之后插一段浅灰小条：单行 flex-wrap，由表情 emoji + 紧凑文本组成：`⏱ 上午`、`💬 几小时没说话（150m）`、`☀ wake 60s`（蓝色）、`★ motion: Tap`（紫色）、`☁ mood: ...`（截断显示）。
+  - 每段独立 title tooltip 解释字段含义；条件渲染——值缺失就不显示该段。
+  - mood 文本一行截断 + ellipsis 避免拖长行。
+- tsc + 96 tests 双过；零 warning。
+- 现在用户开 panel 一眼能看到"此时此刻 LLM 看到的所有对话基调信号"，调试"宠物为什么这么说"的速度 ×10。
+
 ## 2026-05-03 — Iter 49：wake event 软化 cooldown / idle 阈值
 - 新常量 `WAKE_GRACE_WINDOW_SECS = 600`、辅助 `wake_recent(Option<u64>) -> bool`，用 `matches!` 表达 ≤600s 即生效。
 - `evaluate_pre_input_idle` 签名加 `wake_seconds_ago: Option<u64>` 参数（第 5 个）；in-grace 时：

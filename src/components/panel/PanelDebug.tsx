@@ -20,6 +20,15 @@ interface MoodTagStats {
   no_mood: number;
 }
 
+interface ToneSnapshot {
+  period: string;
+  cadence: string | null;
+  since_last_proactive_minutes: number | null;
+  wake_seconds_ago: number | null;
+  mood_text: string | null;
+  mood_motion: string | null;
+}
+
 export function PanelDebug() {
   const [logs, setLogs] = useState<string[]>([]);
   const [cacheStats, setCacheStats] = useState<CacheStats>({
@@ -34,23 +43,26 @@ export function PanelDebug() {
     no_mood: 0,
   });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
+  const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
         invoke<MoodTagStats>("get_mood_tag_stats"),
         invoke<string[]>("get_recent_speeches", { n: 10 }),
+        invoke<ToneSnapshot>("get_tone_snapshot"),
       ]);
       setLogs(result);
       setCacheStats(stats);
       setDecisions(dec);
       setMoodTagStats(mts);
       setRecentSpeeches(speeches);
+      setTone(toneSnap);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -188,6 +200,48 @@ export function PanelDebug() {
           {logs.length} 条日志
         </span>
       </div>
+
+      {/* Conversational tone snapshot — what signals the proactive prompt is seeing */}
+      {tone && (
+        <div
+          style={{
+            padding: "6px 16px",
+            borderBottom: "1px solid #e2e8f0",
+            background: "#f1f5f9",
+            fontSize: "11px",
+            color: "#475569",
+            fontFamily: "'SF Mono', 'Menlo', monospace",
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "12px",
+          }}
+        >
+          <span title="period_of_day(now)">⏱ {tone.period}</span>
+          {tone.cadence && tone.since_last_proactive_minutes !== null && (
+            <span title="距上次宠物主动开口">
+              💬 {tone.cadence}（{tone.since_last_proactive_minutes}m）
+            </span>
+          )}
+          {tone.wake_seconds_ago !== null && tone.wake_seconds_ago <= 600 && (
+            <span title="刚检测到 wake-from-sleep" style={{ color: "#0891b2" }}>
+              ☀ wake {tone.wake_seconds_ago}s
+            </span>
+          )}
+          {tone.mood_motion && (
+            <span title="LLM 当前 motion 标签" style={{ color: "#a855f7" }}>
+              ★ motion: {tone.mood_motion}
+            </span>
+          )}
+          {tone.mood_text && (
+            <span
+              style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              title={tone.mood_text}
+            >
+              ☁ mood: {tone.mood_text}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Recent proactive decisions — answers "why didn't the pet say anything?" */}
       {decisions.length > 0 && (
