@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 60：consolidate 阶段清扫 stale reminder
+- 新纯函数 `pub fn is_stale_reminder(&ReminderTarget, now: NaiveDateTime, cutoff_hours) -> bool` 在 proactive.rs：
+  - Absolute → `(now - dt) > cutoff_hours` 即过期
+  - TodayHour → 永远 false（语义是"recurring-friendly"，不知道创建日期，不该自动删）
+- 新函数 `pub fn sweep_stale_reminders(now, cutoff_hours) -> usize` 在 consolidate.rs：扫 todo 类，对每个 parseable reminder 检查 stale，命中调 `memory::memory_edit("delete", "todo", title)`，返回删除数。先 collect titles 再删，避免 mutate-while-iterate。
+- `run_consolidation` 在 LLM 调用前先 `sweep_stale_reminders(now, 24)`，>0 时写日志。这样 LLM 看到的 index 已经清爽，不会浪费一次 API call 决定要不要删。
+- 4 个新单测覆盖：cutoff 之外 stale / 之内不 stale / 未来不 stale / TodayHour 永不 stale。
+- 总测试 133 + 4 = **137 个**，全过；cargo + tsc 双过；零 warning。
+- 现在用户即使忘了让宠物清掉昨天的 todo，第二天 consolidate 跑时会自动收拾。
+
 ## 2026-05-03 — Iter 59：reminder 支持绝对日期格式
 - 新 `pub enum ReminderTarget { TodayHour(u8, u8), Absolute(NaiveDateTime) }`：把"今天 HH:MM"和"特定日期 HH:MM"做成显式两态。
 - `parse_reminder_prefix` 重构：先尝试 `YYYY-MM-DD HH:MM`（含空格），失败再退到 `HH:MM`。返回 `Option<(ReminderTarget, String)>`。

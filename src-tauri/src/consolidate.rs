@@ -18,6 +18,7 @@ use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
 use crate::mood::{read_current_mood, read_mood_for_event};
+use crate::proactive::{is_stale_reminder, parse_reminder_prefix};
 use crate::tools::ToolContext;
 
 /// Spawn the memory consolidation loop. Reads settings each tick so the user can toggle
@@ -76,6 +77,17 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
         .inner()
         .clone();
     let ctx = ToolContext::new(log_store.clone(), shell_store, process_counters);
+
+    // Deterministic sweep first — drop reminders whose Absolute target is more than 24h
+    // past. The LLM later sees a cleaner index and won't waste a call deciding whether
+    // to delete each one. TodayHour reminders are intentionally left alone (recurring).
+    let swept = sweep_stale_reminders(chrono::Local::now().naive_local(), 24);
+    if swept > 0 {
+        write_log(
+            &log_store.0,
+            &format!("Consolidate: swept {} stale reminder(s) before LLM run", swept),
+        );
+    }
 
     let index = memory::memory_list(None).map_err(|e| format!("memory_list failed: {e}"))?;
     let index_json = serde_json::to_string_pretty(&index)
@@ -151,6 +163,43 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     let _ = app.emit("chat-done", payload);
 
     Ok(())
+}
+
+/// Walk the `todo` memory category, identify reminder entries whose Absolute target is
+/// more than `cutoff_hours` past `now`, and delete them via `memory_edit`. Returns the
+/// number deleted. Non-reminder todos and TodayHour reminders are left alone — only
+/// stale one-shot Absolute reminders are swept.
+pub fn sweep_stale_reminders(now: chrono::NaiveDateTime, cutoff_hours: u64) -> usize {
+    let Ok(index) = memory::memory_list(Some("todo".to_string())) else {
+        return 0;
+    };
+    let Some(cat) = index.categories.get("todo") else {
+        return 0;
+    };
+    // Collect titles to delete first (don't mutate while iterating the index snapshot).
+    let mut to_delete = Vec::new();
+    for item in &cat.items {
+        if let Some((target, _)) = parse_reminder_prefix(&item.description) {
+            if is_stale_reminder(&target, now, cutoff_hours) {
+                to_delete.push(item.title.clone());
+            }
+        }
+    }
+    let mut count = 0;
+    for title in to_delete {
+        if memory::memory_edit(
+            "delete".to_string(),
+            "todo".to_string(),
+            title,
+            None,
+            None,
+        )
+        .is_ok()
+        {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Sum item counts across all memory categories.

@@ -925,6 +925,24 @@ pub fn format_target(target: &ReminderTarget) -> String {
     }
 }
 
+/// Whether this reminder is "stale" — past its target by more than `cutoff_hours`.
+/// Only `Absolute` targets can go stale; `TodayHour` is intentionally recurring-friendly
+/// and doesn't carry a creation date in the memory entry, so we never auto-delete those.
+/// Used by the consolidate sweep to clean up forgotten one-shot reminders.
+pub fn is_stale_reminder(
+    target: &ReminderTarget,
+    now: chrono::NaiveDateTime,
+    cutoff_hours: u64,
+) -> bool {
+    match target {
+        ReminderTarget::Absolute(dt) => {
+            let cutoff = chrono::Duration::hours(cutoff_hours as i64);
+            (now - *dt) > cutoff
+        }
+        ReminderTarget::TodayHour(_, _) => false,
+    }
+}
+
 /// Load the most recent session's messages (without the proactive prompt). Returns
 /// `(session_id, messages)` or `(None, [])` if none exists yet.
 fn load_active_session() -> (Option<String>, Vec<serde_json::Value>) {
@@ -1230,6 +1248,35 @@ mod reminder_tests {
         // is over a day late, must be False.
         let target = ReminderTarget::Absolute(ndt(2026, 5, 1, 23, 55));
         assert!(!is_reminder_due(&target, ndt(2026, 5, 3, 0, 5), 30));
+    }
+
+    // ---- stale reminder ----
+
+    #[test]
+    fn absolute_stale_after_cutoff() {
+        // Target was May 1 09:00; now is May 2 10:00 = 25h past, cutoff 24h → stale.
+        let target = ReminderTarget::Absolute(ndt(2026, 5, 1, 9, 0));
+        assert!(super::is_stale_reminder(&target, ndt(2026, 5, 2, 10, 0), 24));
+    }
+
+    #[test]
+    fn absolute_within_cutoff_not_stale() {
+        // Target May 1 09:00; now May 2 08:00 = 23h past → not stale at 24h cutoff.
+        let target = ReminderTarget::Absolute(ndt(2026, 5, 1, 9, 0));
+        assert!(!super::is_stale_reminder(&target, ndt(2026, 5, 2, 8, 0), 24));
+    }
+
+    #[test]
+    fn absolute_in_future_not_stale() {
+        let target = ReminderTarget::Absolute(ndt(2026, 5, 4, 9, 0));
+        assert!(!super::is_stale_reminder(&target, ndt(2026, 5, 3, 12, 0), 24));
+    }
+
+    #[test]
+    fn today_hour_never_stale() {
+        // TodayHour is intentionally recurring-friendly — never auto-purged.
+        let target = ReminderTarget::TodayHour(9, 0);
+        assert!(!super::is_stale_reminder(&target, ndt(2026, 5, 3, 12, 0), 24));
     }
 }
 
