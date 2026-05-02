@@ -30,6 +30,12 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## PanelSettings 补 Proactive/Consolidate UI 设计要点（已实现）
+- **跳 Iter 26 选这个**：Iter 26 是给 IDEA 写一段 known-limitation 文档 + 加一个验证启动时 active 行为的测试。但 `first_observation_active_logs_on` 测试已经在 Iter 23 覆盖了启动行为；只缺一段说明文字而已——价值低于"补全 panel 形式视图"这个真实的功能缺口。把 Iter 26 标记为 obsolete，留给 IDEA 章节补一句即可。
+- **复制而不抽公共组件**：第一反应是把 `NumberField`（小窗）和 `PanelNumberField`（panel）合一。但两者样式上下文略有差异（小窗的 inputStyle 字号 13 / 边框 #ddd；panel 的字号略小、整体浅色阴影更深）。强行合并要么引入 props 复杂度，要么破坏一边的视觉。先复制，等真需要第三处再抽。Iter 27 列着待办，下次有触发再做。
+- **panel 视图 vs modal 视图**：项目有两套设置 UI——小窗右键弹的 SettingsPanel modal（轻便、260–300 px 宽）+ 独立 panel 窗口的 PanelSettings（重量、能编辑 MCP/Telegram 这种长字段）。共享 `useSettings.ts` 的 `AppSettings` 类型保证字段不漂移；UI 形态可以独立演化。这次让 panel 视图也 catch up 到 modal 已有的字段。
+- **顺手覆盖 Iter 21+22 加的字段**：原 TODO 只说"接 Proactive / Consolidate"。但 Iter 20 的 quiet_hours、Iter 21 的 respect_focus_mode 也都还没在 panel 视图露出过——一并补完，避免未来发现"诶这个字段在 modal 有 panel 没"。
+
 ## Iter 25 设计要点（已实现）
 - **size-based 而非 time-based**：本可以"每月 1 号滚动一次"。但 size-based 有几个优点：(a) 实现简单（一次 metadata 调用比时间窗判断稳）；(b) 对低使用率用户友好（一年都没满 1MB 就不滚动）；(c) 高使用率用户也不会丢得太快（30k 行约一年）。time-based 适合"日志按月归档查阅"场景，本项目是给 LLM 看模式不是给人翻档案。
 - **`with_extension` 陷阱**：`PathBuf::from("focus_history.log").with_extension("log.1")` 会得到 `focus_history.log.1`——但这是利用了 `with_extension` 的实现细节（"log.1"被当成新扩展，附在去掉旧扩展 "log" 后的 stem 上）。换成 `focus.txt` 就不灵了。直接 `OsStr::push(".1")` 是对路径文本追加，最稳。专门写测试 `rotated_path_handles_no_extension` 验证。
