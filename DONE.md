@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 30：cache 命中聚合统计
+- `ToolRegistry` 加两个原子计数器：`cache_hits` / `cache_misses`（`AtomicU64`）。
+- `execute()` 在 cache 命中时 `cache_hits.fetch_add(1)`，写入新缓存项时 `cache_misses.fetch_add(1)`。Relaxed ordering 够用——只是统计计数没并发依赖。
+- 新公共方法：
+  - `cache_stats() -> (hits, misses)`：lock-free 双 load，方便测试和外部读取。
+  - `log_cache_summary(ctx)`：写一行 `"Tool cache summary: H/T hits (P%)"`；当 total=0（没有任何 cacheable tool 调用）时直接 return，避免每次主动开口检查都刷一行 0/0。
+- `run_chat_pipeline` 在 "Final response"（无新 tool_calls）成功分支里调 `registry.log_cache_summary(ctx)`——这条路径覆盖所有 4 个调用者（proactive / chat / telegram / consolidate），无需各自加。
+- 2 个新单测：`cache_stats_track_hits_and_misses`（1 miss + 2 hits → (2, 1)）/ `cache_stats_ignore_non_cacheable_tools`（mutating tool 调用不计数）。
+- 总测试 53 + 2 = **55 个**，全过。
+- cargo check 通过，零 warning。
+- 后续可加 Tauri 命令读 LogStore 过滤这行做面板可视化（Iter 31）。
+
 ## 2026-05-02 — Iter 29：proactive prompt 加"信任首次结果"指引
 - 在 proactive prompt 工具列表后追加一条规则：明确告诉 LLM 三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）"同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果"，要"相信首次返回值"。
 - 措辞策略：不暴露 cache 实现（"我们后端 dedupe 了你"），而是表达成行为指引（"一次就够，不要再问"）——对 LLM 来说更直接，也避免让它思考工程细节。

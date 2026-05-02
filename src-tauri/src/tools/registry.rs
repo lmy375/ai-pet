@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::Mutex as TokioMutex;
 
@@ -30,6 +31,11 @@ pub struct ToolRegistry {
     /// Populated lazily on first call, reused on repeats within the same registry's
     /// lifetime — naturally tick-scoped because the registry is rebuilt per LLM turn.
     cache: TokioMutex<HashMap<String, String>>,
+    /// Counts of cache hits and misses across this registry's lifetime. Aggregated into a
+    /// single summary log line by `log_cache_summary` so debug consumers can see effective
+    /// hit ratio without parsing every per-call log.
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
 }
 
 impl ToolRegistry {
@@ -63,6 +69,8 @@ impl ToolRegistry {
             mcp_definitions,
             mcp_tool_names,
             cache: TokioMutex::new(HashMap::new()),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
         }
     }
 
@@ -91,6 +99,7 @@ impl ToolRegistry {
         if let Some(ref key) = cache_key {
             let cache = self.cache.lock().await;
             if let Some(hit) = cache.get(key) {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 ctx.log(&format!("Tool cache hit: {}", name));
                 return hit.clone();
             }
@@ -100,11 +109,38 @@ impl ToolRegistry {
                 let result = tool.execute(arguments, ctx).await;
                 if let Some(key) = cache_key {
                     self.cache.lock().await.insert(key, result.clone());
+                    self.cache_misses.fetch_add(1, Ordering::Relaxed);
                 }
                 return result;
             }
         }
         format!(r#"{{"error": "unknown tool: {}"}}"#, name)
+    }
+
+    /// Snapshot of cache counters (hits, misses) for this registry's lifetime. Mainly
+    /// used by `log_cache_summary` and tests; lock-free read of two atomics.
+    pub fn cache_stats(&self) -> (u64, u64) {
+        (
+            self.cache_hits.load(Ordering::Relaxed),
+            self.cache_misses.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Emit a single summary log line for the registry's cache activity. Caller invokes
+    /// this after the LLM pipeline completes so debug consumers can grep one line for
+    /// per-turn hit ratio. Suppresses output when no cacheable tool fired this turn —
+    /// no point logging "Tool cache: 0/0" on every silent proactive tick.
+    pub fn log_cache_summary(&self, ctx: &ToolContext) {
+        let (hits, misses) = self.cache_stats();
+        let total = hits + misses;
+        if total == 0 {
+            return;
+        }
+        let pct = (hits as f64 / total as f64 * 100.0).round() as u64;
+        ctx.log(&format!(
+            "Tool cache summary: {}/{} hits ({}%)",
+            hits, total, pct
+        ));
     }
 }
 
@@ -196,6 +232,39 @@ mod tests {
         reg.execute("memory_edit", "{}", &ctx).await;
         reg.execute("memory_edit", "{}", &ctx).await;
         assert_eq!(calls.load(Ordering::SeqCst), 3, "mutating tool must not be cached");
+    }
+
+    #[tokio::test]
+    async fn cache_stats_track_hits_and_misses() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let tool = Box::new(CountingTool {
+            name: "get_weather".to_string(),
+            calls: calls.clone(),
+        });
+        let reg = ToolRegistry::with_tools(vec![tool], vec![]);
+        let ctx = fresh_ctx();
+
+        // 1 miss, then 2 hits with same args = (2 hits, 1 miss).
+        reg.execute("get_weather", "{}", &ctx).await;
+        reg.execute("get_weather", "{}", &ctx).await;
+        reg.execute("get_weather", "{}", &ctx).await;
+        assert_eq!(reg.cache_stats(), (2, 1));
+    }
+
+    #[tokio::test]
+    async fn cache_stats_ignore_non_cacheable_tools() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let tool = Box::new(CountingTool {
+            name: "memory_edit".to_string(),
+            calls: calls.clone(),
+        });
+        let reg = ToolRegistry::with_tools(vec![tool], vec![]);
+        let ctx = fresh_ctx();
+
+        reg.execute("memory_edit", "{}", &ctx).await;
+        reg.execute("memory_edit", "{}", &ctx).await;
+        // memory_edit is not on the whitelist — neither hit nor miss is recorded.
+        assert_eq!(reg.cache_stats(), (0, 0));
     }
 
     #[tokio::test]
