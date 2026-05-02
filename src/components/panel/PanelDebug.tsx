@@ -20,6 +20,13 @@ interface MoodTagStats {
   no_mood: number;
 }
 
+interface PendingReminder {
+  time: string;
+  topic: string;
+  title: string;
+  due_now: boolean;
+}
+
 interface ToneSnapshot {
   period: string;
   cadence: string | null;
@@ -45,18 +52,20 @@ export function PanelDebug() {
   });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
+  const [reminders, setReminders] = useState<PendingReminder[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
         invoke<MoodTagStats>("get_mood_tag_stats"),
         invoke<string[]>("get_recent_speeches", { n: 10 }),
         invoke<ToneSnapshot>("get_tone_snapshot"),
+        invoke<PendingReminder[]>("get_pending_reminders"),
       ]);
       setLogs(result);
       setCacheStats(stats);
@@ -64,6 +73,7 @@ export function PanelDebug() {
       setMoodTagStats(mts);
       setRecentSpeeches(speeches);
       setTone(toneSnap);
+      setReminders(reminderList);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -308,6 +318,44 @@ export function PanelDebug() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Pending user-set reminders — sourced from todo memory category */}
+      {reminders.length > 0 && (
+        <div
+          style={{
+            padding: "8px 16px",
+            borderBottom: "1px solid #e2e8f0",
+            background: "#fff7ed",
+            fontSize: "12px",
+            maxHeight: "120px",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ color: "#9a3412", marginBottom: "4px", fontSize: "12px" }}>
+            待提醒事项 {reminders.length} 条（橙色 = 已到时间窗口）
+          </div>
+          {reminders.map((r, i) => (
+            <div key={i} style={{ display: "flex", gap: "8px" }}>
+              <span
+                style={{
+                  color: r.due_now ? "#ea580c" : "#a16207",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                  fontWeight: r.due_now ? 600 : 400,
+                  minWidth: "44px",
+                }}
+              >
+                {r.time}
+              </span>
+              <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>
+                {r.topic}
+                <span style={{ color: "#94a3b8", marginLeft: "6px", fontSize: "11px" }}>
+                  ({r.title})
+                </span>
+              </span>
+            </div>
+          ))}
         </div>
       )}
 

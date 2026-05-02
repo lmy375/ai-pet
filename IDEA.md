@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 58 设计要点（已实现）
+- **复用 parse_reminder_prefix + is_reminder_due**：和 build_reminders_hint 同一函数，确保 panel 显示和 prompt scan 用同一种判断。"prompt 看到的是哪些 / panel 显示的是哪些" 这两个集合若用两套实现容易飘移。
+- **同时返回 due 和未来未 due**：build_reminders_hint 只给 due 的（要进 prompt），但 panel 想看完整列表（包括"已设但等几小时才到"的）。所以 get_pending_reminders 返全部解析得通的 reminders + 一个 due_now 标志，让前端决定怎么显示。
+- **橙色背景 #fff7ed（reminder 维度）**：颜色编码继续扩展——Cache 蓝 / Tag 紫 / Speech 紫 / Wake 蓝 / Reminder 橙 / Decision 灰白。橙色和"待办" / "时钟"心智模型对应，且与已有色系不冲突。
+- **due_now 加粗 + 更深橙**：同一段两种颜色避免 due 和未 due 看起来一样。深橙 (#ea580c) 抢眼比浅黄 (#a16207) 多。加粗强化"现在该提醒"的紧迫感。
+- **不写后端测试**：get_pending_reminders 是 thin wrapper —— parse_reminder_prefix / is_reminder_due 已分别测过；memory_list 是 Tauri 命令本身有覆盖。再写 plumbing 测试只是验证 wrapper 链接没断，cargo check 抓得住。
+- **panel 渲染区段顺序**：toolbar / tone / decisions / speech / reminders / log。reminders 放 speech 之后是因为两者都跟"宠物未来要做什么"相关（speech 是过去说啥，reminders 是未来要提啥），相邻显示更连贯；放 log 之前因为这是结构化数据 strip，log 是流水。
+
 ## Iter 57 设计要点（已实现）
 - **拆 mood_section / reminder_section 而非内联**：单一长 body 也行，但拆成两段命名变量让代码更易读、未来想加第三段（"如果用户问明天日程"等）可以追加新 section + format!。这是把 mood note 也演化到 builder 模式的早期形态。
 - **格式约定写在 prompt 里 vs 写在 SOUL.md**：SOUL.md 是宠物的 persona 设定（性格），不该塞工具/格式约定。inject_mood_note 是工程性 system 提示，正合适 — 它已经在做 "教 LLM 怎么写 mood format"。新增 reminder format 自然延续。

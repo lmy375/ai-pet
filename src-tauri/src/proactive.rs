@@ -268,6 +268,43 @@ pub struct ToneSnapshot {
     pub pre_quiet_minutes: Option<u64>,
 }
 
+#[derive(serde::Serialize)]
+pub struct PendingReminder {
+    pub time: String,
+    pub topic: String,
+    pub title: String,
+    pub due_now: bool,
+}
+
+/// List every parseable reminder currently in the `todo` memory category, regardless of
+/// whether it's due. Lets the panel show both "set for later" entries (helpful to verify
+/// the chat actually wrote them) and "due now" entries (helpful to confirm the
+/// proactive loop will surface them next tick).
+#[tauri::command]
+pub fn get_pending_reminders() -> Vec<PendingReminder> {
+    let now = chrono::Local::now();
+    let now_h = now.hour() as u8;
+    let now_m = now.minute() as u8;
+    let Ok(index) = crate::commands::memory::memory_list(Some("todo".to_string())) else {
+        return vec![];
+    };
+    let Some(cat) = index.categories.get("todo") else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for item in &cat.items {
+        if let Some((h, m, topic)) = parse_reminder_prefix(&item.description) {
+            out.push(PendingReminder {
+                time: format!("{:02}:{:02}", h, m),
+                topic,
+                title: item.title.clone(),
+                due_now: is_reminder_due(h, m, now_h, now_m, 30),
+            });
+        }
+    }
+    out
+}
+
 #[tauri::command]
 pub async fn get_tone_snapshot(
     clock: tauri::State<'_, InteractionClockStore>,
