@@ -245,7 +245,7 @@ async fn run_proactive_turn(
 - 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{silent}`，不要其他任何文字。\n\
 - 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{silent}`。\n\
 - 只说一句话，简短自然，像伙伴一样。\n\
-- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。\n\
+- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_upcoming_events`（看用户接下来几小时有没有日程，可用于提醒类话题，记得日程是私人内容不要原样念出）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。\n\
 - **决定开口后**：请用 `memory_edit` 更新 `{mood_cat}` 类别下 `{mood_title}` 的记忆（不存在就 `create`，存在就 `update`）。description 用一句话写下你此刻的心情、最近在想什么、对用户的牵挂——这样下次主动开口时你能记得自己刚才的状态，让人格保持连贯。沉默时无需更新。",
         time = now_local.format("%Y-%m-%d %H:%M"),
         minutes = idle_minutes,

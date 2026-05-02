@@ -3,6 +3,7 @@ use super::memory_tools::{MemoryEditTool, MemoryListTool, MemorySearchTool};
 use super::shell_tools::{BashTool, CheckShellStatusTool};
 use super::system_tools::GetActiveWindowTool;
 use super::weather_tool::GetWeatherTool;
+use super::calendar_tool::GetUpcomingEventsTool;
 use super::tool::Tool;
 use super::context::ToolContext;
 
@@ -29,6 +30,7 @@ impl ToolRegistry {
             Box::new(MemoryEditTool),
             Box::new(GetActiveWindowTool),
             Box::new(GetWeatherTool),
+            Box::new(GetUpcomingEventsTool),
         ];
         let mcp_tool_names: Vec<String> = mcp_definitions
             .iter()

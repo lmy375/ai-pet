@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 7b：macOS 日历事件工具
+- 新增 `src-tauri/src/tools/calendar_tool.rs`，定义 `GetUpcomingEventsTool`：
+  - 参数 `hours_ahead`（默认 24，clamp 到 1–168 = 一周）。
+  - macOS 走 `osascript` 调 Calendar.app `every event of c whose start date >= tStart and ≤ tEnd`，每条事件用 TAB 分隔字段（title / start / end / calendar / location），换行分隔记录。
+  - Rust 解析 stdout 为 JSON 数组，最多返回 20 条，标记 `truncated`。
+  - 失败时 stderr 透传出去并附 hint："去 System Settings 给 Calendars 授权"。
+  - 非 macOS 返回明确的 unsupported 错误。
+- `tools/mod.rs` 暴露 `calendar_tool`；`registry.rs` 注册到内置工具。
+- `proactive.rs` 主动 prompt 工具列表加上 `get_upcoming_events`，注释"日程是私人内容不要原样念出"。
+- 没有跑端到端验证（不应未授权读用户真实日历），但脚本与已工作的 `get_active_window` 同一 osascript 模式，cargo check 通过。
+- cargo check 通过（仍是两条与本次无关的预存 warning）。
+
 ## 2026-05-02 — Iter 7a：天气工具（wttr.in）
 - 新增 `src-tauri/src/tools/weather_tool.rs`，定义 `GetWeatherTool`：
   - 调用 `https://wttr.in/{city}?format=4`，返回紧凑一行（如 "Beijing: ⛅ 🌡️+18°C 🌬️↖4km/h"）。
