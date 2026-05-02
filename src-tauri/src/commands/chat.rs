@@ -21,6 +21,33 @@ pub struct ChatDonePayload {
     pub timestamp: String,
 }
 
+/// Insert a transient system message carrying the pet's current mood and a nudge to update
+/// it after replying. Inserted right after the leading system block so it sits next to
+/// SOUL.md but before any conversation history. Frontend never sees this message — we
+/// augment only the in-memory list passed to the pipeline.
+fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let body = match read_current_mood_parsed() {
+        Some((text, _)) if !text.trim().is_empty() => format!(
+            "[宠物当前心情/状态] {}\n\n如果这次对话让你心情有变化，可以用 `memory_edit` 更新 `ai_insights/current_mood`，description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头（Tap=开心活泼，Flick=想分享有兴致，Flick3=焦虑烦躁，Idle=平静低落沉静）。心情没变就不用更新。",
+            text.trim()
+        ),
+        _ => "[宠物当前心情/状态] 还没记录过。如果对话让你产生了某种心情，可以用 `memory_edit create` 新建 `ai_insights/current_mood`，description 以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头。没特别感受就先不写。".to_string(),
+    };
+
+    let note: ChatMessage = serde_json::from_value(serde_json::json!({
+        "role": "system",
+        "content": body,
+    }))
+    .expect("static mood note JSON should always parse");
+
+    let insert_at = messages
+        .iter()
+        .position(|m| m.role != "system")
+        .unwrap_or(messages.len());
+    messages.insert(insert_at, note);
+    messages
+}
+
 /// System prompt for tool usage best practices, injected into every chat pipeline request.
 const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 
@@ -428,7 +455,8 @@ pub async fn chat(
     // Inbound user message — clears the "awaiting reply to previous proactive" flag so the
     // proactive loop can fire again later.
     clock.mark_user_message().await;
-    let result = run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await;
+    let augmented = inject_mood_note(messages);
+    let result = run_chat_pipeline(augmented, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
 
