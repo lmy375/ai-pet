@@ -10,6 +10,7 @@
 //! text — newlines in the text are flattened to spaces. Trimmed to `SPEECH_HISTORY_CAP`
 //! entries on every write so it never grows unbounded.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::log_rotation::rotate_if_needed;
@@ -35,6 +36,18 @@ fn history_path() -> Option<PathBuf> {
 fn count_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("speech_count.txt"))
 }
+
+/// Per-day bucket file: `{ "YYYY-MM-DD": count, ... }`. Lets the panel show "今天开口 N
+/// 次" alongside the lifetime total without scanning speech_history.log timestamps every
+/// tick. Pruned to `DAILY_RETAIN_DAYS` so it can't grow unbounded over years of use.
+fn daily_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("pet").join("speech_daily.json"))
+}
+
+/// How many trailing days to retain in the per-day bucket file. Anything older is dropped
+/// on the next write. 90 is more than the panel ever surfaces (today only, for now) but
+/// gives future "last 7d" / "last 30d" features room to read back without re-architecting.
+const DAILY_RETAIN_DAYS: usize = 90;
 
 /// Append a new utterance to the history file, trimming to `SPEECH_HISTORY_CAP` entries
 /// total. Best-effort — IO errors are silently ignored so a hosed disk doesn't break the
@@ -74,6 +87,8 @@ async fn record_speech_inner(text: &str) -> std::io::Result<()> {
     tokio::fs::write(&path, content).await?;
     // Best-effort lifetime counter bump — failure here doesn't fail the speech write.
     let _ = bump_lifetime_count().await;
+    // Best-effort per-day bucket bump — same rationale.
+    let _ = bump_today_count().await;
     Ok(())
 }
 
@@ -165,6 +180,70 @@ async fn bump_lifetime_count() -> std::io::Result<()> {
     tokio::fs::write(&path, format!("{}\n", current + 1)).await
 }
 
+/// Pure: parse the daily-bucket JSON. Malformed input returns an empty map (caller will
+/// then write a fresh map on the next bump — a corrupt file self-heals after one speech).
+pub fn parse_daily(content: &str) -> BTreeMap<String, u64> {
+    serde_json::from_str(content).unwrap_or_default()
+}
+
+/// Pure: drop entries whose date keys come before `today - retain_days`. Uses string
+/// comparison because YYYY-MM-DD sorts lexicographically. Non-parseable keys are kept —
+/// the caller hasn't written them, so they're either future migrations or user-edited.
+pub fn prune_daily(
+    mut map: BTreeMap<String, u64>,
+    today: chrono::NaiveDate,
+    retain_days: usize,
+) -> BTreeMap<String, u64> {
+    let cutoff = today - chrono::Duration::days(retain_days as i64);
+    let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+    map.retain(|k, _| match chrono::NaiveDate::parse_from_str(k, "%Y-%m-%d") {
+        Ok(_) => k.as_str() >= cutoff_str.as_str(),
+        Err(_) => true,
+    });
+    map
+}
+
+/// Today's date in `YYYY-MM-DD` form using local time — same timezone as the speech log
+/// timestamps so "今天" matches what the user's clock shows.
+fn today_key() -> String {
+    chrono::Local::now().date_naive().format("%Y-%m-%d").to_string()
+}
+
+/// Best-effort: increment today's bucket and prune any entries beyond the retain window.
+async fn bump_today_count() -> std::io::Result<()> {
+    let Some(path) = daily_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let mut map = parse_daily(&existing);
+    let key = today_key();
+    *map.entry(key).or_insert(0) += 1;
+    let pruned = prune_daily(map, chrono::Local::now().date_naive(), DAILY_RETAIN_DAYS);
+    let json = serde_json::to_string(&pruned).unwrap_or_else(|_| "{}".to_string());
+    tokio::fs::write(&path, json).await
+}
+
+/// Number of proactive utterances recorded today (local time). Returns 0 when the file
+/// doesn't exist or today's bucket is missing.
+pub async fn today_speech_count() -> u64 {
+    let Some(path) = daily_path() else {
+        return 0;
+    };
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let map = parse_daily(&content);
+    map.get(&today_key()).copied().unwrap_or(0)
+}
+
+/// Tauri command exposing today's bucket count to the panel UI. Lets the stats card
+/// render "今天开口 X 次" alongside the lifetime total.
+#[tauri::command]
+pub async fn get_today_speech_count() -> u64 {
+    today_speech_count().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +291,56 @@ mod tests {
     #[test]
     fn strip_timestamp_no_space_returns_whole_line() {
         assert_eq!(strip_timestamp("noprefix"), "noprefix");
+    }
+
+    #[test]
+    fn parse_daily_empty_or_malformed() {
+        assert!(parse_daily("").is_empty());
+        assert!(parse_daily("not json").is_empty());
+        assert!(parse_daily("[1, 2, 3]").is_empty());
+    }
+
+    #[test]
+    fn parse_daily_valid_object() {
+        let m = parse_daily(r#"{"2026-05-01": 3, "2026-05-02": 5}"#);
+        assert_eq!(m.get("2026-05-01"), Some(&3));
+        assert_eq!(m.get("2026-05-02"), Some(&5));
+        assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn prune_daily_drops_entries_before_cutoff() {
+        let mut m = BTreeMap::new();
+        m.insert("2026-01-01".to_string(), 10);
+        m.insert("2026-04-01".to_string(), 20);
+        m.insert("2026-05-01".to_string(), 30);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        let pruned = prune_daily(m, today, 30);
+        // cutoff = 2026-04-03; 2026-01-01 (< cutoff) drops, 2026-04-01 (< cutoff) drops,
+        // 2026-05-01 (>= cutoff) stays.
+        assert_eq!(pruned.len(), 1);
+        assert!(pruned.contains_key("2026-05-01"));
+    }
+
+    #[test]
+    fn prune_daily_keeps_unparseable_keys() {
+        let mut m = BTreeMap::new();
+        m.insert("not-a-date".to_string(), 7);
+        m.insert("2026-01-01".to_string(), 1);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        let pruned = prune_daily(m, today, 30);
+        assert!(pruned.contains_key("not-a-date"));
+        assert!(!pruned.contains_key("2026-01-01"));
+    }
+
+    #[test]
+    fn prune_daily_zero_retain_drops_everything_dated() {
+        let mut m = BTreeMap::new();
+        m.insert("2026-05-03".to_string(), 1);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        let pruned = prune_daily(m, today, 0);
+        // cutoff == today, "2026-05-03" >= "2026-05-03" → kept (today is always retained).
+        assert!(pruned.contains_key("2026-05-03"));
     }
 
     fn fresh_temp_dir(label: &str) -> PathBuf {

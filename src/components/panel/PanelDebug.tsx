@@ -53,6 +53,7 @@ export function PanelDebug() {
   });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
+  const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
@@ -62,7 +63,7 @@ export function PanelDebug() {
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
@@ -71,6 +72,7 @@ export function PanelDebug() {
         invoke<ToneSnapshot>("get_tone_snapshot"),
         invoke<PendingReminder[]>("get_pending_reminders"),
         invoke<number>("get_lifetime_speech_count"),
+        invoke<number>("get_today_speech_count"),
       ]);
       setLogs(result);
       setCacheStats(stats);
@@ -80,6 +82,7 @@ export function PanelDebug() {
       setTone(toneSnap);
       setReminders(reminderList);
       setLifetimeSpeechCount(lifetime);
+      setTodaySpeechCount(today);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -273,15 +276,22 @@ export function PanelDebug() {
           background: "linear-gradient(135deg, #fdf4ff 0%, #f0f9ff 100%)",
           display: "flex",
           alignItems: "baseline",
-          gap: "12px",
+          gap: "16px",
         }}
       >
-        <span style={{ fontSize: "28px", fontWeight: 600, color: "#7c3aed", lineHeight: 1, fontFamily: "'SF Mono', 'Menlo', monospace" }}>
-          {lifetimeSpeechCount}
-        </span>
-        <span style={{ fontSize: "12px", color: "#64748b" }}>
-          次主动开口（持久累计 · 跨重启不归零）
-        </span>
+        <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }} title="今天（本机时区）记录的主动开口次数。来自 ~/.config/pet/speech_daily.json">
+          <span style={{ fontSize: "20px", fontWeight: 600, color: "#0ea5e9", lineHeight: 1, fontFamily: "'SF Mono', 'Menlo', monospace" }}>
+            {todaySpeechCount}
+          </span>
+          <span style={{ fontSize: "11px", color: "#64748b" }}>今日</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }} title="持久化在 speech_count.txt，跨重启不归零">
+          <span style={{ fontSize: "28px", fontWeight: 600, color: "#7c3aed", lineHeight: 1, fontFamily: "'SF Mono', 'Menlo', monospace" }}>
+            {lifetimeSpeechCount}
+          </span>
+          <span style={{ fontSize: "11px", color: "#64748b" }}>累计</span>
+        </div>
+        <span style={{ fontSize: "12px", color: "#64748b" }}>次主动开口</span>
         {lifetimeSpeechCount < 3 && (
           <span style={{ fontSize: "11px", color: "#d97706", marginLeft: "auto" }}>
             破冰阶段

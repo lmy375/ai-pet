@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 73：speech 按日分桶，stats 卡显「今日 / 累计」双数
+- 新增 `~/.config/pet/speech_daily.json` sidecar：`{"YYYY-MM-DD": count}` 结构。`record_speech_inner` 写完 → bump_lifetime → bump_today，三层 best-effort 串行。
+- 纯函数 `parse_daily(content) -> BTreeMap<String, u64>`：malformed/空/数组 都回 empty map（损坏文件下次 bump 自愈）。
+- 纯函数 `prune_daily(map, today, retain_days)`：`YYYY-MM-DD` 字符串字典序就是日期序，简单 `>= cutoff_str` 比较。non-parseable key 保留（不属于本模块管理范围）。`DAILY_RETAIN_DAYS = 90` 给未来"近 7d / 30d"特性留余地。
+- 新 `today_speech_count() -> u64` + `#[tauri::command] get_today_speech_count`，注册到 invoke handler。
+- PanelDebug stats 卡改双段布局：左 `20px` 蓝色「今日 N」+ 右 `28px` 紫色「累计 N」+ 共享后缀「次主动开口」。破冰标签靠右浮动逻辑不变。每段一个 tooltip 解释来源文件。
+- 5 个新单测覆盖 parse_daily（empty/malformed/valid）+ prune_daily（cutoff 边界 / unparseable key 保留 / retain=0 today 仍保留）。
+- 146 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 72：lifetime_speech_count 暴露成 Tauri command + panel 大数字
 - 新增 `#[tauri::command] get_lifetime_speech_count() -> u64`：薄封装 `lifetime_speech_count`，注册到 invoke handler。前端无需走 `get_tone_snapshot`（混了一堆其他字段）就能拿到累计数。
 - `PanelDebug.tsx`：fetchLogs 的 Promise.all 数组里加 `invoke("get_lifetime_speech_count")`；新 state `lifetimeSpeechCount`。
