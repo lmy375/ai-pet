@@ -31,6 +31,7 @@ pub fn run() {
             let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
             let log_store = app.state::<LogStore>().inner().clone();
             let shell_store = app.state::<ShellStore>().inner().clone();
+            let app_handle_for_tg = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let settings = commands::settings::get_settings().unwrap_or_default();
 
@@ -50,6 +51,7 @@ pub fn run() {
                         mcp_clone,
                         log_store,
                         shell_store,
+                        app_handle_for_tg,
                     )
                     .await
                     {

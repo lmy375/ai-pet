@@ -1,5 +1,5 @@
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::commands::debug::LogStore;
 use crate::commands::settings::get_settings;
@@ -27,6 +27,7 @@ pub async fn get_telegram_status(
 
 #[tauri::command]
 pub async fn reconnect_telegram(
+    app: AppHandle,
     telegram_store: State<'_, TelegramStore>,
     mcp_store: State<'_, McpManagerStore>,
     log_store: State<'_, LogStore>,
@@ -54,7 +55,7 @@ pub async fn reconnect_telegram(
     let logs = LogStore(log_store.0.clone());
     let shells = ShellStore(shell_store.0.clone());
 
-    match TelegramBot::start(tg.clone(), mcp, logs, shells).await {
+    match TelegramBot::start(tg.clone(), mcp, logs, shells, app).await {
         Ok(bot) => {
             *telegram_store.lock().await = Some(bot);
             Ok(TelegramStatus {

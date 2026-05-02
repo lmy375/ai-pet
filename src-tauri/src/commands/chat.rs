@@ -23,9 +23,10 @@ pub struct ChatDonePayload {
 
 /// Insert a transient system message carrying the pet's current mood and a nudge to update
 /// it after replying. Inserted right after the leading system block so it sits next to
-/// SOUL.md but before any conversation history. Frontend never sees this message — we
-/// augment only the in-memory list passed to the pipeline.
-fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+/// SOUL.md but before any conversation history. Callers (chat tauri command, telegram bot)
+/// augment only the in-memory list passed to the pipeline — persisted session storage is
+/// not affected.
+pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let body = match read_current_mood_parsed() {
         Some((text, _)) if !text.trim().is_empty() => format!(
             "[宠物当前心情/状态] {}\n\n如果这次对话让你心情有变化，可以用 `memory_edit` 更新 `ai_insights/current_mood`，description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头（Tap=开心活泼，Flick=想分享有兴致，Flick3=焦虑烦躁，Idle=平静低落沉静）。心情没变就不用更新。",

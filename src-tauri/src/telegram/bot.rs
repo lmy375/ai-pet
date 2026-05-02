@@ -1,16 +1,20 @@
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 use teloxide::dispatching::ShutdownToken;
 use teloxide::prelude::*;
 use teloxide::types::{ChatAction, Me};
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::commands::chat::{ChatMessage, CollectingSink, run_chat_pipeline};
+use crate::commands::chat::{
+    inject_mood_note, run_chat_pipeline, ChatDonePayload, ChatMessage, CollectingSink,
+};
 use crate::commands::debug::LogStore;
 use crate::commands::session;
 use crate::commands::settings::{get_soul, TelegramConfig};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
+use crate::proactive::read_current_mood_parsed;
 use crate::tools::ToolContext;
 
 /// A running Telegram bot instance.
@@ -27,6 +31,9 @@ struct HandlerState {
     /// Messages for the dedicated Telegram session (kept in memory for fast access).
     session_messages: TokioMutex<Vec<serde_json::Value>>,
     session_id: String,
+    /// Used to emit `chat-done` events so the desktop pet's Live2D motion reacts even
+    /// when the conversation happened on Telegram.
+    app: AppHandle,
 }
 
 const TELEGRAM_SESSION_ID: &str = "telegram-bot";
@@ -39,6 +46,7 @@ impl TelegramBot {
         mcp_store: McpManagerStore,
         log_store: LogStore,
         shell_store: ShellStore,
+        app: AppHandle,
     ) -> Result<Self, String> {
         let bot = Bot::new(&config.bot_token);
 
@@ -55,6 +63,7 @@ impl TelegramBot {
             shell_store,
             session_messages: TokioMutex::new(messages),
             session_id,
+            app,
         });
 
         let handler = Update::filter_message()
@@ -152,11 +161,14 @@ async fn handle_message(
         context_msgs
     };
 
-    // Convert to ChatMessage structs
+    // Convert to ChatMessage structs and inject the same mood-context system note that
+    // the desktop chat path uses. This keeps the pet's persona behavior consistent
+    // regardless of which surface the user is talking through.
     let chat_messages: Vec<ChatMessage> = chat_messages
         .into_iter()
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect();
+    let chat_messages = inject_mood_note(chat_messages);
 
     // Run the LLM pipeline
     let reply_text = match AiConfig::from_settings() {
@@ -164,7 +176,31 @@ async fn handle_message(
             let ctx = ToolContext::new(state.log_store.clone(), state.shell_store.clone());
             let sink = CollectingSink::new();
             match run_chat_pipeline(chat_messages, &sink, &config, &state.mcp_store, &ctx).await {
-                Ok(text) => text,
+                Ok(text) => {
+                    // Emit chat-done with the post-turn mood snapshot so the desktop pet's
+                    // Live2D motion reflects state changes even when the user was chatting
+                    // via Telegram. Same payload shape as the chat tauri command.
+                    let (mood, motion) = match read_current_mood_parsed() {
+                        Some((mtext, m)) => {
+                            if m.is_none() && !mtext.trim().is_empty() {
+                                let _ = state.log_store.0.lock().map(|mut l| l.push(
+                                    "Telegram: mood missing [motion: X] prefix — frontend will fall back to keyword match".to_string()
+                                ));
+                            }
+                            (Some(mtext), m)
+                        }
+                        None => (None, None),
+                    };
+                    let payload = ChatDonePayload {
+                        mood,
+                        motion,
+                        timestamp: chrono::Local::now()
+                            .format("%Y-%m-%dT%H:%M:%S%.3f")
+                            .to_string(),
+                    };
+                    let _ = state.app.emit("chat-done", payload);
+                    text
+                }
                 Err(e) => format!("Error: {}", e),
             }
         }
