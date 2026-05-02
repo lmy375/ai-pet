@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 19：proactive guard 表驱动测试
+- 进一步重构：`evaluate_loop_tick` 拆成
+  - `fn evaluate_pre_input_idle(cfg, snap) -> Result<(), LoopAction>`：纯同步，含 enabled/awaiting/cooldown/idle 4 道 gate，要么短路返回 Err(action) 要么返回 Ok(())。
+  - `fn evaluate_input_idle_gate(cfg, snap, input_idle: Option<u64>) -> LoopAction`：纯同步，gate 5 (input_idle)。
+  - `async fn evaluate_loop_tick(app, settings)`：保留原签名，内部串两段。
+- `LoopAction` 加 `#[derive(Debug, PartialEq, Eq)]` 让 `assert_eq!` 干净。
+- 新增 `mod gate_tests`，12 个测试：
+  - **pre_input_idle**：disabled/awaiting/cooldown_active/cooldown_zero/cooldown_elapsed/idle_below_threshold/idle_clamp_to_60/all_pass。
+  - **input_idle_gate**：zero_disables/none_treats_as_pass/below_min_skips/above_min_runs。
+  - 包括 idle_threshold_seconds 被强制 clamp 到 60s 这种隐含规则的测试。
+- 总测试 8 mood + 12 gate = **20 个**，全过。
+- 加新 gate 时（如 quiet hours）只需在 evaluate_pre_input_idle 中插一段 + 加一个 case，回归现有 12 个 case 一秒内验证。
+- cargo check / cargo test --lib 双过，零 warning。
+
 ## 2026-05-02 — Iter 18：proactive 主循环重构成 guard 列表 + 单一 sleep
 - 新增 `enum LoopAction { Silent, Skip(String), Run { idle_seconds, input_idle_seconds } }`：把每 tick 的可能结果显式枚举出来，外层循环只处理这三种。
 - 新增 `async fn evaluate_loop_tick(app, settings) -> LoopAction`：纯判断，依次跑 4 道 guard：

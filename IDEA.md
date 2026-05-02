@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 19 设计要点（已实现）
+- **拆 sync/async 而不是引 trait**：Iter 18 已经预留了"等真要测时再决定要不要 trait"。这次评估发现：4 道 gate 是纯数据，1 道有 IO。把数据 gate 抽成同步函数，IO gate 接 `Option<u64>` 由 caller 喂——比起引一个 `trait InputIdleProvider` 简单太多，测试也不必 mock 任何东西。
+- **Result<(), LoopAction> 表达"短路 vs 通行"**：因为前段 gate 要么失败终止（返回 LoopAction）要么通过继续，用 `Result<(), LoopAction>` 直接对应这两种状态，比 `Option<LoopAction>` 语义更清晰（None vs Some(...)读者要解释含义，Ok/Err 自带方向）。
+- **derive PartialEq + Debug 在 LoopAction**：本以为不需要，但 `assert_eq!(action, LoopAction::Silent)` 直接比 `match` 简洁。Debug 是为了 `panic!("expected Silent, got {:?}")` 失败信息用。两条 derive 一行搞定。
+- **测试覆盖隐含规则**：`idle_threshold_seconds.max(60)` 这种 clamp 是个容易被未来重构者误删的东西。专门写一个 `idle_threshold_clamped_to_60_minimum` 用 30 配 10 的输入测出来，回归就稳了。
+- **测试不要全是 happy path**：12 个 case 有 8 个是 negative path（短路 / Skip / clamp 等）。这些就是宠物"安静"的关键路径——主动开口逻辑的 bug 多半出在"该闭嘴时却开口"，必须先把 negative 测好。
+
 ## Iter 18 设计要点（已实现）
 - **三态 enum vs 二态 Option<String>**：本来想把 `Silent` 和 `Skip` 合成一个 `Option<String>`（None=Silent, Some=Skip with reason）。能省 enum 但语义糊：Silent 和 Skip 在主循环里行为分支不同（一个不日志一个日志），enum 让分支显式更可读。
 - **evaluate 函数纯而不副作用**：不直接写日志，把 reason 作为 String 返回让外层处理。这是为了下一个 iter 能直接对它写表驱动测试——纯函数测试零成本，函数内部 write_log 测起来就要 mock LogStore。
