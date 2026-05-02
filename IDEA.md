@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 20 设计要点（已实现）
+- **`hour` 注入而非函数内取**：`evaluate_pre_input_idle` 加参数 `hour: u8` 而不是内部 `chrono::Local::now()`。原因：测试要能控制时间。也避免 evaluate 函数变成"impure"（调系统时钟相当于隐式 IO）。`evaluate_loop_tick` 真要跑时再取小时。
+- **`start == end` 表示关闭**：避免再加一个 `enabled` 布尔。约定上"00–00"是空区间，自然代表"无安静时段"。这是个能学的 UX 约定，且测试可见。
+- **Silent 而非 Skip**：晚 11 点到早 7 点用户基本在睡觉，每隔几分钟 evaluate 一次都触发 quiet 分支。如果用 Skip 就一夜下来日志几百行噪音。Silent 直接静默，匹配 idle-below-threshold 的处理思路。
+- **u8 而非 u16/枚举**：本可以用 `enum QuietWindow { Disabled, Active(u8, u8) }`，但 settings.rs 要 serde 序列化、前端要传 number 字段，多一层枚举抽象会让 TS 端跟着麻烦。两个 u8（0–23）+ "相等=关"约定 = 性能/可读/序列化都够好。
+- **wrap_around 是 quiet hours 的核心边界**：默认值 23–7 必然 wrap。专门写了 `wraps_midnight` 测试覆盖 23/0/3/6/7/12/22 七个时间点，未来重构这条逻辑时一秒内就能验证回归。
+- **NOON=12 在 hour 注入后变成必备**：原有 12 个 gate 测试都在 quiet 窗口外的"日间"运行。把 12 提为常量是表意改进——不写 `, 12)` 而写 `, NOON)`，读起来知道意图是"测试不关心时间"。
+
 ## Iter 19 设计要点（已实现）
 - **拆 sync/async 而不是引 trait**：Iter 18 已经预留了"等真要测时再决定要不要 trait"。这次评估发现：4 道 gate 是纯数据，1 道有 IO。把数据 gate 抽成同步函数，IO gate 接 `Option<u64>` 由 caller 喂——比起引一个 `trait InputIdleProvider` 简单太多，测试也不必 mock 任何东西。
 - **Result<(), LoopAction> 表达"短路 vs 通行"**：因为前段 gate 要么失败终止（返回 LoopAction）要么通过继续，用 `Result<(), LoopAction>` 直接对应这两种状态，比 `Option<LoopAction>` 语义更清晰（None vs Some(...)读者要解释含义，Ok/Err 自带方向）。

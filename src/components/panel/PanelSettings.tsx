@@ -39,6 +39,8 @@ export function PanelSettings() {
       idle_threshold_seconds: 900,
       input_idle_seconds: 60,
       cooldown_seconds: 1800,
+      quiet_hours_start: 23,
+      quiet_hours_end: 7,
     },
     memory_consolidate: {
       enabled: false,

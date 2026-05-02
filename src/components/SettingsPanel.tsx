@@ -144,6 +144,30 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
             }
           />
         </div>
+        <div style={twoColRow}>
+          <NumberField
+            label="安静时段开始 (时)"
+            value={form.proactive.quiet_hours_start}
+            min={0}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                proactive: { ...form.proactive, quiet_hours_start: Math.max(0, Math.min(23, v)) },
+              })
+            }
+          />
+          <NumberField
+            label="安静时段结束 (时)"
+            value={form.proactive.quiet_hours_end}
+            min={0}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                proactive: { ...form.proactive, quiet_hours_end: Math.max(0, Math.min(23, v)) },
+              })
+            }
+          />
+        </div>
 
         <div style={groupHeaderStyle}>记忆整理 (Consolidate)</div>
 

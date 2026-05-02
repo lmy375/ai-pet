@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::Timelike;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex as TokioMutex;
@@ -133,12 +134,30 @@ enum LoopAction {
     },
 }
 
-/// Pure-data gates that don't need IO: enabled, awaiting, cooldown, idle threshold.
+/// Returns true if `hour` (0–23) falls inside the quiet window `[start, end)`. Handles the
+/// midnight wrap-around case (start > end, e.g. 23:00–07:00). When start == end, the gate
+/// is treated as disabled (no quiet hours configured).
+fn in_quiet_hours(hour: u8, start: u8, end: u8) -> bool {
+    if start == end {
+        return false;
+    }
+    if start < end {
+        // Same-day window, e.g. 13–15.
+        hour >= start && hour < end
+    } else {
+        // Wraps past midnight, e.g. 23–7. In quiet if hour >= 23 OR hour < 7.
+        hour >= start || hour < end
+    }
+}
+
+/// Pure-data gates that don't need IO: enabled, awaiting, cooldown, quiet hours, idle.
 /// Returns `Err(action)` with the final LoopAction to short-circuit the tick, or `Ok(())`
 /// signaling "all sync gates passed, caller should run the input-idle gate next".
+/// `hour` is the local 24-hour clock (0–23); injected so tests don't depend on wall time.
 fn evaluate_pre_input_idle(
     cfg: &crate::commands::settings::ProactiveConfig,
     snap: &ClockSnapshot,
+    hour: u8,
 ) -> Result<(), LoopAction> {
     if !cfg.enabled {
         return Err(LoopAction::Silent);
@@ -158,7 +177,12 @@ fn evaluate_pre_input_idle(
             )));
         }
     }
-    // Gate 3: minimum quiet time since last interaction. Below threshold = silent skip
+    // Gate 3: quiet hours. A real friend lets you sleep. Silent skip rather than logged
+    // skip — this can happen on every tick during night, no value in spamming logs.
+    if in_quiet_hours(hour, cfg.quiet_hours_start, cfg.quiet_hours_end) {
+        return Err(LoopAction::Silent);
+    }
+    // Gate 4: minimum quiet time since last interaction. Below threshold = silent skip
     // (this is the common idle-yet case, not worth logging on every tick).
     let threshold = cfg.idle_threshold_seconds.max(60);
     if snap.idle_seconds < threshold {
@@ -202,8 +226,9 @@ async fn evaluate_loop_tick(
     let cfg = &settings.proactive;
     let clock = app.state::<InteractionClockStore>().inner().clone();
     let snap = clock.snapshot().await;
+    let hour = chrono::Local::now().hour() as u8;
 
-    if let Err(action) = evaluate_pre_input_idle(cfg, &snap) {
+    if let Err(action) = evaluate_pre_input_idle(cfg, &snap, hour) {
         return action;
     }
     let input_idle = user_input_idle_seconds().await;
@@ -382,6 +407,10 @@ mod gate_tests {
             idle_threshold_seconds: 60,
             input_idle_seconds: 60,
             cooldown_seconds: 0, // off by default in tests so we can hit other gates
+            // Quiet hours disabled by default in tests (start == end). Cases that need
+            // it active set the values explicitly.
+            quiet_hours_start: 0,
+            quiet_hours_end: 0,
         }
     }
 
@@ -393,17 +422,21 @@ mod gate_tests {
         }
     }
 
+    /// Wall clock hour known to be outside any quiet window we configure in tests.
+    const NOON: u8 = 12;
+
     #[test]
     fn disabled_returns_silent() {
         let mut c = cfg();
         c.enabled = false;
-        let action = evaluate_pre_input_idle(&c, &snap(9999, false, None));
+        let action = evaluate_pre_input_idle(&c, &snap(9999, false, None), NOON);
         assert_eq!(action.unwrap_err(), LoopAction::Silent);
     }
 
     #[test]
     fn awaiting_user_reply_skips_with_log() {
-        let action = evaluate_pre_input_idle(&cfg(), &snap(9999, true, None)).unwrap_err();
+        let action =
+            evaluate_pre_input_idle(&cfg(), &snap(9999, true, None), NOON).unwrap_err();
         match action {
             LoopAction::Skip(msg) => assert!(msg.contains("awaiting user reply")),
             other => panic!("expected Skip, got {:?}", other),
@@ -414,7 +447,8 @@ mod gate_tests {
     fn cooldown_active_skips() {
         let mut c = cfg();
         c.cooldown_seconds = 1800;
-        let action = evaluate_pre_input_idle(&c, &snap(9999, false, Some(60))).unwrap_err();
+        let action =
+            evaluate_pre_input_idle(&c, &snap(9999, false, Some(60)), NOON).unwrap_err();
         match action {
             LoopAction::Skip(msg) => {
                 assert!(msg.contains("cooldown"));
@@ -430,7 +464,7 @@ mod gate_tests {
         let mut c = cfg();
         c.cooldown_seconds = 0;
         // idle is high enough to pass the next gate, so we should reach Ok.
-        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(0)));
+        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(0)), NOON);
         assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
     }
 
@@ -438,14 +472,14 @@ mod gate_tests {
     fn cooldown_elapsed_passes() {
         let mut c = cfg();
         c.cooldown_seconds = 1800;
-        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(2000)));
+        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(2000)), NOON);
         assert!(result.is_ok());
     }
 
     #[test]
     fn idle_below_threshold_silent() {
         let c = cfg(); // threshold=60
-        let action = evaluate_pre_input_idle(&c, &snap(30, false, None)).unwrap_err();
+        let action = evaluate_pre_input_idle(&c, &snap(30, false, None), NOON).unwrap_err();
         assert_eq!(action, LoopAction::Silent);
     }
 
@@ -453,14 +487,71 @@ mod gate_tests {
     fn idle_threshold_clamped_to_60_minimum() {
         let mut c = cfg();
         c.idle_threshold_seconds = 10; // user-set absurdly low, should clamp up to 60
-        let action = evaluate_pre_input_idle(&c, &snap(30, false, None)).unwrap_err();
+        let action = evaluate_pre_input_idle(&c, &snap(30, false, None), NOON).unwrap_err();
         assert_eq!(action, LoopAction::Silent, "30s should still be below the clamped 60s");
     }
 
     #[test]
     fn all_sync_gates_pass_returns_ok() {
-        let result = evaluate_pre_input_idle(&cfg(), &snap(9999, false, None));
+        let result = evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON);
         assert!(result.is_ok());
+    }
+
+    // ---- in_quiet_hours pure helper ----
+
+    #[test]
+    fn quiet_hours_disabled_when_start_equals_end() {
+        assert!(!in_quiet_hours(0, 0, 0));
+        assert!(!in_quiet_hours(12, 23, 23));
+    }
+
+    #[test]
+    fn quiet_hours_same_day_window() {
+        // 13–15 quiet
+        assert!(!in_quiet_hours(12, 13, 15));
+        assert!(in_quiet_hours(13, 13, 15));
+        assert!(in_quiet_hours(14, 13, 15));
+        assert!(!in_quiet_hours(15, 13, 15), "end is exclusive");
+    }
+
+    #[test]
+    fn quiet_hours_wraps_midnight() {
+        // 23–7 quiet (the default)
+        assert!(in_quiet_hours(23, 23, 7));
+        assert!(in_quiet_hours(0, 23, 7));
+        assert!(in_quiet_hours(3, 23, 7));
+        assert!(in_quiet_hours(6, 23, 7));
+        assert!(!in_quiet_hours(7, 23, 7));
+        assert!(!in_quiet_hours(12, 23, 7));
+        assert!(!in_quiet_hours(22, 23, 7));
+    }
+
+    // ---- quiet hours gate inside evaluate_pre_input_idle ----
+
+    #[test]
+    fn quiet_hours_silent_during_window() {
+        let mut c = cfg();
+        c.quiet_hours_start = 23;
+        c.quiet_hours_end = 7;
+        // 03:00 — squarely inside the night window.
+        let action = evaluate_pre_input_idle(&c, &snap(9999, false, None), 3).unwrap_err();
+        assert_eq!(action, LoopAction::Silent);
+    }
+
+    #[test]
+    fn quiet_hours_passes_outside_window() {
+        let mut c = cfg();
+        c.quiet_hours_start = 23;
+        c.quiet_hours_end = 7;
+        let result = evaluate_pre_input_idle(&c, &snap(9999, false, None), 14);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn quiet_hours_disabled_does_not_block() {
+        let c = cfg(); // both = 0 → disabled
+        let result = evaluate_pre_input_idle(&c, &snap(9999, false, None), 3);
+        assert!(result.is_ok(), "disabled quiet hours shouldn't gate");
     }
 
     // ---- input-idle gate ----
