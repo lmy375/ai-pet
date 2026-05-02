@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 37 设计要点（已实现）
+- **空白占位让两列网格不踩空**：单字段套两列网格 (`twoColRow`) 看起来奇怪——左边一列右边一列空。用 `<div style={{ flex: 1 }} />` 占位让 NumberField 不被拉满整行，保留与上面 ProactiveConfig 网格的视觉对齐。这种"留白也是 layout 决策"的小用心。
+- **0 = 不限**：约定继承自 trim 后端实现（`max == 0` 早 return）。Label 必须把这点直说，否则用户会以为 0 = "禁用 chat 历史"，意思相反。
+- **panel 视图加说明文字**：modal 视图空间紧不放说明，但独立 panel 窗口宽度够，加一行 11px 浅灰说明文字（"桌面 chat 和 Telegram 都按此上限裁剪"）就解释清楚了 trim 的影响范围。这个差异化做法跟设备形态匹配 — modal 给老手快速调，panel 视图教新手。
+- **复用 NumberField，零新组件**：Iter 27 抽出来的 NumberField 在这里收益体现——加一个新字段 ≈ 8 行 JSX，没新样板。如果当时不抽就是 17 行复制。
+- **不接 reactive UI 提示当前 history 长度**：考虑过显示"当前会话已有 N 条历史，将裁剪到 M"，但这是 reactive 数据需要 polling，且对配置场景过度——用户配置时不想看运行时数据。
+
 ## Iter 36 设计要点（已实现）
 - **trim 在后端而非 frontend**：让 useChat 保留全量历史用于 UI 展示（用户能滚回看完整对话），但发给后端时 backend 自己截断。这样"显示" vs "上下文" 解耦：前者是 UX，后者是经济性。
 - **保留 N 条 + 头部 systems**：前导 system 消息（SOUL.md + 任何 mood/policy 注入）必须留——它们是人格基础。trim 只动中间的 user/assistant。"前导"定义为"从 0 开始连续的 system"，第一条非 system 之后再有 system 也算 history（telegram bot 的 inject_mood_note 就是这种情况，但 inject 是 trim 之后做的，所以测试不需要覆盖这种）。

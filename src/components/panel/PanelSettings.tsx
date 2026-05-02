@@ -574,6 +574,25 @@ export function PanelSettings() {
         </div>
       </div>
 
+      {/* Chat context */}
+      <div style={sectionStyle}>
+        <h4 style={sectionTitle}>对话上下文</h4>
+        <div style={twoColRow}>
+          <PanelNumberField
+            label="历史保留条数 (0=不限)"
+            value={form.chat.max_context_messages}
+            min={0}
+            onChange={(v) =>
+              setForm({ ...form, chat: { ...form.chat, max_context_messages: v } })
+            }
+          />
+          <div style={{ flex: 1 }} />
+        </div>
+        <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
+          桌面 chat 和 Telegram 都按此上限裁剪。前端仍展示全部消息，仅发给 LLM 时裁。
+        </div>
+      </div>
+
       {/* SOUL */}
       <div style={sectionStyle}>
         <h4 style={sectionTitle}>系统提示词 (SOUL.md)</h4>
