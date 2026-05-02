@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 54 设计要点（已实现）
+- **跨日 wrap-around 用 `+ 24 × 60`**：和 in_quiet_hours 同一思路。如果 quiet_start 今天已过（比如 quiet=8-22 + now=23:00），下次 quiet_start 是明天 8:00 = 24×60-23×60+8×60 = 540 分钟。look_ahead 远超 15 → 自然 None。简单且对所有分布通用。
+- **strict `<=` 而非 `<`**：测试 `at_window_edge_15_min` 显式约定 15 分钟时仍触发。设计上"恰好到 look_ahead"算"快到了"更自然。如果改 `<` 会让 22:45 这种正好阈值的场景反复落入"刚错过窗口"的不一致状态。
+- **15 分钟硬编码**：`look_ahead_minutes` 是函数参数（让单测能注入不同值）但 caller 写死 15。理由：(a) 这是 conversational rule，用户调它的预期低；(b) 如果有人想自定义，加 settings 字段比加 UI 控件更便宜——等真有需求再做。
+- **跨日 + look_ahead 关系**：若 look_ahead 跨过 24h（设 1500），算上 wrap 就需要更复杂处理。当前 look_ahead 远 < 1440（一天分钟数），无歧义。注释里没强调但代码上 wrap 后 `delta as u64 <= look_ahead` 比较是单调的。
+- **不修改 quiet_hours 那张 gate 决策表**：临近规则只影响 prompt，不影响 gate。这条 line 之间的边界是有意的——gate 决定 "fire 还是 silent"，prompt 决定 "fire 时该说啥"。让 24:00 用户能听到一句"晚安"再静音，比 22:59 还在聊天 23:00 突然冷处理体验更连贯。
+- **测试 `past_today_uses_tomorrow` case**：07:00 早晨 quiet=23-7 → not in quiet（end 是 exclusive 7），quiet_start 今天 23:00 还有 16h，远超 look_ahead → None。这个 case 验证早晨刚出 quiet 不会 trigger pre-quiet rule。原本以为 wrap-around 可能让我误算成"距下次 quiet 16 小时"反而触发，写 test 帮我提前约束逻辑。
+
 ## Iter 53 设计要点（已实现）
 - **wake_hint 非空作为 wake-recent 信号**：本可以再加一个 `wake_recent: bool` 字段。但 wake_hint 已在 PromptInputs，且其非空恰好对应"在 grace 内"——派生信号不重复携带，DRY。代价：rules 函数读 hint 字符串而不读结构化 bool，但这只是 in-Rust 的小耦合，上下文清楚。
 - **is_first_mood 显式 bool 而非检 mood_hint 字符串**：mood_hint 在 first time 时是 "（还没记录...）"。可以 `mood_hint.contains("还没")` 检测。但那是脆弱耦合（有人改 hint 措辞会断），显式 bool 是契约。

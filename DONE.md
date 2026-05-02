@@ -2,6 +2,28 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 54：临近 quiet hours 注入"收尾"规则
+- 新纯函数 `pub fn minutes_until_quiet_start(now_hour, now_minute, quiet_start, quiet_end, look_ahead_minutes) -> Option<u64>`：
+  - quiet_start == quiet_end → None（gate 关闭）
+  - 已在 quiet → None（没有"接近"可言）
+  - 距 quiet_start > look_ahead → None
+  - 否则 Some(剩余分钟数)
+  - 处理跨日：start_total_today 已过 → 加 24×60 用次日
+- `PromptInputs` 加 `pre_quiet_minutes: Option<u64>`。
+- `proactive_rules` 末尾按 `Some(mins)` 条件 push："快进入安静时段：再过约 N 分钟就到夜里的安静时段了。语气要往收尾靠——简短的晚安/睡前关心比新话题合适。"
+- run_proactive_turn 用 `get_settings()` + `now_local.hour()/minute()` 计算并传入。`look_ahead = 15` 写死。
+- 7 个新单测（mod pre_quiet_tests）：
+  - `within_window_returns_minutes` (22:50→Some(10))
+  - `at_window_edge_15_min` (22:45→Some(15) 含 strict-leq 边界)
+  - `outside_window_returns_none` (22:44→None)
+  - `already_in_quiet_returns_none` (03:00 / 23:30)
+  - `disabled_when_start_equals_end`
+  - `same_day_window` (14:00 quiet → 13:55→Some(5))
+  - `past_today_uses_tomorrow` (07:00 morning, quiet 23-7 already past → None)
+- 1 个 prompt-level 测试 `pre_quiet_rule_appears_when_set` 验证 7 条规则 + 含分钟数。
+- 总测试 109 + 8 = **117 个**，全过；cargo + tsc 双过；零 warning。
+- 现在宠物在快到 22:45（默认 23:00 quiet 前）时会自动调成"晚安"基调，而不是 23:00 整 silent 让用户感觉宠物突然消失。
+
 ## 2026-05-03 — Iter 53：proactive_rules 按上下文动态加规则
 - `proactive_rules` 签名从 `() -> Vec<String>` 改为 `(&PromptInputs) -> Vec<String>`。
 - `PromptInputs` 加 `is_first_mood: bool` 字段——`run_proactive_turn` 从 `read_current_mood_parsed()` 派生；mood 第一次时 true。
