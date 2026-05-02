@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 83 设计要点（已实现）
+- **数据闭环**：Iter 80（LLM沉默率）→ Iter 81（tool tags）→ Iter 82（聚合 atomic）→ Iter 83（数据回流 prompt）。这是连续 4 次小迭代的连贯方向：先给 LLM 行为打标，再聚合数据，再用数据自动改 prompt。每步都可独立 ship + 验证，避免一次性大改。
+- **整数比较 `with_any * 100 < 30 * total` 而非浮点除法**：避免 `f64` 精度边界。100% 准确：3/10 = 30%（>= 30%，不触发）；2/10 = 20%（< 30%，触发）。如果用 `(with_any as f64 / total as f64) < 0.3` 在某些数字下因浮点表示可能产生意外。
+- **min_samples 防早期噪声**：Spoke 计数从 0 开始，前几次结果方差大。比如刚启动 1/2（50%）和 0/3（0%）都是少样本噪声。10 是经验门槛——足够 stable 又不至于让纠偏永远不触发。
+- **不持久化 env_tool counters → 规则会自动愈合**：Iter 82 的 atomic 是 process-level，重启清零。这给纠偏规则一个自然冷却：用户调好 prompt 后重启或手动重置统计，规则需要重新积累 10 次才再次触发。如果新 prompt 真的有效，环境感知率上去了，规则永远不再触发；如果还差，又能稳定回归。
+- **不在规则里直接说"低于 30%"模糊化**：把 "12 次 / 2 次 / < 30%" 三个具体数字都塞进规则文本。LLM 看到"12 次只有 2 次调用"远比"较少"更具体——格式锚定让 prompt 更难被忽略。
+- **建议 `get_active_window` 而非 4 个工具混合**：4 个 env 工具里 active_window 是最 universally 有用的（任何场景都能拿到信息），weather/events 在凌晨/无日程时会返空。规则里建议单一具体工具好执行；如果列出 4 个让 LLM 自由选，反而容易选最便宜的（=不调用）。
+- **不用 settings 暴露阈值**：本可以让 30% 和 10 走 settings.proactive。但这俩参数都是 prompt 调优内部决策，不是用户偏好——普通用户看不出差别。如果未来发现需要按用户场景调（如弱网用户希望降阈值减少 IO），再升级到 settings。
+- **新规则放最后**：rules 顺序 = LLM 阅读顺序。新规则放整个块末尾不打断已有的"silence/speak/single-line/tool-mention"基调；它是"额外纠偏"性质，最后看一眼最自然。
+
 ## Iter 82 设计要点（已实现）
 - **`record_spoke` 集中 match 而非分散写**：本可以让调度处自己写 `for tool in tools { match tool ... bump }`。但工具白名单（4 项）是 EnvToolCounters 的关注域，未来加 `get_now_playing` 类工具，"哪些算 env-aware"应该和数据结构在同一处定义。把 match 放进 impl 让调用处一行：`record_spoke(&tools)`。
 - **per-tool 字段而非 HashMap**：本可以 `tool_counts: HashMap<String, AtomicU64>` 通用化。但 4 项固定 + 不预期高频增长，atomic struct 字段的访问 O(1) 且无锁；HashMap 要 lock 或 dashmap，复杂度反而高。如果将来 env 工具增加到 10+ 项再考虑容器化。
