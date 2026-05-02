@@ -450,6 +450,126 @@ export function PanelSettings() {
         />
       </div>
 
+      {/* Proactive */}
+      <div style={sectionStyle}>
+        <h4 style={sectionTitle}>主动开口</h4>
+        <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
+          <input
+            type="checkbox"
+            checked={form.proactive.enabled}
+            onChange={(e) =>
+              setForm({ ...form, proactive: { ...form.proactive, enabled: e.target.checked } })
+            }
+          />
+          启用宠物主动跟我说话
+        </label>
+
+        <div style={twoColRow}>
+          <PanelNumberField
+            label="检查间隔 (秒)"
+            value={form.proactive.interval_seconds}
+            min={60}
+            onChange={(v) => setForm({ ...form, proactive: { ...form.proactive, interval_seconds: v } })}
+          />
+          <PanelNumberField
+            label="冷却 (秒)"
+            value={form.proactive.cooldown_seconds}
+            min={0}
+            onChange={(v) => setForm({ ...form, proactive: { ...form.proactive, cooldown_seconds: v } })}
+          />
+        </div>
+        <div style={twoColRow}>
+          <PanelNumberField
+            label="最少静默 (秒)"
+            value={form.proactive.idle_threshold_seconds}
+            min={60}
+            onChange={(v) => setForm({ ...form, proactive: { ...form.proactive, idle_threshold_seconds: v } })}
+          />
+          <PanelNumberField
+            label="键鼠空闲 (秒)"
+            value={form.proactive.input_idle_seconds}
+            min={0}
+            onChange={(v) => setForm({ ...form, proactive: { ...form.proactive, input_idle_seconds: v } })}
+          />
+        </div>
+        <div style={twoColRow}>
+          <PanelNumberField
+            label="安静时段开始 (时)"
+            value={form.proactive.quiet_hours_start}
+            min={0}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                proactive: { ...form.proactive, quiet_hours_start: Math.max(0, Math.min(23, v)) },
+              })
+            }
+          />
+          <PanelNumberField
+            label="安静时段结束 (时)"
+            value={form.proactive.quiet_hours_end}
+            min={0}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                proactive: { ...form.proactive, quiet_hours_end: Math.max(0, Math.min(23, v)) },
+              })
+            }
+          />
+        </div>
+        <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: "6px", marginTop: "8px" }}>
+          <input
+            type="checkbox"
+            checked={form.proactive.respect_focus_mode}
+            onChange={(e) =>
+              setForm({ ...form, proactive: { ...form.proactive, respect_focus_mode: e.target.checked } })
+            }
+          />
+          开启 macOS 勿扰/Focus 时不打扰
+        </label>
+      </div>
+
+      {/* Memory Consolidate */}
+      <div style={sectionStyle}>
+        <h4 style={sectionTitle}>记忆整理</h4>
+        <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
+          <input
+            type="checkbox"
+            checked={form.memory_consolidate.enabled}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, enabled: e.target.checked },
+              })
+            }
+          />
+          启用后台记忆整理
+        </label>
+        <div style={twoColRow}>
+          <PanelNumberField
+            label="间隔 (小时)"
+            value={form.memory_consolidate.interval_hours}
+            min={1}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, interval_hours: v },
+              })
+            }
+          />
+          <PanelNumberField
+            label="触发条目数"
+            value={form.memory_consolidate.min_total_items}
+            min={0}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, min_total_items: v },
+              })
+            }
+          />
+        </div>
+      </div>
+
       {/* SOUL */}
       <div style={sectionStyle}>
         <h4 style={sectionTitle}>系统提示词 (SOUL.md)</h4>
@@ -475,6 +595,40 @@ export function PanelSettings() {
       </div>
       </>
       )}
+    </div>
+  );
+}
+
+const twoColRow: React.CSSProperties = {
+  display: "flex",
+  gap: "8px",
+  marginBottom: "6px",
+};
+
+function PanelNumberField({
+  label,
+  value,
+  min,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div style={{ flex: 1 }}>
+      <label style={labelStyle}>{label}</label>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          if (!Number.isNaN(n)) onChange(n);
+        }}
+        style={inputStyle}
+      />
     </div>
   );
 }

@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — PanelSettings.tsx 接 Proactive / Consolidate（顺手补 Iter 21+22 加的字段）
+- panel 形式视图（独立窗口的设置面板，不同于小窗 SettingsPanel modal）原本只展示 Live2D / LLM / MCP / Telegram / SOUL，没暴露 proactive 和 memory_consolidate。
+- 在 Telegram 段后、SOUL 段前插两个新 section：
+  - **主动开口**：enabled checkbox + 6 个 NumberField（interval / cooldown / idle threshold / input idle / quiet_hours_start / quiet_hours_end）+ respect_focus_mode checkbox。
+  - **记忆整理**：enabled checkbox + 2 个 NumberField（interval_hours / min_total_items）。
+- 新增本地 `PanelNumberField` 组件 + `twoColRow` 样式：和 SettingsPanel.tsx 那套一致但没共用（两个组件库分别长出来，复用会改两处文件）。列入 Iter 27 重构。
+- 配置全部受 `useSettings` 类型约束，前面 Iter 20+21 加的 quiet_hours / respect_focus_mode 字段也跟着自动接进 panel 视图。
+- tsc --noEmit 通过。
+- 现在用户从两个不同入口（小窗 SettingsPanel 模态 + 独立 panel 窗口）都可以改全部 proactive 和 consolidate 设置。
+
 ## 2026-05-02 — Iter 25：focus_history.log size-based rotation
 - 新增常量 `MAX_LOG_BYTES = 1_000_000`（1MB ≈ 30k 行，正常使用一年以上）。
 - 新增纯函数 `rotated_path(&Path) -> PathBuf`：对 `focus_history.log` 返回 `focus_history.log.1`（直接 append `.1` 到 OsStr，不走 with_extension 因为它会替换 `.log`）。
