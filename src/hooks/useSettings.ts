@@ -23,6 +23,8 @@ export interface ProactiveConfig {
   idle_threshold_seconds: number;
   input_idle_seconds: number;
   cooldown_seconds: number;
+  quiet_hours_start: number;
+  quiet_hours_end: number;
 }
 
 export interface MemoryConsolidateConfig {
@@ -55,6 +57,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     idle_threshold_seconds: 900,
     input_idle_seconds: 60,
     cooldown_seconds: 1800,
+    quiet_hours_start: 23,
+    quiet_hours_end: 7,
   },
   memory_consolidate: {
     enabled: false,

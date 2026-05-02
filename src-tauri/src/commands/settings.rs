@@ -65,6 +65,13 @@ pub struct ProactiveConfig {
     /// pet from speaking again right after just speaking. Set to 0 to disable.
     #[serde(default = "default_proactive_cooldown")]
     pub cooldown_seconds: u64,
+    /// Start of the daily quiet window, in 24-hour local time (0–23). Pet stays silent
+    /// during this window. Set start == end to disable the gate.
+    #[serde(default = "default_quiet_hours_start")]
+    pub quiet_hours_start: u8,
+    /// End of the daily quiet window (exclusive), in 24-hour local time (0–23).
+    #[serde(default = "default_quiet_hours_end")]
+    pub quiet_hours_end: u8,
 }
 
 fn default_proactive_interval() -> u64 {
@@ -81,6 +88,14 @@ fn default_proactive_input_idle() -> u64 {
 
 fn default_proactive_cooldown() -> u64 {
     1800
+}
+
+fn default_quiet_hours_start() -> u8 {
+    23
+}
+
+fn default_quiet_hours_end() -> u8 {
+    7
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +137,8 @@ impl Default for ProactiveConfig {
             idle_threshold_seconds: default_proactive_idle_threshold(),
             input_idle_seconds: default_proactive_input_idle(),
             cooldown_seconds: default_proactive_cooldown(),
+            quiet_hours_start: default_quiet_hours_start(),
+            quiet_hours_end: default_quiet_hours_end(),
         }
     }
 }
