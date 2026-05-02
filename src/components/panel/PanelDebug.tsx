@@ -523,6 +523,12 @@ function kindColor(kind: string): string {
   switch (kind) {
     case "Run":
       return "#22c55e";
+    case "Spoke":
+      return "#16a34a";
+    case "LlmSilent":
+      return "#a855f7";
+    case "LlmError":
+      return "#dc2626";
     case "Skip":
       return "#f59e0b";
     case "Silent":
@@ -555,6 +561,16 @@ function localizeReason(kind: string, reason: string): string {
       default:
         return reason;
     }
+  }
+  if (kind === "LlmSilent") {
+    // "-" means soft rule wasn't active; the LLM chose silence on its own judgement.
+    return reason === "-" ? "LLM 自主选择沉默" : `LLM 沉默（${reason}）`;
+  }
+  if (kind === "Spoke") {
+    return reason === "-" ? "宠物开口" : `宠物开口（${reason}）`;
+  }
+  if (kind === "LlmError") {
+    return `LLM 调用失败：${reason}`;
   }
   if (kind === "Skip") {
     const stripped = reason.replace(/^Proactive: skip\s*—\s*/, "");

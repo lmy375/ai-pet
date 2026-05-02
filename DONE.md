@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 78：decision log 区分 LLM 层结果，标注克制模式
+- 新纯函数 `pub fn chatty_mode_tag(today, threshold) -> Option<String>`：返回 `chatty=N/M` 或 None（threshold=0 / today<threshold 都视为非活跃）。3 个新单测覆盖 0 阈值禁用、阈值下、阈值上 / 超过的格式。
+- 调度循环 dispatch 处一次性算 `chatty_today / chatty_threshold / chatty_tag`，然后：
+  - `Run` 决策的 reason 末尾追加 `chatty=N/M`（仅在活跃时），让 `Run idle=20s, input_idle=10s, chatty=5/5` 一眼看到 gate 通过时软规则状态。
+  - 调用 `run_proactive_turn` 后再 push 一条决策：`Spoke` / `LlmSilent` / `LlmError`，reason 复用 chatty_tag（活跃时填 "chatty=N/M"，否则填 "-"）。
+- 前端 `kindColor` 加三种新 kind：`Spoke=#16a34a`（深绿）/ `LlmSilent=#a855f7`（紫）/ `LlmError=#dc2626`（红）。
+- `localizeReason` 新增三个 kind 的中文：`LLM 自主选择沉默` / `LLM 沉默（chatty=5/5）` / `宠物开口` / `宠物开口（chatty=5/5）` / `LLM 调用失败：...`。
+- 现在 panel "最近决策" 区可以清晰回答："今天为什么这么安静？" → 看到 `Run idle=...chatty=5/5` 后跟 `LlmSilent chatty=5/5`，即"gate 放行了，但 LLM 在克制规则下选了沉默"。
+- 153 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 77：panel stats 卡可视化"克制模式"
 - `ToneSnapshot` 加 `chatty_day_threshold: u64` 字段；`get_tone_snapshot` 从 settings 读出与 fallback=5（同 run_proactive_turn 的策略，保持一致）。
 - PanelDebug 的 ToneSnapshot interface 同步加；stats 卡用 IIFE 派生 `restraining = threshold > 0 && todaySpeechCount >= threshold`。
