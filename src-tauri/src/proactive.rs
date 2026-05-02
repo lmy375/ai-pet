@@ -319,10 +319,22 @@ async fn run_proactive_turn(
         _ => "（还没有记录过你自己的心情/状态。这是第一次。）".to_string(),
     };
 
+    // Surface the user's active Focus mode (if any) so the pet can speak around it. This
+    // path normally only runs when the user has unset `respect_focus_mode` — otherwise the
+    // gate would have skipped before we got here.
+    let focus_hint = match crate::focus_mode::focus_status().await {
+        Some(s) if s.active => match &s.name {
+            Some(n) => format!("用户当前开着 macOS Focus 模式：「{}」（说明 ta 想专注，开口要克制）。", n),
+            None => "用户当前开着某个 macOS Focus 模式（说明 ta 想专注，开口要克制）。".to_string(),
+        },
+        _ => String::new(),
+    };
+
     let prompt = format!(
         "[系统提示·主动开口检查]\n\n\
 现在是 {time}。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\n\
-{mood_hint}\n\n\
+{mood_hint}\n\
+{focus_hint}\n\
 请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
 约束：\n\
 - 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{silent}`，不要其他任何文字。\n\
@@ -334,6 +346,7 @@ async fn run_proactive_turn(
         minutes = idle_minutes,
         input_hint = input_hint,
         mood_hint = mood_hint,
+        focus_hint = focus_hint,
         silent = SILENT_MARKER,
         mood_cat = MOOD_CATEGORY,
         mood_title = MOOD_TITLE,
