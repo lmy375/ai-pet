@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod consolidate;
 mod focus_mode;
+mod focus_tracker;
 mod input_idle;
 mod mcp;
 mod mood;
@@ -71,6 +72,9 @@ pub fn run() {
 
             // Start memory consolidation loop (long-period, opt-in).
             consolidate::spawn(app.handle().clone());
+
+            // Track Focus mode transitions to disk for long-term insights.
+            focus_tracker::spawn(app.handle().clone());
 
             Ok(())
         })
