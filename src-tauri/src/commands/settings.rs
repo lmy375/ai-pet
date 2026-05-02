@@ -76,6 +76,12 @@ pub struct ProactiveConfig {
     /// On non-macOS or when the Focus state file is unreadable, this gate is a no-op.
     #[serde(default = "default_respect_focus_mode")]
     pub respect_focus_mode: bool,
+    /// Threshold at which today_speech_count starts injecting the "today you've already
+    /// said a lot, prefer to stay quiet" rule into the proactive prompt. Lower = the pet
+    /// becomes selective sooner; raise it on quiet days when you'd like more company.
+    /// 0 disables the rule entirely (pet never gets a chatty-day nudge).
+    #[serde(default = "default_chatty_day_threshold")]
+    pub chatty_day_threshold: u64,
 }
 
 fn default_proactive_interval() -> u64 {
@@ -104,6 +110,10 @@ fn default_quiet_hours_end() -> u8 {
 
 fn default_respect_focus_mode() -> bool {
     true
+}
+
+fn default_chatty_day_threshold() -> u64 {
+    5
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +199,7 @@ impl Default for ProactiveConfig {
             quiet_hours_start: default_quiet_hours_start(),
             quiet_hours_end: default_quiet_hours_end(),
             respect_focus_mode: default_respect_focus_mode(),
+            chatty_day_threshold: default_chatty_day_threshold(),
         }
     }
 }

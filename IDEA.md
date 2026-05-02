@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 76 设计要点（已实现）
+- **从 const 升级到 settings 字段**：Iter 75 的 `CHATTY_DAY_THRESHOLD = 5` 是占位常量，标记位置。Iter 76 拆出来后 const 完全删除——不留死代码。Threshold 现在两路：用户从 panel 改 / serde default 兜底。
+- **0 显式关闭语义**：`threshold > 0 && today_count >= threshold` 而非简单 `today_count >= threshold`。如果只走第二个，当 threshold=0 时 today=0 也会触发——首句话就被骂"今天已经聊了 0 次"，nonsense。0 表示"我永远不希望这个克制规则触发"，明确写进 PromptInputs 的 doc。
+- **default 5 vs 取消默认**：本可以让 default = 0（默认关闭新规则）。但这破坏了 Iter 75 已经在跑的行为。保持 5 = "新功能默认开启与上版本一致"，用户嫌啰嗦再去 panel 调高或调 0。
+- **测试改用 inputs 字段而非读 const**：原 chatty_day 测试 `inputs.today_speech_count = CHATTY_DAY_THRESHOLD` 直接捏死了常量值。改成 `inputs.chatty_day_threshold` 后测试是 self-contained——不受未来默认值变化影响。
+- **PanelNumberField 单独一行**：本可以塞在 quiet_hours 那行的 grid 里。但 quiet_hours 是"硬性时间窗"，chatty_day 是"软性数量阈值"，语义不同；放新行下方避免视觉混淆，且 label 文案较长（"今天主动开口达到此数后变克制（0 = 关闭）"），grid cell 装不下。
+- **fallback 在 run_proactive_turn 而非 trigger 全链**：`get_settings().ok().map(...).unwrap_or(5)`。如果 settings 读失败（极罕见，通常是文件锁竞争或权限），fallback 到 production default 5；不要 `unwrap_or(0)`（默默关闭规则）也不 panic。
+
 ## Iter 75 设计要点（已实现）
 - **跳过 Iter 74 的视觉扩展先做行为**：Iter 74 是 stats 卡的"本周/sparkline"——纯视觉，对宠物行为零影响。Iter 75 让今日数据真正改变 prompt，把 Iter 73 的数据基础变成可观察行为。先做有行为副作用的迭代，视觉迭代留到 todo 末尾。
 - **阈值 5 而非 3 或 10**：3 太低（用户正常一天主动响应几条都可能触发，让宠物从中午就开始装哑），10 太高（每日很少能到）。5 是观察值——typical session 在 idle 周期 + 各种 gates 之后大约会主动开 2-4 次，5 代表"今天异常活跃"的软退避点。如果将来有用户行为数据可以再调。
