@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，对照 debug 日志里的"missing [motion: X] prefix"出现率判断要不要再改 prompt。
-- [ ] Iter 35：在 PanelDebug 加一个"重置 cache 统计"按钮调一个新的 `reset_cache_stats` Tauri 命令——长期跑下来用户会想清零看一段新窗口的命中率。clear_logs 已经有按钮，counters 也该有。
+- [ ] Iter 36：把对话历史 trim 也搬到 settings——目前 telegram bot 写死 `MAX_CONTEXT_MESSAGES=50`，桌面 chat 没限制（依赖 frontend 提交的全部历史）。让用户能在 PanelSettings 调，或至少给桌面 chat 加默认上限避免长会话 token 爆炸。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。

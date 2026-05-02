@@ -51,6 +51,11 @@ export function PanelDebug() {
     setLogs([]);
   };
 
+  const handleResetCacheStats = async () => {
+    await invoke("reset_cache_stats");
+    setCacheStats({ turns: 0, total_hits: 0, total_calls: 0 });
+  };
+
   const handleOpenDevTools = async () => {
     try {
       // Open devtools for the current webview
@@ -81,17 +86,36 @@ export function PanelDebug() {
         <span style={{ flex: 1 }} />
         {cacheStats.total_calls > 0 && (
           <span
-            style={{
-              fontSize: "12px",
-              color: "#0ea5e9",
-              alignSelf: "center",
-              fontFamily: "'SF Mono', 'Menlo', monospace",
-            }}
-            title={`${cacheStats.turns} 次 LLM turn 中累计触发了 ${cacheStats.total_calls} 次环境工具调用，其中 ${cacheStats.total_hits} 次命中缓存`}
+            style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
           >
-            Cache {cacheStats.total_hits}/{cacheStats.total_calls} (
-            {Math.round((cacheStats.total_hits / cacheStats.total_calls) * 100)}
-            %) · {cacheStats.turns} turns
+            <span
+              style={{
+                fontSize: "12px",
+                color: "#0ea5e9",
+                alignSelf: "center",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+              title={`${cacheStats.turns} 次 LLM turn 中累计触发了 ${cacheStats.total_calls} 次环境工具调用，其中 ${cacheStats.total_hits} 次命中缓存`}
+            >
+              Cache {cacheStats.total_hits}/{cacheStats.total_calls} (
+              {Math.round((cacheStats.total_hits / cacheStats.total_calls) * 100)}
+              %) · {cacheStats.turns} turns
+            </span>
+            <button
+              onClick={handleResetCacheStats}
+              title="重置 cache 统计计数器"
+              style={{
+                fontSize: "10px",
+                padding: "2px 6px",
+                borderRadius: "4px",
+                border: "1px solid #cbd5e1",
+                background: "#fff",
+                color: "#64748b",
+                cursor: "pointer",
+              }}
+            >
+              重置
+            </button>
           </span>
         )}
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>

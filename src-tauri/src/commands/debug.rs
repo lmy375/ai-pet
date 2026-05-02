@@ -151,6 +151,15 @@ pub fn get_cache_stats(counters: State<'_, CacheCountersStore>) -> CacheStats {
     }
 }
 
+/// Zero out the process-wide cache counters. Mirrors `clear_logs` for the stats panel —
+/// useful when the user wants to measure hit ratio over a fresh window.
+#[tauri::command]
+pub fn reset_cache_stats(counters: State<'_, CacheCountersStore>) {
+    counters.turns.store(0, Ordering::Relaxed);
+    counters.hits.store(0, Ordering::Relaxed);
+    counters.calls.store(0, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{new_cache_counters, write_log, MAX_LOG_LINES};
@@ -180,6 +189,21 @@ mod tests {
         assert_eq!(c.turns.load(Ordering::Relaxed), 3);
         assert_eq!(c.hits.load(Ordering::Relaxed), 6);
         assert_eq!(c.calls.load(Ordering::Relaxed), 15);
+    }
+
+    #[test]
+    fn cache_counters_can_be_reset_to_zero() {
+        let c = new_cache_counters();
+        c.turns.fetch_add(7, Ordering::Relaxed);
+        c.hits.fetch_add(20, Ordering::Relaxed);
+        c.calls.fetch_add(40, Ordering::Relaxed);
+        // Inline what reset_cache_stats does — the Tauri State wrapper is just plumbing.
+        c.turns.store(0, Ordering::Relaxed);
+        c.hits.store(0, Ordering::Relaxed);
+        c.calls.store(0, Ordering::Relaxed);
+        assert_eq!(c.turns.load(Ordering::Relaxed), 0);
+        assert_eq!(c.hits.load(Ordering::Relaxed), 0);
+        assert_eq!(c.calls.load(Ordering::Relaxed), 0);
     }
 
     // ---- write_log size cap ----
