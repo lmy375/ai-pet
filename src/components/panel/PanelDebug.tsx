@@ -395,24 +395,28 @@ export function PanelDebug() {
             background: "#f8fafc",
             fontSize: "11px",
             fontFamily: "'SF Mono', 'Menlo', monospace",
-            maxHeight: "120px",
+            maxHeight: "200px",
             overflowY: "auto",
           }}
         >
           <div style={{ color: "#64748b", marginBottom: "4px", fontFamily: "inherit", fontSize: "12px" }}>
             最近 {decisions.length} 次主动开口判断（最新在底部）
           </div>
-          {decisions.map((d, i) => (
-            <div key={i} style={{ display: "flex", gap: "8px" }}>
-              <span style={{ color: "#94a3b8" }}>{d.timestamp.slice(11)}</span>
-              <span style={{ color: kindColor(d.kind), fontWeight: 600, minWidth: "44px" }}>
-                {d.kind}
-              </span>
-              <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>
-                {localizeReason(d.kind, d.reason)}
-              </span>
-            </div>
-          ))}
+          {decisions.map((d, i) => {
+            const isOutcome = d.kind === "Spoke" || d.kind === "LlmSilent" || d.kind === "LlmError";
+            return (
+              <div key={i} style={{ display: "flex", gap: "8px" }}>
+                <span style={{ color: "#94a3b8" }}>{d.timestamp.slice(11)}</span>
+                <span style={{ color: kindColor(d.kind), fontWeight: 600, minWidth: "44px" }}>
+                  {/* Tree-like connector visually links an outcome row to the Run above it */}
+                  {isOutcome ? "└ " : ""}{d.kind}
+                </span>
+                <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>
+                  {localizeReason(d.kind, d.reason)}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 

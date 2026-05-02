@@ -13,9 +13,11 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-/// Cap on how many decisions we keep in the panel's "recent" view. Two-digit count is
-/// enough to spot patterns at a glance without overwhelming the toolbar.
-pub const CAPACITY: usize = 10;
+/// Cap on how many decisions we keep in the panel's "recent" view. Bumped from 10 → 16
+/// after Iter 78 started pushing two entries per Run (gate + LLM outcome): 16 keeps the
+/// effective gate-decision window comparable to before while letting the new
+/// Run+outcome pairing fit. Still small enough to scan at a glance in the panel strip.
+pub const CAPACITY: usize = 16;
 
 #[derive(Clone, Serialize)]
 pub struct ProactiveDecision {

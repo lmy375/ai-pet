@@ -2,6 +2,13 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 79：decision log CAPACITY 升 16，panel 视觉配对 Run+outcome
+- `decision_log::CAPACITY` 从 `10` → `16`。Iter 78 起每次 Run 触发会 push 两条（Run + LLM outcome），10 cap 仅给 5 个完整 cycle 的视野；16 给约 8 个 cycle，恢复 Iter 77 之前的工作集大小。
+- panel "最近决策" 列表对 `Spoke / LlmSilent / LlmError` 三个 outcome kind 的 kind 列前加 `└ ` tree 字符（U+2514 + 空格），让"这是上一个 Run 的后续"视觉自洽——不需要看时间戳就知道哪两行是一对。
+- `maxHeight` 从 `120px` → `200px`，让升 cap 后的更多行无需滚动就能看到。仍带 `overflowY: auto` 兜底，超出时滚动。
+- 现有 3 个 decision_log 测试用 `CAPACITY` 常量，自动跟随新值不破。
+- 153 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 78：decision log 区分 LLM 层结果，标注克制模式
 - 新纯函数 `pub fn chatty_mode_tag(today, threshold) -> Option<String>`：返回 `chatty=N/M` 或 None（threshold=0 / today<threshold 都视为非活跃）。3 个新单测覆盖 0 阈值禁用、阈值下、阈值上 / 超过的格式。
 - 调度循环 dispatch 处一次性算 `chatty_today / chatty_threshold / chatty_tag`，然后：
