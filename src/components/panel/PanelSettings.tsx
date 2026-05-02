@@ -33,6 +33,18 @@ export function PanelSettings() {
     model: "",
     mcp_servers: {},
     telegram: { bot_token: "", allowed_username: "", enabled: false },
+    proactive: {
+      enabled: false,
+      interval_seconds: 300,
+      idle_threshold_seconds: 900,
+      input_idle_seconds: 60,
+      cooldown_seconds: 1800,
+    },
+    memory_consolidate: {
+      enabled: false,
+      interval_hours: 6,
+      min_total_items: 12,
+    },
   });
   const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);
