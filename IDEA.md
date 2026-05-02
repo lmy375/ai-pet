@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 87 设计要点（已实现）
+- **label-driven 而非 condition-driven**：原 `proactive_rules` 把"是否触发"和"触发后说什么"绑在一起。拆开后 helper 负责前者（"哪些 label 活跃"），proactive_rules 负责后者（"label 翻译成什么规则文本"）。两份职责各司其职。
+- **保留 unknown fallback 而非 panic**：`match *label { ... other => format!(..."规则文本待补"...)}` 让"label 加了但翻译没加"成为可见但非致命的 bug。`(规则文本待补)` 字符串明显异于正常规则，测试 + 实机日志都能捕获。如果 panic，prompt 就构造失败，宠物彻底沉默——比展示降级文本糟糕。
+- **测试用 strings.contains() 仍稳定**：`proactive_rules` 重构 push 顺序 / 措辞都没变（match arm 直接拷贝原 if-block 的字符串）。所以 18+ 个 contains 测试零修改通过，是好的"无关行为不变"信号。
+- **for chain(env, data) 顺序锁定 firing 顺序**：env 在 data 之前。如果未来想插入"between env and data"的新分类，要么在某 helper 里加新 label，要么在 chain 里加第三个 helper——结构清晰可扩展。
+- **`for label in env_labels.iter().chain(data_labels.iter())`**：iter 取 `&&str`，`*label` 解到 `&str` 给 match。`*label` 看似多余但 match arm 用字符串字面量比较时 `&str == &&str` 不行，得 deref 一次。
+- **不抽 `(label, format_args)` 表驱动**：理论上可以 `[("icebreaker", |inputs| format!(...)), ...]` 全表存储。但每条规则的 format 参数不同（icebreaker 只用 history_count，chatty 用 today_count + SILENT_MARKER），强行抽闭包表反而更复杂。match 直白足够。
+- **5 always-on rules 保留 push**：本可以也走 helper 模式（"always" 总返"always"label），但那 5 条永远触发，没数据驱动条件，跑 helper 是空操作。直接 push 简单。
+
 ## Iter 86 设计要点（已实现）
 - **拆两个 helper 而非一个胖函数**：本可以让 active_data_driven_rule_labels 接 10 个参数同时返 8 个 label。但 data-driven（依赖 counter / 历史）和 environmental（依赖瞬时 state）是两类信号——拆开后调用者能根据需要单独使用，比如未来"只统计 prompt 里的纠偏规则数量"还能直接用 data_driven helper，不用再切片。
 - **chain + collect 而非 mut Vec push**：`env.iter().chain(data.iter()).copied().collect()` 一行表达组合意图。两边都是 Vec<&'static str>，链式拼接零拷贝直到 collect。

@@ -225,54 +225,60 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
     ));
 
     // ---- context-driven rules ----
-    if !inputs.wake_hint.trim().is_empty() {
-        rules.push(
-            "- **用户刚从离开桌子回来**：问候要简短克制，先轻打招呼或简短关心一句，不要立刻提日程/工作类信息密集的话题。"
-                .into(),
-        );
-    }
-    if inputs.is_first_mood {
-        rules.push(format!(
-            "- **第一次开口**：你还没有写过 `{}/{}` 记忆条目，开口后应当用 `memory_edit create` 而非 `update` 来初始化它（按上面格式）。",
-            MOOD_CATEGORY, MOOD_TITLE
-        ));
-    }
-    if let Some(mins) = inputs.pre_quiet_minutes {
-        rules.push(format!(
-            "- **快进入安静时段**：再过约 {} 分钟就到夜里的安静时段了。语气要往收尾靠——简短的晚安/睡前关心比新话题合适。",
-            mins
-        ));
-    }
-    if !inputs.reminders_hint.trim().is_empty() {
-        rules.push(
-            "- **有到期的用户提醒**：上面 reminders 段列出的事项是用户之前明确让你提醒的，请把其中**最相关的一条**自然带进开口里（不要全念出来），并在开口后用 `memory_edit delete` 把已经提醒过的那条 todo 条目删掉，避免下次再提一遍。"
-                .into(),
-        );
-    }
-    if !inputs.plan_hint.trim().is_empty() {
-        rules.push(
-            "- **你有今日计划在执行中**：上面 plan 段列出了你今天的小目标。开口时**优先**考虑推进其中一条（不必每次推进，看时机自然）；推进后用 `memory_edit update` 在 ai_insights/daily_plan 里更新进度（比如把 [0/2] 改成 [1/2]），全部完成的项可以删除。"
-                .into(),
-        );
-    }
-    if inputs.proactive_history_count < 3 {
-        rules.push(format!(
-            "- **你和用户还不熟**：你之前主动开口过 {} 次（< 3 次的破冰阶段）。开口时偏向问一个简短、低压力的了解性问题（例如 ta 此刻的感受、当下在做什么、有没有最近喜欢的小事），别直接给建议或扔信息密集的话题。如果用户答了什么记得用 `memory_edit create` 写到 `user_profile` 类下方便日后用。",
-            inputs.proactive_history_count
-        ));
-    }
-    if inputs.chatty_day_threshold > 0 && inputs.today_speech_count >= inputs.chatty_day_threshold
-    {
-        rules.push(format!(
-            "- **今天已经聊了不少**：你今天已经主动开过 {} 次口了。除非有真正值得说的新信号（用户刚回来、有到期提醒、明显环境变化），优先**保持安静**（用 `{}`）；要说也只说极简一句，别再起新话题。",
-            inputs.today_speech_count, SILENT_MARKER
-        ));
-    }
-    if env_awareness_low(inputs.env_spoke_total, inputs.env_spoke_with_any) {
-        rules.push(format!(
-            "- **最近你开口前几乎都没看环境**：过去 {} 次主动开口里只有 {} 次调用了 `get_active_window` / `get_weather` / `get_upcoming_events` / `memory_search` 之一（< {}%）。如果决定开口，**这次先调一次 `get_active_window` 看看用户在用什么 app**，再据此说一句贴合当下的话；别凭空起话题。",
-            inputs.env_spoke_total, inputs.env_spoke_with_any, ENV_AWARENESS_LOW_RATE_PCT
-        ));
+    // Single source of truth: which contextual rules fire is decided by the two label
+    // helpers; the match below maps each label back to its rule text. Avoids the
+    // previous duplicated if-blocks (one set in `proactive_rules`, another set inside
+    // each helper) — adding a new rule now means: bump the helper, add a match arm.
+    let env_labels = active_environmental_rule_labels(
+        !inputs.wake_hint.trim().is_empty(),
+        inputs.is_first_mood,
+        inputs.pre_quiet_minutes.is_some(),
+        !inputs.reminders_hint.trim().is_empty(),
+        !inputs.plan_hint.trim().is_empty(),
+    );
+    let data_labels = active_data_driven_rule_labels(
+        inputs.proactive_history_count,
+        inputs.today_speech_count,
+        inputs.chatty_day_threshold,
+        inputs.env_spoke_total,
+        inputs.env_spoke_with_any,
+    );
+    for label in env_labels.iter().chain(data_labels.iter()) {
+        let rule = match *label {
+            "wake-back" => {
+                "- **用户刚从离开桌子回来**：问候要简短克制，先轻打招呼或简短关心一句，不要立刻提日程/工作类信息密集的话题。".to_string()
+            }
+            "first-mood" => format!(
+                "- **第一次开口**：你还没有写过 `{}/{}` 记忆条目，开口后应当用 `memory_edit create` 而非 `update` 来初始化它（按上面格式）。",
+                MOOD_CATEGORY, MOOD_TITLE
+            ),
+            "pre-quiet" => format!(
+                "- **快进入安静时段**：再过约 {} 分钟就到夜里的安静时段了。语气要往收尾靠——简短的晚安/睡前关心比新话题合适。",
+                inputs.pre_quiet_minutes.unwrap_or(0)
+            ),
+            "reminders" => {
+                "- **有到期的用户提醒**：上面 reminders 段列出的事项是用户之前明确让你提醒的，请把其中**最相关的一条**自然带进开口里（不要全念出来），并在开口后用 `memory_edit delete` 把已经提醒过的那条 todo 条目删掉，避免下次再提一遍。".to_string()
+            }
+            "plan" => {
+                "- **你有今日计划在执行中**：上面 plan 段列出了你今天的小目标。开口时**优先**考虑推进其中一条（不必每次推进，看时机自然）；推进后用 `memory_edit update` 在 ai_insights/daily_plan 里更新进度（比如把 [0/2] 改成 [1/2]），全部完成的项可以删除。".to_string()
+            }
+            "icebreaker" => format!(
+                "- **你和用户还不熟**：你之前主动开口过 {} 次（< 3 次的破冰阶段）。开口时偏向问一个简短、低压力的了解性问题（例如 ta 此刻的感受、当下在做什么、有没有最近喜欢的小事），别直接给建议或扔信息密集的话题。如果用户答了什么记得用 `memory_edit create` 写到 `user_profile` 类下方便日后用。",
+                inputs.proactive_history_count
+            ),
+            "chatty" => format!(
+                "- **今天已经聊了不少**：你今天已经主动开过 {} 次口了。除非有真正值得说的新信号（用户刚回来、有到期提醒、明显环境变化），优先**保持安静**（用 `{}`）；要说也只说极简一句，别再起新话题。",
+                inputs.today_speech_count, SILENT_MARKER
+            ),
+            "env-awareness" => format!(
+                "- **最近你开口前几乎都没看环境**：过去 {} 次主动开口里只有 {} 次调用了 `get_active_window` / `get_weather` / `get_upcoming_events` / `memory_search` 之一（< {}%）。如果决定开口，**这次先调一次 `get_active_window` 看看用户在用什么 app**，再据此说一句贴合当下的话；别凭空起话题。",
+                inputs.env_spoke_total, inputs.env_spoke_with_any, ENV_AWARENESS_LOW_RATE_PCT
+            ),
+            // Unknown label means a helper added something proactive_rules doesn't know
+            // about — log defensively rather than panic, so the prompt still ships.
+            other => format!("- **[{}]**: (规则文本待补)", other),
+        };
+        rules.push(rule);
     }
     rules
 }
@@ -1728,6 +1734,40 @@ mod prompt_tests {
             labels,
             vec!["wake-back", "first-mood", "pre-quiet", "reminders", "plan"],
         );
+    }
+
+    #[test]
+    fn proactive_rules_contextual_count_matches_label_count() {
+        // The match-by-label refactor (Iter 87) means the number of contextual rules
+        // pushed must equal env_labels.len() + data_labels.len(). If a future helper
+        // returns a label proactive_rules doesn't recognize, the fallback "(规则文本待补)"
+        // catches it but this test pins down the healthy path.
+        let mut inputs = base_inputs();
+        // Trip every contextual rule.
+        inputs.wake_hint = "（用户的电脑在大约 60 秒前刚从休眠唤醒。）";
+        inputs.is_first_mood = true;
+        inputs.pre_quiet_minutes = Some(10);
+        inputs.reminders_hint = "你有以下到期的用户提醒：\n· something";
+        inputs.plan_hint = "你今天的小目标：\n· something";
+        inputs.proactive_history_count = 0;
+        inputs.today_speech_count = inputs.chatty_day_threshold;
+        inputs.env_spoke_total = 12;
+        inputs.env_spoke_with_any = 1;
+        let rules = proactive_rules(&inputs);
+        // 6 always-pushed base rules + 5 env labels + 3 data labels = 14.
+        assert_eq!(rules.len(), 6 + 5 + 3, "rules: {:#?}", rules);
+        // No "TODO" fallback for any active label.
+        assert!(!rules.iter().any(|r| r.contains("规则文本待补")));
+    }
+
+    #[test]
+    fn proactive_rules_baseline_only_pushes_always_on_rules() {
+        // With a neutral base_inputs (no contextual triggers), only the 5 always-pushed
+        // rules should appear — proves the contextual loop adds nothing when labels are empty.
+        let rules = proactive_rules(&base_inputs());
+        // Strip the 6 always-on rules: silent / speak / single-line / tools / cache / motion.
+        // Wait — there are actually 6 always-on (counted directly from the code). Use that.
+        assert_eq!(rules.len(), 6, "expected exactly 6 always-on rules in neutral state");
     }
 
     #[test]
