@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 72 设计要点（已实现）
+- **薄封装而非 reuse get_tone_snapshot**：`get_tone_snapshot` 已经返了 proactive_count，理论上前端可以直接 `tone?.proactive_count` 渲染大数字。但这绑定了"想看累计数 = 必须先拿到完整 ToneSnapshot"——一旦未来 ToneSnapshot 加重字段、或者出现想脱离 tone 单独看 stats 的场景（如启动画面、Telegram /stats 命令），就要重新拆。先做单值 command 让职责清楚。
+- **大卡片 + chip 双重显示，不删 chip**：表面上看冗余，但读者场景不同。chip 在 tone strip（`fontSize: 11px` 条带）里是"我顺便扫一眼当前所有信号"——大数字混进去会被周边压扁。大卡片放工具栏正下方是"我点开 panel 第一眼想知道宠物存在感"。两者都保留实际花费几乎是 0（多渲染一行），收益是不同心理路径都得满足。
+- **背景渐变而非纯色**：panel 里其他段都是 `#fdf4ff`/`#f1f5f9`/`#fff7ed` 等单色背景区分用途。这个 stats 块要"亮眼"但不喧宾夺主，用一道淡紫到淡蓝 135° 渐变就够 weight 了——和紫色数字呼应又不挤压可读性。
+- **破冰期标签靠右浮动**：`marginLeft: "auto"` 把"破冰阶段"推到右边。如果直接放数字旁边，0/1/2 三个数字时整行会变成"0 次主动开口（破冰阶段）（持久累计...）"——括号嵌套读着累。靠右单独一格让它像个 badge。
+- **不为这个加单测**：纯透传命令 + 前端 state 串联。已有 `lifetime_speech_count` 测试 + cargo type check + tsc 兜底。
+
 ## Iter 71 设计要点（已实现）
 - **从 A 反转到 B**：Iter 70 选了 frontend-only 截断指示（A 方案，"50+"），Iter 71 走的是当时被推迟的 B 方案——独立持久 counter。两次决定不矛盾：A 适合验证用户在不在乎；现在已上线第三轮 panel chip 演化（69 加 chip → 70 加饱和提示 → 71 升级为真实累计），把"长跑用户能看到精确数"这个底层能力补全。
 - **文件 sidecar 而非 ProcessCounters atomic**：counter 必须跨重启活下来，否则用户每次开机都看到从 0 涨——比 50+ 还差。ProcessCounters 是进程内 State，重启清零，不达标。文件方案虽然不优雅但和 speech_history.log 同位置同 IO 模式，复杂度增量最小。如果将来加更多持久 counter，可以一次把它们迁到一个 .json 或 sqlite。

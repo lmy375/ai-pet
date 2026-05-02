@@ -116,6 +116,14 @@ pub async fn get_recent_speeches(n: Option<usize>) -> Vec<String> {
     recent_speeches(n.unwrap_or(10)).await
 }
 
+/// Tauri command exposing the persistent lifetime speech count for the panel stats
+/// header. Thin wrapper over `lifetime_speech_count` so the frontend can `invoke` it
+/// without going through `get_tone_snapshot` (which mixes a dozen other fields).
+#[tauri::command]
+pub async fn get_lifetime_speech_count() -> u64 {
+    lifetime_speech_count().await
+}
+
 /// Number of non-empty lines currently in the speech_history.log file. Caps at
 /// `SPEECH_HISTORY_CAP` because of trim-on-write. Useful for "show last N speeches"
 /// but not for true lifetime stats — see `lifetime_speech_count` for that.
