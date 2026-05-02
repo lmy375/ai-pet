@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 84：panel 工具栏 "prompt: N 条 hint" 紫色 pill badge
+- 新纯函数 `pub fn active_data_driven_rule_labels(...)` 返回 `["icebreaker"|"chatty"|"env-awareness"]` 子集，按 proactive_rules 内的 firing 顺序排列。仅覆盖"数据驱动"的 3 条规则；wake/first_mood/reminders/plan/pre_quiet 这些环境性 hint 由 panel 现有 chip 已展示，不重复。
+- `ToneSnapshot` 加 `active_prompt_rules: Vec<String>`；`get_tone_snapshot` 现在还要 `ProcessCountersStore` state（读 env_tool atomic）和 `today_speech_count`（读 speech_daily.json）。一次性把这三条规则的真实状态计算后塞 ToneSnapshot 里。
+- 工具栏在所有 chip 末尾（"N 条日志"前）加紫色 pill: `prompt: N 条 hint`，`background: #7c3aed`，`borderRadius: 10px`。tooltip 列出每条规则名 "prompt 当前正被以下 data-driven 规则影响：icebreaker、chatty、env-awareness"。空时不渲染（neutral state 不出现 badge）。
+- 4 个新单测覆盖：neutral 时 vec 空 / 三条独立单触发 / 全部触发返完整三元组（顺序锁定）/ chatty_threshold=0 时即使数字爆表也不进入 chatty 标签。
+- 现在用户能立刻看到"我现在的 prompt 被多少 data-driven 规则影响"——0 条说明 prompt 是默认状态，3 条说明已被多重纠偏在驱动。
+- 170 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 83：env-awareness 数据回流 prompt，自我纠偏规则
 - `PromptInputs` 加 `env_spoke_total / env_spoke_with_any: u64` 两字段；新 `pub const ENV_AWARENESS_MIN_SAMPLES: u64 = 10` + `ENV_AWARENESS_LOW_RATE_PCT: u64 = 30`。
 - 纯函数 `pub fn env_awareness_low(spoke_total, spoke_with_any) -> bool`：< MIN_SAMPLES 时返 false（避免噪声触发），否则 `with_any * 100 < 30 * total` 严格比较（避免浮点边界）。

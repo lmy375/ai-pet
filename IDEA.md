@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 84 设计要点（已实现）
+- **只统计 data-driven 规则**：原 TODO 措辞是"任意 prompt 自动纠偏规则正在触发"。但实际 proactive_rules 有 8 条 contextual rule，前 5 条（wake/first_mood/pre_quiet/reminders/plan）是环境/状态触发——panel 已用 chip 展示对应输入。再用一个 badge 重复计数会让它和已有 UI 冗余冲突。后 3 条（icebreaker/chatty/env-awareness）才是基于聚合数据驱动 prompt 的，badge 单专门体现这层。
+- **labels 返回 Vec<&'static str> 而非 Vec<String>**：所有标签是编译期常量。`&'static str` 零分配，调用者才转 String 入 ToneSnapshot（serde 需 owned）。多余拷贝最少。
+- **labels 顺序匹配 firing 顺序**：proactive_rules 里 icebreaker 先 push 然后 chatty 然后 env-awareness。labels 函数严格同序。如果未来新增规则，单测 `combine_in_firing_order` 会捕获顺序漂移。
+- **get_tone_snapshot 加 ProcessCountersStore state**：本可以让前端拿 env_tool stats 后自己派生标签。但派生逻辑（threshold、min_samples）藏在 backend，复制到 frontend 会破坏单一事实源。让 backend 一次算清楚 ship over 即可。一次额外 atomic load + 一次 today_speech_count IO，几乎零成本。
+- **紫色 pill 而非小数字 chip**：badge 是身份标识"prompt 现在不在 default 状态"，区别于 cache/tag/silence 等数据 chip（mono 字 + 数字）。pill 形状 + 紫色（与已有"克制模式"badge 同 family，但更亮 #7c3aed 标识 prompt 层）让它在工具栏 visually 跳出。
+- **空时不渲染，零干扰**：neutral state 工具栏不出现 badge。新装 + 用过几次的用户从不出现 → 突然出现说明"prompt 被多个规则影响了"，本身就是有用信号。如果常驻显示 "prompt: 0" 反而成为视觉噪声。
+- **不直接显示完整规则文本**：tooltip 只列规则名（短），不复述 prompt 文本。规则名足够用户理解发生什么；要看完整 prompt 用户可以在 panel 别处或日志里翻——badge 是 dashboard 不是 inspector。
+
 ## Iter 83 设计要点（已实现）
 - **数据闭环**：Iter 80（LLM沉默率）→ Iter 81（tool tags）→ Iter 82（聚合 atomic）→ Iter 83（数据回流 prompt）。这是连续 4 次小迭代的连贯方向：先给 LLM 行为打标，再聚合数据，再用数据自动改 prompt。每步都可独立 ship + 验证，避免一次性大改。
 - **整数比较 `with_any * 100 < 30 * total` 而非浮点除法**：避免 `f64` 精度边界。100% 准确：3/10 = 30%（>= 30%，不触发）；2/10 = 20%（< 30%，触发）。如果用 `(with_any as f64 / total as f64) < 0.3` 在某些数字下因浮点表示可能产生意外。
