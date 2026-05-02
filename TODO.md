@@ -5,6 +5,6 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，对照 debug 日志里的"missing [motion: X] prefix"出现率判断要不要再改 prompt。
-- [ ] Iter 22：把当前活跃的 Focus 名字（"工作"、"专注"…）也读出来注入 proactive prompt——让宠物知道 "用户正在工作 Focus"，下次开口时话题更贴合（比如"等你忙完工作我们再聊"）。需要扩 focus_mode 模块返回 `Option<FocusInfo { active, name }>`。
+- [ ] Iter 23：记录 focus 模式切换历史到 memory（如 `general/focus_history`），让 consolidate 阶段可以总结出"用户每天平均工作 focus 用 N 小时"这类长周期洞察。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。
 - [ ] PanelSettings.tsx：把新加的 Proactive / Consolidate 配置也接进 panel 形式视图。

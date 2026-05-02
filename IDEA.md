@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 22 设计要点（已实现）
+- **拆 IO 与解析**：和 mood/gate 同一套路。`parse_focus_status(&Value)` 是纯函数（输入 Value 输出 FocusStatus），`focus_status()` 是异步外壳负责读盘。这样测试 6 个 case 不用 mock 文件系统。
+- **嵌套 and_then 而非 unwrap**：JSON 路径 `data[0].storeAssertionRecords[0].assertionDetails.assertionDetailsModeIdentifier` 5 层深，每层都可能缺失（macOS 版本差异）。`Option::and_then` 链是最简洁的"任一层失败就降级到 None"方式。
+- **`rsplit('.').next()`**：identifier 形如 `com.apple.donotdisturb.mode.work`，要的就是最后一段。`rsplit` 反向迭代，`next()` 拿到第一个 → 也就是最后段。语义直白，无需正则。
+- **focus_hint 在 mood_hint 之后**：模板里位置选择不是随便的——mood 是宠物自身状态，focus 是用户当前状态。先自己后用户的顺序更符合"我现在心情如何 → 用户在做什么 → 我该不该说话"的思考链。
+- **`respect_focus_mode=true` 时这条注入不会触发**：这是有意的耦合。默认配置下 focus active → gate skip → 不到 run_proactive_turn。只有用户主动 opt out gate 才会让 LLM 看到 focus 名字。这种"用户可以渐进解锁更精细的行为"是温和的设计。
+- **保留 `focus_mode_active` 作为薄 wrapper**：本来想全部迁到 focus_status，但 gate 代码只关心 active 不关心 name。让 focus_mode_active 继续存在 + 内部调 focus_status 是 Sequencially Better Patterns 教科书做法（旧 API 不破坏，新 API 更丰富）。
+- **未实测**：和 Iter 21 一样依赖用户实机的 Focus 文件结构。代码层面 36 个 tests + cargo check 全过；解析逻辑保守 fail-soft，最坏情况是 name=None 不影响 prompt 整体可读。
+
 ## Iter 21 设计要点（已实现）
 - **读 Assertions.json 而不是 osascript / shortcuts**：考虑过 `osascript -e 'tell application "System Events" ...'` 但 System Events 没有 focus 状态字段；考虑过 `shortcuts run "GetFocus"` 但需要用户先创建 shortcut；最终选 `~/Library/DoNotDisturb/DB/Assertions.json`，是 macOS 自己写的真相源，read-only 一次足够。代价：(a) Sonoma 之前路径或格式可能不同；(b) 文件可能无权限读（但极少见，通常用户级访问没问题）。
 - **`Option<bool>` 三态而非 bool**：`Some(true)`=肯定 active；`Some(false)`=肯定不在；`None`=不知道（非 macOS、文件缺失、解析失败）。让 gate 逻辑能区分"不确定"和"确定不"——前者必须 fail open（不阻塞），不然非 macOS 用户永远卡死。和 input_idle 的 None 处理思路一致。
