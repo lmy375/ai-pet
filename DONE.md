@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 77：panel stats 卡可视化"克制模式"
+- `ToneSnapshot` 加 `chatty_day_threshold: u64` 字段；`get_tone_snapshot` 从 settings 读出与 fallback=5（同 run_proactive_turn 的策略，保持一致）。
+- PanelDebug 的 ToneSnapshot interface 同步加；stats 卡用 IIFE 派生 `restraining = threshold > 0 && todaySpeechCount >= threshold`。
+- 跨过阈值时：今日数字从蓝色（#0ea5e9）切换到橙色（#ea580c）；右上角"破冰阶段"小标 → 替换为"克制模式" pill 形 badge（`background: #fff7ed`，`border: 1px solid #fed7aa`，`borderRadius: 10px`）；hover 文案解释"prompt 里加了'今天聊得不少了'的克制规则"。
+- 优先级互斥：「克制模式」>「破冰阶段」。同时满足时只显示克制（一个用户当天聊到饱和，新手期早过了）。
+- 150 tests + tsc 全过；零 warning。
+- 现在用户能直观看到行为切换：今天聊得多 → 数字变橙 + badge 出现，看到 LLM 真的在被 prompt 软规则控制。
+
 ## 2026-05-03 — Iter 76：CHATTY_DAY_THRESHOLD 升级为 settings.proactive.chatty_day_threshold
 - `ProactiveConfig` 新字段 `chatty_day_threshold: u64`（带 `#[serde(default)]` + `default_chatty_day_threshold() = 5`），现有 settings.json 升级时自动补默认值。
 - `PromptInputs.chatty_day_threshold: u64` 替代 Iter 75 的 `pub const CHATTY_DAY_THRESHOLD`，整个常量删除。`proactive_rules` 检查 `threshold > 0 && today_count >= threshold`：0 显式关闭整条规则。
