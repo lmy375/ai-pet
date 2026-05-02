@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 43 设计要点（已实现）
+- **直接给中文时段词，不给 morning/afternoon**：原 TODO 设想英文标签（"morning/evening/..."），但 prompt 整体是中文，混语会让 LLM 多一次内部翻译。直接给"清晨/上午"等让模型语义抓手最近。代价：英文使用者看不懂——但这个项目的 SOUL.md / 工具描述都是中文，本来就是中文 first。
+- **边界选定按对话直觉**：5 起算清晨而非 6（早起的人 5 点醒了，听到"深夜"会困惑）；11 进中午而非 12（11:30 已经在准备午饭）；17 到傍晚（北京冬天 17 点已天黑）。这些都是在脑子里走一遍 "如果是用户此时收到这条消息，他会觉得宠物说对了吗" 决定的。
+- **22:00 算深夜**：和 quiet_hours 默认起点 23:00 错开 1 小时是有意的——quiet_hours 是"不打扰你睡觉"，period_of_day "深夜" 是"很晚了"的对话氛围。22:00 用户可能还醒着但是该营造夜的氛围，proactive gate 还允许说话。
+- **不与 quiet_hours 联动**：可以让 period_of_day 直接复用 quiet_hours 边界，但那把"用户配置（什么时候不打扰）"和"对话氛围（什么时候叫晚上）"耦合了。两个独立维度：quiet 决定要不要开口、period 决定开口时怎么说。
+- **测试覆盖每个跳变点两侧**：不光测 happy path（每个时段一个代表 hour），还专门测每个 boundary（4/5、7/8、10/11、12/13、16/17、18/19、21/22、23/0）。time-of-day 这种规则一年用 365 天，bug 可能要等到某个特定 hour 才显形——cheap 测试覆盖换来强信心。
+- **不动反应式 prompt**：proactive 是"主动找话题"，time-of-day 给找话题人提示；reactive 是用户驱动话题，模型再注入"现在是傍晚"反而冗余、抢戏。
+
 ## Iter 42 设计要点（已实现）
 - **嵌套 struct 而非 newtype**：本可以让 ProcessCounters 是各种 atomic 的扁平堆叠（`pub turns: AtomicU64` / `pub hits: AtomicU64` / `pub mood_with_tag: AtomicU64` ...）。但这会丢失"cache 维度"、"mood_tag 维度"的语义层级——日后再加 third 组 metrics 时，扁平命名会冲突或啰嗦。嵌套子 struct 的代价是访问稍长（`counters.cache.turns` vs `counters.cache_turns`），收益是分组语义清晰。
 - **暂留旧 type alias 给测试**：完全删 `CacheCountersStore` / `new_cache_counters()` 也行（测试改用 `new_process_counters().cache`），但要重写 5 个测试。`#[cfg(test)] pub` 是更小的改动——production 不见、测试可见、零 warning。规模到时（Iter 50+ 出现第三个 counter group 时）再考虑彻底删。

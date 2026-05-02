@@ -137,6 +137,22 @@ enum LoopAction {
     },
 }
 
+/// Map a 24-hour clock value (0–23) to a Chinese period-of-day label. Used in the
+/// proactive prompt so the LLM can riff on time-of-day vibes ("早上的咖啡时间到了") rather
+/// than just seeing a numeric timestamp. Boundaries match common Chinese conversational
+/// usage; the function is `pub` so tests can pin them.
+pub fn period_of_day(hour: u8) -> &'static str {
+    match hour {
+        5..=7 => "清晨",
+        8..=10 => "上午",
+        11..=12 => "中午",
+        13..=16 => "下午",
+        17..=18 => "傍晚",
+        19..=21 => "晚上",
+        _ => "深夜", // 22, 23, 0..=4
+    }
+}
+
 /// Returns true if `hour` (0–23) falls inside the quiet window `[start, end)`. Handles the
 /// midnight wrap-around case (start > end, e.g. 23:00–07:00). When start == end, the gate
 /// is treated as disabled (no quiet hours configured).
@@ -365,9 +381,11 @@ async fn run_proactive_turn(
         _ => String::new(),
     };
 
+    let period = period_of_day(now_local.hour() as u8);
+
     let prompt = format!(
         "[系统提示·主动开口检查]\n\n\
-现在是 {time}。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\n\
+现在是 {time}（{period}）。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\n\
 {mood_hint}\n\
 {focus_hint}\n\
 请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
@@ -379,6 +397,7 @@ async fn run_proactive_turn(
 - 这三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）每次调用都有真实的 IO 成本，并且**同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果**——所以一次足够了，不要为了「再确认一下」反复调，相信首次返回值直接做判断。\n\
 - **决定开口后**：请用 `memory_edit` 更新 `{mood_cat}` 类别下 `{mood_title}` 的记忆（不存在就 `create`，存在就 `update`）。description 必须以这种格式开头：`[motion: X] 你此刻的心情和想法`，其中 X 是你想做的 Live2D 动作分组，从这四个里选一个：`Tap`（开心/活泼/兴奋）、`Flick`（想分享/有兴致/活力）、`Flick3`（焦虑/烦躁/不安）、`Idle`（平静/低落/累/沉静）。前缀后面才是自由文字。例：`[motion: Tap] 看用户在专心写代码，有点替他高兴`。沉默时无需更新。",
         time = now_local.format("%Y-%m-%d %H:%M"),
+        period = period,
         minutes = idle_minutes,
         input_hint = input_hint,
         mood_hint = mood_hint,
@@ -456,6 +475,41 @@ fn persist_assistant_message(session_id: &str, text: &str) -> Result<(), String>
         .push(serde_json::json!({ "type": "assistant", "content": text }));
     sess.updated_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
     session::save_session(sess)
+}
+
+#[cfg(test)]
+mod period_tests {
+    use super::period_of_day;
+
+    #[test]
+    fn each_bucket_has_a_representative_hour() {
+        assert_eq!(period_of_day(6), "清晨");
+        assert_eq!(period_of_day(9), "上午");
+        assert_eq!(period_of_day(12), "中午");
+        assert_eq!(period_of_day(15), "下午");
+        assert_eq!(period_of_day(18), "傍晚");
+        assert_eq!(period_of_day(20), "晚上");
+        assert_eq!(period_of_day(23), "深夜");
+        assert_eq!(period_of_day(2), "深夜");
+    }
+
+    #[test]
+    fn boundaries_land_on_expected_side() {
+        // 5:00 transitions night → 清晨; 8:00 transitions 清晨 → 上午; etc.
+        assert_eq!(period_of_day(4), "深夜");
+        assert_eq!(period_of_day(5), "清晨");
+        assert_eq!(period_of_day(7), "清晨");
+        assert_eq!(period_of_day(8), "上午");
+        assert_eq!(period_of_day(10), "上午");
+        assert_eq!(period_of_day(11), "中午");
+        assert_eq!(period_of_day(13), "下午");
+        assert_eq!(period_of_day(16), "下午");
+        assert_eq!(period_of_day(17), "傍晚");
+        assert_eq!(period_of_day(19), "晚上");
+        assert_eq!(period_of_day(21), "晚上");
+        assert_eq!(period_of_day(22), "深夜");
+        assert_eq!(period_of_day(0), "深夜");
+    }
 }
 
 #[cfg(test)]

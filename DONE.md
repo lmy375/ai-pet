@@ -2,6 +2,13 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 43：proactive prompt 加 time-of-day 语义
+- 新 `pub fn period_of_day(hour: u8) -> &'static str` 在 proactive.rs：把 0–23 小时映射成中文时段词（清晨 / 上午 / 中午 / 下午 / 傍晚 / 晚上 / 深夜）。边界按中文日常说法：5–7 清晨，8–10 上午，11–12 中午，13–16 下午，17–18 傍晚，19–21 晚上，22–4 深夜。
+- run_proactive_turn prompt 头部从 `"现在是 {time}"` 升到 `"现在是 {time}（{period}）"`——多 1 列开销可忽略，给 LLM 一个语义抓手能让它说"傍晚的咖啡"而不是"15:47 的咖啡"。
+- 新 `mod period_tests` 14 个 case：每个时段一个代表小时（happy path）+ 边界 hour（4/5/7/8/10/11/13/16/17/19/21/22/0），覆盖每个跳变点的两侧。
+- 总测试 72 + 2（按 mod 算）= **74 个**，全过；cargo + tsc 双过；零 warning。
+- 不动反应式 chat / consolidate prompt——time-of-day 与"主动找话题"最搭，反应式是用户驱动话题，注入反而冗余。
+
 ## 2026-05-03 — Iter 42：counters 合并为 ProcessCounters
 - 新 `pub struct ProcessCounters { cache: CacheCounters, mood_tag: MoodTagCounters }` 在 commands/debug.rs，default 派生让 `new_process_counters()` 一行返 Arc<...>。doc comment 写明扩展原则："加新 counter 组只在这里加字段 + 加 Tauri 命令，不动 ToolContext 与 5 callsite"。
 - ToolContext 字段从 `cache_counters + mood_tag_counters` 缩成单 `process_counters: ProcessCountersStore`，`new` / `from_states` 各砍一参，`for_test` 简化。
