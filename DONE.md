@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 25：focus_history.log size-based rotation
+- 新增常量 `MAX_LOG_BYTES = 1_000_000`（1MB ≈ 30k 行，正常使用一年以上）。
+- 新增纯函数 `rotated_path(&Path) -> PathBuf`：对 `focus_history.log` 返回 `focus_history.log.1`（直接 append `.1` 到 OsStr，不走 with_extension 因为它会替换 `.log`）。
+- 新增异步 `rotate_if_needed(&Path, max_bytes) -> io::Result<bool>`：读 metadata，文件不存在或 size < max 时返 false；超过则 `tokio::fs::rename` 到 `.1`（覆盖任何旧的 `.1`）。
+- `append_event` 在写入前调用 `rotate_if_needed`，best-effort 忽略错误（rotation 失败不该阻断 tracker）。
+- 6 个新测试覆盖：`rotated_path` 标准 + 无扩展名；`rotates_when_oversized` / `does_not_rotate_when_under_limit` / `rotation_overwrites_existing_dot_one` / `missing_file_is_no_op`。
+- 不引 `tempfile` dev-dep：用 `std::env::temp_dir().join("pet-test-{label}-{nanos}")` 自建唯一临时目录，nanos 时间戳避免并行测试冲突。
+- 总测试 43 + 6 = **49 个**，全过。
+- cargo check 通过，零 warning。
+- 只保留一代历史（`.log` 现役 + `.log.1` 上一段），不做 `.1 → .2` 多代滚动——LLM 看长期模式只关心最近，深历史价值低。
+
 ## 2026-05-02 — Iter 24：consolidate prompt 引导 LLM 读 focus history
 - `consolidate.rs` 新增 `fn focus_history_hint() -> String`：检查 `~/.config/pet/focus_history.log` 是否存在，存在则返回一段 prompt 片段（绝对路径 + 格式示例 + 操作建议），不存在/无 config_dir 则返回空串。
 - consolidation prompt 模板加 `{focus_log_hint}` 占位符，紧贴"特殊保护"段之后、"原则保守"之前。

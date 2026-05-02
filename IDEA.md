@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 25 设计要点（已实现）
+- **size-based 而非 time-based**：本可以"每月 1 号滚动一次"。但 size-based 有几个优点：(a) 实现简单（一次 metadata 调用比时间窗判断稳）；(b) 对低使用率用户友好（一年都没满 1MB 就不滚动）；(c) 高使用率用户也不会丢得太快（30k 行约一年）。time-based 适合"日志按月归档查阅"场景，本项目是给 LLM 看模式不是给人翻档案。
+- **`with_extension` 陷阱**：`PathBuf::from("focus_history.log").with_extension("log.1")` 会得到 `focus_history.log.1`——但这是利用了 `with_extension` 的实现细节（"log.1"被当成新扩展，附在去掉旧扩展 "log" 后的 stem 上）。换成 `focus.txt` 就不灵了。直接 `OsStr::push(".1")` 是对路径文本追加，最稳。专门写测试 `rotated_path_handles_no_extension` 验证。
+- **best-effort rotation**：`append_event` 里 `let _ = rotate_if_needed(...)`，吞掉错误。原因是 tracker 跑在后台，rotation 失败不该让 transition 丢失——大不了文件继续涨一会儿，下次 polls 再尝试。append 写本身的错误倒是 propagate 出去，因为那才是数据丢失。
+- **只保留一代**：`.1` 之外不再有 `.2/.3`。设计假设是 LLM 周期性 consolidate 把"长期模式"提炼到 user_profile memory，原始日志只是给最近的 read_file 服务。一年前的具体 transition 时刻没价值。如果未来 Iter 有"年度复盘"需求再加多代。
+- **覆盖 `.1` 是合规的**：测试 `rotation_overwrites_existing_dot_one` 显式验证。`tokio::fs::rename` 在目标存在时直接替换（POSIX 语义），不需要先 remove。
+- **不引 tempfile**：用 `std::env::temp_dir() + nanos` 自建临时目录，节省一个 dev-dep。代价是清理靠 `let _ = remove_dir_all` 而非 RAII，偶尔可能残留——但 /tmp 本来就是 OS 周期清理的，不是问题。
+
 ## Iter 24 设计要点（已实现）
 - **存在性检查决定是否注入**：consolidate prompt 是有限注意力。让 LLM 看到一段"读这个文件"的指令，但文件其实不存在，模型只会困惑——可能会去 read_file，得到空内容或错误，然后在总结里写一句"focus 数据不足"，浪费 tokens。`focus_history_hint()` 用 `path.exists()` 短路返空串，让 prompt 在新装环境保持简洁。
 - **绝对路径而非 `~`**：tilde 由 shell 展开，但 read_file 是 Rust 端调用，不会走 shell。给 LLM 看实际可用的绝对路径（如 `/Users/moon/Library/Application Support/pet/focus_history.log`）能减少一次试错。
