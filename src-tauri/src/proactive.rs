@@ -299,7 +299,15 @@ async fn run_proactive_turn(
     // rewritten and we should ship the latest snapshot to the frontend. Parse the optional
     // [motion: X] prefix so the frontend can drive Live2D directly from the model's pick.
     let (mood_after, motion_after) = match read_current_mood_parsed() {
-        Some((text, motion)) => (Some(text), motion),
+        Some((text, motion)) => {
+            if motion.is_none() && !text.trim().is_empty() {
+                // Compliance signal: if the LLM updated mood without the [motion: X] prefix,
+                // the frontend will fall back to keyword matching. Worth logging so we can
+                // tell whether the model is following the format in practice.
+                ctx.log("Proactive: mood missing [motion: X] prefix — frontend will fall back to keyword match");
+            }
+            (Some(text), motion)
+        }
         None => (None, None),
     };
 
@@ -334,6 +342,15 @@ pub fn read_current_mood() -> Option<String> {
 /// Returns None if no mood is recorded yet.
 pub fn read_current_mood_parsed() -> Option<(String, Option<String>)> {
     let raw = read_current_mood()?;
+    Some(parse_mood_string(&raw))
+}
+
+/// Pure-function variant of the parsing — extracted for unit testing without touching the
+/// memory store. Splits an optional `[motion: X]` prefix off the raw description; if the
+/// prefix is missing, malformed, or carries a too-long tag, falls back to the raw text
+/// with motion=None. Returns owned strings so callers don't have to manage lifetimes
+/// against the source.
+pub fn parse_mood_string(raw: &str) -> (String, Option<String>) {
     let trimmed = raw.trim_start();
     if let Some(after_open) = trimmed.strip_prefix("[motion:") {
         if let Some(close_idx) = after_open.find(']') {
@@ -341,11 +358,72 @@ pub fn read_current_mood_parsed() -> Option<(String, Option<String>)> {
             let text = after_open[close_idx + 1..].trim().to_string();
             // Defend against empty or impossibly long tags from a confused model.
             if !motion.is_empty() && motion.len() <= 16 {
-                return Some((text, Some(motion)));
+                return (text, Some(motion));
             }
         }
     }
-    Some((raw, None))
+    (raw.to_string(), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mood_string;
+
+    #[test]
+    fn parses_well_formed_prefix() {
+        let (text, motion) = parse_mood_string("[motion: Tap] 看用户在写代码，替他高兴");
+        assert_eq!(motion.as_deref(), Some("Tap"));
+        assert_eq!(text, "看用户在写代码，替他高兴");
+    }
+
+    #[test]
+    fn allows_extra_whitespace_inside_prefix() {
+        let (text, motion) = parse_mood_string("[motion:   Flick3   ]   有点烦躁");
+        assert_eq!(motion.as_deref(), Some("Flick3"));
+        assert_eq!(text, "有点烦躁");
+    }
+
+    #[test]
+    fn no_prefix_returns_raw_with_none() {
+        let (text, motion) = parse_mood_string("觉得今天过得很平静");
+        assert!(motion.is_none());
+        assert_eq!(text, "觉得今天过得很平静");
+    }
+
+    #[test]
+    fn empty_motion_falls_back() {
+        let (text, motion) = parse_mood_string("[motion: ] 心情");
+        assert!(motion.is_none());
+        assert_eq!(text, "[motion: ] 心情");
+    }
+
+    #[test]
+    fn oversized_motion_falls_back() {
+        // 17 chars, exceeds 16 limit — defends against the LLM dumping prose into the slot.
+        let (_text, motion) = parse_mood_string("[motion: aaaaaaaaaaaaaaaaa] hi");
+        assert!(motion.is_none());
+    }
+
+    #[test]
+    fn unclosed_bracket_falls_back() {
+        let (text, motion) = parse_mood_string("[motion: Tap 心情没收尾");
+        assert!(motion.is_none());
+        assert_eq!(text, "[motion: Tap 心情没收尾");
+    }
+
+    #[test]
+    fn empty_text_after_prefix() {
+        let (text, motion) = parse_mood_string("[motion: Idle]");
+        assert_eq!(motion.as_deref(), Some("Idle"));
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn handles_leading_whitespace() {
+        let (text, motion) = parse_mood_string("   [motion: Tap] hello");
+        assert_eq!(motion.as_deref(), Some("Tap"));
+        assert_eq!(text, "hello");
+    }
 }
 
 /// Load the most recent session's messages (without the proactive prompt). Returns

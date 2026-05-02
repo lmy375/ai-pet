@@ -464,7 +464,14 @@ pub async fn chat(
     // same way it does for proactive messages. Mood may be unchanged from before the turn —
     // reactive chats don't currently update it — but we still want motion feedback.
     let (mood, motion) = match read_current_mood_parsed() {
-        Some((text, m)) => (Some(text), m),
+        Some((text, m)) => {
+            if m.is_none() && !text.trim().is_empty() {
+                // Same compliance signal as proactive — flag mood updates that omit the
+                // [motion: X] prefix so we can monitor format adherence in the log stream.
+                ctx.log("Chat: mood missing [motion: X] prefix — frontend will fall back to keyword match");
+            }
+            (Some(text), m)
+        }
         None => (None, None),
     };
     let payload = ChatDonePayload {

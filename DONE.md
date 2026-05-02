@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 12a：mood 解析单元测试 + 缺前缀监控
+- 重构：`read_current_mood_parsed` 拆成"读盘 + 解析"两层，新增 `parse_mood_string(raw: &str) -> (String, Option<String>)` 纯函数，无 IO 依赖、可单测。
+- `proactive` 模块加 `#[cfg(test)] mod tests`，覆盖 8 个边界：
+  - 标准格式 / 多余空格 / 无前缀 / 空 motion / 超长 motion / 未闭合 bracket / 前缀后空文本 / 前导空白
+  - `cargo test --lib proactive` → 8 passed 0 failed。
+- 缺前缀监控：proactive.rs 和 chat.rs 在 `read_current_mood_parsed` 之后判断"motion 缺失但 text 非空"——日志里写一行"missing [motion: X] prefix — frontend will fall back to keyword match"。
+- 端到端实机测试本次没做（需要交互式 Tauri/LLM），列为 Iter 12b。但日志告警已就位，等用户实跑时可以根据出现率判断是否要再调 prompt。
+- cargo check 通过（仍是两条与本次无关的预存 warning）。
+
 ## 2026-05-02 — Iter 11：反应式 chat 也注入和更新 mood
 - `commands/chat.rs` 新增 `inject_mood_note(messages)`：
   - 用 `read_current_mood_parsed()` 取当前 mood text。
