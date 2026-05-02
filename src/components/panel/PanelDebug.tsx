@@ -33,21 +33,24 @@ export function PanelDebug() {
     without_tag: 0,
     no_mood: 0,
   });
+  const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts] = await Promise.all([
+      const [result, stats, dec, mts, speeches] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
         invoke<MoodTagStats>("get_mood_tag_stats"),
+        invoke<string[]>("get_recent_speeches", { n: 10 }),
       ]);
       setLogs(result);
       setCacheStats(stats);
       setDecisions(dec);
       setMoodTagStats(mts);
+      setRecentSpeeches(speeches);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -213,6 +216,38 @@ export function PanelDebug() {
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Pet's recent proactive utterances — sourced from speech_history.log */}
+      {recentSpeeches.length > 0 && (
+        <div
+          style={{
+            padding: "8px 16px",
+            borderBottom: "1px solid #e2e8f0",
+            background: "#fdf4ff",
+            fontSize: "12px",
+            maxHeight: "120px",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ color: "#86198f", marginBottom: "4px", fontSize: "12px" }}>
+            宠物最近主动说过的 {recentSpeeches.length} 句（最新在底部）
+          </div>
+          {recentSpeeches.map((line, i) => {
+            const idx = line.indexOf(" ");
+            const ts = idx > 0 ? line.slice(0, idx) : "";
+            const text = idx > 0 ? line.slice(idx + 1) : line;
+            const tShort = ts.length >= 16 ? ts.slice(11, 16) : ts;
+            return (
+              <div key={i} style={{ display: "flex", gap: "8px" }}>
+                <span style={{ color: "#a78bfa", fontFamily: "'SF Mono', 'Menlo', monospace", minWidth: "44px" }}>
+                  {tShort}
+                </span>
+                <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>{text}</span>
+              </div>
+            );
+          })}
         </div>
       )}
 

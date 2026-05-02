@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 46：PanelDebug 显示宠物最近发言
+- 后端 `speech_history.rs` 加 `#[tauri::command] pub async fn get_recent_speeches(n: Option<usize>) -> Vec<String>` —— 直接走 `recent_speeches`（默认 n=10）。lib.rs 注册。
+- 前端 `PanelDebug.tsx`：
+  - 加 `recentSpeeches: string[]` state，fetchLogs 五路 Promise.all 并联。
+  - 决策段之后插一段紫色背景 (#fdf4ff) 的"宠物最近主动说过的 N 句"卡片，max-height 120px scroll。
+  - 每行布局：左侧浅紫等宽 `HH:MM`（从 ISO timestamp 切片 11..16），右侧灰色文本主体。无 ts 行 fallback 显示原文。
+  - 仅 `recentSpeeches.length > 0` 渲染——首次启动 / 文件丢失时不出空卡片。
+- 颜色编码区分既有区块：决策段灰白 / Cache 蓝 / Tag 紫色 / Speech 紫色背景——视觉上 Speech 也是 mood/personality 维度，与 Tag 同色系一致。
+- tsc + 85 tests 双过；零 warning。
+- 现在用户调试"宠物为什么这么说话"看 panel 一眼就明白：决策段说"为什么开口"，speech 段说"具体说了啥"。
+
 ## 2026-05-03 — Iter 45：宠物自言自语流持久化 + 反话题重复
 - 新模块 `src-tauri/src/speech_history.rs`：append-only 文件 `~/.config/pet/speech_history.log`，每行 `<ISO ts> <text>`（newline 平到 space）。
 - API：
