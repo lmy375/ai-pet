@@ -92,6 +92,7 @@ pub fn run() {
             commands::debug::append_log,
             commands::debug::clear_logs,
             commands::debug::get_llm_logs,
+            commands::debug::get_cache_stats,
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,

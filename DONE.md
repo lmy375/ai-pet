@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 31：cache 统计的解析 + Tauri 命令
+- 新纯函数 `parse_cache_summary(&str) -> Option<(u64, u64)>`：从 `"... Tool cache summary: H/T hits (P%)"` 提取 (hits, total)，不匹配返 None。剥离独立函数让单测无需 mock LogStore。
+- 新 `pub struct CacheStats { turns, total_hits, total_calls }`（serde::Serialize），供 frontend 消费。
+- 新 Tauri 命令 `get_cache_stats(LogStore) -> CacheStats`：遍历 LogStore 所有行，对每行调 parse，命中即累加。`turns` 是命中行数（≈ 跑完且至少有一次 cacheable 调用的 LLM turn 数）。
+- `lib.rs` `tauri::generate_handler!` 注册 `get_cache_stats`。
+- 5 个新单测：canonical / 0 hits / 100% / 不相关行 / 数字格式异常——重点覆盖 negative path。
+- 总测试 55 + 5 = **60 个**，全过；cargo check 零 warning。
+- 后续 Iter 32 在 panel UI 调用此命令做渲染。
+
 ## 2026-05-02 — Iter 30：cache 命中聚合统计
 - `ToolRegistry` 加两个原子计数器：`cache_hits` / `cache_misses`（`AtomicU64`）。
 - `execute()` 在 cache 命中时 `cache_hits.fetch_add(1)`，写入新缓存项时 `cache_misses.fetch_add(1)`。Relaxed ordering 够用——只是统计计数没并发依赖。

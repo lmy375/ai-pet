@@ -103,3 +103,92 @@ pub fn append_log(store: State<'_, LogStore>, message: String) {
 pub fn clear_logs(store: State<'_, LogStore>) {
     store.0.lock().unwrap().clear();
 }
+
+/// Aggregated tool-cache statistics derived from "Tool cache summary" lines emitted at
+/// the end of each successful LLM turn. Each summary line records one turn; the totals
+/// sum every turn this session has produced so the panel can render an honest cumulative
+/// hit ratio without re-implementing the parsing in TS.
+#[derive(serde::Serialize)]
+pub struct CacheStats {
+    /// Number of "Tool cache summary" lines parsed (≈ pipeline turns that fired any
+    /// cacheable tool).
+    pub turns: u64,
+    /// Sum of cache hits across all parsed summaries.
+    pub total_hits: u64,
+    /// Sum of total cacheable calls (hits + misses) across all parsed summaries.
+    pub total_calls: u64,
+}
+
+/// Pure parser — extracts (hits, total) from a single summary line in the form
+/// `"... Tool cache summary: <hits>/<total> hits (<pct>%)"`. Returns None if the line
+/// doesn't match. Extracted to a separate function so it can be unit-tested without
+/// touching the LogStore.
+pub fn parse_cache_summary(line: &str) -> Option<(u64, u64)> {
+    let body = line.split("Tool cache summary:").nth(1)?.trim();
+    let stat_segment = body.split_whitespace().next()?;
+    let (hits_str, total_str) = stat_segment.split_once('/')?;
+    let hits: u64 = hits_str.trim().parse().ok()?;
+    let total: u64 = total_str.trim().parse().ok()?;
+    Some((hits, total))
+}
+
+#[tauri::command]
+pub fn get_cache_stats(store: State<'_, LogStore>) -> CacheStats {
+    let logs = store.0.lock().unwrap();
+    let mut stats = CacheStats {
+        turns: 0,
+        total_hits: 0,
+        total_calls: 0,
+    };
+    for line in logs.iter() {
+        if let Some((hits, total)) = parse_cache_summary(line) {
+            stats.turns += 1;
+            stats.total_hits += hits;
+            stats.total_calls += total;
+        }
+    }
+    stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cache_summary;
+
+    #[test]
+    fn parses_canonical_summary_line() {
+        let line = "[12:34:56] Tool cache summary: 3/5 hits (60%)";
+        assert_eq!(parse_cache_summary(line), Some((3, 5)));
+    }
+
+    #[test]
+    fn parses_zero_hits() {
+        let line = "Tool cache summary: 0/4 hits (0%)";
+        assert_eq!(parse_cache_summary(line), Some((0, 4)));
+    }
+
+    #[test]
+    fn parses_perfect_hit_ratio() {
+        let line = "Tool cache summary: 7/7 hits (100%)";
+        assert_eq!(parse_cache_summary(line), Some((7, 7)));
+    }
+
+    #[test]
+    fn ignores_unrelated_log_lines() {
+        assert_eq!(parse_cache_summary("Tool call: get_weather({})"), None);
+        assert_eq!(parse_cache_summary("LLM round 0 (3 messages)"), None);
+        assert_eq!(parse_cache_summary(""), None);
+    }
+
+    #[test]
+    fn rejects_malformed_numbers() {
+        assert_eq!(
+            parse_cache_summary("Tool cache summary: x/y hits (?%)"),
+            None,
+        );
+        assert_eq!(
+            parse_cache_summary("Tool cache summary: 3 hits"),
+            None,
+            "missing slash"
+        );
+    }
+}

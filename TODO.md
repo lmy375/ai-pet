@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，对照 debug 日志里的"missing [motion: X] prefix"出现率判断要不要再改 prompt。
-- [ ] Iter 31：写个简单的 debug.rs CLI / Tauri 命令读 LogStore，过滤"Tool cache summary"行做平均统计，让用户能在 panel 里直观看到累计命中率。光看一行行的日志原始数据信息密度太低。
+- [ ] Iter 32：把 `get_cache_stats` 接进 panel UI——在 debug bar 或 panel header 加一行 "Cache: H/T hits (P%) over N turns"。前端调 invoke('get_cache_stats')，渲染 + 自动刷新。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。
