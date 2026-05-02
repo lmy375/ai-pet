@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 18：proactive 主循环重构成 guard 列表 + 单一 sleep
+- 新增 `enum LoopAction { Silent, Skip(String), Run { idle_seconds, input_idle_seconds } }`：把每 tick 的可能结果显式枚举出来，外层循环只处理这三种。
+- 新增 `async fn evaluate_loop_tick(app, settings) -> LoopAction`：纯判断，依次跑 4 道 guard：
+  1. enabled → Silent
+  2. awaiting_user_reply → Skip(...)
+  3. cooldown 未到 → Skip(...)
+  4. idle 不足 → Silent（高频"还没空"不日志）
+  5. input_idle 不达标 → Skip(...)
+  6. 全过 → Run
+- 主循环简化为：取 settings → 算 interval → match evaluate → 单一 `tokio::time::sleep(interval)`：
+  - 行数从 ~70 下降到 ~25（含 match）。
+  - 原来 4 处独立 `sleep + continue` 收成 1 处统一 sleep，行为不变（每个分支都最终睡 interval）。
+  - log_store 只在需要写日志的分支懒取，避免 Silent 分支也付一次 Arc clone。
+- cargo check 通过，零 warning。
+- 现在加新 gate（如"focus mode 时不打扰"）只需在 evaluate_loop_tick 中插一段 `if cond { return LoopAction::Skip(...); }`，主循环不动。
+
 ## 2026-05-02 — Iter 17：清理预存 dead_code warning
 - 删除 `commands/chat.rs::CollectingSink::take_text`：原意是给非流式 caller（Telegram）取最终文本用，但 Telegram bot 实际上是用 `run_chat_pipeline` 的返回值直接拿，从未调用 take_text。Sink 自己只 push 不 take，删掉无副作用。
 - 删除 `mcp/manager.rs::McpManager::has_tool`：MCP tool 路由已经走 `is_mcp_tool` 路径（在 ToolRegistry），manager 自己的 has_tool 没有任何 caller。
