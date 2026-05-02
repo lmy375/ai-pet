@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 40 设计要点（已实现）
+- **取代 Iter 12b 的"实机交互测试"**：12b 一直挂着无法在自动化会话中完成。把"格式遵守率"做成 panel 一直可见的指标后，这个统计随着每次 LLM turn 自动累计，用户实机跑应用时打开 panel 就看到——比专门做一次"测试"更可持续，也消除了 12b 的存在意义（合并进 12b TODO）。
+- **三档统计而非两档**：除 with_tag / without_tag 还加 no_mood，因为"还没记录过 mood"是真实存在的常态（首次启动、第一次 proactive 之前）。这一档不参与 ratio 分母，避免初期"100% no_mood = 0% 命中率"的误导。
+- **read_mood_for_event 签名改为接 &ToolContext**：之前接 (&LogStore, &str)。改为 ctx 后函数能拿到所有它需要的东西（log store + counters），调用站省两次 inner().clone()。这是"小函数应该接它需要的全部 context"原则的应用。
+- **重新走一遍 ToolContext field 加字段流程**：和 Iter 34 添加 cache_counters 同款 6 步——struct 字段 / new / from_states / for_test / 5 callsite / 反向 plumbing 通到 lib.rs。每一步都是机械的，但加一遍仍然要碰 11 个文件。这种"reusable plumbing pattern"如果再来一次（比如下次加 token_usage_counters），考虑是不是要把这些 counter 都装进一个总的 `ProcessCounters` struct 减少散布。Iter 41 / 42 时再决定。
+- **不写复杂集成测试**：read_mood_for_event 依赖 disk read，单测要 mock memory 系统重。我满足于：(a) atomic counter 单测覆盖低层；(b) 现有 mood::tests 覆盖 parse 逻辑；(c) cargo check 把 plumbing 错误兜住；(d) 实机用 panel 实时看真值更有说服力。
+
 ## Iter 39 设计要点（已实现）
 - **前端映射 vs 后端中文文案**：选前者。原因：(a) 后端 reason 现在是稳定的语义 key（"disabled" / "quiet_hours" / ...），改成中文文案就把 UI 语言耦合进协议；(b) 加新语言、做 i18n 时只动前端表；(c) 后端日志依然英文便于 grep；(d) reason 字符串可以同时作 enum 用（panel 旁的"按 reason 过滤决策"功能就靠英文 key）。
 - **分层翻译策略**：Silent 是 enum-like → 一对一 switch；Skip 是 prefix + 动态参数 → startsWith 匹配 + 替换前缀保数字；Run 已经结构化无需翻译。每个 kind 一种翻译策略，简洁。

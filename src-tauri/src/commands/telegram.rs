@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::commands::debug::{CacheCountersStore, LogStore};
+use crate::commands::debug::{CacheCountersStore, LogStore, MoodTagCountersStore};
 use crate::commands::settings::get_settings;
 use crate::commands::shell::ShellStore;
 use crate::mcp::McpManagerStore;
@@ -33,6 +33,7 @@ pub async fn reconnect_telegram(
     log_store: State<'_, LogStore>,
     shell_store: State<'_, ShellStore>,
     cache_counters: State<'_, CacheCountersStore>,
+    mood_tag_counters: State<'_, MoodTagCountersStore>,
 ) -> Result<TelegramStatus, String> {
     // Stop existing bot
     {
@@ -56,8 +57,9 @@ pub async fn reconnect_telegram(
     let logs = LogStore(log_store.0.clone());
     let shells = ShellStore(shell_store.0.clone());
     let counters = cache_counters.inner().clone();
+    let mood_counters = mood_tag_counters.inner().clone();
 
-    match TelegramBot::start(tg.clone(), mcp, logs, shells, counters, app).await {
+    match TelegramBot::start(tg.clone(), mcp, logs, shells, counters, mood_counters, app).await {
         Ok(bot) => {
             *telegram_store.lock().await = Some(bot);
             Ok(TelegramStatus {

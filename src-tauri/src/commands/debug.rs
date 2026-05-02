@@ -30,6 +30,27 @@ pub fn new_cache_counters() -> CacheCountersStore {
     Arc::new(CacheCounters::default())
 }
 
+/// Per-process counters tracking how often the LLM cooperated with the
+/// `[motion: X]` prefix convention. Bumped every time `read_mood_for_event` is invoked
+/// (i.e. after every successful LLM turn that produced a mood snapshot). Lets the panel
+/// render an honest "is the model following the format?" indicator without grepping
+/// the log buffer.
+#[derive(Default)]
+pub struct MoodTagCounters {
+    /// Mood was present and started with a valid `[motion: X]` prefix.
+    pub with_tag: AtomicU64,
+    /// Mood was present but missing/invalid prefix — frontend falls back to keyword match.
+    pub without_tag: AtomicU64,
+    /// No mood entry yet (typically just after install / first proactive turn).
+    pub no_mood: AtomicU64,
+}
+
+pub type MoodTagCountersStore = Arc<MoodTagCounters>;
+
+pub fn new_mood_tag_counters() -> MoodTagCountersStore {
+    Arc::new(MoodTagCounters::default())
+}
+
 /// Return the log directory: ~/.config/pet/logs/
 pub fn log_dir() -> PathBuf {
     dirs::home_dir()
@@ -160,6 +181,22 @@ pub fn reset_cache_stats(counters: State<'_, CacheCountersStore>) {
     counters.calls.store(0, Ordering::Relaxed);
 }
 
+#[derive(serde::Serialize)]
+pub struct MoodTagStats {
+    pub with_tag: u64,
+    pub without_tag: u64,
+    pub no_mood: u64,
+}
+
+#[tauri::command]
+pub fn get_mood_tag_stats(counters: State<'_, MoodTagCountersStore>) -> MoodTagStats {
+    MoodTagStats {
+        with_tag: counters.with_tag.load(Ordering::Relaxed),
+        without_tag: counters.without_tag.load(Ordering::Relaxed),
+        no_mood: counters.no_mood.load(Ordering::Relaxed),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{new_cache_counters, write_log, MAX_LOG_LINES};
@@ -189,6 +226,20 @@ mod tests {
         assert_eq!(c.turns.load(Ordering::Relaxed), 3);
         assert_eq!(c.hits.load(Ordering::Relaxed), 6);
         assert_eq!(c.calls.load(Ordering::Relaxed), 15);
+    }
+
+    #[test]
+    fn mood_tag_counters_default_to_zero_and_accumulate() {
+        let c = super::new_mood_tag_counters();
+        assert_eq!(c.with_tag.load(Ordering::Relaxed), 0);
+        assert_eq!(c.without_tag.load(Ordering::Relaxed), 0);
+        assert_eq!(c.no_mood.load(Ordering::Relaxed), 0);
+        c.with_tag.fetch_add(3, Ordering::Relaxed);
+        c.without_tag.fetch_add(1, Ordering::Relaxed);
+        c.no_mood.fetch_add(2, Ordering::Relaxed);
+        assert_eq!(c.with_tag.load(Ordering::Relaxed), 3);
+        assert_eq!(c.without_tag.load(Ordering::Relaxed), 1);
+        assert_eq!(c.no_mood.load(Ordering::Relaxed), 2);
     }
 
     #[test]

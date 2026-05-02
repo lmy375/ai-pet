@@ -14,6 +14,12 @@ interface ProactiveDecision {
   reason: string;
 }
 
+interface MoodTagStats {
+  with_tag: number;
+  without_tag: number;
+  no_mood: number;
+}
+
 export function PanelDebug() {
   const [logs, setLogs] = useState<string[]>([]);
   const [cacheStats, setCacheStats] = useState<CacheStats>({
@@ -22,19 +28,26 @@ export function PanelDebug() {
     total_calls: 0,
   });
   const [decisions, setDecisions] = useState<ProactiveDecision[]>([]);
+  const [moodTagStats, setMoodTagStats] = useState<MoodTagStats>({
+    with_tag: 0,
+    without_tag: 0,
+    no_mood: 0,
+  });
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec] = await Promise.all([
+      const [result, stats, dec, mts] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
+        invoke<MoodTagStats>("get_mood_tag_stats"),
       ]);
       setLogs(result);
       setCacheStats(stats);
       setDecisions(dec);
+      setMoodTagStats(mts);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -125,6 +138,25 @@ export function PanelDebug() {
             >
               重置
             </button>
+          </span>
+        )}
+        {moodTagStats.with_tag + moodTagStats.without_tag > 0 && (
+          <span
+            style={{
+              fontSize: "12px",
+              color: "#a855f7",
+              alignSelf: "center",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+            title={`${moodTagStats.with_tag} 次心情写入带 [motion: X] 前缀，${moodTagStats.without_tag} 次缺失（前端走关键词 fallback）`}
+          >
+            Tag {moodTagStats.with_tag}/{moodTagStats.with_tag + moodTagStats.without_tag} (
+            {Math.round(
+              (moodTagStats.with_tag /
+                (moodTagStats.with_tag + moodTagStats.without_tag)) *
+                100,
+            )}
+            %)
           </span>
         )}
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>

@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::commands::debug::{write_llm_log, CacheCountersStore, LogStore};
+use crate::commands::debug::{write_llm_log, CacheCountersStore, LogStore, MoodTagCountersStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
@@ -474,9 +474,15 @@ pub async fn chat(
     mcp_store: State<'_, McpManagerStore>,
     interaction_clock: State<'_, InteractionClockStore>,
     cache_counters: State<'_, CacheCountersStore>,
+    mood_tag_counters: State<'_, MoodTagCountersStore>,
 ) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
-    let ctx = ToolContext::from_states(&log_store, &shell_store, &cache_counters);
+    let ctx = ToolContext::from_states(
+        &log_store,
+        &shell_store,
+        &cache_counters,
+        &mood_tag_counters,
+    );
     let mcp = mcp_store.inner().clone();
     let clock = interaction_clock.inner().clone();
     // Inbound user message — clears the "awaiting reply to previous proactive" flag so the
@@ -493,7 +499,7 @@ pub async fn chat(
     // Emit chat-done with current mood snapshot so the frontend can drive Live2D motion the
     // same way it does for proactive messages. Mood may be unchanged from before the turn —
     // reactive chats don't currently update it — but we still want motion feedback.
-    let (mood, motion) = read_mood_for_event(log_store.inner(), "Chat");
+    let (mood, motion) = read_mood_for_event(&ctx, "Chat");
     let payload = ChatDonePayload {
         mood,
         motion,

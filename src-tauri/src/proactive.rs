@@ -328,9 +328,13 @@ async fn run_proactive_turn(
     let log_store = app.state::<LogStore>().inner().clone();
     let shell_store = app.state::<ShellStore>().inner().clone();
     let cache_counters = app.state::<crate::commands::debug::CacheCountersStore>().inner().clone();
+    let mood_tag_counters = app
+        .state::<crate::commands::debug::MoodTagCountersStore>()
+        .inner()
+        .clone();
     let clock = app.state::<InteractionClockStore>().inner().clone();
 
-    let ctx = ToolContext::new(log_store, shell_store, cache_counters);
+    let ctx = ToolContext::new(log_store, shell_store, cache_counters, mood_tag_counters);
 
     // Try to load the latest session so the proactive turn has the recent context. If none
     // exists yet, fall back to a system-only conversation.
@@ -418,8 +422,7 @@ async fn run_proactive_turn(
 
     // Re-read mood after the turn — if the LLM updated it via memory_edit, the file has been
     // rewritten and we should ship the latest snapshot to the frontend.
-    let log_store = app.state::<LogStore>().inner().clone();
-    let (mood_after, motion_after) = read_mood_for_event(&log_store, "Proactive");
+    let (mood_after, motion_after) = read_mood_for_event(&ctx, "Proactive");
 
     let payload = ProactiveMessage {
         text: reply_trimmed.to_string(),

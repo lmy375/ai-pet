@@ -72,7 +72,11 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     let log_store = app.state::<LogStore>().inner().clone();
     let shell_store = app.state::<ShellStore>().inner().clone();
     let cache_counters = app.state::<crate::commands::debug::CacheCountersStore>().inner().clone();
-    let ctx = ToolContext::new(log_store.clone(), shell_store, cache_counters);
+    let mood_tag_counters = app
+        .state::<crate::commands::debug::MoodTagCountersStore>()
+        .inner()
+        .clone();
+    let ctx = ToolContext::new(log_store.clone(), shell_store, cache_counters, mood_tag_counters);
 
     let index = memory::memory_list(None).map_err(|e| format!("memory_list failed: {e}"))?;
     let index_json = serde_json::to_string_pretty(&index)
@@ -129,7 +133,7 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
 
     // Re-read mood for the post-consolidation snapshot. If consolidation merged or refined
     // the mood entry, we want the desktop pet's Live2D motion to reflect it.
-    let (mood, motion) = read_mood_for_event(&log_store, "Consolidate");
+    let (mood, motion) = read_mood_for_event(&ctx, "Consolidate");
     if mood_before.is_some() && mood.is_none() {
         // Despite the explicit prompt protection, the LLM removed the mood entry. Worth
         // surfacing — repeated occurrences mean the protection text needs hardening.
