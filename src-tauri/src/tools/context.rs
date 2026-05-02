@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use crate::commands::debug::{write_log, LogStore, ProcessCountersStore};
 use crate::commands::shell::ShellStore;
 
@@ -9,6 +11,12 @@ pub struct ToolContext {
     /// Adding a new metric is now one new field on `ProcessCounters` plus one Tauri
     /// command — no changes to ToolContext signatures or the 5+ callers.
     pub process_counters: ProcessCountersStore,
+    /// Optional sink for "which tool names did the LLM end up calling this turn?".
+    /// `run_chat_pipeline` pushes the registry's `called_tool_names` here at the end so
+    /// callers like `run_proactive_turn` can tag the decision log without changing the
+    /// pipeline's `Result<String, _>` return type. Stays `None` for callers that don't
+    /// care (consolidate, telegram, generic chat command).
+    pub tools_used: Option<Arc<Mutex<Vec<String>>>>,
 }
 
 impl ToolContext {
@@ -21,6 +29,7 @@ impl ToolContext {
             shell_store,
             log_store,
             process_counters,
+            tools_used: None,
         }
     }
 
@@ -33,6 +42,7 @@ impl ToolContext {
             shell_store: ShellStore(shell_store.0.clone()),
             log_store: LogStore(log_store.0.clone()),
             process_counters: process_counters.inner().clone(),
+            tools_used: None,
         }
     }
 
@@ -45,6 +55,13 @@ impl ToolContext {
             shell_store,
             crate::commands::debug::new_process_counters(),
         )
+    }
+
+    /// Builder method — attach a `tools_used` collector. Caller keeps a clone of the Arc
+    /// so it can read the populated names after the pipeline returns.
+    pub fn with_tools_used_collector(mut self, collector: Arc<Mutex<Vec<String>>>) -> Self {
+        self.tools_used = Some(collector);
+        self
     }
 
     pub fn log(&self, msg: &str) {

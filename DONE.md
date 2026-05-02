@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 81：把 LLM 用的工具串记到 decision log Spoke reason
+- `ToolRegistry` 加 `called_tools: TokioMutex<Vec<String>>`：每次 `execute()` push 名字（hit/miss 都记，cache hit 也算 LLM 主观调用）。新 `pub async fn called_tool_names()` 读完去重排序。
+- `ToolContext` 加 `tools_used: Option<Arc<Mutex<Vec<String>>>>` opt-in collector + `with_tools_used_collector()` builder。其他 callers（consolidate / telegram / 普通 chat）不传，零开销。
+- `run_chat_pipeline` 在 final response 分支末尾把 `registry.called_tool_names().await` 写入 collector（成功路径独占，partial/error 路径不污染数据）。
+- `run_proactive_turn` 改返回 `ProactiveTurnOutcome { reply: Option<String>, tools: Vec<String> }`：在 ctx 上挂 collector，pipeline 完成后读出来一起返。`trigger_proactive_turn` 同步更新到新返回结构。
+- 调度循环 dispatch 把 `tools` 拼成 `tools=window+weather` 加在 Spoke 的 chatty_part 后：reason 形如 `"chatty=5/5, tools=get_active_window+get_weather"`。
+- 前端 `localizeReason` Spoke 分支处理 4 种 reason 形态：`"-"` / `"-, tools=X+Y"` / `"chatty=5/5"` / `"chatty=5/5, tools=X+Y"`，无 chatty 标签时去掉前缀 "-" 显示 `"宠物开口（tools=...）"`。
+- 2 个新单测覆盖 called_tool_names empty / mixed cacheable+非的 sort+dedup。
+- 现在 panel decision log 看 Spoke 行就能立刻知道："这次开口前 LLM 调了 active_window+weather → 它有看用户场景再说话"，对调试 prompt 是否实际驱动 LLM 用工具非常关键。
+- 157 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 80：LLM 沉默率 atomic counters + panel 工具栏 chip
 - 新 `LlmOutcomeCounters { spoke, silent, error: AtomicU64 }` 加到 `ProcessCounters`，container pattern 与 cache/mood_tag 一致；零 plumbing 改动。
 - 新 Tauri commands `get_llm_outcome_stats` / `reset_llm_outcome_stats`；都注册到 invoke handler。

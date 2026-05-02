@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 81 设计要点（已实现）
+- **opt-in collector via ToolContext 而非改 run_chat_pipeline 签名**：4 个 callers（chat / proactive / consolidate / telegram）只有 proactive 需要 tool tags。改返回类型迫使所有 caller 解构 `(reply, tools)` 或 ignore；通过 ctx 加 optional collector 让不关心的 caller 零改动。这是"添字段不破坏既有调用者"的标准模式。
+- **mutex 而非 atomic / channel**：tool names 是 `Vec<String>`，原子追加需要 lock-free queue（复杂）或 channel（异步生命周期繁琐）。`Arc<Mutex<Vec<String>>>` 同步锁简单可靠，pipeline 末尾一次性写入，dispatch 读一次——锁竞争不可能成为瓶颈。
+- **registry 自己也持有 called_tools (TokioMutex)**：本可以让 execute() 直接写到 ctx.tools_used。但 registry 自己有这个数据更内聚——未来其他 caller 想拿 tool names（例如统计页 "本会话用过哪些工具"）能直接 `registry.called_tool_names()` 而不需要 ctx 介入。pipeline 末尾的拷贝是显式的"出口"。
+- **cache hit 也算 called**：意图角度：LLM 想着调 tool X（哪怕命中缓存），算"它用了 X"。如果只算 miss，cache 优化越狠 tool tag 越假——明明 LLM 调了 3 次 weather 都用，tag 缺。本目标是 prompt 调试反馈，关注 LLM 心智模型而不是 IO 实际数。
+- **sort+dedup 在 read 而非 write**：每次 push 不去重，读时 sort+dedup。优势：write 路径零成本（无锁内查找）；劣势：内存稍多但同一 turn 工具调用很少（< 10），可忽略。
+- **partial/error 路径不写 collector**：tool collector 在 pipeline final response 分支才 populate。如果 turn 中途 fetch 失败、loop 中断、或被 cancel，collector 保持空。这避免了"看到 tools 但没看到 reply"的迷之状态——always-correlated。
+- **ProactiveTurnOutcome struct 而非 tuple**：`Result<(Option<String>, Vec<String>), _>` 也能用，但带名字的 struct 让 caller 写 `outcome.reply` / `outcome.tools` 自描述，未来加第三个字段（如 `tokens_used: u64`）零摩擦。
+- **`tools=X+Y` 编码而非 JSON 数组**：decision log 是字符串域，纯字符串拼接最简单。`+` 是分隔符避免和工具名内含的 `_` 冲突。前端读到后无需解析，直接拼进展示文案。如果未来想结构化（带 latency 等），再 split。
+
 ## Iter 80 设计要点（已实现）
 - **复用 ProcessCounters container pattern**：第 3 个 sub-struct（cache/mood_tag/llm_outcome）用同一模式：AtomicU64 + 工厂 + Stats serde 结构 + get_/reset_ 命令对。每加一个新指标，机械地复制粘贴改名字即可。这种"同形复制"反而比抽象出 trait 更易读——具体类型里能直接看到字段含义。
 - **bump 在 dispatch 处，不在 run_proactive_turn 内部**：`run_proactive_turn` 不知道 ProcessCounters 的存在（它接 AppHandle 但通过 state 访问也行）。但放在 dispatch 处的好处是：它已经在做完全相同的 outcome 分类（`Ok(Some) / Ok(None) / Err`）来 push decision log；同位置 fetch_add 让 atomic 和 decision log 永不分叉，未来想加新 outcome 状态（如 `LlmTimeout`）一处改全到位。

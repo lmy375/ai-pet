@@ -425,6 +425,16 @@ pub async fn run_chat_pipeline(
                 result.total_latency_ms,
             ));
             registry.log_cache_summary(ctx);
+            // Hand the registry's tool-name list back to any caller that opted in via
+            // ctx.tools_used. Done here (and only on the success path) so the populated
+            // names always correspond to a turn that actually completed and produced a
+            // reply — partial / error paths leave the collector untouched.
+            if let Some(collector) = &ctx.tools_used {
+                let names = registry.called_tool_names().await;
+                if let Ok(mut g) = collector.lock() {
+                    *g = names;
+                }
+            }
             sink.send_done();
             return Ok(result.text);
         }
