@@ -36,6 +36,11 @@ pub struct ToolRegistry {
     /// hit ratio without parsing every per-call log.
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
+    /// Names of tools the LLM has invoked at least once during this registry's lifetime.
+    /// Surfaced via `called_tool_names` so the proactive dispatch can tag the decision log
+    /// "Spoke" entry with which env-awareness tools the model actually used. Order is not
+    /// preserved (only presence matters); duplicates are deduped on read.
+    called_tools: TokioMutex<Vec<String>>,
 }
 
 impl ToolRegistry {
@@ -71,6 +76,7 @@ impl ToolRegistry {
             cache: TokioMutex::new(HashMap::new()),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
+            called_tools: TokioMutex::new(Vec::new()),
         }
     }
 
@@ -91,6 +97,10 @@ impl ToolRegistry {
     /// the per-registry cache when arguments match a previous call this turn.
     pub async fn execute(&self, name: &str, arguments: &str, ctx: &ToolContext) -> String {
         ctx.log(&format!("Tool call: {}({})", name, arguments));
+        // Record the call regardless of cache hit/miss so the decision-log Spoke tag
+        // reflects "the model asked about X this turn" — cache hits are still semantic
+        // calls from the LLM's perspective even if no IO fired.
+        self.called_tools.lock().await.push(name.to_string());
         let cache_key = if CACHEABLE_TOOLS.contains(&name) {
             Some(format!("{}|{}", name, arguments))
         } else {
@@ -124,6 +134,16 @@ impl ToolRegistry {
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),
         )
+    }
+
+    /// Sorted unique list of tool names the LLM invoked during this registry's lifetime.
+    /// Used by the proactive dispatch loop to tag the Spoke decision-log entry; small
+    /// enough that sort+dedup on read is fine versus maintaining a HashSet on write.
+    pub async fn called_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.called_tools.lock().await.clone();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Emit a single summary log line and bump the process-wide cache counters. Caller
@@ -252,6 +272,40 @@ mod tests {
         reg.execute("get_weather", "{}", &ctx).await;
         reg.execute("get_weather", "{}", &ctx).await;
         assert_eq!(reg.cache_stats(), (2, 1));
+    }
+
+    #[tokio::test]
+    async fn called_tool_names_lists_each_invocation_once() {
+        let calls_a = Arc::new(AtomicU64::new(0));
+        let calls_b = Arc::new(AtomicU64::new(0));
+        let reg = ToolRegistry::with_tools(
+            vec![
+                Box::new(CountingTool {
+                    name: "get_weather".to_string(),
+                    calls: calls_a,
+                }),
+                Box::new(CountingTool {
+                    name: "memory_search".to_string(),
+                    calls: calls_b,
+                }),
+            ],
+            vec![],
+        );
+        let ctx = fresh_ctx();
+
+        // Mix of cacheable + non-cacheable, with repeats — sorted dedup result regardless.
+        reg.execute("memory_search", r#"{"q":"a"}"#, &ctx).await;
+        reg.execute("get_weather", "{}", &ctx).await;
+        reg.execute("get_weather", "{}", &ctx).await;
+        reg.execute("memory_search", r#"{"q":"b"}"#, &ctx).await;
+        let names = reg.called_tool_names().await;
+        assert_eq!(names, vec!["get_weather".to_string(), "memory_search".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn called_tool_names_starts_empty() {
+        let reg = ToolRegistry::with_tools(vec![], vec![]);
+        assert!(reg.called_tool_names().await.is_empty());
     }
 
     #[tokio::test]

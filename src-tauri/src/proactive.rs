@@ -370,9 +370,9 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
     let snap = clock.snapshot().await;
     let input_idle = crate::input_idle::user_input_idle_seconds().await;
     let started = std::time::Instant::now();
-    let reply = run_proactive_turn(&app, snap.idle_seconds, input_idle).await?;
+    let outcome = run_proactive_turn(&app, snap.idle_seconds, input_idle).await?;
     let elapsed_ms = started.elapsed().as_millis();
-    Ok(match reply {
+    Ok(match outcome.reply {
         Some(text) => format!(
             "开口完成 ({} ms, idle={}s): {}",
             elapsed_ms, snap.idle_seconds, text
@@ -792,23 +792,27 @@ pub fn spawn(app: AppHandle) {
                 }
                 LoopAction::Run { idle_seconds, input_idle_seconds } => {
                     let outcome = run_proactive_turn(&app, idle_seconds, input_idle_seconds).await;
-                    let outcome_reason = chatty_tag.clone().unwrap_or_else(|| "-".to_string());
+                    let chatty_part = chatty_tag.clone().unwrap_or_else(|| "-".to_string());
                     let outcome_counters = &app
                         .state::<crate::commands::debug::ProcessCountersStore>()
                         .inner()
                         .llm_outcome;
                     match &outcome {
-                        Ok(Some(_)) => {
+                        Ok(o) if o.reply.is_some() => {
                             outcome_counters.spoke.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            decisions.push("Spoke", outcome_reason);
+                            let mut reason = chatty_part.clone();
+                            if !o.tools.is_empty() {
+                                reason.push_str(&format!(", tools={}", o.tools.join("+")));
+                            }
+                            decisions.push("Spoke", reason);
                         }
-                        Ok(None) => {
+                        Ok(_) => {
                             outcome_counters.silent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            decisions.push("LlmSilent", outcome_reason);
+                            decisions.push("LlmSilent", chatty_part);
                         }
                         Err(e) => {
                             outcome_counters.error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            decisions.push("LlmError", format!("{} ({})", e, outcome_reason));
+                            decisions.push("LlmError", format!("{} ({})", e, chatty_part));
                         }
                     }
                     if let Err(e) = outcome {
@@ -826,11 +830,20 @@ pub fn spawn(app: AppHandle) {
 /// reply text on success — `Some(text)` when the pet actually said something, `None`
 /// when it chose to stay silent. Callers can use this for status display; the spawn
 /// loop discards the value.
+/// What `run_proactive_turn` returns. `reply == Some` means the pet spoke; `None` means
+/// it stayed silent (empty reply or `<silent>` marker). `tools` lists the unique tool
+/// names the LLM called during this turn — empty when the model ignored every tool, or
+/// when the turn aborted before reaching the final pipeline response.
+pub struct ProactiveTurnOutcome {
+    pub reply: Option<String>,
+    pub tools: Vec<String>,
+}
+
 async fn run_proactive_turn(
     app: &AppHandle,
     idle_seconds: u64,
     input_idle_seconds: Option<u64>,
-) -> Result<Option<String>, String> {
+) -> Result<ProactiveTurnOutcome, String> {
     let config = AiConfig::from_settings()?;
     let mcp_store = app.state::<McpManagerStore>().inner().clone();
     let log_store = app.state::<LogStore>().inner().clone();
@@ -841,7 +854,10 @@ async fn run_proactive_turn(
         .clone();
     let clock = app.state::<InteractionClockStore>().inner().clone();
 
-    let ctx = ToolContext::new(log_store, shell_store, process_counters);
+    let tools_used: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ctx =
+        ToolContext::new(log_store, shell_store, process_counters).with_tools_used_collector(tools_used.clone());
 
     // Try to load the latest session so the proactive turn has the recent context. If none
     // exists yet, fall back to a system-only conversation.
@@ -990,10 +1006,12 @@ async fn run_proactive_turn(
     let reply = run_chat_pipeline(chat_messages, &sink, &config, &mcp_store, &ctx).await?;
     let reply_trimmed = reply.trim();
 
+    let tools = tools_used.lock().map(|g| g.clone()).unwrap_or_default();
+
     // Treat empty / silent marker as "do nothing".
     if reply_trimmed.is_empty() || reply_trimmed.contains(SILENT_MARKER) {
         ctx.log(&format!("Proactive: silent (idle={}s)", idle_seconds));
-        return Ok(None);
+        return Ok(ProactiveTurnOutcome { reply: None, tools });
     }
 
     ctx.log(&format!("Proactive: speaking ({} chars, idle={}s)", reply_trimmed.len(), idle_seconds));
@@ -1021,7 +1039,10 @@ async fn run_proactive_turn(
     };
     let _ = app.emit("proactive-message", payload);
 
-    Ok(Some(reply_trimmed.to_string()))
+    Ok(ProactiveTurnOutcome {
+        reply: Some(reply_trimmed.to_string()),
+        tools,
+    })
 }
 
 /// Scan the `todo` memory category for items whose description starts with a reminder

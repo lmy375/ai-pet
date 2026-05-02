@@ -630,7 +630,14 @@ function localizeReason(kind: string, reason: string): string {
     return reason === "-" ? "LLM 自主选择沉默" : `LLM 沉默（${reason}）`;
   }
   if (kind === "Spoke") {
-    return reason === "-" ? "宠物开口" : `宠物开口（${reason}）`;
+    // reason layouts:
+    //   "-"                          → no chatty tag, no tools
+    //   "-, tools=X+Y"               → no chatty, tools used
+    //   "chatty=5/5"                 → chatty active, no tools
+    //   "chatty=5/5, tools=X+Y"      → both
+    if (reason === "-") return "宠物开口";
+    const cleaned = reason.replace(/^-, /, "");
+    return `宠物开口（${cleaned}）`;
   }
   if (kind === "LlmError") {
     return `LLM 调用失败：${reason}`;
