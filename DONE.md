@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 34：cache 累计搬到 atomic Tauri State
+- 新 `pub struct CacheCounters { turns, hits, calls: AtomicU64 }` + `pub type CacheCountersStore = Arc<CacheCounters>` + `pub fn new_cache_counters()` 都在 `commands/debug.rs`。
+- `lib.rs` 注册到 Tauri State：`.manage(new_cache_counters())`；setup 里把 store 拷贝传进 telegram::start。
+- `ToolContext` 加 `cache_counters: CacheCountersStore` 字段；`new` / `from_states` 签名加第三参；新增 `#[cfg(test)] for_test` 构造器自动给 fresh counters。
+- 5 个 ToolContext 调用点全部更新（proactive / consolidate / chat / telegram / registry tests）。telegram 路径还要 HandlerState 多一个字段 + `TelegramBot::start` 多一个 arg + reconnect_telegram 透传。
+- `ToolRegistry::log_cache_summary` 在写 log 行后多三行 `fetch_add(.., Relaxed)` 推到全局 counters。
+- `get_cache_stats` 重写为直接 load atomic（不再依赖 log 解析）；删除 `parse_cache_summary` + 5 个老解析测试。
+- 加 2 个 atomic 累计测试 + 2 个 registry 集成测试（验证 log_cache_summary 真的 bump counters，empty case 不 bump）。
+- 总测试 62 - 5（删 parser tests）+ 2 + 2 = **61 个**，全过；cargo check 零 warning。
+- 现在即便 LogStore 5000 行 cap 把旧 summary 行裁掉，PanelDebug 显示的累计命中率也保持正确——cap 与统计两关注点彻底解耦。
+
 ## 2026-05-02 — Iter 33a：LogStore size cap 提升 + 命名 + 测试
 - 发现：原 TODO 写"unbounded Vec<String>"是错的——`write_log` 已有硬编码 500 行 cap，但偏小（≈ 25 个 LLM turn 就溢出）。
 - 把魔法数 500 提为 `pub const MAX_LOG_LINES: usize = 5000`（约几百 turn / 一段会话量），加 doc comment 说明 trade-off。

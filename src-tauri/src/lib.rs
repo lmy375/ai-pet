@@ -10,7 +10,7 @@ mod proactive;
 mod telegram;
 mod tools;
 
-use commands::debug::{log_dir, LogStore};
+use commands::debug::{log_dir, new_cache_counters, LogStore};
 use commands::shell::ShellStore;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
+        .manage(new_cache_counters())
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
         .manage(proactive::new_interaction_clock())
@@ -34,6 +35,10 @@ pub fn run() {
             let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
             let log_store = app.state::<LogStore>().inner().clone();
             let shell_store = app.state::<ShellStore>().inner().clone();
+            let cache_counters = app
+                .state::<commands::debug::CacheCountersStore>()
+                .inner()
+                .clone();
             let app_handle_for_tg = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let settings = commands::settings::get_settings().unwrap_or_default();
@@ -54,6 +59,7 @@ pub fn run() {
                         mcp_clone,
                         log_store,
                         shell_store,
+                        cache_counters,
                         app_handle_for_tg,
                     )
                     .await
