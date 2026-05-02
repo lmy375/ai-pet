@@ -180,7 +180,25 @@ pub struct PromptInputs<'a> {
     /// so users can tune their own tolerance. 0 disables the rule entirely (a 0-threshold
     /// would otherwise fire constantly even on the first utterance, which is nonsense).
     pub chatty_day_threshold: u64,
+    /// Total Spoke turns counted by `EnvToolCounters` since process start (or last reset).
+    /// Together with `env_spoke_with_any` this drives the "you've been speaking without
+    /// checking the environment" self-correction rule.
+    pub env_spoke_total: u64,
+    /// Of those, how many invoked at least one env-aware tool. When the ratio sits low
+    /// past `ENV_AWARENESS_MIN_SAMPLES`, the rules block prods the model to use a tool.
+    pub env_spoke_with_any: u64,
 }
+
+/// Minimum sample size before the env-awareness self-correction rule starts firing. Below
+/// this we don't have enough signal to distinguish "user just got the pet talking" from
+/// "the pet has been ignoring tools for a while". 10 turns is roughly half a day of
+/// normal use given default cadences.
+pub const ENV_AWARENESS_MIN_SAMPLES: u64 = 10;
+/// Ratio threshold (numerator/100) below which the rule fires. 30 → fires when fewer
+/// than 30% of recent Spoke turns consulted at least one env-aware tool. Keeps the prod
+/// to the genuinely concerning floor; 50% (the panel chip's warning color) is too eager
+/// for a prompt-side intervention.
+pub const ENV_AWARENESS_LOW_RATE_PCT: u64 = 30;
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
 /// adding a rule is just `rules.push(...)` instead of squeezing a line into the middle
@@ -250,7 +268,26 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
             inputs.today_speech_count, SILENT_MARKER
         ));
     }
+    if env_awareness_low(inputs.env_spoke_total, inputs.env_spoke_with_any) {
+        rules.push(format!(
+            "- **最近你开口前几乎都没看环境**：过去 {} 次主动开口里只有 {} 次调用了 `get_active_window` / `get_weather` / `get_upcoming_events` / `memory_search` 之一（< {}%）。如果决定开口，**这次先调一次 `get_active_window` 看看用户在用什么 app**，再据此说一句贴合当下的话；别凭空起话题。",
+            inputs.env_spoke_total, inputs.env_spoke_with_any, ENV_AWARENESS_LOW_RATE_PCT
+        ));
+    }
     rules
+}
+
+/// Pure check: does the env-awareness ratio sit below the corrective threshold? Returns
+/// false until at least `ENV_AWARENESS_MIN_SAMPLES` Spoke turns are recorded so we don't
+/// fire on noise. Extracted for testability — the rule body uses it once.
+pub fn env_awareness_low(spoke_total: u64, spoke_with_any: u64) -> bool {
+    if spoke_total < ENV_AWARENESS_MIN_SAMPLES {
+        return false;
+    }
+    // Compare spoke_with_any * 100 < ENV_AWARENESS_LOW_RATE_PCT * spoke_total instead of
+    // floating-point division — exact integer arithmetic, no rounding edge cases at
+    // exactly 30%.
+    spoke_with_any * 100 < ENV_AWARENESS_LOW_RATE_PCT * spoke_total
 }
 
 /// Assemble the proactive prompt from a Vec of sections rather than a giant `format!()`.
@@ -964,6 +1001,19 @@ async fn run_proactive_turn(
         .ok()
         .map(|s| s.proactive.chatty_day_threshold)
         .unwrap_or(5);
+    // Env-awareness ratio over the recent window (process-wide atomic, reset by panel).
+    // Drives a self-correction rule: when the model's been ignoring env tools, nudge it
+    // to call get_active_window this turn.
+    let env_counters = &app
+        .state::<crate::commands::debug::ProcessCountersStore>()
+        .inner()
+        .env_tool;
+    let env_spoke_total = env_counters
+        .spoke_total
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let env_spoke_with_any = env_counters
+        .spoke_with_any
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     let pre_quiet_minutes = {
         let settings = get_settings().ok();
@@ -994,6 +1044,8 @@ async fn run_proactive_turn(
         proactive_history_count,
         today_speech_count,
         chatty_day_threshold,
+        env_spoke_total,
+        env_spoke_with_any,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1176,6 +1228,10 @@ mod prompt_tests {
             // Mirrors the production default (5) — keeps existing tests stable while
             // letting chatty-day tests assert behavior at exact threshold boundary.
             chatty_day_threshold: 5,
+            // Default 0/0 = below ENV_AWARENESS_MIN_SAMPLES → rule won't fire. Tests that
+            // exercise the corrective rule bump these explicitly.
+            env_spoke_total: 0,
+            env_spoke_with_any: 0,
         }
     }
 
@@ -1371,6 +1427,47 @@ mod prompt_tests {
         inputs.today_speech_count = 9999;
         let rules = proactive_rules(&inputs);
         assert!(!rules.iter().any(|r| r.contains("今天已经聊了不少")));
+    }
+
+    #[test]
+    fn env_awareness_low_below_min_samples_returns_false() {
+        // Even 0/9 (which would be 0%) doesn't fire because we don't trust the ratio yet.
+        assert!(!env_awareness_low(9, 0));
+        assert!(!env_awareness_low(ENV_AWARENESS_MIN_SAMPLES - 1, 0));
+    }
+
+    #[test]
+    fn env_awareness_low_at_threshold_strict_inequality() {
+        // Exactly 30% (3/10) → not low; just under (2/10 = 20%) → low.
+        assert!(!env_awareness_low(10, 3));
+        assert!(env_awareness_low(10, 2));
+    }
+
+    #[test]
+    fn env_awareness_low_at_full_coverage_returns_false() {
+        // 100% coverage definitely shouldn't trigger the prod.
+        assert!(!env_awareness_low(20, 20));
+    }
+
+    #[test]
+    fn env_awareness_corrective_rule_appears_when_low() {
+        let mut inputs = base_inputs();
+        inputs.env_spoke_total = 12;
+        inputs.env_spoke_with_any = 2; // ~16%
+        let rules = proactive_rules(&inputs);
+        assert!(rules.iter().any(|r| r.contains("最近你开口前几乎都没看环境")));
+        // Includes the actual numbers + threshold so the LLM has concrete signal.
+        assert!(rules.iter().any(|r| r.contains("12 次")));
+        assert!(rules.iter().any(|r| r.contains("get_active_window")));
+    }
+
+    #[test]
+    fn env_awareness_corrective_rule_absent_when_healthy() {
+        let mut inputs = base_inputs();
+        inputs.env_spoke_total = 12;
+        inputs.env_spoke_with_any = 8; // ~67%
+        let rules = proactive_rules(&inputs);
+        assert!(!rules.iter().any(|r| r.contains("最近你开口前几乎都没看环境")));
     }
 
     #[test]

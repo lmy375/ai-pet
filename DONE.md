@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 83：env-awareness 数据回流 prompt，自我纠偏规则
+- `PromptInputs` 加 `env_spoke_total / env_spoke_with_any: u64` 两字段；新 `pub const ENV_AWARENESS_MIN_SAMPLES: u64 = 10` + `ENV_AWARENESS_LOW_RATE_PCT: u64 = 30`。
+- 纯函数 `pub fn env_awareness_low(spoke_total, spoke_with_any) -> bool`：< MIN_SAMPLES 时返 false（避免噪声触发），否则 `with_any * 100 < 30 * total` 严格比较（避免浮点边界）。
+- `proactive_rules` 末尾加纠偏规则：当 env_awareness_low → push "过去 N 次主动开口里只有 M 次调用了 env 工具（< 30%）。本次先调一次 `get_active_window` 看用户在用什么 app，再据此说一句贴合当下的话；别凭空起话题。" 真实数字塞进规则让 LLM 知道处于多深。
+- `run_proactive_turn` 新读 ProcessCounters.env_tool 两 atomic 透传到 PromptInputs。`base_inputs` 默认 0/0（低于 MIN_SAMPLES）让现有 18+ 个 prompt 测试不被新规则误触发。
+- 5 个新单测覆盖：min_samples 之下不触发、严格 30% 边界、100% 不触发、规则正常出现+包含数字+包含 get_active_window 工具名提示、健康率（67%）下规则不出。
+- 现在数据形成闭环：EnvToolCounters 记 LLM 行为 → panel 显示给用户调试 → 同时反馈给 prompt 自动纠偏。如果用户重置统计，规则需要重新积累 10 次才会再触发——避免过去问题永久性塞 prompt。
+- 166 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 82：EnvToolCounters + panel 环境感知率 chip
 - 新 `EnvToolCounters` sub-struct 加到 `ProcessCounters`，含 6 个 atomic：`spoke_total`、`spoke_with_any` 加 4 个 per-tool 字段（active_window / weather / upcoming_events / memory_search）。
 - `EnvToolCounters::record_spoke(&[String])` 方法：单次 Spoke 决策时调，读 outcome.tools 列表分别 bump 已知 env 工具，未知 tool（memory_edit / bash / MCP 等）忽略。`any` flag 控制 `spoke_with_any` 是否 +1。封装在 impl 里让调度处一行调用、未来加新 env 工具只改 match 一处。
