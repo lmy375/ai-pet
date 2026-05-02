@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 66：宠物的"今日计划"
+- 复用 `ai_insights` 类别 + 单一 `daily_plan` 条目（与 current_mood 同模式，避免新增 memory 类别）。
+- 新 `fn build_plan_hint() -> String`：读 `ai_insights/daily_plan`，存在且 description 非空就返"你今天的小目标 / 计划：\n{description}"，否则返空字符串。
+- `PromptInputs.plan_hint: &'a str` 字段；builder push_if_nonempty 在 reminders_hint 之后。
+- proactive_rules 加 conditional rule：plan_hint 非空时 instruct LLM "**优先**考虑推进其中一条（不必每次推进，看时机自然）；推进后用 memory_edit update 更新 `[0/2]` 进度；全部完成的项删除"。
+- run_proactive_turn 调 build_plan_hint 传给 builder。
+- inject_mood_note（reactive chat）加 `plan_section` 第三段：教 LLM "如果想定今日小目标用 memory_edit 在 ai_insights 下 create/update daily_plan，description 用 `· 关心工作 [0/2]\\n· 喝水 [0/1]` 这种格式"。
+- 2 个新单测：rule appears + plan hint appears in full prompt。
+- 总测试 137 + 2 = **139 个**，全过；cargo + tsc 双过；零 warning。
+- 现在宠物有了"目的感"：用户在 chat 里跟宠物说「今天多关心我一下吧」，宠物可以把这个意图写成 daily_plan，在后续 proactive 开口时按计划推进，跨 turn 不再各自独立。
+
 ## 2026-05-03 — Iter 65：trigger 状态包含 LLM 实际回复
 - `run_proactive_turn` 签名从 `Result<(), String>` 改为 `Result<Option<String>, String>`：
   - `None` = 宠物选择沉默

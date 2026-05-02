@@ -162,6 +162,11 @@ pub struct PromptInputs<'a> {
     /// Multi-line bullet list of user-set reminders that just came due, or empty.
     /// Scanned from the `todo` memory category every proactive turn.
     pub reminders_hint: &'a str,
+    /// The pet's own short-term plan for the day (or current period). Empty when no plan
+    /// has been written. Sourced from `ai_insights/daily_plan` memory; the LLM both writes
+    /// and updates it. Gives the pet cross-turn intentionality so each utterance can
+    /// nudge a thread forward instead of being drawn from scratch.
+    pub plan_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -213,6 +218,12 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
                 .into(),
         );
     }
+    if !inputs.plan_hint.trim().is_empty() {
+        rules.push(
+            "- **你有今日计划在执行中**：上面 plan 段列出了你今天的小目标。开口时**优先**考虑推进其中一条（不必每次推进，看时机自然）；推进后用 `memory_edit update` 在 ai_insights/daily_plan 里更新进度（比如把 [0/2] 改成 [1/2]），全部完成的项可以删除。"
+                .into(),
+        );
+    }
     rules
 }
 
@@ -234,6 +245,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
+    push_if_nonempty(&mut s, inputs.plan_hint);
     s.push(String::new());
     s.push(
         "请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。".into()
@@ -840,6 +852,9 @@ async fn run_proactive_turn(
     // Each becomes a bullet line. The whole hint is empty when nothing's due.
     let reminders_hint = build_reminders_hint(now_local.naive_local());
 
+    // Pull the pet's own short-term plan from ai_insights/daily_plan, if it has written one.
+    let plan_hint = build_plan_hint();
+
     let pre_quiet_minutes = {
         let settings = get_settings().ok();
         settings.and_then(|s| {
@@ -865,6 +880,7 @@ async fn run_proactive_turn(
         is_first_mood,
         pre_quiet_minutes,
         reminders_hint: &reminders_hint,
+        plan_hint: &plan_hint,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -943,6 +959,26 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
     }
 }
 
+/// Read the pet's own short-term plan from `ai_insights/daily_plan`. Returns the plan
+/// description verbatim with a header line, or empty when nothing's been written. The
+/// plan format is intentionally open — the LLM owns the structure (bullet list with
+/// progress markers like `[1/2]` is the suggested convention but not enforced).
+fn build_plan_hint() -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("ai_insights") else {
+        return String::new();
+    };
+    let plan = cat.items.iter().find(|i| i.title == "daily_plan");
+    match plan {
+        Some(item) if !item.description.trim().is_empty() => {
+            format!("你今天的小目标 / 计划：\n{}", item.description.trim())
+        }
+        _ => String::new(),
+    }
+}
+
 /// Format a reminder target for display in prompt / panel. TodayHour shows just the
 /// HH:MM (compact, since context is "today"); Absolute spells out the full date.
 pub fn format_target(target: &ReminderTarget) -> String {
@@ -1012,6 +1048,7 @@ mod prompt_tests {
             is_first_mood: false,
             pre_quiet_minutes: None,
             reminders_hint: "",
+            plan_hint: "",
         }
     }
 
@@ -1151,6 +1188,22 @@ mod prompt_tests {
         let rules = proactive_rules(&inputs);
         assert_eq!(rules.len(), 7, "base 6 + 1 reminders rule");
         assert!(rules.iter().any(|r| r.contains("memory_edit delete")));
+    }
+
+    #[test]
+    fn plan_rule_appears_when_hint_present() {
+        let mut inputs = base_inputs();
+        inputs.plan_hint = "你今天的小目标 / 计划：\n· 关心用户工作进展 [0/2]";
+        let rules = proactive_rules(&inputs);
+        assert!(rules.iter().any(|r| r.contains("你有今日计划在执行中")));
+    }
+
+    #[test]
+    fn plan_hint_appears_in_full_prompt() {
+        let mut inputs = base_inputs();
+        inputs.plan_hint = "你今天的小目标 / 计划：\n· 关心用户工作进展 [0/2]";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("关心用户工作进展"));
     }
 
     #[test]
