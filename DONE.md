@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 38：proactive 决策记录 + 面板显示
+- 后端：
+  - `LoopAction::Silent` 改为 `Silent { reason: &'static str }`，3 处返回点分别给"disabled" / "quiet_hours" / "idle_below_threshold"。已有测试和 spawn 内 match arm 同步更新。
+  - 新模块 `decision_log.rs`：`pub struct ProactiveDecision { timestamp, kind, reason }`（serde::Serialize）+ `DecisionLog { buf: Mutex<VecDeque>, capacity 10 }` ring buffer + `push` / `snapshot` 方法。
+  - `pub type DecisionLogStore = Arc<DecisionLog>` + `new_decision_log()` 工厂。
+  - 新 Tauri 命令 `get_proactive_decisions(State) -> Vec<ProactiveDecision>`。
+  - `lib.rs` 注册模块、State、命令。
+  - `proactive::spawn` 主循环在 evaluate 后、dispatch 前先 `decisions.push("Silent"|"Skip"|"Run", reason)`，让所有路径都被记录——包括 Silent 的"沉默却有原因"分支。
+  - 3 个新 decision_log 单测：empty / 顺序保留 / 容量超限丢最老。
+- 前端 `PanelDebug.tsx`：
+  - 新接口 `ProactiveDecision`，新 state，fetchLogs 三路 Promise.all 一并取。
+  - toolbar 之后插一段 max-height=120px 的滚动区，等宽字体显示 `时间 KIND reason`。Run=绿、Skip=橙、Silent=灰。说明 "最新在底部"。
+  - 仅当 `decisions.length > 0` 时渲染。
+- 总测试 67 + 3 = **70 个**，全过；cargo + tsc 双过；零 warning。
+- 现在用户调试"宠物为什么不说话"只看 panel 一眼就懂——之前要 grep 50 行日志才知道哪条 gate 跳过了。
+
 ## 2026-05-02 — Iter 37：chat.max_context_messages 接进两个设置 UI
 - `SettingsPanel.tsx`（小窗 modal）在记忆整理段后加"对话上下文 (Chat)"分组：单字段 NumberField + 同样的两列网格留半边占位（视觉一致）。
 - `panel/PanelSettings.tsx`（独立面板视图）加同名 section（中文标题"对话上下文"），下方加一行浅灰小字解释："桌面 chat 和 Telegram 都按此上限裁剪。前端仍展示全部消息，仅发给 LLM 时裁。"

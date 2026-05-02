@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod consolidate;
+mod decision_log;
 mod focus_mode;
 mod focus_tracker;
 mod input_idle;
@@ -26,6 +27,7 @@ pub fn run() {
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(new_cache_counters())
+        .manage(decision_log::new_decision_log())
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
         .manage(proactive::new_interaction_clock())
@@ -100,6 +102,7 @@ pub fn run() {
             commands::debug::get_llm_logs,
             commands::debug::get_cache_stats,
             commands::debug::reset_cache_stats,
+            decision_log::get_proactive_decisions,
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,

@@ -120,11 +120,14 @@ const SILENT_MARKER: &str = "<silent>";
 
 /// What the proactive loop should do this tick. Each variant maps to one outer-loop branch:
 /// `Silent` skips quietly, `Skip` logs the reason, `Run` triggers a real proactive turn.
+/// All variants now carry a debug reason so the panel can show *why* a tick was silent
+/// (disabled / quiet hours / idle short — these used to be indistinguishable in the UI).
 #[derive(Debug, PartialEq, Eq)]
 enum LoopAction {
     /// No log, just sleep — used when proactive is disabled or the user simply hasn't been
-    /// idle long enough yet (the common case, not interesting).
-    Silent,
+    /// idle long enough yet (the common case, not interesting). Static reason so the
+    /// recorder can show which silent path was taken.
+    Silent { reason: &'static str },
     /// Log the reason then sleep — guard fired (awaiting / cooldown / user-active).
     Skip(String),
     /// All gates passed; fire a proactive turn with these idle stats.
@@ -162,7 +165,7 @@ fn evaluate_pre_input_idle(
     focus_active: Option<bool>,
 ) -> Result<(), LoopAction> {
     if !cfg.enabled {
-        return Err(LoopAction::Silent);
+        return Err(LoopAction::Silent { reason: "disabled" });
     }
     // Gate 1: a real friend doesn't keep talking when ignored.
     if snap.awaiting_user_reply {
@@ -182,7 +185,7 @@ fn evaluate_pre_input_idle(
     // Gate 3: quiet hours. A real friend lets you sleep. Silent skip rather than logged
     // skip — this can happen on every tick during night, no value in spamming logs.
     if in_quiet_hours(hour, cfg.quiet_hours_start, cfg.quiet_hours_end) {
-        return Err(LoopAction::Silent);
+        return Err(LoopAction::Silent { reason: "quiet_hours" });
     }
     // Gate 4: macOS Focus / DND. The user explicitly opted into "don't disturb me", so
     // skip with a logged reason (less frequent than nightly quiet hours, worth surfacing).
@@ -195,7 +198,7 @@ fn evaluate_pre_input_idle(
     // (this is the common idle-yet case, not worth logging on every tick).
     let threshold = cfg.idle_threshold_seconds.max(60);
     if snap.idle_seconds < threshold {
-        return Err(LoopAction::Silent);
+        return Err(LoopAction::Silent { reason: "idle_below_threshold" });
     }
     Ok(())
 }
@@ -267,8 +270,36 @@ pub fn spawn(app: AppHandle) {
             };
             let interval = settings.proactive.interval_seconds.max(60);
 
-            match evaluate_loop_tick(&app, &settings).await {
-                LoopAction::Silent => {}
+            let action = evaluate_loop_tick(&app, &settings).await;
+            // Record before dispatching so even paths that immediately sleep are visible
+            // in the panel — the entire point of this log is "why didn't anything happen".
+            let decisions = app
+                .state::<crate::decision_log::DecisionLogStore>()
+                .inner()
+                .clone();
+            match &action {
+                LoopAction::Silent { reason } => {
+                    decisions.push("Silent", (*reason).to_string());
+                }
+                LoopAction::Skip(reason) => {
+                    decisions.push("Skip", reason.clone());
+                }
+                LoopAction::Run { idle_seconds, input_idle_seconds } => {
+                    decisions.push(
+                        "Run",
+                        format!(
+                            "idle={}s, input_idle={}",
+                            idle_seconds,
+                            input_idle_seconds
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "?".to_string()),
+                        ),
+                    );
+                }
+            }
+
+            match action {
+                LoopAction::Silent { .. } => {}
                 LoopAction::Skip(reason) => {
                     let log_store = app.state::<LogStore>().inner().clone();
                     write_log(&log_store.0, &reason);
@@ -461,7 +492,7 @@ mod gate_tests {
         let mut c = cfg();
         c.enabled = false;
         let action = evaluate_pre_input_idle(&c, &snap(9999, false, None), NOON, None);
-        assert_eq!(action.unwrap_err(), LoopAction::Silent);
+        assert_eq!(action.unwrap_err(), LoopAction::Silent { reason: "disabled" });
     }
 
     #[test]
@@ -511,7 +542,7 @@ mod gate_tests {
     fn idle_below_threshold_silent() {
         let c = cfg(); // threshold=60
         let action = evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None).unwrap_err();
-        assert_eq!(action, LoopAction::Silent);
+        assert_eq!(action, LoopAction::Silent { reason: "idle_below_threshold" });
     }
 
     #[test]
@@ -519,7 +550,8 @@ mod gate_tests {
         let mut c = cfg();
         c.idle_threshold_seconds = 10; // user-set absurdly low, should clamp up to 60
         let action = evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None).unwrap_err();
-        assert_eq!(action, LoopAction::Silent, "30s should still be below the clamped 60s");
+        assert_eq!(action, LoopAction::Silent { reason: "idle_below_threshold" },
+            "30s should still be below the clamped 60s");
     }
 
     #[test]
@@ -566,7 +598,7 @@ mod gate_tests {
         c.quiet_hours_end = 7;
         // 03:00 — squarely inside the night window.
         let action = evaluate_pre_input_idle(&c, &snap(9999, false, None), 3, None).unwrap_err();
-        assert_eq!(action, LoopAction::Silent);
+        assert_eq!(action, LoopAction::Silent { reason: "quiet_hours" });
     }
 
     #[test]
