@@ -291,6 +291,9 @@ pub struct ToneSnapshot {
     /// Lifetime count of proactive utterances. Mirrors the value run_proactive_turn
     /// passes into PromptInputs — when small (< 3) the icebreaker rule fires.
     pub proactive_count: u64,
+    /// True when `proactive_count` has saturated at the speech_history line cap. Lets
+    /// the panel render a "50+" suffix instead of a misleading literal "50".
+    pub proactive_count_capped: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -377,7 +380,8 @@ pub async fn get_tone_snapshot(
             15,
         )
     });
-    let proactive_count = crate::speech_history::count_speeches().await as u64;
+    let proactive_count_raw = crate::speech_history::count_speeches().await;
+    let proactive_count_capped = proactive_count_raw >= crate::speech_history::SPEECH_HISTORY_CAP;
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -386,7 +390,8 @@ pub async fn get_tone_snapshot(
         mood_text,
         mood_motion,
         pre_quiet_minutes,
-        proactive_count,
+        proactive_count: proactive_count_raw as u64,
+        proactive_count_capped,
     })
 }
 

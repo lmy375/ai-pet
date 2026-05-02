@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 70 设计要点（已实现）
+- **A vs B 选 A**：(A) `50+` 显示是 frontend-only 提示截断，零额外 state；(B) 独立 atomic 是 source-of-truth fix，多一组持久化考虑（不持久化重启就清零，反而误导）。当前用户最可能在前几次破冰阶段就放下来或换设备，长跑用户的精确累计需求弱。简单版本足够。如果将来真有人想用 lifetime stats 当成就，再走 B。
+- **bool 而非 sentinel value**：本可以让 backend 返 `Option<u64>` (None=capped) 或负数。但 `proactive_count_capped: bool` 字段名自解释；前端 `count + (capped ? "+" : "")` 一行渲染干净。
+- **SPEECH_HISTORY_CAP 升 pub**：原是 file-private const。现要 ToneSnapshot 比较，最低权限升级——只让模块内 const 公开为模块级 pub，不引新接口。
+- **`>= cap` 而非 `== cap`**：理论上 trim 保持 ≤ cap，但用 `>=` 是防御性写法——如果 future 改了 trim 逻辑（如不那么严格），这个比较仍然正确。
+- **tooltip 三档**：< 3（破冰）/ capped（饱和说明）/ 默认（基于 log）。每档用户场景不同，文案对应。
+- **不写新单测**：本质是 bool 派生 + ToneSnapshot 字段添加 + 前端渲染条件。runtime 行为靠现有 count_speeches 测试 + cargo type check 兜底。
+
 ## Iter 69 设计要点（已实现）
 - **chip 在 count=0 也渲染**：其他 chip（cache/tag/wake/mood）都用「值不存在/为零就藏起来」逻辑。但破冰阶段的核心展示就是 "0次/1次/2次"——藏起来反而失去信号。所以 proactive chip 无条件渲染，只是颜色随破冰状态变化。
 - **琥珀色（#d97706）作 warning 而非 alert**：red 给 quiet-soon、green 给 trigger 成功、紫 给 mood/tag——琥珀是 "soft warning / heads-up"。"破冰阶段"不是问题，只是个状态告知，琥珀比红色合适。
