@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 28 设计要点（已实现）
+- **白名单 opt-in 而非 opt-out**：缓存默认应该是关——任何"被默认缓存"的工具都需要显式判断它是否真的幂等。把 `CACHEABLE_TOOLS` 写成短列表 + 注释强调"never add mutating tools"，让加新缓存工具变成需要刻意决策的动作。
+- **registry-scoped 而非全局缓存**：`ToolRegistry` 在每次 `run_chat_pipeline` 里 new 一遍 → 缓存自动 per-turn。如果做全局 LRU 缓存反而要操心 invalidation（"用户 30 秒后再问一次天气，旧值还该用吗？"）。当前设计 0 invalidation 复杂度。
+- **测试用 CountingTool mock 而不是真工具**：真 `get_weather` 要打 wttr.in 网络，单测不该；引用 `httpmock` 等 dev-dep 又重。手写 5 行的 CountingTool 内部测试用，最轻量。
+- **with_tools 私有而非 pub**：考虑过 `pub fn with_tools(...)` 让外部也能定制工具列表，但现在没有这种调用者。`#[cfg(test)]` + 同 mod 自由访问 = 最小 API 表面。哪天真有人需要再升级到 pub。
+- **cache_key 用 `name|args` 字符串而非 (name, args) tuple**：Tuple key 类型签名更精确，但 `HashMap<(String, String), String>` 多两个 String 分配。单字符串 key + `|` 分隔同样可靠（工具名不含 `|`），更便宜。如果哪天工具名能含 `|` 再换。
+- **缓存值是 result string**：result 是工具的 JSON 字符串输出，缓存它就够了。不是缓存执行——重要边界，因为 `execute(arguments, ctx)` 里包含 `ctx.log(...)` 副作用。"被 cache 的工具调用不再写日志"是预期的——首次已经 log 过了，后续 hit 单独记 "cache hit" 行就够了。
+- **未来可能的扩展**：(a) 给 cache 加 size cap 防 LLM 疯狂尝试不同 args 把内存撑爆；(b) per-tool TTL（天气数据 1 小时之内有效跨 turn 也行）；(c) MCP 工具白名单——但需要工具自报"我是只读"。Iter 28 这版是最小 viable。
+
 ## Iter 27 设计要点（已实现）
 - **wrapper 模式 vs 直接传 props**：抽共享组件最常见的失败模式是"call site 比之前更啰嗦"。如果让每个 NumberField 调用都写 `labelStyle={labelStyle} inputStyle={inputStyle}`，8 处 + 2 处 = 16 处样板重复——比抽之前还差。本地 wrapper 把样式绑定一次，call site 完全不用改。这是"trade DRY in styles for DRY in calls"的典型选择，前者重要性低（一个文件内 const 引用）。
 - **labelStyle/inputStyle 作 props 而非 fixed**：起初想直接在 SharedNumberField 里硬编码 inputStyle。但两个 panel 实际样式差异有几处（边框颜色、字号），强行统一会破坏视觉连贯性。让样式可注入是设计开放原则的实例：组件知道"这是个数字字段"，不该越权决定外观。
