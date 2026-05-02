@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 15：抽出 read_mood_for_event 统一 helper
+- `proactive.rs` 新增 `pub fn read_mood_for_event(log_store: &LogStore, source: &str) -> (Option<String>, Option<String>)`：
+  - 内部调 `read_current_mood_parsed`
+  - 解析结果 motion=None 且 text 非空时写一行 "{source}: mood missing [motion: X] prefix..." 日志
+  - 返回 `(Option<text>, Option<motion>)` 供 caller 直接用
+- 4 处 callsite 重构为 `read_mood_for_event(...)` 单行：
+  - `proactive::run_proactive_turn` — source="Proactive"，原 11 行 match → 1 行（多一行 log_store 二次拷贝）
+  - `commands::chat::chat` — source="Chat"，原 11 行 → 1 行（用 `log_store.inner()` 把 State 转成 &LogStore）
+  - `telegram::bot::handle_message` — source="Telegram"，原 12 行（含手写 lock）→ 1 行
+  - `consolidate::run_consolidation` — source="Consolidate"，保留独有的"mood 被删 WARNING"分支，但前缀监控改走 helper
+- chat.rs 的 `inject_mood_note` 仍用 `read_current_mood_parsed`（因为它要 mood text 注入 prompt 而不是事件 payload），所以保留 import。
+- cargo check 通过；`cargo test --lib proactive` 8 测试仍全绿。
+- 净减少约 30 行重复代码，未来加第五个入口（如 IM / Discord 等）只需一行调用。
+
 ## 2026-05-02 — Iter 14：consolidate 路径接 mood 监控 + emit
 - `consolidate.rs` 加 `tauri::Emitter` import，引入 `ChatDonePayload`、`read_current_mood`、`read_current_mood_parsed`。
 - consolidation prompt 新增"特殊保护"段：明确 `ai_insights/current_mood` 不可删，可 update 但 description 必须以 `[motion: ...] 心情文字` 开头。

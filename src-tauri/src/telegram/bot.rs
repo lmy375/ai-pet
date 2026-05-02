@@ -14,7 +14,7 @@ use crate::commands::settings::{get_soul, TelegramConfig};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::read_current_mood_parsed;
+use crate::proactive::read_mood_for_event;
 use crate::tools::ToolContext;
 
 /// A running Telegram bot instance.
@@ -180,17 +180,7 @@ async fn handle_message(
                     // Emit chat-done with the post-turn mood snapshot so the desktop pet's
                     // Live2D motion reflects state changes even when the user was chatting
                     // via Telegram. Same payload shape as the chat tauri command.
-                    let (mood, motion) = match read_current_mood_parsed() {
-                        Some((mtext, m)) => {
-                            if m.is_none() && !mtext.trim().is_empty() {
-                                let _ = state.log_store.0.lock().map(|mut l| l.push(
-                                    "Telegram: mood missing [motion: X] prefix — frontend will fall back to keyword match".to_string()
-                                ));
-                            }
-                            (Some(mtext), m)
-                        }
-                        None => (None, None),
-                    };
+                    let (mood, motion) = read_mood_for_event(&state.log_store, "Telegram");
                     let payload = ChatDonePayload {
                         mood,
                         motion,

@@ -18,6 +18,33 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::commands::chat::{run_chat_pipeline, ChatMessage, CollectingSink};
 use crate::commands::debug::{write_log, LogStore};
 use crate::commands::memory;
+
+/// Shared post-turn mood read used by every LLM entry point (proactive, chat, telegram,
+/// consolidate). Reads the current mood, parses the optional `[motion: X]` prefix, and
+/// emits a single line of compliance telemetry when the prefix is missing. `source` is
+/// the human-readable label that prefixes the log line so the user can tell which
+/// pipeline produced the warning.
+pub fn read_mood_for_event(
+    log_store: &LogStore,
+    source: &str,
+) -> (Option<String>, Option<String>) {
+    let parsed = read_current_mood_parsed();
+    if let Some((text, None)) = &parsed {
+        if !text.trim().is_empty() {
+            write_log(
+                &log_store.0,
+                &format!(
+                    "{}: mood missing [motion: X] prefix — frontend will fall back to keyword match",
+                    source
+                ),
+            );
+        }
+    }
+    match parsed {
+        Some((t, m)) => (Some(t), m),
+        None => (None, None),
+    }
+}
 use crate::commands::session;
 use crate::commands::settings::{get_settings, get_soul};
 use crate::commands::shell::ShellStore;
@@ -296,20 +323,9 @@ async fn run_proactive_turn(
     clock.mark_proactive_spoken().await;
 
     // Re-read mood after the turn — if the LLM updated it via memory_edit, the file has been
-    // rewritten and we should ship the latest snapshot to the frontend. Parse the optional
-    // [motion: X] prefix so the frontend can drive Live2D directly from the model's pick.
-    let (mood_after, motion_after) = match read_current_mood_parsed() {
-        Some((text, motion)) => {
-            if motion.is_none() && !text.trim().is_empty() {
-                // Compliance signal: if the LLM updated mood without the [motion: X] prefix,
-                // the frontend will fall back to keyword matching. Worth logging so we can
-                // tell whether the model is following the format in practice.
-                ctx.log("Proactive: mood missing [motion: X] prefix — frontend will fall back to keyword match");
-            }
-            (Some(text), motion)
-        }
-        None => (None, None),
-    };
+    // rewritten and we should ship the latest snapshot to the frontend.
+    let log_store = app.state::<LogStore>().inner().clone();
+    let (mood_after, motion_after) = read_mood_for_event(&log_store, "Proactive");
 
     let payload = ProactiveMessage {
         text: reply_trimmed.to_string(),
