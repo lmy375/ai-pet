@@ -32,6 +32,7 @@ export interface MemoryConsolidateConfig {
   enabled: boolean;
   interval_hours: number;
   min_total_items: number;
+  stale_reminder_hours: number;
 }
 
 export interface ChatConfig {
@@ -71,6 +72,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     interval_hours: 6,
     min_total_items: 12,
+    stale_reminder_hours: 24,
   },
   chat: {
     max_context_messages: 50,

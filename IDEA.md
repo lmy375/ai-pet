@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 61 设计要点（已实现）
+- **归属 MemoryConsolidateConfig 而非 ProactiveConfig**：原 TODO 写 ProactiveConfig 但反思下来 sweep 是 consolidate 阶段做的、和 consolidate 的 enabled / interval_hours 等同源。把它放 ProactiveConfig 会让 settings.yaml 里 reminder 相关配置散落两处。"功能在哪跑，配置就在哪" 是更稳的归属规则。
+- **default 24 与硬编码同值**：升级用户的 config.yaml 没有 `stale_reminder_hours` 字段时 serde default 给 24 = 之前行为。零意外升级。
+- **fallback to 24 on settings error**：`get_settings().map(...).unwrap_or(24)` 让 settings 文件出问题时仍能 sweep——consolidate 整体功能不该被 settings 解析失败彻底关掉。
+- **panel 加说明字段**：模态太挤就不放说明（用户看 label "清理过期 reminder (小时)" 大致能懂）；panel 视图宽，加一句中文说明区分 HH:MM vs YYYY-MM-DD 两种 reminder 行为。这种 modal-vs-panel 差异化跟 Iter 37 的 chat trim 设置一致。
+- **不写新单测**：is_stale_reminder 已经接受 cutoff 参数测过；新设置字段只是把"24"换成"settings.stale_reminder_hours"——类型 + cargo check 抓 plumbing 错。Tauri 命令+settings 套路稳定后这种改动单测价值低。
+
 ## Iter 60 设计要点（已实现）
 - **deterministic sweep 而非 prompt rule**：原 TODO 说"加一条规则" — 但用 prompt rule 让 LLM 删除 stale 是不可靠的（LLM 可能漏看、可能误删非 reminder 的 todo）。Rust 端按规则扫一遍是确定的。"consolidate 帮兜底"恰恰是确定性兜底的语义。
 - **TodayHour 永远不 stale**：Recurring 语义。比如"23:00 吃药"用户可能希望天天提醒，让 consolidate 第二天就删了违反预期。如果用户想单次，让他用 Absolute 格式。这种"shorthand 是 recurring，long-form 是 one-shot"的语义靠 enum 拆分明确。
