@@ -30,6 +30,12 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 27 设计要点（已实现）
+- **wrapper 模式 vs 直接传 props**：抽共享组件最常见的失败模式是"call site 比之前更啰嗦"。如果让每个 NumberField 调用都写 `labelStyle={labelStyle} inputStyle={inputStyle}`，8 处 + 2 处 = 16 处样板重复——比抽之前还差。本地 wrapper 把样式绑定一次，call site 完全不用改。这是"trade DRY in styles for DRY in calls"的典型选择，前者重要性低（一个文件内 const 引用）。
+- **labelStyle/inputStyle 作 props 而非 fixed**：起初想直接在 SharedNumberField 里硬编码 inputStyle。但两个 panel 实际样式差异有几处（边框颜色、字号），强行统一会破坏视觉连贯性。让样式可注入是设计开放原则的实例：组件知道"这是个数字字段"，不该越权决定外观。
+- **顺手清理冗余 TODO**：发现 TODO.md 里有一条"PanelSettings.tsx 接 Proactive/Consolidate"上一轮已经做完但忘了删。这种 stale 项每过几天就会让人怀疑"我是不是漏了什么"。看到就清。
+- **确认 tsc 而非加测试**：UI 重构无逻辑变化，类型系统就是最好的回归。type-check 通过 = 调用 site 至少没看错 prop 名字。
+
 ## PanelSettings 补 Proactive/Consolidate UI 设计要点（已实现）
 - **跳 Iter 26 选这个**：Iter 26 是给 IDEA 写一段 known-limitation 文档 + 加一个验证启动时 active 行为的测试。但 `first_observation_active_logs_on` 测试已经在 Iter 23 覆盖了启动行为；只缺一段说明文字而已——价值低于"补全 panel 形式视图"这个真实的功能缺口。把 Iter 26 标记为 obsolete，留给 IDEA 章节补一句即可。
 - **复制而不抽公共组件**：第一反应是把 `NumberField`（小窗）和 `PanelNumberField`（panel）合一。但两者样式上下文略有差异（小窗的 inputStyle 字号 13 / 边框 #ddd；panel 的字号略小、整体浅色阴影更深）。强行合并要么引入 props 复杂度，要么破坏一边的视觉。先复制，等真需要第三处再抽。Iter 27 列着待办，下次有触发再做。
