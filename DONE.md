@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 14：consolidate 路径接 mood 监控 + emit
+- `consolidate.rs` 加 `tauri::Emitter` import，引入 `ChatDonePayload`、`read_current_mood`、`read_current_mood_parsed`。
+- consolidation prompt 新增"特殊保护"段：明确 `ai_insights/current_mood` 不可删，可 update 但 description 必须以 `[motion: ...] 心情文字` 开头。
+- pipeline 跑前快照 `mood_before = read_current_mood()`；跑完后再读 parsed：
+  - 若 before=Some / after=None，写 WARNING 日志（保护规则被违反）。
+  - 若 motion 缺失但 text 非空，写"missing [motion: X] prefix"日志（与其他 3 条入口同行文）。
+- 构造 `ChatDonePayload` 并 `app.emit("chat-done", ...)`，让前端 useMoodAnimation 根据整理后的 mood 触发动作。
+- 现在四条入口（proactive / chat / telegram / consolidate）行为完全对称：都读 mood、可写 mood、emit 事件、有缺前缀监控；consolidate 还多了"mood 被删"特殊监控。
+- cargo check 通过（仍是两条与本次无关的预存 warning）。
+
 ## 2026-05-02 — Iter 13：Telegram 路径接 mood 注入 + chat-done emit
 - `commands/chat::inject_mood_note` 改 pub，让 telegram 复用，避免重写。
 - `telegram/bot.rs`：

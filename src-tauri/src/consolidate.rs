@@ -8,15 +8,16 @@
 
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::chat::{run_chat_pipeline, ChatMessage, CollectingSink};
+use crate::commands::chat::{run_chat_pipeline, ChatDonePayload, ChatMessage, CollectingSink};
 use crate::commands::debug::{write_log, LogStore};
 use crate::commands::memory;
 use crate::commands::settings::get_settings;
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
+use crate::proactive::{read_current_mood, read_current_mood_parsed};
 use crate::tools::ToolContext;
 
 /// Spawn the memory consolidation loop. Reads settings each tick so the user can toggle
@@ -85,6 +86,7 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
 2. **过期/失效**：明显过时（已完成的 todo、不再相关的临时上下文），用 `memory_edit delete`。\n\
 3. **太琐碎**：完全没有保留价值的（例如随口一句话被记下），删除。\n\
 4. **可以补充细节**：如果某条记忆 description 太短、可以扩展但需要查更多上下文，可以用 `memory_edit update` 加入更完整的 detail_content。\n\n\
+**特殊保护**：`ai_insights/current_mood` 是宠物当前的心情状态，绝对不要删除——可以适当 update 让 description 更准确，但务必保留这条记录、且 description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头格式。\n\n\
 原则：**保守**。如果不确定一条记忆是否还有价值，就保留。**不要为了整理而整理**——如果索引看起来已经清爽，就什么都不做并输出 `<noop>`。\n\n\
 工作完成后，简短总结你做了什么（合并了几条 / 删了几条 / 没改动）。不需要客气，只要事实。",
         total = total_before,
@@ -102,6 +104,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
         })).unwrap(),
     ];
 
+    let mood_before = read_current_mood();
+
     let sink = CollectingSink::new();
     let summary = run_chat_pipeline(messages, &sink, &config, &mcp_store, &ctx).await?;
 
@@ -115,6 +119,38 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
             summary.trim().chars().take(200).collect::<String>()
         ),
     );
+
+    // Re-read mood for the post-consolidation snapshot. If consolidation merged or refined
+    // the mood entry, we want the desktop pet's Live2D motion to reflect it.
+    let parsed = read_current_mood_parsed();
+    if mood_before.is_some() && parsed.is_none() {
+        // Despite the explicit prompt protection, the LLM removed the mood entry. Worth
+        // surfacing — repeated occurrences mean the protection text needs hardening.
+        write_log(
+            &log_store.0,
+            "Consolidate: WARNING — current_mood entry was removed despite protection rule",
+        );
+    }
+    let (mood, motion) = match parsed {
+        Some((text, m)) => {
+            if m.is_none() && !text.trim().is_empty() {
+                write_log(
+                    &log_store.0,
+                    "Consolidate: mood missing [motion: X] prefix — frontend will fall back to keyword match",
+                );
+            }
+            (Some(text), m)
+        }
+        None => (None, None),
+    };
+    let payload = ChatDonePayload {
+        mood,
+        motion,
+        timestamp: chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string(),
+    };
+    let _ = app.emit("chat-done", payload);
 
     Ok(())
 }
