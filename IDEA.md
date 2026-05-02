@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 85 设计要点（已实现）
+- **dispatch 时一次性算 labels，所有 push 复用**：active_data_driven_rule_labels 调用时机有两个候选：dispatch 前（与 prompt 实际计算同步） 或在 run_proactive_turn 里返回。前者意味着 dispatch 自己读 atomic + speech_count；后者要把 labels 加进 ProactiveTurnOutcome。选 dispatch 时算的好处：Skip / Silent / Run / outcome 全分支统一，不依赖 LLM 是否被调用。
+- **append_tag 内联函数处理 "-" 占位**：reason 起始要么是 "chatty=..." 要么是 "-"。直接 `push_str(", rules=...")` 会得到 `"-, rules=icebreaker"` 不优雅。append_tag 检查若仍是 "-" 占位就先 clear——结果变成 "rules=icebreaker"。前端 strip "-, " 已经能 backwards-compat 处理两种格式。
+- **"rules=" 顺序在 chatty 之后、tools 之前**：Spoke reason 形如 `chatty=N/M, rules=A+B, tools=X+Y`。chatty 是状态指标（"我现在多忙"），rules 是 prompt 规则集（"我现在受多少 hint 影响"），tools 是结果（"LLM 用了哪些"）。三者从输入→规则→输出递进，读起来像一条因果链。
+- **labels 来自 active_data_driven_rule_labels 而非重复条件**：单一事实源——同一函数同时给 ToneSnapshot.active_prompt_rules 和 decision log 用。如果将来加新规则到该函数，两处自动同步。原本就是 Iter 84 抽出来这个 helper 的目的。
+- **LlmError 把 tag 塞括号里**：现有格式 `format!("{} ({})", e, chatty_part)`——保留这个"错误信息 + 上下文"形态，只在括号内累加 tag。前端 localizeReason 对 LlmError 的 case 没改，因为它就是简单 passthrough "LLM 调用失败：${reason}"——括号里的 chatty/rules tag 自然在 reason 字符串里展示。
+- **不在 Skip/Silent 里加 rules tag**：理论上 gate 拦截时 prompt 也"会"是这些 rules，但 LLM 没看到。把 tag 限定在"prompt 实际生效过"的事件（Run + outcome）更准确。Silent 进的 reason 是 gate 名字（"disabled" / "quiet_hours"），加上 rules tag 反而混淆——那次 prompt 根本没构造。
+- **panel 不动**：localizeReason 已经处理 reason 字符串中可能存在多个 tag 的情况（用 strip + display 模式）。新增 rules tag 自然 fall through 到"宠物开口（...）"里展示完整字符串，无需特殊代码。
+
 ## Iter 84 设计要点（已实现）
 - **只统计 data-driven 规则**：原 TODO 措辞是"任意 prompt 自动纠偏规则正在触发"。但实际 proactive_rules 有 8 条 contextual rule，前 5 条（wake/first_mood/pre_quiet/reminders/plan）是环境/状态触发——panel 已用 chip 展示对应输入。再用一个 badge 重复计数会让它和已有 UI 冗余冲突。后 3 条（icebreaker/chatty/env-awareness）才是基于聚合数据驱动 prompt 的，badge 单专门体现这层。
 - **labels 返回 Vec<&'static str> 而非 Vec<String>**：所有标签是编译期常量。`&'static str` 零分配，调用者才转 String 入 ToneSnapshot（serde 需 owned）。多余拷贝最少。

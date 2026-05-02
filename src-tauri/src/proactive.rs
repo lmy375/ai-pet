@@ -852,6 +852,43 @@ pub fn spawn(app: AppHandle) {
             let chatty_today = crate::speech_history::today_speech_count().await;
             let chatty_threshold = settings.proactive.chatty_day_threshold;
             let chatty_tag = chatty_mode_tag(chatty_today, chatty_threshold);
+            // Snapshot the data-driven prompt rules that *will* fire this turn (icebreaker /
+            // chatty / env-awareness). Computed at dispatch time so every decision-log
+            // entry — Silent / Skip / Run / Spoke / LlmSilent / LlmError — gets stamped
+            // with the same rule set the LLM saw, enabling event-by-event audit later.
+            let lifetime_count = crate::speech_history::lifetime_speech_count().await;
+            let env_counters = &app
+                .state::<crate::commands::debug::ProcessCountersStore>()
+                .inner()
+                .env_tool;
+            let env_total = env_counters
+                .spoke_total
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let env_with_any = env_counters
+                .spoke_with_any
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let active_labels = active_data_driven_rule_labels(
+                lifetime_count as usize,
+                chatty_today,
+                chatty_threshold,
+                env_total,
+                env_with_any,
+            );
+            let rules_tag = if active_labels.is_empty() {
+                None
+            } else {
+                Some(format!("rules={}", active_labels.join("+")))
+            };
+            // Append optional comma-separated tag onto a reason string. Centralizes the
+            // ", " separator so reasons stay parseable by the panel.
+            fn append_tag(reason: &mut String, tag: &str) {
+                if !reason.is_empty() && reason != "-" {
+                    reason.push_str(", ");
+                } else if reason == "-" {
+                    reason.clear();
+                }
+                reason.push_str(tag);
+            }
             match &action {
                 LoopAction::Silent { reason } => {
                     decisions.push("Silent", (*reason).to_string());
@@ -868,6 +905,10 @@ pub fn spawn(app: AppHandle) {
                             .unwrap_or_else(|| "?".to_string()),
                     );
                     if let Some(t) = &chatty_tag {
+                        reason.push_str(", ");
+                        reason.push_str(t);
+                    }
+                    if let Some(t) = &rules_tag {
                         reason.push_str(", ");
                         reason.push_str(t);
                     }
@@ -897,18 +938,33 @@ pub fn spawn(app: AppHandle) {
                             outcome_counters.spoke.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             env_tool_counters.record_spoke(&o.tools);
                             let mut reason = chatty_part.clone();
+                            if let Some(t) = &rules_tag {
+                                append_tag(&mut reason, t);
+                            }
                             if !o.tools.is_empty() {
-                                reason.push_str(&format!(", tools={}", o.tools.join("+")));
+                                let tools_tag = format!("tools={}", o.tools.join("+"));
+                                append_tag(&mut reason, &tools_tag);
+                            }
+                            if reason.is_empty() {
+                                reason = "-".to_string();
                             }
                             decisions.push("Spoke", reason);
                         }
                         Ok(_) => {
                             outcome_counters.silent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            decisions.push("LlmSilent", chatty_part);
+                            let mut reason = chatty_part.clone();
+                            if let Some(t) = &rules_tag {
+                                append_tag(&mut reason, t);
+                            }
+                            decisions.push("LlmSilent", reason);
                         }
                         Err(e) => {
                             outcome_counters.error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            decisions.push("LlmError", format!("{} ({})", e, chatty_part));
+                            let mut tail = chatty_part.clone();
+                            if let Some(t) = &rules_tag {
+                                append_tag(&mut tail, t);
+                            }
+                            decisions.push("LlmError", format!("{} ({})", e, tail));
                         }
                     }
                     if let Err(e) = outcome {
