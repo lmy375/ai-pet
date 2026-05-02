@@ -2,6 +2,13 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 72：lifetime_speech_count 暴露成 Tauri command + panel 大数字
+- 新增 `#[tauri::command] get_lifetime_speech_count() -> u64`：薄封装 `lifetime_speech_count`，注册到 invoke handler。前端无需走 `get_tone_snapshot`（混了一堆其他字段）就能拿到累计数。
+- `PanelDebug.tsx`：fetchLogs 的 Promise.all 数组里加 `invoke("get_lifetime_speech_count")`；新 state `lifetimeSpeechCount`。
+- 工具栏下方插入新 stats 卡片：`28px` 紫色 mono 大数字 + "次主动开口（持久累计 · 跨重启不归零）"灰色副标。破冰期（< 3）右上角显"破冰阶段"琥珀小标。背景用 `linear-gradient(135deg, #fdf4ff, #f0f9ff)` 轻彩区分于其他面板段。
+- chip 里的 "🤝 已开口 N 次" 留着不删——chip 是条带式概览，大卡片是首屏独立标识，两者读者场景不同（扫一眼 vs 注视）。
+- cargo check + 141 tests + tsc 全过。
+
 ## 2026-05-03 — Iter 71：proactive_count 持久化 sidecar，告别 50 行 cap
 - 新增 `~/.config/pet/speech_count.txt` sidecar：单整数文件，每次 `record_speech_inner` 写完追加 `bump_lifetime_count()` 把它 +1（best-effort，IO 错误不挡 speech 主流程）。
 - `lifetime_speech_count() -> u64`：读 sidecar；文件缺失/损坏时 fallback 到 `count_speeches().await as u64` 作 bootstrap，让从 Iter 70 升级上来的现有用户首次访问不会回退到 0。第一次 bump 后 sidecar 永远存在，bootstrap 路径只走一次。

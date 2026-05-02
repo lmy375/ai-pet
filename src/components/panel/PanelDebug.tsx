@@ -52,6 +52,7 @@ export function PanelDebug() {
     no_mood: 0,
   });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
+  const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
@@ -61,7 +62,7 @@ export function PanelDebug() {
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
@@ -69,6 +70,7 @@ export function PanelDebug() {
         invoke<string[]>("get_recent_speeches", { n: 10 }),
         invoke<ToneSnapshot>("get_tone_snapshot"),
         invoke<PendingReminder[]>("get_pending_reminders"),
+        invoke<number>("get_lifetime_speech_count"),
       ]);
       setLogs(result);
       setCacheStats(stats);
@@ -77,6 +79,7 @@ export function PanelDebug() {
       setRecentSpeeches(speeches);
       setTone(toneSnap);
       setReminders(reminderList);
+      setLifetimeSpeechCount(lifetime);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -257,6 +260,33 @@ export function PanelDebug() {
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>
           {logs.length} 条日志
         </span>
+      </div>
+
+      {/* Prominent lifetime stats — single big number for the "we've talked N times" feel.
+          Sourced from speech_count.txt sidecar (persisted across restarts). The same value
+          is also surfaced in the chip strip below; here it gets a bigger typographic moment
+          for users who actually want to see the long-running total. */}
+      <div
+        style={{
+          padding: "10px 16px",
+          borderBottom: "1px solid #e2e8f0",
+          background: "linear-gradient(135deg, #fdf4ff 0%, #f0f9ff 100%)",
+          display: "flex",
+          alignItems: "baseline",
+          gap: "12px",
+        }}
+      >
+        <span style={{ fontSize: "28px", fontWeight: 600, color: "#7c3aed", lineHeight: 1, fontFamily: "'SF Mono', 'Menlo', monospace" }}>
+          {lifetimeSpeechCount}
+        </span>
+        <span style={{ fontSize: "12px", color: "#64748b" }}>
+          次主动开口（持久累计 · 跨重启不归零）
+        </span>
+        {lifetimeSpeechCount < 3 && (
+          <span style={{ fontSize: "11px", color: "#d97706", marginLeft: "auto" }}>
+            破冰阶段
+          </span>
+        )}
       </div>
 
       {/* Conversational tone snapshot — what signals the proactive prompt is seeing */}

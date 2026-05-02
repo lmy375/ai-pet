@@ -110,6 +110,7 @@ pub fn run() {
             commands::debug::reset_mood_tag_stats,
             decision_log::get_proactive_decisions,
             speech_history::get_recent_speeches,
+            speech_history::get_lifetime_speech_count,
             proactive::get_tone_snapshot,
             proactive::get_pending_reminders,
             consolidate::trigger_consolidate,
