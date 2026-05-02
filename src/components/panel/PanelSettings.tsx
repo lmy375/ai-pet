@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, McpServerConfig } from "../../hooks/useSettings";
+import { NumberField as SharedNumberField } from "../common/NumberField";
 
 interface McpStatus {
   name: string;
@@ -605,32 +606,15 @@ const twoColRow: React.CSSProperties = {
   marginBottom: "6px",
 };
 
-function PanelNumberField({
-  label,
-  value,
-  min,
-  onChange,
-}: {
+// Bind the shared NumberField to this panel's local styles. Call sites stay free of
+// style boilerplate; the shared component owns the input-handling logic.
+function PanelNumberField(props: {
   label: string;
   value: number;
   min?: number;
   onChange: (v: number) => void;
 }) {
-  return (
-    <div style={{ flex: 1 }}>
-      <label style={labelStyle}>{label}</label>
-      <input
-        type="number"
-        value={value}
-        min={min}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          if (!Number.isNaN(n)) onChange(n);
-        }}
-        style={inputStyle}
-      />
-    </div>
-  );
+  return <SharedNumberField {...props} labelStyle={labelStyle} inputStyle={inputStyle} />;
 }
 
 /* ---------- MCP Server Card ---------- */

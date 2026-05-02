@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 27：抽共享 NumberField 组件
+- 新文件 `src/components/common/NumberField.tsx`：通用 `<input type="number">` 包装，含 NaN 守护和 onChange 类型转换。`labelStyle` / `inputStyle` 作为 props 注入，让两个 panel 各自保留视觉差异。
+- `SettingsPanel.tsx` 删本地 `NumberField`，改成一层薄 wrapper：`function NumberField(props) { return <SharedNumberField {...props} labelStyle={labelStyle} inputStyle={inputStyle} /> }`。8 处调用 site 一字未改。
+- `panel/PanelSettings.tsx` 同样：原 `PanelNumberField` 由 17 行实现缩到 3 行 wrapper。
+- 设计权衡：本可以让调用 site 直接传 labelStyle/inputStyle，但那样每处调用要多两行 props 重复。Wrapper 模式让"共享逻辑"与"局部样式绑定"分离——逻辑改 SharedNumberField 一处，样式改各自 panel 一处。
+- 顺手清理 TODO.md 里"PanelSettings.tsx：把新加的 Proactive / Consolidate 接进 panel 形式视图"——上一轮已完成，留着是冗余项。
+- tsc --noEmit 通过。
+
 ## 2026-05-02 — PanelSettings.tsx 接 Proactive / Consolidate（顺手补 Iter 21+22 加的字段）
 - panel 形式视图（独立窗口的设置面板，不同于小窗 SettingsPanel modal）原本只展示 Live2D / LLM / MCP / Telegram / SOUL，没暴露 proactive 和 memory_consolidate。
 - 在 Telegram 段后、SOUL 段前插两个新 section：

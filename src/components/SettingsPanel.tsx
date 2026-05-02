@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AppSettings } from "../hooks/useSettings";
+import { NumberField as SharedNumberField } from "./common/NumberField";
 
 interface Props {
   settings: AppSettings;
@@ -233,32 +234,15 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
   );
 }
 
-function NumberField({
-  label,
-  value,
-  min,
-  onChange,
-}: {
+// Bind the shared NumberField to this panel's local styles. Call sites stay free of
+// style boilerplate; the shared component still owns the input-handling logic.
+function NumberField(props: {
   label: string;
   value: number;
   min?: number;
   onChange: (v: number) => void;
 }) {
-  return (
-    <div style={{ flex: 1 }}>
-      <label style={labelStyle}>{label}</label>
-      <input
-        type="number"
-        value={value}
-        min={min}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          if (!Number.isNaN(n)) onChange(n);
-        }}
-        style={inputStyle}
-      />
-    </div>
-  );
+  return <SharedNumberField {...props} labelStyle={labelStyle} inputStyle={inputStyle} />;
 }
 
 const labelStyle: React.CSSProperties = {
