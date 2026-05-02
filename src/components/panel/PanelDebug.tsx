@@ -154,7 +154,9 @@ export function PanelDebug() {
               <span style={{ color: kindColor(d.kind), fontWeight: 600, minWidth: "44px" }}>
                 {d.kind}
               </span>
-              <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>{d.reason}</span>
+              <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>
+                {localizeReason(d.kind, d.reason)}
+              </span>
             </div>
           ))}
         </div>
@@ -204,6 +206,50 @@ function kindColor(kind: string): string {
     default:
       return "#475569";
   }
+}
+
+/**
+ * Translate the backend's reason string to user-friendly Chinese for the panel.
+ *
+ * - Silent reasons are stable enum keys, mapped one-to-one.
+ * - Skip reasons start with "Proactive: skip — " plumbing noise; we strip it and
+ *   translate a few known phrasings while preserving any dynamic numbers.
+ * - Run reasons are already structured (e.g. "idle=900s, input_idle=120") — pass through.
+ *
+ * Falls back to the original string for anything we don't recognize, so a future backend
+ * change degrades to English-passthrough rather than blanking the row.
+ */
+function localizeReason(kind: string, reason: string): string {
+  if (kind === "Silent") {
+    switch (reason) {
+      case "disabled":
+        return "已禁用 (proactive.enabled = false)";
+      case "quiet_hours":
+        return "安静时段内";
+      case "idle_below_threshold":
+        return "用户活跃时间未到阈值";
+      default:
+        return reason;
+    }
+  }
+  if (kind === "Skip") {
+    const stripped = reason.replace(/^Proactive: skip\s*—\s*/, "");
+    if (stripped.startsWith("awaiting user reply")) {
+      return "等待用户回复上一条主动消息";
+    }
+    if (stripped.startsWith("cooldown")) {
+      // "cooldown (60s < 1800s)" → "冷却中 (60s < 1800s)"
+      return stripped.replace(/^cooldown/, "冷却中");
+    }
+    if (stripped.startsWith("user active")) {
+      return stripped.replace(/^user active/, "用户活跃中");
+    }
+    if (stripped.startsWith("macOS Focus")) {
+      return "macOS Focus / 勿扰已开启";
+    }
+    return stripped;
+  }
+  return reason;
 }
 
 const toolBtnStyle: React.CSSProperties = {

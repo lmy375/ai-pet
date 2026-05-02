@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 39 设计要点（已实现）
+- **前端映射 vs 后端中文文案**：选前者。原因：(a) 后端 reason 现在是稳定的语义 key（"disabled" / "quiet_hours" / ...），改成中文文案就把 UI 语言耦合进协议；(b) 加新语言、做 i18n 时只动前端表；(c) 后端日志依然英文便于 grep；(d) reason 字符串可以同时作 enum 用（panel 旁的"按 reason 过滤决策"功能就靠英文 key）。
+- **分层翻译策略**：Silent 是 enum-like → 一对一 switch；Skip 是 prefix + 动态参数 → startsWith 匹配 + 替换前缀保数字；Run 已经结构化无需翻译。每个 kind 一种翻译策略，简洁。
+- **未识别 fallback to 原文**：`default: return reason` 让未来后端加新 Silent 值（比如 `respect_focus_mode 关`）UI 不会突然空白，而是显示英文 key——降级体验合理。
+- **剥离 "Proactive: skip — " 前缀**：后端日志里这个前缀有用（grep 时能锁定来源），但 UI 已经用颜色 + KIND 列标识"这是 Skip"，重复信息只是噪音。前端独立优化呈现，不需要改后端。
+- **不写测试**：纯字符串映射，没有边界 / 分支风险，cargo 也无新东西要验。tsc 通过 = 类型/语法对，已经是足够防线。
+
 ## Iter 38 设计要点（已实现）
 - **`Silent { reason: &'static str }` 而非 String**：silent 的原因都是固定枚举值（"disabled" / "quiet_hours" / "idle_below_threshold"），用 static str 零分配。Skip 才用 String 因为它有动态信息（cooldown 还差几秒）。这种"按需选择存储成本"细致但值得。
 - **决定记录在 dispatch 之前**：先记录、再 dispatch。如果先 dispatch（特别是 Run 路径会跑 LLM 几秒），到记录时 timestamp 就漂了；记录失败也可能让 dispatch 提前继续。先记录顺序更可靠，对 Silent/Skip 也无延迟。
