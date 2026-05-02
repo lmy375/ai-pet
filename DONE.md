@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 58：PanelDebug 显示 todo 类 reminder 候选
+- 后端：
+  - 新 `pub struct PendingReminder { time, topic, title, due_now }`（serde::Serialize）
+  - 新 `#[tauri::command] pub fn get_pending_reminders() -> Vec<PendingReminder>`：扫 memory todo 类，对每条 description 调 `parse_reminder_prefix`，能解析就纳入；同步算 `due_now` 让前端渲染时区分。
+  - lib.rs `tauri::generate_handler!` 注册。
+- 前端 `PanelDebug.tsx`：
+  - 新 interface `PendingReminder` + state；fetchLogs 7 路 Promise.all 一并取。
+  - speech 段之后插一段橙色背景 (#fff7ed) 卡片：`待提醒事项 N 条（橙色 = 已到时间窗口）`，每行 `HH:MM topic (title)`。
+  - due_now 的行 time 字段用 #ea580c 橙 + 加粗；非 due 用 #a16207 暗黄；让用户视觉上立刻区分。
+  - 仅当 reminders.length > 0 时渲染。
+- tsc + 128 tests 双过；零 warning。
+- 现在用户在 chat 让宠物记一条提醒后，立刻打开 panel 就能看到"23:00 吃药 (take_meds)"这样的条目，不用 cat memory yaml 验证。
+
 ## 2026-05-03 — Iter 57：reactive chat 教 LLM reminder 格式
 - `commands/chat::inject_mood_note` 拆 body 为 `mood_section` + 新增 `reminder_section`：
   - 明确告诉 LLM "如果用户说类似「N 点提醒我做 X」类话，请用 `memory_edit create` 在 `todo` 类别下创建 description 以 `[remind: HH:MM] X` 开头的条目"。

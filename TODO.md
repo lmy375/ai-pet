@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，配合 panel 里 Iter 40 加的 Tag 统计观察实际命中率，决定是否要再加强 prompt。
-- [ ] Iter 58：让 PanelDebug 也展示当前 todo 类别下所有"reminder 候选"——已设但未到时间的列表。用户调试"我刚让宠物提醒我，到底有没有记下来"时一目了然。
+- [ ] Iter 59：reminder 解析支持 "today HH:MM"、"+N min" 等更灵活格式——目前只支持 `[remind: 23:00]`，无法表达"30 分钟后"或者"明天 9 点"这类相对时间。先扩展 parse_reminder_prefix 支持 `[remind: +30m]`、`[remind: tomorrow 09:00]` 等，再让 LLM 知道这些写法。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。
