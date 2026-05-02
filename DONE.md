@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 61：stale_reminder_hours 配置化
+- `MemoryConsolidateConfig` 加 `stale_reminder_hours: u64`（默认 24），归到 consolidate 配置而非 ProactiveConfig（虽然 TODO 说 ProactiveConfig，但 sweep 在 consolidate 跑、用 consolidate 的 settings 更一致）。
+- `default_stale_reminder_hours()` 返 24，与上一版硬编码值相同——升级现有 config.yaml 不会引起行为变化。
+- consolidate.rs `run_consolidation` 改为读 `get_settings().memory_consolidate.stale_reminder_hours`，错误时 fallback 到 24。
+- 前端 `useSettings.ts` MemoryConsolidateConfig interface + DEFAULT_SETTINGS 加字段；`PanelSettings.tsx` 初值同步。
+- UI：
+  - SettingsPanel modal 在"触发条目数"后加一行"清理过期 reminder (小时)" NumberField。
+  - PanelSettings 加同名字段 + 11px 浅灰说明文字："consolidate 跑时会自动删超过此时长的过期 [remind: YYYY-MM-DD HH:MM] 提醒。HH:MM 格式（'今天'）不受影响。"
+- 137 tests + tsc 双过；零 warning。
+- 不写新单测——is_stale_reminder 接 cutoff 参数早测过；plumbing 一类改动靠类型系统 + cargo check 兜底。
+
 ## 2026-05-03 — Iter 60：consolidate 阶段清扫 stale reminder
 - 新纯函数 `pub fn is_stale_reminder(&ReminderTarget, now: NaiveDateTime, cutoff_hours) -> bool` 在 proactive.rs：
   - Absolute → `(now - dt) > cutoff_hours` 即过期

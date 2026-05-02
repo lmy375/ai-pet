@@ -48,6 +48,7 @@ export function PanelSettings() {
       enabled: false,
       interval_hours: 6,
       min_total_items: 12,
+      stale_reminder_hours: 24,
     },
     chat: {
       max_context_messages: 50,
@@ -571,6 +572,23 @@ export function PanelSettings() {
               })
             }
           />
+        </div>
+        <div style={twoColRow}>
+          <PanelNumberField
+            label="清理过期 reminder (小时)"
+            value={form.memory_consolidate.stale_reminder_hours}
+            min={1}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, stale_reminder_hours: v },
+              })
+            }
+          />
+          <div style={{ flex: 1 }} />
+        </div>
+        <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
+          consolidate 跑时会自动删超过此时长的过期 [remind: YYYY-MM-DD HH:MM] 提醒。HH:MM 格式（"今天"）不受影响。
         </div>
       </div>
 

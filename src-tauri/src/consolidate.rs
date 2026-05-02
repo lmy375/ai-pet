@@ -78,10 +78,14 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
         .clone();
     let ctx = ToolContext::new(log_store.clone(), shell_store, process_counters);
 
-    // Deterministic sweep first — drop reminders whose Absolute target is more than 24h
-    // past. The LLM later sees a cleaner index and won't waste a call deciding whether
-    // to delete each one. TodayHour reminders are intentionally left alone (recurring).
-    let swept = sweep_stale_reminders(chrono::Local::now().naive_local(), 24);
+    // Deterministic sweep first — drop reminders whose Absolute target is past their
+    // configured stale cutoff. The LLM later sees a cleaner index and won't waste a
+    // call deciding whether to delete each one. TodayHour reminders are intentionally
+    // left alone (recurring).
+    let stale_cutoff = get_settings()
+        .map(|s| s.memory_consolidate.stale_reminder_hours)
+        .unwrap_or(24);
+    let swept = sweep_stale_reminders(chrono::Local::now().naive_local(), stale_cutoff);
     if swept > 0 {
         write_log(
             &log_store.0,

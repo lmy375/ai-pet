@@ -117,6 +117,11 @@ pub struct MemoryConsolidateConfig {
     /// burning tokens to "tidy up" an empty index.
     #[serde(default = "default_consolidate_min_items")]
     pub min_total_items: usize,
+    /// Sweep an Absolute-form reminder that's been past its target by this many hours.
+    /// 24 is conservative for daily-use; raise it for devices that suspend overnight,
+    /// lower it for always-on setups that want todos to clear out faster.
+    #[serde(default = "default_stale_reminder_hours")]
+    pub stale_reminder_hours: u64,
 }
 
 fn default_consolidate_interval() -> u64 {
@@ -127,12 +132,17 @@ fn default_consolidate_min_items() -> usize {
     12
 }
 
+fn default_stale_reminder_hours() -> u64 {
+    24
+}
+
 impl Default for MemoryConsolidateConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             interval_hours: default_consolidate_interval(),
             min_total_items: default_consolidate_min_items(),
+            stale_reminder_hours: default_stale_reminder_hours(),
         }
     }
 }
