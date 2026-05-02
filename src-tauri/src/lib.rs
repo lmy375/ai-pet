@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod input_idle;
 mod mcp;
 mod proactive;
 mod telegram;

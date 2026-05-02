@@ -16,11 +16,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::commands::chat::{run_chat_pipeline, ChatMessage, CollectingSink};
-use crate::commands::debug::LogStore;
+use crate::commands::debug::{write_log, LogStore};
 use crate::commands::session;
 use crate::commands::settings::{get_settings, get_soul};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
+use crate::input_idle::user_input_idle_seconds;
 use crate::mcp::McpManagerStore;
 use crate::tools::ToolContext;
 
@@ -82,12 +83,35 @@ pub fn spawn(app: AppHandle) {
             }
 
             let threshold = settings.proactive.idle_threshold_seconds.max(60);
+            let input_idle_min = settings.proactive.input_idle_seconds;
             let clock = app.state::<InteractionClockStore>().inner().clone();
             let idle = clock.idle_seconds().await;
 
             if idle >= threshold {
-                if let Err(e) = run_proactive_turn(&app, idle).await {
-                    eprintln!("Proactive turn failed: {}", e);
+                // Don't interrupt if the user is actively at the keyboard/mouse.
+                // A value of 0 disables this gate; on non-macOS we get None and
+                // proceed (fall back to interaction-time check only).
+                let input_idle = user_input_idle_seconds().await;
+                let input_ok = match (input_idle_min, input_idle) {
+                    (0, _) => true,
+                    (_, Some(secs)) => secs >= input_idle_min,
+                    (_, None) => true,
+                };
+
+                if input_ok {
+                    if let Err(e) = run_proactive_turn(&app, idle, input_idle).await {
+                        eprintln!("Proactive turn failed: {}", e);
+                    }
+                } else {
+                    let secs = input_idle.unwrap_or(0);
+                    let log_store = app.state::<LogStore>().inner().clone();
+                    write_log(
+                        &log_store.0,
+                        &format!(
+                            "Proactive: skip — user active (input_idle={}s < {}s)",
+                            secs, input_idle_min
+                        ),
+                    );
                 }
             }
 
@@ -97,7 +121,11 @@ pub fn spawn(app: AppHandle) {
 }
 
 /// Build the prompt, ask the LLM, emit the reply, and persist it.
-async fn run_proactive_turn(app: &AppHandle, idle_seconds: u64) -> Result<(), String> {
+async fn run_proactive_turn(
+    app: &AppHandle,
+    idle_seconds: u64,
+    input_idle_seconds: Option<u64>,
+) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
     let mcp_store = app.state::<McpManagerStore>().inner().clone();
     let log_store = app.state::<LogStore>().inner().clone();
@@ -113,9 +141,13 @@ async fn run_proactive_turn(app: &AppHandle, idle_seconds: u64) -> Result<(), St
     let soul = get_soul().unwrap_or_default();
     let now_local = chrono::Local::now();
     let idle_minutes = idle_seconds / 60;
+    let input_hint = match input_idle_seconds {
+        Some(secs) => format!("用户键鼠空闲约 {} 秒。", secs),
+        None => "（无法读取键鼠空闲信息。）".to_string(),
+    };
 
     let prompt = format!(
-        "[系统提示·主动开口检查]\n\n现在是 {time}。距离上次和用户互动已经过去约 {minutes} 分钟。\n\n\
+        "[系统提示·主动开口检查]\n\n现在是 {time}。距离上次和用户互动已经过去约 {minutes} 分钟。{input_hint}\n\n\
 请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。\n\n\
 约束：\n\
 - 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{silent}`，不要其他任何文字。\n\
@@ -124,6 +156,7 @@ async fn run_proactive_turn(app: &AppHandle, idle_seconds: u64) -> Result<(), St
 - 必要时可以调用工具：`get_active_window` 看看用户在用什么 app（开口前优先调一次，让话题更贴合当下），`memory_search` 翻一下记忆里相关的用户偏好。",
         time = now_local.format("%Y-%m-%d %H:%M"),
         minutes = idle_minutes,
+        input_hint = input_hint,
         silent = SILENT_MARKER,
     );
 
