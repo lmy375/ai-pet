@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 60 设计要点（已实现）
+- **deterministic sweep 而非 prompt rule**：原 TODO 说"加一条规则" — 但用 prompt rule 让 LLM 删除 stale 是不可靠的（LLM 可能漏看、可能误删非 reminder 的 todo）。Rust 端按规则扫一遍是确定的。"consolidate 帮兜底"恰恰是确定性兜底的语义。
+- **TodayHour 永远不 stale**：Recurring 语义。比如"23:00 吃药"用户可能希望天天提醒，让 consolidate 第二天就删了违反预期。如果用户想单次，让他用 Absolute 格式。这种"shorthand 是 recurring，long-form 是 one-shot"的语义靠 enum 拆分明确。
+- **collect titles 再删**：iterate 时直接 mutate 会触发 memory_list 内部状态飘移（每次 memory_edit 都重写 yaml）。先收集要删的 titles，循环结束后再调 memory_edit，避免 race。
+- **24h 硬编码**：当前 cutoff 写在 sweep call site `sweep_stale_reminders(now, 24)`。Iter 61 列入了 settings 化。这个 magic number 在调用站显式而非藏在函数默认值里——读 run_consolidation 的人一眼能看到"24h cutoff"。
+- **沙盒前调 sweep 而非 LLM 之后**：把 sweep 放 LLM 调用之前，意味着 LLM 看的 index 已经干净，不会"花功夫思考要不要删过期 reminder"。少一次推理。
+- **best-effort delete**：sweep_stale_reminders 用 `.is_ok()` 累计，删除失败（罕见）忽略不抛错。consolidate 主流程不该被一个 todo 删除失败打断。
+- **测试位置**：`is_stale_reminder` 测试放在 `mod reminder_tests` 里（与 parse / due 同 mod），保持 reminder 相关行为统一审视。`sweep_stale_reminders` 不测——它的逻辑就是"调 is_stale 过滤 + 调 memory_edit delete"，每个组件已测。
+
 ## Iter 59 设计要点（已实现）
 - **enum 而非 Option<NaiveDate>**：原本想用 `Option<NaiveDate>` 配 `(u8, u8)` —— 表示"无日期=今天，有日期=绝对"。但 enum `TodayHour` / `Absolute` 显式语义两态，match 时 caller 必须想清楚两种情况，避免 forget Some/None 心智负担。
 - **TodayHour 仍保留 wrap-midnight**：用户用简短形式时通常是"今晚的事"，"23:55"在凌晨 00:05 仍想触发是合理预期。Absolute 不 wrap——既然指定了具体日期，就不该越界。这两种语义差异写在 doc + 测试 (`absolute_does_not_wrap_midnight`) 里。
