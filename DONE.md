@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 82：EnvToolCounters + panel 环境感知率 chip
+- 新 `EnvToolCounters` sub-struct 加到 `ProcessCounters`，含 6 个 atomic：`spoke_total`、`spoke_with_any` 加 4 个 per-tool 字段（active_window / weather / upcoming_events / memory_search）。
+- `EnvToolCounters::record_spoke(&[String])` 方法：单次 Spoke 决策时调，读 outcome.tools 列表分别 bump 已知 env 工具，未知 tool（memory_edit / bash / MCP 等）忽略。`any` flag 控制 `spoke_with_any` 是否 +1。封装在 impl 里让调度处一行调用、未来加新 env 工具只改 match 一处。
+- `get_env_tool_stats` / `reset_env_tool_stats` 两个 Tauri command，注册到 invoke handler。
+- 调度循环 Spoke 分支：`env_tool_counters.record_spoke(&o.tools)` 紧挨 `outcome_counters.spoke.fetch_add` 同位置——两组 atomic 永远同步。
+- 前端：`EnvToolStats` interface 加 6 字段；fetchLogs Promise.all 加 invoke；新 state + 重置 handler。
+- 工具栏在 LLM沉默 chip 之后插入"环境感知 N/M (X%)" chip：默认青色 #0891b2；`spoke_with_any * 2 < spoke_total`（低于 50%）切橙色 #ea580c warning。tooltip 拆出每工具数字"window=N · weather=N · events=N · memory_search=N"，方便看是哪个工具被忽略。
+- 4 个新单测覆盖：含已知 env 工具、只含 mutating 工具、空 tools、多次累计 + 比例。
+- 161 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 81：把 LLM 用的工具串记到 decision log Spoke reason
 - `ToolRegistry` 加 `called_tools: TokioMutex<Vec<String>>`：每次 `execute()` push 名字（hit/miss 都记，cache hit 也算 LLM 主观调用）。新 `pub async fn called_tool_names()` 读完去重排序。
 - `ToolContext` 加 `tools_used: Option<Arc<Mutex<Vec<String>>>>` opt-in collector + `with_tools_used_collector()` builder。其他 callers（consolidate / telegram / 普通 chat）不传，零开销。

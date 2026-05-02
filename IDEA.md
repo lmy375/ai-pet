@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 82 设计要点（已实现）
+- **`record_spoke` 集中 match 而非分散写**：本可以让调度处自己写 `for tool in tools { match tool ... bump }`。但工具白名单（4 项）是 EnvToolCounters 的关注域，未来加 `get_now_playing` 类工具，"哪些算 env-aware"应该和数据结构在同一处定义。把 match 放进 impl 让调用处一行：`record_spoke(&tools)`。
+- **per-tool 字段而非 HashMap**：本可以 `tool_counts: HashMap<String, AtomicU64>` 通用化。但 4 项固定 + 不预期高频增长，atomic struct 字段的访问 O(1) 且无锁；HashMap 要 lock 或 dashmap，复杂度反而高。如果将来 env 工具增加到 10+ 项再考虑容器化。
+- **spoke_total != llm_outcome.spoke**：两个计数在不同地方累计但应当同步。spoke_total 在 `record_spoke` 内 +1，llm_outcome.spoke 在 dispatch 同分支 +1——两者放紧邻代码块互为校验。如果未来重构破坏对齐，panel 上的两个 chip 比例对不上会是肉眼可见的回归信号。
+- **50% 临界点**：与 LLM 沉默 chip 对称的"半数门槛"。低于 50% 表示"大多数开口都没看环境就说话"——prompt 工具引导没起作用。本可以用更严格的 30% 或更宽松的 70%，但 50% 是直观的"主流 vs 少数"分界。
+- **不持久化**：env_tool 是 process-level atomic，重启清零。和 cache / mood_tag / llm_outcome 一致，是 session 内 prompt 调试的快速反馈。如果将来要看"上周环境感知率"，可以加 daily 文件，但当前需求是即时调优。
+- **不加 spoke_no_tools 字段**：派生为 `spoke_total - spoke_with_any` 在前端就行；序列化时只送原子值，前端做减法。避免冗余字段、避免一致性校验负担。
+- **chip 渲染条件 `spoke_total > 0`**：和其他 chip 一样首次启动不渲染，避免显示 "0/0" 除零。`Math.round(... * 100)` 在 frontend 也保护 NaN 不出现，因为分支已判过非零。
+
 ## Iter 81 设计要点（已实现）
 - **opt-in collector via ToolContext 而非改 run_chat_pipeline 签名**：4 个 callers（chat / proactive / consolidate / telegram）只有 proactive 需要 tool tags。改返回类型迫使所有 caller 解构 `(reply, tools)` 或 ignore；通过 ctx 加 optional collector 让不关心的 caller 零改动。这是"添字段不破坏既有调用者"的标准模式。
 - **mutex 而非 atomic / channel**：tool names 是 `Vec<String>`，原子追加需要 lock-free queue（复杂）或 channel（异步生命周期繁琐）。`Arc<Mutex<Vec<String>>>` 同步锁简单可靠，pipeline 末尾一次性写入，dispatch 读一次——锁竞争不可能成为瓶颈。
