@@ -119,6 +119,7 @@ const SILENT_MARKER: &str = "<silent>";
 
 /// What the proactive loop should do this tick. Each variant maps to one outer-loop branch:
 /// `Silent` skips quietly, `Skip` logs the reason, `Run` triggers a real proactive turn.
+#[derive(Debug, PartialEq, Eq)]
 enum LoopAction {
     /// No log, just sleep — used when proactive is disabled or the user simply hasn't been
     /// idle long enough yet (the common case, not interesting).
@@ -132,48 +133,48 @@ enum LoopAction {
     },
 }
 
-/// Evaluate every gate in priority order and return the action this tick should take. Pure
-/// dispatch — does not sleep, log, or call the LLM. Caller threads the result into the
-/// outer loop's single `tokio::time::sleep` and `write_log` calls.
-async fn evaluate_loop_tick(
-    app: &AppHandle,
-    settings: &crate::commands::settings::AppSettings,
-) -> LoopAction {
-    let cfg = &settings.proactive;
+/// Pure-data gates that don't need IO: enabled, awaiting, cooldown, idle threshold.
+/// Returns `Err(action)` with the final LoopAction to short-circuit the tick, or `Ok(())`
+/// signaling "all sync gates passed, caller should run the input-idle gate next".
+fn evaluate_pre_input_idle(
+    cfg: &crate::commands::settings::ProactiveConfig,
+    snap: &ClockSnapshot,
+) -> Result<(), LoopAction> {
     if !cfg.enabled {
-        return LoopAction::Silent;
+        return Err(LoopAction::Silent);
     }
-
-    let clock = app.state::<InteractionClockStore>().inner().clone();
-    let snap = clock.snapshot().await;
-
     // Gate 1: a real friend doesn't keep talking when ignored.
     if snap.awaiting_user_reply {
-        return LoopAction::Skip(
+        return Err(LoopAction::Skip(
             "Proactive: skip — awaiting user reply to previous proactive message".into(),
-        );
+        ));
     }
-
     // Gate 2: cooldown since the last proactive utterance, regardless of user idle.
     if let Some(since) = snap.since_last_proactive_seconds {
         if cfg.cooldown_seconds > 0 && since < cfg.cooldown_seconds {
-            return LoopAction::Skip(format!(
+            return Err(LoopAction::Skip(format!(
                 "Proactive: skip — cooldown ({}s < {}s)",
                 since, cfg.cooldown_seconds
-            ));
+            )));
         }
     }
-
     // Gate 3: minimum quiet time since last interaction. Below threshold = silent skip
     // (this is the common idle-yet case, not worth logging on every tick).
     let threshold = cfg.idle_threshold_seconds.max(60);
     if snap.idle_seconds < threshold {
-        return LoopAction::Silent;
+        return Err(LoopAction::Silent);
     }
+    Ok(())
+}
 
-    // Gate 4: don't interrupt while the user is actively at the keyboard/mouse. 0 disables
-    // the gate; non-macOS returns None and we proceed (rely on idle-time gate only).
-    let input_idle = user_input_idle_seconds().await;
+/// Gate 4: input-idle. Don't interrupt while the user is actively at the keyboard/mouse.
+/// `input_idle_seconds = 0` disables the gate; `input_idle = None` (non-macOS) is treated
+/// as a pass so behavior degrades to "rely on the interaction-time gate only".
+fn evaluate_input_idle_gate(
+    cfg: &crate::commands::settings::ProactiveConfig,
+    snap: &ClockSnapshot,
+    input_idle: Option<u64>,
+) -> LoopAction {
     let input_ok = match (cfg.input_idle_seconds, input_idle) {
         (0, _) => true,
         (_, Some(secs)) => secs >= cfg.input_idle_seconds,
@@ -186,11 +187,27 @@ async fn evaluate_loop_tick(
             cfg.input_idle_seconds
         ));
     }
-
     LoopAction::Run {
         idle_seconds: snap.idle_seconds,
         input_idle_seconds: input_idle,
     }
+}
+
+/// Evaluate every gate in priority order and return the action this tick should take.
+/// Composes the pure pre-input-idle gates with the IO call to query keyboard/mouse idle.
+async fn evaluate_loop_tick(
+    app: &AppHandle,
+    settings: &crate::commands::settings::AppSettings,
+) -> LoopAction {
+    let cfg = &settings.proactive;
+    let clock = app.state::<InteractionClockStore>().inner().clone();
+    let snap = clock.snapshot().await;
+
+    if let Err(action) = evaluate_pre_input_idle(cfg, &snap) {
+        return action;
+    }
+    let input_idle = user_input_idle_seconds().await;
+    evaluate_input_idle_gate(cfg, &snap, input_idle)
 }
 
 /// Spawn the background engagement loop. Reads settings on every tick so changes take effect
@@ -351,4 +368,145 @@ fn persist_assistant_message(session_id: &str, text: &str) -> Result<(), String>
         .push(serde_json::json!({ "type": "assistant", "content": text }));
     sess.updated_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
     session::save_session(sess)
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use crate::commands::settings::ProactiveConfig;
+
+    fn cfg() -> ProactiveConfig {
+        ProactiveConfig {
+            enabled: true,
+            interval_seconds: 60,
+            idle_threshold_seconds: 60,
+            input_idle_seconds: 60,
+            cooldown_seconds: 0, // off by default in tests so we can hit other gates
+        }
+    }
+
+    fn snap(idle: u64, awaiting: bool, since_proactive: Option<u64>) -> ClockSnapshot {
+        ClockSnapshot {
+            idle_seconds: idle,
+            awaiting_user_reply: awaiting,
+            since_last_proactive_seconds: since_proactive,
+        }
+    }
+
+    #[test]
+    fn disabled_returns_silent() {
+        let mut c = cfg();
+        c.enabled = false;
+        let action = evaluate_pre_input_idle(&c, &snap(9999, false, None));
+        assert_eq!(action.unwrap_err(), LoopAction::Silent);
+    }
+
+    #[test]
+    fn awaiting_user_reply_skips_with_log() {
+        let action = evaluate_pre_input_idle(&cfg(), &snap(9999, true, None)).unwrap_err();
+        match action {
+            LoopAction::Skip(msg) => assert!(msg.contains("awaiting user reply")),
+            other => panic!("expected Skip, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cooldown_active_skips() {
+        let mut c = cfg();
+        c.cooldown_seconds = 1800;
+        let action = evaluate_pre_input_idle(&c, &snap(9999, false, Some(60))).unwrap_err();
+        match action {
+            LoopAction::Skip(msg) => {
+                assert!(msg.contains("cooldown"));
+                assert!(msg.contains("60s < 1800s"));
+            }
+            other => panic!("expected Skip, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cooldown_zero_disables_gate() {
+        // Even with a recent proactive turn, cooldown=0 means "no cooldown gate".
+        let mut c = cfg();
+        c.cooldown_seconds = 0;
+        // idle is high enough to pass the next gate, so we should reach Ok.
+        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(0)));
+        assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+    }
+
+    #[test]
+    fn cooldown_elapsed_passes() {
+        let mut c = cfg();
+        c.cooldown_seconds = 1800;
+        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(2000)));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn idle_below_threshold_silent() {
+        let c = cfg(); // threshold=60
+        let action = evaluate_pre_input_idle(&c, &snap(30, false, None)).unwrap_err();
+        assert_eq!(action, LoopAction::Silent);
+    }
+
+    #[test]
+    fn idle_threshold_clamped_to_60_minimum() {
+        let mut c = cfg();
+        c.idle_threshold_seconds = 10; // user-set absurdly low, should clamp up to 60
+        let action = evaluate_pre_input_idle(&c, &snap(30, false, None)).unwrap_err();
+        assert_eq!(action, LoopAction::Silent, "30s should still be below the clamped 60s");
+    }
+
+    #[test]
+    fn all_sync_gates_pass_returns_ok() {
+        let result = evaluate_pre_input_idle(&cfg(), &snap(9999, false, None));
+        assert!(result.is_ok());
+    }
+
+    // ---- input-idle gate ----
+
+    #[test]
+    fn input_idle_zero_disables_gate_runs() {
+        let mut c = cfg();
+        c.input_idle_seconds = 0;
+        let action = evaluate_input_idle_gate(&c, &snap(9999, false, None), Some(1));
+        assert!(matches!(action, LoopAction::Run { .. }));
+    }
+
+    #[test]
+    fn input_idle_none_treats_as_pass() {
+        // Non-macOS: user_input_idle_seconds returns None, gate should not block.
+        let action = evaluate_input_idle_gate(&cfg(), &snap(9999, false, None), None);
+        match action {
+            LoopAction::Run { input_idle_seconds, .. } => {
+                assert_eq!(input_idle_seconds, None);
+            }
+            other => panic!("expected Run, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn input_idle_below_min_skips() {
+        // input_idle_min=60, observed=10 — user is actively typing.
+        let action = evaluate_input_idle_gate(&cfg(), &snap(9999, false, None), Some(10));
+        match action {
+            LoopAction::Skip(msg) => {
+                assert!(msg.contains("user active"));
+                assert!(msg.contains("input_idle=10s < 60s"));
+            }
+            other => panic!("expected Skip, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn input_idle_above_min_runs() {
+        let action = evaluate_input_idle_gate(&cfg(), &snap(9999, false, None), Some(120));
+        match action {
+            LoopAction::Run { idle_seconds, input_idle_seconds } => {
+                assert_eq!(idle_seconds, 9999);
+                assert_eq!(input_idle_seconds, Some(120));
+            }
+            other => panic!("expected Run, got {:?}", other),
+        }
+    }
 }
