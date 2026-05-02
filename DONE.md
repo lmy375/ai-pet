@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 69：ToneSnapshot 加 proactive_count + panel chip
+- 后端 `ToneSnapshot.proactive_count: u64` 字段；`get_tone_snapshot` 调 `count_speeches().await as u64` 取值。
+- 前端 `PanelDebug.tsx` interface 同步加；tone strip 在 pre-quiet 之后加 🤝 chip：
+  - 默认色 #64748b（灰）
+  - count < 3 时切 #d97706（琥珀，warning 暖色）+ 后缀「（破冰）」
+  - tooltip 解释 < 3 是"破冰阶段——前 3 次主动开口走探索性话题"，否则"累计主动开口次数（受 speech_history.log 50 行 cap 影响）"
+- count == 0 仍渲染（与其他 chip 用 `!== null && > 0` 不同——破冰阶段就是从 0 开始的，0 才是最重要的展示时刻）。
+- 141 tests + tsc 双过；零 warning。
+- 现在用户安装新版本后能在 panel 一眼看到"目前是破冰阶段，宠物会问简短问题"，理解宠物为什么前几句话感觉特别像问卷。
+
 ## 2026-05-03 — Iter 68：first-time 破冰 prompt 规则
 - 新 `pub async fn count_speeches() -> usize` 在 speech_history.rs：读 file 计非空行数，作 lifetime proactive utterance count（受 SPEECH_HISTORY_CAP=50 约束足以判断"前几次")。
 - `PromptInputs.proactive_history_count: usize` 新字段。

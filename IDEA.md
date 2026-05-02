@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 69 设计要点（已实现）
+- **chip 在 count=0 也渲染**：其他 chip（cache/tag/wake/mood）都用「值不存在/为零就藏起来」逻辑。但破冰阶段的核心展示就是 "0次/1次/2次"——藏起来反而失去信号。所以 proactive chip 无条件渲染，只是颜色随破冰状态变化。
+- **琥珀色（#d97706）作 warning 而非 alert**：red 给 quiet-soon、green 给 trigger 成功、紫 给 mood/tag——琥珀是 "soft warning / heads-up"。"破冰阶段"不是问题，只是个状态告知，琥珀比红色合适。
+- **🤝 emoji 选择**：握手 = 初识 / 介绍。和其他 emoji 一样作 type discriminator——time/cadence/wake/motion/mood/quiet/handshake，都不重复。
+- **不在破冰外完全隐藏**：count > 3 时仍然显示「已开口 N 次」（灰色），让用户随时能看到累计——是 lifetime stat，不是临时态。
+- **50 行 cap 的暴露问题**：count_speeches 受 SPEECH_HISTORY_CAP=50 限制，超过后永远显示 50。这个截断 panel 上没法体现，写进 tooltip "受 speech_history.log 50 行 cap 影响"。如果用户介意可以走 Iter 70 加独立 atomic 真实累计。
+
 ## Iter 68 设计要点（已实现）
 - **用 speech_history 行数作 proxy 而非新 atomic**：本可以加 ProcessCounters.proactive_lifetime_count + bump 在 record_speech 处。但 speech_history 文件本身就是"宠物每次开口"的真相源，count 它的非空行数和 atomic 等价、自动持久化、零新状态。SPEECH_HISTORY_CAP=50 足以判断"前几次"，超出后总是返 50；对于 < 3 的 threshold 完全够用。
 - **threshold = 3**：经验值。1 太少（用户连"宠物长啥样"都还没适应）；5+ 太多（让宠物长期处于"问问题"模式让人嫌唠叨）。3 给一天（默认设置 5min interval × 3 ≈ 15min）的破冰窗口。
