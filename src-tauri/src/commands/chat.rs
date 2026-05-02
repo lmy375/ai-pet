@@ -2,15 +2,23 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::debug::{write_llm_log, LogStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::InteractionClockStore;
+use crate::proactive::{read_current_mood, InteractionClockStore};
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
+
+/// Payload emitted to the frontend after a reactive chat turn finishes. Symmetric with
+/// `proactive-message` — the frontend uses `mood` to drive Live2D motion.
+#[derive(Clone, Serialize)]
+pub struct ChatDonePayload {
+    pub mood: Option<String>,
+    pub timestamp: String,
+}
 
 /// System prompt for tool usage best practices, injected into every chat pipeline request.
 const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
@@ -404,6 +412,7 @@ pub async fn run_chat_pipeline(
 
 #[tauri::command]
 pub async fn chat(
+    app: AppHandle,
     messages: Vec<ChatMessage>,
     on_event: Channel<StreamEvent>,
     log_store: State<'_, LogStore>,
@@ -421,5 +430,17 @@ pub async fn chat(
     let result = run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
+
+    // Emit chat-done with current mood snapshot so the frontend can drive Live2D motion the
+    // same way it does for proactive messages. Mood may be unchanged from before the turn —
+    // reactive chats don't currently update it — but we still want motion feedback.
+    let payload = ChatDonePayload {
+        mood: read_current_mood(),
+        timestamp: chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string(),
+    };
+    let _ = app.emit("chat-done", payload);
+
     Ok(())
 }

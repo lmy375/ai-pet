@@ -309,7 +309,7 @@ async fn run_proactive_turn(
 /// item's description if present, otherwise `None`. The LLM bootstraps this on first
 /// proactive turn via `memory_edit` — we never write it from Rust to keep the source of
 /// truth in the model's hands.
-fn read_current_mood() -> Option<String> {
+pub fn read_current_mood() -> Option<String> {
     let index = memory::memory_list(Some(MOOD_CATEGORY.to_string())).ok()?;
     let cat = index.categories.get(MOOD_CATEGORY)?;
     cat.items

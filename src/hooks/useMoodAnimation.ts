@@ -34,26 +34,39 @@ interface ProactivePayload {
   mood: string | null;
 }
 
+interface ChatDonePayload {
+  mood: string | null;
+  timestamp: string;
+}
+
+function triggerMotion(model: any, mood: string | null | undefined) {
+  if (!model) return;
+  const group = pickMotionGroup(mood);
+  try {
+    // pixi-live2d-display: model.motion(group, index?, priority?). Priority 2 = NORMAL,
+    // letting the motion play through but not interrupting a higher-priority one.
+    model.motion(group, undefined, 2);
+  } catch (e) {
+    // Some models throw if a group has no motions; safe to ignore.
+    console.debug("motion trigger failed:", e);
+  }
+}
+
 export function useMoodAnimation(modelRef: React.MutableRefObject<any>) {
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenProactive: (() => void) | undefined;
+    let unlistenChatDone: (() => void) | undefined;
     (async () => {
-      unlisten = await listen<ProactivePayload>("proactive-message", (event) => {
-        const model = modelRef.current;
-        if (!model) return;
-        const group = pickMotionGroup(event.payload.mood);
-        try {
-          // pixi-live2d-display: model.motion(group, index?, priority?). Priority 2 = NORMAL,
-          // letting the motion play through but not interrupting a higher-priority one.
-          model.motion(group, undefined, 2);
-        } catch (e) {
-          // Some models throw if a group has no motions; safe to ignore.
-          console.debug("motion trigger failed:", e);
-        }
+      unlistenProactive = await listen<ProactivePayload>("proactive-message", (event) => {
+        triggerMotion(modelRef.current, event.payload.mood);
+      });
+      unlistenChatDone = await listen<ChatDonePayload>("chat-done", (event) => {
+        triggerMotion(modelRef.current, event.payload.mood);
       });
     })();
     return () => {
-      if (unlisten) unlisten();
+      if (unlistenProactive) unlistenProactive();
+      if (unlistenChatDone) unlistenChatDone();
     };
   }, [modelRef]);
 }

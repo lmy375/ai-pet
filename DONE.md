@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 9：反应式聊天也驱动 mood 动作
+- 后端：
+  - `proactive::read_current_mood` 改为 `pub` 以便 chat.rs 复用（避免重复实现）。
+  - `commands/chat.rs` 引入 `tauri::AppHandle + Emitter`，`chat` 命令的签名加 `app: AppHandle`。
+  - 新增 `ChatDonePayload { mood, timestamp }`；run_chat_pipeline 跑完后 `read_current_mood` 一次，emit `chat-done` 事件。
+  - 即便反应式聊天暂时不主动改 mood（mood 还是 stale），用户与宠物对话时也能看到角色动起来。
+- 前端：
+  - `useMoodAnimation.ts` 抽出 `triggerMotion(model, mood)` 内部辅助；同时监听 `proactive-message` 和 `chat-done`，两者走同一逻辑。
+  - 卸载时清两个 unlisten 句柄。
+- tsc + cargo check 双过；视觉效果仍需实机验证。
+
 ## 2026-05-02 — Iter 8：mood 驱动 Live2D 动作
 - 后端：`ProactiveMessage` 加 `mood: Option<String>` 字段；`run_proactive_turn` 在 `mark_proactive_spoken` 之后再次 `read_current_mood()`，把 LLM 刚写好的最新 mood 一起 emit 给前端。这样省一次额外的 IPC，也保证 mood 与本次 message 一一对应。
 - 前端新增 `src/hooks/useMoodAnimation.ts`：
