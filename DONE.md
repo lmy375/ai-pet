@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 56：用户驱动的 manual 提醒
+- 新纯函数 `pub fn parse_reminder_prefix(desc) -> Option<(u8, u8, String)>` 解析 `[remind: HH:MM] topic` 格式，验证 hour ≤23 / minute ≤59 / topic 非空。
+- 新纯函数 `pub fn is_reminder_due(target_h, target_m, now_h, now_m, window_minutes) -> bool`：在 `[target, target+window)` 内为 due；处理跨午夜（target 23:55 / now 00:05 用 +24×60 wrap）；未来时间不算 due。
+- `PromptInputs` 加 `reminders_hint: &'a str`；builder 在 speech_hint 之后 push_if_nonempty。
+- 新 `fn build_reminders_hint(now_h, now_m) -> String`：扫 memory 的 `todo` 类别，对每条 description 调 parse + due 检查；命中即生成 bullet `· HH:MM topic（条目标题: title）`。无命中返空字符串。
+- run_proactive_turn 调 `build_reminders_hint(now_h, now_m)` 再传给 builder。
+- proactive_rules 加条件性规则（reminders_hint 非空时）："有到期的用户提醒：上面 reminders 段列出的事项是用户之前明确让你提醒的，请把其中**最相关的一条**自然带进开口里（不要全念出来），并在开口后用 `memory_edit delete` 把已经提醒过的那条 todo 条目删掉，避免下次再提一遍。"
+- 11 个新单测：parse 5（标准 / 空格 / 空 topic / 非法时间 / 无前缀）+ due 5（窗口内 / exact target / 未来 / 太久 / 跨午夜）+ rule-level 1。
+- 总测试 117 + 11 = **128 个**，全过；cargo + tsc 双过；零 warning。
+- 现在用户在 chat 里让 LLM 创建 todo 条目（description 以 `[remind: 23:00] 吃药` 开头）后，到 23:00 ~ 23:30 的 proactive 检查会把这条提醒注入 prompt + 加规则要求 LLM 自然带出并删掉已提醒条目。Iter 57 会让 reactive chat 主动告诉 LLM 这个格式约定。
+
 ## 2026-05-03 — Iter 55：ToneSnapshot 加 pre_quiet_minutes 进 panel
 - 后端 `ToneSnapshot` 加 `pre_quiet_minutes: Option<u64>` 字段；`get_tone_snapshot` 读 `get_settings()` 算 quiet hours start，调 `minutes_until_quiet_start` 取分钟（look_ahead=15）。
 - 前端 `PanelDebug.tsx` interface 同步加字段；tone strip 在 wake 之后加红色 🌙 段：「距安静时段 N 分钟」，仅 Some 时渲染。

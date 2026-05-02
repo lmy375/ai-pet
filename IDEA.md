@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 56 设计要点（已实现）
+- **`[remind: HH:MM]` 前缀约定，复用 todo 类别**：考虑过新建 `reminder` memory 类别，但那要改 memory.rs 的常量并不增加多少清晰度。复用 `todo` 类别，用 description 前缀做识别——和 `[motion: X]` mood 前缀同款思路（Iter 10 / 22）。memory_edit 已经能创建 todo，无需新工具。
+- **due window = 30 min**：宠物每 5 min 一次 proactive tick，30 min 给 6 个机会能命中。如果 < 5 min，主动开口的其他 gate（cooldown/idle）很容易让宠物错过；> 30 min 又会让早起报错过的提醒在中午冒出来诡异。30 min 是经验值，settings 可暴露但当前不暴露。
+- **跨午夜处理与 quiet hours wrap 同一思路**：`+24×60`。但 due 检查只想认 "now 是 target 之后但不超过 window" 这一种 due——所以 `delta < 0` (target 在未来) 不应直接 wrap 当作 due。仔细看代码：`+24*60` 后 delta 可能很大，再用 `< window` 过滤；只有"刚刚跨过 target 时刻"才 wrap 后变 small delta。例：target 23:55 / now 00:05 → 原 delta = -23×60-50 = -1430，+1440 = 10，< 30 → due。target 12:00 / now 11:55 → 原 delta = -5，+1440 = 1435，> 30 → 不 due。Wrap 逻辑天然只允许小 wrap 通过。
+- **rule 强调"最相关的一条"**：实际场景下用户可能积累多条 todo（吃药、开会、买菜...）。如果让 LLM 一次全念出来对话会僵——明确 instruct "挑最相关一条" 减少机器感。
+- **delete after 提醒**：让 LLM 在开口后删掉那条 todo，避免下个 30-min 窗口里 reminder 重复。这是单次提醒语义；如果用户想周期性提醒，让他们重新加一条（或后续 Iter 加 "周期" 标记）。
+- **scan async 还是同步**：memory_list 是同步函数（直接读 yaml）。`build_reminders_hint` 用同步签名即可，不需 async。
+- **测试拆 mod 而非全塞 prompt_tests**：parse / due 的测试纯数学，逻辑清晰，单独 `mod reminder_tests` 让 test 列表读起来按主题分组。
+
 ## Iter 55 设计要点（已实现）
 - **复用 minutes_until_quiet_start**：Iter 54 写好的纯函数直接 reuse，不重写。`get_tone_snapshot` 和 `run_proactive_turn` 都调它，保证 panel 显示和 prompt 看到的一致——单一数据源。
 - **红色 🌙 颜色**：tone strip 现有 Cache 蓝、Tag 紫、wake 蓝、period 灰。新加的 pre-quiet 用红色 / 月亮 emoji 区分"快到了"的紧迫感。颜色编码越多越要谨慎，但目前只有 5 个独立段落，红色 alert 仍可读。
