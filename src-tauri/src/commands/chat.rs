@@ -71,7 +71,11 @@ pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 - 相对时间（「30 分钟后」「2 小时后」等）：你需要根据当前时间换算成绝对的 HH:MM（或日期时间），不要原样写「+30m」。\n\
 等时间到了，主动开口循环会把这条提醒带出来给用户。其他的「我说今晚要...」这种闲聊不算提醒，不要乱建。";
 
-    let body = format!("{}{}", mood_section, reminder_section);
+    // Plan section: cross-turn intent. Open structure — LLM owns formatting; Rust just
+    // surfaces whatever is in description back into proactive prompts.
+    let plan_section = "\n\n[今日计划的约定] 如果对话中你想给自己定个今天的小目标（比如「关心用户工作进展两次」「夜里 22 点提醒喝水一次」之类），可以用 `memory_edit` 在 `ai_insights` 类下 create/update `daily_plan` 条目，description 用简短的 bullet list 表达，每条带上「[已执行/目标次数]」进度标记。例：description=`· 关心工作进展 [0/2]\\n· 提醒喝水 [0/1]`、title=`daily_plan`。下次主动开口循环看到这个 plan 时会优先推进其中一项。完成的项请删掉。";
+
+    let body = format!("{}{}{}", mood_section, reminder_section, plan_section);
 
     let note: ChatMessage = serde_json::from_value(serde_json::json!({
         "role": "system",

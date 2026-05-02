@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 66 设计要点（已实现）
+- **format 不限定，让 LLM 自由发挥**：考虑过定义结构化 plan 格式（JSON / 严格 bullet schema），但 plan 的本质是 self-instruction，越约束越机械。Description 当 free-form 给 LLM——只在 prompt 给 suggested 格式（`[done/total]` 进度标记），不在 Rust 端 parse。代价：进度计算靠 LLM 自觉，可能漂移；收益：跨 turn 灵活性大。
+- **复用 ai_insights 类别**：current_mood 已经在那里。daily_plan 同样是 pet's own state——同 category 一致。如果未来"pet's state" 项太多再考虑分子类别。
+- **"优先推进"非"必须推进"**：rule 里写"看时机自然"。如果 user 刚好在做完全无关的事，硬套 plan 就尴尬。LLM 自己判断 fit。
+- **完成的项要删除**：和 reminder 一样，避免 plan 永远停在已完成状态污染下次。删除责任仍在 LLM——"自我管理"是 plan 概念的一部分。
+- **不写专门的 stale sweep**：daily_plan 不像 reminder 有时间锚。如果用户休 3 天再开 pet，旧 plan 还在。Iter 67 列了——加 updated_at-based 清扫。
+- **inject_mood_note 第三 section**：mood / reminder / plan 三段结构。每段 self-contained 不互引——LLM 看哪段相关就用哪段。`format!` 拼三段比之前两段更适合走 builder 模式（如果第四段出现就该重构）。
+- **panel 暂不显示 plan**：plan 在 prompt + memory 都看得见；toolbar 显示又一段会让 panel 拥挤。等用户实际用上后视情况扩。
+
 ## Iter 65 设计要点（已实现）
 - **`Option<String>` 而非两 enum**：`enum TurnOutcome { Silent, Spoke(String) }` 也行，但 `Option<String>` 让 None=Silent / Some=spoke 一一对应——类型本身已经够表达，无需新枚举。`is_some()` / `match` 都自然好用。
 - **spawn 自动适配类型变更**：`if let Err(e) = ...` 只关心 Err 变体，对 Ok 子类型变化无感。这是 Rust 类型系统的优雅之处——单点改返回类型，多个 callsite 自动通过编译。
