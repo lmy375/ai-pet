@@ -7,12 +7,14 @@ import { ChatPanel } from "./components/ChatPanel";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
+import { useMoodAnimation } from "./hooks/useMoodAnimation";
 
 function App() {
   const { settings, soul, loaded } = useSettings();
   const { isLoading, sendMessage, displayMessage, showBubble } = useChat(soul);
   const modelRef = useRef<any>(null);
   const { hidden, handleMouseEnter } = useAutoHide();
+  useMoodAnimation(modelRef);
 
   const handleModelReady = useCallback((model: any) => {
     modelRef.current = model;

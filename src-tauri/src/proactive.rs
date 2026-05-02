@@ -113,6 +113,10 @@ pub fn new_interaction_clock() -> InteractionClockStore {
 pub struct ProactiveMessage {
     pub text: String,
     pub timestamp: String,
+    /// Snapshot of `ai_insights/current_mood` *after* the LLM ran, so the frontend can drive
+    /// expression/motion changes without a separate memory read. None if the LLM hasn't
+    /// written one yet (e.g. very first proactive turn).
+    pub mood: Option<String>,
 }
 
 const SILENT_MARKER: &str = "<silent>";
@@ -287,9 +291,14 @@ async fn run_proactive_turn(
 
     clock.mark_proactive_spoken().await;
 
+    // Re-read mood after the turn — if the LLM updated it via memory_edit, the file has been
+    // rewritten and we should ship the latest snapshot to the frontend.
+    let mood_after = read_current_mood();
+
     let payload = ProactiveMessage {
         text: reply_trimmed.to_string(),
         timestamp: now_local.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
+        mood: mood_after,
     };
     let _ = app.emit("proactive-message", payload);
 
