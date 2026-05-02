@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 65 设计要点（已实现）
+- **`Option<String>` 而非两 enum**：`enum TurnOutcome { Silent, Spoke(String) }` 也行，但 `Option<String>` 让 None=Silent / Some=spoke 一一对应——类型本身已经够表达，无需新枚举。`is_some()` / `match` 都自然好用。
+- **spawn 自动适配类型变更**：`if let Err(e) = ...` 只关心 Err 变体，对 Ok 子类型变化无感。这是 Rust 类型系统的优雅之处——单点改返回类型，多个 callsite 自动通过编译。
+- **silent 也算成功**：`Result<Option<String>, String>` 把 silent 放在 Ok(None) 而不是 Err("silent")。silent 是合法决策，不是错误——错误（API 失败 / config 缺失）还是走 Err 通道。
+- **trigger 显示真实 reply**：截断到 toolbar 的 ellipsis + tooltip 完整。如果 reply 超长（极端情况几百字），ellipsis 截断不会让 toolbar 错位；hover 看全文也是开发期 demo 的合理交互。
+- **format 含三段（耗时 / idle / 文本）**：耗时让用户判断 LLM 调用速度；idle 让用户对比 prompt 中其他 hint；文本是核心。一行装下三种语义信号是 status 设计的小巧思。
+- **不更新 useChat session**：trigger_proactive_turn 走的是 run_proactive_turn 路径，里面的 `app.emit("proactive-message", payload)` 仍然会触发 useChat 的事件监听，session message 自动更新。trigger 命令本身不需要再单独管 session。
+
 ## Iter 64 设计要点（已实现）
 - **共用一个 state 显示成功/失败**：本可以两个 state 分别表示。但 success/failure 是同一行 UI 元素的两种内容，单 state 加 `startsWith("触发失败")` 判断颜色更紧凑。代价：失败信息和成功信息互相覆盖；但用户基本不会同时关心两者。
 - **8 秒自动清**：手动调过 setInterval 见过用户被 stuck status 困扰。8 秒既给用户读完，也让 status 不会永远卡在那。比 5 秒留点缓冲，比 15 秒不至于太久。

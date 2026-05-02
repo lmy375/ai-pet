@@ -313,12 +313,18 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
     let snap = clock.snapshot().await;
     let input_idle = crate::input_idle::user_input_idle_seconds().await;
     let started = std::time::Instant::now();
-    run_proactive_turn(&app, snap.idle_seconds, input_idle).await?;
-    Ok(format!(
-        "Proactive turn finished in {} ms (idle={}s)",
-        started.elapsed().as_millis(),
-        snap.idle_seconds
-    ))
+    let reply = run_proactive_turn(&app, snap.idle_seconds, input_idle).await?;
+    let elapsed_ms = started.elapsed().as_millis();
+    Ok(match reply {
+        Some(text) => format!(
+            "开口完成 ({} ms, idle={}s): {}",
+            elapsed_ms, snap.idle_seconds, text
+        ),
+        None => format!(
+            "宠物选择沉默 ({} ms, idle={}s)",
+            elapsed_ms, snap.idle_seconds
+        ),
+    })
 }
 
 #[tauri::command]
@@ -725,12 +731,15 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// Build the prompt, ask the LLM, emit the reply, and persist it.
+/// Build the prompt, ask the LLM, emit the reply, and persist it. Returns the spoken
+/// reply text on success — `Some(text)` when the pet actually said something, `None`
+/// when it chose to stay silent. Callers can use this for status display; the spawn
+/// loop discards the value.
 async fn run_proactive_turn(
     app: &AppHandle,
     idle_seconds: u64,
     input_idle_seconds: Option<u64>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let config = AiConfig::from_settings()?;
     let mcp_store = app.state::<McpManagerStore>().inner().clone();
     let log_store = app.state::<LogStore>().inner().clone();
@@ -876,7 +885,7 @@ async fn run_proactive_turn(
     // Treat empty / silent marker as "do nothing".
     if reply_trimmed.is_empty() || reply_trimmed.contains(SILENT_MARKER) {
         ctx.log(&format!("Proactive: silent (idle={}s)", idle_seconds));
-        return Ok(());
+        return Ok(None);
     }
 
     ctx.log(&format!("Proactive: speaking ({} chars, idle={}s)", reply_trimmed.len(), idle_seconds));
@@ -904,7 +913,7 @@ async fn run_proactive_turn(
     };
     let _ = app.emit("proactive-message", payload);
 
-    Ok(())
+    Ok(Some(reply_trimmed.to_string()))
 }
 
 /// Scan the `todo` memory category for items whose description starts with a reminder
