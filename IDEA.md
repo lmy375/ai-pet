@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 32 设计要点（已实现）
+- **复用现有 polling 周期**：PanelDebug 已经每 1 秒 fetch 一次日志，`get_cache_stats` 也搭这个频率不需要单独的 setInterval。`Promise.all` 让两个 IPC 并行而不是串行——同样的整体延迟。
+- **total_calls=0 时不渲染**：UI 初始打开 + 还没跑过任何 LLM turn 时，渲染 "Cache 0/0 (NaN%)" 既丑也无信息量。`{total > 0 && <span>...</span>}` 一行守卫掉。
+- **等宽字体 + 蓝色**：把统计跟旁边的"日志条数"在视觉上区分开。等宽是因为数字会跳变（0/0 → 1/3 → 5/9...），等宽避免每次更新让旁边内容抖动。
+- **tooltip 写口语而非缩写**：`Cache 5/9 (56%) · 3 turns` 是技术性短表达；hover tooltip 写 "3 次 LLM turn 中累计触发了 9 次环境工具调用，其中 5 次命中缓存" — 让不熟悉术语的用户也能 figure out 含义。
+- **不在 chat / settings panel 显示**：cache 统计是 debug 性质的信息，放在 PanelDebug 最合适。primary chat 路径用户不该看到工程指标。
+- **后续陷阱预演**：Iter 33 提到 LogStore 无 size cap。当前 stats 完全靠日志解析，如果日志被截尾旧的 summary 行就消失。短期不是问题（LogStore 在 RAM 里，`clear_logs` 是用户主动），但长跑会渐进失真。Iter 33 可能要考虑把 turns/hits/calls 搬到 LogStore 旁边做 atomic 累计——cache_stats 解析当 fallback。
+
 ## Iter 31 设计要点（已实现）
 - **解析 log 行而非外部 atomic 累计器**：另一个选择是给 ToolRegistry 加全局 atomic（cross-turn 累计）。但 registry 是 per-turn 重建的，跨 turn 累计需要把状态搬到 app state 层级——引入新的 `Mutex<CacheCounters>` Tauri State。解析现有 log 行避免新状态：(a) 利用了 LogStore 已经存在的"按 turn 分行"结构；(b) clear_logs 自然清空累计；(c) 新加 turn 不需要任何代码改动来纳入。
 - **parser 容错且严格**：`parse_cache_summary` 不匹配 → 返 None 而不是默认 (0, 0)。这样统计不会被无效行污染。测试里 5 个 case 4 个是 negative，确认 parser 不会被相关但不匹配的行（"Tool call: ..."）误吃。
