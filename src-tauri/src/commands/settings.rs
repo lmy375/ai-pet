@@ -61,6 +61,10 @@ pub struct ProactiveConfig {
     /// Set to 0 to disable the input-idle gate.
     #[serde(default = "default_proactive_input_idle")]
     pub input_idle_seconds: u64,
+    /// Minimum seconds between two proactive utterances, regardless of idle. Prevents the
+    /// pet from speaking again right after just speaking. Set to 0 to disable.
+    #[serde(default = "default_proactive_cooldown")]
+    pub cooldown_seconds: u64,
 }
 
 fn default_proactive_interval() -> u64 {
@@ -75,6 +79,10 @@ fn default_proactive_input_idle() -> u64 {
     60
 }
 
+fn default_proactive_cooldown() -> u64 {
+    1800
+}
+
 impl Default for ProactiveConfig {
     fn default() -> Self {
         Self {
@@ -82,6 +90,7 @@ impl Default for ProactiveConfig {
             interval_seconds: default_proactive_interval(),
             idle_threshold_seconds: default_proactive_idle_threshold(),
             input_idle_seconds: default_proactive_input_idle(),
+            cooldown_seconds: default_proactive_cooldown(),
         }
     }
 }

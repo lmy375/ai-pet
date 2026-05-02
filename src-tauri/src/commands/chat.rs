@@ -415,7 +415,9 @@ pub async fn chat(
     let ctx = ToolContext::from_states(&log_store, &shell_store);
     let mcp = mcp_store.inner().clone();
     let clock = interaction_clock.inner().clone();
-    clock.touch().await;
+    // Inbound user message — clears the "awaiting reply to previous proactive" flag so the
+    // proactive loop can fire again later.
+    clock.mark_user_message().await;
     let result = run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;

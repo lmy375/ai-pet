@@ -32,23 +32,74 @@ use crate::tools::ToolContext;
 const MOOD_CATEGORY: &str = "ai_insights";
 const MOOD_TITLE: &str = "current_mood";
 
-/// Tracks the last interaction time. Updated whenever the user sends a message
-/// or the pet speaks (proactively or reactively).
+/// Tracks interaction timing for the proactive engagement loop. Holds the last interaction
+/// time, the last proactive utterance time, and whether the most recent proactive message
+/// is still waiting for a user reply.
+///
+/// State transitions:
+/// - `mark_user_message()` — user sent something. Clears `awaiting_user_reply`.
+/// - `mark_proactive_spoken()` — pet spoke proactively. Sets `awaiting_user_reply = true`
+///   and stamps `last_proactive`.
+/// - `touch()` — any other interaction (e.g. assistant finished a reactive reply). Only
+///   updates `last`; does not affect `awaiting_user_reply` or `last_proactive`.
 pub struct InteractionClock {
-    last: TokioMutex<Instant>,
+    inner: TokioMutex<ClockInner>,
+}
+
+struct ClockInner {
+    last: Instant,
+    last_proactive: Option<Instant>,
+    awaiting_user_reply: bool,
+}
+
+/// Snapshot of clock state used by the proactive scheduler to decide whether to fire.
+pub struct ClockSnapshot {
+    pub idle_seconds: u64,
+    pub since_last_proactive_seconds: Option<u64>,
+    pub awaiting_user_reply: bool,
 }
 
 impl InteractionClock {
     pub fn new() -> Self {
-        Self { last: TokioMutex::new(Instant::now()) }
+        Self {
+            inner: TokioMutex::new(ClockInner {
+                last: Instant::now(),
+                last_proactive: None,
+                awaiting_user_reply: false,
+            }),
+        }
     }
 
     pub async fn touch(&self) {
-        *self.last.lock().await = Instant::now();
+        let mut g = self.inner.lock().await;
+        g.last = Instant::now();
     }
 
-    pub async fn idle_seconds(&self) -> u64 {
-        self.last.lock().await.elapsed().as_secs()
+    /// Called when the user sends a message. Clears the awaiting-reply flag — once the user
+    /// has spoken, we no longer consider any prior proactive message "ignored".
+    pub async fn mark_user_message(&self) {
+        let mut g = self.inner.lock().await;
+        g.last = Instant::now();
+        g.awaiting_user_reply = false;
+    }
+
+    /// Called after a proactive utterance is delivered. Sets `awaiting_user_reply = true`
+    /// and records the time so cooldown checks can run.
+    pub async fn mark_proactive_spoken(&self) {
+        let now = Instant::now();
+        let mut g = self.inner.lock().await;
+        g.last = now;
+        g.last_proactive = Some(now);
+        g.awaiting_user_reply = true;
+    }
+
+    pub async fn snapshot(&self) -> ClockSnapshot {
+        let g = self.inner.lock().await;
+        ClockSnapshot {
+            idle_seconds: g.last.elapsed().as_secs(),
+            since_last_proactive_seconds: g.last_proactive.map(|t| t.elapsed().as_secs()),
+            awaiting_user_reply: g.awaiting_user_reply,
+        }
     }
 }
 
@@ -91,10 +142,38 @@ pub fn spawn(app: AppHandle) {
 
             let threshold = settings.proactive.idle_threshold_seconds.max(60);
             let input_idle_min = settings.proactive.input_idle_seconds;
+            let cooldown = settings.proactive.cooldown_seconds;
             let clock = app.state::<InteractionClockStore>().inner().clone();
-            let idle = clock.idle_seconds().await;
+            let snap = clock.snapshot().await;
+            let log_store = app.state::<LogStore>().inner().clone();
 
-            if idle >= threshold {
+            // Gate 1: if the previous proactive utterance hasn't been replied to, stay quiet.
+            // A real friend doesn't keep talking when ignored.
+            if snap.awaiting_user_reply {
+                write_log(
+                    &log_store.0,
+                    "Proactive: skip — awaiting user reply to previous proactive message",
+                );
+                tokio::time::sleep(Duration::from_secs(interval)).await;
+                continue;
+            }
+
+            // Gate 2: cooldown since the last proactive utterance, regardless of idle.
+            if let (Some(since), min) = (snap.since_last_proactive_seconds, cooldown) {
+                if min > 0 && since < min {
+                    write_log(
+                        &log_store.0,
+                        &format!(
+                            "Proactive: skip — cooldown ({}s < {}s)",
+                            since, min
+                        ),
+                    );
+                    tokio::time::sleep(Duration::from_secs(interval)).await;
+                    continue;
+                }
+            }
+
+            if snap.idle_seconds >= threshold {
                 // Don't interrupt if the user is actively at the keyboard/mouse.
                 // A value of 0 disables this gate; on non-macOS we get None and
                 // proceed (fall back to interaction-time check only).
@@ -106,12 +185,11 @@ pub fn spawn(app: AppHandle) {
                 };
 
                 if input_ok {
-                    if let Err(e) = run_proactive_turn(&app, idle, input_idle).await {
+                    if let Err(e) = run_proactive_turn(&app, snap.idle_seconds, input_idle).await {
                         eprintln!("Proactive turn failed: {}", e);
                     }
                 } else {
                     let secs = input_idle.unwrap_or(0);
-                    let log_store = app.state::<LogStore>().inner().clone();
                     write_log(
                         &log_store.0,
                         &format!(
@@ -207,7 +285,7 @@ async fn run_proactive_turn(
         let _ = persist_assistant_message(&id, reply_trimmed);
     }
 
-    clock.touch().await;
+    clock.mark_proactive_spoken().await;
 
     let payload = ProactiveMessage {
         text: reply_trimmed.to_string(),
