@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 64 设计要点（已实现）
+- **共用一个 state 显示成功/失败**：本可以两个 state 分别表示。但 success/failure 是同一行 UI 元素的两种内容，单 state 加 `startsWith("触发失败")` 判断颜色更紧凑。代价：失败信息和成功信息互相覆盖；但用户基本不会同时关心两者。
+- **8 秒自动清**：手动调过 setInterval 见过用户被 stuck status 困扰。8 秒既给用户读完，也让 status 不会永远卡在那。比 5 秒留点缓冲，比 15 秒不至于太久。
+- **绿色 #059669（成功）/ 红色 #dc2626（错误）**：标准 success/danger 配色，与 panel 其他色系（蓝/紫/橙）区分。Status 是临时态，颜色越鲜明读越快。
+- **max-width 260px + ellipsis**：toolbar 紧凑，长 status 会让按钮挤压。截断后整体布局稳定，hover tooltip 给完整信息。
+- **失败也保留 console.error**：DevTools 用户期望错误能在 console 看到完整 stack。state 显示是中文友好版，console 是原始版。两者并存。
+- **不加给 consolidate 的同种反馈**：PanelMemory 已有 `message` state 显示 trigger_consolidate 的状态。两个 panel 各自独立。如果未来想统一一个全局 toast 系统再考虑合并。
+
 ## Iter 63 设计要点（已实现）
 - **绕过 evaluate_loop_tick 直调 run_proactive_turn**：手动 trigger 的语义就是"我现在要它开口"，跑一遍 gate 然后 silent 是徒劳。所以直接 skip evaluate，从 run_proactive_turn 起步。代价：手动触发的 turn 不会被 decision_log 记录（因为那是 spawn loop 在 evaluate 后做的）；但 LogStore 会记 "Proactive: speaking ..." 行，可追溯。
 - **保留真实 idle/input_idle 值**：本可以传 0 和 None（"假装用户刚活跃"），但保留真实值让 prompt 看到的 cadence_hint / input_hint 是真的——demo 时用户能看到真实状态，调 prompt 时也是真实输入。仅 gate 被绕过，prompt 内容仍真实。
