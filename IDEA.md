@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 88 设计要点（已实现）
+- **summary 字典在前端而非 backend**：原 TODO 提议 backend 返 `Vec<{label, summary}>`。但 summary 是面向用户的中文 UI 文案，应当和其他 UI 文案一起在前端维护——backend 关心"哪些规则活跃"（数据），UI 关心"怎么呈现"（文案）。分层清晰。如果将来想多语言，前端字典可改成 `Record<string, {title_zh, title_en, summary_zh, summary_en}>` 不动 backend。
+- **fallback 路径明确**：lookup 失败显示 `(label "xxx" 暂无中文描述)`，让用户立刻知道"哪个 label 在 backend 出现但前端字典没补"——而不是让缺失静默成空字符串。和 backend 的 `(规则文本待补)` fallback 同理：缺失要可见。
+- **button 而非 span+onClick**：button 自带 keyboard accessibility（tab + enter/space）。默认 button 在 chrome 上有边框/背景，得 `border: none` reset。`background-color` 切换替代 `:active` 状态——不写 CSS-in-JS pseudo-class，简单 stateful 颜色就够了。
+- **▾/▸ chevron 而非 +/-**：chevron 三角更直观表达"列表展开方向"，加号减号在中文界面里更像加减运算。`fontSize: 9px` + `opacity: 0.85` 让 chevron 比标签略小不抢视觉。
+- **default collapsed**：badge 默认是收起状态。新装用户看到 "prompt: N 条 hint" 时不会被一堆中文规则块淹——好奇了再点开。已经有的 hover tooltip 还在，给只想 quick-glance 的用户。
+- **不持久化展开状态**：不存到 localStorage 等。展开是临时审视的"我现在想看"动作，不是配置；下次打开 panel 默认收起最干净。
+- **84px title 列宽**：5 个汉字 ≈ 80px (12px font × 1.3 字宽 + buffer)。固定宽度让所有标题左对齐成一列，summary 也同位置开始读，扫读流畅。
+- **背景 #faf5ff 浅紫**：和 badge 紫色同 family 但极淡，视觉上"badge 拉出了一个紫色区域"。如果用 #f8fafc 中性灰，badge 和展开区色调断裂。
+
 ## Iter 87 设计要点（已实现）
 - **label-driven 而非 condition-driven**：原 `proactive_rules` 把"是否触发"和"触发后说什么"绑在一起。拆开后 helper 负责前者（"哪些 label 活跃"），proactive_rules 负责后者（"label 翻译成什么规则文本"）。两份职责各司其职。
 - **保留 unknown fallback 而非 panic**：`match *label { ... other => format!(..."规则文本待补"...)}` 让"label 加了但翻译没加"成为可见但非致命的 bug。`(规则文本待补)` 字符串明显异于正常规则，测试 + 实机日志都能捕获。如果 panic，prompt 就构造失败，宠物彻底沉默——比展示降级文本糟糕。

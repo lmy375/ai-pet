@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 88：prompt hints badge 可点击展开成 inline 详情列表
+- PanelDebug 新 state `showPromptHints: boolean`，badge 由 `<span>` 改成 `<button>`，click 切换。深紫 #5b21b6（展开时）/ 浅紫 #7c3aed（收起时）+ 末尾添加 ▾/▸ chevron 提示状态。
+- 新顶层常量 `PROMPT_RULE_DESCRIPTIONS: Record<string, {title, summary}>`：8 条规则各对应中文短标题（4-5 字，如"破冰阶段"、"今日克制"、"环境感知低"）+ 一句简介（解释 LLM 被要求做什么）。lookup 失败 fallback 到 `(label "xxx" 暂无中文描述)`。
+- 工具栏 `</div>` 后插入条件渲染的 `<div>`：`#faf5ff` 浅紫背景，每行 `[mono title 84px固定宽] [灰色简介 flex:1]` 两列布局。展开时显示 N 条 hint 详情，收起时不渲染（零视觉占用）。
+- 决定不走"backend 同时返 summary"——summary 是 user-facing 中文 UI 字符串，与 panel 同位置维护更内聚；backend 只负责返 label 列表（contract）。这样未来加多语言 panel 可以单独本地化字典而不动 backend。
+- 现在用户可以一眼看到："prompt: 3 条 hint" → 点击 → "破冰阶段" + "之前主动开口 < 3 次..."、"今日计划" + "ai_insights/daily_plan 有未完成项..."、"环境感知低" + "近几次开口很少看环境..."。不必再 hover 也能审视当前 prompt 状态。
+- 175 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 87：proactive_rules 重构为基于 label 的单一事实源
 - `proactive_rules` 内的 8 条 contextual 规则原本各有自己的 `if` 分支，条件和 helper 里的 `if` 重复（icebreaker 条件 `< 3` 写两处、chatty 条件 `> 0 && >= threshold` 写两处...）。Iter 87 让 `proactive_rules` 先调 helper 取 label 列表，然后 `for label in env+data` 用 `match *label { ... }` 选规则文本——条件检查只剩 helper 一处。
 - 加了 unknown label 的 fallback：`other => format!("- **[{}]**: (规则文本待补)", other)`，避免未来 helper 加 label 但忘记加 match arm 时直接 panic 或丢失规则；测试断言活跃 label 路径不应出现该 fallback。
