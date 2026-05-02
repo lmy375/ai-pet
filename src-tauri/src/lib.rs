@@ -12,6 +12,7 @@ mod proactive;
 mod speech_history;
 mod telegram;
 mod tools;
+mod wake_detector;
 
 use commands::debug::{log_dir, new_process_counters, LogStore};
 use commands::shell::ShellStore;
@@ -30,6 +31,7 @@ pub fn run() {
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(new_process_counters())
         .manage(decision_log::new_decision_log())
+        .manage(wake_detector::new_wake_detector())
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
         .manage(proactive::new_interaction_clock())
