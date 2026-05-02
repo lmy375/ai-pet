@@ -30,6 +30,12 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 29 设计要点（已实现）
+- **行为指引而非实现细节**：原 TODO 措辞是"告诉 LLM 重复调用会被 dedupe"，但 LLM 不需要知道我们怎么做的——它只需要知道做什么。改成"相信首次返回值"对模型更直接、不让它分心去推理工程层。这是 prompt 工程一个反复出现的原则。
+- **不在 reactive chat 同样加**：`inject_mood_note` 是反应式聊天的注入，那里用户可能间隔几分钟分两次问"现在天气怎样"——cache 已经过期、LLM 也理应 re-query。不加这条规则，让反应式 chat 保持灵活。
+- **半角引号陷阱**：用 ASCII `"再确认一下"` 在 Rust format!() 中等于"提前关闭字符串"。换成中文全角「」既符合中文排版习惯，又避开了语法陷阱。这种坑代码 review 时不容易发现，cargo 立刻 fail 是好事。
+- **cache 默认无副作用**：本迭代纯 prompt，没改任何 Rust 行为。Iter 28 的 cache 已经在跑，无论 LLM 是否守这条规则，重复调用都不会真的产生 IO。这条 prompt 是给 LLM 内部推理压力减负——它若按规则做，就不必为每次工具调用都"思考要不要再确认"了。
+
 ## Iter 28 设计要点（已实现）
 - **白名单 opt-in 而非 opt-out**：缓存默认应该是关——任何"被默认缓存"的工具都需要显式判断它是否真的幂等。把 `CACHEABLE_TOOLS` 写成短列表 + 注释强调"never add mutating tools"，让加新缓存工具变成需要刻意决策的动作。
 - **registry-scoped 而非全局缓存**：`ToolRegistry` 在每次 `run_chat_pipeline` 里 new 一遍 → 缓存自动 per-turn。如果做全局 LRU 缓存反而要操心 invalidation（"用户 30 秒后再问一次天气，旧值还该用吗？"）。当前设计 0 invalidation 复杂度。

@@ -2,6 +2,12 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 29：proactive prompt 加"信任首次结果"指引
+- 在 proactive prompt 工具列表后追加一条规则：明确告诉 LLM 三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）"同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果"，要"相信首次返回值"。
+- 措辞策略：不暴露 cache 实现（"我们后端 dedupe 了你"），而是表达成行为指引（"一次就够，不要再问"）——对 LLM 来说更直接，也避免让它思考工程细节。
+- 半角引号 vs 全角引号：第一次写时用了 ASCII `"再确认一下"`，恰好闭合了 Rust 的 format! 字符串导致 syntax error。改成全角「再确认一下」立刻通过。这是中文 prompt 在 Rust raw 字符串里的常见坑——记一笔。
+- cargo check + 53 tests 全过，零 warning。
+
 ## 2026-05-02 — Iter 28：环境感知工具的 per-tick 缓存
 - `ToolRegistry` 加 `cache: TokioMutex<HashMap<String, String>>` 字段；构造函数都通过新私有 `with_tools` 走，统一初始化空缓存。
 - 新常量 `CACHEABLE_TOOLS = &["get_active_window", "get_weather", "get_upcoming_events"]`：只读环境感知工具白名单。注释明确警告"never add mutating tools"。
