@@ -167,6 +167,10 @@ pub struct PromptInputs<'a> {
     /// and updates it. Gives the pet cross-turn intentionality so each utterance can
     /// nudge a thread forward instead of being drawn from scratch.
     pub plan_hint: &'a str,
+    /// How many times the pet has ever spoken proactively (line count of
+    /// speech_history.log). When small (< 3) the rules block adds an icebreaker hint so
+    /// early conversations stay exploratory rather than info-dense.
+    pub proactive_history_count: usize,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -223,6 +227,12 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
             "- **你有今日计划在执行中**：上面 plan 段列出了你今天的小目标。开口时**优先**考虑推进其中一条（不必每次推进，看时机自然）；推进后用 `memory_edit update` 在 ai_insights/daily_plan 里更新进度（比如把 [0/2] 改成 [1/2]），全部完成的项可以删除。"
                 .into(),
         );
+    }
+    if inputs.proactive_history_count < 3 {
+        rules.push(format!(
+            "- **你和用户还不熟**：你之前主动开口过 {} 次（< 3 次的破冰阶段）。开口时偏向问一个简短、低压力的了解性问题（例如 ta 此刻的感受、当下在做什么、有没有最近喜欢的小事），别直接给建议或扔信息密集的话题。如果用户答了什么记得用 `memory_edit create` 写到 `user_profile` 类下方便日后用。",
+            inputs.proactive_history_count
+        ));
     }
     rules
 }
@@ -855,6 +865,9 @@ async fn run_proactive_turn(
     // Pull the pet's own short-term plan from ai_insights/daily_plan, if it has written one.
     let plan_hint = build_plan_hint();
 
+    // Lifetime proactive utterance count — drives the icebreaker rule.
+    let proactive_history_count = crate::speech_history::count_speeches().await;
+
     let pre_quiet_minutes = {
         let settings = get_settings().ok();
         settings.and_then(|s| {
@@ -881,6 +894,7 @@ async fn run_proactive_turn(
         pre_quiet_minutes,
         reminders_hint: &reminders_hint,
         plan_hint: &plan_hint,
+        proactive_history_count,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1049,6 +1063,9 @@ mod prompt_tests {
             pre_quiet_minutes: None,
             reminders_hint: "",
             plan_hint: "",
+            // Default well past the icebreaker threshold so existing tests stay at the
+            // base 6 rule count; icebreaker tests bump this down explicitly.
+            proactive_history_count: 100,
         }
     }
 
@@ -1196,6 +1213,24 @@ mod prompt_tests {
         inputs.plan_hint = "你今天的小目标 / 计划：\n· 关心用户工作进展 [0/2]";
         let rules = proactive_rules(&inputs);
         assert!(rules.iter().any(|r| r.contains("你有今日计划在执行中")));
+    }
+
+    #[test]
+    fn icebreaker_rule_appears_when_count_under_three() {
+        let mut inputs = base_inputs();
+        inputs.proactive_history_count = 0;
+        let rules = proactive_rules(&inputs);
+        assert!(rules.iter().any(|r| r.contains("你和用户还不熟")));
+        // Must include the actual count so the LLM has a sense of where on the curve.
+        assert!(rules.iter().any(|r| r.contains("0 次")));
+    }
+
+    #[test]
+    fn icebreaker_rule_absent_at_threshold() {
+        let mut inputs = base_inputs();
+        inputs.proactive_history_count = 3;
+        let rules = proactive_rules(&inputs);
+        assert!(!rules.iter().any(|r| r.contains("你和用户还不熟")));
     }
 
     #[test]

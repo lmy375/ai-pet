@@ -104,6 +104,19 @@ pub async fn get_recent_speeches(n: Option<usize>) -> Vec<String> {
     recent_speeches(n.unwrap_or(10)).await
 }
 
+/// Total number of proactive utterances ever recorded. Used by the proactive prompt as
+/// an "icebreaker" signal — when the count is small the pet hasn't spoken to the user
+/// much yet and should keep openings exploratory. The count is line-based so it caps at
+/// `SPEECH_HISTORY_CAP` after that many lifetime utterances; for the icebreaker use case
+/// (first ~3 lines) that's plenty of resolution.
+pub async fn count_speeches() -> usize {
+    let Some(path) = history_path() else {
+        return 0;
+    };
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    content.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

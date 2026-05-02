@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 68 设计要点（已实现）
+- **用 speech_history 行数作 proxy 而非新 atomic**：本可以加 ProcessCounters.proactive_lifetime_count + bump 在 record_speech 处。但 speech_history 文件本身就是"宠物每次开口"的真相源，count 它的非空行数和 atomic 等价、自动持久化、零新状态。SPEECH_HISTORY_CAP=50 足以判断"前几次"，超出后总是返 50；对于 < 3 的 threshold 完全够用。
+- **threshold = 3**：经验值。1 太少（用户连"宠物长啥样"都还没适应）；5+ 太多（让宠物长期处于"问问题"模式让人嫌唠叨）。3 给一天（默认设置 5min interval × 3 ≈ 15min）的破冰窗口。
+- **rule 在 plan 之后**：plan 是"宠物自己有意图"，icebreaker 是"宠物没经验"。两者可能并存（用户初次安装就问宠物今天有啥计划）。先 plan 后 ice-breaker 让 LLM 看到：先看自己的目标，再看自己的经验状态——更符合"先意图后克制"的思考链。
+- **数字直接写入 rule**：用 "你之前主动开口过 N 次（< 3 次的破冰阶段）" 让 LLM 知道精确进度。如果只写"还不熟"模糊，LLM 第 1 次和第 3 次都会同样克制。
+- **base_inputs 默认 100**：之前 5 个 conditional rule 都用 false/empty 作 default 不触发，新加的 `usize` 没有"empty"概念。100 远超 threshold 让现有 rules_count_and_format 等测试 unchanged。
+- **不写 count_speeches 单测**：纯 file read + line count + filter，逻辑被 parse_recent 同 mod 的测试覆盖（用 std::fs::write 验证 round-trip）。新 count_speeches 实现接近 trivial，cargo check 抓签名错。
+
 ## Iter 67 设计要点（已实现）
 - **plan vs reminder 各自独立的 cutoff**：考虑过共用一个 `stale_memory_hours`，但两类语义不同——reminder 是用户挂的，错过窗口算"凉了"；plan 是宠物自己定的目标，错过 24h 表示"昨天的目标，今天该重新看看了"。各自配置可让用户分别调（"我经常出差，48h 才算 plan 过期，但 reminder 我希望严格 12h"）。
 - **`as_ref()` 让 Result 可重用**：`get_settings()` 是 fallible 调用，本来调一次就消耗。`cfg_settings.as_ref().map(...).unwrap_or(24)` 让两次读 settings 共用同一个 Result，避免双调。
