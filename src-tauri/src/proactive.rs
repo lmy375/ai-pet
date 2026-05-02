@@ -154,9 +154,34 @@ pub struct PromptInputs<'a> {
     pub speech_hint: &'a str,
 }
 
+/// The "约束" rules block of the proactive prompt — extracted into its own builder so
+/// adding a rule is just `rules.push(...)` instead of squeezing a line into the middle
+/// of a giant template, and so future variants can conditionally include / skip rules
+/// (e.g. drop the env-tool dedup rule when no env tools are enabled).
+pub fn proactive_rules() -> Vec<String> {
+    let mut rules: Vec<String> = Vec::with_capacity(6);
+    rules.push(format!(
+        "- 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{}`，不要其他任何文字。",
+        SILENT_MARKER
+    ));
+    rules.push(format!(
+        "- 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{}`。",
+        SILENT_MARKER
+    ));
+    rules.push("- 只说一句话，简短自然，像伙伴一样。".into());
+    rules.push("- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_upcoming_events`（看用户接下来几小时有没有日程，可用于提醒类话题，记得日程是私人内容不要原样念出）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。".into());
+    rules.push("- 这三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）每次调用都有真实的 IO 成本，并且**同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果**——所以一次足够了，不要为了「再确认一下」反复调，相信首次返回值直接做判断。".into());
+    rules.push(format!(
+        "- **决定开口后**：请用 `memory_edit` 更新 `{cat}` 类别下 `{title}` 的记忆（不存在就 `create`，存在就 `update`）。description 必须以这种格式开头：`[motion: X] 你此刻的心情和想法`，其中 X 是你想做的 Live2D 动作分组，从这四个里选一个：`Tap`（开心/活泼/兴奋）、`Flick`（想分享/有兴致/活力）、`Flick3`（焦虑/烦躁/不安）、`Idle`（平静/低落/累/沉静）。前缀后面才是自由文字。例：`[motion: Tap] 看用户在专心写代码，有点替他高兴`。沉默时无需更新。",
+        cat = MOOD_CATEGORY,
+        title = MOOD_TITLE,
+    ));
+    rules
+}
+
 /// Assemble the proactive prompt from a Vec of sections rather than a giant `format!()`.
 /// Adding a new optional hint is now: (a) extend `PromptInputs`, (b) push it via
-/// `push_if_nonempty`. No template / arg-list edits scattered across the function.
+/// `push_if_nonempty`. Adding a new constraint rule is one push in `proactive_rules`.
 pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     let mut s: Vec<String> = Vec::with_capacity(20);
     s.push("[系统提示·主动开口检查]".into());
@@ -177,22 +202,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     );
     s.push(String::new());
     s.push("约束：".into());
-    s.push(format!(
-        "- 如果你判断**不打扰**用户更好（比如只是想保持安静），只回复一个标记：`{}`，不要其他任何文字。",
-        SILENT_MARKER
-    ));
-    s.push(format!(
-        "- 如果决定开口，就直接说话，不要解释自己为什么开口，也不要包含 `{}`。",
-        SILENT_MARKER
-    ));
-    s.push("- 只说一句话，简短自然，像伙伴一样。".into());
-    s.push("- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_upcoming_events`（看用户接下来几小时有没有日程，可用于提醒类话题，记得日程是私人内容不要原样念出）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。".into());
-    s.push("- 这三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）每次调用都有真实的 IO 成本，并且**同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果**——所以一次足够了，不要为了「再确认一下」反复调，相信首次返回值直接做判断。".into());
-    s.push(format!(
-        "- **决定开口后**：请用 `memory_edit` 更新 `{cat}` 类别下 `{title}` 的记忆（不存在就 `create`，存在就 `update`）。description 必须以这种格式开头：`[motion: X] 你此刻的心情和想法`，其中 X 是你想做的 Live2D 动作分组，从这四个里选一个：`Tap`（开心/活泼/兴奋）、`Flick`（想分享/有兴致/活力）、`Flick3`（焦虑/烦躁/不安）、`Idle`（平静/低落/累/沉静）。前缀后面才是自由文字。例：`[motion: Tap] 看用户在专心写代码，有点替他高兴`。沉默时无需更新。",
-        cat = MOOD_CATEGORY,
-        title = MOOD_TITLE,
-    ));
+    s.extend(proactive_rules());
     s.join("\n")
 }
 
@@ -757,6 +767,40 @@ mod prompt_tests {
         let p = build_proactive_prompt(&base_inputs());
         assert!(p.contains(MOOD_CATEGORY));
         assert!(p.contains(MOOD_TITLE));
+    }
+
+    // ---- proactive_rules ----
+
+    #[test]
+    fn rules_count_and_format() {
+        let rules = proactive_rules();
+        assert_eq!(rules.len(), 6, "ladder change → update count + add a test");
+        // Every rule is a bullet starting with "- ".
+        for r in &rules {
+            assert!(r.starts_with("- "), "rule must be a bullet: {:?}", r);
+        }
+    }
+
+    #[test]
+    fn rules_interpolate_constants() {
+        let rules = proactive_rules();
+        let joined = rules.join("\n");
+        assert!(joined.contains(SILENT_MARKER));
+        assert!(joined.contains(MOOD_CATEGORY));
+        assert!(joined.contains(MOOD_TITLE));
+        // The motion-tag enumeration is part of the last rule and must remain there.
+        for tag in ["Tap", "Flick", "Flick3", "Idle"] {
+            assert!(joined.contains(tag), "missing motion tag: {}", tag);
+        }
+    }
+
+    #[test]
+    fn rules_appear_in_full_prompt() {
+        let p = build_proactive_prompt(&base_inputs());
+        let rules = proactive_rules();
+        for r in &rules {
+            assert!(p.contains(r.as_str()), "rule missing from prompt: {:?}", r);
+        }
     }
 }
 

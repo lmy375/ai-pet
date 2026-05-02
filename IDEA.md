@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 52 设计要点（已实现）
+- **`Vec<String>` 而非 `Vec<&'static str>`**：原 TODO 想用 `&'static str` const 数组省分配。但其中 3 条规则用 `format!` 插值（SILENT_MARKER / MOOD_CATEGORY / MOOD_TITLE），编译期不可能形成 `&'static str`。混用 owned 和 borrowed 反而复杂；统一 `Vec<String>` 简单。每秒 < 1 次调用，6 个 String alloc 无足轻重。
+- **行 by 行 push 而非 vec! macro**：本可以用 `vec![format!(...), "…".into(), ...]`。但分批 push 调试更直观——加新规则时 `git diff` 显示一行 push，而 vec! 内插一行会让整段被识别为 "全改"，git blame 也更细。
+- **assert rules.len() == 6**：count assertion 是 anchor。未来 ladder 改动（加 / 删一条）必须显式更新测试，避免悄悄 drift。配合"每条以 `- ` 起头"约束 + 关键词存在性测试，三层防护。
+- **关键词测 SILENT_MARKER / MOOD_CATEGORY / MOOD_TITLE / motion tags**：这些是规则有效性的最低门槛——LLM 看不到这些标识就不知道该写啥。测它们存在比测完整字符串稳健（措辞调整不破坏测试），比不测更能阻止误删（直接复制/粘贴时漏掉常量）。
+- **rules_appear_in_full_prompt 是回归测试**：未来若有人 refactor `build_proactive_prompt` 不小心忘 extend rules，这条 test 立刻失败。"每个被抽出来的子组件都有"还在主路径里"的测试"是 builder pattern 的标配。
+- **不在 rules() 里读 PromptInputs**：现在签名 `proactive_rules() -> Vec<String>`，无依赖。Iter 53 想动态调整时可以无痛改成 `proactive_rules(&PromptInputs)`——就算 callers 多，因为内部使用，改两处即可（builder 自身 + tests）。
+
 ## Iter 51 设计要点（已实现）
 - **`Vec<String>` 而非 `String::push_str`**：考虑过 `let mut s = String::new(); s.push_str(...); s.push('\n');`。Vec + join 优势：(a) push_if_nonempty 可单独跳过；(b) 调试时 `dbg!(&sections)` 看 layout 一目了然；(c) 不用手写 newline，join 帮忙。代价是分配多一些（每段一个 String alloc），prompt 调用一秒级别频率，可忽略。
 - **PromptInputs 而非 9 个独立参数**：单一函数签名 9 个 borrow lifetime 让调用方读起来糟糕。Struct 把它们打包，调用站显式 `PromptInputs { ... }` 字段写法 self-documenting。`'a` lifetime 显式标注让编译器把 borrow 关系算得清楚。
