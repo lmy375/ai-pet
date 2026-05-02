@@ -234,7 +234,17 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
               })
             }
           />
-          <div style={{ flex: 1 }} />
+          <NumberField
+            label="清理过期 plan (小时)"
+            value={form.memory_consolidate.stale_plan_hours}
+            min={1}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, stale_plan_hours: v },
+              })
+            }
+          />
         </div>
 
         <div style={groupHeaderStyle}>对话上下文 (Chat)</div>

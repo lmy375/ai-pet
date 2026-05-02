@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 67：daily_plan 自动过期 sweep
+- `MemoryConsolidateConfig` 加 `stale_plan_hours: u64`（默认 24）；与 `stale_reminder_hours` 平行字段。
+- 新 `pub fn sweep_stale_plan(now, cutoff_hours) -> bool` 在 consolidate.rs：读 ai_insights 类的 daily_plan 条目，`DateTime::parse_from_rfc3339(updated_at)` 算与 now 的 age；超过 cutoff 调 memory_edit delete。任意 IO/解析失败 → false（best-effort）。
+- run_consolidation：把 `get_settings()` 抽到 `cfg_settings` 共用，分别调 sweep_stale_reminders 和 sweep_stale_plan。后者 deletion 时单独写一行日志"swept stale daily_plan before LLM run"。
+- 前端 `useSettings.ts` interface + DEFAULT；`PanelSettings.tsx` 初值同步。
+- UI：SettingsPanel modal 把 reminder cutoff 一行改成两列（reminder + plan）；PanelSettings 的说明文字改为"reminder：... plan：daily_plan 条目 updated_at 超过该时长就清空。"
+- 不加 sweep 测试——逻辑结构与 sweep_stale_reminders 同 pattern 已测过；is_stale 替代是 chrono 内置 parse_from_rfc3339 + Duration 比较，cargo check 抓 plumbing 错。
+- tsc + 139 tests 双过；零 warning。
+- 现在 plan 不会跨日累积，宠物每天 new turn 都从干净状态自己定（或选择不定）当日目标。
+
 ## 2026-05-03 — Iter 66：宠物的"今日计划"
 - 复用 `ai_insights` 类别 + 单一 `daily_plan` 条目（与 current_mood 同模式，避免新增 memory 类别）。
 - 新 `fn build_plan_hint() -> String`：读 `ai_insights/daily_plan`，存在且 description 非空就返"你今天的小目标 / 计划：\n{description}"，否则返空字符串。
