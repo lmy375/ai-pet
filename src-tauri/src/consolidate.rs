@@ -17,7 +17,7 @@ use crate::commands::settings::get_settings;
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::{read_current_mood, read_mood_for_event};
+use crate::mood::{read_current_mood, read_mood_for_event};
 use crate::tools::ToolContext;
 
 /// Spawn the memory consolidation loop. Reads settings each tick so the user can toggle

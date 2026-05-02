@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 16：mood 代码迁到独立模块
+- 新增 `src-tauri/src/mood.rs`，把以下从 `proactive.rs` 整体迁移过来：
+  - 常量 `MOOD_CATEGORY` / `MOOD_TITLE`（改为 `pub`）
+  - 函数 `read_current_mood` / `read_current_mood_parsed` / `parse_mood_string` / `read_mood_for_event`
+  - `#[cfg(test)] mod tests` 含 8 个 parse_mood 边界用例
+- `lib.rs` 加 `mod mood;` 紧邻 `mod mcp;`。
+- `proactive.rs` 改为 `use crate::mood::{...}` 拉回需要的 4 个符号；同时清掉了一段错位被 `use` 切碎的导入块（因为 helper 当初先就地加再迁出，留了一坨乱序 import）。
+- `commands/chat.rs` / `telegram/bot.rs` / `consolidate.rs` 全部把 `crate::proactive::read_*` import 改到 `crate::mood`。
+- `cargo check` + `cargo test --lib` 通过：8 个测试名从 `proactive::tests::*` 变为 `mood::tests::*`，全绿。
+- 现在 `proactive.rs` 单一职责回到"主动开口调度"，mood 状态机自成模块。
+
 ## 2026-05-02 — Iter 15：抽出 read_mood_for_event 统一 helper
 - `proactive.rs` 新增 `pub fn read_mood_for_event(log_store: &LogStore, source: &str) -> (Option<String>, Option<String>)`：
   - 内部调 `read_current_mood_parsed`

@@ -3,6 +3,7 @@ mod config;
 mod consolidate;
 mod input_idle;
 mod mcp;
+mod mood;
 mod proactive;
 mod telegram;
 mod tools;
