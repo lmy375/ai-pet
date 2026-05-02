@@ -98,14 +98,29 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     // configured stale cutoff. The LLM later sees a cleaner index and won't waste a
     // call deciding whether to delete each one. TodayHour reminders are intentionally
     // left alone (recurring).
-    let stale_cutoff = get_settings()
+    let cfg_settings = get_settings();
+    let now_naive = chrono::Local::now().naive_local();
+
+    let stale_cutoff = cfg_settings
+        .as_ref()
         .map(|s| s.memory_consolidate.stale_reminder_hours)
         .unwrap_or(24);
-    let swept = sweep_stale_reminders(chrono::Local::now().naive_local(), stale_cutoff);
+    let swept = sweep_stale_reminders(now_naive, stale_cutoff);
     if swept > 0 {
         write_log(
             &log_store.0,
             &format!("Consolidate: swept {} stale reminder(s) before LLM run", swept),
+        );
+    }
+
+    let plan_cutoff = cfg_settings
+        .as_ref()
+        .map(|s| s.memory_consolidate.stale_plan_hours)
+        .unwrap_or(24);
+    if sweep_stale_plan(now_naive, plan_cutoff) {
+        write_log(
+            &log_store.0,
+            "Consolidate: swept stale daily_plan before LLM run",
         );
     }
 
@@ -183,6 +198,37 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     let _ = app.emit("chat-done", payload);
 
     Ok(())
+}
+
+/// Sweep the pet's `ai_insights/daily_plan` entry when its `updated_at` is older than
+/// `cutoff_hours`. Returns true if the entry was deleted, false otherwise (no plan, or
+/// plan still fresh, or any IO/parse failure).
+pub fn sweep_stale_plan(now: chrono::NaiveDateTime, cutoff_hours: u64) -> bool {
+    let Ok(index) = memory::memory_list(Some("ai_insights".to_string())) else {
+        return false;
+    };
+    let Some(cat) = index.categories.get("ai_insights") else {
+        return false;
+    };
+    let Some(plan) = cat.items.iter().find(|i| i.title == "daily_plan") else {
+        return false;
+    };
+    // updated_at is written as "%Y-%m-%dT%H:%M:%S%:z" — RFC3339 compatible.
+    let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&plan.updated_at) else {
+        return false;
+    };
+    let age = now - updated.naive_local();
+    if age <= chrono::Duration::hours(cutoff_hours as i64) {
+        return false;
+    }
+    memory::memory_edit(
+        "delete".to_string(),
+        "ai_insights".to_string(),
+        plan.title.clone(),
+        None,
+        None,
+    )
+    .is_ok()
 }
 
 /// Walk the `todo` memory category, identify reminder entries whose Absolute target is

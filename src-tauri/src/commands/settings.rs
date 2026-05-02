@@ -122,6 +122,11 @@ pub struct MemoryConsolidateConfig {
     /// lower it for always-on setups that want todos to clear out faster.
     #[serde(default = "default_stale_reminder_hours")]
     pub stale_reminder_hours: u64,
+    /// Sweep the pet's `ai_insights/daily_plan` entry when its updated_at is older than
+    /// this many hours. Plans are short-term intent; lingering plans bias every prompt
+    /// after they were relevant. 24 = "today's plan ages out tomorrow".
+    #[serde(default = "default_stale_plan_hours")]
+    pub stale_plan_hours: u64,
 }
 
 fn default_consolidate_interval() -> u64 {
@@ -136,6 +141,10 @@ fn default_stale_reminder_hours() -> u64 {
     24
 }
 
+fn default_stale_plan_hours() -> u64 {
+    24
+}
+
 impl Default for MemoryConsolidateConfig {
     fn default() -> Self {
         Self {
@@ -143,6 +152,7 @@ impl Default for MemoryConsolidateConfig {
             interval_hours: default_consolidate_interval(),
             min_total_items: default_consolidate_min_items(),
             stale_reminder_hours: default_stale_reminder_hours(),
+            stale_plan_hours: default_stale_plan_hours(),
         }
     }
 }

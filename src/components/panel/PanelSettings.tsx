@@ -49,6 +49,7 @@ export function PanelSettings() {
       interval_hours: 6,
       min_total_items: 12,
       stale_reminder_hours: 24,
+      stale_plan_hours: 24,
     },
     chat: {
       max_context_messages: 50,
@@ -585,10 +586,20 @@ export function PanelSettings() {
               })
             }
           />
-          <div style={{ flex: 1 }} />
+          <PanelNumberField
+            label="清理过期 plan (小时)"
+            value={form.memory_consolidate.stale_plan_hours}
+            min={1}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, stale_plan_hours: v },
+              })
+            }
+          />
         </div>
         <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
-          consolidate 跑时会自动删超过此时长的过期 [remind: YYYY-MM-DD HH:MM] 提醒。HH:MM 格式（"今天"）不受影响。
+          reminder：consolidate 跑时删超过该时长的过期 [remind: YYYY-MM-DD HH:MM]。plan：daily_plan 条目 updated_at 超过该时长就清空。
         </div>
       </div>
 

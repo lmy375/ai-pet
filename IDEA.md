@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 67 设计要点（已实现）
+- **plan vs reminder 各自独立的 cutoff**：考虑过共用一个 `stale_memory_hours`，但两类语义不同——reminder 是用户挂的，错过窗口算"凉了"；plan 是宠物自己定的目标，错过 24h 表示"昨天的目标，今天该重新看看了"。各自配置可让用户分别调（"我经常出差，48h 才算 plan 过期，但 reminder 我希望严格 12h"）。
+- **`as_ref()` 让 Result 可重用**：`get_settings()` 是 fallible 调用，本来调一次就消耗。`cfg_settings.as_ref().map(...).unwrap_or(24)` 让两次读 settings 共用同一个 Result，避免双调。
+- **parse_from_rfc3339**：memory.rs 的 `now_iso()` 写 `"%Y-%m-%dT%H:%M:%S%:z"` 是 RFC3339 格式 — chrono 内置 parser 直接吃。如果 someday 格式变了 parser 会 fail 而 sweep_stale_plan 返 false（fail-safe），不会误删。
+- **best-effort delete**：和 sweep_stale_reminders 一样，`memory_edit.is_ok()` 不吐错。Plan 文件读不到、updated_at 解析不了、删除失败——任何一步出错都不阻塞 consolidate 主流程。
+- **bool 返回 vs usize**：sweep_stale_reminders 返 usize（多个），sweep_stale_plan 返 bool（单个）。daily_plan 是 singleton（只能有一个 entry），用 bool 准确表达"删了吗"。
+- **不写新单测**：plan 删除靠两个 chrono 操作 + 一次 memory_edit。chrono 的 parse_from_rfc3339 是 stdlib 行为；memory_edit 是 Tauri 命令本身有 path coverage；Duration 比较显然。Iter 60 sweep_stale_reminders 也没写专门 test 就是同理由。
+
 ## Iter 66 设计要点（已实现）
 - **format 不限定，让 LLM 自由发挥**：考虑过定义结构化 plan 格式（JSON / 严格 bullet schema），但 plan 的本质是 self-instruction，越约束越机械。Description 当 free-form 给 LLM——只在 prompt 给 suggested 格式（`[done/total]` 进度标记），不在 Rust 端 parse。代价：进度计算靠 LLM 自觉，可能漂移；收益：跨 turn 灵活性大。
 - **复用 ai_insights 类别**：current_mood 已经在那里。daily_plan 同样是 pet's own state——同 category 一致。如果未来"pet's state" 项太多再考虑分子类别。
