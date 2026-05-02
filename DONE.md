@@ -2,6 +2,13 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 17：清理预存 dead_code warning
+- 删除 `commands/chat.rs::CollectingSink::take_text`：原意是给非流式 caller（Telegram）取最终文本用，但 Telegram bot 实际上是用 `run_chat_pipeline` 的返回值直接拿，从未调用 take_text。Sink 自己只 push 不 take，删掉无副作用。
+- 删除 `mcp/manager.rs::McpManager::has_tool`：MCP tool 路由已经走 `is_mcp_tool` 路径（在 ToolRegistry），manager 自己的 has_tool 没有任何 caller。
+- 全 grep 确认两者只剩定义没有调用。
+- `cargo check` 输出从 "2 warnings" 变成 "no warnings"——以后任何新写代码引入的 dead_code 提示都能立刻看到，不会被遗留 warning 盖住。
+- `cargo test --lib` 8 测试仍全过。
+
 ## 2026-05-02 — Iter 16：mood 代码迁到独立模块
 - 新增 `src-tauri/src/mood.rs`，把以下从 `proactive.rs` 整体迁移过来：
   - 常量 `MOOD_CATEGORY` / `MOOD_TITLE`（改为 `pub`）

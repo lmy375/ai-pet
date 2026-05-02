@@ -137,9 +137,6 @@ impl CollectingSink {
     pub fn new() -> Self {
         Self { text: Mutex::new(String::new()) }
     }
-    pub fn take_text(&self) -> String {
-        std::mem::take(&mut *self.text.lock().unwrap())
-    }
 }
 
 impl ChatEventSink for CollectingSink {

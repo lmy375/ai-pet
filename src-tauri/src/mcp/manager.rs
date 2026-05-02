@@ -181,11 +181,6 @@ impl McpManager {
         self.tool_definitions.clone()
     }
 
-    /// Check if a tool name belongs to an MCP server
-    pub fn has_tool(&self, name: &str) -> bool {
-        self.tool_map.contains_key(name)
-    }
-
     /// Call an MCP tool by name
     pub async fn call_tool(
         &self,
