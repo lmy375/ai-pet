@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 51：proactive prompt 改 builder 模式
+- 新 `pub struct PromptInputs<'a>` 9 字段（time / period / idle_minutes / input_hint / cadence_hint / mood_hint / focus_hint / wake_hint / speech_hint）。3 个固定段直接 push，3 个可选段通过 `push_if_nonempty` 跳过空值。
+- 新 `pub fn build_proactive_prompt(&PromptInputs) -> String`：用 `Vec<String>` + `join("\n")` 装配。约束段、motion 规则段都从 format! 模板 inline 提到这里，每段 1 行 push。
+- 新私有 `fn push_if_nonempty(sections: &mut Vec<String>, s: &str)` 工具——trim 后判空，避免 join 出来留空行。
+- run_proactive_turn 删掉 27 行 `let prompt = format!(...)`，换成构造 PromptInputs + 调 builder（10 行）。原 12 个 named placeholder + arg list 全消失。
+- 6 个新单测覆盖：必有段都出现、空可选段不出空行、focus/wake/speech 各自被注入时正确、MOOD_CATEGORY/MOOD_TITLE 仍 interpolated。
+- 总测试 96 + 6 = **102 个**，全过；cargo + tsc 双过；零 warning。
+- 净收益：加新 hint 段从"struct + format! 模板 + arg list 改 4 处"降到"struct 加字段 + builder 加 push_if_nonempty 一行"。Iter 52 把约束段也类似化后，proactive prompt 的可扩展性 ≈ 配置文件级别。
+
 ## 2026-05-03 — Iter 50：PanelDebug 显示对话基调摘要
 - 后端 `proactive.rs` 新增：
   - `pub struct ToneSnapshot { period, cadence, since_last_proactive_minutes, wake_seconds_ago, mood_text, mood_motion }`（serde::Serialize）。
