@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 10：LLM 直接挑 motion group
+- 后端：
+  - 新增 `read_current_mood_parsed() -> Option<(String, Option<String>)>`，从 `[motion: X] free text` 格式解析。前缀缺失/损坏时 motion=None、text=raw，确保旧记忆不破。
+  - 加防御：motion 标签长度 ≤ 16，避免 LLM 写出诡异长串塞坏 payload。
+  - `ProactiveMessage` / `ChatDonePayload` 都加 `motion: Option<String>`。proactive prompt 末尾约束改为：description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头，并给出每个 group 对应的情绪映射示例。
+  - mood_hint 注入 prompt 时用 `parsed.text` 而非原始 description，避免 `[motion:...]` 前缀污染上下文。
+- 前端：
+  - `useMoodAnimation.ts` 把 `pickMotionGroup` 拆成两层：先看 payload.motion 是否在 `VALID_GROUPS` 集合，命中直接用；不命中（缺失或拼错）才退回旧的关键词匹配。
+  - `triggerMotion` 接受 `(motion, mood)` 两个参数，体现"优先级"语义。
+  - Payload 接口加 `motion: string | null`。
+- 这样 LLM 既能用语义直接挑动作，又有关键词做安全网；前端硬编码列表从"事实标准"降级为"兜底"。
+- tsc + cargo check 双过。
+
 ## 2026-05-02 — Iter 9：反应式聊天也驱动 mood 动作
 - 后端：
   - `proactive::read_current_mood` 改为 `pub` 以便 chat.rs 复用（避免重复实现）。
