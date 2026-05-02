@@ -292,10 +292,8 @@ pub fn env_awareness_low(spoke_total: u64, spoke_with_any: u64) -> bool {
 
 /// Returns the labels for every *data-driven* contextual rule currently firing in the
 /// proactive prompt. "Data-driven" means rules whose firing depends on counters/history
-/// (icebreaker / chatty / env-awareness) — distinct from environmental hints like
-/// pre-quiet / wake-back / due-reminders that the panel already surfaces via dedicated
-/// chips. Used by the panel toolbar to show "prompt: N active hints" so users can see
-/// at a glance how much of the model's instruction set is being shaped by usage data.
+/// (icebreaker / chatty / env-awareness) — distinct from `active_environmental_rule_labels`
+/// which covers state-driven rules like wake-back / first-mood / due-reminders.
 ///
 /// Order matches the firing order in `proactive_rules` so a future "show in firing
 /// sequence" tooltip stays correct.
@@ -315,6 +313,39 @@ pub fn active_data_driven_rule_labels(
     }
     if env_awareness_low(env_spoke_total, env_spoke_with_any) {
         labels.push("env-awareness");
+    }
+    labels
+}
+
+/// Returns the labels for every *environmental* contextual rule currently firing —
+/// rules whose firing depends on present-state signals like a recent wake-from-sleep,
+/// missing mood file, approaching quiet hours, due reminders, or an in-flight daily
+/// plan. Pairs with `active_data_driven_rule_labels`; both feed the panel "prompt:
+/// N hints" badge and the decision-log `rules=...` tag.
+///
+/// Order matches the firing order in `proactive_rules`.
+pub fn active_environmental_rule_labels(
+    wake_back: bool,
+    first_mood: bool,
+    pre_quiet: bool,
+    reminders_due: bool,
+    has_plan: bool,
+) -> Vec<&'static str> {
+    let mut labels: Vec<&'static str> = Vec::with_capacity(5);
+    if wake_back {
+        labels.push("wake-back");
+    }
+    if first_mood {
+        labels.push("first-mood");
+    }
+    if pre_quiet {
+        labels.push("pre-quiet");
+    }
+    if reminders_due {
+        labels.push("reminders");
+    }
+    if has_plan {
+        labels.push("plan");
     }
     labels
 }
@@ -494,16 +525,34 @@ pub async fn get_tone_snapshot(
     let env_with_any = env_counters_for_rules
         .spoke_with_any
         .load(std::sync::atomic::Ordering::Relaxed);
-    let active_prompt_rules: Vec<String> = active_data_driven_rule_labels(
+    // Environmental rules: derive from already-fetched ToneSnapshot ingredients +
+    // memory-IO probes for due reminders / active plan. Cost is one yaml read per
+    // category — same as a panel `get_pending_reminders` call, which the panel was
+    // already polling at 1 Hz, so this doesn't add new IO pressure.
+    let wake_back = matches!(wake_ago, Some(secs) if secs <= 600);
+    let first_mood = mood_text.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true);
+    let pre_quiet = pre_quiet_minutes.is_some();
+    let reminders_due = !build_reminders_hint(now.naive_local()).is_empty();
+    let has_plan = !build_plan_hint().is_empty();
+    let env_labels = active_environmental_rule_labels(
+        wake_back,
+        first_mood,
+        pre_quiet,
+        reminders_due,
+        has_plan,
+    );
+    let data_labels = active_data_driven_rule_labels(
         proactive_count as usize,
         today_count_for_rules,
         chatty_day_threshold,
         env_total,
         env_with_any,
-    )
-    .into_iter()
-    .map(String::from)
-    .collect();
+    );
+    let active_prompt_rules: Vec<String> = env_labels
+        .iter()
+        .chain(data_labels.iter())
+        .map(|s| String::from(*s))
+        .collect();
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -867,13 +916,46 @@ pub fn spawn(app: AppHandle) {
             let env_with_any = env_counters
                 .spoke_with_any
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let active_labels = active_data_driven_rule_labels(
+            // Combine environmental + data-driven labels so the decision-log rules tag
+            // matches the panel "prompt: N hints" badge — same composition order as
+            // ToneSnapshot.active_prompt_rules.
+            let now_for_rules = chrono::Local::now();
+            let mood_for_rules = crate::mood::read_current_mood_parsed();
+            let wake_ago_for_rules = app
+                .state::<crate::wake_detector::WakeDetectorStore>()
+                .inner()
+                .last_wake_seconds_ago()
+                .await;
+            let pre_quiet_for_rules = minutes_until_quiet_start(
+                now_for_rules.hour() as u8,
+                now_for_rules.minute() as u8,
+                settings.proactive.quiet_hours_start,
+                settings.proactive.quiet_hours_end,
+                15,
+            )
+            .is_some();
+            let env_label_set = active_environmental_rule_labels(
+                matches!(wake_ago_for_rules, Some(secs) if secs <= 600),
+                mood_for_rules
+                    .as_ref()
+                    .map(|(t, _)| t.trim().is_empty())
+                    .unwrap_or(true),
+                pre_quiet_for_rules,
+                !build_reminders_hint(now_for_rules.naive_local()).is_empty(),
+                !build_plan_hint().is_empty(),
+            );
+            let data_label_set = active_data_driven_rule_labels(
                 lifetime_count as usize,
                 chatty_today,
                 chatty_threshold,
                 env_total,
                 env_with_any,
             );
+            let active_labels: Vec<&'static str> = env_label_set
+                .iter()
+                .chain(data_label_set.iter())
+                .copied()
+                .collect();
             let rules_tag = if active_labels.is_empty() {
                 None
             } else {
@@ -1608,6 +1690,44 @@ mod prompt_tests {
         // chatty threshold == 0 means the user opted out — even today_count=99 shouldn't
         // surface the chatty label.
         assert!(active_data_driven_rule_labels(100, 99, 0, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn active_environmental_rule_labels_empty_when_all_false() {
+        assert!(active_environmental_rule_labels(false, false, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn active_environmental_rule_labels_picks_each_independently() {
+        assert_eq!(
+            active_environmental_rule_labels(true, false, false, false, false),
+            vec!["wake-back"],
+        );
+        assert_eq!(
+            active_environmental_rule_labels(false, true, false, false, false),
+            vec!["first-mood"],
+        );
+        assert_eq!(
+            active_environmental_rule_labels(false, false, true, false, false),
+            vec!["pre-quiet"],
+        );
+        assert_eq!(
+            active_environmental_rule_labels(false, false, false, true, false),
+            vec!["reminders"],
+        );
+        assert_eq!(
+            active_environmental_rule_labels(false, false, false, false, true),
+            vec!["plan"],
+        );
+    }
+
+    #[test]
+    fn active_environmental_rule_labels_combine_in_firing_order() {
+        let labels = active_environmental_rule_labels(true, true, true, true, true);
+        assert_eq!(
+            labels,
+            vec!["wake-back", "first-mood", "pre-quiet", "reminders", "plan"],
+        );
     }
 
     #[test]
