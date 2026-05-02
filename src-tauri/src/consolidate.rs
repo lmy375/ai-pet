@@ -17,7 +17,7 @@ use crate::commands::settings::get_settings;
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::{read_current_mood, read_current_mood_parsed};
+use crate::proactive::{read_current_mood, read_mood_for_event};
 use crate::tools::ToolContext;
 
 /// Spawn the memory consolidation loop. Reads settings each tick so the user can toggle
@@ -122,8 +122,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
 
     // Re-read mood for the post-consolidation snapshot. If consolidation merged or refined
     // the mood entry, we want the desktop pet's Live2D motion to reflect it.
-    let parsed = read_current_mood_parsed();
-    if mood_before.is_some() && parsed.is_none() {
+    let (mood, motion) = read_mood_for_event(&log_store, "Consolidate");
+    if mood_before.is_some() && mood.is_none() {
         // Despite the explicit prompt protection, the LLM removed the mood entry. Worth
         // surfacing — repeated occurrences mean the protection text needs hardening.
         write_log(
@@ -131,18 +131,6 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
             "Consolidate: WARNING — current_mood entry was removed despite protection rule",
         );
     }
-    let (mood, motion) = match parsed {
-        Some((text, m)) => {
-            if m.is_none() && !text.trim().is_empty() {
-                write_log(
-                    &log_store.0,
-                    "Consolidate: mood missing [motion: X] prefix — frontend will fall back to keyword match",
-                );
-            }
-            (Some(text), m)
-        }
-        None => (None, None),
-    };
     let payload = ChatDonePayload {
         mood,
         motion,

@@ -8,7 +8,7 @@ use crate::commands::debug::{write_llm_log, LogStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::{read_current_mood_parsed, InteractionClockStore};
+use crate::proactive::{read_current_mood_parsed, read_mood_for_event, InteractionClockStore};
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
 
@@ -464,17 +464,7 @@ pub async fn chat(
     // Emit chat-done with current mood snapshot so the frontend can drive Live2D motion the
     // same way it does for proactive messages. Mood may be unchanged from before the turn —
     // reactive chats don't currently update it — but we still want motion feedback.
-    let (mood, motion) = match read_current_mood_parsed() {
-        Some((text, m)) => {
-            if m.is_none() && !text.trim().is_empty() {
-                // Same compliance signal as proactive — flag mood updates that omit the
-                // [motion: X] prefix so we can monitor format adherence in the log stream.
-                ctx.log("Chat: mood missing [motion: X] prefix — frontend will fall back to keyword match");
-            }
-            (Some(text), m)
-        }
-        None => (None, None),
-    };
+    let (mood, motion) = read_mood_for_event(log_store.inner(), "Chat");
     let payload = ChatDonePayload {
         mood,
         motion,
