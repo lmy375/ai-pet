@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 75 设计要点（已实现）
+- **跳过 Iter 74 的视觉扩展先做行为**：Iter 74 是 stats 卡的"本周/sparkline"——纯视觉，对宠物行为零影响。Iter 75 让今日数据真正改变 prompt，把 Iter 73 的数据基础变成可观察行为。先做有行为副作用的迭代，视觉迭代留到 todo 末尾。
+- **阈值 5 而非 3 或 10**：3 太低（用户正常一天主动响应几条都可能触发，让宠物从中午就开始装哑），10 太高（每日很少能到）。5 是观察值——typical session 在 idle 周期 + 各种 gates 之后大约会主动开 2-4 次，5 代表"今天异常活跃"的软退避点。如果将来有用户行为数据可以再调。
+- **建议保持安静而非硬封闭**：本可以在 backend 直接 gate（`today_count >= N` 就跳过 LLM 调用）。但这会出错——如果今天恰好有用户刚醒来的窗口/到期提醒，LLM 自己有上下文判断该不该说，比 gate 拍死强。所以走"prompt 软规则"路线，把决定权给 LLM 但写明"除非有真正值得说的新信号才开口"。
+- **借用现有 SILENT_MARKER**：规则里直接 `format!` 拼出当前的 silent marker 而不是再造一套机制。如果将来 marker 改了，这条规则自动跟随，零维护。
+- **数字塞进规则文本**：和 icebreaker 规则同样设计——不写"已经很多次"模糊形容，而是 `今天已经主动开过 N 次口了`。LLM 看到 5 vs 8 vs 15 会有不同力度的克制，模糊形容会被一刀切。
+- **不在 PromptInputs 加 `is_chatty_day: bool` 派生字段**：本可以在 `PromptInputs` 加个 bool 让 rules 直接读，但那等于把阈值逻辑重复在两处。直接把原始 count 传给 rules，rules 自己 `>= CHATTY_DAY_THRESHOLD` 比较——单一事实源，阈值改动一处生效。
+
 ## Iter 73 设计要点（已实现）
 - **JSON map 而非 SQLite/CSV**：当前需求是单天 key→count 反查，JSON map O(1)；如果未来要带"分小时"、"分类型"或多列查询，再迁 SQLite。CSV 必须扫全文件，对 90 天数据其实差不多但缺省可读性。serde_json 已有依赖，零成本。
 - **BTreeMap 而非 HashMap**：序列化输出按 key 排序后 file diff 友好（手动看 `~/.config/pet/speech_daily.json` 也按日期排序）。读 path 几乎不影响性能，90 行数据级别可忽略。

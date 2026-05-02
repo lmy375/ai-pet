@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 75：今日开口数喂回 prompt，触发"今天已经聊了不少"克制规则
+- `PromptInputs` 新字段 `today_speech_count: u64`；新 `pub const CHATTY_DAY_THRESHOLD: u64 = 5`。
+- `proactive_rules` 末尾加新条件规则：当 `today_speech_count >= CHATTY_DAY_THRESHOLD`，push "今天已经聊了 N 次了。除非有真正值得说的新信号（用户刚回来、有到期提醒、明显环境变化），优先**保持安静**（用 `<silent_marker>`）；要说也只说极简一句"。规则里塞了真实数字让 LLM 知道处于多深。
+- `run_proactive_turn` 加 `let today_speech_count = crate::speech_history::today_speech_count().await;` 与现有 `proactive_history_count` 同位置；PromptInputs 加新字段。
+- `base_inputs` 默认 `today_speech_count: 0`，让现有 17 个 prompt 测试不被新规则误触发。
+- 新增 2 个 unit test：`chatty_day_rule_appears_at_or_above_threshold` 验证 == 阈值时规则出现+数字到位；`chatty_day_rule_absent_below_threshold` 验证 < 阈值时不出。
+- 148 tests + tsc 全过；零 warning。
+- 现在用户长时间使用一天后宠物会自然变克制，不会在 idle 时段重复打扰；和 quiet hours 不同，这是行为上的"软退避"而非时间窗。
+
 ## 2026-05-03 — Iter 73：speech 按日分桶，stats 卡显「今日 / 累计」双数
 - 新增 `~/.config/pet/speech_daily.json` sidecar：`{"YYYY-MM-DD": count}` 结构。`record_speech_inner` 写完 → bump_lifetime → bump_today，三层 best-effort 串行。
 - 纯函数 `parse_daily(content) -> BTreeMap<String, u64>`：malformed/空/数组 都回 empty map（损坏文件下次 bump 自愈）。
