@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 65：trigger 状态包含 LLM 实际回复
+- `run_proactive_turn` 签名从 `Result<(), String>` 改为 `Result<Option<String>, String>`：
+  - `None` = 宠物选择沉默
+  - `Some(reply)` = 宠物开口的 trim 后文本
+- silent 分支 `return Ok(None)`；speaking 分支末尾 `Ok(Some(reply_trimmed.to_string()))`。
+- spawn 主循环原本就是 `if let Err(e) = run_proactive_turn(...)`，对 Ok 值不关心 → 类型改了不需要动逻辑。
+- `trigger_proactive_turn` 接住 reply：
+  - `Some` → 状态字符串"开口完成 (Nms, idle=Ks): 实际回复内容"
+  - `None` → "宠物选择沉默 (Nms, idle=Ks)"
+- 前端 toolbar 的 ellipsis + tooltip 自动适配新格式，长 reply 截断后 hover 看完整。
+- 137 tests + tsc 双过；零 warning。
+- 现在按"立即开口"立刻知道宠物说了啥，调试 prompt 不用切到聊天面板看气泡。
+
 ## 2026-05-03 — Iter 64：trigger_proactive_turn 状态反馈
 - `PanelDebug.tsx` 加 `proactiveStatus: string` state；`handleTriggerProactive` 接住 invoke 返回的 status 字符串赋给 state；catch 失败也写进同一 state（带"触发失败"前缀）。
 - toolbar 在 DevTools 按钮后插条 status span：成功用 `#059669`（绿），失败用 `#dc2626`（红）；max-width 260px + ellipsis 截断长字符串，hover tooltip 看完整。
