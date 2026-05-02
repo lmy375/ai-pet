@@ -8,7 +8,8 @@ use crate::commands::debug::{write_llm_log, LogStore};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::{read_current_mood_parsed, read_mood_for_event, InteractionClockStore};
+use crate::mood::{read_current_mood_parsed, read_mood_for_event};
+use crate::proactive::InteractionClockStore;
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
 

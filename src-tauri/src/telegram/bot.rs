@@ -14,7 +14,7 @@ use crate::commands::settings::{get_soul, TelegramConfig};
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::proactive::read_mood_for_event;
+use crate::mood::read_mood_for_event;
 use crate::tools::ToolContext;
 
 /// A running Telegram bot instance.
