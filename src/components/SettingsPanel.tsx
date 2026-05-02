@@ -223,6 +223,19 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
           />
         </div>
 
+        <div style={groupHeaderStyle}>对话上下文 (Chat)</div>
+        <div style={twoColRow}>
+          <NumberField
+            label="历史保留条数 (0=不限)"
+            value={form.chat.max_context_messages}
+            min={0}
+            onChange={(v) =>
+              setForm({ ...form, chat: { ...form.chat, max_context_messages: v } })
+            }
+          />
+          <div style={{ flex: 1 }} />
+        </div>
+
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
           <button onClick={onClose} style={btnSecondaryStyle}>取消</button>
           <button onClick={handleSave} disabled={saving} style={btnPrimaryStyle}>

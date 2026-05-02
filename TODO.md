@@ -5,5 +5,5 @@
 
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，对照 debug 日志里的"missing [motion: X] prefix"出现率判断要不要再改 prompt。
-- [ ] Iter 37：在 SettingsPanel modal 和 PanelSettings 表单里加 `chat.max_context_messages` 字段，让用户从 UI 而非编辑 config.yaml 调整。后端配置已就位，缺的只是输入控件。
+- [ ] Iter 38：让前端能展示"上次主动开口被 X 闸跳过"——在 panel 加一段最近 5 次 proactive tick 的判断结果（Run / Silent / Skip(reason)），方便用户调试为什么宠物不说话。当前只在日志里能看到，分散且不直观。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。

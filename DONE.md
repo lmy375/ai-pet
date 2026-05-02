@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-02 — Iter 37：chat.max_context_messages 接进两个设置 UI
+- `SettingsPanel.tsx`（小窗 modal）在记忆整理段后加"对话上下文 (Chat)"分组：单字段 NumberField + 同样的两列网格留半边占位（视觉一致）。
+- `panel/PanelSettings.tsx`（独立面板视图）加同名 section（中文标题"对话上下文"），下方加一行浅灰小字解释："桌面 chat 和 Telegram 都按此上限裁剪。前端仍展示全部消息，仅发给 LLM 时裁。"
+- 标签写"历史保留条数 (0=不限)"——0 这个语义对用户陌生，必须在 label 里直说，不能让人猜。
+- 复用现有的 `NumberField` / `PanelNumberField` 包装组件（Iter 27 抽出来的），新增 0 行公共代码。
+- tsc --noEmit 干净。
+- 现在 chat trim 的配置链路完全打通：用户改 UI → 写 settings.yaml → AiConfig::from_settings 读 → trim_to_context 应用。
+
 ## 2026-05-02 — Iter 36：chat 历史 trim 配置化 + 桌面 chat 默认上限
 - 新 `pub struct ChatConfig { max_context_messages: usize }`（默认 50）加到 `AppSettings.chat`。
 - `AiConfig` 也加 `max_context_messages: usize` 字段，从 settings.chat 复制；这样 chat 命令拿 config 时直接看得到。
