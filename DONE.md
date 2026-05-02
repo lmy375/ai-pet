@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 47：log_rotation 抽公共 util
+- 新模块 `src-tauri/src/log_rotation.rs`：
+  - `pub fn rotated_path(&Path) -> PathBuf`（OsString append `.1`，避开 with_extension 替换扩展的陷阱）
+  - `pub async fn rotate_if_needed(&Path, max_bytes) -> io::Result<bool>`
+  - 6 个测试（path 标准/无扩展、rotates / no-op / overwrite / missing）
+- focus_tracker.rs 删掉私有的 `rotate_if_needed` / `rotated_path` 实现 + 6 个测试，改 `use crate::log_rotation::rotate_if_needed`。注释指出测试搬家。
+- speech_history.rs 加 `SPEECH_HISTORY_MAX_BYTES = 100_000` 常量，`record_speech_inner` 在 read 之前 best-effort 调 `rotate_if_needed`——LLM 万一抽风输出超长字符串也不会让单文件膨胀（trim 50 行的兜底 + size 兜底，双层防御）。
+- lib.rs 加 `mod log_rotation;`。
+- 测试总数不变 = 85（focus_tracker 减 6 + log_rotation 加 6），cargo + tsc 双过，零 warning。
+- 净收益：log rotation 的"rule of two"已触发，第三个模块要 rotation 时 0 行新代码 + 复用现成测试。
+
 ## 2026-05-03 — Iter 46：PanelDebug 显示宠物最近发言
 - 后端 `speech_history.rs` 加 `#[tauri::command] pub async fn get_recent_speeches(n: Option<usize>) -> Vec<String>` —— 直接走 `recent_speeches`（默认 n=10）。lib.rs 注册。
 - 前端 `PanelDebug.tsx`：

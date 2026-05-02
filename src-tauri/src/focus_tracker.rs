@@ -12,13 +12,14 @@
 //!     2026-05-02T13:00:00+08:00 switch:personal
 //! so anyone can `grep` / `awk` the file without a parser.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tauri::AppHandle;
 use tokio::io::AsyncWriteExt;
 
 use crate::focus_mode::{focus_status, FocusStatus};
+use crate::log_rotation::rotate_if_needed;
 
 const POLL_INTERVAL_SECS: u64 = 60;
 /// Roll the log over to `.1` once the active file passes this many bytes. ~1 MB ≈ 30k
@@ -104,29 +105,8 @@ async fn append_event(event: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Roll `path` over to `<path>.1` when it has reached `max_bytes`. Returns `Ok(true)` if
-/// the rotation happened, `Ok(false)` if the file is small enough or doesn't exist yet.
-/// Any pre-existing `.1` is overwritten — we keep one generation only, since the LLM
-/// reading this log cares about recent transitions, not deep history.
-async fn rotate_if_needed(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
-    let meta = match tokio::fs::metadata(path).await {
-        Ok(m) => m,
-        Err(_) => return Ok(false), // file doesn't exist yet
-    };
-    if meta.len() < max_bytes {
-        return Ok(false);
-    }
-    let rotated = rotated_path(path);
-    tokio::fs::rename(path, &rotated).await?;
-    Ok(true)
-}
-
-/// Append `.1` to a path, preserving the original filename. Pure helper, no IO.
-fn rotated_path(path: &Path) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(".1");
-    PathBuf::from(s)
-}
+// Rotation lives in crate::log_rotation now — focus_tracker uses the shared helper so any
+// future log-bearing module can pick it up without copying again.
 
 #[cfg(test)]
 mod tests {
@@ -185,84 +165,6 @@ mod tests {
         assert_eq!(ev.as_deref(), Some("on:"));
     }
 
-    // ---- rotation ----
-
-    #[test]
-    fn rotated_path_appends_dot_one() {
-        let p = PathBuf::from("/some/dir/focus_history.log");
-        assert_eq!(rotated_path(&p), PathBuf::from("/some/dir/focus_history.log.1"));
-    }
-
-    #[test]
-    fn rotated_path_handles_no_extension() {
-        let p = PathBuf::from("/tmp/raw");
-        assert_eq!(rotated_path(&p), PathBuf::from("/tmp/raw.1"));
-    }
-
-    /// Build a fresh per-test temp dir under the system temp root. Caller is responsible
-    /// for cleanup; we use a unique nanos-based name to avoid collisions across parallel
-    /// test runs without pulling in tempfile as a dev-dep.
-    fn fresh_temp_dir(label: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("pet-test-{}-{}", label, nanos));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[tokio::test]
-    async fn rotates_when_oversized() {
-        let dir = fresh_temp_dir("rot");
-        let log = dir.join("focus_history.log");
-        tokio::fs::write(&log, b"0123456789").await.unwrap();
-
-        let did_rotate = rotate_if_needed(&log, 5).await.unwrap();
-        assert!(did_rotate);
-        assert!(!log.exists(), "active log should have been moved");
-        let rotated = dir.join("focus_history.log.1");
-        assert!(rotated.exists(), "rotated copy should appear");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn does_not_rotate_when_under_limit() {
-        let dir = fresh_temp_dir("norot");
-        let log = dir.join("focus_history.log");
-        tokio::fs::write(&log, b"abc").await.unwrap();
-
-        let did_rotate = rotate_if_needed(&log, 1024).await.unwrap();
-        assert!(!did_rotate);
-        assert!(log.exists(), "active log untouched");
-        assert!(!dir.join("focus_history.log.1").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn rotation_overwrites_existing_dot_one() {
-        // Only one generation is kept. An old .1 should be replaced silently.
-        let dir = fresh_temp_dir("overwrite");
-        let log = dir.join("focus_history.log");
-        let prior = dir.join("focus_history.log.1");
-        tokio::fs::write(&log, b"NEWNEWNEWNEW").await.unwrap();
-        tokio::fs::write(&prior, b"OLD").await.unwrap();
-
-        rotate_if_needed(&log, 5).await.unwrap();
-        let rotated_contents = tokio::fs::read(&prior).await.unwrap();
-        assert_eq!(rotated_contents, b"NEWNEWNEWNEW", "the new one should now be .1");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn missing_file_is_no_op() {
-        let dir = fresh_temp_dir("missing");
-        let log = dir.join("nope.log");
-        let did_rotate = rotate_if_needed(&log, 1).await.unwrap();
-        assert!(!did_rotate);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    // Rotation tests live in crate::log_rotation now — same logic, single source of
+    // truth. focus_tracker just calls rotate_if_needed at append time.
 }

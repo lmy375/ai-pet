@@ -5,6 +5,7 @@ mod decision_log;
 mod focus_mode;
 mod focus_tracker;
 mod input_idle;
+mod log_rotation;
 mod mcp;
 mod mood;
 mod proactive;
