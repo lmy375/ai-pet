@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 31 设计要点（已实现）
+- **解析 log 行而非外部 atomic 累计器**：另一个选择是给 ToolRegistry 加全局 atomic（cross-turn 累计）。但 registry 是 per-turn 重建的，跨 turn 累计需要把状态搬到 app state 层级——引入新的 `Mutex<CacheCounters>` Tauri State。解析现有 log 行避免新状态：(a) 利用了 LogStore 已经存在的"按 turn 分行"结构；(b) clear_logs 自然清空累计；(c) 新加 turn 不需要任何代码改动来纳入。
+- **parser 容错且严格**：`parse_cache_summary` 不匹配 → 返 None 而不是默认 (0, 0)。这样统计不会被无效行污染。测试里 5 个 case 4 个是 negative，确认 parser 不会被相关但不匹配的行（"Tool call: ..."）误吃。
+- **`turns` 字段定义为"含至少一次 cacheable 调用的 turn 数"**：因为 log_cache_summary 在 total=0 时不打印，所以解析端看到的"行数"自然只算非空 turn。这个语义对用户更有用——"宠物有过 N 次环境感知决策，命中率 P%"——比"系统跑了 N 次 LLM turn"更直观。
+- **CacheStats 三字段而非 derived hit_ratio**：本可以再加 `hit_ratio: f64`。但前端拿到 hits/total 自己除一下更灵活（精度、显示格式都由 UI 决定）。Rust 侧只送原始数据。
+- **保 string-based parsing 简单**：用 `split("Tool cache summary:")` 找 marker，再 `split('/').nth()` 取 H/T，没引正则库。日志格式我们自己控制，正则反而过度。如果将来格式漂移，测试会先失败。
+
 ## Iter 30 设计要点（已实现）
 - **AtomicU64 + Relaxed**：cache 计数器不参与任何同步——它们只用于事后统计。Relaxed ordering 是最便宜的内存序，性能影响可忽略。Acquire/Release 这种关系性 ordering 在这里是无意义的负担。
 - **0/0 不打日志**：silent proactive tick（gate 先 short-circuit 没有跑 LLM）就完全不会走到 pipeline，那条路径根本碰不到 summary 行。但 LLM 跑了但模型没调任何 cacheable 工具的情况存在——这时也跳过 summary，避免日志噪音。
