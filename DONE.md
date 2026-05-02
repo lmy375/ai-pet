@@ -2,6 +2,12 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 41：mood_tag 重置按钮（与 cache 对称）
+- 后端：新 Tauri 命令 `reset_mood_tag_stats(State<MoodTagCountersStore>)` 三个 `store(0, Relaxed)`，与 `reset_cache_stats` 行文一致；`lib.rs` 注册。
+- 前端：`PanelDebug.tsx` 加 `handleResetMoodTagStats` 调 invoke + 乐观更新 React state；Tag 统计 span 包进 inline-flex 容器，旁边小号低对比"重置"按钮，与 Cache 重置按钮视觉一致。
+- 1 个新单测 `mood_tag_counters_can_be_reset_to_zero` 验证 store(0) 语义。
+- 总测试 71 + 1 = **72 个**，全过；cargo + tsc 双过；零 warning。
+
 ## 2026-05-03 — Iter 40：[motion: X] 前缀遵守率统计
 - 后端：
   - 新 `MoodTagCounters { with_tag, without_tag, no_mood: AtomicU64 }` + `MoodTagCountersStore` + `new_mood_tag_counters()` 在 commands/debug.rs。
