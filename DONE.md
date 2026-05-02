@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 63：手动触发 proactive turn 命令 + 按钮
+- 后端 `proactive.rs` 加 `#[tauri::command] pub async fn trigger_proactive_turn(app)`：取 InteractionClock snap + user_input_idle_seconds，直接调 `run_proactive_turn(...)` 绕过 evaluate_loop_tick 所有闸门。返回 "Proactive turn finished in N ms (idle=Ks)"。
+- lib.rs 注册命令。
+- 前端 `PanelDebug.tsx`：
+  - 加 `triggeringProactive: boolean` state + `handleTriggerProactive` async 处理。
+  - toolbar 在"清空"和"DevTools"之间插绿色（`#10b981`）"立即开口"按钮，运行中变灰且文字"开口中…"，tooltip 解释"绕过 idle/cooldown/quiet/focus 等闸门，立刻让宠物跑一次主动开口检查（用于测试 prompt 或现场 demo）。"。
+- 137 tests + tsc 双过；零 warning。
+- 现在调试 prompt 或给人 demo 时不必等 5–15 分钟自然 idle，按一下宠物立刻开口；同时 wake/cadence 等 hint 仍按真实状态注入，让 demo 看到的 prompt 是真实的而非 dummy。
+
 ## 2026-05-03 — Iter 62：手动触发 consolidate 命令 + 按钮
 - 后端 `consolidate.rs` 加 `#[tauri::command] pub async fn trigger_consolidate(app) -> Result<String, String>`：
   - 计算 `total_memory_items`（不走 min_total_items gate——手动想 always 跑）

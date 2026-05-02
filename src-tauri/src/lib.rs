@@ -113,6 +113,7 @@ pub fn run() {
             proactive::get_tone_snapshot,
             proactive::get_pending_reminders,
             consolidate::trigger_consolidate,
+            proactive::trigger_proactive_turn,
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,
