@@ -29,6 +29,13 @@ fn history_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("speech_history.log"))
 }
 
+/// Tiny sidecar that holds the lifetime count of proactive utterances as a single
+/// integer. We need this because `speech_history.log` is trimmed at SPEECH_HISTORY_CAP
+/// and so its line count saturates; this file just keeps incrementing forever.
+fn count_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("pet").join("speech_count.txt"))
+}
+
 /// Append a new utterance to the history file, trimming to `SPEECH_HISTORY_CAP` entries
 /// total. Best-effort — IO errors are silently ignored so a hosed disk doesn't break the
 /// pet's actual speaking flow.
@@ -64,7 +71,10 @@ async fn record_speech_inner(text: &str) -> std::io::Result<()> {
     }
     let mut content = entries.join("\n");
     content.push('\n');
-    tokio::fs::write(&path, content).await
+    tokio::fs::write(&path, content).await?;
+    // Best-effort lifetime counter bump — failure here doesn't fail the speech write.
+    let _ = bump_lifetime_count().await;
+    Ok(())
 }
 
 /// Read up to the last `n` entries from the history file. Empty vector when the file is
@@ -106,17 +116,45 @@ pub async fn get_recent_speeches(n: Option<usize>) -> Vec<String> {
     recent_speeches(n.unwrap_or(10)).await
 }
 
-/// Total number of proactive utterances ever recorded. Used by the proactive prompt as
-/// an "icebreaker" signal — when the count is small the pet hasn't spoken to the user
-/// much yet and should keep openings exploratory. The count is line-based so it caps at
-/// `SPEECH_HISTORY_CAP` after that many lifetime utterances; for the icebreaker use case
-/// (first ~3 lines) that's plenty of resolution.
+/// Number of non-empty lines currently in the speech_history.log file. Caps at
+/// `SPEECH_HISTORY_CAP` because of trim-on-write. Useful for "show last N speeches"
+/// but not for true lifetime stats — see `lifetime_speech_count` for that.
 pub async fn count_speeches() -> usize {
     let Some(path) = history_path() else {
         return 0;
     };
     let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     content.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
+/// Lifetime count of proactive utterances, persisted across restarts in a sidecar file.
+/// Returns 0 on a brand-new install. For an existing install that's upgrading from the
+/// pre-counter version, the counter file won't exist yet; in that case we bootstrap
+/// from `count_speeches` so users don't see a regression to 0 after upgrading. After
+/// the first bump the sidecar file always exists and takes precedence.
+pub async fn lifetime_speech_count() -> u64 {
+    let Some(path) = count_path() else {
+        return 0;
+    };
+    if let Ok(s) = tokio::fs::read_to_string(&path).await {
+        if let Ok(n) = s.trim().parse::<u64>() {
+            return n;
+        }
+    }
+    // Bootstrap path — file missing or malformed.
+    count_speeches().await as u64
+}
+
+/// Best-effort: increment the persistent lifetime counter by 1.
+async fn bump_lifetime_count() -> std::io::Result<()> {
+    let Some(path) = count_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let current = lifetime_speech_count().await;
+    tokio::fs::write(&path, format!("{}\n", current + 1)).await
 }
 
 #[cfg(test)]

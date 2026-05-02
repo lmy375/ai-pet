@@ -36,7 +36,6 @@ interface ToneSnapshot {
   mood_motion: string | null;
   pre_quiet_minutes: number | null;
   proactive_count: number;
-  proactive_count_capped: boolean;
 }
 
 export function PanelDebug() {
@@ -295,14 +294,11 @@ export function PanelDebug() {
             title={
               tone.proactive_count < 3
                 ? "破冰阶段——前 3 次主动开口走探索性话题"
-                : tone.proactive_count_capped
-                  ? "已饱和（speech_history.log 上限是 50 行；真实总数可能更高）"
-                  : "宠物累计主动开口次数（基于 speech_history.log 行数）"
+                : "宠物累计主动开口次数（持久化在 speech_count.txt，跨重启不归零）"
             }
             style={{ color: tone.proactive_count < 3 ? "#d97706" : "#64748b" }}
           >
-            🤝 已开口 {tone.proactive_count}
-            {tone.proactive_count_capped ? "+" : ""} 次
+            🤝 已开口 {tone.proactive_count} 次
             {tone.proactive_count < 3 ? "（破冰）" : ""}
           </span>
           {tone.mood_motion && (
