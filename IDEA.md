@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 73 设计要点（已实现）
+- **JSON map 而非 SQLite/CSV**：当前需求是单天 key→count 反查，JSON map O(1)；如果未来要带"分小时"、"分类型"或多列查询，再迁 SQLite。CSV 必须扫全文件，对 90 天数据其实差不多但缺省可读性。serde_json 已有依赖，零成本。
+- **BTreeMap 而非 HashMap**：序列化输出按 key 排序后 file diff 友好（手动看 `~/.config/pet/speech_daily.json` 也按日期排序）。读 path 几乎不影响性能，90 行数据级别可忽略。
+- **prune 策略：lex-compare YYYY-MM-DD**：本可以 parse 每个 key 成 NaiveDate 再比较 Duration。但 ISO 日期字符串字典序 == 日期序，直接 `k.as_str() >= cutoff_str.as_str()` 一行搞定，避免每个 key 走 chrono parse。non-parseable key 保留是显式选择——不是这模块写的就别动它。
+- **三段 best-effort IO**：speech_history.log 写完 → lifetime bump → today bump。lifetime 失败不影响 today，反之亦然。理论上可以并行 join，但顺序 IO 保证: 用户看 panel 时若 today 比 lifetime 多代表"刚刚 bump 完 today 还没回到 lifetime"——窗口极短，比并行带来的写竞争可控。
+- **DAILY_RETAIN_DAYS = 90**：超出当前面板需要（只用 today 1 项），但写入端 prune 一次定下来 retention 上限，未来面板要"过去 30 天 sparkline"或"周报"时不用追溯写时机。90 行 JSON ≈ 2KB，零成本。
+- **20px/28px 大小对比**：数字读者最关心"今天 vs 总累计"，"今天"是 daily refresh 的瞬时态，"累计"才是 brand-defining 长期 number。对比 8px 大小让累计仍然主导视觉但今日清晰可读。
+- **测试只覆盖纯函数**：bump_today_count / today_speech_count 是 IO，依赖系统时区和 config_dir，难脱离副作用。parse_daily 和 prune_daily 是 pure，5 个单测覆盖 empty/malformed/valid/cutoff 边界/non-parseable key 保留/retain=0 含义；这是最小集合让设计意图被钉死。
+
 ## Iter 72 设计要点（已实现）
 - **薄封装而非 reuse get_tone_snapshot**：`get_tone_snapshot` 已经返了 proactive_count，理论上前端可以直接 `tone?.proactive_count` 渲染大数字。但这绑定了"想看累计数 = 必须先拿到完整 ToneSnapshot"——一旦未来 ToneSnapshot 加重字段、或者出现想脱离 tone 单独看 stats 的场景（如启动画面、Telegram /stats 命令），就要重新拆。先做单值 command 让职责清楚。
 - **大卡片 + chip 双重显示，不删 chip**：表面上看冗余，但读者场景不同。chip 在 tone strip（`fontSize: 11px` 条带）里是"我顺便扫一眼当前所有信号"——大数字混进去会被周边压扁。大卡片放工具栏正下方是"我点开 panel 第一眼想知道宠物存在感"。两者都保留实际花费几乎是 0（多渲染一行），收益是不同心理路径都得满足。
