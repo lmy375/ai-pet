@@ -288,6 +288,9 @@ pub struct ToneSnapshot {
     /// Lets the panel show "距安静时段 N 分钟" so the user can see why the pet is
     /// suddenly winding down.
     pub pre_quiet_minutes: Option<u64>,
+    /// Lifetime count of proactive utterances. Mirrors the value run_proactive_turn
+    /// passes into PromptInputs — when small (< 3) the icebreaker rule fires.
+    pub proactive_count: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -374,6 +377,7 @@ pub async fn get_tone_snapshot(
             15,
         )
     });
+    let proactive_count = crate::speech_history::count_speeches().await as u64;
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -382,6 +386,7 @@ pub async fn get_tone_snapshot(
         mood_text,
         mood_motion,
         pre_quiet_minutes,
+        proactive_count,
     })
 }
 

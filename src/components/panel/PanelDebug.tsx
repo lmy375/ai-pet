@@ -35,6 +35,7 @@ interface ToneSnapshot {
   mood_text: string | null;
   mood_motion: string | null;
   pre_quiet_minutes: number | null;
+  proactive_count: number;
 }
 
 export function PanelDebug() {
@@ -289,6 +290,16 @@ export function PanelDebug() {
               🌙 距安静时段 {tone.pre_quiet_minutes}m
             </span>
           )}
+          <span
+            title={
+              tone.proactive_count < 3
+                ? "破冰阶段——前 3 次主动开口走探索性话题"
+                : "宠物累计主动开口次数（受 speech_history.log 50 行 cap 影响）"
+            }
+            style={{ color: tone.proactive_count < 3 ? "#d97706" : "#64748b" }}
+          >
+            🤝 已开口 {tone.proactive_count} 次{tone.proactive_count < 3 ? "（破冰）" : ""}
+          </span>
           {tone.mood_motion && (
             <span title="LLM 当前 motion 标签" style={{ color: "#a855f7" }}>
               ★ motion: {tone.mood_motion}
