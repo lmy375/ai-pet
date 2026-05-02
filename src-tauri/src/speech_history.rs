@@ -16,8 +16,10 @@ use crate::log_rotation::rotate_if_needed;
 
 /// Hard cap on retained entries. Far more than the prompt ever surfaces (5–10) — the
 /// extra slack lets future features (e.g. a panel "what did the pet say lately?" view)
-/// reach further back without re-architecting.
-const SPEECH_HISTORY_CAP: usize = 50;
+/// reach further back without re-architecting. `pub` so callers can detect when
+/// `count_speeches` has saturated (a "50+" affordance vs reading 50 as the literal
+/// lifetime number).
+pub const SPEECH_HISTORY_CAP: usize = 50;
 /// Byte ceiling — defense in depth on top of the line-count trim. A misbehaving LLM that
 /// emits a megabyte-long "single utterance" can't blow up the file: rotation kicks in
 /// and the next write starts a fresh log.

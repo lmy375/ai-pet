@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 70：proactive_count 50+ 截断指示
+- speech_history.rs 的 `SPEECH_HISTORY_CAP` 从 private const 改为 `pub const`，让其他模块能比较检测饱和。
+- ToneSnapshot 加 `proactive_count_capped: bool`：`get_tone_snapshot` 计算 `count >= SPEECH_HISTORY_CAP` 决定。
+- 前端 `PanelDebug.tsx` interface 同步；🤝 chip 渲染逻辑：
+  - 数字后缀：饱和时加 `+`（如 "已开口 50+ 次"）
+  - tooltip 三档：< 3 是破冰说明 / capped 是"已饱和（speech_history.log 上限是 50 行；真实总数可能更高）" / 普通是"基于 speech_history.log 行数"
+- 选方案 A（轻量截断指示）而非 B（独立 atomic 累计）：当前用户最可能在前几次破冰阶段就关闭/换设备，长跑用户的精确累计需求不强；若日后需要再走 Iter 71。
+- 不写新单测：bool 派生自现有 const 比较，cargo + tsc 兜底。
+- tsc + 141 tests 双过；零 warning。
+
 ## 2026-05-03 — Iter 69：ToneSnapshot 加 proactive_count + panel chip
 - 后端 `ToneSnapshot.proactive_count: u64` 字段；`get_tone_snapshot` 调 `count_speeches().await as u64` 取值。
 - 前端 `PanelDebug.tsx` interface 同步加；tone strip 在 pre-quiet 之后加 🤝 chip：
