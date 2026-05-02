@@ -56,6 +56,11 @@ pub struct ProactiveConfig {
     /// Required idle time since last interaction before pet may speak, in seconds.
     #[serde(default = "default_proactive_idle_threshold")]
     pub idle_threshold_seconds: u64,
+    /// Required idle time since the last keyboard/mouse event, in seconds.
+    /// Prevents the pet from interrupting while the user is actively typing.
+    /// Set to 0 to disable the input-idle gate.
+    #[serde(default = "default_proactive_input_idle")]
+    pub input_idle_seconds: u64,
 }
 
 fn default_proactive_interval() -> u64 {
@@ -66,12 +71,17 @@ fn default_proactive_idle_threshold() -> u64 {
     900
 }
 
+fn default_proactive_input_idle() -> u64 {
+    60
+}
+
 impl Default for ProactiveConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             interval_seconds: default_proactive_interval(),
             idle_threshold_seconds: default_proactive_idle_threshold(),
+            input_idle_seconds: default_proactive_input_idle(),
         }
     }
 }

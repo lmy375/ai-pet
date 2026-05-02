@@ -2,7 +2,12 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
-## 2026-05-02 — Iter 2：环境感知（前台 app/窗口标题）
+## 2026-05-02 — Iter 3：键鼠空闲门槛
+- 新增 `src-tauri/src/input_idle.rs`：macOS 通过 `ioreg -c IOHIDSystem` 读 `HIDIdleTime`（纳秒）→ 秒。非 macOS 返回 `None`。不引新依赖，也不需要 Accessibility 权限。
+- `ProactiveConfig` 加入 `input_idle_seconds`（默认 60，0 表示禁用门槛）。
+- `proactive.rs` 触发逻辑改为：先满足"距上次互动 ≥ idle_threshold_seconds"，再读 HID idle，必须 ≥ `input_idle_seconds` 才会真的让 LLM 决定要不要开口；否则只写一条 skip 日志。
+- 主动 prompt 把当前键鼠空闲时长也告诉 LLM，作为额外判断 context。
+- cargo check 通过（仍是两条与本次无关的预存 warning）。
 - 新增 `src-tauri/src/tools/system_tools.rs`，定义 `GetActiveWindowTool`：
   - macOS 下用 `osascript` + System Events 拿当前 frontmost 进程名 + 前窗口标题。
   - 失败时返回 JSON 错误并提示开启 Accessibility 权限。
