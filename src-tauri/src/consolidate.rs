@@ -71,12 +71,11 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     let mcp_store = app.state::<McpManagerStore>().inner().clone();
     let log_store = app.state::<LogStore>().inner().clone();
     let shell_store = app.state::<ShellStore>().inner().clone();
-    let cache_counters = app.state::<crate::commands::debug::CacheCountersStore>().inner().clone();
-    let mood_tag_counters = app
-        .state::<crate::commands::debug::MoodTagCountersStore>()
+    let process_counters = app
+        .state::<crate::commands::debug::ProcessCountersStore>()
         .inner()
         .clone();
-    let ctx = ToolContext::new(log_store.clone(), shell_store, cache_counters, mood_tag_counters);
+    let ctx = ToolContext::new(log_store.clone(), shell_store, process_counters);
 
     let index = memory::memory_list(None).map_err(|e| format!("memory_list failed: {e}"))?;
     let index_json = serde_json::to_string_pretty(&index)

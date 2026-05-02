@@ -24,8 +24,13 @@ pub struct CacheCounters {
     pub calls: AtomicU64,
 }
 
+// Test-only helper that builds an isolated CacheCounters Arc. Production code accesses
+// counters via ProcessCounters; tests still want to exercise the inner struct directly
+// without the wrapper layer.
+#[cfg(test)]
 pub type CacheCountersStore = Arc<CacheCounters>;
 
+#[cfg(test)]
 pub fn new_cache_counters() -> CacheCountersStore {
     Arc::new(CacheCounters::default())
 }
@@ -45,10 +50,30 @@ pub struct MoodTagCounters {
     pub no_mood: AtomicU64,
 }
 
+// Test-only — see new_cache_counters above.
+#[cfg(test)]
 pub type MoodTagCountersStore = Arc<MoodTagCounters>;
 
+#[cfg(test)]
 pub fn new_mood_tag_counters() -> MoodTagCountersStore {
     Arc::new(MoodTagCounters::default())
+}
+
+/// Container for every per-process counter group the panel surfaces. Bundling them as a
+/// single Tauri State keeps `ToolContext` stable when we add a new metric: one field, one
+/// `app.state::<ProcessCountersStore>()` lookup, no plumbing through 5 callsites and
+/// reconnect paths each time. Add a new sub-struct here and register one Tauri command
+/// that reads it; everything else stays put.
+#[derive(Default)]
+pub struct ProcessCounters {
+    pub cache: CacheCounters,
+    pub mood_tag: MoodTagCounters,
+}
+
+pub type ProcessCountersStore = Arc<ProcessCounters>;
+
+pub fn new_process_counters() -> ProcessCountersStore {
+    Arc::new(ProcessCounters::default())
 }
 
 /// Return the log directory: ~/.config/pet/logs/
@@ -164,21 +189,21 @@ pub struct CacheStats {
 }
 
 #[tauri::command]
-pub fn get_cache_stats(counters: State<'_, CacheCountersStore>) -> CacheStats {
+pub fn get_cache_stats(counters: State<'_, ProcessCountersStore>) -> CacheStats {
     CacheStats {
-        turns: counters.turns.load(Ordering::Relaxed),
-        total_hits: counters.hits.load(Ordering::Relaxed),
-        total_calls: counters.calls.load(Ordering::Relaxed),
+        turns: counters.cache.turns.load(Ordering::Relaxed),
+        total_hits: counters.cache.hits.load(Ordering::Relaxed),
+        total_calls: counters.cache.calls.load(Ordering::Relaxed),
     }
 }
 
 /// Zero out the process-wide cache counters. Mirrors `clear_logs` for the stats panel —
 /// useful when the user wants to measure hit ratio over a fresh window.
 #[tauri::command]
-pub fn reset_cache_stats(counters: State<'_, CacheCountersStore>) {
-    counters.turns.store(0, Ordering::Relaxed);
-    counters.hits.store(0, Ordering::Relaxed);
-    counters.calls.store(0, Ordering::Relaxed);
+pub fn reset_cache_stats(counters: State<'_, ProcessCountersStore>) {
+    counters.cache.turns.store(0, Ordering::Relaxed);
+    counters.cache.hits.store(0, Ordering::Relaxed);
+    counters.cache.calls.store(0, Ordering::Relaxed);
 }
 
 #[derive(serde::Serialize)]
@@ -189,11 +214,11 @@ pub struct MoodTagStats {
 }
 
 #[tauri::command]
-pub fn get_mood_tag_stats(counters: State<'_, MoodTagCountersStore>) -> MoodTagStats {
+pub fn get_mood_tag_stats(counters: State<'_, ProcessCountersStore>) -> MoodTagStats {
     MoodTagStats {
-        with_tag: counters.with_tag.load(Ordering::Relaxed),
-        without_tag: counters.without_tag.load(Ordering::Relaxed),
-        no_mood: counters.no_mood.load(Ordering::Relaxed),
+        with_tag: counters.mood_tag.with_tag.load(Ordering::Relaxed),
+        without_tag: counters.mood_tag.without_tag.load(Ordering::Relaxed),
+        no_mood: counters.mood_tag.no_mood.load(Ordering::Relaxed),
     }
 }
 
@@ -201,10 +226,10 @@ pub fn get_mood_tag_stats(counters: State<'_, MoodTagCountersStore>) -> MoodTagS
 /// can measure adherence over a fresh window (e.g. after tweaking the prompt to see if
 /// the model improves).
 #[tauri::command]
-pub fn reset_mood_tag_stats(counters: State<'_, MoodTagCountersStore>) {
-    counters.with_tag.store(0, Ordering::Relaxed);
-    counters.without_tag.store(0, Ordering::Relaxed);
-    counters.no_mood.store(0, Ordering::Relaxed);
+pub fn reset_mood_tag_stats(counters: State<'_, ProcessCountersStore>) {
+    counters.mood_tag.with_tag.store(0, Ordering::Relaxed);
+    counters.mood_tag.without_tag.store(0, Ordering::Relaxed);
+    counters.mood_tag.no_mood.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]

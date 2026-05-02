@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 42：counters 合并为 ProcessCounters
+- 新 `pub struct ProcessCounters { cache: CacheCounters, mood_tag: MoodTagCounters }` 在 commands/debug.rs，default 派生让 `new_process_counters()` 一行返 Arc<...>。doc comment 写明扩展原则："加新 counter 组只在这里加字段 + 加 Tauri 命令，不动 ToolContext 与 5 callsite"。
+- ToolContext 字段从 `cache_counters + mood_tag_counters` 缩成单 `process_counters: ProcessCountersStore`，`new` / `from_states` 各砍一参，`for_test` 简化。
+- 4 个 Tauri 命令（get_cache_stats / reset_cache_stats / get_mood_tag_stats / reset_mood_tag_stats）签名统一为 `State<ProcessCountersStore>`，访问改为 `counters.cache.*` / `counters.mood_tag.*`。
+- 5 callsite（proactive / chat / consolidate / telegram bot / from_states）每处少抓一个 state；reconnect_telegram + TelegramBot::start + HandlerState 都减少一参；lib.rs `.manage()` 从两个变一个。
+- ToolRegistry::log_cache_summary 内 `ctx.cache_counters.*` → `ctx.process_counters.cache.*`（registry 自身 + 测试都更新）。
+- mood::read_mood_for_event 同理。
+- 旧 `CacheCountersStore` / `MoodTagCountersStore` / `new_cache_counters` / `new_mood_tag_counters` 标 `#[cfg(test)]`：测试还在用它们独立测内部 struct，production 不再需要——避免 dead_code 警告同时保留测试入口。
+- 测试 72 全过，cargo + tsc 双过，零 warning。
+- 净减少：每加新 counter 组从 5 callsite + 5 import + 5 plumbing 降到 1 字段 + 1 命令。
+
 ## 2026-05-03 — Iter 41：mood_tag 重置按钮（与 cache 对称）
 - 后端：新 Tauri 命令 `reset_mood_tag_stats(State<MoodTagCountersStore>)` 三个 `store(0, Relaxed)`，与 `reset_cache_stats` 行文一致；`lib.rs` 注册。
 - 前端：`PanelDebug.tsx` 加 `handleResetMoodTagStats` 调 invoke + 乐观更新 React state；Tag 统计 span 包进 inline-flex 容器，旁边小号低对比"重置"按钮，与 Cache 重置按钮视觉一致。
