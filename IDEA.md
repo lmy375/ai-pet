@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R17 设计要点（已实现）
+- **每个写入信号都欠一笔 retention 债**：R12 写 daily_review 当时只考虑了 happy path（"每天写一条很好"），没考虑 365 天后会怎样。**任何长期 append 数据流都隐藏一个未付的 retention 设计** — reminder 有 stale_reminder_hours，plan 有 stale_plan_hours，butler-once 有 stale_once_butler_hours，daily_review 终于有 stale_daily_review_days。R17 是补 R12 时欠下的债。规则：**新建 append-style 数据流时立即想好 retention 策略**，否则下一次 R-iter 就要回来还。
+- **schema-based protection > hardcoded allowlist**：sweep 用 `parse_daily_review_date` 的 None/Some 来决定要不要删，不是维护一个"protected_titles = ['current_mood', 'daily_plan', 'persona_summary']"。后者每次加新 protected 项都得改 sweep 函数 + 测试。前者 schema 自然演化 — 加新 item title 不需要碰 sweep 代码，只要 title 不匹配 daily_review_YYYY-MM-DD pattern 就自动安全。**让 schema 自己说话** > **维护 list 同步**。
+- **retention=0 = disabled，不是 aggressive**：fail-safe 默认是数据保留方向。如果代码哲学是"0 = 立刻全删"，用户误配置 0 → 历史 review 全没 → 不可逆。代码哲学是"0 = 保留"，用户误配置 0 → 没人删 → 慢慢手动 spotted → 可恢复。**删除是不可逆的，保留是可逆的** — 在不可逆操作上设 conservative default。
+- **30 天默认 sweet spot**：考虑过 7 / 14 / 30 / 90 / 365。7-14 太激进（"我上周写的回顾呢？"）；365 不够侵略性（panel 列表过载）；90 也合理但 30 对应"过去一个月" 是用户日常 retrospective 的自然单位。**用户能直觉描述的时间窗 ≈ 月** 是 default 的 anchor 点。
+- **`>` 而非 `>=` 给边界 1 天 buffer**：delta == 30 不删，delta == 31 才删 — 等于"在第 31 天才丢掉"。tests 里 stale_review_returns_false_within_retention_window 钉住这个边界（4 月 4 号的 review 在 5 月 4 号是 delta=30，不删）。这种"strict gt 给边界缓冲"是 UI / time-bound 数据的友好惯例，避免"恰好满 30 天" 用户误以为还在但已经丢了。
+- **signed_duration_since 处理时间倒流**：用户改系统时间 / yaml 手写 future date / clock skew 都可能让 review.date > today。chrono 的 signed_duration_since 返负数，num_days() < retention_days → not stale。**比 `today - date` 然后 unwrap 安全得多**。R12b [1/0] 同思路 — graceful degradation 优先 panic。Rust 的 chrono::Duration 也有 saturating semantics 是对的设计。
+- **同步 sweep 优于 async sweep（除非有 async 依赖）**：butler-once sweep 是 async 因为要写 butler_history。reminder / plan / daily_review sweep 都不需要 history — 同步函数 + 同步 memory_edit 完全够。**不要为了"看起来现代化"而无脑 async**。async overhead = 调用方必须 .await + 必须在 runtime 里 + 错误处理变复杂。能同步就同步是 Rust 风格。
+
 ## Iter R1c 设计要点（已实现）
 - **"写到" ≠ "看到"**：R1b 把 Dismissed 信号写进 feedback log + 接到 R7 ratio 计算，技术上完整。但 panel UI 依然只显示二元"回复/忽略"。这是个 hidden invariant 违例：**新增数据维度后，相关 surface 必须同步**，否则用户看到 panel 数字以为是旧二元，对系统行为产生误解（"我点了 dismiss 为什么 cooldown 没变?" → 实际变了，但没显示给用户看）。R1c 把这条 invariant 主动还掉。
 - **"replied/total" 仍然是正确的中心数字**：诱惑是改成 "replied / (ignored + dismissed)" 或三元数字。但 panel 是稀缺 visual budget，单 chip 只能讲 1-2 个数字。R7 adapter 阈值（>0.6 negative）跟"replied/total"是简单互补关系（ratio + negative = 1），所以 "replied/total" 已经完整表达了 cooldown 决策输入。dismissed 是细节维度，做尾巴小字而不是抢主标题。**主信号占 C 位、辅信号做修饰** 是 dashboard 设计经典原则。

@@ -157,6 +157,26 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         );
     }
 
+    // Iter R17: prune old daily_review entries past their retention window.
+    // Mirrors the reminder/plan/butler sweeps. Quiet success — only logs when
+    // something was actually pruned, to avoid every consolidate spamming
+    // "swept 0 reviews".
+    let review_retention = cfg_settings
+        .as_ref()
+        .map(|s| s.memory_consolidate.stale_daily_review_days)
+        .unwrap_or(30);
+    let today_for_sweep = chrono::Local::now().date_naive();
+    let reviews_swept = sweep_stale_daily_reviews(today_for_sweep, review_retention);
+    if reviews_swept > 0 {
+        write_log(
+            &log_store.0,
+            &format!(
+                "Consolidate: pruned {} daily_review(s) older than {} days",
+                reviews_swept, review_retention
+            ),
+        );
+    }
+
     // Iter Cη: derive today's butler-task summary from butler_history.log and
     // upsert into butler_daily.log so the user has a per-day "今天我帮你 ..."
     // trail surfaced in the panel. Pre-LLM and deterministic — survives even if
@@ -377,6 +397,45 @@ pub async fn sweep_completed_once_butler_tasks(
             // through commands::memory directly so we log manually here, marking
             // the action source so it's clear in the log.
             crate::butler_history::record_event("delete", &title, &desc).await;
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Iter R17: prune `daily_review_YYYY-MM-DD` entries from `ai_insights`
+/// older than `retention_days`. R12 writes one per day; without this they
+/// accumulate forever. The pure staleness gate lives in
+/// `proactive::daily_review::is_stale_daily_review` and rejects non-review
+/// titles (mood / plan / persona_summary stay untouched). `retention_days
+/// == 0` disables pruning. Returns the number of entries deleted.
+pub fn sweep_stale_daily_reviews(today: chrono::NaiveDate, retention_days: u32) -> usize {
+    if retention_days == 0 {
+        return 0;
+    }
+    let Ok(index) = memory::memory_list(Some("ai_insights".to_string())) else {
+        return 0;
+    };
+    let Some(cat) = index.categories.get("ai_insights") else {
+        return 0;
+    };
+    let to_delete: Vec<String> = cat
+        .items
+        .iter()
+        .filter(|it| crate::proactive::is_stale_daily_review(&it.title, today, retention_days))
+        .map(|it| it.title.clone())
+        .collect();
+    let mut count = 0;
+    for title in to_delete {
+        if memory::memory_edit(
+            "delete".to_string(),
+            "ai_insights".to_string(),
+            title,
+            None,
+            None,
+        )
+        .is_ok()
+        {
             count += 1;
         }
     }
