@@ -1251,7 +1251,11 @@ async fn run_proactive_turn(
     // gate's R7 cooldown adapter uses, so prompt and gate agree on
     // "recent era" of feedback.
     let recent_feedback = crate::feedback_history::recent_feedback(20).await;
-    let feedback_hint = crate::feedback_history::format_feedback_hint(&recent_feedback);
+    // R60: pass redact closure so excerpt gets the same privacy filter
+    // as other prompt hints (speech_hint / repeated_topic_hint etc).
+    let feedback_hint = crate::feedback_history::format_feedback_hint(&recent_feedback, &|s| {
+        crate::redaction::redact_with_settings(s)
+    });
     let feedback_aggregate_hint =
         crate::feedback_history::format_feedback_aggregate_hint(&recent_feedback);
     // Iter R33: trailing silence streak detection. Reads the ring buffer
