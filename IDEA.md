@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R58 设计要点（已实现）
+- **codified rule audit 第一次践行 R57 原则**：R57 codified "transient state needs refresh on user-interaction entry"。R58 立刻 audit 同 codebase 还有谁违反 —— R52 mute 同样 latent bug。这种 codified rule → audit-and-backfill 是 R-series 反复践行的节奏（R20→R21+R22 / R29→R30 / R46→R47）。**rule 价值不在 codify 一次，而是反复 audit 让全 codebase 都跟上**。R58 是这条节奏的又一次实例化，证明 rule 真的 actively 应用。
+- **Promise<boolean> return 解 closure-over-stale-state 坑**：React useState 的 setMuted 触发 next-render 才生效。如果 `setMuted(isMuted); if (muted) ...` 这种代码 sequence 里 `muted` 仍是 closure 里捕获的旧值。**直接 return fresh value** 让同 promise chain 内拿到 truth = 经典 React closure 坑解法。这条原则适用所有"先 fetch 再 act" 的 async handler。
+- **graceful degradation in UI**：refreshMuteState catch error 时 return `muted` (current React state)。诱惑是 throw 让 caller 处理，但 click 路径要 best-effort —— 网络故障时 mute toggle 仍能 fallback 到 last-known state 工作。**UI 应该 fail soft 而不是 fail hard**。错误处理在 backend 严格在 UI 弹性。
+- **copy + tweak 是 use-2 的合理选择**：R57 + R58 两次同样 pattern (refresh-on-interaction)。诱惑是抽 generic `useTransientStateRefresh<T>` hook。但 mute 只 boolean，note 是 (text, active) 双状态，generic 化得加 type parameters + signature 复杂度。**use-2 仍 copy 比抽 hook 经济**（R39 IDEA codified "use-3+"）。如果未来 mood preset / focus level 等加第三个 transient state 才抽 hook。
+- **close 不 refresh 但 open refresh**：close 是 user 主动 + state 不会变，refresh 没价值。open 是 user 触碰 + state 可能 stale，refresh 必要。**fetch 时机 = user-interaction × state-might-be-stale 的交集**。R58 严格遵循 R57 IDEA 的"仅在可能 stale 的 user-interaction" 原则。
+- **R52→R58 = 7 iter user-control cluster**：R52 mute backend, R53 mute test, R54 mute preset menu, R55 note backend, R56 note remaining, R57 note refresh, R58 mute refresh。**7 iter 全在同 cluster** —— 新长度纪录。说明 mature phase 中 cluster 长度由 user-domain depth 决定 —— 简单 domain 3 iter 闭环，复杂 domain (mute+note 两工具 × backend+test+UI 多维度) 自然延展到 7。**cluster size 跟 problem space depth 成正比**，不是 iter rule。
+- **stale-state pattern 普适警告**：mount-fetch + 不 refresh 是 React frontend + transient backend state 的常见 footgun。任何"backend state 有 expiry / 时效" 的功能都该 audit 是否有这个 bug。R-series 类似工具（如未来的 mood override / focus level / etc）都要 same-iter 加 refresh-on-interaction 否则 ship 时就埋雷。
+
 ## Iter R57 设计要点（已实现）
 - **transient state 跟 frontend cache 的同步陷阱**：R55 mount 时 fetch 一次，之后 frontend useState 当 truth。但 backend 在 expiry 时自动改状态，frontend 不知道。**任何 transient backend state 都需要在 user-interaction entry point refresh**——开 popover 是 user-interaction，应该 fetch。这条是普适原则：long-lived component 持有 transient state 时，每次 user 触碰该 state 入口都 refetch。
 - **stale-state bug 在 mature feature 上的隐性出现**：R55 ship 时 mount-fetch 看似够。R57 才意识到"60 min 后 expire 期间 popover 不会主动 refresh"。**transient state 的 lifecycle 测试需要超过 mount window 的场景**——但单测不容易模拟"60 min 后再交互"。靠 IDEA + 经验觉察 vs 测试覆盖。

@@ -64,10 +64,18 @@ const PANEL_STYLES = `
 export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Iter R52 / R54: 🔇 mute button. Left-click toggles 30 min default
-  // (R52 fast-path); right-click opens preset menu with 15/30/60/120
-  // min options + clear (R54 flexible-path). Two paths cover the two
-  // user types — quick mute users and granular-control users.
+  // Iter R52 / R54 / R58: 🔇 mute button. Left-click toggles 30 min
+  // default (R52 fast-path); right-click opens preset menu with
+  // 15/30/60/120 min options + clear (R54 flexible-path).
+  //
+  // R58: refresh mute state on each user interaction (entry-point
+  // refresh codified in R57 IDEA). Without this, after auto-expiry
+  // frontend `muted` stays true and button still shows red — matching
+  // the same stale-state bug R57 fixed for note popover. Behavior:
+  //   - left-click: refetch fresh state, toggle based on it (not on
+  //     potentially-stale local state)
+  //   - right-click: refetch fresh state before showing menu so menu
+  //     reflects current backend
   const [muted, setMuted] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   useEffect(() => {
@@ -85,9 +93,28 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
     }
     setShowMenu(false);
   };
-  const handleMuteClick = () => applyMute(muted ? 0 : 30);
-  const handleMuteContextMenu = (e: React.MouseEvent) => {
+  // R58: returns the freshly-fetched mute state so callers can use the
+  // truth without depending on the React-state update latency. Errors
+  // fall back to current React state.
+  const refreshMuteState = async (): Promise<boolean> => {
+    try {
+      const iso = await invoke<string>("get_mute_until");
+      const isMuted = iso !== "";
+      setMuted(isMuted);
+      return isMuted;
+    } catch {
+      return muted;
+    }
+  };
+  const handleMuteClick = async () => {
+    const isMuted = await refreshMuteState();
+    applyMute(isMuted ? 0 : 30);
+  };
+  const handleMuteContextMenu = async (e: React.MouseEvent) => {
     e.preventDefault();
+    if (!showMenu) {
+      await refreshMuteState();
+    }
     setShowMenu((v) => !v);
   };
   // Close menu when clicking anywhere outside it.
