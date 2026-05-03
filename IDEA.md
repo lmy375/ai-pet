@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 102 设计要点（已实现）— 路线 A 第二步
+- **复用 consolidate 的 LLM 调用而非新加一次**：consolidate 已经是周期性 LLM 调用 + 已经允许 LLM 改 memory。把"reflect 自己写 persona_summary"作为该调用的第 5 项任务，零新 LLM 成本。如果将来想让 reflection 频率独立于 consolidate，再拆出独立调用。
+- **第一人称写法**：prompt 明确要求"写第一人称（如 我倾向...、我注意到...）"。LLM 写关于自己的话用第三人称（"宠物的语气倾向..."）会让 proactive 读到时显得疏离；第一人称让 description 直接像"我自己的笔记"，proactive prompt 拼回去时角色一致。
+- **~100 字限制**：persona_summary 注入 proactive prompt 后是固定增量。100 字（约 200-300 tokens）是经验值——足以表达"语气 + 互动模式 + 偏好"三个维度，又不至于 prompt 膨胀。如果将来发现 LLM 写超长，加 prompt 强约束或后置 truncate。
+- **< 5 句跳过的"信号下限"**：consolidate 可能在宠物刚装上、还没说几句的时候就跑（如手动触发）。强行让 LLM 总结 0-2 句话会得到不准确的人格描述（"我话很少" — 其实只是没启动）。明确门槛 5 句，让首次反思有意义。
+- **strip_timestamp 后再投喂**：speech_history 文件每行带 ISO timestamp，对 LLM 总结语气/模式没用，反而占 prompt 长度。strip 后 LLM 看到的就是干净的"宠物说过的话清单"。
+- **persona_summary 复用 daily_plan 模式**：build_persona_hint 完全镜像 build_plan_hint 的结构（read memory_list ai_insights → find by title → format with header）。两个 hint 同型让代码风格一致，未来加第三个 self-state hint（如 mood_trend / Iter 103）一行复制即可。
+- **位置：mood → companionship → persona → context**：从瞬时（mood）→ 关系时长（companionship）→ 长期自我认知（persona）→ 当下环境（context）。"我现在感觉怎么样" → "我和你认识多久了" → "我看到自己是个怎样的我" → "现在用户在做什么" 的递进，每层时间尺度不同，LLM 容易合成。
+- **"特殊保护"扩成两条**：current_mood + persona_summary 都不能 delete。consolidate 的 LLM 有时会过于积极清理 ai_insights 类条目；明确写在 prompt 里防止意外删除"这只宠物的灵魂"。
+
 ## Iter 101 设计要点（已实现）— 路线 A 入口
 - **首次启动 zero-config 写入**：用户不需要在任何 settings 配置 install_date——首次 proactive turn 跑 `ensure_install_date` 自动写入今天。这是 setup-friction = 0 的关键，符合"宠物自己开始累积时间"的隐喻。
 - **数字而非文字传给 prompt**：本可以让 backend 直接拼好 "已经 N 天" 字符串塞进 cadence_hint。但传纯数字让 prompt 构造层（format_companionship_line）拿到完整决策权——day 0 用初识措辞、day N 用相处时长措辞，未来想加 "100 天纪念"、"半年" 之类阶段化文案也不需要改 backend。

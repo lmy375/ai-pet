@@ -196,6 +196,12 @@ pub struct PromptInputs<'a> {
     /// LLM modulate language: a freshly-met pet on day 0 should sound less familiar
     /// than one that's been around for a year. Persisted in `install_date.txt`.
     pub companionship_days: u64,
+    /// Self-authored persona summary the pet's own consolidate loop has written about
+    /// itself (Iter 102). Empty until the first consolidate produces enough signal.
+    /// When non-empty, surfaces a "what I've noticed about my own voice and how I
+    /// interact with this user" header so each proactive turn can lean on the
+    /// reflection rather than starting from a static SOUL.md alone.
+    pub persona_hint: &'a str,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -439,6 +445,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push(String::new());
     s.push(inputs.mood_hint.to_string());
     s.push(format_companionship_line(inputs.companionship_days));
+    push_if_nonempty(&mut s, inputs.persona_hint);
     push_if_nonempty(&mut s, inputs.focus_hint);
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
@@ -1312,6 +1319,7 @@ async fn run_proactive_turn(
 
     // Pull the pet's own short-term plan from ai_insights/daily_plan, if it has written one.
     let plan_hint = build_plan_hint();
+    let persona_hint = build_persona_hint();
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
@@ -1372,6 +1380,7 @@ async fn run_proactive_turn(
         env_spoke_with_any,
         since_last_proactive_minutes,
         companionship_days,
+        persona_hint: &persona_hint,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1452,6 +1461,29 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
         String::new()
     } else {
         lines.join("\n")
+    }
+}
+
+/// Read the pet's self-authored persona summary from `ai_insights/persona_summary`.
+/// Iter 102: this is what the consolidate loop generates by reflecting on recent
+/// speech_history + user_profile. Returns the description verbatim with a header line,
+/// or empty when no summary has been written yet (fresh installs / not enough signal).
+fn build_persona_hint() -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("ai_insights") else {
+        return String::new();
+    };
+    let summary = cat.items.iter().find(|i| i.title == "persona_summary");
+    match summary {
+        Some(item) if !item.description.trim().is_empty() => {
+            format!(
+                "你最近一次自我反思的画像（来自 consolidate）：\n{}",
+                item.description.trim()
+            )
+        }
+        _ => String::new(),
     }
 }
 
@@ -1565,6 +1597,10 @@ mod prompt_tests {
             // Default 30 — neither install-day (0) nor a long history; tests that care
             // about either extreme set this explicitly.
             companionship_days: 30,
+            // Default empty — base inputs simulate the pre-Iter 102 state where no
+            // persona summary has been written yet. Tests for the persona hint set this
+            // to a non-empty string to assert injection.
+            persona_hint: "",
         }
     }
 
@@ -1900,6 +1936,23 @@ mod prompt_tests {
         inputs.companionship_days = 0;
         let p = build_proactive_prompt(&inputs);
         assert!(p.contains("第一天"));
+    }
+
+    #[test]
+    fn prompt_includes_persona_hint_when_set() {
+        let mut inputs = base_inputs();
+        inputs.persona_hint =
+            "你最近一次自我反思的画像（来自 consolidate）：\n我倾向短句，话题偏当下场景。";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("自我反思的画像"));
+        assert!(p.contains("我倾向短句"));
+    }
+
+    #[test]
+    fn prompt_omits_persona_hint_when_empty() {
+        let inputs = base_inputs(); // default persona_hint = ""
+        let p = build_proactive_prompt(&inputs);
+        assert!(!p.contains("自我反思的画像"));
     }
 
     #[test]

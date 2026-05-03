@@ -132,21 +132,43 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     // point asking it to read a path that's empty on a fresh install or non-macOS host.
     let focus_log_hint = focus_history_hint();
 
+    // Iter 102: surface the pet's recent self-utterances so the consolidate run can
+    // write/refresh a persona_summary. We strip timestamps for readability; the LLM
+    // doesn't need exact times to spot voice patterns. Empty list is fine — the prompt
+    // tells the model to skip the persona step when signal is too thin.
+    let recent_speeches = crate::speech_history::recent_speeches(30).await;
+    let recent_speech_block = if recent_speeches.is_empty() {
+        "（你最近还没有主动开过口；本次跳过 persona_summary 维护。）".to_string()
+    } else {
+        let body: Vec<String> = recent_speeches
+            .iter()
+            .map(|line| crate::speech_history::strip_timestamp(line).to_string())
+            .collect();
+        format!(
+            "你最近 {} 句主动开口（按时间正序，最新在底部）：\n{}",
+            body.len(),
+            body.iter().map(|t| format!("- {}", t)).collect::<Vec<_>>().join("\n"),
+        )
+    };
+
     let prompt = format!(
         "[系统提示·记忆整理]\n\n\
 作为 AI 桌面宠物，你正在做后台记忆维护——这次没有用户互动，只是回顾一下你存的记忆。\n\n\
 当前记忆索引（共 {total} 条）：\n\n```yaml\n{index}\n```\n\n\
+{recent_speeches}\n\n\
 请扫一遍这些条目，判断：\n\
 1. **重复/同主题**：把内容相近的合并成一条更精炼的——保留信息量大的，用 `memory_edit update` 更新；用 `memory_edit delete` 删掉冗余的。\n\
 2. **过期/失效**：明显过时（已完成的 todo、不再相关的临时上下文），用 `memory_edit delete`。\n\
 3. **太琐碎**：完全没有保留价值的（例如随口一句话被记下），删除。\n\
-4. **可以补充细节**：如果某条记忆 description 太短、可以扩展但需要查更多上下文，可以用 `memory_edit update` 加入更完整的 detail_content。\n\n\
-**特殊保护**：`ai_insights/current_mood` 是宠物当前的心情状态，绝对不要删除——可以适当 update 让 description 更准确，但务必保留这条记录、且 description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头格式。\n\n\
+4. **可以补充细节**：如果某条记忆 description 太短、可以扩展但需要查更多上下文，可以用 `memory_edit update` 加入更完整的 detail_content。\n\
+5. **维护 `ai_insights/persona_summary`**：基于上面「你最近主动开口」的句子 + `user_profile` 类下的条目，简要总结你观察到的自己的语气特点和与用户的互动模式。description 控制在 ~100 字以内、写第一人称（如「我倾向...」、「我注意到...」）。如果该条目不存在，用 `memory_edit create` 创建到 `ai_insights/persona_summary`；如果已存在并且这次有新观察，用 `update` 更新。如果最近开口少于 5 句、信号不足，跳过这一项。\n\n\
+**特殊保护**：`ai_insights/current_mood` 是宠物当前的心情状态，绝对不要删除——可以适当 update 让 description 更准确，但务必保留这条记录、且 description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头格式。`ai_insights/persona_summary` 同样保护——是你长期人格画像，可 update 不要 delete。\n\n\
 {focus_log_hint}\
 原则：**保守**。如果不确定一条记忆是否还有价值，就保留。**不要为了整理而整理**——如果索引看起来已经清爽，就什么都不做并输出 `<noop>`。\n\n\
-工作完成后，简短总结你做了什么（合并了几条 / 删了几条 / 没改动）。不需要客气，只要事实。",
+工作完成后，简短总结你做了什么（合并了几条 / 删了几条 / persona_summary 是创建/更新/跳过 / 没改动）。不需要客气，只要事实。",
         total = total_before,
         index = index_json,
+        recent_speeches = recent_speech_block,
         focus_log_hint = focus_log_hint,
     );
 

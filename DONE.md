@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 102：persona_summary 自反思 + 注入 proactive prompt
+- consolidate 流程在主 prompt 里新增第 5 项任务：让 LLM 基于"最近 30 句主动开口" + user_profile 条目，写一段 ~100 字的第一人称自我画像（"我倾向 ..."），通过 `memory_edit create / update` 写到 `ai_insights/persona_summary`。最近开口 < 5 句时跳过（信号不足）。
+- consolidate prompt 现在前置 `recent_speech_block`：把 speech_history 最近 30 行 strip timestamp 后 bullet-list 进 prompt。空时显示"跳过 persona_summary 维护"提示，让 LLM 不要硬编。
+- 特殊保护清单从 1 条扩展为 2 条：current_mood + persona_summary，都不允许 delete，可 update。
+- proactive 侧新增 `build_persona_hint()` 读 `ai_insights/persona_summary` description，非空时格式化成 "你最近一次自我反思的画像（来自 consolidate）：\n{description}"。
+- `PromptInputs` 加 `persona_hint: &'a str`（默认空）；`build_proactive_prompt` 在 companionship 行之后 push_if_nonempty——位置：自我状态 → 时间维度 → 自我反思 → 上下文 hints，叙事顺序合理。
+- run_proactive_turn 调 `build_persona_hint()` 透传。
+- 2 个新 prompt 测试：set 时含 "自我反思的画像" 和具体内容 / 空时不出现该 header。
+- 路线 A 第二步完成：现在宠物有"我和用户走过 N 天"（Iter 101）+ "我观察到自己的语气是 X 这样"（Iter 102）双层人格信息源；下次 proactive 二者并入 prompt，让"使用一年的宠物"和"刚装上的宠物"在语气、自我认知层面都有可观测差别。
+- 196 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 101：陪伴天数注入 prompt（路线 A 入口）
 - 新模块 `src-tauri/src/companionship.rs`：
   - `install_date_path()` → `~/.config/pet/install_date.txt`
