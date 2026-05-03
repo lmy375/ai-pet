@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cσ 设计要点（已实现）
+- **对称的捕捉/注入架构**：Iter Cα 做了"读 user_profile → 注入 prompt"，Cσ 做了"听到 stable fact → 写 user_profile"。两个方向一对就形成完整记忆闭环。这种"对称设计"原则在 butler 路径也有：Cγ-Cπ 的 delegate（Cι 教捕捉）↔ inject（Cγ ambient block）↔ execute（proactive）↔ 留痕（Cε），每个方向都有对应教学。
+- **三正三反例**：单方向例子可能让 LLM 误推（"我累了"是不是该写？）。三正 + 三反明确边界——尤其 "我老是忘喝水" 反例引到 todo+remind，对应 Cι 教过的 reminder vs butler 区分；这里多对一个轴（user_profile vs todo）让 LLM 不会把 ephemeral fact 错判成 stable preference。
+- **dedup via update 而不是堆叠**：user_profile 容易膨胀——用户每提一次都 create 会 1 条变 5 条相同条目。明确教 LLM 如果相近条目存在就 update。代价是 LLM 要先 memory_list 检查（多一次工具调用）——但这成本可接受，因为 user_profile 通常 < 10 条，list 一次便宜。
+- **不强制每次 acknowledge**：曾想要求 LLM "捕捉后必须用一句确认"。但用户大多数时候不希望这种 process noise——「我用 mac」 「好的我记下了」 显得官僚。改成 "简短确认或自然 acknowledge"——LLM 自己判断，可以一句"嗯，mac 党呀"自然带过，也可以完全不提（事实进了 user_profile 就行）。
+- **捕捉 → 注入 因果讲明**：末段一句"这些条目会自动出现在你后续 proactive 的提示里，让 ta 越用越懂用户"——告诉 LLM 它这次捕捉的工作以后自己会受益。这种"教 LLM 它的行为如何回流到自己"是 prompt 工程的隐藏增益层：让 LLM 把这件事看作 self-interest 而不仅是被 instructed。
+- **不改 SOUL.md**：SOUL 是 identity（"我是一只什么样的宠物"），TOOL_USAGE_PROMPT 是 operational（"你应该怎么做事"）。识别 / 处理 user fact 是 operational，不该上升到 identity——否则 SOUL 越来越多 instruction，identity 失焦。
+
 ## Iter Cρ 设计要点（已实现）
 - **data-driven 还是 environmental**：milestone 用 `companionship_days` 计算（counter，data 性质），但语义更像"今天是某种特殊环境状态"。最终选 data-driven 因为：(a) data-driven 已有 `chatty` 这种"基于 counter 的状态"先例；(b) environmental 已经 6 个字段了再加变沉重；(c) data-driven 加一个 u64 参数边际成本低。
 - **rule body 强调"作为底色"**：曾写过更激进的版本「告诉 ta 这是百日，要怎么纪念」——但和 Iter 5 cooldown / Iter 75 chatty 的"克制原则"冲突。LLM 容易把"今天是 100 天"当大事件、强行要求用户回应或开长篇感慨。明确写"轻轻提一句、不要要求 ta 回应、纪念日只做底色"是把这条规则定位成"语气微调"而不是"话题选择"——和 prior persona/mood register 系列同思路。
