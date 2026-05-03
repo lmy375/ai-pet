@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R41：ChatBubble :active press feedback（click 触觉反馈）
+- 现状缺口：R40 给 bubble 加了 fadeIn 入场动画，但 click 时**没有 visual feedback** 表示"点击被收到"。点 bubble → 80ms 后 dismiss 状态生效 → bubble 消失。这 80ms 内用户没看到任何"reaction"，体验上像"我点了，但好像没反应... 哦它消失了"。**native UI 点击感的缺失** —— 普通按钮 / 链接都有 :active 压感，pet bubble 也该有。
+- 解法 — CSS `:active` pseudo-class + transition：
+  - 把 R40 的 `FADE_IN_KEYFRAMES` const 重命名 `BUBBLE_STYLES`，因为现在含两段 style：keyframes + `:active` pseudo-class rule。
+  - 加 `.pet-bubble:active { transform: scale(0.97); }` —— 鼠标按下时 bubble 轻微缩 3%。释放后回弹。
+  - bubble div 加 className "pet-bubble" 让 selector 匹配。
+  - bubble div style 加 `transition: transform 80ms ease-out` 让缩 / 回弹平滑。
+- 决策 — scale(0.97) 而非 0.95 / 0.92：3% 缩压非常 subtle，刚好让眼睛感觉"有反应"但不像"按钮被按瘪"。**保持 polish iter 的克制纪律** (R40 IDEA "subtle > dramatic in pet UX")。
+- 决策 — 80ms transition：浏览器 frame budget 16.67ms，80ms ≈ 5 frame，足够 perceptible 但不显延迟。100-150ms 太慢（按下感觉拖泥带水），50ms 太快（按下感不明显）。80 是 mouse-down 到 visual-press 视觉延迟 sweet spot。
+- 决策 — `:active` CSS 而非 React state：CSS pseudo-class 是 native UI feedback 的标准实现，无需 React 重渲染 + state machine。**最简单实现胜过最 React-y 实现**。inline `<style>` 让 selector 作用域留组件内（class "pet-bubble" 不太可能跟其他组件碰名）。
+- 决策 — 复用 R40 inline `<style>`：把 R40 的 const 改名扩展，不另开 `<style>` tag。**两段相关 style 合并一处**比分开两 inline tag 干净。
+- 决策 — 不写测试：CSS pseudo-class 行为由浏览器保证，无 logic 分支。tsc + cargo build 验证 wiring。
+- 决策 — `transform: scale` 不冲突 fadeIn 的 translateY：CSS animation `pet-bubble-fade-in` 设置 transform，`:active` rule 也设 transform —— 后者覆盖前者。但 fadeIn 只在 mount 220ms 内执行；之后 `transform: translateY(0)` 是 final 状态，`:active` 时 scale(0.97) 取代它。OK。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：宠物 bubble 现在 click 有触觉反馈。R-series 在 user-visible UX 维度连续两 iter (R40 fadeIn + R41 :active press) 投入 — 配合之前 R24 ✕ 角标 / R1b dismiss feedback，bubble 的"作为可交互对象" 终于完整。**user-visible polish 应该 cluster** —— 一段连续投入比每 5 iter 来一次更累积感。
+
 ## 2026-05-04 — Iter R40：ChatBubble fade-in 动画（pop in → 轻轻沉下来）
 - 现状缺口：ChatBubble 通过 React `if (!visible) return null` 条件渲染。每次新 utterance 出现都是 0→1 visibility 突变，**视觉上像系统通知 pop up**，不像活着的宠物自然开口。R-series 一直在投资"信号闭环"和"observability"，但**最直接 user-facing 的 UX 一直没动**。R40 是 UX-first polish。
 - 解法 — CSS keyframes 220ms fadeIn：
