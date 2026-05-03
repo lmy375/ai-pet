@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cβ：proactive prompt 加 weekday/weekend awareness
+- 现状缺口：proactive prompt 里有 time + period（清晨/上午/.../深夜）但没有 weekday vs weekend 区分。LLM 看到 `2026-05-03 14:30（下午）` 要自己反推今天是周几——某些模型版本对日期算术不可靠，且即使算对了也不会在语气上区分"周五晚上 vs 周一上午"。
+- 解法：在 time 行 inline 加一个 `周X · 工作日/周末` 标签。一行字 + 一个枚举，零额外分支，零成本，但能给 LLM 一个清晰的语气切换信号——"周五晚上别再写代码"、"周末早上要不要慢点起"这类话题就有触发面。
+- `proactive.rs` 加三个 pure helper：
+  - `weekday_zh(Weekday) -> &'static str`：Mon..Sun → 周一..周日
+  - `weekday_kind_zh(Weekday) -> &'static str`：Sat/Sun → "周末"，其余 → "工作日"
+  - `format_day_of_week_hint(Weekday) -> String`：返回 `周日 · 周末` 这种合并格式
+  - 拆三个而不是合一个：weekday_zh 和 weekday_kind_zh 都可能将来单独被引用（panel ToneStrip / UI hint），合并函数只负责 `·` 拼接逻辑。
+- `PromptInputs` 加 `day_of_week: &'a str` 字段。`build_proactive_prompt` 的 time 行从 `现在是 X（period）。...` 改为 `现在是 X（period，weekday · kind）。...`。
+- `run_proactive_turn` 调 `format_day_of_week_hint(now_local.weekday())` 后传入。
+- 4 个新单测：weekday_zh 7 个分支、weekday_kind_zh 周末 vs 工作日、format_day_of_week_hint 合并格式、prompt 包含 day_of_week 在 time 行的正确位置。
+- 测试总数 237 → 241。
+- 既有测试保持稳定：`base_inputs` 默认 `day_of_week = "周日 · 周末"`（与 time = "2026-05-03 14:30" 是周日一致），所有断言 `p.contains("下午")` 仍命中（"下午" 现在出现在 `（下午，周日 · 周末）` 里）。
+- 结果：proactive prompt 现在告诉 LLM 周X 和 是否周末，不必从日期反推。一个 prompt 行的小改造，把"今天是哪种日子"的语气基线明确化。
+
 ## 2026-05-03 — Iter Cα：user_profile 摘要注入 proactive prompt
 - 现状缺口：`user_profile` memory 类别只通过 `memory_search` 工具暴露给 LLM，每次主动开口要花一次 tool call 才能拿到"用户喜欢什么 / 几点起床"这种基础信息。env-tool 计数显示 memory_search 调用率不到 1/3，多数时候 LLM 直接凭空起话题，与"伙伴感"目标背离。
 - 解法：把 user_profile 摘要做成 prompt 里的 ambient block，跟 `persona_hint` / `mood_trend_hint` 同级——LLM 不调工具就能看到。
