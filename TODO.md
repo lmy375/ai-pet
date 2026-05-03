@@ -38,8 +38,11 @@
     `evaluate_input_idle_gate` / `evaluate_loop_tick` / `wake_recent` /
     `WAKE_GRACE_WINDOW_SECS` + 全套 gate_tests）2026-05-03 完成。`in_quiet_hours`
     已在 QG5c-prep 时移到 time_helpers，gate 通过 `super::in_quiet_hours` 引用
-  - [ ] QG5e：telemetry 子系统（`record_proactive_outcome` / `append_outcome_tag` /
-    `ProactiveTurnOutcome` / `LAST_PROACTIVE_*` static stashes）
+  - [x] QG5e：telemetry 子系统（2026-05-03 完成 — `record_proactive_outcome` /
+    `append_outcome_tag` / `chatty_mode_tag` + 5 个 `LAST_*` static stashes +
+    `TurnRecord` / `ProactiveTurnMeta` + `PROACTIVE_TURN_HISTORY_CAP` + 4 个
+    Tauri commands。`ProactiveTurnOutcome` 留 proactive.rs 作为 orchestrator
+    return type，telemetry 通过 `super::ProactiveTurnOutcome` 引用）
 
 - [x] Quality Gate 6：减少 panel 高频 IPC（2026-05-03 完成 — Iter QG6）
 

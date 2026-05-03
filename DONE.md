@@ -2,6 +2,27 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG5e：telemetry 子系统拆分到 `proactive/telemetry.rs`（QG5 收官）
+- 现状：QG5d 把 gate 抽走后只剩 telemetry 这片是显著的 cohesive cluster。telemetry 是 proactive 子系统的"观察 + 记录"层：static stashes 让 panel 看到上次 turn 状态 + record_proactive_outcome 把每次 turn 的结果埋成可观测信号。
+- 改动：
+  - 新文件 `src-tauri/src/proactive/telemetry.rs` 239 行
+  - 移过去：5 个 `LAST_*` static (LAST_PROACTIVE_PROMPT/REPLY/TIMESTAMP/TOOLS/TURNS + LAST_FEEDBACK_RECORDED_FOR) + `TurnRecord` struct + `ProactiveTurnMeta` struct + `PROACTIVE_TURN_HISTORY_CAP` const + 4 个 Tauri commands (get_last_proactive_prompt / _reply / _meta / get_recent_proactive_turns) + `chatty_mode_tag` + `append_outcome_tag` + `record_proactive_outcome`
+  - proactive.rs：`mod telemetry;` + glob `pub use` 加进 head；删除原定义
+  - proactive.rs 净减 ~204 行（3232 → 3028）
+- 决策 — `ProactiveTurnOutcome` 留 proactive.rs：是 `run_proactive_turn` 返回类型，属 orchestrator 数据，不 telemetry。telemetry 通过 `use super::ProactiveTurnOutcome;` 引入做 record_proactive_outcome 签名。
+- 决策 — 把 stashes + 命令 + 记录器放同一个 telemetry 模块：本来想 stashes 一个 mod、recorder 一个 mod。但两者高度协作（recorder 不直接动 stashes，但都 serve 同一个 panel observability 目的）+ 模块切多了 grep 反而困难。一个 cohesive "telemetry" mod 比两个 micro-modules 更易理解。
+- 决策 — Tests 留 proactive.rs prompt_tests：append_outcome_tag/record_proactive_outcome 测试在 prompt_tests 通过 super::* 解析；同 QG5c1/QG5c2 的策略。
+- **QG5 收官**：5500 → 3028 行，**~45% reduction**。剩余 3028 行全是真正的 orchestration：spawn loop body + run_proactive_turn 巨函数 + InteractionClock + Tauri commands surface + ProactiveTurnOutcome / ProactiveMessage / ToneSnapshot data types。这是健康的 mid-term 终态——核心流程在主文件，cohesive units 各自模块化。
+- 模块结构最终态：
+  - butler_schedule.rs (628) — 管家任务调度子系统
+  - gate.rs (654) — proactive loop 决策门
+  - prompt_assembler.rs (375) — prompt 组装
+  - prompt_rules.rs (266) — rule label 决策
+  - reminders.rs (283) — 用户提醒
+  - telemetry.rs (239) — 观测 + 记录
+  - time_helpers.rs (317) — 纯时间标签
+- 测试结果：383 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean。
+
 ## 2026-05-03 — Iter QG5d：gate 子系统拆分到 `proactive/gate.rs`
 - 现状：QG5c2 后 prompt 系统 (rules + assembler + tests + 时间 helpers) 都各自模块化。下一片是 gate 决策子系统——决定每次 loop tick 该 Silent / Skip / Run 哪条。
 - 改动：
