@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R45：Tab unread badge — pet 在 hidden 期间开口的 surface
+- 现状缺口：bubble 渲染条件 `visible={showBubble && !hidden && !bubbleDismissed}` —— 当 hidden=true (pet auto-hidden)，proactive 主动开口的 bubble 不显示。但 backend 仍触发 proactive-message 事件、写 speech_history、产生反馈分类（被算 "ignored"）。**用户回来时根本不知道 pet 趁他不在时说过 N 次话**。Tab 是 hidden 期间唯一 visible UI，应该承载这个 unread 状态。
+- 解法 — useEffect 监听 + 计数 + badge：
+  - `hiddenRef = useRef(hidden)` + sync useEffect — 让 listener 永远拿到最新 hidden 值，不需要 listener 跟 hidden 一起 re-subscribe。
+  - 新 `unreadWhileHidden` state，initial 0。
+  - mount 时 useEffect 调 `listen("proactive-message", () => { if (hiddenRef.current) setUnreadWhileHidden(n => n+1); })`。
+  - watch hidden useEffect：`!hidden → setUnreadWhileHidden(0)`。pet 一回来立刻清零。
+  - Tab 右上角 -4/-4 偏移红 badge：14×14 min size，宽度按数字伸缩。9+ 截断（保 chip 紧凑）。border 1.5px white 让 badge 在蓝 tab 上 pop。boxShadow 1px 让 badge 浮起。
+- 决策 — useRef + useEffect 同步 hidden 而非依赖数组：listener 只 subscribe 一次（mount），但 closure 里的 hidden 永远是 mount 时的值。如果 useEffect 每次 hidden 变化重 subscribe，会丢失中间到达的事件。**ref 模式让 listener 长寿但读 latest state**。这是 React closure trap 的标准解法。
+- 决策 — 在 hidden 翻 false 时清零，而非 mouse-enter 那一刻：`!hidden` 是 final state；mouse-enter 是 trigger event。监 state 变化更稳，trigger 可能 fire 多次（mouse re-enter 等）。**state-driven > event-driven** 在 cleanup logic。
+- 决策 — 红色 badge 不 grey/blue：标准 unread notification 视觉语言（iOS / macOS / Windows）。R-series 极简风格但 badge 是已有 universal pattern，遵循比独创好。**用 industry convention 而非自创** —— 用户 mental model 立刻 build 起。
+- 决策 — 9+ 截断：4-digit number "12 / 24 / 100" 会让 badge 变长破坏 tab 形态。10+ 都标 "9+" 是常见做法。也提供"很多" 的 perceptual signal —— "就算 11 跟 21 实际差距大，user 看到 9+ 都知道'累了，赶紧回去看看'"。
+- 决策 — title 解释清零规则：badge 颜色不能教用户它怎么消失。tooltip 写"mouse-enter 让 pet 回来后会自动消失" 让 user 知道行为而不需测试。**panel hover education** R-series 一直延续 — R23/R28 同思路。
+- 决策 — listener 不 re-subscribe on hidden change：`useEffect(..., [])` 让 listener 跟 component lifecycle 走，避免每次 hidden flip 都重 subscribe → unsubscribe。这跟 useChat 的 proactive-message listener 模式一致。
+- 决策 — 不写测试：React UI + useEffect lifecycle 行为由 React/Tauri 保证；类型对齐 tsc 验。**测 logic 不测 wiring** 又一次。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：用户 auto-hide pet 后再回来，tab 上若有红 badge 就知道"pet 找过你 N 次"，而不是哑寂寂回到无信号状态。**polish iter 中加新功能** —— R-series 之前 polish 都纯样式 / 复用，R45 第一次在 polish 期实质加 user-facing 行为。Codified：polish iter 不只 cosmetic，也可以 functional —— 只要范围小且承接 cluster 的 visual coherence。
+
 ## 2026-05-04 — Iter R44：Tab arrow ambient bob 动画（持续召唤）
 - 现状缺口：R43 给 tab 加了 slide-in 入场 + hover widen。但 tab 长时间 hidden 后**静态在那里**，user 5+ 分钟后可能忘记 pet 还在。tab 需要 ambient 提醒 — 不打扰但持续 visible。
 - 解法 — infinite loop 箭头 bob：

@@ -1,5 +1,18 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R45 设计要点（已实现）
+- **polish iter 不限于 cosmetic**：R40-R44 都是纯 visual polish (animation, hover, ambient)。R45 在 polish cluster 里加了**新功能** (unread badge + 计数 + lifecycle 处理)。R-series codified "polish 期 iter 类型多样" 但都默认 visual。R45 突破这个误判 —— polish iter 也可以是 functional。原则是：**polish iter 应该承接 cluster 的 visual coherence**，但不强求 zero-feature。R45 在 tab cluster 里加 badge 是"扩展 tab 这个 component 的 affordance"，跟 cluster 主题一致。
+- **useRef + useEffect 同步是 listener 长寿正解**：useEffect listener 注册一次（mount）但 closure 里 `hidden` 永远是 mount 时的值。如果让 useEffect deps 包含 hidden，每次 hidden 变化 listener 重 subscribe → 中间到达的 events 丢失。解法：`useRef` 持久化 + 单独 useEffect 同步 ref.current = hidden。**这是 React closure trap 的标准解法**，每个长寿 listener 处理 frequently-changing state 都该用。也可以用 zustand / valtio 等外部 state 库，但单 component 内 useRef 最轻。
+- **state-driven > event-driven cleanup logic**：清零 unread 的两种实现：
+  1. `mouse-enter` event handler 内 setUnreadWhileHidden(0)
+  2. `useEffect(..., [hidden])` 内监听 !hidden 后 reset
+  
+  选 (2)。理由：mouse-enter 可能 fire 多次（user 频繁 hover 边缘），event 也可能跟 state 不同步（mouse-enter 触发 unhide 但 unhide 实际由 useAutoHide 内部 logic 决定）。**state-driven cleanup 更稳** —— state 是 single source of truth，cleanup 跟 state 同步天然正确。
+- **industry convention 优于独创**：red unread badge 是 iOS/macOS/Windows 通用 visual。诱惑是 "R-series 极简风格，用蓝/灰更协调"。但极简风格不应该违反广泛认知 —— red badge = "新东西要看" 是 lifelong-learned visual language。**风格 inertia 让位于 universal mental model**。这跟 R42 hover 不加 box-shadow 的思考相反 —— 那是因为 R-series 内一致更重要；R45 是因为 universal pattern 优先。**何时听内部 inertia，何时听外部 convention 是品味判断**。
+- **9+ truncation 表达"too many"**：badge 显 "11" vs "9+"，前者精确但占 2 字宽；后者损失精度但视觉紧凑 + 传 "嗯多到该回去看看"。**panel chip "信息密度" 跟"精度"的取舍**：dashboard 数字普遍 chip 化 (👋3 / 📏 长 / 🤐 沉默 ×N) 都是精确数字。Badge 是 attention-grabber，不是分析数据 —— 9+ 模糊化 acceptable。
+- **listener mount-once 模式**：`useEffect(async () => { unlisten = await listen(...); }, [])` 是 React + Tauri 的标准 listener 注册模式。R-series 多处用（useChat, App.tsx 各处）。**这是 stable mental model**——长寿 listener 配 useEffect empty-deps + cleanup return，frequently-changing state 配 useRef sync。两个 piece 一起就解决"listener 看到最新 state 但不重 subscribe" 的痛点。
+- **R-series 第一次在 polish 期加 user-facing 行为**：R45 不只是动画 / refactor / threshold tune。它实质让 pet 在 hidden 期间的"behind the scenes" speech 变 surfaceable。**polish phase 不该一刀切排除 functional**。判断：feature 是否扩展 cluster 主题？是否 small & contained？R45 答都是 yes —— badge 是 tab 的 affordance 扩展，30 行代码内含。Polish iter 加 functional 的 budget = 跨 component 改动小、scope 不蔓延。
+
 ## Iter R44 设计要点（已实现）
 - **ambient animation = 新动画维度**：R-series 之前的动画都是 *event-driven* — mount fadeIn / hover lift / press scale 都响应特定 event。R44 是 *持续运行* —— infinite loop，独立于 user action。**ambient 是 long-running UI 必备**，让"安静等待中" 的 visual 不至于死板。比如 OS 系统的 Spinner / Pulse light / Cursor blink 都属此类。
 - **subtle magnitude > dramatic magnitude**：translateX(-2px) 是 1/3 箭头宽度。诱惑是 -4 / -6 / -8 让动作明显。但 ambient 的本质是"持续低强度提醒"——动作太大变成"持续高强度干扰"。**用户应该几乎不察觉 ambient 但视觉皮层处理到了**。这种"sub-conscious attention" 是 ambient 设计的核心。
