@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R29 设计要点（已实现）
+- **新加 settings 字段必须 same-iter 上 UI**：R13 (2026-05-03) 加 companion_mode 后端时 IDEA 显式写"前端 UI 暂缺"。这种"先后端，等以后做前端" 的 split 看着合理但实际让"功能上线" 跟"功能可用" 错位 — 7 iter 过去用户没法用。**应该 codify**：每个新 settings 字段同 iter 必须有 UI 入口，否则 = hidden feature。R20 已 codify "新 prompt 信号 = 同 iter panel surface"，R29 把这条扩展到 "新 settings 字段 = 同 iter UI 入口"。
+- **option label 显数学 multipliers 是 surface-the-math**：诱惑是 dropdown 写简短 "balanced / chatty / quiet" 让用户自己 read docs 理解差异。但 dropdown 是用户做选择的瞬间 —— surface the consequence at decision time 比让 user 走流程查文档好得多。R23 cooldown hover "configured × mode × feedback = effective" 同思路 — **panel UI 应该把数学 surface 出来**让用户可见可算。
+- **多层系统的 settings UI 应解释 layering**：companion_mode 是 base layer，R7 adapter 在它之上叠加。如果 UI 不说明 "你选了 chatty 但实际可能更安静（R7 在 fine-tune）"，user 会困惑 "为啥我选 chatty 还是安静"。**explicit limitations** 比 implicit power 让 user 心智模型对齐。这条原则适用所有有 layered behavior 的系统。
+- **string vs union-type 是前后端 schema 经济**：TypeScript 喜欢 union "balanced" | "chatty" | "quiet"——type-safe 优雅。但**后端 R13 选了 String 不 enum**（serde tolerance / 未来扩展），前端硬约束 union 等于让前端先进入"加新模式必须先改 union"局面。**string + 文档约定** = 前后端 schema 同步无摩擦。union 在这里是 "looking smart but creating friction"。
+- **dead code 不投资**：SettingsPanel.tsx 是 legacy file，无 import 调用。诱惑是"也加上 dropdown 保持一致"。但加上等于持续维护永远不被加载的代码。**deletion is the cleanest fix** — 但今天不删（不在本 iter 范围），至少**不投资 dead code**。下个 cleanup iter 该考虑 grep + delete。
+- **R-series 还债节奏**：R29 是回头补 R13 留的债，跟 R18（R16 IDEA 标的 helper 抽取）/ R21+R22（R20 codified rule audit）/ R28（hover details → at-a-glance）一样属于"有意识的回头收口"。**长 iter 系列的健康标志是周期性还债**——纯做新功能的系列会越积越多 hidden cost。
+- **base=0 invariant 一直延续**：R13 IDEA 已强调 cooldown_seconds=0 时三档都返 0（用户 explicit opt-out 不被任何 multiplier 重新打开）。R29 hint 文案明确这一点 — UI 帮助 user 看到 invariant 不会被 mode 选择破坏。**对 user 透明 invariant 是 trust-building**。
+
 ## Iter R28 设计要点（已实现）
 - **hover details → at-a-glance surface 是 incremental upgrade pattern**：第一次 surface 一个新信号通常用 hover/tooltip 包住所有细节（容易写、不抢视觉）。第二次升级把"哪部分信息有价值前推到 chip 颜色 / 字重 / 文案"。R23 是第一次（hover breakdown），R28 是第二次（chip color band）。**这种 incremental discovery 让"什么细节值得前推" 来自实际用户经验，而不是预先想象**。新 chip 上线先 hover-only 是合理的。
 - **变化的色彩才有信号意义**：cyan 保 default 是有意识的。如果三 band 都变色（cyan / green / amber → red / blue / yellow），baseline 状态消失，每个状态都被 visually elevated 等于没人被 elevate。**保留一种"安静默认"色让 user 知道"现在没事"**。这是 neutral-as-baseline 设计。

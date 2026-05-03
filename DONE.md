@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R29：companion_mode 下拉菜单进 PanelSettings（R13b 7-iter 还债）
+- 现状缺口：R13 (2026-05-03) 加了 companion_mode 后端字段 + 三档行为，但 IDEA 写"前端 UI 暂缺，得手改 yaml 才能换 mode" 留 R13b follow-up。**7 iter 过去 ta 还在 yaml-only**，没真正落地到普通用户。R20 codified rule "新加 prompt hint 同 iter 加 panel surface" 也适用 settings：**新加 settings 字段同 iter 加 UI** 否则等于隐藏功能。
+- 解法 — TS 类型 + dropdown UI：
+  - `useSettings.ts`：ProactiveConfig 接口加 `companion_mode: string`，DEFAULT_SETTINGS proactive 块加 `companion_mode: "balanced"`。注释解释三档语义。
+  - `PanelSettings.tsx` 默认 form state 同步加 `companion_mode: "balanced"`。
+  - 新 `<select>` 紧接 chatty_day_threshold，三 `<option>` 显 "balanced — 默认（不改 base）" / "chatty — ×0.5 cooldown · ×2 chatty 阈值（多说）" / "quiet — ×2 cooldown · ×0.5 chatty 阈值（少说）"。
+  - 下方 12px hint 文案解释 (a) base=0 时三档都 0（保 R7 explicit-opt-out invariant）+ (b) R7 反馈适配器在此模式之上再叠加 ratio 调整。
+- 决策 — option label 直接显数学 multipliers：诱惑是简短 "balanced / chatty / quiet"。但 user 选模式时**最关心的就是"对实际行为啥影响"**——直接显 ×0.5 / ×2 让 mental model 立刻建。这是 R23 cooldown hover "derivation" 同思路 — surface the math。
+- 决策 — hint 文案明确 R7 叠加：用户可能困惑 "我选了 chatty 但有时候 pet 还很安静"。hint 解释 "R7 adapter 在此基础上再叠加" 让 expectation 准确：mode 是 base，feedback 是 fine-tune，两层 compose。**多层系统的 settings UI 应当解释自己的限制**——什么 setting 不会单独决定行为。
+- 决策 — value 用 string 不 enum：跟 backend 保持类型一致（R13 时已选 String 不 enum）。如果用 union type "balanced" | "chatty" | "quiet"，未来加新 mode 必须改前端。string 容忍未来扩展。**前后端一致的 schema 形态** > **过度类型安全**。
+- 决策 — 不做 SettingsPanel.tsx：grep 发现 SettingsPanel.tsx 是 dead code（无 import 调用）。只改 PanelSettings.tsx 即真正用户面。**dead-code 不投资**。
+- 决策 — 不加新单测：UI 是 form binding + 持久化，无新逻辑。tsc 验类型对齐 + cargo build clean 验 backend 没破。R13 时已有 6 单测覆盖 apply_companion_mode 三档行为。
+- 测试结果：478 cargo（无变化）；clippy clean；tsc clean。
+- 结果：用户现在能在 PanelSettings 直接选 chatty/balanced/quiet 三档而不用碰 yaml。R-series codified rule "settings 新字段 = 同 iter UI"——R29 是回头还 R13 时漏的债，下次新加 settings 字段应该 same-iter 上 UI 不再延期。
+
 ## 2026-05-04 — Iter R28：cooldown chip color-code by feedback band（R23 → at-a-glance）
 - 现状缺口：R23 给 ⏳ 冷却 chip 加了完整 derivation hover ("configured × mode × feedback = effective"). 但 chip 颜色 fixed cyan — **band 信息躲在 hover 后面**，user 必须把鼠标停在 chip 上才知道 R7 adapter 是否在干预。本来一眼能给的状态变成两步操作。
 - 解法 — 三色 mapping 沿 R23 现有 band 字段：
