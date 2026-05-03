@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter TR2 设计要点（已实现）
+- **observe-only 是 security 工作里的杀手锏**：直接上"高风险即阻塞" 等于把 bash / write_file / memory delete 全停掉，宠物可能整周无法做任何事。observe-only = 分类逻辑就位 + 数据流通 + 真实场景跑过几天，看到具体 high-risk pattern 后再设计 gate UX。这是"先收集 ground truth 再设计 enforcement" 的 shadow-deploy pattern。
+- **`_purpose` 参数留位但本 iter 不用**：保留签名让 TR3 + 未来语义策略（"purpose 含 'cleanup'+'rm -rf' 直接拒"）不需要再改 callers。这是 TR1 的"对未来留口子" 设计的延续。
+- **`safe_alternative` 是机制级帮 LLM 学好**：单纯 reject 无意义；告诉模型"想做 X 应该走 Y" 让它下次自己绕开。bash → 专用工具，write_file → edit_file，memory delete → update。这种 alt 提示也是给 TR3 review UI 准备 — 拒绝按钮配 alt 文案，用户能瞬间懂为什么拒。
+- **三档分级而非二元**：原本想做 binary（safe / dangerous）。考虑后发现：edit_file 是"局部改本地文件" — 比 write_file（任意覆盖）安全但比 read_file 危险，硬塞二元会假装它跟 bash 同等级，迫使所有人工审核流程过它。三档让 medium 自然跨过，UI 上也有差异化处理空间。
+- **tool 名是分类主轴，不是 args 内容**：除了 memory_edit 看 action，其他工具都按 name 整体分类。理由：(a) args 是 LLM 写的，攻击者可能伪装；(b) 工具名是注册时定义的常量，是更可靠的边界。TR3 / 未来需要细化某个 high tool（如 bash 内有"git status"等只读命令）再做 inner classifier — 那是分立 work。
+- **新模块 vs 函数加 chat.rs**：放进 chat.rs 早晚污染那个 1000+ 行文件；放 src/tool_risk.rs 是 standalone module，TR3 / 任何风险 policy / 未来"风险随时间 decay" 等都可在这模块内长大，chat.rs 只引用 2 个 pub fn。原则：当一个新概念产生 2+ pub fn 就值得单文件。
+
 ## Iter TR1 设计要点（已实现）
 - **TR 系列前置 = 给 risk decisioning 提供数据源**：TR2（risk assessment）和 TR3（人工审核 gate）的输入都包含 purpose。如果不先做 TR1，后续 risk_level 决策只能基于工具名 + args，缺少最关键的"模型为什么调它"。先建立 protocol 让数据就位，再决定怎么用。
 - **purpose 进 args 而不是 outer field**：OpenAI 和 Anthropic 的 tool calling 协议，`function.arguments` 是 LLM 唯一可控的 JSON。把 purpose 放进 args 让 LLM 通过现有协议传递，零网络/序列化改动；放到 outer 字段需要 wrapper 扩展协议层，跨 MCP 还要协调。
