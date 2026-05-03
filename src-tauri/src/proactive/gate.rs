@@ -161,6 +161,42 @@ pub fn evaluate_input_idle_gate(
 pub static MUTE_UNTIL: std::sync::Mutex<Option<chrono::DateTime<chrono::Local>>> =
     std::sync::Mutex::new(None);
 
+/// Iter R55: transient instruction note — distinct from mute (which fully
+/// blocks). Note lets pet **still speak** but with user-supplied context
+/// like "I'm in a meeting until 2pm" / "I'm not feeling well today, be
+/// gentle". Stored as text + expiry. Injected into proactive prompt as
+/// a directive; auto-clears at expiry like mute. text + until paired so
+/// stale note can't outlive its meaning.
+#[derive(Clone, Debug)]
+pub struct TransientNote {
+    pub text: String,
+    pub until: chrono::DateTime<chrono::Local>,
+}
+
+pub static TRANSIENT_NOTE: std::sync::Mutex<Option<TransientNote>> = std::sync::Mutex::new(None);
+
+/// Iter R55: pure helper computing whether the transient note is still
+/// active (not expired). Returns the text when active, None otherwise.
+/// Pure / testable — caller passes both `note` (from TRANSIENT_NOTE
+/// static or anywhere) and `now` (for deterministic tests).
+pub fn compute_transient_note_active(
+    note: Option<&TransientNote>,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<String> {
+    let n = note?;
+    if n.until <= now {
+        return None;
+    }
+    Some(n.text.clone())
+}
+
+/// Iter R55: production wrapper. Reads TRANSIENT_NOTE static + Local::now()
+/// and delegates to `compute_transient_note_active`.
+pub fn transient_note_active() -> Option<String> {
+    let note = TRANSIENT_NOTE.lock().ok().and_then(|g| g.clone());
+    compute_transient_note_active(note.as_ref(), chrono::Local::now())
+}
+
 /// Iter R52 / R53: pure helper computing remaining mute seconds. Returns
 /// `None` when `until` is None (never set / cleared) or already past.
 /// Returns `Some(positive)` when mute is still active. Pure / testable —
@@ -748,5 +784,61 @@ mod tests {
         let now = now_at(2026, 5, 4, 10, 0);
         let until = now + chrono::Duration::seconds(1);
         assert_eq!(compute_mute_remaining(Some(until), now), Some(1));
+    }
+
+    // -- Iter R55: compute_transient_note_active tests ------------------------
+
+    #[test]
+    fn transient_note_returns_none_when_note_is_none() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert_eq!(compute_transient_note_active(None, now), None);
+    }
+
+    #[test]
+    fn transient_note_returns_text_when_active() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = TransientNote {
+            text: "I'm in a meeting".to_string(),
+            until: now + chrono::Duration::minutes(30),
+        };
+        assert_eq!(
+            compute_transient_note_active(Some(&note), now).as_deref(),
+            Some("I'm in a meeting"),
+        );
+    }
+
+    #[test]
+    fn transient_note_returns_none_when_expired() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = TransientNote {
+            text: "stale".to_string(),
+            until: now - chrono::Duration::minutes(5),
+        };
+        assert_eq!(compute_transient_note_active(Some(&note), now), None);
+    }
+
+    #[test]
+    fn transient_note_returns_none_at_exact_expiry() {
+        // until == now → expired (boundary semantics: gate releases at
+        // exact expiry, no extra second). Same idiom as compute_mute_remaining.
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = TransientNote {
+            text: "edge".to_string(),
+            until: now,
+        };
+        assert_eq!(compute_transient_note_active(Some(&note), now), None);
+    }
+
+    #[test]
+    fn transient_note_one_second_before_expiry_still_active() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = TransientNote {
+            text: "almost gone".to_string(),
+            until: now + chrono::Duration::seconds(1),
+        };
+        assert_eq!(
+            compute_transient_note_active(Some(&note), now).as_deref(),
+            Some("almost gone"),
+        );
     }
 }

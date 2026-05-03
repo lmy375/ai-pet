@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R55：transient instruction note 完整 stack（"我在开会"上下文留言）
+- 现状缺口：R52 mute 完全阻塞 pet — 适合"完全静一段时间"。但用户经常想的是"我在开会，你别打扰但万一有真急事还是说一声"或"今天身体不舒服请轻点开口"——**需要 context 而非 silence**。memory_edit 写 todo 类是 future 提醒不是 current state directive。需要新工具：transient instruction note。
+- 解法 — 完整端到端 feature stack：
+  - **Backend gate.rs**: TransientNote struct (text, until) + TRANSIENT_NOTE static + 纯函数 `compute_transient_note_active(note, now) -> Option<String>` + production wrapper。5 单测覆盖 None / active / expired / boundary / 1s before。
+  - **Backend proactive.rs**: 3 Tauri 命令 `set_transient_note(text, minutes)` / `get_transient_note() -> (text, until_iso)` / 实际清除走 set_transient_note(_, 0)。
+  - **Prompt 注入**：PromptInputs 加 `transient_note_hint`。run_proactive_turn 包装 wrapper 加 `[临时指示]` header + 主文本 + "尊重 / 配合，不要怀疑或追问" 指令。redact 后注入 prompt。
+  - **ToneSnapshot**: `transient_note: Option<String>` 字段 from `transient_note_active()`。
+  - **Frontend chip**: PanelToneStrip cyan #0891b2 "📝 {text}" chip，maxWidth 240px + ellipsis 防长 note 撑爆。
+  - **Frontend UI**: ChatPanel 加 📝 button between 🔇 and ⚙。click 打开 popover —— textarea + 4 preset durations (30/60/120/240 min) + 保存/解除 buttons。outside-click close。
+  - **lib.rs**: 注册 2 新命令。
+- 决策 — note ≠ mute：mute 是 binary block，note 是 contextual augment。两者**正交而非互斥** —— 可同时启用。比如"开会期间静音 30 min + 留 note '在开会到 14:00'"，pet 半小时不开口，下次 mute 解除后开口时已读到 note。
+- 决策 — `[临时指示] ... 不要怀疑或追问`：prompt 文案明确给 LLM 强 directive。一般 hints 是建议，note 是用户主动 explicit 状态——LLM 应该 *trust* 不 *question*。比 "user might be busy" 这种 inference 更直接。
+- 决策 — 4 preset durations 30/60/120/240：跟 R54 mute presets 对齐 30/60/120 + 加一个 240 (4 hour for 长会议 / 半天)。**preset 数值跨同 idiom UI 一致**让 mental model 简单。
+- 决策 — note 自动到期 vs 手动清：到期类似 mute —— "note 是 *transient* 不是永久"。如果 user 想永久"今天我状态不好"该用 memory_edit 写 ai_insights 类。**transient + persistent 用不同工具**避免混淆。
+- 决策 — popover textarea 共用 .pet-chat-input class：reuse R46 textarea focus ring style。**已建立的 visual idiom 跨多 input 应用** = consistent UX。
+- 决策 — ChatPanel 加第三按钮（📝/🔇/⚙）：原本两按钮 (🔇/⚙) 已有 R52 / 既有。R55 加 📝 让 ChatPanel 工具区从 2 → 3 button。**ChatPanel 工具区是用户 quick action 集中点**——R-series 应该把高频 user-control surface 放这里，不是埋进 PanelDebug 等深处。
+- 决策 — chip 显文本 maxWidth 240 + ellipsis：长 note ("我今天身体特别不舒服请尽量少打扰..." 几十字) 不应撑爆 panel。240px 显示开头，hover full text。**panel chip 视觉空间永远有限**，长内容靠 hover。
+- 测试结果：505 cargo（+5）；clippy clean；fmt clean；tsc clean。
+- 结果：**R-series 第二个真实 vertical feature stack 完整 ship**（R52 mute = 第一个）。用户现在能："给 pet 留个临时 context" 与"完全 mute pet" 双工具。**R52 + R55 形成 user-control trio 雏形**：silence (R52) / context (R55) / 还可加 dynamic mood preset 等。R52→R53→R54→R55 是连续 4 iter 在 user-control 维度的 cluster。
+
 ## 2026-05-04 — Iter R54：mute 按钮加右键 preset 菜单（fast + flexible 双轨）
 - 现状缺口：R52 mute button 是单 toggle —— 30 min 默认。R52 IDEA 写过"未来加 preset menu"。R52 决策当时是 "fast path > flexible path 当 fast path 覆盖大多数用例"。R54 同时加 flexible path（不是替换 fast）—— 左键保 R52 toggle，右键打开 preset 菜单。**双轨设计：fast 路径满足 90%，flexible 路径覆盖剩 10%**。
 - 解法 — 浮层 menu + outside-click close：

@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R55 设计要点（已实现）
+- **mute vs note 是 user-control 双工具**：mute 是 binary block (R52)，note 是 contextual augment (R55)。两者**正交而非互斥**，可叠用。这种"不同工具承载不同 user intent"是 mature UX 的标志 —— 一个万能工具 (e.g. settings flag) 永远不如多个针对性工具好用。**R-series 进入 mature 期后 user-control 应该展开成多种细分**。下一候选：mood preset quick toggle ("让 pet 这小时低调一点 / 活泼一点"), tone preset 等。
+- **directive 强度跟来源对应**：一般 prompt hint 是 system inference (e.g. "用户最近多次被忽略" — 系统观察)。R55 transient note 是 user explicit input。文案 "[临时指示] ... 不要怀疑或追问" 比一般 hints 强得多 —— 因为来源 trustworthy。**LLM 看到 prompt 时应根据 source 调 trust** —— 系统 inference 可争议，user explicit 该 obey。这条原则可推广：未来加 user-set 字段时都用 explicit "[xxx]" header 标注 trust level。
+- **跨 idiom UI consistency**：R55 popover preset durations 用 30/60/120/240 跟 R54 mute presets 对齐（除 R55 多一档 240 给 longer meeting）。**多个 popover idiom 跨子系统 preset 数值统一** = user 学一套数字概念覆盖多场景。如果 R55 用 15/45/90/180，user 要建立第二个 mental model。
+- **transient + persistent 用不同工具**：transient note 是临时 (auto-expire)，persistent state 用 memory_edit 写 ai_insights。**两种数据生命周期对应两种工具** —— 如果都塞 memory，user 要每天清理"假持久"的临时数据。生命周期 → 数据存储位置匹配。
+- **outside-click close 跟 R54 idiom 复用**：R55 popover 同样 window addEventListener("click", close)。第二次同 idiom = pattern 进入 R-series stable vocabulary。但**第三个出现时该抽 PetPopover 共享组件**（R39 use-3+ 抽规则）—— Mute menu (R54) + Note popover (R55) 是 use-2，下次再加 popover 就是 use-3+ trigger。
+- **R52→R53→R54→R55 是 user-control cluster 4 iter**：4 iter 都聚焦"用户 control pet 的 quick path"。R52 backend feature, R53 test debt, R54 fast+flexible 扩展，R55 第二个 control 工具。**cluster 内分阶段：feature ship → test → extend → 同主题不同工具**。这种节奏比 single-feature-per-iter 更累积，因为 cluster 内 iter 共享 mental model，新工具复用旧 idiom。
+- **vertical feature stack 是 mature phase 的高 ROI iter**：R52 / R55 都端到端 backend + frontend + tests。比 polish iter (单纯样式) 投入大但 user-visible value 也大。**polish: feature ratio in mature phase 应该 ~3:1** —— polish iter 数量多但单 iter 影响小，feature iter 数量少但单 iter 影响大。R-series 50+ iter 中 feature iter (R12, R52, R55) ≈ 5-7 个，符合预期。
+
 ## Iter R54 设计要点（已实现）
 - **fast + flexible 双轨设计 vs 单一 path**：R52 IDEA 写"fast path > flexible path 当 fast path 覆盖大多数用例"。R54 进化为**双轨**：fast path 不换（左键 30min），flexible path 加（右键 menu）。**保留 fast path 的关键** —— 不破坏既有用户的 muscle memory。如果 R54 改成"左键打开菜单"，R52 用户得多一次 click。**进化要 additive，不要 replacing**。Web app 标准：左键 = primary action，右键 = secondary/extended menu。
 - **outside-click close 是 popover 必备**：window.addEventListener("click", close) + stopPropagation 内部 → outside click 关。这种 30 行 popover logic 不需要 floating-ui / portals lib。**小 popover 自己写比 lib 经济** —— 同 R39 "use-3+ 才抽" 思路：单 popover 不抽组件 / 不引入 lib。第 2-3 个 popover 出现时再抽 PetPopoverMenu 共享组件。

@@ -146,6 +146,9 @@ export interface ToneSnapshot {
   // Chip fires whenever > 0 (no threshold — every active mute is worth
   // surfacing).
   mute_remaining_seconds: number | null;
+  // Iter R55: transient instruction note text. null when no active note.
+  // Different from mute — note adds context, doesn't block.
+  transient_note: string | null;
 }
 
 /**
