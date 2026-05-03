@@ -758,6 +758,10 @@ const PROMPT_RULE_DESCRIPTIONS: Record<string, { title: string; summary: string 
     title: "积极开口",
     summary: "刚回桌 + 有今日 plan：是「先关心、再带 plan」串起来的复合时机。",
   },
+  "long-idle-no-restraint": {
+    title: "久未开口",
+    summary: "≥ 60min 没主动说话 + 不在克制态：找个贴合用户当下的轻话题。",
+  },
 };
 
 function kindColor(kind: string): string {

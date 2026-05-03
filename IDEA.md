@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 93 设计要点（已实现）
+- **None == long-idle 的语义选择**：从未开口（None）当作 long-idle 处理。理由：fresh session 时用户面对一个完全没说话过的宠物，宠物自己应该开第一口；如果 None 当作"未知，不触发"反而把 first-session 用户排除在外。这条规则的精神是"沉默太久"——None 是"沉默无穷大"，应该最满足条件。
+- **三参数门槛设计**：long-idle && under_chatty && !pre_quiet。三者都得满足才积极开口——单 long-idle 触发会跟 chatty / pre-quiet 冲突（已经聊够了 / 该睡了），过于鲁莽。三因素叠加才是真正的"安全开口窗口"。
+- **chatty / long-idle 互斥与 pre-quiet / long-idle 互斥的处理**：测试上没法 single inputs 同时触发所有 10 label。改成 fingerprint 测试两 scenario combined coverage——这是"测试设计跟随领域设计"。如果硬塞 single inputs 通过测试，反而是把不可能的逻辑组合写进 production 代码。
+- **rule 文本特意反 "问候 / 问感受"**：long-idle 规则明确说"不是问候、不是问感受，是真的「看到 ta 在做 X 想到 Y」"。observation: 沉默已久后开口最容易退化成"还好吗"这种无意义模板；规则强制 LLM 调 active_window 看出真实 context 后再开口，杜绝 generic 问候式打扰。这是 prompt 设计上"明确反例"的力量。
+- **数字字段补 cadence_hint 字符串的不足**：cadence_hint 是文本（如"刚说过话，话题还热"），LLM 解析它需要对中文做语义理解。数字字段允许规则本身做 deterministic 比较（`>= 60`），LLM 不需要做模糊匹配。两者互补：人读字符串方便，规则用数字精准。
+- **测试 base_inputs 默认 Some(8) 而非 None**：默认值要让现有测试不受新规则影响。Some(8) 表示"刚说过话"——和 cadence_hint 的默认文本对齐，且 < LONG_IDLE_MINUTES 不触发。如果默认 None 反而会让所有现有测试都激活 long-idle，违反"添加新功能不破坏老测试"。
+
 ## Iter 92 设计要点（已实现）
 - **从单向限制到双向引导**：前 8 条规则全是"在 X 条件下宠物应该克制 / 校正 / 按某种方式说话"。Iter 92 第一次出现"在 X+Y 复合条件下宠物**应该开口**"，反向用 prompt 系统鼓励主动行为而不是只压制。"复合规则"是合理的第三类——单一信号可能不够强，复合信号可以解锁不同语调。
 - **三类规则架构**：environmental（瞬时状态触发）/ data-driven（统计驱动）/ composite（多信号合成）。每类有自己的 helper，三者 chain 为 active_prompt_rules。这个分类不是为了好看——是把"什么样的输入触发什么类型的引导"拆成可独立扩展的轴。
