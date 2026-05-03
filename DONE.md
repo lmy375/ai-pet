@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R9：reactive chat 注入"最近主动开口" system layer
+- 现状缺口：proactive 的 bubble 说了"看你还在写 Rust"，用户点开 chat 面板回"刚才说啥来着？"——pet 一脸茫然。bubble 历史不在 chat session 的消息列表里。proactive prompt 已经有 `speech_hint`（避免重复），但 reactive 路径完全看不到自己最近的主动话语。
+- 解法 — 第三个 inject_*_layer：
+  - 新 `pub fn format_recent_speech_layer(lines: &[String]) -> String`：纯 formatter，把 strip_timestamp + redact_with_settings 后的 bullet list 拼到一个"最近主动开口" 系统消息。空列表 / 全空行 → 返空（caller skip 注入）。
+  - 新 `pub async fn inject_recent_speech_layer(messages)`：和 inject_mood_note / inject_persona_layer 同模式 —— 在 first non-system 位置插入系统消息。
+  - chat() Tauri 命令在 inject_persona_layer 之后调一次 inject_recent_speech_layer。
+- 决策 — 沿用 inject_*_layer pattern：reactive chat 已经有 mood_note + persona_layer 两个系统消息层。recent_speech 是同模式自然延伸。每次 chat turn 都重新 build（recent_speeches 是 file IO，每次 ~ms）。
+- 决策 — 5 条窗口 vs proactive 的 5 条对齐：proactive prompt 也读 recent_speeches(5)，reactive 用同样窗口 = 同一段 mental model — "宠物的最近 5 句"。如果未来想分开就再考虑。
+- 决策 — redact_with_settings 应用：speech 内容可能含已删的私人信息。其他 inject_* 路径都 redact，新增层一致。
+- 决策 — 空列表 silent skip（无系统消息）：让"刚装机的用户" 第一次 chat 时不看到神秘的"最近主动开口" 但啥也没说的 bullet。
+- 测试（4 新单测）：
+  - `format_recent_speech_layer_returns_empty_for_no_lines`
+  - `format_recent_speech_layer_skips_blank_lines`（防 ghost bullets）
+  - `format_recent_speech_layer_renders_bullets_in_order`（旧→新 ordering preserved + 钉死 header signal "旧→新" + "接住话题"）
+  - `format_recent_speech_layer_strips_timestamps_for_readability`（不浪费 LLM token 在 ISO 串）
+- 测试结果：387 cargo（+4）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：reactive chat 现在有完整 "system context"：SOUL.md → mood_note → persona_layer → recent_speech_layer → 用户消息。"你刚才说啥？" → pet 能从 system 消息看到自己说过什么并接续话题。chat 面板与 bubble 历史的"叙事断层" 关上了。
+
 ## 2026-05-03 — Iter QG5e：telemetry 子系统拆分到 `proactive/telemetry.rs`（QG5 收官）
 - 现状：QG5d 把 gate 抽走后只剩 telemetry 这片是显著的 cohesive cluster。telemetry 是 proactive 子系统的"观察 + 记录"层：static stashes 让 panel 看到上次 turn 状态 + record_proactive_outcome 把每次 turn 的结果埋成可观测信号。
 - 改动：

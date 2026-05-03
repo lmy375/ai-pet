@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R9 设计要点（已实现）
+- **bubble 历史 ≠ chat session 历史是产品理念分裂**：bubble 是即时通知（F1 自动消失 60s），chat session 是持久对话。但用户心智里两者是"同一只宠物在跟我说话" — pet 自己看不到自己的 bubble 是个 broken mental model。R9 用一层 system 消息把两者粘合，用户问"刚才说啥" 终于能得到答案。
+- **inject_*_layer 已经成 idiomatic pattern**：mood_note + persona_layer + soul_refresh + 现在 recent_speech。每个都是 "在 first non-system 位置插入一条系统消息" 的同模式。chat() 顶部的"信息分层" 架构清晰可扩展——下一个想塞的 context（最近 mood 趋势？管家任务摘要？）都按这模板加。
+- **空列表 silent skip 是新装机用户保护**：format_recent_speech_layer 返回空字符串时 caller 不插入 system 消息。新装机用户第一次 chat 时 LLM 系统消息只有 SOUL + mood + persona，没有"最近主动开口" 的诡异空 bullet 段。这种"零数据时干净"的细节是好 UX 的累积体现。
+- **redaction 一致**：proactive 的 speech_hint 已经 redact（QG4），R9 layer 也 redact —— 两者读同一份 speech_history.log，应用同一份 privacy filter。任何走 LLM 的内容都过 redact 是 R series 之后的稳定 invariant。
+- **窗口 5 与 proactive 对齐**：故意。proactive prompt 看 5 条避免重复，reactive 也看同样 5 条 — pet "记得" 的范围两者一致，符合"同一个宠物" 的体感。如果某天发现 reactive 需要更长 history 再单独调。
+- **测试钉死 header 字符串契约**："旧→新" + "接住话题" 是给 LLM 的 instruction signal。如果未来误删 / 改字，alignment 测试不会捕（这是 chat 模块不是 panel）；这一组 4 个 unit test 是唯一防回归。
+
 ## Iter QG5e 设计要点 + QG5 全程总结（已实现）
 - **stashes + recorder 一个 mod**：两个子模块也合理，但合在一起的优势：(a) cohesion — 都 serve 同一目的（panel observability + 决策日志）；(b) future maintainer 一眼看到"telemetry 这片是什么" 不用跨 file；(c) test 命名也容易（`mod tests` 一个 mod）。模块化的目标是 readable 而不是"切到极致"。
 - **`ProactiveTurnOutcome` 留 parent 是 orchestrator 数据 vs telemetry 数据的边界**：record_proactive_outcome 拿这个数据来记录，但 outcome **本身** 是 orchestrator (run_proactive_turn) 的产物。把 ProactiveTurnOutcome 移到 telemetry 反而暗示"telemetry 决定 outcome 形态"——倒了。`use super::ProactiveTurnOutcome;` 显式 import 表达"我消费这个 type，但不拥有它"。

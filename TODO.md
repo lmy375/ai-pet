@@ -15,7 +15,8 @@
 
 - [x] Quality Gate 4：补齐 prompt reinjection redaction（2026-05-03 完成 — Iter QG4）
 
-- [ ] Quality Gate 5：拆分 `src-tauri/src/proactive.rs`（incremental——一次一片）。
+- [x] Quality Gate 5：拆分 `src-tauri/src/proactive.rs`（2026-05-03 完成 — 7 slice
+  全部完成，5500 → 3028, ~45% 缩小）。
   - AI prompt：每个 iter 抽一个完整 cohesive 子系统到 `src/proactive/<sub>.rs`，glob `pub use`
     re-export 保 public API 不变。先做行为不变的纯移动，之后行有余力再做内部清理。
   - [x] QG5a：reminders 子系统（`ReminderTarget` / `parse_reminder_prefix` / `is_reminder_due` /

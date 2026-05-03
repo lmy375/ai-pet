@@ -183,6 +183,57 @@ pub async fn inject_persona_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMes
     messages
 }
 
+/// Iter R9: format a "what the pet has been saying" reactive-chat hint from
+/// recently-spoken proactive utterances. Pure — tests pass arbitrary lines.
+/// Empty input returns empty string so the caller can `push_if_nonempty`.
+///
+/// Distinct from the proactive prompt's `speech_hint`: that one is meant to
+/// help the *next proactive turn* avoid repeating itself. This injection
+/// lets the *reactive chat* see what was said in the bubble so the user
+/// asking "你刚才说什么？" gets a coherent answer.
+pub fn format_recent_speech_layer(lines: &[String]) -> String {
+    let bullets: Vec<String> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            // Reuse the same timestamp-stripping helper proactive uses; redact
+            // private terms before re-injection (Iter QG4 pattern).
+            let stripped = crate::speech_history::strip_timestamp(line);
+            format!("· {}", crate::redaction::redact_with_settings(stripped))
+        })
+        .collect();
+    if bullets.is_empty() {
+        return String::new();
+    }
+    format!(
+        "[最近主动开口] 你最近主动跟用户说过的几句话（旧→新），用户如果在回应这些就接住话题：\n{}",
+        bullets.join("\n")
+    )
+}
+
+/// Inject the recent-speech layer into a reactive chat message list. Same
+/// "after leading systems, before user/assistant history" insertion rule as
+/// `inject_mood_note` and `inject_persona_layer`. No-op when there are no
+/// recent proactive utterances yet.
+pub async fn inject_recent_speech_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let recent = crate::speech_history::recent_speeches(5).await;
+    let body = format_recent_speech_layer(&recent);
+    if body.is_empty() {
+        return messages;
+    }
+    let note: ChatMessage = serde_json::from_value(serde_json::json!({
+        "role": "system",
+        "content": body,
+    }))
+    .expect("static recent-speech layer JSON should always parse");
+    let insert_at = messages
+        .iter()
+        .position(|m| m.role != "system")
+        .unwrap_or(messages.len());
+    messages.insert(insert_at, note);
+    messages
+}
+
 /// System prompt for tool usage best practices, injected into every chat pipeline request.
 const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 
@@ -893,6 +944,11 @@ pub async fn chat(
     // long-term identity (companionship_days / persona_summary / mood_trend) survives
     // when the user pings it directly, not just during proactive turns.
     let augmented = inject_persona_layer(augmented).await;
+    // Iter R9: also surface recent proactive speech so reactive chat can
+    // reference what the pet said in bubbles. Without this, "你刚说啥？"
+    // gets a blank stare because the bubble's history isn't in the chat
+    // session's message list.
+    let augmented = inject_recent_speech_layer(augmented).await;
     let result = run_chat_pipeline(augmented, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
@@ -1053,6 +1109,51 @@ mod trim_tests {
     fn refresh_leading_soul_empty_messages_passes_through() {
         let out: Vec<ChatMessage> = refresh_leading_soul(vec![], "FRESH");
         assert_eq!(out.len(), 0);
+    }
+
+    // -- Iter R9: format_recent_speech_layer ----------------------------------
+
+    #[test]
+    fn format_recent_speech_layer_returns_empty_for_no_lines() {
+        assert_eq!(format_recent_speech_layer(&[]), "");
+    }
+
+    #[test]
+    fn format_recent_speech_layer_skips_blank_lines() {
+        // Empty / whitespace-only entries shouldn't render as ghost bullets.
+        let lines = vec!["".to_string(), "   ".to_string(), "".to_string()];
+        assert_eq!(format_recent_speech_layer(&lines), "");
+    }
+
+    #[test]
+    fn format_recent_speech_layer_renders_bullets_in_order() {
+        // recent_speeches returns oldest-first; preserve that ordering so the
+        // bullet list reads chronologically and the latest utterance is
+        // closest to the user's incoming message.
+        let lines = vec![
+            "2026-05-03T10:00:00+08:00 早上好".to_string(),
+            "2026-05-03T11:30:00+08:00 看你还在工作".to_string(),
+        ];
+        let out = format_recent_speech_layer(&lines);
+        assert!(out.starts_with("[最近主动开口]"));
+        let m = out.find("早上好").unwrap();
+        let n = out.find("看你还在工作").unwrap();
+        assert!(m < n, "oldest first preserved");
+        // Header signals the LLM how to use the section.
+        assert!(
+            out.contains("旧→新") && out.contains("接住话题"),
+            "header should explain ordering + intent"
+        );
+    }
+
+    #[test]
+    fn format_recent_speech_layer_strips_timestamps_for_readability() {
+        // Bullets shouldn't include the ISO timestamp prefix — the LLM
+        // doesn't need it and it'd just spend tokens.
+        let lines = vec!["2026-05-03T10:00:00+08:00 早上好".to_string()];
+        let out = format_recent_speech_layer(&lines);
+        assert!(!out.contains("2026-05-03T10:00:00"));
+        assert!(out.contains("早上好"));
     }
 
     #[test]
