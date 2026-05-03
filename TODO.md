@@ -30,9 +30,10 @@
     （`active_*_rule_labels` ×3 + `env_awareness_low` + `companionship_milestone` +
     `LATE_NIGHT_*` consts/static + `late_night_wellness_*` ×3 + `LONG_*` /
     `ENV_AWARENESS_*` consts）2026-05-03 完成
-  - [ ] QG5c2：prompt assembler（`PromptInputs` struct + `proactive_rules` rule-text
-    emitter + `build_proactive_prompt` + `push_if_nonempty` + `format_proactive_mood_hint` /
-    `format_plan_hint` + 所有 prompt_tests 移过去）
+  - [x] QG5c2：prompt assembler（2026-05-03 完成 — `SILENT_MARKER` + `PromptInputs` +
+    `proactive_rules` + `build_proactive_prompt` + `push_if_nonempty` +
+    `format_proactive_mood_hint` + `format_plan_hint`。tests 暂留 prompt_tests 用
+    `use super::*;` 通过 re-export 解析）
   - [ ] QG5d：gate 子系统（`evaluate_pre_input_idle` / `evaluate_input_idle_gate` /
     `evaluate_loop_tick` / `LoopAction` / `wake_recent` / `in_quiet_hours` / gate_tests）
   - [ ] QG5e：telemetry 子系统（`record_proactive_outcome` / `append_outcome_tag` /
