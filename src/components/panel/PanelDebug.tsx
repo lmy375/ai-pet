@@ -62,6 +62,8 @@ export function PanelDebug() {
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
+  const [lastPrompt, setLastPrompt] = useState<string>("");
+  const [showLastPrompt, setShowLastPrompt] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -202,6 +204,82 @@ export function PanelDebug() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Iter E1: modal showing the last-built proactive prompt verbatim. Triggered
+          by the "看上次 prompt" toolbar button; click backdrop to close. */}
+      {showLastPrompt && (
+        <div
+          onClick={() => setShowLastPrompt(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.4)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "40px",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              borderRadius: "8px",
+              maxWidth: "780px",
+              width: "100%",
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+            }}
+          >
+            <div
+              style={{
+                padding: "12px 16px",
+                borderBottom: "1px solid #e2e8f0",
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+              }}
+            >
+              <span style={{ fontSize: "14px", fontWeight: 600, color: "#0f172a" }}>
+                上次 proactive prompt
+              </span>
+              <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                {lastPrompt ? `${lastPrompt.length} chars` : "（process 重启后清空 / 还没触发过）"}
+              </span>
+              <button
+                onClick={() => setShowLastPrompt(false)}
+                style={{
+                  marginLeft: "auto",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  color: "#64748b",
+                  fontSize: "16px",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <pre
+              style={{
+                flex: 1,
+                overflow: "auto",
+                padding: "16px",
+                fontSize: "12px",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                color: "#1e293b",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                margin: 0,
+              }}
+            >
+              {lastPrompt || "（还没有 proactive 触发过——按上面 立即开口 试一次）"}
+            </pre>
+          </div>
+        </div>
+      )}
       {/* Iter 97: data chips on their own row above the action toolbar so chips and
           buttons each get full horizontal space. The chip strip's prompt-hint badge
           still triggers `showPromptHints`; the expansion card stays just below this
@@ -240,6 +318,21 @@ export function PanelDebug() {
           }}
         >
           {triggeringProactive ? "开口中…" : "立即开口"}
+        </button>
+        <button
+          onClick={async () => {
+            try {
+              const p = await invoke<string>("get_last_proactive_prompt");
+              setLastPrompt(p);
+              setShowLastPrompt(true);
+            } catch (e) {
+              console.error("get_last_proactive_prompt failed:", e);
+            }
+          }}
+          title="查看上次构造的 proactive prompt（process 重启后清空）— 直接看 LLM 实际看到的内容，不必扫 logs。"
+          style={{ ...toolBtnStyle, background: "#6366f1", color: "#fff" }}
+        >
+          看上次 prompt
         </button>
         <button onClick={handleOpenDevTools} style={{ ...toolBtnStyle, background: "#f59e0b", color: "#fff" }}>
           DevTools

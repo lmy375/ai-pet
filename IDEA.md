@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter E1 设计要点（已实现）
+- **process 内 static Mutex 而不是文件**：last prompt 是 transient 信息，写盘没意义。每次 stash 是 lock + clone + write — 微秒级，不会让 run_proactive_turn 慢可观察。
+- **clone 到 Option<String>**：每次都 clone 整个 prompt 字符串看似浪费，但 prompt ~1-2KB / proactive 触发频率分钟级，实际开销忽略。alternative 是 `Arc<String>` 但增加复杂度无收益。
+- **modal 而不是 inline expand**：上次 prompt 通常 1-2KB 中文文字，inline 展开会推开下面所有 logs 让排版乱。modal 更专注、可滚动、点 backdrop 关闭符合习惯。
+- **modal pre + whiteSpace pre-wrap**：保留 prompt 段落分行（`\n`）但允许长行 wrap，比 plain `<div>` 更接近"读文档"体验。研发常用复制粘贴整段去外部 LLM 工具试，pre 方便选取。
+- **没有自动刷新模态内的 prompt**：modal 打开瞬间抓取一次，之后不再 poll。理由：用户开 modal 就是要看那一次的 prompt；连续轮询反而让"当时的 prompt vs 现在的"混淆。如果用户想看新的，关掉 + 立即开口 + 重开。
+- **D series → E series 转向**：D 是"信号 surface"，E 是"工具向"。E1 是看 raw prompt，未来 E2/E3 可能是"对比两次 prompt 差异"、"模拟改 settings 后 prompt 长什么样"等。E series 服务研发 / 高级用户。
+
 ## Iter D12 设计要点（已实现）
 - **disabled chip 设计 vs 隐藏**：本来 chip 在 strip 里通常表"激活信号"（chip 出现 = 状态成立）。disabled 是"禁用状态" — chip 出现就表示问题。这种"反向 chip"在视觉上稍特别，但语义上正确：用户看到 chip = 有事。
 - **置于 strip 首位**：最显眼。其它 chip 虽然按"时间维度→用户→宠物→gate"分组，但 disabled 状态一旦出现要压过所有其它 — 因为后续的所有信号都"不会被引擎使用"。把 chip 放最前是 visual hierarchy 的应用。
