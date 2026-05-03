@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R24：ChatBubble 加 ✕ 角标让 dismiss 行为可发现
+- 现状缺口：R1b 让 ChatBubble click-to-dismiss + 5s 内点 fire feedback signal。但 bubble 视觉上没有任何"可点击" 提示 — 用户根本不知道这个 affordance 存在。R1b panel chip (R1c) 让信号可见，但主入口（bubble 本身）依然 silent。**discoverability 是 UX 的隐藏指标** — 功能再好用户没发现等于没有。
+- 解法 — 半透明 ✕ 角标 + tooltip：
+  - bubble 右上角 absolute-positioned `<span>✕</span>`，opacity: 0.55 灰色，不抢视觉重心。
+  - title 文案"点掉气泡（5 秒内点 = 给宠物 '别这条' 信号；R1b dismissed feedback）" 解释**为什么** 5 秒重要。
+  - **不加独立 onClick**：✕ 的 click 自然 bubble up 到父 div 已有的 onClick handler，所以点 ✕ 还是 bubble 任意位置的 dismiss + feedback signal logic 完全一致。**event bubbling 比 dual handler 干净** — 单一 source of truth。
+  - 仅当 `onClick` prop 存在时渲染 ✕（component 在其他 view 没 dismiss handler 时 ✕ 也消失）。
+- 决策 — 半透明 ✕ 而非显眼的关闭按钮：诱惑是做成"标准红色 close button"。但 bubble 是宠物开口的"软"对话气泡，硬 close button 让它感觉像系统 dialog 一样冷峻。半透明 + 灰色让 ✕ 是"安静的提示" — 知道它在那里但不抢戏。**affordance 的视觉重量应该匹配交互重要性**。
+- 决策 — 没有 stopPropagation：ngix uneanseparate handler。让 click bubble up 到 parent，是 single-source-of-truth 模式 — 所有 dismiss 路径都走同一段代码。**stopPropagation 应该是稀有的、明确需要的设计** —— 默认让 events 自然传播，简化 mental model。
+- 决策 — 文案明确"5 秒内点"：tooltip 不只说"关闭"，而是说"5 秒内 = 强反馈信号"。这种"教用户系统行为"是 panel chip / hover 一致的 R-series 风格 (R23 cooldown 解释 / R22 active app 解释 etc)。**主动 educate user** 是高质量 UI 的标志，比"留给用户摸索" 更尊重用户时间。
+- 决策 — 不写 R1b 的 5s threshold 是 UX 决策（前端常量）：R1b 当时定的 5000ms 在 App.tsx 里。Tooltip 反映这个常量 (硬编码"5 秒")。如果以后 threshold 改，tooltip 也要改 — 接受这个 mild 耦合，因为 stable UX 常量不该频繁动。
+- 决策 — 不加 panel surface for "✕ 已被点过的次数"：R1c 已经把 dismiss 计数显示在 chip 上 (👋N)，再加"✕ 角标点击次数" 只是同一信息的不同 surface。"信号上 surface 一次就够"。
+- 决策 — pointerEvents 默认（不 disable）：曾考虑 pointerEvents:none 让 ✕ 纯装饰但发现会 break tooltip 显示 (浏览器对 pointer-events:none 元素的 title 处理不一致)。让 ✕ 是普通可点击元素 + click 事件 bubble up 到 parent — 既保 tooltip 又保单一 handler。
+- 测试：纯前端 styling iter，无 logic 改动，无新单测。tsc + cargo build/test/clippy 全 clean 验证 wiring + 无 breakage。
+- 测试结果：469 cargo（无变化）；clippy clean；tsc clean。
+- 结果：bubble 现在视觉上"长得像可点的"。R1b 反馈信号采集路径终于完整 — backend 写、panel 显、UI 提示，三段全闭合。**discoverability 是 R1b → R1c → R24 三次叠加才让 active dismiss feedback loop 真正可用**。教训：每个新 user-facing 行为都应该 audit 三层（功能 / 反馈 / 发现），少一层就等于少一半。
+
 ## 2026-05-04 — Iter R23：cooldown chip 显 derivation breakdown（含修一个 D9 bug）
 - 现状缺口 + 顺手发现的 bug：⏳ 冷却 chip 显示"还剩 30m" 但用户看不到 WHY 30m。R7 cooldown adapter 应用 companion_mode + negative_signal_ratio 两层乘数，但 chip 不展示这层数学。**深入看代码发现一个 D9 bug**：cooldown_remaining_seconds 用 raw `cooldown_seconds` 计算，但 gate.rs 用 effective cooldown 决策 — chip 数字跟 gate 实际行为不一致！companion_mode chatty 把 base 减半时，chip 仍显 base 值，用户看到 chip "还剩 30m" 但 gate 实际 15m 后就放过。R23 修 bug + 加 surface。
 - 解法 — 新 struct + 纯 helper + chip hover 升级：

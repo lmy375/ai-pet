@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R24 设计要点（已实现）
+- **三段闭合 affordance：function / feedback / discoverability**：R1b 让 dismiss 工作（function）。R1c 让 panel 看到信号（feedback）。R24 让 bubble 看起来可点（discoverability）。**任何 user-facing 行为都该过这三关**，否则等于 hidden feature。R1b 上线时只过了 function，R1c 上线时过了 feedback，但 discoverability 留了 7 iter 才补 — 期间用户根本没途径知道这功能存在。教训：**新 user 行为应该 same-iter 完成三段，否则有效用户量为 0**。
+- **affordance 的视觉重量匹配交互重要性**：标准 close button (红色 / 显眼) 在 system dialog 是合适的，因为关闭对话框是高频显式操作。chat bubble 的 dismiss 是"我看到了，不太想理"的软交互，所以 ✕ 应该是软提示而不是硬按钮。半透明灰色 ✕ 0.55 透明度让它**存在但不抢戏**。**UI 元素的视觉强度应该是 user 注意力分配的引导**，不是装饰美学。
+- **event bubbling > dual handler**：✕ 不需要自己的 onClick — click 自然 bubble up 到父 div 已有的 handler。诱惑是给 ✕ 单独 onClick 让"语义清晰"，但那是双 handler 的双 source of truth — 改 dismiss 逻辑要改两处。**bubbling 是 React/DOM 的 native 工具**，default 让它工作 = single source。stopPropagation 应该是显式 opt-in，不是默认。
+- **tooltip 是 inline education**：R23 cooldown hover 解释 derivation，R22 active app hover 区分"prompt fired vs panel only"，R24 ✕ tooltip 解释"5s 内 = 强信号"。这种"chips 不只显数字、hovers 解释为什么这样"是 R-series UI 一以贯之的纪律。**panel 是用户慢慢学的工具**，不是一次性 dashboard — tooltip 替代 docs 让学习曲线 inline 内置。
+- **pointerEvents:none 的 footgun**：第一版我用 pointerEvents:none 让 ✕ 纯装饰。但浏览器对 pointer-events:none 元素的 title attribute 显示行为**不一致** —— Chrome / Safari / Firefox 各有差异。改成 default pointer events + bubbling 一起处理 — title 稳定显示，click 通过 bubbling 走 parent handler。**CSS 工具不是免费的**，每次禁用 native 行为都要思考 side effect。
+- **frontend 常量到 tooltip 的耦合是 acceptable trade-off**：R1b 5000ms threshold 在 App.tsx，R24 tooltip 文案"5 秒内"。改 threshold 要改 tooltip。理论上可 export 常量然后 tooltip 用 template literal 引入。但 5000ms 是 stable UX 决定（不会随便改），bonus 复杂度不值得。**轻度耦合在 stable invariant 上是 acceptable**，过度抽象反而 obscure 简单逻辑。
+- **discoverability 是隐藏的 N+1 工作**：function + feedback 是 N，discoverability 是隐藏的 +1。每次以为某 iter 已经"完成" 都该再问一次"用户怎么发现这个"。R-series 后期会反复 audit 这种"+1" — 老的 user-facing 行为很多还停在功能完整但 invisible 状态。
+
 ## Iter R23 设计要点（已实现）
 - **Surface bug discovery 比 surface design 更值钱**：R23 起步是"加 hover breakdown" 这个 UX 改善。中途读代码发现 chip 用 base cooldown 而 gate 用 effective，**修了 6+ iter 没人注意的 bug**。这是 surface 工作的隐藏价值 — 强迫你重读已有代码、对照不同 caller 的逻辑，bug 自然浮出来。**每个"surface old signal" iter 都该顺手 audit signal 的所有 consumer 是否一致**。
 - **derivation 比 value 信息密度高**：chip 显 "30m" 是 value，hover 显 "1800s × 0.5 × 2.0 = 1800s" 是 derivation。后者让用户从"看到结果"升级到"理解机制"。当用户问"为什么 30m" 时，derivation 直接答了；当 user 问"为什么是 30m" 时，value 啥也没说。**panel 应该越来越 explanation-rich**，每个数字都该在 hover 解释来源。
