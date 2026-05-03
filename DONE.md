@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D6：butler 执行后让宠物在 bubble 里简短提一下
+- 现状缺口：Cε 让 LLM 执行 butler_task 后写 butler_history（panel 时间线看得到）；Cπ 让失败留 [error] 标记。但有一个细微 UX 缺口：执行成功时，LLM **可能**在它的开口里提一下"我帮你写好了 today.md"——也可能完全不提，只 update 了 butler_tasks 条目就过去了。结果用户的 bubble 看到的是普通闲聊，必须打开 panel 才发现 timeline 多了一条。"trust loop" 在 panel-only 上断开。
+- 解法：在 `format_butler_tasks_block` 的 footer 加一段：
+  - 教 LLM "记得在你这一轮的开口里简短提一下"（位置在 schedule 解释 之后、错误处理 之前）
+  - 给两个例子: 「我帮你写好 today.md 了」「Downloads 整理完了」——一句话级别
+  - 强调"不必描述细节"避免 LLM 长篇汇报
+  - 解释 why: 让用户从 bubble 直接看到反馈，不必打开 panel
+- 1 个新 contract test `format_butler_tasks_block_footer_teaches_speech_mention` 钉住关键 phrase，避免后续重构被静默移除（与 Cι/Cσ 等 prompt 内容契约 test 同形态）。
+- 测试总数 301 → 302。
+- 结果：执行 butler 任务后 bubble 文案一致包含管家执行的反馈——用户从"被动观察 panel"升级到"被动收到 bubble 通知"。和 Cπ 的"失败可见"对称：成功也要可见。
+- 不改代码逻辑、不动数据流——纯 prompt engineering + contract test。
+
 ## 2026-05-03 — Iter D5：persona_summary 加"X 天前更新"新鲜度标签
 - 现状缺口：PanelPersona 的"自我画像"段显示 LLM 写的 persona_summary 文本，但没有任何"上次更新是什么时候"指示。如果用户没启用 consolidate（默认关），persona_summary 可能从首次生成后就再也没动过——内容随时间就跟不上"宠物和用户当前实际关系"。Cφ 加了"立即生成画像" 空态按钮，但有内容的态没有等价信号告诉用户"这画像可能旧了"。
 - 解法：

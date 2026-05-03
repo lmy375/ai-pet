@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D6 设计要点（已实现）
+- **prompt-only fix vs UI 改动**：曾考虑做"butler 执行检测后强制 emit 一条 toast"。但那意味着 panel 持续监听 butler_history poll、状态机复杂；prompt 内一句话教 LLM 把执行反馈带进 bubble 是更简洁的路径。LLM agent 模式的好处之一就是：行为塑造不必硬编码到代码层。
+- **位置 schedule 之后、错误之前**：footer 里现在有三个段落：操作指南（update/delete）→ schedule 含义 → "记得提一下" → 错误处理。"提一下"放第三段是因为它依附于"成功执行"语义，紧跟操作指南之后；错误处理段需要 LLM 已经知道前面的执行流程才有意义，所以放最后。
+- **给两个示例 vs 让 LLM 自由发挥**：「我帮你写好 today.md 了」/「Downloads 整理完了」是固定句式示例。LLM 看到具体例子比"请简短描述"指令更可靠地输出短句——降低过度解释的风险。
+- **强调 "不必描述细节"**：LLM 默认倾向把"你做了什么"展开成详细汇报；明确"一句话即可"避免 bubble 文案膨胀。
+- **contract test 钉关键 phrase**：和 Iter Cι（teach delegation）/ Cσ（teach user_profile）一样的契约测试模式。如果未来重构 footer 文字，test 立刻 fail——避免"我以为某段 prompt 还在但其实被改没了"这种隐藏退化。
+- **不动 butler_history schema**：如果想要"硬保证宠物提到了执行"，可以在 chat pipeline 里检测 LLM 输出并强制 inject 一句话——但那是 prescriptive style，违背 LLM agent 自治。Prompt 教学 + 实际行为观察是更轻巧的路径。
+
 ## Iter D5 设计要点（已实现）
 - **改返回类型 vs 加新命令**：曾考虑加 `get_persona_summary_meta`，把现 String 命令保留以便其它调用方不改。但这是单一调用方（PanelPersona）的命令，没有外部 API 兼容性顾虑，直接升级返回类型是干净路径。
 - **7 天阈值**：consolidate 默认 6h interval × 7 天 = 28 次机会。若超过 7 天还没更新，要么 consolidate 关了、要么 LLM 27 次评估都觉得"信号不足跳过"——两种都该提醒用户。
