@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R21 设计要点（已实现）
+- **codified 原则的第一次还债**：R20 commit message 写下"所有 prompt 信号都该 panel 可见"作 codebase rule。R21 立即回头看老信号 R11，发现没 panel surface — 立刻还。**新原则不只指导 future iter，也应该 audit past iter** 找 violations。如果只对 future iter 生效，旧债永远等着；audit + back-fill 是原则真正落地的方式。
+- **fetch 共享提取的时机**：build_tone_snapshot 原本 speech_register 字段 inline 自己 `recent_speeches(5).await`。R21 加 repeated_topic 时面对选择：(a) inline 第二次 await 同样数据；(b) 提到外部变量两个字段共享。选 (b) 因为这是单一函数体内的二次同源 fetch，**locality is preserved**（变量在最近的祖先 scope）但 IO 节省。如果是跨 module / 跨函数，外部状态/缓存就过 designed。**fetch 共享的设计成本应该匹配 fetch 共享的范围**。
+- **不要打包独立概念到 aggregate fn**：诱惑是 `analyze_speech_signals(lines) -> { register, topic, ... }` 一个超级 fn 抓所有 5-line analyses。但 register 关心长度分布，topic 关心字符 ngram 重叠 — **数据流共享但分析维度独立**。打包 fn 必须 maintain 所有 sub-analysis 的相关性，未来加第三种 (e.g. emotion)、第四种 (e.g. question-vs-statement ratio) 都得改 aggregate signature。**保持 analysis fn 单一职责，只在 caller 层共享 fetch**。
+- **chip 色彩语义稳定** = panel 视觉协议：R10 feedback 用红/绿/灰 三 band。R20 register 用橙（卡）/绿（健康）二色。R21 topic 用橙（卡）— 没绿色对应（因为 None 时根本不渲染）。三 chip 共享"橙 = anomaly worth noting" 一致，user 看到橙就知道"这个维度有 issue"。**panel 是 visual programming language**，色彩是其中的 keyword，应该有稳定语义。
+- **chip 顺序 conceptual cluster**：feedback 💬 / register 📏 / topic 🔁 三个都关于"宠物开口"，所以视觉相邻；time period ⏱ / day_of_week 📆 / idle_register 👤 / cadence 💬 / cooldown ⏳ 是"上下文" cluster。**panel chip 不只 list，也要 group** — 相关 chip 放一起降低 user 的 mental scan cost。
+- **redact 在 backend 而非 frontend**：诱惑是"backend 给 raw topic，frontend 自己 redact"。但 redact 的 settings.privacy.redaction_patterns 在 backend，frontend 没法直接读。**敏感数据净化 always at backend boundary** — 不让原始数据离开 backend 信任域。Defense in depth + clean separation。
+- **R21 不加单测因为没新逻辑**：R11 detect_repeated_topic 已有 7 测。R20 classify_speech_register 已有 4 测。R21 只是 wire signal 到 ToneSnapshot 字段 + chip — Tauri Snapshot building 没单测（需要 fixture），但 cargo build / clippy / tsc clean 已经验类型对齐 wiring 正确。**单测应该覆盖 logic，wiring 测试由 type system + integration test 覆盖**。
+
 ## Iter R20 设计要点（已实现）
 - **新原则：所有 prompt 信号都该 panel 可见**：R1c 把 dismiss 信号 surface 到 panel；R20 把 register 信号 surface 到 panel。这不是巧合 —— 两次都是回头补"信号写但没看见"的债。**新加 prompt hint 应该 same iter 加 panel chip** 而不是事后 follow-up。从此往后这条作 codebase rule，免得每过 2-3 iter 就要回来还一笔。
 - **classifier 同源 + 双消费者形态各异**：R19 prompt 只要"long/short" 两态（mixed 不 nudge），R20 panel 要"long/short/mixed" 三态。诱惑是写两个 fn — `format_speech_length_hint` 和 `format_speech_register_chip`。但底层"看 5 条 speech 怎么分类" 就是一个判断，**应该一处实现**。抽 `classify_speech_register` → 两边 pull format。这是"data + view 分离" 在 Rust 里的实现 — pure data fn 出在 lib，view-specific transformer 各 module 自己写。

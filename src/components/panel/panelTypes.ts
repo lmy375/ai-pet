@@ -108,6 +108,11 @@ export interface ToneSnapshot {
     mean_chars: number;
     samples: number;
   } | null;
+  // Iter R21: repeated-topic ngram (R11's char ngram detector) when the
+  // pet has been circling the same theme; redacted before it reaches
+  // here. Null when no ngram recurs across enough distinct lines —
+  // healthy / varying default.
+  repeated_topic: string | null;
 }
 
 /**

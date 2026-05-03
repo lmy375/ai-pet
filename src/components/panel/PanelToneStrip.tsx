@@ -104,6 +104,20 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           </span>
         );
       })()}
+      {tone.repeated_topic && (
+        <span
+          title={`R11 检测到最近 5 句开口里反复出现「${tone.repeated_topic}」（4-char ngram，跨 ≥3 句）— prompt 已要求 LLM 换话题。`}
+          style={{
+            color: "#fff",
+            background: "#d97706",
+            padding: "1px 8px",
+            borderRadius: "10px",
+            fontWeight: 600,
+          }}
+        >
+          🔁 {tone.repeated_topic}
+        </span>
+      )}
       <span title="period_of_day(now)">⏱ {tone.period}</span>
       {tone.day_of_week && (
         <span title="weekday + 工作日/周末（Iter Cβ — proactive prompt 时间行已包含）">
