@@ -2,6 +2,15 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 89：cargo test 守门 frontend label 字典与 backend 对齐
+- 新单测 `frontend_prompt_rule_descriptions_cover_every_backend_label` 在 `proactive.rs` 测试模块里：用 `CARGO_MANIFEST_DIR/../src/components/panel/PanelDebug.tsx` 路径读 frontend 文件，遍历 `active_environmental_rule_labels(true, ..., true)` + `active_data_driven_rule_labels(0, 999, 1, 999, 0)` 返回的所有 label，断言每个 label 在 TS 文件里能匹配到 `"label":` 或 `\n  label:`（覆盖 quoted 和 bare-identifier 两种 JS 写法）。
+- 同步加 sanity check：`PROMPT_RULE_DESCRIPTIONS` 字符串本身必须存在，避免文件移动 / 重命名 / 删字典时测试 vacuously 通过。
+- 路径错误时 panic 包含 explicit hint："Did the path move? Adjust this test if so."——告诉未来调试者怎么修。
+- 决定不走 codegen / build script：每加一个 label 改两处（Rust 加 enum/match arm + TS 加 dict 行）已经够轻；codegen 解 TS 的代价远超手维护。当 backend label 数量 / 频率上升再考虑。
+- 选择跨语言文本扫描而非引入 wasm-bindgen 或 trunk 之类前端测试 framework：纯文本扫描零依赖、可读、CI 跑得动。Trade-off：如果 label 名碰巧出现在 TS 文件的注释/字符串里会假阳性——但 kebab-case 的 wake-back / env-awareness 等独特名字几乎不可能撞，未来真撞了再升级到正式 TS parser。
+- 现在如果 backend 加一个新 label 但忘记更新前端字典：`cargo test` 直接 fail 报"Missing entries for: [\"new-label\"]"，配合 Iter 87 的 backend match fallback (`(规则文本待补)`) 形成两层守护。
+- 176 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 88：prompt hints badge 可点击展开成 inline 详情列表
 - PanelDebug 新 state `showPromptHints: boolean`，badge 由 `<span>` 改成 `<button>`，click 切换。深紫 #5b21b6（展开时）/ 浅紫 #7c3aed（收起时）+ 末尾添加 ▾/▸ chevron 提示状态。
 - 新顶层常量 `PROMPT_RULE_DESCRIPTIONS: Record<string, {title, summary}>`：8 条规则各对应中文短标题（4-5 字，如"破冰阶段"、"今日克制"、"环境感知低"）+ 一句简介（解释 LLM 被要求做什么）。lookup 失败 fallback 到 `(label "xxx" 暂无中文描述)`。
