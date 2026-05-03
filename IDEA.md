@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cε 设计要点（已实现）
+- **新文件而不是塞进 speech_history**：曾考虑把 butler 事件也写到 `speech_history.log`，加一个 type 字段区分。这能省一个文件、让"今天的事件流"在一处看。但耦合后："今天宠物开口几次" / "今天 butler 完成几项" 两个统计要扫同一文件再过滤——读放大；而且 butler 事件没有 mood、不该计入 chatty_day_threshold。两个独立的 log 各自只关心一件事，反而干净。命名也清晰。
+- **只记 update/delete，不记 create**：create = 委托发生（用户或 LLM 写下了任务），update/delete = 执行 / 撤回。前者对"宠物为我做了什么"无信号，后者才是。如果哪天加了"用户 vs LLM author"区分，create 会更有意义；目前 author 不区分，记 create 只会噪声。
+- **轮询而不是事件 emit**：Tauri 的 emit 需要 AppHandle，但 ToolContext / memory_tools 这一层没有 AppHandle 引用——传过来要改 trait 签名 + 多处构造。15 秒轮询便宜（一个 string[] 拉过来），butler 事件是分钟级，15 秒粒度感官上等同实时。等以后做"宠物视觉反馈"（执行完跳一下）再加 emit。
+- **handleSaveEdit / handleDelete 立刻刷新**：用户自己点了"保存"或"删除"，期望立刻看到时间线更新——别让他等下一个 15 秒 tick。这是 UX 的细节，但写出来感觉差很多。
+- **不 redact butler_history**：Cw/Cy/Cz 一系列把所有 outbound prompt 输入都 redact 了。但 butler_history 是 inbound（给用户看的执行记录），需要看到原文。redaction 是"出门前别带这个出去"，不是"我自己也不能看自己"。
+- **格式 `<ts> <action> <title> :: <desc>`**：分隔符 ` :: ` 而不是 ` | ` 是因为 description 里 `|` 可能出现（用户随手写"读 a | b 的差异"）。`::` 在中文场景几乎不出现，且视觉上像"键值之间的连接符"，意图清晰。
+- **panel 上 update teal / delete red 的色彩**：和 chip strip 的"hits>0 teal"、"engagement-window green"等保持同色系。teal = 正向行动、red = 撤销/删除（语义中立但视觉上需要区分）。
+- **不做 panel 顶层 tab**：曾想在 panel 上加一个独立的 "执行流" tab，跟 Debug / Memory / Persona / Chat 同级。但事件类型只有 butler 一种，做整个 tab 杀鸡用牛刀；嵌进 Memory/butler_tasks 区域里是事件 + 上下文（待办列表）的天然组合。如果后续接入更多 source（speech、focus 切换、task schedule 触发），再考虑独立 tab。
+
 ## Iter Cδ 设计要点（已实现）
 - **placeholder 而不是 helper text**：曾考虑在 textarea 上方加一段灰字说明"butler_task 格式建议..."。但 helper text 永远占布局空间；placeholder 只在空状态出现，输入后消失，对已经会用的用户零干扰。代价是 placeholder 不能太长（每行截断），所以我把示例切成几个短行用 `\n` 隔开——这在 textarea 里 native 支持换行 placeholder。
 - **快捷入口仅给 butler_tasks**：曾考虑给所有类别都加 "+ 新建 X" 顶级按钮（todo / butler_tasks 都是用户写的），但这会让顶部按钮区从 3 个按钮（搜索/清除/整理）变 5 个，视觉密度太高。butler_tasks 是"宠物管家"方向的主轴，单独给它快捷入口符合"actionable 类别上调"的方向；加 reminder 仍走分区下的 "+ 新建"——reminder 流程已经熟，且 todo 现在大多是 LLM 写的。

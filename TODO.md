@@ -11,8 +11,7 @@
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
 - [x] Iter Cδ：panel 顶部 "+ 委托任务" 快捷入口 + 模态分类 placeholder（2026-05-03 完成）
-- [ ] Iter Cε：butler_task 执行留痕——LLM 完成一项时自动 append 到 speech_history
-  并发 panel 事件，让用户能看到"宠物刚为我做了什么"。
+- [x] Iter Cε：butler_history.log + panel "最近执行" 时间线（2026-05-03 完成）
 - [ ] Iter Cζ：scheduled butler_tasks——支持 description 前缀 `[every: 09:00]` /
   `[once: 2026-05-10 14:00]`，proactive 循环按时机选择性触发（参考 reminder parser
   做法，复用 ReminderTarget 但语义不同：reminder 是给用户的，schedule 是给宠物的）。

@@ -190,9 +190,20 @@ async fn memory_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
         return r#"{"error": "missing required parameters: action, category, title"}"#.to_string();
     }
 
+    // Capture description for the butler-event log before move'ing into memory_edit.
+    // Iter Cε: when the LLM touches a butler_tasks entry (update / delete) we record
+    // a one-line event so the user has a "what did the pet do for me" surface
+    // distinct from speech_history. Creates aren't logged — those are *assignments*,
+    // not executions; logging them would dilute the signal.
+    let butler_action_logged = category == "butler_tasks" && (action == "update" || action == "delete");
+    let desc_for_log = description.clone().unwrap_or_default();
+
     match memory::memory_edit(action.clone(), category.clone(), title.clone(), description, detail_content) {
         Ok(msg) => {
             ctx.log(&format!("memory_edit: {} '{}' in {}", action, title, category));
+            if butler_action_logged {
+                crate::butler_history::record_event(&action, &title, &desc_for_log).await;
+            }
             serde_json::json!({ "status": "ok", "message": msg }).to_string()
         }
         Err(e) => format!(r#"{{"error": "{}"}}"#, e),

@@ -2,6 +2,30 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cε：butler_task 执行留痕 + panel "最近执行" 时间线
+- 现状缺口：Cγ + Cδ 已经让用户可以委托任务、LLM 可以在 proactive turn 看到任务并尝试执行——但用户看不到任何"宠物刚做了什么"的反馈。即使 LLM 真的 update 了一个 butler_tasks 条目，那只是 description 字段变了，用户得手动找进去对比。Closing the loop 需要一个"事件流"。
+- 解法：新建 `butler_history.log`，每次 LLM 通过 memory_edit_impl 接触 butler_tasks（update / delete）就记一行。create 不记——那是 *委托*，不是 *执行*；记进来会冲淡信号。
+- `src-tauri/src/butler_history.rs` 新模块（参 speech_history 模式）：
+  - 文件 `~/.config/pet/butler_history.log`，每行 `<ts> <action> <title> :: <desc-snippet>`
+  - 200 行硬上限 + 100K 字节 rotation（与 speech_history 同思路）
+  - `format_event_body(action, title, description)` 是 pure helper：trim、flatten 换行、80 字符截断 + `…`
+  - `parse_recent(content, n)` 同样 pure
+  - Tauri command `get_butler_history(n: Option<usize>)`
+- 8 个新单测覆盖：短描述原样、长描述截断、换行 flatten、trim、空内容、tail order、不足 n 时返回全部、跳空行。
+- 钩子：`tools/memory_tools.rs::memory_edit_impl` 在 successful edit 后判断 `category == "butler_tasks" && action ∈ {update, delete}`，是则调 `butler_history::record_event`。description 在 move 进 memory_edit 之前 clone 一份给日志用——不能在调用后再读。
+- `lib.rs` 加 `mod butler_history;` + register `get_butler_history` 命令。
+- 前端 `PanelMemory.tsx`：
+  - 加 `butlerHistory: string[]` state，挂载时拉 + 每 15 秒轮询一次（butler 事件来自 LLM 调工具，分钟级粒度，15 秒轮询便宜且能给"刚执行完"的及时反馈）
+  - handleSaveEdit / handleDelete 在涉及 butler_tasks 时立刻刷新一次（不等 15 秒）
+  - 在 butler_tasks section 顶部（标题下、items 前）渲染一个 "最近执行 (N)" 浅蓝色块，每行显示 `时间 · action · 标题 :: 描述`：
+    - `update` 标 teal `#0d9488`、`delete` 标红 `#dc2626`，颜色提示语义
+    - 描述 ellipsis + tooltip 完整文本
+    - reverse 排显示，最新在最上
+  - parseButlerLine 是 inline pure helper，handle 格式不规范的 fallback
+- 测试总数 248 → 256（butler_history 自带 8 个 unit）。tsc 干净。
+- 重要细节：butler_history 不被 redact——它是用户面向的执行历史，需要看到原文判断"宠物到底做对了没"；redaction 只用于"prompt 里的 outbound 文本"。
+- 结果：用户在 Memory tab 能看到"管家任务"区域顶部一个时间线块——LLM 每次推进任务都会立刻反映出来。本次 iter 没有让 LLM 真去调用 read_file/bash 之类（那会涉及具体执行 path 的复杂判断），但只要 LLM 按 proactive prompt 的指引在执行后 update 一次 butler_tasks，时间线就会出现新条目。下一步 Cζ 的 schedule 触发器会让这条线更密集——"每天 9 点"类任务会在固定时间产生事件。
+
 ## 2026-05-03 — Iter Cδ：panel 添加"委托任务"快捷入口 + 分类 placeholder
 - 现状缺口：Iter Cγ 已经做了 butler_tasks 类别，但用户从 panel 入手要先点 Memory tab，再
   滚到 butler_tasks 区域，再点 "+ 新建"——三步才能加任务。而且打开模态后描述框是空的，
