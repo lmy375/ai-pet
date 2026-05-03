@@ -158,7 +158,7 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
 {recent_speeches}\n\n\
 请扫一遍这些条目，判断：\n\
 1. **重复/同主题**：把内容相近的合并成一条更精炼的——保留信息量大的，用 `memory_edit update` 更新；用 `memory_edit delete` 删掉冗余的。\n\
-2. **过期/失效**：明显过时（已完成的 todo、不再相关的临时上下文），用 `memory_edit delete`。\n\
+2. **过期/失效**：明显过时（已完成的 todo、不再相关的临时上下文），用 `memory_edit delete`。`butler_tasks` 类别下如果某条任务用户已经撤回 / 已经完成且不再 recurring，也归这一类。\n\
 3. **太琐碎**：完全没有保留价值的（例如随口一句话被记下），删除。\n\
 4. **可以补充细节**：如果某条记忆 description 太短、可以扩展但需要查更多上下文，可以用 `memory_edit update` 加入更完整的 detail_content。\n\
 5. **维护 `ai_insights/persona_summary`**：基于上面「你最近主动开口」的句子 + `user_profile` 类下的条目，简要总结你观察到的自己的语气特点和与用户的互动模式。description 控制在 ~100 字以内、写第一人称（如「我倾向...」、「我注意到...」）。如果该条目不存在，用 `memory_edit create` 创建到 `ai_insights/persona_summary`；如果已存在并且这次有新观察，用 `update` 更新。如果最近开口少于 5 句、信号不足，跳过这一项。\n\n\

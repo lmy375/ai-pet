@@ -19,7 +19,7 @@ interface MemoryIndex {
   categories: Record<string, CategoryData>;
 }
 
-const CATEGORY_ORDER = ["ai_insights", "user_profile", "todo", "general"];
+const CATEGORY_ORDER = ["butler_tasks", "todo", "ai_insights", "user_profile", "general"];
 
 export function PanelMemory() {
   const [index, setIndex] = useState<MemoryIndex | null>(null);

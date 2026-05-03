@@ -15,13 +15,13 @@ impl Tool for MemoryListTool {
             "type": "function",
             "function": {
                 "name": "memory_list",
-                "description": "List memory items from the memory index. Returns titles, descriptions, and detail file paths grouped by category.\n\nCategories:\n- ai_insights: AI 思考与经验\n- user_profile: 用户习惯\n- todo: 当前任务\n- general: 其他\n\nTo read the full detail of a memory item, use the read_file tool with the detail_path (relative to ~/.config/pet/memories/).",
+                "description": "List memory items from the memory index. Returns titles, descriptions, and detail file paths grouped by category.\n\nCategories:\n- ai_insights: AI 思考与经验\n- user_profile: 用户习惯\n- todo: 用户让你提醒 ta 的事项（reminders for the user — uses [remind: HH:MM] / [remind: YYYY-MM-DD HH:MM] prefix）\n- butler_tasks: 用户委托给你执行的管家任务（things the OWNER asked YOU to do — info gathering, file writes, scheduled reports, recurring chores）\n- general: 其他\n\nTo read the full detail of a memory item, use the read_file tool with the detail_path (relative to ~/.config/pet/memories/).",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "category": {
                             "type": "string",
-                            "description": "Filter by category name (ai_insights, user_profile, todo, general). Omit to list all."
+                            "description": "Filter by category name (ai_insights, user_profile, todo, butler_tasks, general). Omit to list all."
                         }
                     }
                 }
@@ -136,7 +136,7 @@ impl Tool for MemoryEditTool {
             "type": "function",
             "function": {
                 "name": "memory_edit",
-                "description": "Create, update, or delete a memory item.\n\n- create: Add a new memory item to a category. Provide title, description, and optionally detail_content (written to a .md file).\n- update: Modify an existing item (matched by category + title). Can update description and/or detail_content.\n- delete: Remove an item (matched by category + title) and its .md file.\n\nCategories: ai_insights, user_profile, todo, general",
+                "description": "Create, update, or delete a memory item.\n\n- create: Add a new memory item to a category. Provide title, description, and optionally detail_content (written to a .md file).\n- update: Modify an existing item (matched by category + title). Can update description and/or detail_content.\n- delete: Remove an item (matched by category + title) and its .md file.\n\nCategories: ai_insights, user_profile, todo, butler_tasks, general\n\nUse `butler_tasks` whenever the owner asks you to DO something on their behalf — info gathering (\"每天早上把日历发给我\"), file work (\"周末整理一下 ~/Downloads\"), scheduled reports, or any recurring chore. Description should record what was asked + how often + last execution status. Don't confuse with `todo`: `todo` is reminders the user wants for themselves (\"提醒我 5pm 喝水\"), `butler_tasks` is work the user wants YOU to perform.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -147,7 +147,7 @@ impl Tool for MemoryEditTool {
                         },
                         "category": {
                             "type": "string",
-                            "enum": ["ai_insights", "user_profile", "todo", "general"],
+                            "enum": ["ai_insights", "user_profile", "todo", "butler_tasks", "general"],
                             "description": "The category"
                         },
                         "title": {

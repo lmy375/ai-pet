@@ -85,15 +85,11 @@
 2. **多窗口 panel 共存**：用户开多个 panel（debug / chat / settings）时数据轮询是
    独立的——同一份 ToneSnapshot 每秒拉 N 次。如果将来用户基础变大需要做共享
    store。
-3. **跨设备**：当前所有持久化都在本机。若用户用多设备（Mac + iPad），speech_history
-   / mood / memory 不同步。
-4. **隐私边界**：active_window 标题、calendar event 全文都进 prompt——LLM
+3. **隐私边界**：active_window 标题、calendar event 全文都进 prompt——LLM
    provider 看到。如果把宠物当真伙伴，应该有个"哪些场景不要发出去"的本地 filter。
-5. **真正的"长期人格"**：宠物没有跨会话演化的人格——mood 在更新但 SOUL.md 是
+4. **真正的"长期人格"**：宠物没有跨会话演化的人格——mood 在更新但 SOUL.md 是
    静态。"陪伴一年的宠物"和"刚装上的宠物"语气、记忆密度、情感状态应该有差，
    目前没有。
-6. **macOS 系统通知 hook**（Iter 7c 一直 deferred）：能让宠物对"刚收到一条消息"
-   做反应，是真实陪伴感的一个维度。
 
 ## 未来路线（粗）
 
@@ -107,8 +103,6 @@
   / calendar 主题不发出去），让用户能信任宠物背后的 LLM。
 - **D. 记忆 surface**：把 `~/.config/pet/memory/*.md` 在 panel 里做可浏览的视图，
   让用户看到宠物"记住了什么"——增强信任也帮 debug。
-- **E. 跨设备同步**：iCloud Drive / 云盘共享 config_dir 子集，最低成本实现"在两台
-  Mac 上是同一只宠物"。
 
 ## 关于"是真实伙伴吗" 的诚实评估
 
