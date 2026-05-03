@@ -1,5 +1,22 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R61 设计要点（已实现）
+- **R-series proactive-audit cadence is forming**：R60 → R61 都是 audit-driven。R60 grep `redact_with_settings` 调用点查 prompt 注入完整。R61 grep `redact_text` 调用点查 tool output 完整。**每次 audit 锁定一个 "boundary kind"，systematic grep + 一次性修**。这种节奏比"feature ship + reactive bug fix" 更适合 mature project —— 主动巡查比被动响应高效。
+- **redact_text vs redact_with_settings 命名隐患**：API 命名让 `redact_text` 看起来像 main entry point。但真正完整的是 `redact_with_settings`（含 regex）。**命名应该让"完整工具" 有更显眼的名字**，sub-helper 名字更长 / 标 internal。R61 IDEA 想到这点但不动 API 命名（影响测试 + 现有测试用 `redact_text` 直接调）。**API 命名重构的代价大于收益时，靠 audit + 文档** 替代。
+- **substring 先 regex 后两-pass 顺序的隐性意义**：redact_with_settings 注释写明 "specific names get marker before wide email regex could swallow context"。这个顺序选择**保护"具体 > 通用" 的 redaction 优先级**。如果 regex `\\w+@\\w+` 先匹配，后面 substring "Alice" 可能匹配不到。先 substring 让 specific names 先打 marker，regex 处理剩余。**多 pass redaction 的顺序是有 semantic 意义的，不是任意拍**。
+- **redact_text caller minor pattern**：grep 后发现 `redact_text` 只在 redact_with_settings 内部调一次 + 测试。**外部 caller 0 处** = R61 切换 system_tools / calendar_tool 后 `redact_text` 真的只剩 internal 调用。这是"audit 后 internal-only" 的一个简化机会 —— 未来可以把 `redact_text` 改 `pub(crate)` 限定在 redaction module 内部。
+- **counter 副收益**：原 redact_text 不更新 REDACTION_CALLS / REDACTION_HITS atomic counters。切到 redact_with_settings 后 tool 调用也累加。**panel redact stats chip / API 现在反映真实总调用** —— 之前 active_app / calendar redact 是 invisible 的。
+- **boundary-kind audit list**：R-series privacy audit 需要 systematic 走过所有 boundary kind。已 covered:
+  - prompt injection (R60: feedback_hint)
+  - tool output (R61: active_app / calendar)
+  
+  剩下候选:
+  - log file (debug.log / butler_history / feedback_history) — 已 conscious 决定保 raw 给 dev
+  - panel display — local-only，不需 redact
+  - Tauri command return values — 多数已经从 ToneSnapshot 等去 — 已 redacted upstream
+  
+  R-series privacy audit 大致完整，剩下 case 都是 conscious decision (raw 保留)。**audit 不是无穷尽** —— 终点 = 所有 boundary 都明确 raw or redacted。
+
 ## Iter R60 设计要点（已实现）
 - **proactive privacy audit 是 mature project 健康习惯**：R-series 之前的 redaction 加点都是被动响应（QG4 等）。R60 是第一次主动 grep 全 codebase 查 redact 完整性。**长 lived project 应该周期性主动审 privacy boundary** —— 不等到 bug 报出来。这是除"react to incidents" 之外的 proactive security stance。
 - **storage 不 redact / prompt boundary 才 redact**：feedback_history.log 存原文，prompt 注入 redact。**redact 是 cross-process / cross-trust-domain boundary 的责任**，不是 inside-process 数据存储责任。Local 文件 / panel 显示都是 user-local，不需 redact 自己的数据；prompt 是发到 LLM (potentially external API)，必须 redact。这条边界划分清楚后所有 redact 调用点都该 audit "我跨 boundary 了吗？"。

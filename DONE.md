@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R61：tool outputs 切到 redact_with_settings（privacy audit 续）
+- 现状缺口：R60 audit 找到 feedback_hint 没 redact。R61 继续 audit —— grep `redact_text\b` 全 codebase 发现 system_tools.rs (Iter Cx) 和 calendar_tool.rs (Iter Cx) 两处用 `redact_text(text, &patterns)` —— **substring-only**，**bypass regex patterns**。Active app 名 / 日历事件标题如果含 email / 结构化 ID 等只有 regex 能 match 的私人内容，**regex 模式被绕过**。
+- 解法 — 全 swap 到 redact_with_settings：
+  - `redact_text(text, &patterns)` 替换为 `redact_with_settings(text)` —— 后者内部既调 substring (`redact_text`) 也调 regex (`redact_regex`)，two-pass 顺序固定（substring 先，regex 后）。
+  - 删除手动 patterns fetch (`get_settings().map(...)`) —— `redact_with_settings` 内部 fetch。callsite 减 3 行简化。
+  - 注释更新：`Iter R61: switched from redact_text (substring-only) to redact_with_settings (substring + regex)`。
+  - 影响 sites：
+    - `system_tools.rs` Iter Cx code 块（get_active_window 工具的 app + window_title redact）
+    - `calendar_tool.rs` Iter Cx code 块（get_upcoming_events 工具的 title + location redact）
+- 决策 — 不动 `redact_text` 函数本身：它仍是 `redact_with_settings` 的 substring sub-call。**底层 helper 可暴露但 caller 应优先 high-level**。`redact_text` 直接调用合理 case 是"我已经有 patterns 列表想用" —— 但 R61 之前两处 caller 不是这个 case，是"想 redact 但只 fetch 了 substring 半截"。
+- 决策 — 不补 redact_regex caller audit：`redact_regex` 没有第三方 caller（grep 显示只在 redact_with_settings 内部用 + redaction.rs tests）。**只 redact_text 被外部独立调** 是该 audit 关注点。
+- 决策 — REDACTION_CALLS / REDACTION_HITS counters 现在也覆盖这两个 site：原 `redact_text` 不更新 counter（只 redact_with_settings 入口加），R61 切换后 tool 调用也累加。**统计完整性副收益** —— R-series 的 redact_stats panel chip / API 现在反映真实 redact 调用频次。
+- 决策 — 不写新 tests：行为变化是"加 regex 应用"，已有 redact_with_settings tests 覆盖。各 tool 的 unit test 不该 mock 整个 redaction subsystem。
+- 决策 — R-series proactive-audit cadence：R60 → R61 = audit-driven 连续 iter。R-series 现在有清晰节奏：R60 grep prompt-injection sites → R61 grep tool output sites。**audit 应该 systematic** —— 每次锁定一个 boundary kind（prompt / tool output / log file / chip display 等），grep 全 codebase 找 violations，一次性修。
+- 测试结果：519 cargo（无变化）；clippy clean；fmt clean。
+- 结果：所有面向 LLM 的输出（prompt hints / tool results）现在都走 redact_with_settings 包括 regex 覆盖。**R-series privacy boundary 第一次全 codebase consistent** —— 用户配置的 regex pattern 不再被 tool output bypass。下次 audit 候选：log file 写入是否需 redact？panel display 已 audit 不需。
+
 ## 2026-05-04 — Iter R60：format_feedback_hint excerpt 加 redaction（privacy 漏洞补上）
 - 现状缺口：R1 format_feedback_hint 把 latest entry's excerpt 直接 inject 进 prompt：`"上次你说「{excerpt}」，..."`。**excerpt 没经过 redact_with_settings**。Pet 自己的 reply（excerpt 来源）可能含用户 redaction 模式中的私人词 —— LLM 在 reply 中可能 weave 用户 user_profile 里的私人内容（"company X 的工作进展"等），这条 reply 进 speech_history → 后续 feedback_hint 把它原样回喂 prompt，redaction 漏了。
 - audit 触发：Privacy 全 codebase 审计 grep redact_with_settings 调用点。speech_hint / cross_day_hint / yesterday_recap_hint / active_app_hint / reminders_hint / user_profile_hint / persona_hint / plan_hint 等都 redact ✓。**只有 format_feedback_hint 漏了**。
