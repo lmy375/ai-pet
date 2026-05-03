@@ -2,6 +2,27 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R5：reactive 会话 SOUL.md hot-reload（修补烘焙盲点）
+- 现状审计：原 TODO 写"SOUL.md 改了得重启 app 才生效"，但其实 proactive (`run_proactive_turn` line 1822) 和 telegram (`bot.rs:119`) 都在每次 turn 调 `get_soul()` —— 全是从磁盘读，无缓存层。所以这两条路径**已经自动 hot reload**。
+- 真正的 gap 在 reactive chat：`commands::session::create_session` 把 SOUL.md 烘焙进 `messages[0]`（系统消息），后续每次发消息时前端从 session 拉这个 stale system message 发回后端。session 一旦创建，SOUL 改动被忽略——直到用户开新 session。
+- 解法 — pure helper `refresh_leading_soul(messages, current_soul)`：
+  - 如果 messages[0].role == "system" 且 current_soul 非空（trim 后），用 current_soul 替换 messages[0].content；否则原样返回
+  - 防御性 skip blank：current_soul empty/whitespace → no-op（不要把好好的 stale SOUL 替成空）
+  - skip non-system-first：未来可能有 history 不以 system 开头（pre-R5 老 session、cli 路径），不强行加 SOUL
+  - 只动第一个 system 消息：mood/persona 系统消息会在第二个槽位之后出现（inject_mood_note 插在 first non-system 位置）—— 这些不是 SOUL，必须留下
+- 集成：`chat()` Tauri 命令在 trim_to_context 之后、inject_mood_note 之前调一次 refresh_leading_soul + get_soul。新参一个 IO（每 chat turn 读一次小文件），代价可忽略。
+- 决策 — 不加 panel "立即重新加载 SOUL" 按钮：原 TODO 提了作为 fallback。但 hot-reload 现在是自动的（每个 turn 都新读），fallback 没意义；按钮反而变成"用户认为需要点一下" 的认知噪音。如果未来加文件 watcher（实时通知），按钮才有意义。
+- 决策 — 不动 session 存储：persistent session 文件里仍存旧 SOUL，下次重新打开历史会话还会显示旧的 SOUL。但 (a) 用户聊天 UI 不显 system message；(b) 实际 LLM input 永远新；(c) session 应该忠实记录"当时" 的对话上下文，把 SOUL 当时间快照存反而更诚实。所以 session 持久层故意不动。
+- 决策 — 不缓存 SOUL：现 IO 是"每 turn 读一次几 KB 本地文件"，无瓶颈。加缓存 + invalidation 反而引入新的"什么时候 invalidate" 复杂度。Filesystem 已经是最快的缓存，让 OS page cache 处理。
+- 测试（5 新单测）：
+  - replaces_first_system_content（标准 happy path）
+  - no_op_when_first_is_not_system（pre-R5 / 怪 history 兼容）
+  - only_touches_first_system_when_multiple（pin"只动 SOUL slot，不动 mood/persona 后续 system 槽"）
+  - skips_when_current_is_blank（防御 empty SOUL 摧毁 prior）
+  - empty_messages_passes_through（边界）
+- 测试结果：364 cargo（+5）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：reactive chat 现在每个 turn 都用最新 SOUL 重发给 LLM。开发改 SOUL 不再需要 "新建会话" 这个仪式动作。proactive / telegram 路径不变（早就 hot-reload 了）。
+
 ## 2026-05-03 — Iter R3：late-night-wellness 复合规则（凌晨该睡了硬提醒）
 - 现状缺口：宠物的 wellness 关怀是软的——靠 plan_hint 让 LLM "看到深夜还在工作时主动关心"，但前提是宠物自己写过 daily_plan + LLM 当下判断决定提。如果用户连续好几个深夜都加班，pet 没机制硬性 override，可能继续 chatty / icebreaker / engagement 那几套常规规则。
 - 解法 — 第四个 composite rule `late-night-wellness`：

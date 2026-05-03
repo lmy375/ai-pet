@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R5 设计要点（已实现）
+- **审计推翻 TODO 假设是健康事件**：原 TODO 写"SOUL.md 得重启 app 才生效" 是错的——proactive / telegram 都已 hot-reload。我自己作为前面 iter 写 TODO 的"人"，那时没 audit 当前路径就写下了假设。这次审计后发现真正 gap 在 reactive 会话烘焙。教训：写 TODO 时先看一眼当前实现再描述差距，避免盲写假需求。
+- **session 持久层不动是设计选择**：直觉上"既然 SOUL 变了，session 存的也要更"。但 session 是历史记录——它应该忠实保留对话当时的 system context，不该被未来 SOUL 编辑回写。"LLM 看到的"和"session 持久的" 分两套语义就清晰了。
+- **purity for testability is a recurring win**：refresh_leading_soul 是 pure (messages, soul) → messages，5 测试全 in-memory ChatMessage。get_soul 是 disk IO，分开后测试零 setup。这是 D series 以来反复用的模式。
+- **不引入 file watcher**：watcher 是"主动通知"，每 turn 重读是"被动拉取"。watcher 增加 (a) 跨平台兼容（macOS / Linux / Windows）；(b) 重新加载触发时机（read 期间编辑怎么办）；(c) panel 同步（watcher 改 cache 时，panel 要么轮询要么 emit event）。每 turn 重读避开所有这些复杂度，cost 可忽略。
+- **皮肤场景：用户改 SOUL 想看效果**：user workflow 是 (1) 改 SOUL.md 在 panel 设置里点保存 (2) 立即 send 一条 chat 消息看回应。没改之前 (1)→(2) 之间需要 cycle session 才生效，是开发摩擦点。本 iter 让 (1)→(2) 之间不需要操作，user → AI 反馈 loop 缩短。
+- **panel 按钮拒掉是 UX 减法**：spec 写的"立即重新加载 SOUL" 按钮在自动 hot-reload 后反而困惑用户："我什么时候需要点这个？" 自动机制下按钮变成幽灵控件——存在但永远不该被点。删掉它就是"少一个认知项"。
+
 ## Iter R3 设计要点（已实现）
 - **硬规则 vs 软规则的边界是 wellness 标志位**：proactive_rules 之前都是"在合适条件下推荐 LLM 怎么开口" 的软引导。wellness 这个第一次出现"无视常规 cadence/chatty/pre_quiet 的硬 override"。这个区分以后会有更多：例如 "用户当前 mood 是焦虑 + idle 长 → 强制柔和 register"，也是硬 override。把 wellness 做出来给后面这种规则建立模式：override 时不应 gate on 那些通常的克制信号。
 - **hour 之前没有进 PromptInputs 是历史遗留**：period 是早就有的（"上午/下午/晚上"），但 raw hour 直到现在都通过 inputs.time 字符串隐式传递。本 iter 把 raw hour 暴露出来后，未来其它规则（深夜 / 清晨开机 / 中午午休等）都能用具体小时数判断而不需要 parse 字符串。这是"原始数据进结构、派生字段进 prompt"的清洁分层。
