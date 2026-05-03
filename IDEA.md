@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 103 设计要点（已实现）— 路线 A 第三步（路线 A 收官）
+- **去重而非全部记录**：mood 在 proactive 周期被频繁 re-read，但实际转变不那么频繁。如果每次 record 都写，"我最近 30 次心情" 容易变成 "30 次都是同一个 Idle"——失去趋势意义。dedup 让 history 抓"心情演化的关键点"。
+- **`<ts> <motion> | <text>` 格式而非空格分隔**：mood text 含中文标点可能含空格、特殊字符。pipe + space 三字符 ` | ` 作 separator 几乎不会和真实文本碰撞，但又比 JSON Lines 轻量——`parse_motion_text` 一行 split_once 搞定。
+- **`-` 表示 no-motion 而非 None**：解析时区分 "Tap" 和 "Idle" 容易，要表达"这条 mood 没 motion 前缀"需要一个占位。`-` 简单可识别，trend hint 在格式化时 filter 掉它（无信息量），但仍占 total 计数（便于阈值判断）。
+- **format_trend_hint 双 fallback**：(a) total < min_entries → None（早期不输出虚假 insight）；(b) 全是 `-` → None（filter 后 body 空也不输出）。两条 fallback 让 prompt 注入要么有意义要么不出现，不会出现 "你最近 N 次心情：（无）" 这种空尴尬。
+- **window 50 / min 5**：window 大于 30 因为 dedup 后实际记录的转变次数 ≪ proactive 调用次数；50 大约覆盖几周的转变窗口。min 5 让"前几天试用"的宠物不会因 1-2 个 Idle 就显示"你最近偏 Idle"——还得攒一阵子才有 trend。
+- **建议在 prompt 措辞 "可以让 ta 渗进当下语气，但不必生硬带出"**：和 persona_hint 类似，不让 LLM 把 "我最近 Tap × 12" 直白复述给用户（"你知道吗我最近 Tap 12 次"），而是让 trend 影响选词风格。这是 prompt design 教 LLM **subtle 应用而非 verbose 报告** 的细节。
+- **路线 A 收官**：companionship_days（瞬时身份 = 我们认识 N 天）+ persona_summary（中期身份 = 我观察自己的语气）+ mood_trend（长期身份 = 我的情绪谱）。三层覆盖时间尺度，每层 prompt 注入位置由 backend 控制，每层都可独立 evolve。前置 SOUL.md 静态人格 + 这三层动态人格 = "陪伴一年的宠物"和"刚装上的宠物"在 prompt 上有可观测的差别。
+
 ## Iter 102 设计要点（已实现）— 路线 A 第二步
 - **复用 consolidate 的 LLM 调用而非新加一次**：consolidate 已经是周期性 LLM 调用 + 已经允许 LLM 改 memory。把"reflect 自己写 persona_summary"作为该调用的第 5 项任务，零新 LLM 成本。如果将来想让 reflection 频率独立于 consolidate，再拆出独立调用。
 - **第一人称写法**：prompt 明确要求"写第一人称（如 我倾向...、我注意到...）"。LLM 写关于自己的话用第三人称（"宠物的语气倾向..."）会让 proactive 读到时显得疏离；第一人称让 description 直接像"我自己的笔记"，proactive prompt 拼回去时角色一致。

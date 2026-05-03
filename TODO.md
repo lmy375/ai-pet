@@ -9,9 +9,16 @@
 参 STATUS.md "未来路线"。从 A 路线（长期人格演化）切入，因为它把已有 infra 真正绑
 在一起；其余路线作为辅助优先级。
 
-### 路线 A：长期人格演化（首要）
-- [ ] Iter 103：mood 加趋势——记 mood_history.log（与 speech_history 类似），让 prompt 看
-  到"我最近一周心情主要是 X，今天偏 Y"，引导 LLM 在不同长期态势下选择不同语气。
+### 路线 A：长期人格演化（已完成 Iter 101 / 102 / 103，路线 A 收官）
+
+下一步候选（路线 A 后续延展）：
+- [ ] Iter 104：把 companionship_days / persona_summary 摘要 / mood_trend 三层信息也透
+  传到反应式 chat（commands::chat）的 system prompt——目前只在 proactive 注入。让长期
+  人格在用户主动来聊时也成立。
+- [ ] Iter 105：panel 加 "Persona" tab 显示当前 install_date / companionship_days /
+  persona_summary 描述 / 最近 mood trend，让用户能直接看到"宠物当前画像"。
+- [ ] Iter 106：给 panel stats 卡加"陪伴 N 天"chip（与今日 / 累计开口数并列），让用户
+  在主面板就感知"和这只宠物相处多久了"。
 
 ### 路线 B：表情系统升级
 - [ ] Iter 8b：扩展 mood 解析支持 expression 字段（如 [motion: Tap, expression: smile]），
