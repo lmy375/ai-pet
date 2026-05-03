@@ -308,6 +308,7 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         inputs.chatty_day_threshold,
         inputs.env_spoke_total,
         inputs.env_spoke_with_any,
+        inputs.companionship_days,
     );
     let composite_labels = active_composite_rule_labels(
         !inputs.wake_hint.trim().is_empty(),
@@ -352,6 +353,13 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
                 "- **今天已经聊了不少**：你今天已经主动开过 {} 次口了。除非有真正值得说的新信号（用户刚回来、有到期提醒、明显环境变化），优先**保持安静**（用 `{}`）；要说也只说极简一句，别再起新话题。",
                 inputs.today_speech_count, SILENT_MARKER
             ),
+            "companionship-milestone" => {
+                let label = companionship_milestone(inputs.companionship_days).unwrap_or("纪念日");
+                format!(
+                    "- **今天是和用户相处的「{}」**（共 {} 天）。如果决定开口，可以轻轻提一句这种相处的感受——不是郑重宣告，更像顺口提一下「啊，今天好像满 X 了」；不要要求 ta 回应这个话题，就当作语气底色。如果其它高优先级信号（到期任务/重要提醒）也在，让那个先说，纪念日只做个底色。",
+                    label, inputs.companionship_days
+                )
+            }
             "env-awareness" => format!(
                 "- **最近你开口前几乎都没看环境**：过去 {} 次主动开口里只有 {} 次调用了 `get_active_window` / `get_weather` / `get_upcoming_events` / `memory_search` 之一（< {}%）。如果决定开口，**这次先调一次 `get_active_window` 看看用户在用什么 app**，再据此说一句贴合当下的话；别凭空起话题。",
                 inputs.env_spoke_total, inputs.env_spoke_with_any, ENV_AWARENESS_LOW_RATE_PCT
@@ -402,13 +410,17 @@ pub fn active_data_driven_rule_labels(
     chatty_day_threshold: u64,
     env_spoke_total: u64,
     env_spoke_with_any: u64,
+    companionship_days: u64,
 ) -> Vec<&'static str> {
-    let mut labels: Vec<&'static str> = Vec::with_capacity(3);
+    let mut labels: Vec<&'static str> = Vec::with_capacity(4);
     if proactive_history_count < 3 {
         labels.push("icebreaker");
     }
     if chatty_day_threshold > 0 && today_speech_count >= chatty_day_threshold {
         labels.push("chatty");
+    }
+    if companionship_milestone(companionship_days).is_some() {
+        labels.push("companionship-milestone");
     }
     if env_awareness_low(env_spoke_total, env_spoke_with_any) {
         labels.push("env-awareness");
@@ -552,6 +564,24 @@ pub fn format_companionship_line(days: u64) -> String {
             "你和用户已经一起走过 {} 天——可以让这份相处时长自然渗进语气，比如对 ta 偏好的预判、共同回忆的暗指（不必硬塞，时机对就用）。",
             days
         )
+    }
+}
+
+/// Iter Cρ: pure helper — return a Chinese milestone label if `days` is a relationship
+/// milestone, else None. Called by both the rule body (which formats the label into
+/// the prompt) and the data-driven label helper (which pushes the rule label when
+/// non-None). Milestones: 7, 30, 100, 180, 365 fixed; every 365 thereafter is
+/// "又一个周年". Returns None on day 0 (already covered by the always-rendered
+/// companionship_line's "第一天" framing).
+pub fn companionship_milestone(days: u64) -> Option<&'static str> {
+    match days {
+        7 => Some("刚好一周"),
+        30 => Some("满一个月"),
+        100 => Some("百日纪念"),
+        180 => Some("满半年"),
+        365 => Some("满一年"),
+        d if d > 365 && d % 365 == 0 => Some("又一个周年"),
+        _ => None,
     }
 }
 
@@ -716,12 +746,14 @@ pub async fn get_tone_snapshot(
         has_plan,
         today_count_for_rules == 0,
     );
+    let companionship_days_for_rules = crate::companionship::companionship_days().await;
     let data_labels = active_data_driven_rule_labels(
         proactive_count as usize,
         today_count_for_rules,
         chatty_day_threshold,
         env_total,
         env_with_any,
+        companionship_days_for_rules,
     );
     let composite_labels = active_composite_rule_labels(
         wake_back,
@@ -1184,12 +1216,15 @@ pub fn spawn(app: AppHandle) {
                 has_plan_for_rules,
                 chatty_today == 0,
             );
+            let companionship_days_for_rules =
+                crate::companionship::companionship_days().await;
             let data_label_set = active_data_driven_rule_labels(
                 lifetime_count as usize,
                 chatty_today,
                 chatty_threshold,
                 env_total,
                 env_with_any,
+                companionship_days_for_rules,
             );
             // Pull cadence (minutes since last proactive) for the long-idle composite,
             // and idle-minutes (user-side absence) for the long-absence-reunion rule.
@@ -2154,9 +2189,11 @@ mod prompt_tests {
             // string ("约 8 分钟（刚说过话，话题还热）"). Tests for long-idle bump this
             // above 60 explicitly.
             since_last_proactive_minutes: Some(8),
-            // Default 30 — neither install-day (0) nor a long history; tests that care
-            // about either extreme set this explicitly.
-            companionship_days: 30,
+            // Default 5 — past day-0 special framing, but not a milestone (30 / 100 /
+            // 365 / etc.) so the Iter Cρ companionship-milestone rule stays silent
+            // by default. Tests that need either the day-0 framing or a milestone
+            // set this explicitly.
+            companionship_days: 5,
             // Default empty — base inputs simulate the pre-Iter 102 state where no
             // persona summary has been written yet. Tests for the persona hint set this
             // to a non-empty string to assert injection.
@@ -2402,24 +2439,24 @@ mod prompt_tests {
     #[test]
     fn active_data_driven_rule_labels_empty_in_neutral_state() {
         // Past icebreaker, below chatty threshold, no env-awareness data.
-        assert!(active_data_driven_rule_labels(100, 0, 5, 0, 0).is_empty());
+        assert!(active_data_driven_rule_labels(100, 0, 5, 0, 0, 0).is_empty());
     }
 
     #[test]
     fn active_data_driven_rule_labels_picks_up_each_rule_independently() {
         // Only icebreaker.
         assert_eq!(
-            active_data_driven_rule_labels(0, 0, 5, 0, 0),
+            active_data_driven_rule_labels(0, 0, 5, 0, 0, 0),
             vec!["icebreaker"],
         );
         // Only chatty.
         assert_eq!(
-            active_data_driven_rule_labels(100, 5, 5, 0, 0),
+            active_data_driven_rule_labels(100, 5, 5, 0, 0, 0),
             vec!["chatty"],
         );
         // Only env-awareness.
         assert_eq!(
-            active_data_driven_rule_labels(100, 0, 5, 12, 2),
+            active_data_driven_rule_labels(100, 0, 5, 12, 2, 0),
             vec!["env-awareness"],
         );
     }
@@ -2427,7 +2464,7 @@ mod prompt_tests {
     #[test]
     fn active_data_driven_rule_labels_combine_in_firing_order() {
         // All three at once: should appear in the same order proactive_rules pushes them.
-        let labels = active_data_driven_rule_labels(0, 6, 5, 12, 1);
+        let labels = active_data_driven_rule_labels(0, 6, 5, 12, 1, 0);
         assert_eq!(labels, vec!["icebreaker", "chatty", "env-awareness"]);
     }
 
@@ -2435,7 +2472,7 @@ mod prompt_tests {
     fn active_data_driven_rule_labels_zero_threshold_disables_chatty() {
         // chatty threshold == 0 means the user opted out — even today_count=99 shouldn't
         // surface the chatty label.
-        assert!(active_data_driven_rule_labels(100, 99, 0, 0, 0).is_empty());
+        assert!(active_data_driven_rule_labels(100, 99, 0, 0, 0, 0).is_empty());
     }
 
     #[test]
@@ -2469,6 +2506,51 @@ mod prompt_tests {
             active_environmental_rule_labels(false, false, false, false, false, true),
             vec!["first-of-day"],
         );
+    }
+
+    #[test]
+    fn companionship_milestone_fixed_thresholds() {
+        assert_eq!(companionship_milestone(7), Some("刚好一周"));
+        assert_eq!(companionship_milestone(30), Some("满一个月"));
+        assert_eq!(companionship_milestone(100), Some("百日纪念"));
+        assert_eq!(companionship_milestone(180), Some("满半年"));
+        assert_eq!(companionship_milestone(365), Some("满一年"));
+    }
+
+    #[test]
+    fn companionship_milestone_returns_none_for_non_milestones() {
+        assert_eq!(companionship_milestone(0), None);
+        assert_eq!(companionship_milestone(1), None);
+        assert_eq!(companionship_milestone(6), None);
+        assert_eq!(companionship_milestone(8), None);
+        assert_eq!(companionship_milestone(29), None);
+        assert_eq!(companionship_milestone(31), None);
+        assert_eq!(companionship_milestone(99), None);
+        assert_eq!(companionship_milestone(364), None);
+        assert_eq!(companionship_milestone(366), None);
+    }
+
+    #[test]
+    fn companionship_milestone_yearly_after_first_year() {
+        assert_eq!(companionship_milestone(730), Some("又一个周年"));
+        assert_eq!(companionship_milestone(1095), Some("又一个周年"));
+        assert_eq!(companionship_milestone(1460), Some("又一个周年"));
+        // Off-by-one days near anniversaries should not fire.
+        assert_eq!(companionship_milestone(729), None);
+        assert_eq!(companionship_milestone(731), None);
+    }
+
+    #[test]
+    fn companionship_milestone_rule_fires_through_proactive_rules() {
+        let mut inputs = base_inputs();
+        inputs.companionship_days = 100;
+        let rules = proactive_rules(&inputs);
+        assert!(rules.iter().any(|r| r.contains("百日纪念")));
+        assert!(rules.iter().any(|r| r.contains("今天是和用户相处的")));
+
+        inputs.companionship_days = 5; // not a milestone
+        let rules = proactive_rules(&inputs);
+        assert!(!rules.iter().any(|r| r.contains("今天是和用户相处的")));
     }
 
     #[test]
@@ -3287,6 +3369,7 @@ mod prompt_tests {
             ("plan", "你有今日计划在执行中"),
             ("icebreaker", "你和用户还不熟"),
             ("chatty", "今天已经聊了不少"),
+            ("companionship-milestone", "今天是和用户相处的"),
             ("env-awareness", "最近你开口前几乎都没看环境"),
             ("engagement-window", "此刻是开新话题的好时机"),
             ("long-idle-no-restraint", "沉默已久但没在克制状态"),
@@ -3298,7 +3381,7 @@ mod prompt_tests {
         let backend_labels: std::collections::HashSet<&'static str> =
             active_environmental_rule_labels(true, true, true, true, true, true)
                 .into_iter()
-                .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0))
+                .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0, 100))
                 .chain(active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60))
                 .collect();
         let fingerprint_labels: std::collections::HashSet<&str> =
@@ -3316,7 +3399,7 @@ mod prompt_tests {
 
         // Scenario 1: short-idle + chatty active + pre-quiet active.
         // Covers: wake-back, first-mood, pre-quiet, reminders, plan, icebreaker, chatty,
-        // env-awareness, engagement-window.
+        // env-awareness, engagement-window, companionship-milestone.
         let mut s1 = base_inputs();
         s1.wake_hint = "（用户的电脑在大约 60 秒前刚从休眠唤醒。）";
         s1.is_first_mood = true;
@@ -3327,6 +3410,7 @@ mod prompt_tests {
         s1.today_speech_count = s1.chatty_day_threshold;
         s1.env_spoke_total = 12;
         s1.env_spoke_with_any = 1;
+        s1.companionship_days = 100; // milestone — fires companionship-milestone
         // since_last_proactive_minutes stays at base_inputs default (Some(8)) — short.
         let rules1 = proactive_rules(&s1);
 
@@ -3377,7 +3461,7 @@ mod prompt_tests {
         // All-true / max-trigger inputs surface every label all backend helpers can
         // ever produce. Same input recipe as Iter 89's test for consistency.
         let env = active_environmental_rule_labels(true, true, true, true, true, true);
-        let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
+        let data = active_data_driven_rule_labels(0, 999, 1, 999, 0, 100);
         let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
         let backend: std::collections::HashSet<&'static str> = env
             .iter()
@@ -3418,7 +3502,7 @@ mod prompt_tests {
             frontend_keys.iter().map(|s| s.as_str()).collect();
         // All-true inputs surface every possible label all helpers can ever return.
         let env = active_environmental_rule_labels(true, true, true, true, true, true);
-        let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
+        let data = active_data_driven_rule_labels(0, 999, 1, 999, 0, 100);
         let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
         let missing: Vec<&'static str> = env
             .iter()

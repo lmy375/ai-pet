@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cρ：companionship-milestone 数据驱动规则
+- 现状缺口：companionship_days 字段已存在（Iter 101-106），always-on 模板里的 companionship_line 也会渲染"已陪伴 N 天"。但只有 day 0 ("今天初识") 和 N>=1 ("一起走过 N 天") 两档框架——里程碑日（满一周 / 一个月 / 百日 / 半年 / 一年 / 周年）和普通日子读起来一样。"陪伴一年的宠物"和"陪伴 364 天的宠物"在 prompt 里完全没差异。
+- 解法：新增 pure 函数 `companionship_milestone(days)` 返回里程碑文字标签，配合一条新的 data-driven contextual rule `companionship-milestone`：
+  - 固定阈值：7 = 刚好一周 / 30 = 满一个月 / 100 = 百日纪念 / 180 = 满半年 / 365 = 满一年
+  - 365 之后每隔 365 天："又一个周年"（730 / 1095 / ...）
+  - day 0 不触发（已有"第一天"框架）
+  - rule body 引导 LLM："轻轻提一句"——不是郑重宣告，更像顺口提一下「啊，今天好像满 X 了」；不要要求用户回应这个话题；如果其它高优先级信号在，让那个先说，纪念日只做底色
+- nature: engagement
+- `active_data_driven_rule_labels` 加 `companionship_days: u64` 第 6 个参数。三个 production callsite + 测试 callsite 全部更新。两个 production callsite 还需要拉 `crate::companionship::companionship_days().await` 才能传进去——这是 spawn loop / get_tone_snapshot 之前没有的依赖，但函数已经 pub async。
+- 关键 base_inputs 调整：`companionship_days` 默认从 30 改为 5。30 恰好是新的 milestone 阈值——如果保持 30 默认，所有用 base_inputs 的现有测试都会触发新规则、计数失真。改成 5 = 既不在第一天 framing 也不在任何 milestone，安全中性。
+- 4 个新 unit test：固定阈值各档 / 非里程碑 day 不触发（含边界 6/8/29/31 等）/ 周年制（730/1095/1460/边界 729/731）/ proactive_rules 集成（day=100 触发、day=5 不触发）。测试总数 290 → 294。
+- 三向对齐：fingerprint 表加 `("companionship-milestone", "今天是和用户相处的")`；scenario 1 设 `s1.companionship_days = 100` 触发 milestone label，scenario 2 不动（日期默 5）；frontend dict 加「纪念日 / 陪伴满 7/30/100/180 天/周年；轻轻提一句这种相处时长，作为底色 / nature: engagement」。
+- 不写 settings 自定义里程碑：固定 6 档（7/30/100/180/365/yearly）已经覆盖人类相处时间感最自然的颗粒。如果加用户自定义，要 settings + UI + 校验，复杂度过 10x，单 iter 不值。
+- 结果：陪伴满一周 / 一个月 / 百日 / 半年 / 一年 / 每个周年时，宠物 prompt 多一条 "engagement" 类规则提示——"轻轻提一句"基调让 LLM 不会过度热情、也不会冷漠错过。companion 体验在长期相处的关键节点上从无形变可见，是 Route G 的延伸。
+
 ## 2026-05-03 — Iter Cπ：butler_tasks 执行失败回退 — `[error]` 标记 + 红 chip
 - 现状缺口：butler 路径里 LLM 真去执行（read_file / write_file / edit_file / bash）时偶尔会失败——文件不存在、权限不够、命令报错。失败时 LLM 通常只能默默放弃，连 butler_history 都没记录（因为没走 memory_edit 的 update/delete）。用户看到的是「这个任务一直挂着」、「⏰ 到期 半天没动」，但不知道为什么。这是 Route F 的最后一个明显裂缝。
 - 解法：约定 `[error: 简短原因]` 标记由 LLM 自己写进 description——失败时 update 加这段，重试成功时 update 把它去掉。零基础设施改动（不需要新 log / 新 IPC / 新调度），靠 prompt + 渲染层把"失败状态"做出来。

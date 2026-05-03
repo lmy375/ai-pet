@@ -16,6 +16,8 @@
   （2026-05-03 完成）
 - [x] Iter Cο：PanelPersona 加"当下心情"区（motion emoji + 文字 + 空状态）
   （2026-05-03 完成）
+- [x] Iter Cρ：companionship-milestone 数据驱动规则（满 7/30/100/180 天/年/周年→
+  engagement 类提示）（2026-05-03 完成）
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
