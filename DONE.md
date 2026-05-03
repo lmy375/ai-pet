@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D9：ToneSnapshot 暴露 cooldown_remaining_seconds + ⏳ chip
+- 现状缺口：proactive cooldown gate（Iter 5）默认 1800s（30 min）。宠物开过一次口后那 30 分钟内任何 proactive 评估都会 skip——但 panel 没有任何"现在还有 N 秒才会再说"的指示。结果用户感觉 "宠物刚说过然后突然安静好久"，不知道这是 cooldown gate 还是 LLM 选择沉默。
+- 解法（D series 模板复用第 N 次）：
+  - `ToneSnapshot.cooldown_remaining_seconds: Option<u64>` —— Some(N) 当 cooldown 还在窗口里，None 当 gate 已经放开（cooldown 0、cooldown 已过、宠物从未说过）
+  - 计算逻辑严格 mirror gate 路径：`since_last < cooldown_seconds` 时 `remaining = cooldown - since_last`
+  - PanelToneStrip 在 💬 cadence chip 之后渲染 ⏳ 冷却 chip：青色 (#0891b2) 区分功能性 (vs 红色警报 / 灰色信息)
+  - 格式化：< 60s 显 `Ns`、≥ 60s 显 `NmKs`（NaN 保护：mod 60 == 0 时省去 0s 前缀）。tooltip 给精确数字 + 指向 settings 配置项
+- 不暴露 `cooldown_seconds` 配置值：那是 settings 中的常量，不需要 ToneSnapshot 重复——chip 里给精确剩余即可。
+- 测试：302 cargo 不变（gate 路径已被 Iter 5 测过；本 iter 是 panel 透传）；tsc 干净。
+- 结果：宠物 cooldown 期间 panel 显示 ⏳ 冷却 12m；用户立刻明白"不是 LLM 选静音，是 gate 在挡"。和 ☀ wake / 🌙 pre_quiet / 😴 in_quiet / 🎯 focus 一起，panel 现在反映了**所有 4 个 gate 的状态**：cooldown、quiet hours（含 pre_quiet 进入提示）、focus、wake-recent. observability 完整。
+
 ## 2026-05-03 — Iter D8：PanelPersona 显示 settings.user_name 当前值
 - 现状缺口：Cτ + Cυ 把 user_name 注入到 reactive chat / Telegram persona_layer 和 proactive prompt。但 user 设了 name 之后没有"我看到 ta 真的会用这个名字"的明显反馈——下次 proactive 触发也许能看到，但很多用户可能担心自己设错了。需要 panel 上 explicit 显示当前生效的 name。
 - 解法：

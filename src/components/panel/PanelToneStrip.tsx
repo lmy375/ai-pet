@@ -46,6 +46,16 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           💬 {tone.cadence}（{tone.since_last_proactive_minutes}m）
         </span>
       )}
+      {tone.cooldown_remaining_seconds !== null && (
+        <span
+          title={`cooldown gate 还有 ${tone.cooldown_remaining_seconds}s 才会放过这一轮 proactive 评估（settings.proactive.cooldown_seconds 控制窗口）`}
+          style={{ color: "#0891b2" }}
+        >
+          ⏳ 冷却 {tone.cooldown_remaining_seconds < 60
+            ? `${tone.cooldown_remaining_seconds}s`
+            : `${Math.floor(tone.cooldown_remaining_seconds / 60)}m${tone.cooldown_remaining_seconds % 60 > 0 ? `${tone.cooldown_remaining_seconds % 60}s` : ""}`}
+        </span>
+      )}
       {tone.wake_seconds_ago !== null && tone.wake_seconds_ago <= 600 && (
         <span title="刚检测到 wake-from-sleep" style={{ color: "#0891b2" }}>
           ☀ wake {tone.wake_seconds_ago}s

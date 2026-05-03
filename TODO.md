@@ -50,7 +50,9 @@
   "跑了多久"（2026-05-03 完成）
 - [x] Iter D8：PanelPersona 显示 settings.user_name 当前值（"🐾 宠物称呼你为「moon」"
   或空态提示路径），让 Cτ/Cυ 设的名字有 confirmation loop（2026-05-03 完成）
-- D series 八连完成。
+- [x] Iter D9：ToneSnapshot 暴露 cooldown_remaining_seconds + PanelToneStrip 显 ⏳
+  冷却 Nm chip — gate 状态全可见（2026-05-03 完成）
+- D series 九连完成；4 个 gate（cooldown / quiet / focus / wake）全部 panel 可见。
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）

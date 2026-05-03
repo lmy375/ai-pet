@@ -671,6 +671,12 @@ pub struct ToneSnapshot {
     /// when the gate is fully suppressing proactive turns. The panel uses both
     /// to render "approaching → in" transition for the user.
     pub in_quiet_hours: bool,
+    /// Iter D9: seconds remaining on the cooldown gate (Iter 5). Some(N) when
+    /// the gate is currently blocking — `N = cooldown_seconds - since_last`.
+    /// None when the gate is open (cooldown expired or pet has never spoken).
+    /// Surfaced so the panel can show "下次开口最多还要 Ns" instead of the
+    /// silent gate making the pet feel unresponsive.
+    pub cooldown_remaining_seconds: Option<u64>,
 }
 
 #[derive(serde::Serialize)]
@@ -850,6 +856,20 @@ pub async fn get_tone_snapshot(
                 in_quiet_hours(hour, s.proactive.quiet_hours_start, s.proactive.quiet_hours_end)
             })
             .unwrap_or(false),
+        // Iter D9: cooldown remaining. Mirrors the gate logic exactly:
+        // remaining = cooldown_seconds - since_last_proactive_seconds when
+        // since_last < cooldown; None when gate is open (cooldown expired,
+        // pet has never spoken, or cooldown disabled by setting it to 0).
+        cooldown_remaining_seconds: {
+            let cooldown = get_settings()
+                .ok()
+                .map(|s| s.proactive.cooldown_seconds)
+                .unwrap_or(0);
+            match snap.since_last_proactive_seconds {
+                Some(since) if cooldown > 0 && since < cooldown => Some(cooldown - since),
+                _ => None,
+            }
+        },
     })
 }
 
