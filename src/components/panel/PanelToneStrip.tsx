@@ -178,6 +178,12 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
         // legacy short hover when breakdown is null (e.g. proactive
         // disabled — but then remaining is also null so this branch
         // shouldn't really hit).
+        //
+        // R28: color the chip by feedback band so user sees the R7
+        // adapter's current verdict at a glance, not just on hover —
+        //   high_negative (cooldown ×2) → amber: pet is backing off
+        //   low_negative (cooldown ×0.7) → green: user engaged, pet free
+        //   mid / insufficient → cyan: neutral / not enough data
         const remaining = tone.cooldown_remaining_seconds;
         const bd = tone.cooldown_breakdown;
         const titleText = bd
@@ -187,8 +193,13 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
             `${bd.feedback_factor.toFixed(1)} (${bd.feedback_band}) = ` +
             `effective ${bd.effective_seconds}s。`
           : `cooldown gate 还有 ${remaining}s 才会放过这一轮 proactive 评估。`;
+        const band = bd?.feedback_band;
+        const color =
+          band === "high_negative" ? "#d97706"
+          : band === "low_negative" ? "#16a34a"
+          : "#0891b2";
         return (
-          <span title={titleText} style={{ color: "#0891b2" }}>
+          <span title={titleText} style={{ color, fontWeight: band && band !== "mid" && band !== "insufficient_samples" ? 600 : "normal" }}>
             ⏳ 冷却 {remaining < 60
               ? `${remaining}s`
               : `${Math.floor(remaining / 60)}m${remaining % 60 > 0 ? `${remaining % 60}s` : ""}`}

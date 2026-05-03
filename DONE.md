@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R28：cooldown chip color-code by feedback band（R23 → at-a-glance）
+- 现状缺口：R23 给 ⏳ 冷却 chip 加了完整 derivation hover ("configured × mode × feedback = effective"). 但 chip 颜色 fixed cyan — **band 信息躲在 hover 后面**，user 必须把鼠标停在 chip 上才知道 R7 adapter 是否在干预。本来一眼能给的状态变成两步操作。
+- 解法 — 三色 mapping 沿 R23 现有 band 字段：
+  - `high_negative` (cooldown ×2，pet 后退中) → amber `#d97706`
+  - `low_negative` (cooldown ×0.7，pet free 多说) → green `#16a34a`
+  - `mid` / `insufficient_samples` → cyan `#0891b2`（保留原色，"中性"语义）
+  - non-neutral band 加 fontWeight 600 让 chip 视觉权重升级 —— "adapter 在干预" 是 worth attention 的 status。
+  - hover 文案不变（R23 已完整 breakdown）。
+- 决策 — 保 cyan 作 neutral 是 backwards compat：很多用户 default 不会触发 high/low band（< 5 samples 或 ratio 在 [0.2, 0.6] 之间）。"颜色不变 = 系统安静默认状态"，避免每次都换色让 user 混淆。**变化的色彩才有信号意义**——保留默认 baseline。
+- 决策 — bold weight only on non-neutral：不只换色，还加重字重。**多重 visual cue 提高 noticeability** —— 颜色变化 + 字重变化共同 anchor "现在系统在做什么"。但 mid/insufficient 不加重，避免让 chip 总像在喊。
+- 决策 — 没有新 backend 字段：所有逻辑 derive from cooldown_breakdown.feedback_band（R23 already exposed）。**R27 codified rule "band 计算 view-edge derive"** 又一次践行 —— frontend 直接读 band 字符串做色彩 mapping，不让 backend 多塞个 chip_color 字段。
+- 决策 — band → color 是 hardcoded mapping 而非 settings：用户没必要可配置颜色（panel 少有这层个性化需求）。**默认值好的话 settings 就别加** 是控件经济原则。
+- 决策 — cyan 保为 default 是历史延续：R23 之前 chip 是 cyan，user 已有视觉记忆。换 default 色会破坏"长期看 panel"的 visual continuity。**改进现有 chip 时尊重已有视觉积累**。
+- 测试：纯前端样式 iter，无新 logic，无新单测。tsc + cargo build/test/clippy 全 clean 验证 wiring。
+- 测试结果：478 cargo（无变化）；clippy clean；tsc clean。
+- 结果：⏳ chip 现在 at-a-glance 揭示 R7 adapter 状态。看到橙色 chip 就知道"宠物在后退"，绿色就知道"用户活跃，pet 多说"，cyan 就是"系统中立"。**panel 设计的精进 = 把 hover 才看到的信息逐步前推到 chip 颜色 / 字重 / 位置**。R23 → R28 是 hover details → at-a-glance 的 surface 升级模式 —— 类似 R20 codified rule 的 application：surface 信息密度可以通过"先粗后细" 多层叠加。
+
 ## 2026-05-04 — Iter R27：active_app deep-focus directive + 3-band panel chip
 - 现状缺口：R15 把 active_app 注入 prompt 是描述性的："用户在「Cursor」里已经待了 90 分钟。" LLM 看到能 *infer* 是深度工作，但不一定每次都做对——尤其是 prompt 里其他信号（如"用户已经 X 分钟没回应"）拉它打断。**长时间专注是强 contextual signal，应该 explicit directive 而不是 implicit 描述**。15-60 分钟范围还可以打断（pomodoro 间隙），≥60 是真深度，干扰成本陡增。
 - 解法 — prompt 升级 + panel 3 段色：
