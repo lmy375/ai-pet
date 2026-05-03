@@ -131,6 +131,9 @@ export interface ToneSnapshot {
     feedback_factor: number;
     effective_seconds: number;
   } | null;
+  // Iter R31: char count of the last proactive prompt (chars().count(),
+  // not bytes — CJK-friendly). Null when no turn has fired yet.
+  last_prompt_chars: number | null;
 }
 
 /**

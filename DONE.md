@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R31：proactive prompt size 📝 chip（budget 自检）
+- 现状缺口：R-series 一路加 prompt hint —— speech / repeated_topic / cross_day / yesterday_recap / active_app / length_register / feedback / feedback_aggregate / persona / mood / wake / focus / reminders / butler_tasks / plan ... 累积下来 prompt 单次构造可能 3000+ chars。**没有任何 surface 显示当前 prompt 多大**，无法判断"是否该裁哪条 hint"。E1 modal 让用户能 inspect 全文，但要数字数得手动数。budget 自检 chip 缺位。
+- 解法 — 复用 LAST_PROACTIVE_PROMPT static + chip：
+  - 后端：ToneSnapshot 加 `last_prompt_chars: Option<usize>` 字段。build_tone_snapshot 从 LAST_PROACTIVE_PROMPT.lock() 读 String → `chars().count()` —— **CJK-friendly 计数**，否则 1000 字 prompt 会被算成 3000 字节误导。
+  - 前端：panelTypes.ts 加 `last_prompt_chars: number | null`。PanelToneStrip 新 chip "📝 N 字"，3 段色：< 1500 绿（lean）/ 1500-2999 灰（normal）/ ≥3000 橙（heavy）。hover 文案解释为什么有这个 chip。
+- 决策 — chars().count() 不 len()：CJK 一字 ≈ 3 byte UTF-8。len() 会把 1000 字 prompt 报成 3000，让 chip 永远停在 orange 误判 "总是太长"。**所有"长度感知"字段必须用 chars().count()** 是 R19 / R23 IDEA 写过的纪律 — R31 再次践行。
+- 决策 — < 1500 / 1500-2999 / ≥3000 阈值是经验拍：CJK 对话 prompt 一般 1000-2000 字适宜。R-series 现状大概 2500-3500（多 hint 都 fire 时）。3000 设为 "heavy" 是想把 "all hints + recent context" 状态标 orange，触发"是不是有 hint 总是 fire 但没价值"的 review thinking。
+- 决策 — 不放在 cluster 中段而放 period 之前：📝 prompt size 不是"宠物开口形态"也不是"用户上下文" —— 是 *meta* signal（关于 prompt 本身）。放在 cluster 之间（period chip 前）作 transition。
+- 决策 — fresh process / 第一次 turn 之前不显 chip：null check。User 看到 panel 第一次没数字，第二次开始有 — 这是诚实信号 "还没有 prompt 历史"，不是 fake "0 字"。
+- 决策 — 没新单测：值是 chars().count()，逻辑 trivial；CJK 处理由 Rust 标准库保证。R23 / R25 / R28 都 followed 同思路 "wiring 不写测，logic 才写测"。
+- 测试结果：478 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：panel 现在 surface 一条 meta-signal "上次 LLM 看到的 prompt 多大字"。R-series 后续加 hint 时 chip 会 visually warn "你这次又胖了" — 直接的 budget 反馈循环。是 dev-facing observability 也是 codebase 自我体检 surface。
+
 ## 2026-05-04 — Iter R30：memory_consolidate 字段两个 yaml-only debt 还清（R29 rule audit）
 - 现状缺口：R29 codified "新加 settings 字段 = 同 iter UI 入口"。R29 立刻还了 R13b（companion_mode）的债。R30 audit 同样的债务来源 —— 发现 memory_consolidate 还有 **两个** yaml-only 字段：
   - `stale_once_butler_hours`（Iter Cλ，2026-05-03）—— 后端 + 行为 + 测试都齐了，但 PanelSettings 只 default 了值，从未 surface 字段。
