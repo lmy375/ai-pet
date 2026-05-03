@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter E3 设计要点（已实现）
+- **timestamp 在 prompt build 时 set 而不是 reply 后**：prompt 里有 `time` 字段（now_local.format），那是 LLM 看到的时刻——和 panel 显示的时刻保持一致更直观，让"这个时间正是 LLM 看到的时间"。如果在 reply 后 set，会有几秒到几十秒漂移（LLM 调用耗时）。
+- **tools_used dedup with BTreeSet**：原 tools 是 per-call list（一次 turn 可能 call 多个工具，每个 call 一行）。UI 想看的是"调过哪些"，去重 + 排序后展示更紧凑。BTreeSet 同时给排序，`get_active_window · memory_edit` 而不是按调用顺序的 `memory_edit · get_active_window · memory_edit · get_active_window`。
+- **combined `get_last_proactive_meta` 而不是两个独立**：timestamp + tools_used 几乎总同时 want，一次 IPC 比两次便宜——E series 实践积累的小优化。E2 的 Promise.all 同时拉 prompt + reply 是同样思路。
+- **不持久化**：和 E1/E2 一样，process 重启清空。如果 user 需要长期回看，应该走 logs（已有）或更系统化的 trace 存储——E series 是 transient inspect 工具。
+- **modal 头部紧凑布局**：标题 + char count + ⏱ + 🔧 + copy msg + ✕ 全在一行。中文工具名（如 active_window）较短，` · ` 连接符即使 5-6 个工具也不会太挤。如果未来更多工具或更长名字再考虑换行。
+- **E series 三连后形态稳定**：E1 (prompt) + E2 (reply) + E3 (meta) = 一个 modal 看完整 chat round。下一步 E4 候选可能是 "同 modal 切换查看上 N 次的 prompt 历史"——但那需要 ring buffer，复杂度上一台阶。先 ship 三连看实际使用是否有 demand。
+
 ## Iter E2 设计要点（已实现）
 - **同 E1 完全镜像 pattern**：static Mutex stash + Tauri command + 在 run_proactive_turn 关键点 clone。E series 的 dev tool 设计模式正在自然涌现。
 - **modal 双段而不是 tab**：tab 切换增加交互成本；通常 user 想同时看 in/out 找因果。两段用浅色背景（slate / green-50）区分 + 段头 emoji 箭头（⇢ ⇠）使方向感强烈。

@@ -142,6 +142,18 @@ pub static LAST_PROACTIVE_PROMPT: std::sync::Mutex<Option<String>> = std::sync::
 /// panel show the full request/response loop without log scraping.
 pub static LAST_PROACTIVE_REPLY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Iter E3: ISO-8601 local timestamp of the most recent proactive turn — when
+/// the prompt above was constructed. Lets the panel show "this run was 12
+/// minutes ago" so users can tell whether the cached pair is fresh or stale.
+pub static LAST_PROACTIVE_TIMESTAMP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Iter E3: distinct tool names the LLM called during the most recent turn
+/// (e.g. ["get_active_window", "memory_edit"]). Empty Vec when the turn ran but
+/// invoked no tools. Surfacing this answers "did the LLM look at the
+/// environment / write to memory this round?" — a chip-style summary in the
+/// modal complements the prompt+reply text.
+pub static LAST_PROACTIVE_TOOLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Tauri command — return the most recently built proactive prompt, or empty
 /// string if none has been built yet (fresh process, never fired).
 #[tauri::command]
@@ -162,6 +174,32 @@ pub fn get_last_proactive_reply() -> String {
         .ok()
         .and_then(|g| g.clone())
         .unwrap_or_default()
+}
+
+/// Iter E3: combined accessor for the panel modal — timestamp + tool list in
+/// one shot so the frontend doesn't need three round-trips. Empty values when
+/// no turn has fired.
+#[derive(serde::Serialize)]
+pub struct ProactiveTurnMeta {
+    pub timestamp: String,
+    pub tools_used: Vec<String>,
+}
+
+#[tauri::command]
+pub fn get_last_proactive_meta() -> ProactiveTurnMeta {
+    let timestamp = LAST_PROACTIVE_TIMESTAMP
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default();
+    let tools_used = LAST_PROACTIVE_TOOLS
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    ProactiveTurnMeta {
+        timestamp,
+        tools_used,
+    }
 }
 
 pub type InteractionClockStore = Arc<InteractionClock>;
@@ -1770,6 +1808,12 @@ async fn run_proactive_turn(
     if let Ok(mut g) = LAST_PROACTIVE_PROMPT.lock() {
         *g = Some(prompt.clone());
     }
+    // Iter E3: also stash the timestamp at prompt-build time. Set here (not at
+    // reply time) so the user sees "when was this turn started" — closer to
+    // when the displayed signals (mood/cadence/etc.) were sampled.
+    if let Ok(mut g) = LAST_PROACTIVE_TIMESTAMP.lock() {
+        *g = Some(now_local.format("%Y-%m-%d %H:%M:%S").to_string());
+    }
 
     // Ensure system message anchors the conversation; build a temporary message list.
     if messages.is_empty() {
@@ -1792,6 +1836,16 @@ async fn run_proactive_turn(
     }
 
     let tools = tools_used.lock().map(|g| g.clone()).unwrap_or_default();
+    // Iter E3: stash the distinct tool names alongside the prompt/reply pair.
+    // Deduped via BTreeSet then collected so panel UI doesn't have to handle
+    // duplicates from the registry's per-call list.
+    if let Ok(mut g) = LAST_PROACTIVE_TOOLS.lock() {
+        let mut seen = std::collections::BTreeSet::new();
+        for t in &tools {
+            seen.insert(t.clone());
+        }
+        *g = seen.into_iter().collect();
+    }
 
     // Treat empty / silent marker as "do nothing".
     if reply_trimmed.is_empty() || reply_trimmed.contains(SILENT_MARKER) {
