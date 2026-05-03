@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 93：第二条积极复合规则 long-idle-no-restraint
+- `PromptInputs` 加 `since_last_proactive_minutes: Option<u64>` 数字字段（与现有字符串 `cadence_hint` 互补，让规则能精确比较）。base_inputs 默认 `Some(8)` 与 cadence_hint 文案一致。
+- 新常量 `pub const LONG_IDLE_MINUTES: u64 = 60`。
+- `active_composite_rule_labels` 升级为 6 参数：在原 wake_back/has_plan 后追加 since_last/today/threshold/pre_quiet。第二条 label `long-idle-no-restraint` 当 `(idle >= 60min || None) && under_chatty && !pre_quiet` 触发。`None` (从未开口) 视为 long-idle，让首次会话也能享受这条规则。
+- proactive_rules 新 match arm "long-idle-no-restraint"：建议 LLM 先 `get_active_window` 看用户在做什么，然后抛一个和 ta 当下场景相关的轻话题——明确反对"问候/问感受"的低信号开口模式。
+- `run_proactive_turn` 把 cadence 计算改成 tuple `(cadence_hint, since_last_proactive_minutes)`，PromptInputs 透传新字段。
+- get_tone_snapshot 和调度循环 dispatch 都升级 active_composite_rule_labels 调用，传 cadence_min/today/threshold/pre_quiet——保证 panel badge / 决策日志 / prompt 三处看到同一份 composite label 集。
+- 三个新单测：`active_composite_rule_labels_long_idle_requires_three_signals`（4 个 corner case + None 等价 long-idle + threshold=0 disable）+ `active_composite_rule_labels_both_can_fire_together`（两 composite labels 在同一 inputs 下都活跃）+ 重命名原 engagement-window 测试。
+- 既有 fingerprint 测试改为两 scenario：(s1) chatty + pre-quiet 路径覆盖 8 个 label；(s2) long-idle + !pre-quiet 路径覆盖剩下的 long-idle-no-restraint。两个 scenario 的 fingerprint 合集需覆盖全部 10 label，捕获互斥规则在 single inputs 下无法同时触发的现实。
+- 前端 PROMPT_RULE_DESCRIPTIONS 加 "long-idle-no-restraint" → "久未开口" / "≥ 60min 没主动说话 + 不在克制态：找个贴合用户当下的轻话题。"
+- 三层守护测试自动跟随：composite helper 全集枚举改为 `(true, true, Some(120), 0, 5, false)` 同时触发两条 composite。
+- 181 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 92：第一条积极复合规则 engagement-window
 - 新 `active_composite_rule_labels(wake_back, has_plan) -> Vec<&'static str>`：仅当两个信号同时为真才返回 `["engagement-window"]`。引入"复合规则"分类，与 environmental / data-driven 并列三类。
 - proactive_rules 现在 chain 三个 label 集（env + data + composite），新 match arm "engagement-window" 推一条积极规则文本："此刻是开新话题的好时机：用户刚从离开桌子回来 + 你今天有 plan 在执行——是把「先简短关心 ta 一下，再点一下 plan 进度」自然串起来的复合时机。一句话里带一句关心 + 一句和 plan 相关的，避免硬切话题，也别只问候不带行动。"

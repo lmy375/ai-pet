@@ -187,6 +187,11 @@ pub struct PromptInputs<'a> {
     /// Of those, how many invoked at least one env-aware tool. When the ratio sits low
     /// past `ENV_AWARENESS_MIN_SAMPLES`, the rules block prods the model to use a tool.
     pub env_spoke_with_any: u64,
+    /// Minutes since the pet's last proactive utterance, or `None` when it has never
+    /// spoken proactively this session. Numeric form (alongside the textual
+    /// `cadence_hint`) so composite rules can compare against thresholds without
+    /// re-parsing the hint string.
+    pub since_last_proactive_minutes: Option<u64>,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -199,6 +204,12 @@ pub const ENV_AWARENESS_MIN_SAMPLES: u64 = 10;
 /// to the genuinely concerning floor; 50% (the panel chip's warning color) is too eager
 /// for a prompt-side intervention.
 pub const ENV_AWARENESS_LOW_RATE_PCT: u64 = 30;
+/// Minutes-since-last-proactive threshold for the `long-idle-no-restraint` composite
+/// rule. 60 = "you haven't spoken for an hour" — distinct from the existing cadence
+/// tiers used in `cadence_hint`, which top out at "haven't talked in ages" without a
+/// numeric anchor. None (= never spoken) is treated as long-idle so the rule helps
+/// fresh sessions where 0 prior speech is the same problem as silent for an hour.
+pub const LONG_IDLE_MINUTES: u64 = 60;
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
 /// adding a rule is just `rules.push(...)` instead of squeezing a line into the middle
@@ -246,6 +257,10 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
     let composite_labels = active_composite_rule_labels(
         !inputs.wake_hint.trim().is_empty(),
         !inputs.plan_hint.trim().is_empty(),
+        inputs.since_last_proactive_minutes,
+        inputs.today_speech_count,
+        inputs.chatty_day_threshold,
+        inputs.pre_quiet_minutes.is_some(),
     );
     for label in env_labels
         .iter()
@@ -285,6 +300,10 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
             "engagement-window" => {
                 "- **此刻是开新话题的好时机**：用户刚从离开桌子回来 + 你今天有 plan 在执行——是把「先简短关心 ta 一下，再点一下 plan 进度」自然串起来的复合时机。一句话里带一句关心 + 一句和 plan 相关的，避免硬切话题，也别只问候不带行动。".to_string()
             }
+            "long-idle-no-restraint" => format!(
+                "- **沉默已久但没在克制状态**：距上次你主动开口已经 ≥ {} 分钟（或一直没说过），今天聊得也不多，又不在安静时段——是开口找个新话题的安全窗口。建议先 `get_active_window` 看看用户在做什么，再据此抛一个和 ta 当下场景相关的轻话题（不是问候、不是问感受，是真的「看到 ta 在做 X 想到 Y」）。",
+                LONG_IDLE_MINUTES
+            ),
             // Unknown label means a helper added something proactive_rules doesn't know
             // about — log defensively rather than panic, so the prompt still ships.
             other => format!("- **[{}]**: (规则文本待补)", other),
@@ -370,14 +389,33 @@ pub fn active_environmental_rule_labels(
 /// Returns labels for *composite* rules — those that fire only when multiple individual
 /// signals coincide. Most existing rules are restraints ("be quiet because X"); the
 /// composite group makes room for *positive* prompts ("right now is a good moment to
-/// open up because X+Y") that the singletons can't express. Currently just one label:
+/// open up because X+Y") that the singletons can't express. Members:
 ///
 /// - `engagement-window`: user just came back to the desk AND the pet has an in-flight
 ///   daily plan — a natural moment to weave concern + plan progress into one line.
-pub fn active_composite_rule_labels(wake_back: bool, has_plan: bool) -> Vec<&'static str> {
-    let mut labels: Vec<&'static str> = Vec::with_capacity(1);
+/// - `long-idle-no-restraint`: it's been ≥ `LONG_IDLE_MINUTES` since the last proactive
+///   AND the pet hasn't been chatty today AND we're not approaching quiet hours — a
+///   safe window to surface a fresh topic instead of letting the silence drag on.
+pub fn active_composite_rule_labels(
+    wake_back: bool,
+    has_plan: bool,
+    since_last_proactive_minutes: Option<u64>,
+    today_speech_count: u64,
+    chatty_day_threshold: u64,
+    pre_quiet: bool,
+) -> Vec<&'static str> {
+    let mut labels: Vec<&'static str> = Vec::with_capacity(2);
     if wake_back && has_plan {
         labels.push("engagement-window");
+    }
+    let long_idle = match since_last_proactive_minutes {
+        Some(m) => m >= LONG_IDLE_MINUTES,
+        // Never-spoken is treated as long-idle: no recent speech to defer to.
+        None => true,
+    };
+    let under_chatty = chatty_day_threshold == 0 || today_speech_count < chatty_day_threshold;
+    if long_idle && under_chatty && !pre_quiet {
+        labels.push("long-idle-no-restraint");
     }
     labels
 }
@@ -580,7 +618,14 @@ pub async fn get_tone_snapshot(
         env_total,
         env_with_any,
     );
-    let composite_labels = active_composite_rule_labels(wake_back, has_plan);
+    let composite_labels = active_composite_rule_labels(
+        wake_back,
+        has_plan,
+        cadence_min,
+        today_count_for_rules,
+        chatty_day_threshold,
+        pre_quiet,
+    );
     let active_prompt_rules: Vec<String> = env_labels
         .iter()
         .chain(data_labels.iter())
@@ -987,8 +1032,23 @@ pub fn spawn(app: AppHandle) {
                 env_total,
                 env_with_any,
             );
-            let composite_label_set =
-                active_composite_rule_labels(wake_back_for_rules, has_plan_for_rules);
+            // Pull cadence (minutes since last proactive) for the long-idle composite.
+            // Same source as run_proactive_turn's cadence_hint construction.
+            let since_last_for_rules = app
+                .state::<InteractionClockStore>()
+                .inner()
+                .snapshot()
+                .await
+                .since_last_proactive_seconds
+                .map(|s| s / 60);
+            let composite_label_set = active_composite_rule_labels(
+                wake_back_for_rules,
+                has_plan_for_rules,
+                since_last_for_rules,
+                chatty_today,
+                chatty_threshold,
+                pre_quiet_for_rules,
+            );
             let active_labels: Vec<&'static str> = env_label_set
                 .iter()
                 .chain(data_label_set.iter())
@@ -1156,12 +1216,14 @@ async fn run_proactive_turn(
     // Distance since the pet last spoke proactively — different from idle_seconds (which
     // resets on any interaction). Lets the LLM pick a register: continuation vs. casual
     // check-in vs. "haven't talked in ages".
-    let cadence_hint = {
+    let (cadence_hint, since_last_proactive_minutes) = {
         let snap = clock.snapshot().await;
-        match snap.since_last_proactive_seconds.map(|s| s / 60) {
+        let mins = snap.since_last_proactive_seconds.map(|s| s / 60);
+        let hint = match mins {
             Some(m) => format!("距上次你主动开口约 {} 分钟（{}）。", m, idle_tier(m)),
             None => "你还没有主动开过口，这是第一次。".to_string(),
-        }
+        };
+        (hint, mins)
     };
 
     // If the proactive loop noticed a sleep gap recently (≤ 10 minutes ago), surface it
@@ -1277,6 +1339,7 @@ async fn run_proactive_turn(
         chatty_day_threshold,
         env_spoke_total,
         env_spoke_with_any,
+        since_last_proactive_minutes,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1463,6 +1526,10 @@ mod prompt_tests {
             // exercise the corrective rule bump these explicitly.
             env_spoke_total: 0,
             env_spoke_with_any: 0,
+            // Default Some(8) — well below LONG_IDLE_MINUTES, matches the cadence_hint
+            // string ("约 8 分钟（刚说过话，话题还热）"). Tests for long-idle bump this
+            // above 60 explicitly.
+            since_last_proactive_minutes: Some(8),
         }
     }
 
@@ -1770,15 +1837,50 @@ mod prompt_tests {
     }
 
     #[test]
-    fn active_composite_rule_labels_requires_both_signals() {
-        // engagement-window only fires when wake_back AND has_plan are both true.
-        assert!(active_composite_rule_labels(false, false).is_empty());
-        assert!(active_composite_rule_labels(true, false).is_empty());
-        assert!(active_composite_rule_labels(false, true).is_empty());
+    fn active_composite_rule_labels_engagement_window_requires_both_signals() {
+        // engagement-window: wake_back AND has_plan.
+        // long-idle-no-restraint: long_idle (None == long-idle) AND under_chatty AND !pre_quiet.
+        // Default for long-idle inputs: Some(8) (short idle), today=0, threshold=5, pre_quiet=false.
+        let short_idle = Some(8u64);
+        assert!(active_composite_rule_labels(false, false, short_idle, 0, 5, false).is_empty());
+        assert!(active_composite_rule_labels(true, false, short_idle, 0, 5, false).is_empty());
+        assert!(active_composite_rule_labels(false, true, short_idle, 0, 5, false).is_empty());
         assert_eq!(
-            active_composite_rule_labels(true, true),
+            active_composite_rule_labels(true, true, short_idle, 0, 5, false),
             vec!["engagement-window"],
         );
+    }
+
+    #[test]
+    fn active_composite_rule_labels_long_idle_requires_three_signals() {
+        // long_idle yes, under_chatty yes, !pre_quiet yes → fires.
+        assert_eq!(
+            active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES), 0, 5, false),
+            vec!["long-idle-no-restraint"],
+        );
+        // None (never spoken) is treated as long-idle.
+        assert_eq!(
+            active_composite_rule_labels(false, false, None, 0, 5, false),
+            vec!["long-idle-no-restraint"],
+        );
+        // Short idle (< threshold) → no fire.
+        assert!(active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES - 1), 0, 5, false).is_empty());
+        // chatty (today >= threshold) → no fire.
+        assert!(active_composite_rule_labels(false, false, Some(120), 5, 5, false).is_empty());
+        // pre_quiet active → no fire.
+        assert!(active_composite_rule_labels(false, false, Some(120), 0, 5, true).is_empty());
+        // Threshold == 0 disables chatty gate, so under_chatty is always true.
+        assert_eq!(
+            active_composite_rule_labels(false, false, Some(120), 9999, 0, false),
+            vec!["long-idle-no-restraint"],
+        );
+    }
+
+    #[test]
+    fn active_composite_rule_labels_both_can_fire_together() {
+        // wake_back + has_plan + long_idle + under_chatty + !pre_quiet → both labels.
+        let labels = active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false);
+        assert_eq!(labels, vec!["engagement-window", "long-idle-no-restraint"]);
     }
 
     /// Read PanelDebug.tsx and return the kebab/snake keys defined in
@@ -1829,39 +1931,15 @@ mod prompt_tests {
 
     #[test]
     fn proactive_rules_has_match_arm_for_every_backend_label() {
-        // Iter 91 — guard the proactive_rules match against the helper label set. If a
-        // label ships from a helper but proactive_rules has no arm for it, the unknown
-        // fallback `(规则文本待补)` slips into the prompt — visible in panel logs but
-        // easy to miss in CI. This test fails immediately instead.
+        // Iter 91 / Iter 93 — guard the proactive_rules match against the helper label
+        // set. If a label ships from a helper but proactive_rules has no arm for it,
+        // the fallback `(规则文本待补)` slips into the prompt — visible in panel logs
+        // but easy to miss in CI. This test fails immediately instead.
         //
-        // Setup: build inputs that simultaneously trigger every contextual rule. Then
-        // run proactive_rules once, scan for the fallback marker, and verify each
-        // backend label produced a recognizable rule (via a per-label fingerprint
-        // substring unique to that arm's rule text).
-        let mut inputs = base_inputs();
-        inputs.wake_hint = "（用户的电脑在大约 60 秒前刚从休眠唤醒。）";
-        inputs.is_first_mood = true;
-        inputs.pre_quiet_minutes = Some(10);
-        inputs.reminders_hint = "你有以下到期的用户提醒：\n· something";
-        inputs.plan_hint = "你今天的小目标：\n· something";
-        inputs.proactive_history_count = 0;
-        inputs.today_speech_count = inputs.chatty_day_threshold;
-        inputs.env_spoke_total = 12;
-        inputs.env_spoke_with_any = 1;
-        let rules = proactive_rules(&inputs);
-
-        assert!(
-            !rules.iter().any(|r| r.contains("规则文本待补")),
-            "proactive_rules emitted the unknown-label fallback. A helper added a \
-             label without a matching arm in proactive_rules.\nRules: {:#?}",
-            rules
-        );
-
-        // Each (label, fingerprint) pair: fingerprint is a substring guaranteed to
-        // appear *only* in that label's rule text. If a future arm rewrite changes
-        // the rule wording, update the fingerprint here — the lock-in is intentional
-        // so refactors that accidentally swap arms (icebreaker text into chatty arm)
-        // still trip the test.
+        // Some labels are mutually exclusive (chatty vs long-idle-no-restraint share the
+        // chatty threshold; pre-quiet excludes long-idle). We run two scenarios and
+        // require each fingerprint to fire in at least one of them — combined coverage
+        // still pins down the full match arm set.
         let fingerprints: &[(&str, &str)] = &[
             ("wake-back", "用户刚从离开桌子回来"),
             ("first-mood", "第一次开口"),
@@ -1872,15 +1950,16 @@ mod prompt_tests {
             ("chatty", "今天已经聊了不少"),
             ("env-awareness", "最近你开口前几乎都没看环境"),
             ("engagement-window", "此刻是开新话题的好时机"),
+            ("long-idle-no-restraint", "沉默已久但没在克制状态"),
         ];
-        // Sanity: the fingerprint table must cover every label the helpers emit, so a
-        // new backend label without a fingerprint entry here forces the test author
-        // to consciously add one (rather than silently leaving the new arm untested).
+
+        // Sanity: the fingerprint table must cover every label the helpers emit. Use
+        // each helper's max-trigger inputs to enumerate the universe.
         let backend_labels: std::collections::HashSet<&'static str> =
             active_environmental_rule_labels(true, true, true, true, true)
                 .into_iter()
                 .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0))
-                .chain(active_composite_rule_labels(true, true))
+                .chain(active_composite_rule_labels(true, true, Some(120), 0, 5, false))
                 .collect();
         let fingerprint_labels: std::collections::HashSet<&str> =
             fingerprints.iter().map(|(l, _)| *l).collect();
@@ -1894,12 +1973,47 @@ mod prompt_tests {
              with a substring unique to that label's rule text.",
             untested
         );
+
+        // Scenario 1: short-idle + chatty active + pre-quiet active.
+        // Covers: wake-back, first-mood, pre-quiet, reminders, plan, icebreaker, chatty,
+        // env-awareness, engagement-window.
+        let mut s1 = base_inputs();
+        s1.wake_hint = "（用户的电脑在大约 60 秒前刚从休眠唤醒。）";
+        s1.is_first_mood = true;
+        s1.pre_quiet_minutes = Some(10);
+        s1.reminders_hint = "你有以下到期的用户提醒：\n· something";
+        s1.plan_hint = "你今天的小目标：\n· something";
+        s1.proactive_history_count = 0;
+        s1.today_speech_count = s1.chatty_day_threshold;
+        s1.env_spoke_total = 12;
+        s1.env_spoke_with_any = 1;
+        // since_last_proactive_minutes stays at base_inputs default (Some(8)) — short.
+        let rules1 = proactive_rules(&s1);
+
+        // Scenario 2: long-idle + under-chatty + !pre-quiet.
+        // Covers: long-idle-no-restraint plus everything except chatty / pre-quiet.
+        let mut s2 = s1;
+        s2.pre_quiet_minutes = None;
+        s2.today_speech_count = 0;
+        s2.since_last_proactive_minutes = Some(LONG_IDLE_MINUTES);
+        let rules2 = proactive_rules(&s2);
+
+        let combined: Vec<&String> = rules1.iter().chain(rules2.iter()).collect();
+        assert!(
+            !combined.iter().any(|r| r.contains("规则文本待补")),
+            "proactive_rules emitted the unknown-label fallback. A helper added a \
+             label without a matching arm in proactive_rules.\nRules1: {:#?}\nRules2: {:#?}",
+            rules1,
+            rules2,
+        );
         for (label, fp) in fingerprints {
             assert!(
-                rules.iter().any(|r| r.contains(fp)),
-                "label '{}' should have produced a rule containing '{}', but none \
-                 of the rules matched. Either the arm is missing or its text changed.",
-                label, fp
+                combined.iter().any(|r| r.contains(fp)),
+                "label '{}' should produce a rule containing '{}' in at least one of \
+                 the two scenarios, but neither matched. Either the arm is missing \
+                 or its text changed.",
+                label,
+                fp
             );
         }
     }
@@ -1921,7 +2035,7 @@ mod prompt_tests {
         // ever produce. Same input recipe as Iter 89's test for consistency.
         let env = active_environmental_rule_labels(true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
-        let composite = active_composite_rule_labels(true, true);
+        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false);
         let backend: std::collections::HashSet<&'static str> = env
             .iter()
             .chain(data.iter())
@@ -1962,7 +2076,7 @@ mod prompt_tests {
         // All-true inputs surface every possible label all helpers can ever return.
         let env = active_environmental_rule_labels(true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
-        let composite = active_composite_rule_labels(true, true);
+        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false);
         let missing: Vec<&'static str> = env
             .iter()
             .chain(data.iter())
@@ -1995,11 +2109,16 @@ mod prompt_tests {
         inputs.today_speech_count = inputs.chatty_day_threshold;
         inputs.env_spoke_total = 12;
         inputs.env_spoke_with_any = 1;
+        // pre-quiet on AND long-idle are mutually exclusive by design (long-idle
+        // requires !pre_quiet). Likewise chatty (today_count >= threshold) and
+        // long-idle exclude each other. This scenario: pre-quiet on, today=0 (no
+        // chatty), long-idle won't fire — so we expect:
+        // 6 base + 5 env + 2 data (icebreaker + env-awareness) + 1 composite
+        // (engagement-window) = 14. The fingerprint test below covers long-idle and
+        // chatty in a separate scenario, so combined coverage is still complete.
+        inputs.today_speech_count = 0;
         let rules = proactive_rules(&inputs);
-        // 6 always-pushed base + 5 env + 3 data + 1 composite (engagement-window
-        // fires because wake_hint and plan_hint are both set) = 15.
-        assert_eq!(rules.len(), 6 + 5 + 3 + 1, "rules: {:#?}", rules);
-        // No "TODO" fallback for any active label.
+        assert_eq!(rules.len(), 6 + 5 + 2 + 1, "rules: {:#?}", rules);
         assert!(!rules.iter().any(|r| r.contains("规则文本待补")));
     }
 
