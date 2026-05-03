@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 91：proactive_rules match arm 完整性测试
+- 新单测 `proactive_rules_has_match_arm_for_every_backend_label`：构造全 8 条 contextual 规则同时触发的 inputs，跑 `proactive_rules`，做两层断言：
+  1. 输出中**没有** "规则文本待补" 字符串（fallback path 不应被走到）
+  2. 每条 backend label 对应的 unique fingerprint 子串都出现在 rules 中（如 icebreaker→"你和用户还不熟"、env-awareness→"最近你开口前几乎都没看环境"）
+- 加 fingerprint 表完整性 sanity check：扫 backend 全集，断言每个 label 在 fingerprint 表里有对应行；未来 backend 加 label 但 fingerprint 表没补 → 测试 panic 提示 "missing entries for: [...]"，强迫作者显式选择一个独特的文本子串。
+- 三层守护现在闭合：
+  - Iter 89: backend label → frontend dict（前端漏译 → fail）
+  - Iter 90: frontend dict → backend label（前端 ghost → fail）
+  - Iter 91: backend label → proactive_rules match arm（match 缺 arm → fail）
+- 178 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 90：反向对齐——禁止前端"幽灵 label"
 - 新单测 `frontend_prompt_rule_descriptions_have_no_ghost_labels`：扫 `PROMPT_RULE_DESCRIPTIONS` 所有 key，断言每个 key 都能在 backend 全集（env+data 全开）中找到。失败时列出 ghost keys，提示"要么删了，要么补 backend label"。
 - 抽出共用 helper `parse_prompt_rule_dict_keys() -> Vec<String>`：从 `const PROMPT_RULE_DESCRIPTIONS` 起始扫到 `};` 结束，每行 `<key>: {` 模式提取 key（兼容 `"wake-back": {` 和 `plan: {` 两种 JS 写法）。纯字符串扫描零依赖，避免引入 regex crate。

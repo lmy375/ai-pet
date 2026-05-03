@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 91 设计要点（已实现）
+- **fingerprint 而非 length 检查**：本可以只断言 `rules.len() == base + len(labels)`——但那会被"两个 arm 互换"的 bug 蒙混过关（数量不变但文本错位）。fingerprint 表锁定每个 label 的文本特征，要求 arm 内容真实匹配 label 含义，捕获更细致的退化。
+- **fingerprint 表的元-元覆盖检查**：测试自己也守门——如果 backend 加 label 但 fingerprint 表没补，`backend_labels.iter().filter(!fingerprint_labels.contains)` 会列出缺失。让测试不能因"作者漏改"而假阳性通过。这是"测试代码本身的可维护性"防线。
+- **fingerprint 用最 unique 的 prompt 中文短语**：每个 arm 的 markdown 加粗段（`**...**：` 后内容）天然适合做 fingerprint——句首独特词组，几乎不会与其他 arm 撞。如果将来 prompt 改写，更新 fingerprint 比 wholesale 重写测试简单。
+- **"规则文本待补" double assert**：单独检查 fallback 字符串 + 每个 fingerprint 单独检查。两个角度互补：fallback 检查捕获"完全 match 失败"，fingerprint 检查捕获"match 命中错的 arm"。理论上 fingerprint 检查能捕获 fallback 场景（label 无对应 fingerprint → 找不到 → fail），但 explicit 的 fallback 检查 panic message 更直白。
+- **三层守护闭合的本质**：backend label → 前端 dict、前端 dict → backend、backend label → proactive_rules arm。任意一对漂移都被覆盖，形成 ABC 三角约束。新加规则的标准流程现在是固定的：(1) backend helper 加 label (2) proactive_rules 加 arm + 测试 fingerprint (3) 前端 dict 加 entry——三步都有 cargo test 守护。
+- **不抽 trait/macro**：本可以用宏让"添加规则"成为单一声明。但 8 条规则的当前规模下，三处独立维护比一个庞大的 macro_rules 易读得多。等规则数量超过 20 再考虑。
+
 ## Iter 90 设计要点（已实现）
 - **共享 parser helper**：Iter 89 用 substring contains，Iter 90 需要枚举 keys——共用一个解析函数让两个测试都看同一个真相。Iter 89 的 contains 模式有 false-positive 风险（label 名字出现在 comment 里），key parse 则严格只承认对象字面量的 key。重构 Iter 89 复用 helper 顺带提升它的严格度。
 - **bare key 检测从 indent depend 改为更通用**：原 Iter 89 的 `"\n  plan:"` 模式硬编码两空格 indent。helper 改用 trim + `find(": {")` 模式，缩进无关——TS prettier 配置改成 4 空格也能工作。
