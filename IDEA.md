@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG4 设计要点（已实现）
+- **三个漏点正好揭示了"redact 不是一次性补丁，是 design pattern"**：早期 inject_mood_note 加 redact 时是按"补漏"思路写的——遇到一个补一个。结果 build_persona / butler / user_profile 后续做了，但 mood_hint 的另一个 entry point（proactive）漏了；reminders 和 plan 是后期 Iter Cβ/Cγ 加的，作者没意识到要 redact。QG4 应该订下一条：**任何把 memory description / title 拼回 prompt 的新 builder，必须有对应的 format_X_hint pure helper + 闭包 redact 参数 + 至少一个 redact 测试**。
+- **closure (impl Fn / dyn Fn) 比 patterns: &[String] 灵活**：闭包 = wrapper 决定怎么 redact（substr / regex / 两段都做），formatter 不知不论；patterns 强迫 wrapper 二选一。代价是签名带个泛型/dyn —— 调用点不知道实际是哪种 impl，但调用点也不需要知道。这是把"实现细节" inflate 进 type system 而不让它泄到 caller 体感。
+- **test 用 `redact_text` 直接构造 closure，不动 settings**：上 iter QG3 学到 ProcessCounters::default() 可以 in-process 构造；这 iter 同样地，redact 闭包是 `move |s| redact_text(s, &owned_patterns)`。tests 完全独立、并发安全。redaction 模块的 `redact_text` 暴露 patterns 是 pub fn，正好为这种用例设计。
+- **mood_hint 与 inject_mood_note 没融合**：两边 prompt 内容差异大（chat.rs 还教 LLM 怎么 update mood），融合等于把 chat-only 引导泄进 proactive。两边都过 redact 即可，formatter 不必同源。
+- **拒绝面向 panel 命令做 redact**：`get_pending_reminders` 是 user-facing 的 Tauri 命令，redact 它会让用户看到自己的提醒变成 (私人)——这违背了 redact 的定义"防止 LLM 二次泄漏"。redact 范围严格限定在 LLM-bound 路径。decision_log 反 reason 里也不 redact —— 那是 panel 给开发者看的，又不是 LLM 输入。
+- **没动 consolidate.rs**：审计中看 consolidate 也读 memory，但它读完只用于"删除/清理"动作（找 stale reminder, 找已完成 butler）——不是把内容拼回 prompt。这是不需要 redact 的边界。
+
 ## Iter QG3 设计要点（已实现）
 - **prompt_tilt 故意不为 manual 计入** —— 这是设计上的硬决策。tilt 桶（restraint/engagement/balanced/neutral）是 *prompt 内容*的统计，依赖 `active_labels`；manual 旁路了 gates，也没"针对性应用规则"。如果硬塞空 labels 进 record_dispatch，会全部归入 neutral，把 panel 的 tilt 饼图扭歪——尤其在用户高频手动 fire 验证 prompt 时。明确不计 = tilt 永远反映"loop 行为"这一种数据源。如果未来真要 surface "manual 触发了 N 次"，加一个独立 manual_trigger_total counter 比污染 tilt 更干净。
 - **source 用 reason 字符串里的 `source=X` tag 而不是 ProactiveDecision 加新字段**：panel 已经渲染 reason 字符串，加新字段需要前后端 schema 联动 + 类型生成。tag-in-reason 是零 schema 改动，前端如果要硬解析也只是 `reason.includes('source=manual')`。decision_log 本来就是 free-form reason，再加结构化字段才是技术债。

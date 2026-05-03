@@ -13,8 +13,7 @@
 
 - [x] Quality Gate 3：统一手动 proactive trigger 与后台 loop 的 telemetry（2026-05-03 完成 — Iter QG3）
 
-- [ ] Quality Gate 4：补齐 prompt reinjection redaction。
-  - AI prompt：审计 proactive / reactive / consolidate 中所有把 memory、mood、daily_plan、reminder、speech history、persona summary、butler task 重新注入 prompt 的路径。把未过滤内容统一接入 `redact_with_settings`，并补针对 mood/reminder/plan 的回归测试。
+- [x] Quality Gate 4：补齐 prompt reinjection redaction（2026-05-03 完成 — Iter QG4）
 
 - [ ] Quality Gate 5：拆分 `src-tauri/src/proactive.rs`。
   - AI prompt：在不改变行为的前提下，把 proactive 的纯逻辑按 gate、prompt rules、reminders、butler schedule、telemetry 拆到子模块。先移动代码和测试，保持 public API 稳定；每一步都运行 `cargo test`，避免大爆炸式重构。

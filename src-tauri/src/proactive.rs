@@ -1745,12 +1745,10 @@ async fn run_proactive_turn(
 
     let mood_parsed = read_current_mood_parsed();
     let is_first_mood = !matches!(&mood_parsed, Some((text, _)) if !text.trim().is_empty());
-    let mood_hint = match &mood_parsed {
-        Some((text, _)) if !text.trim().is_empty() => {
-            format!("你上次记录的心情/状态：「{}」。", text.trim())
-        }
-        _ => "（还没有记录过你自己的心情/状态。这是第一次。）".to_string(),
-    };
+    let mood_hint = format_proactive_mood_hint(
+        mood_parsed.as_ref().map(|(t, _)| t.as_str()).unwrap_or(""),
+        &|s| crate::redaction::redact_with_settings(s),
+    );
 
     // Distance since the pet last spoke proactively — different from idle_seconds (which
     // resets on any interaction). Lets the LLM pick a register: continuation vs. casual
@@ -2037,6 +2035,33 @@ async fn run_proactive_turn(
     })
 }
 
+/// Pure formatter for the reminders hint block. Items are `(formatted_time, topic, title)`.
+/// `redact` is applied to topic and title before they're inserted, so user-authored
+/// reminder content (and the LLM-picked entry title) doesn't leak private terms back
+/// into the prompt. Empty list returns empty string.
+///
+/// Iter QG4: gained the redaction pass — previously topic and title were formatted raw,
+/// letting any privacy-pattern term in the user's reminder ("提醒我跟 {private name}
+/// 喝咖啡") flow straight through to the next proactive prompt.
+pub fn format_reminders_hint(
+    items: &[(String, String, String)],
+    redact: &dyn Fn(&str) -> String,
+) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["你有以下到期的用户提醒（请挑最相关的一条带进开口）：".to_string()];
+    for (time, topic, title) in items {
+        lines.push(format!(
+            "· {} {}（条目标题: {}）",
+            time,
+            redact(topic),
+            redact(title),
+        ));
+    }
+    lines.join("\n")
+}
+
 /// Scan the `todo` memory category for items whose description starts with a reminder
 /// prefix and are due now (within the 30-minute window). Returns a multi-line bullet
 /// hint, or empty string when nothing is due. `now` is injected so tests / call sites
@@ -2048,20 +2073,15 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
     let Some(cat) = index.categories.get("todo") else {
         return String::new();
     };
-    let mut lines = vec!["你有以下到期的用户提醒（请挑最相关的一条带进开口）：".to_string()];
+    let mut items: Vec<(String, String, String)> = Vec::new();
     for item in &cat.items {
         if let Some((target, topic)) = parse_reminder_prefix(&item.description) {
             if is_reminder_due(&target, now, 30) {
-                let when = format_target(&target);
-                lines.push(format!("· {} {}（条目标题: {}）", when, topic, item.title));
+                items.push((format_target(&target), topic, item.title.clone()));
             }
         }
     }
-    if lines.len() == 1 {
-        String::new()
-    } else {
-        lines.join("\n")
-    }
+    format_reminders_hint(&items, &|s| crate::redaction::redact_with_settings(s))
 }
 
 /// Cap on how many `butler_tasks` entries to surface in the proactive prompt. Above
@@ -2483,6 +2503,41 @@ pub fn build_user_profile_hint() -> String {
     crate::redaction::redact_with_settings(&block)
 }
 
+/// Pure formatter for the proactive prompt's mood-hint line. Empty / whitespace text
+/// emits the "first time" placeholder; otherwise the recorded mood text is wrapped
+/// in 「…」 quotes after passing through `redact`. Symmetric with chat.rs's
+/// `inject_mood_note`, which does its own (already-redacted) mood injection for
+/// reactive chats — keeps the two entry points consistent.
+///
+/// Iter QG4: previously inline in `run_proactive_turn` and emitted raw mood text,
+/// allowing privacy-pattern terms to re-leak whenever the proactive loop fired.
+pub fn format_proactive_mood_hint(text: &str, redact: &dyn Fn(&str) -> String) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        "（还没有记录过你自己的心情/状态。这是第一次。）".to_string()
+    } else {
+        format!("你上次记录的心情/状态：「{}」。", redact(trimmed))
+    }
+}
+
+/// Pure formatter for the daily-plan hint block. `redact` is applied to the plan
+/// description before it's wrapped in the header line, so plan items the LLM wrote
+/// (which may have absorbed user-private terms during reactive turns) don't leak
+/// back into subsequent proactive prompts. Empty / whitespace-only description
+/// returns empty string.
+///
+/// Iter QG4: gained the redaction pass — previously the description was inserted
+/// verbatim, the only one of the three reinjection sites where the LLM itself was
+/// the original author of the unredacted content.
+pub fn format_plan_hint(description: &str, redact: &dyn Fn(&str) -> String) -> String {
+    let trimmed = description.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("你今天的小目标 / 计划：\n{}", redact(trimmed))
+    }
+}
+
 /// Read the pet's own short-term plan from `ai_insights/daily_plan`. Returns the plan
 /// description verbatim with a header line, or empty when nothing's been written. The
 /// plan format is intentionally open — the LLM owns the structure (bullet list with
@@ -2494,13 +2549,13 @@ fn build_plan_hint() -> String {
     let Some(cat) = index.categories.get("ai_insights") else {
         return String::new();
     };
-    let plan = cat.items.iter().find(|i| i.title == "daily_plan");
-    match plan {
-        Some(item) if !item.description.trim().is_empty() => {
-            format!("你今天的小目标 / 计划：\n{}", item.description.trim())
-        }
-        _ => String::new(),
-    }
+    let description = cat
+        .items
+        .iter()
+        .find(|i| i.title == "daily_plan")
+        .map(|i| i.description.as_str())
+        .unwrap_or("");
+    format_plan_hint(description, &|s| crate::redaction::redact_with_settings(s))
 }
 
 /// Format a reminder target for display in prompt / panel. TodayHour shows just the
@@ -4333,6 +4388,73 @@ mod prompt_tests {
         assert_eq!(snap[0].kind, "LlmError");
         assert!(snap[0].reason.contains("network down"));
         assert!(snap[0].reason.contains("source=manual"));
+    }
+
+    // -- Iter QG4: redact-on-reinjection coverage ---------------------------------
+
+    /// Test-side redact closure that emulates `redact_with_settings` with a fixed
+    /// substring list — case-insensitive, single pass. Avoids touching real settings
+    /// state so these tests can run in any order.
+    fn test_redactor(patterns: &'static [&'static str]) -> impl Fn(&str) -> String {
+        move |text: &str| {
+            let owned: Vec<String> = patterns.iter().map(|s| (*s).to_string()).collect();
+            crate::redaction::redact_text(text, &owned)
+        }
+    }
+
+    #[test]
+    fn format_reminders_hint_redacts_topic_and_title() {
+        let items = vec![(
+            "23:00".to_string(),
+            "跟 SecretCorp 同事喝咖啡".to_string(),
+            "secretcorp_coffee".to_string(),
+        )];
+        let out = format_reminders_hint(&items, &test_redactor(&["SecretCorp"]));
+        // Both topic and title must contain the marker; original term must not survive.
+        assert!(out.contains("(私人)"));
+        assert!(!out.to_lowercase().contains("secretcorp"));
+        // Header survives unredacted (no patterns match).
+        assert!(out.contains("到期的用户提醒"));
+    }
+
+    #[test]
+    fn format_reminders_hint_empty_returns_empty_string() {
+        let out = format_reminders_hint(&[], &test_redactor(&["irrelevant"]));
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn format_plan_hint_redacts_description() {
+        let desc = "· 关心 SecretCorp 项目进展 [0/2]";
+        let out = format_plan_hint(desc, &test_redactor(&["SecretCorp"]));
+        assert!(out.contains("(私人)"));
+        assert!(!out.to_lowercase().contains("secretcorp"));
+        assert!(out.contains("你今天的小目标"));
+    }
+
+    #[test]
+    fn format_plan_hint_empty_or_whitespace_returns_empty() {
+        let r = test_redactor(&["x"]);
+        assert_eq!(format_plan_hint("", &r), "");
+        assert_eq!(format_plan_hint("   \n  ", &r), "");
+    }
+
+    #[test]
+    fn format_proactive_mood_hint_redacts_text() {
+        let out = format_proactive_mood_hint(
+            "和 SecretCorp 同事开会有点累",
+            &test_redactor(&["SecretCorp"]),
+        );
+        assert!(out.contains("(私人)"));
+        assert!(!out.to_lowercase().contains("secretcorp"));
+        assert!(out.contains("你上次记录的心情/状态"));
+    }
+
+    #[test]
+    fn format_proactive_mood_hint_empty_returns_first_time_message() {
+        let out = format_proactive_mood_hint("", &test_redactor(&["x"]));
+        assert!(out.contains("还没有记录过"));
+        assert!(out.contains("第一次"));
     }
 
     #[test]
