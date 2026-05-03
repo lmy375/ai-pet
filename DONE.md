@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter TR2：工具调用风险评估（observe-only 模式）
+- 现状缺口：TR1 把 purpose 字段铺好了，但所有工具调用仍按"统一允许"处理。bash 任意 shell、write_file 创建/覆盖任意文件、memory_edit delete 不可恢复——都和 read_file / get_weather 一个待遇。审计 + 未来人工审核需要分级。
+- 解法 — 新模块 `src/tool_risk.rs`：
+  - `enum ToolRiskLevel { Low, Medium, High }`：三档够用，更细的分级反而难映射到 UI / 审批流。
+  - `struct ToolRiskAssessment { risk_level, reasons: Vec<String>, requires_human_review: bool, safe_alternative: Option<String> }`：与 TODO 描述的 4 字段对齐。
+  - `pub fn assess_tool_risk(tool_name, args_json, _purpose) -> ToolRiskAssessment`：纯函数，按工具名 + （memory_edit 时）args 中 action 字段分类。purpose 作参数保留但本 iter 不用——TR2/TR3 follow-up 可以基于 purpose 内容做语义匹配。
+  - `pub fn format_assessment_log(name, &assessment) -> String`：单行紧凑格式，写 app.log。
+- 分类策略：
+  - **High** + requires_human_review=true：bash（任意 shell），write_file（覆盖文件），memory_edit delete（不可恢复）
+  - **Medium**：edit_file（受 old_string 唯一性约束的局部修改），memory_edit create/update（写记忆但可逆），未识别 / MCP 工具兜底
+  - **Low**：read_file，get_active_window / weather / upcoming_events / check_shell_status，memory_list / search / get
+  - 每种 high-risk 都附 `safe_alternative` 中文提示（bash → 用专用工具、write_file → 用 edit_file、memory delete → 改 update 标记废弃）
+- 集成 — chat pipeline 中 purpose 提取通过后立即 assess + log：每条 tool call 都会写 `Tool risk [name]: high|medium|low; reasons=[...]; review=true|false; alt=...` 到 app.log。**execution 不阻塞**——这是 observe-only 阶段。TR3 只需翻 `requires_human_review` 那个开关即可正式 gate。
+- 决策 — observe-only 而非立即 block：直接 block 会让 bash / write_file / memory_edit delete 在 TR3 落地前全部失效——破坏宠物正常运作。observe-only 让我们先 audit：实际跑几天后看 app.log 里高风险占比、误判（read_file 但用户其实希望它打码）等等，再设计 gate 的具体行为。这是 security 工作里"shadow deploy" 模式。
+- 决策 — 新模块 vs 塞进 chat.rs：tool_risk 是独立 concept，不应耦合 chat pipeline；放入 `src/tool_risk.rs` 让未来 TR3 / 未来策略 driver 都可单独进化。同时 chat pipeline 只调 2 个 pub fn，依赖关系干净。
+- 决策 — `_purpose` 参数保留但目前不使用：签名稳定让 TR2/TR3 follow-up（"如果 purpose 含敏感词如 'rm' 就降级 risk"）不动调用方。也表态: purpose 是 audit 输入的一部分，将来一定会用到。
+- 测试（12 新单测）：覆盖 8 个工具名各自分类 + memory_edit 4 个 action 分支（create/update/delete/未知）+ memory_edit malformed args + format_assessment_log 两个边界（含 alt / 不含 alt + 空 reasons）。
+- 测试结果：340 cargo（+12）；clippy clean；fmt clean；tsc clean。
+- 结果：每个工具调用现在都有 risk classification 写入 app.log。TR3 接手时只要在"requires_human_review=true 时 await 用户输入 vs 直接执行"加一个分支即可——分类逻辑、log 形态、reasoning 都已就位。
+
 ## 2026-05-03 — Iter TR1：工具调用必须带 purpose 字段（pipeline-level gate）
 - 现状缺口：所有工具调用都是黑盒触发——LLM 可能突然调 read_file、memory_edit、shell、weather，但开发者只能在 app.log 看到工具名 + 原始 args。**为什么** 这次 turn 调了这个工具？没有显式记录。这影响 (a) 调试（"哪条 prompt 让它调 weather？"）；(b) 安全审计（高风险工具下未来需要审核流程，没有 purpose 字段就无法做出 risk decision）；(c) 模型自我约束（要求模型每次声明 purpose 会让它的工具调用更"想清楚"再发）。
 - 解法 — pipeline-level enforcement：

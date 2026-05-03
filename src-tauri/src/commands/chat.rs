@@ -650,6 +650,15 @@ pub async fn run_chat_pipeline(
                         "Tool call: {}({}) purpose=\"{}\"",
                         tc_name, tc_args, p
                     ));
+                    // Iter TR2: classify risk + log assessment line. Observe-only —
+                    // execution still proceeds. TR3 will turn requires_human_review
+                    // into an actual gate; the audit trail this writes is exactly
+                    // what TR3 needs to flip the switch.
+                    let assessment = crate::tool_risk::assess_tool_risk(tc_name, tc_args, p);
+                    ctx.log(&crate::tool_risk::format_assessment_log(
+                        tc_name,
+                        &assessment,
+                    ));
                     if registry.is_mcp_tool(tc_name) {
                         let args_value: serde_json::Value =
                             serde_json::from_str(tc_args).unwrap_or(serde_json::Value::Null);

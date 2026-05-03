@@ -23,8 +23,8 @@
 - [x] Tool Review 1：工具调用目的字段与展示（2026-05-03 完成 — Iter TR1。后端 gate +
   app.log 记录已实现；前端 ToolCallBlock 展示 purpose 留待 follow-up iter）
 
-- [ ] Tool Review 2：AI 工具调用风险审核。
-  - AI prompt：在工具执行前增加风险评估层，输入包括工具名、参数、purpose、当前上下文摘要和调用来源。输出结构化结论：`risk_level`、`reasons`、`requires_human_review`、`safe_alternative`。低风险只记录审核结果后继续执行；高风险进入人工审核流程；审核结果写入 decision log 和 app log。
+- [x] Tool Review 2：AI 工具调用风险审核（2026-05-03 完成 — Iter TR2。observe-only：
+  分类 + 写 app.log，TR3 才会真正 block 高风险）
 
 - [ ] Tool Review 3：高风险工具调用的人类审核与 1 分钟超时。
   - AI prompt：实现高风险工具调用的人工审核 gate。前端展示待审核工具名、purpose、参数摘要、风险理由、允许/拒绝按钮；后端等待审核结果最多 60 秒。超时后按安全默认策略处理：拒绝 mutating / shell 类调用，允许只读低影响调用继续或要求模型改用安全替代方案。无论允许、拒绝还是超时，都要把结果返回给 LLM，使自动化流程能继续收束而不是永久挂起。

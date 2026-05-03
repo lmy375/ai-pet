@@ -15,6 +15,7 @@ mod proactive;
 mod redaction;
 mod speech_history;
 mod telegram;
+mod tool_risk;
 mod tools;
 mod wake_detector;
 
