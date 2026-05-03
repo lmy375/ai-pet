@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG5b 设计要点（已实现）
+- **同模式重复使用降低 risk**：QG5a 跑通的"创建 sub.rs + glob pub use + 删 src + 删 tests + run cargo test"流水线在 QG5b 直接复用。第一次抽离 ~30 分钟试错（debug glob re-export, dead_code warning 等）；第二次 ~15 分钟。模板化后效率翻倍。
+- **跨子系统私有 helper 处理**：`parse_updated_at_local` 同时被 `is_butler_due` 和 `is_completed_once` 用，是子系统私有 implementation detail。决策跟着移走（不外露）。如果将来 reminders 要解析 `updated_at`，要么把这个 helper 提到 proactive.rs（而非两个子模块各自复制一份），要么提取一个 `proactive/time_helpers.rs`。但现在过早抽象。
+- **测试与代码同居 (mod tests in sub) 的可读性优势**：QG5a 时 17 测试随 reminders 走；QG5b 24 测试随 butler 走。proactive.rs 里 mod prompt_tests 块越来越短 = 它"什么是 prompt_tests" 的语义越来越纯——只剩跟 prompt assembly 真正相关的测试。
+- **每片 ~600-700 行的合理 chunk size**：reminders.rs (283) 是小片；butler_schedule.rs (628) 是中片；接下来 prompt rules 估计 1500-2000 行（最大块）。这种渐进切让 git review 一直 manageable。
+- **当前 proactive.rs 4751 行 = 已经可一屏滚到的体量**：起点 5393 行；QG5a + QG5b 共减 642 行。剩下 prompt rules / gate / telemetry 三片预计能把 proactive.rs 压到 1500-2000 行——纯顶层 orchestration（spawn loop + run_proactive_turn + 几个 IO-heavy builder）。
+- **避免改动行为是 refactor 第一原则**：每个 QG5 子 iter 我都问自己"这次有没有动到 actual behavior？" 答案永远是 no——只是搬代码 + 重新 wiring 命名空间。如果哪天忍不住"既然在动这块，顺便修个 bug" 就破坏了"行为不变" 契约。bug 修复留单独 iter。
+
 ## Iter QG5a 设计要点（已实现）
 - **"切大象的时候用刀，不要用挖土机"**：proactive.rs 5500 行，QG5 卡在"太大" 状态多 iter 没动。换成一次切一片（reminders / butler / prompt rules / gate / telemetry 五片独立提炼），每片可独立 ship + revert。这是"big refactor 卡住时的标准对策" — turn it into a series.
 - **`pub use self::sub::*;` 是 backward-compat 的银弹**：consolidate.rs / panel commands 都用 `crate::proactive::ReminderTarget`。glob re-export 让外部代码完全不知道发生了什么，0-line external diff。如果某天想把它们全部 promotion 到 `proactive::reminders::ReminderTarget` 让 namespace 更明确，可以做单独的 cleanup iter。

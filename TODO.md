@@ -20,9 +20,9 @@
     re-export 保 public API 不变。先做行为不变的纯移动，之后行有余力再做内部清理。
   - [x] QG5a：reminders 子系统（`ReminderTarget` / `parse_reminder_prefix` / `is_reminder_due` /
     `format_target` / `is_stale_reminder` / `format_reminders_hint` + 17 测试）2026-05-03 完成
-  - [ ] QG5b：butler_tasks schedule 子系统（`ButlerSchedule` / `parse_butler_schedule_prefix` /
-    `is_butler_due` / `has_butler_error` / `is_completed_once` / `format_butler_tasks_block` /
-    `build_butler_tasks_hint`）
+  - [x] QG5b：butler_tasks schedule 子系统（2026-05-03 完成 — `ButlerSchedule` / `parse_butler_schedule_prefix` /
+    `is_butler_due` / `has_butler_error` / `is_completed_once` / `format_butler_tasks_block` +
+    private `parse_updated_at_local` + `BUTLER_TASKS_HINT_*` 常量 + 24 测试）
   - [ ] QG5c：prompt rules 子系统（`active_environmental_rule_labels` / `active_data_driven_*` /
     `active_composite_*` / `proactive_rules` / `build_proactive_prompt` / `PromptInputs` +
     所有 prompt_tests）—— 最大块
