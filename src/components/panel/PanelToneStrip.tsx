@@ -120,15 +120,25 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
       )}
       {tone.active_app && (() => {
         const { app, minutes } = tone.active_app;
-        // R22: ≥15m matches MIN_DURATION_MINUTES — at this point R15's
-        // prompt hint fires ("用户已经在 X 待了 N 分钟"). Below threshold:
-        // chip still shown for observability but in a muted gray tone so
-        // the LLM-active "long focus" signal stands out (orange).
-        const isLongFocus = minutes >= 15;
-        const bg = isLongFocus ? "#d97706" : "#94a3b8";
-        const titleText = isLongFocus
-          ? `用户已经在「${app}」里待了 ${minutes} 分钟 — R15 prompt hint 已 fire（≥15m 阈值）。`
-          : `当前前台 app 是「${app}」，停留 ${minutes} 分钟（< 15m，prompt 未 nudge）。`;
+        // R22 + R27: three bands matching the prompt-side gates —
+        //   < 15m: gray (panel only, no prompt)
+        //   15-59m: orange (R15 informational hint fires)
+        //   ≥60m: red (R27 deep-focus directive fires — "极简或选择沉默")
+        // Color escalation maps directly to escalating prompt intervention
+        // so user can see at a glance which regime the pet is currently
+        // playing under.
+        let bg: string;
+        let titleText: string;
+        if (minutes >= 60) {
+          bg = "#b91c1c"; // red — deep focus, explicit silence directive
+          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（深度专注期 ≥60m）— R27 directive 已 fire，prompt 显式要求 LLM 极简或沉默。`;
+        } else if (minutes >= 15) {
+          bg = "#d97706"; // orange — R15 informational hint fired
+          titleText = `用户已经在「${app}」里待了 ${minutes} 分钟 — R15 prompt hint 已 fire（≥15m 阈值，描述性）。`;
+        } else {
+          bg = "#94a3b8"; // gray — panel only
+          titleText = `当前前台 app 是「${app}」，停留 ${minutes} 分钟（< 15m，prompt 未 nudge）。`;
+        }
         return (
           <span
             title={titleText}
@@ -140,7 +150,7 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
               fontWeight: 600,
             }}
           >
-            🪟 {app}（{minutes}m）
+            🪟 {app}（{minutes}m{minutes >= 60 ? " 🔒" : ""}）
           </span>
         );
       })()}

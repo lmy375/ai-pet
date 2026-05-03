@@ -21,6 +21,14 @@ use std::time::Instant;
 /// being obnoxiously soon.
 pub const MIN_DURATION_MINUTES: u64 = 15;
 
+/// Iter R27: minutes after which the same-app duration counts as "deep
+/// focus" — at this point the prompt hint upgrades from informational
+/// ("用户在 X 已 N 分钟") to directive ("...这是深度专注期，这次开口应当
+/// 极简或选择沉默"). 60m ≈ a Pomodoro × 2 / a typical deep-work block;
+/// below it 15-60 is "regular sustained focus" that doesn't need the
+/// stronger nudge.
+pub const DEEP_FOCUS_MINUTES: u64 = 60;
+
 /// In-memory snapshot of the foreground app at the time we first observed
 /// it. `since` is monotonic, so the elapsed minutes survive system clock
 /// adjustments. App-name string is raw (un-redacted) — redaction happens
@@ -78,14 +86,24 @@ pub fn compute_active_duration(
 /// - app name is empty / whitespace
 /// - minutes is below `MIN_DURATION_MINUTES`
 ///
-/// Otherwise produces "用户在「{app}」里已经待了 {N} 分钟。" — a single
-/// line so `push_if_nonempty` slots it into the prompt's optional-section
-/// chain alongside other hints.
+/// Iter R27: when minutes ≥ `DEEP_FOCUS_MINUTES` (60), the line is
+/// upgraded from informational to directive — explicitly tells the LLM
+/// to consider sustaining silence so it doesn't break long flow.
+/// Below that threshold but above MIN_DURATION_MINUTES, the original
+/// "已经待了 N 分钟" descriptive form remains so 15-60min sustained
+/// focus is acknowledged without the stronger nudge.
 pub fn format_active_app_hint(app: &str, minutes: u64) -> String {
     if app.trim().is_empty() || minutes < MIN_DURATION_MINUTES {
         return String::new();
     }
-    format!("用户在「{}」里已经待了 {} 分钟。", app, minutes)
+    if minutes >= DEEP_FOCUS_MINUTES {
+        format!(
+            "用户在「{}」里已经待了 {} 分钟（深度专注期 ≥{}m）。这次开口应当极简或选择沉默，避免打断长时间工作流。",
+            app, minutes, DEEP_FOCUS_MINUTES
+        )
+    } else {
+        format!("用户在「{}」里已经待了 {} 分钟。", app, minutes)
+    }
 }
 
 /// Iter R22: panel-side read-only inspection of the active-app snapshot.
@@ -214,8 +232,52 @@ mod tests {
 
     #[test]
     fn format_handles_long_durations() {
+        // R27: 240 min is now in the deep-focus band (≥60), so the directive
+        // line fires. Preserve the original assertion that app + minutes
+        // are present, plus add the new directive marker.
         let out = format_active_app_hint("Slack", 240);
         assert!(out.contains("240"));
         assert!(out.contains("Slack"));
+        assert!(out.contains("深度专注期"));
+    }
+
+    #[test]
+    fn format_below_deep_focus_threshold_uses_descriptive_form() {
+        // R27: 15-59 min stays in the original informational form (no
+        // "深度专注期" / "极简或选择沉默" directive).
+        let out = format_active_app_hint("Cursor", 30);
+        assert!(out.contains("Cursor"));
+        assert!(out.contains("30 分钟"));
+        assert!(
+            !out.contains("深度专注期"),
+            "30m should NOT trigger deep-focus: {}",
+            out
+        );
+        assert!(!out.contains("极简"));
+    }
+
+    #[test]
+    fn format_at_deep_focus_threshold_fires_directive() {
+        // R27: exactly 60 = boundary, gate is `>=`, should fire.
+        let out = format_active_app_hint("Xcode", DEEP_FOCUS_MINUTES);
+        assert!(out.contains("深度专注期"));
+        assert!(out.contains("极简或选择沉默"));
+    }
+
+    #[test]
+    fn format_above_deep_focus_threshold_fires_directive() {
+        // R27: 90 min — clearly deep focus.
+        let out = format_active_app_hint("IntelliJ", 90);
+        assert!(out.contains("深度专注期"));
+        assert!(out.contains("打断长时间工作流"));
+        assert!(out.contains("90"));
+    }
+
+    #[test]
+    fn format_just_below_deep_focus_keeps_descriptive() {
+        // R27: 59 = boundary minus one, should NOT fire deep-focus.
+        let out = format_active_app_hint("Terminal", DEEP_FOCUS_MINUTES - 1);
+        assert!(!out.contains("深度专注期"));
+        assert!(out.contains("已经待了"));
     }
 }
