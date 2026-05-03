@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cτ 设计要点（已实现）
+- **settings 字段而不是 user_profile 条目**：曾考虑让 LLM 通过 user_profile.title="姓名" 间接管。但 (a) 用户期望"输入名字 → 立刻被称呼"是直接路径，绕一层 LLM 太曲折；(b) settings 字段在 UI 上立刻可见可改，user_profile 是 LLM 的世界；(c) 名字是 first-class 关系绑定，配 settings 字段更符合"宠物 vs 主人"语义。
+- **prepend 而不是 append**：persona_layer 原本是"陪伴时长 → 画像 → 情绪谱 → tail 指引"。把 user_name 放最顶让 LLM "先知道是谁，再读身份背景"——叙事更顺。LLM 实际生成时会把 prompt 当对话准备阶段，最重要的"指代对象"放最早最不容易被忽略。
+- **persona_layer only，不动 proactive**：proactive 有自己独立的 build_persona_hint（Iter Cw redaction 那条线）。本 iter scope 控制为 persona_layer 路径（reactive chat + Telegram）。proactive 想要也能加，但要改 PromptInputs 字段 + 三个 callsite，单 iter 外延出去过大。留作 Cυ 候选。
+- **placeholder 写「留空则用「你」」**：直接告知用户"不填会怎样"——降低迟疑成本。新装用户最常的疑问"我必须填吗？" 立刻有答案。
+- **trim 而不是 raw**：用户常会复制带空格的字符串（"  moon  "），trim 一次让显示干净；whitespace-only 视为空避免出现「你的主人是「  」」这种空名字 prompt。这种"对人类输入容错"的小细节累积起来体感差很多。
+- **trims 测试用户名**：`format_persona_layer_trims_user_name_whitespace` 钉住「  moon  」→「moon」，避免未来某次重构去掉 trim 静默回归。
+- **不和 SOUL.md 合并**：SOUL.md 是用户可自由编辑的 prompt 段落——可能用 markdown、长篇 instruction。user_name 是结构化字段，要参与 prompt 构造逻辑（trim、empty check）；混进 SOUL 就需要解析 SOUL 找名字，复杂多了。两个 namespace 各管各的。
+
 ## Iter Cσ 设计要点（已实现）
 - **对称的捕捉/注入架构**：Iter Cα 做了"读 user_profile → 注入 prompt"，Cσ 做了"听到 stable fact → 写 user_profile"。两个方向一对就形成完整记忆闭环。这种"对称设计"原则在 butler 路径也有：Cγ-Cπ 的 delegate（Cι 教捕捉）↔ inject（Cγ ambient block）↔ execute（proactive）↔ 留痕（Cε），每个方向都有对应教学。
 - **三正三反例**：单方向例子可能让 LLM 误推（"我累了"是不是该写？）。三正 + 三反明确边界——尤其 "我老是忘喝水" 反例引到 todo+remind，对应 Cι 教过的 reminder vs butler 区分；这里多对一个轴（user_profile vs todo）让 LLM 不会把 ephemeral fact 错判成 stable preference。

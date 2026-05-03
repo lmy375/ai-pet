@@ -59,6 +59,7 @@ export interface AppSettings {
   memory_consolidate: MemoryConsolidateConfig;
   chat: ChatConfig;
   privacy: PrivacyConfig;
+  user_name: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -94,6 +95,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     redaction_patterns: [],
     regex_patterns: [],
   },
+  user_name: "",
 };
 
 export function useSettings() {
