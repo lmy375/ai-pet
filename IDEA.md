@@ -30,6 +30,11 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter Cw 设计要点（已实现）— persona_summary 自循环入口也 redact
+- **build_persona_hint redact，get_persona_summary 不 redact**：刻意的不对称。前者是 prompt 注入通道（送给 LLM），后者是 panel 显示通道（给本地用户）。同一份原始数据，两种 surface，不同处理——redaction 是"对外可见性"过滤而非"数据修改"。注释明确写出这个区分，避免后续维护者困惑。
+- **5 个通道闭环**：active_window 工具 → calendar 工具 → mood note → speech_history hint → persona_summary hint。这 5 个是 LLM 能从 prompt 读到的所有"用户/历史相关"自由文本字段，全部经过 redact。剩余字段（companionship_days / cadence / motion 标签 / 时间戳 / 设置参数）都是结构化数字或固定文案，无 leak 通道。
+- **没有抽 trait/abstraction**：5 处都是 `redact_with_settings(text)` 一行调用。如果将来超过 10 处再考虑用宏 / 中间层。当前的 spread-out call sites 让"哪些通道经过 redact"在 grep 时一目了然——比抽象隐藏的"自动 redact" 更清晰。
+
 ## Iter Cy 设计要点（已实现）— redaction 扩到 self-loop 通道
 - **read-time 而非 write-time redaction**：speech_history.log 文件保持原文。如果在写入时 redact，用户改 patterns 后过往 leak 永远留在文件里。read-time redact 让"我刚加了新 pattern" → 下一次 prompt 注入时新+老内容都被覆盖。可逆 + 即时生效。
 - **redact_with_settings 抽成 helper**：Iter Cx 的两个工具入口手写 `get_settings().map(...).unwrap_or_default()` + `redact_text(...)` 4 行模板。Iter Cy 把它抽成一行 helper——3 处调用（active_window / calendar / mood note / speech_history）现在写法统一。如果将来加 ToneSnapshot.mood_text 也需要 redact，再加一处调用同样简洁。

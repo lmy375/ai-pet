@@ -21,8 +21,6 @@
 - [ ] Iter Cz：redaction patterns 加 regex 模式（settings.privacy.regex_patterns），让用户
   能匹配如 `\b\d{4}-\d{4}-\d{4}-\d{4}\b`（信用卡）/ 邮件地址等结构化敏感信息。当前
   substring 模式只能 match 固定词。需注意 ReDoS 防御。
-- [ ] Iter Cw：persona_summary 注入 prompt 时也走 redact_with_settings——LLM 自己写的
-  人格画像可能复述了私人词。当前 4 个通道已覆盖，这是第 5 个 self-loop 入口。
 
 ### 路线 D：记忆 surface
 - [ ] Iter Dx：panel 加 Memory tab（已有 PanelMemory.tsx，需要从 yaml 索引展开成可读 UI），
