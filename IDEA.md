@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D4 设计要点（已实现）
+- **D3 之后再审视发现盲区**：上一个 iter 我说"D 三连 closes parity"——但仔细看 PanelToneStrip 的实际行为，pre_quiet 是 transient 的（仅 15min 窗口），跨过窗口后那段几小时的 quiet 期间 panel 信号全空白。这是"D series 自检"的价值——封口后再走一遍能发现自己当时遗漏的细节。
+- **fn 改 pub 即可**：in_quiet_hours 已经 private，已被 4 个单测覆盖完整 boundary cases。改 pub 是最小改动；test 都不用动。
+- **chip 颜色 vs pre_quiet 红**：pre_quiet 用红色 (#dc2626) 表"快进入了，要警觉"；in_quiet 用深灰 (#475569) 表"已经在睡，平静"。视觉强度梯度对应"approaching → in"的紧迫感降级。
+- **emoji 选 😴 而不是 🌙**：🌙 已被 pre_quiet 用了（月亮表示"快天黑"）。😴 表"在睡了"，语义不重叠。如果未来想加"刚醒来" chip 可以用 🌅。
+- **panel 11 chip 这事**：太多 chip 也是问题。但目前每个都对应一个 prompt 决策维度，算高密度但有意义。如果将来加更多，考虑分组 / 折叠 — 比如 "时间维度" / "用户维度" / "宠物维度" 三组。
+
 ## Iter D3 设计要点（已实现）
 - **复用 focus_status() 的代价是再做一次 IO**：每次 get_tone_snapshot 调用都会读 `~/Library/DoNotDisturb/DB/Assertions.json`。panel 1s 轮询 → 每秒一次 disk read。考虑成本：单文件几 KB，OS 读缓存友好，几乎无开销。但如果 panel 多窗口同开（每窗口 1s 轮询），IO 会乘数。先用简单方案，必要时 cache 100ms 也容易做。
 - **fallback to "active"**：当 macOS 不能解析出 focus name（旧版本格式不同）但 active=true 时返回 "active" 字符串。chip 显 "🎯 focus: active" 比直接 None 更有信息——告诉用户"我们看到 focus 在跑，只是不知道是哪个"。

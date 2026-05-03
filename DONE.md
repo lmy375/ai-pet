@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D4：ToneSnapshot 暴露 in_quiet_hours + 😴 chip
+- 现状缺口：D series 三连后我说"prompt/panel parity 完成"，再审视发现一个真实的盲区。`pre_quiet_minutes` 只在距 quiet 开始 ≤ 15 分钟时显（"🌙 距安静时段 8m"），表示"快进入"。**真的进入 quiet 后** pre_quiet 变 None，那段实际宠物在睡觉的时间 panel 没有任何 chip——用户晚上 23:30 打开 panel 看不到任何"现在宠物在 dormant"信号，只能从"宠物没说话 + tone strip 不少 chip 都消失了"间接推断。
+- 解法：补一个 `in_quiet_hours: bool` 字段：
+  - 把现有 private fn `in_quiet_hours(hour, start, end)` 改 pub（已被 4 个单测覆盖：同日窗口、跨午夜、boundary、disabled-when-equal）
+  - get_tone_snapshot 调它喂给新字段
+  - PanelToneStrip 渲染 `😴 安静时段中` chip（深灰 `#475569` + 加粗，比 🌙 红色"快了"的紧迫感更平静——已经 dormant 了不需要紧张）
+  - tooltip 解释 proactive engine 在 gate 所有开口，指 settings.proactive.quiet_hours_start/end
+- pre_quiet 和 in_quiet 是互补、永不同时 true：pre_quiet 是"还没进 quiet 但快了"，in_quiet 是"在 quiet 里"。两个 chip 一前一后的逻辑过渡呈现 quiet 周期完整生命周期：approaching → in → exit (pre 重新出现就是下一天的 approaching)。
+- 测试：现有 in_quiet_hours 4 个单测覆盖核心；本次只是 wire-up + 改 pub。301 cargo 不变；tsc 干净。
+- 结果：晚上深夜打开 panel 立刻看到 😴 chip，明白宠物在睡觉。和 D 系列三连一起，panel 现在有 11 个 chip 维度（period / day_of_week / idle_register / cadence / wake / pre_quiet / in_quiet / focus / lifetime / motion / mood）—— prompt 决策依赖的所有 ambient 信号 user 都能直接看见。
+
 ## 2026-05-03 — Iter D3：ToneSnapshot 暴露 focus_mode + 🎯 chip
 - 现状缺口：proactive engine 已经会读 macOS Focus state 来决定是否 gate（Iter 21-25）+ 写 focus_hint 进 prompt（Iter Cw redaction也覆盖）。但 panel 不知道——用户开着 Work focus、宠物因此一直安静，user 看到的是"宠物今天怎么没说话"，要去 logs 才能找到原因。observability 缺最后一段。
 - 解法（继续 D series 风格）：

@@ -64,6 +64,14 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           🌙 距安静时段 {tone.pre_quiet_minutes}m
         </span>
       )}
+      {tone.in_quiet_hours && (
+        <span
+          title="当前时间在配置的 quiet hours 内 — proactive engine 现在会 gate 所有主动开口（看 settings.proactive.quiet_hours_start/end）。"
+          style={{ color: "#475569", fontWeight: 600 }}
+        >
+          😴 安静时段中
+        </span>
+      )}
       <span
         title={
           tone.proactive_count < 3
