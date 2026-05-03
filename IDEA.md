@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R26 设计要点（已实现）
+- **latest event vs trend = 树 vs 林**：单点 latest 信号容易被异常值误导（最后一条恰巧是 dismissed → LLM 认为"用户讨厌我" 但其实是个 outlier）。aggregate trend 平滑掉 outlier 反映真实 base rate。但只有 trend 没 latest 也有问题 —— LLM 看不到刚才发生了什么具体事件，会缺乏 contextual reaction。**两层都给** 让 LLM 既看 *what just happened* 又看 *what's been happening*。这是 prompt design 的经典对偶。
+- **min_samples = 5 是 R-series 跨函数稳定阈值**：FEEDBACK_ADAPT_MIN_SAMPLES (R7), SPEECH_LENGTH_MIN_SAMPLES (R19), FEEDBACK_AGGREGATE_MIN_SAMPLES (R26) — 三个都是 5。这是有意识的一致：跨子系统用同一个 "low-confidence cutoff" 让 mental model 简单。**common knobs should have common values** —— 设计 trade-off 一致比每处独立 tune 更可读。如果未来发现某场景需要不同阈值，再 case-by-case 拉开。
+- **零状态省略文案不只是 visual noise 减少**：dismissed=0 时省"0 主动点掉" segment。表面是减少 visual noise (panel chip 同 pattern)，深层是 **避免无意义信号注入 prompt**。"0 主动点掉" 这句话技术上是真信息但 actionable density 是 0 —— LLM 看到不会改行为。**省略零信号 = 提高 prompt token 单位 actionability**。
+- **同 fetch 多 consumer 是经济也是 consistency**：原本 prompt 路径 recent_feedback(1)，gate 路径 recent_feedback(20)。两窗口不同 → 万一中间用户 reply 了一条，prompt 看到的"上次"和 gate 看到的"trend"基于的样本会错位（R26 同步前的潜在 race condition）。改成共用 (20) 不只是省 IO —— **同一时刻 prompt 和 gate 看到完全一样的 feedback 历史**。一致性是隐藏的正确性属性。
+- **chip vs prompt 不必 1:1 mapping**：R20-R23 codified "prompt 信号同 iter 加 panel surface"。R26 反过来 —— **trend 信号已经在 panel surface（R10/R1c chip 显 N/M + 👋K），prompt 这层是补**。原则是双向：prompt 信号缺 panel 时补 panel，panel 信号缺 prompt 时补 prompt。但 R-series 的"应该 panel 可见" 不是说"也只有 panel 能看到"。**prompt 和 panel 是两个 audience**，各自需要的信息密度可以独立 tune。
+- **共享 fetch 抽变量比 helper 抽函数轻量**：R20/R21 把 5-line speech fetch hoisted 到 build_tone_snapshot 顶部 `let recent_for_signals`. R26 把 feedback fetch hoisted 到 run_proactive_turn 中部 `let recent_feedback`。两者都是变量层面 sharing，没抽函数。**抽函数适合"有自己 IO 边界的逻辑"**，抽变量适合"同 scope 内多个 read 复用"。区分这两个层级让 refactor 决策不过度。
+- **统一中文 label 是跨 surface mental model 的纽带**：R1c panel chip 用 "回复 / 忽略 / 点掉"，R26 prompt aggregate hint 也用 "回复 / 静默忽略 / 主动点掉"（aggregate 加修饰词更具体）。**LLM 读到的描述 ≈ 用户在 panel 读到的描述** = 两者讨论同一件事时对得上。这种"统一术语"是 multi-surface system 的隐性 hygiene —— 比 "ignored vs ignore vs 忽略" 三种说法更专业。
+
 ## Iter R25 设计要点（已实现）
 - **隐式状态 vs 显式标签**：reply 字段是空字符串 → 用户得记住"哦这意味 silent"。这是 **隐式状态**，依赖每个 reader 自己 decode。显式 outcome 字段是 explicit label —— 字段名+值告诉读者结论。**任何需要 reader decode 才能知道含义的字段都是 cognitive debt**，给它一个 explicit label 释放 reader 大脑。这条原则放到所有数据结构上：能加 label 不要让 reader infer。
 - **同源逻辑写两遍是隐患不是冗余**：原本 SILENT_MARKER 检测在 push 点之外（4 行后的兜底返回）。R25 在 push 点又写一次同条件。看着像重复 —— 但**两处其实判断时刻不同**，push 是为了打 outcome label，下面是控制返回 reply 字段。两个 caller 各自需要这个判断。如果未来 prompt format 改了 silent marker 含义，两处一起改是 *features* 不是 bug —— 同源逻辑抽 helper 反而模糊"两处都依赖这条规则"。**复制粘贴是有时是更诚实的代码**。

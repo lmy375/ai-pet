@@ -2,6 +2,28 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R26：feedback aggregate hint 注入 prompt（trend + latest 双层）
+- 现状缺口：R1 的 format_feedback_hint 只把**最后一条** feedback 注入 prompt（"上次你说 X，用户回复了 / 没回应 / 主动点掉"）。LLM 看到的是单点事件，看不到趋势。如果用户最近 20 句被静默忽略 8 次但最后一句意外 replied，LLM 看到 "用户回复了" 会过度乐观调升频率。**latest event ≠ trend**，prompt 应该两个都看。
+- 解法 — 纯函数 + 共享 fetch：
+  - feedback_history.rs 新 `pub fn format_feedback_aggregate_hint(entries) -> String`：< 5 样本返空（信号太薄）；否则数 replied / ignored / dismissed 三类，拼一行 "你最近 N 次主动开口里，X 回复 / Y 静默忽略 / Z 主动点掉。"。dismissed=0 时省略对应 segment（避免常态噪声）。
+  - 加新常量 `FEEDBACK_AGGREGATE_MIN_SAMPLES: usize = 5`，跟 R7 adapter 同样阈值（一致 "5 条信号才足够"原则）。
+  - PromptInputs 加 `feedback_aggregate_hint: &'a str`。push_if_nonempty 紧接 feedback_hint。
+  - run_proactive_turn 把 recent_feedback(1) 升级到 (20) 共享：last() 喂 format_feedback_hint，整 slice 喂 format_feedback_aggregate_hint。**单 fetch 喂两层** 跟 R20/R21 (recent_for_signals) 同模式。
+- 决策 — 两层 hint 同 push 不合并：诱惑是把 latest + aggregate 打包一行 "上次 ... 整体 ..."。但两条信号语义不同：latest 是 *event*（具体哪条 utterance、用户怎么反应），aggregate 是 *trend*（数字密度）。合并会让句子长度爆炸。**保持两层独立** + push_if_nonempty 让 LLM 各自取用。
+- 决策 — < 5 样本不报 trend：跟 R7 cooldown adapter 共用 `FEEDBACK_AGGREGATE_MIN_SAMPLES`（值都是 5）。低样本 trend 是 noise，比"没数字"还误导。**少即是无** 是低样本时的诚实。
+- 决策 — dismissed=0 时省略文案：诱惑是永显 "X 回复 / Y 忽略 / 0 主动点掉"，对称美。但 0 出现频率高（多数用户日常不主动 click），常态显 "0 主动点掉" 是 visual noise。条件渲染零状态是 R1c chip "👋N 仅在 N>0 时显" 同思路。
+- 决策 — recent_feedback(20) 复用 gate 同窗口：gate.rs R7 adapter 已 fetch (20)。原 prompt 路径独立 fetch (1) — 浪费 IO + 两窗口含义对不齐 ("最近 1 vs 最近 20")。R26 改成 (20)，同 fetch 喂 latest 和 aggregate，逻辑一致。
+- 决策 — 不加 panel chip：trend 信息用户已经能在 panel 看到（R10 / R1c 的 💬 chip 显 N/M + 👋K，和 timeline pill）。再加 chip 是 *summary of summary*。**prompt 注入 ≠ panel surface 应该 1:1**，prompt 给 LLM 看，panel 给用户看，两者各自适配。R26 是 prompt-only 因为 trend 数字 panel 已有 surface。
+- 决策 — 统一 "回复" / "静默忽略" / "主动点掉" 中文 label：跟 R1c panel chip 文案一致。LLM 看到中文 trend 描述跟 user 看到 panel 描述对齐 — 心智模型一致。
+- 测试（5 新单测）：
+  - returns_empty_below_min_samples（< 5）
+  - omits_dismissed_when_zero（3R+2I → 不含"主动点掉"）
+  - includes_dismissed_when_nonzero（2R+1I+2D → 三计数全显）
+  - handles_all_replied（6R → "6 回复 / 0 静默忽略" + 不含"主动点掉"）
+  - handles_at_min_samples_threshold（恰好 5 → fire 边界）
+- 测试结果：474 cargo（+5）；clippy --all-targets clean；fmt clean。
+- 结果：proactive prompt 现在含双层 feedback signal。LLM 看到 "上次你说 X，用户回复了 — ..." + "你最近 20 次主动开口里 8 回复 / 12 静默忽略" 时不会因为 last-event 单点偏置而误判 trend。**latest + aggregate 是 prompt design 经典模式** — 给 LLM 既看树（事件）又看林（趋势）。
+
 ## 2026-05-04 — Iter R25：TurnRecord 加 outcome 字段 + modal 显 spoke/silent badge
 - 现状缺口：E4 ring buffer 存最近 5 个 turn（prompt/reply/timestamp/tools），modal 用 «/» 翻看。但**outcome 只能从 reply 是否空字符串隐式判断**——sense reading 的负担在 user 身上。翻到第 3 个历史 turn 看到 reply 是空的，要回头确认"这是 LLM 沉默 还是 reply 没存"——cognitive friction。
 - 解法 — 在 TurnRecord 加显式 outcome 字段：

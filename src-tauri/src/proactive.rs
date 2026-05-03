@@ -1114,8 +1114,16 @@ async fn run_proactive_turn(
     }
     // Build the hint from the most recent entry (after we may have just written
     // one above). Empty when there's no history yet.
-    let recent_feedback = crate::feedback_history::recent_feedback(1).await;
+    //
+    // Iter R26: widened from `recent_feedback(1)` to `recent_feedback(20)` —
+    // last entry feeds `format_feedback_hint` (latest event), full window
+    // feeds `format_feedback_aggregate_hint` (trend). Same window the
+    // gate's R7 cooldown adapter uses, so prompt and gate agree on
+    // "recent era" of feedback.
+    let recent_feedback = crate::feedback_history::recent_feedback(20).await;
     let feedback_hint = crate::feedback_history::format_feedback_hint(&recent_feedback);
+    let feedback_aggregate_hint =
+        crate::feedback_history::format_feedback_aggregate_hint(&recent_feedback);
 
     // If the proactive loop noticed a sleep gap recently (≤ 10 minutes ago), surface it
     // so the LLM can choose a "welcome back" register. Strong signal that the user was
@@ -1339,6 +1347,7 @@ async fn run_proactive_turn(
         butler_tasks_hint: &butler_tasks_hint,
         user_name: &user_name,
         feedback_hint: &feedback_hint,
+        feedback_aggregate_hint: &feedback_aggregate_hint,
         hour: now_local.hour() as u8,
         recently_fired_wellness: late_night_wellness_in_cooldown(),
         repeated_topic_hint: &repeated_topic_hint,
@@ -1838,6 +1847,7 @@ mod prompt_tests {
             // Default empty — pre-Iter R1 state, no feedback log yet. Tests for
             // the feedback hint set this explicitly.
             feedback_hint: "",
+            feedback_aggregate_hint: "",
             // Default 14 (afternoon) — well outside the late-night-wellness window
             // (hours 0..LATE_NIGHT_END_HOUR=4) so existing tests stay neutral.
             // Tests for the late-night rule set this to 0/1/2/3 explicitly.
