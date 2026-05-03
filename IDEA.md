@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R8 设计要点（已实现）
+- **R3 上线后的真实 bug 反思**：R3 完成时还自我感觉良好（"硬规则 wellness override 是设计闪光"），但漏掉了"硬规则需要节流" 这个常识。任何"无论如何都要触发" 的事件都需要 rate limit；wellness 没节流 = harassment 而非 care。这是"feature 与 rate-limit 应该一起设计" 的教训。
+- **三层 helper 模式 (pure / wrapper / writer)**：late_night_wellness_recently_fired_at 是纯函数；late_night_wellness_in_cooldown 是封装 production-side 副作用的 thin wrapper；mark_late_night_wellness_fired 是写副作用。三层让测试只动 pure 部分，production 路径只调 wrapper，符合 D series 以来的"view-time mirror" 思路。
+- **dispatch-time stamp vs reply-time stamp**：选 dispatch-time 是因为：(a) 简单，rule 出现就 stamp 一次，不需要 thread "是否 Spoke" 状态；(b) LLM 拒绝 wellness 也是用户已经看到了一次"该睡了" 心智的机会；(c) 边缘情况不该污染主流程。这是"简单完整流 vs 完美精确语义" 的实用主义选择。
+- **新 9 个参数有 too_many_arguments 警告但 already allow**：QG1 时已经在 active_composite_rule_labels 上 `#[allow(clippy::too_many_arguments)]`。本 iter 再加一个参数没违反 lint，因为 allow attribute 已在。这种"接受 too_many_arguments 的稳定决定"在 QG1 时就做好了——本 iter 只是 collect dividends。
+- **测试 boundary 选 `15min/30min/60min` 三档**：在边界两侧各取一个 + boundary 自己。`exactly_at_gap` 的语义是"刚到 30 min 了，可以再触发"——`<` not `<=` 在 helper 的语义上是 "still cooling"。测试钉住这个 strict-less-than 语义防止未来误改成 `<=`。
+- **mark_*_fired 用 dispatch-time 而非 LLM 后**：如果在 LLM Spoke 后才 mark，那 LLM 选 silent 时第二轮也会 mark（因为 rule 被再次激活），可能导致 stamp 滞后。dispatch-time stamp 一次定锚 30 min 干净。
+
 ## Iter R4 设计要点（已实现）
 - **结构化捕获 vs 日志解析**：log line parsing 看似简单，实际维护噩梦——每改一次 log format 都要更新 regex 不然 panel "突然空了"。结构化 ring buffer 在 call site 原子写入，shape 由代码而非字符串契约定义。这是 Iter E4 的同模式（LAST_PROACTIVE_TURNS），证明可复用。
 - **5 个 review_status 分支映射 5 个 pipeline branch**：MissingPurpose（TR1）/ NotRequired（low/medium 直执行）/ Approved + Denied + Timeout（TR3 三种 outcome）。`Ok(Err(_))` channel-lost 收编进 Denied 因为效果一致。把这五个明确枚举出来给前端 badge 渲染零猜测。

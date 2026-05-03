@@ -404,6 +404,13 @@ pub struct PromptInputs<'a> {
     /// time-of-day specificity beyond the coarse `period` label — currently
     /// the late-night-wellness rule (0:00-3:59 + active idle).
     pub hour: u8,
+    /// Iter R8: caller-side flag indicating the late-night-wellness rule
+    /// fired within `LATE_NIGHT_WELLNESS_MIN_GAP_SECONDS`. When true, the
+    /// rule label is suppressed even if hour/idle still satisfy the trigger,
+    /// preventing repeat 30-min "该睡了" pings during a single overnight
+    /// session. Production code computes via `late_night_wellness_in_cooldown()`;
+    /// tests pass false unless deliberately exercising the gate.
+    pub recently_fired_wellness: bool,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -493,6 +500,7 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         inputs.pre_quiet_minutes.is_some(),
         inputs.idle_minutes,
         inputs.hour,
+        inputs.recently_fired_wellness,
     );
     for label in env_labels
         .iter()
@@ -653,6 +661,57 @@ pub const LATE_NIGHT_END_HOUR: u8 = 4;
 /// for the late-night-wellness rule. < 5 minutes since last interaction means
 /// they are clearly working / browsing / etc., not just left the laptop on.
 pub const LATE_NIGHT_ACTIVE_MAX_IDLE_MIN: u64 = 5;
+/// Iter R8: minimum gap between two `late-night-wellness` rule activations.
+/// Without this, every loop tick during 0:00-3:59 with active user fires the
+/// rule again — six "该睡了" pings per hour is harassment, not concern. 30
+/// minutes is enough that a user who ignored once will still feel the second
+/// nudge as fresh, not a repeat. Caller-checked via `recently_fired_wellness`
+/// param so the label fn stays pure.
+pub const LATE_NIGHT_WELLNESS_MIN_GAP_SECONDS: u64 = 1800;
+
+/// Iter R8: stamp of the most recent late-night-wellness rule activation.
+/// Used to suppress re-firing within `LATE_NIGHT_WELLNESS_MIN_GAP_SECONDS`.
+/// Reset on process restart (forgivable; rate limit only matters during a
+/// single overnight session anyway).
+pub static LAST_LATE_NIGHT_WELLNESS_AT: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// Iter R8: pure decider — given the most recent stamp and a "now" Instant,
+/// returns true if the gap is shorter than `min_gap_seconds`. Pure so tests
+/// can drive it deterministically without touching the static.
+pub fn late_night_wellness_recently_fired_at(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+    min_gap_seconds: u64,
+) -> bool {
+    match last {
+        None => false,
+        Some(t) => now.saturating_duration_since(t).as_secs() < min_gap_seconds,
+    }
+}
+
+/// Iter R8: read the static stamp + apply the gap rule. Caller-side
+/// convenience over `late_night_wellness_recently_fired_at` so production
+/// code paths don't need to touch `Instant::now()` and the static directly.
+pub fn late_night_wellness_in_cooldown() -> bool {
+    let last = LAST_LATE_NIGHT_WELLNESS_AT.lock().ok().and_then(|g| *g);
+    late_night_wellness_recently_fired_at(
+        last,
+        std::time::Instant::now(),
+        LATE_NIGHT_WELLNESS_MIN_GAP_SECONDS,
+    )
+}
+
+/// Iter R8: stamp the static so subsequent `late_night_wellness_in_cooldown`
+/// returns true within the gap window. Called on rule activation (dispatch
+/// time) — even if the LLM ultimately stays silent, we treat the
+/// activation as "user has been notified for this window" so we don't
+/// thrash on near-edge cases.
+pub fn mark_late_night_wellness_fired() {
+    if let Ok(mut g) = LAST_LATE_NIGHT_WELLNESS_AT.lock() {
+        *g = Some(std::time::Instant::now());
+    }
+}
 
 /// Returns labels for *composite* rules — those that fire only when multiple individual
 /// signals coincide. Most existing rules are restraints ("be quiet because X"); the
@@ -678,6 +737,7 @@ pub fn active_composite_rule_labels(
     pre_quiet: bool,
     idle_minutes: u64,
     hour: u8,
+    recently_fired_wellness: bool,
 ) -> Vec<&'static str> {
     let mut labels: Vec<&'static str> = Vec::with_capacity(4);
     if wake_back && has_plan {
@@ -702,7 +762,12 @@ pub fn active_composite_rule_labels(
     // Iter R3: late-night wellness — fires regardless of chatty / pre_quiet so
     // the pet always speaks up if user is still at the keyboard past midnight.
     // The whole point is overriding normal cadence to prioritize health.
-    if hour < LATE_NIGHT_END_HOUR && idle_minutes < LATE_NIGHT_ACTIVE_MAX_IDLE_MIN {
+    // Iter R8: rate-limited via `recently_fired_wellness` so a user staying up
+    // 1am-4am isn't pinged 6+ times. 30-minute gap (caller-computed).
+    if hour < LATE_NIGHT_END_HOUR
+        && idle_minutes < LATE_NIGHT_ACTIVE_MAX_IDLE_MIN
+        && !recently_fired_wellness
+    {
         labels.push("late-night-wellness");
     }
     labels
@@ -1136,6 +1201,7 @@ pub async fn build_tone_snapshot(
         pre_quiet,
         idle_min_for_rules,
         hour,
+        late_night_wellness_in_cooldown(),
     );
     let active_prompt_rules: Vec<String> = env_labels
         .iter()
@@ -1682,6 +1748,7 @@ pub fn spawn(app: AppHandle) {
                 pre_quiet_for_rules,
                 idle_min_for_rules,
                 now_for_rules.hour() as u8,
+                late_night_wellness_in_cooldown(),
             );
             let active_labels: Vec<&'static str> = env_label_set
                 .iter()
@@ -1689,6 +1756,14 @@ pub fn spawn(app: AppHandle) {
                 .chain(composite_label_set.iter())
                 .copied()
                 .collect();
+            // Iter R8: stamp the wellness static at dispatch time when the rule
+            // appears in this turn's active set. Doing it here (loop wrapper)
+            // rather than after the LLM response means even if the model stays
+            // silent, we still consume the 30-min window — preventing a near-
+            // edge thrash where we'd reactivate the rule on the next tick.
+            if active_labels.contains(&"late-night-wellness") {
+                mark_late_night_wellness_fired();
+            }
             let rules_tag = if active_labels.is_empty() {
                 None
             } else {
@@ -2038,6 +2113,7 @@ async fn run_proactive_turn(
         user_name: &user_name,
         feedback_hint: &feedback_hint,
         hour: now_local.hour() as u8,
+        recently_fired_wellness: late_night_wellness_in_cooldown(),
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -2797,6 +2873,9 @@ mod prompt_tests {
             // (hours 0..LATE_NIGHT_END_HOUR=4) so existing tests stay neutral.
             // Tests for the late-night rule set this to 0/1/2/3 explicitly.
             hour: 14,
+            // Default false — pre-Iter R8 gate state. Tests for the rate limit
+            // bump this to true to verify suppression.
+            recently_fired_wellness: false,
         }
     }
 
@@ -3956,16 +4035,19 @@ mod prompt_tests {
         // hour = 14 (afternoon) → late-night-wellness silent throughout.
         let short_idle = Some(8u64);
         assert!(
-            active_composite_rule_labels(false, false, short_idle, 0, 5, false, 0, 14).is_empty()
+            active_composite_rule_labels(false, false, short_idle, 0, 5, false, 0, 14, false)
+                .is_empty()
         );
         assert!(
-            active_composite_rule_labels(true, false, short_idle, 0, 5, false, 0, 14).is_empty()
+            active_composite_rule_labels(true, false, short_idle, 0, 5, false, 0, 14, false)
+                .is_empty()
         );
         assert!(
-            active_composite_rule_labels(false, true, short_idle, 0, 5, false, 0, 14).is_empty()
+            active_composite_rule_labels(false, true, short_idle, 0, 5, false, 0, 14, false)
+                .is_empty()
         );
         assert_eq!(
-            active_composite_rule_labels(true, true, short_idle, 0, 5, false, 0, 14),
+            active_composite_rule_labels(true, true, short_idle, 0, 5, false, 0, 14, false),
             vec!["engagement-window"],
         );
     }
@@ -3975,12 +4057,22 @@ mod prompt_tests {
         // hour = 14 (afternoon) keeps late-night-wellness silent throughout.
         // long_idle yes, under_chatty yes, !pre_quiet yes → fires.
         assert_eq!(
-            active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES), 0, 5, false, 0, 14),
+            active_composite_rule_labels(
+                false,
+                false,
+                Some(LONG_IDLE_MINUTES),
+                0,
+                5,
+                false,
+                0,
+                14,
+                false
+            ),
             vec!["long-idle-no-restraint"],
         );
         // None (never spoken) is treated as long-idle.
         assert_eq!(
-            active_composite_rule_labels(false, false, None, 0, 5, false, 0, 14),
+            active_composite_rule_labels(false, false, None, 0, 5, false, 0, 14, false),
             vec!["long-idle-no-restraint"],
         );
         // Short idle (< threshold) → no fire.
@@ -3993,19 +4085,22 @@ mod prompt_tests {
             false,
             0,
             14,
+            false,
         )
         .is_empty());
         // chatty (today >= threshold) → no fire.
         assert!(
-            active_composite_rule_labels(false, false, Some(120), 5, 5, false, 0, 14).is_empty()
+            active_composite_rule_labels(false, false, Some(120), 5, 5, false, 0, 14, false)
+                .is_empty()
         );
         // pre_quiet active → no fire.
         assert!(
-            active_composite_rule_labels(false, false, Some(120), 0, 5, true, 0, 14).is_empty()
+            active_composite_rule_labels(false, false, Some(120), 0, 5, true, 0, 14, false)
+                .is_empty()
         );
         // Threshold == 0 disables chatty gate, so under_chatty is always true.
         assert_eq!(
-            active_composite_rule_labels(false, false, Some(120), 9999, 0, false, 0, 14),
+            active_composite_rule_labels(false, false, Some(120), 9999, 0, false, 0, 14, false),
             vec!["long-idle-no-restraint"],
         );
     }
@@ -4014,8 +4109,17 @@ mod prompt_tests {
     fn active_composite_rule_labels_both_can_fire_together() {
         // wake_back + has_plan + long_idle + under_chatty + !pre_quiet → both labels.
         // hour = 14 keeps late-night-wellness silent.
-        let labels =
-            active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false, 0, 14);
+        let labels = active_composite_rule_labels(
+            true,
+            true,
+            Some(LONG_IDLE_MINUTES),
+            0,
+            5,
+            false,
+            0,
+            14,
+            false,
+        );
         assert_eq!(labels, vec!["engagement-window", "long-idle-no-restraint"]);
     }
 
@@ -4034,6 +4138,7 @@ mod prompt_tests {
                 false,
                 LONG_ABSENCE_MINUTES,
                 14,
+                false,
             ),
             vec!["long-absence-reunion"],
         );
@@ -4047,6 +4152,7 @@ mod prompt_tests {
             false,
             LONG_ABSENCE_MINUTES - 1,
             14,
+            false,
         )
         .is_empty());
         // chatty active → silent (don't pile reunion onto a chatty day).
@@ -4059,6 +4165,7 @@ mod prompt_tests {
             false,
             LONG_ABSENCE_MINUTES + 60,
             14,
+            false,
         )
         .is_empty());
         // pre_quiet active → silent (don't open new register before quiet hours).
@@ -4071,6 +4178,7 @@ mod prompt_tests {
             true,
             LONG_ABSENCE_MINUTES + 60,
             14,
+            false,
         )
         .is_empty());
     }
@@ -4082,7 +4190,8 @@ mod prompt_tests {
         // Pure name → no other signal interferes; pass neutral defaults.
         // Hours 0,1,2,3 with idle=0 should fire.
         for h in 0u8..LATE_NIGHT_END_HOUR {
-            let labels = active_composite_rule_labels(false, false, Some(8), 0, 5, false, 0, h);
+            let labels =
+                active_composite_rule_labels(false, false, Some(8), 0, 5, false, 0, h, false);
             assert!(
                 labels.contains(&"late-night-wellness"),
                 "hour={} idle=0 should trigger late-night-wellness",
@@ -4099,6 +4208,7 @@ mod prompt_tests {
             false,
             0,
             LATE_NIGHT_END_HOUR,
+            false,
         );
         assert!(!labels.contains(&"late-night-wellness"));
         // hour=2 but idle=5 (boundary off) → silent.
@@ -4111,12 +4221,51 @@ mod prompt_tests {
             false,
             LATE_NIGHT_ACTIVE_MAX_IDLE_MIN,
             2,
+            false,
         );
         assert!(!labels.contains(&"late-night-wellness"));
         // hour=2 + idle=4 (in band) → fires regardless of chatty / pre_quiet.
         // This rule deliberately bypasses both gates because user health > cadence.
-        let labels = active_composite_rule_labels(false, false, Some(8), 999, 5, true, 4, 2);
+        let labels = active_composite_rule_labels(false, false, Some(8), 999, 5, true, 4, 2, false);
         assert!(labels.contains(&"late-night-wellness"));
+    }
+
+    #[test]
+    fn late_night_wellness_recently_fired_at_gates_window() {
+        // Iter R8: pure decider for the rate-limit window. None last → never recent;
+        // last < gap → recent (suppress); last == gap → not recent (allow);
+        // last > gap → not recent.
+        let now = std::time::Instant::now();
+        assert!(
+            !late_night_wellness_recently_fired_at(None, now, 1800),
+            "no prior fire = always allow"
+        );
+        let recent = now - std::time::Duration::from_secs(900); // 15 min ago
+        assert!(
+            late_night_wellness_recently_fired_at(Some(recent), now, 1800),
+            "15 min < 30 min gap → suppress"
+        );
+        let exactly_at_gap = now - std::time::Duration::from_secs(1800);
+        assert!(
+            !late_night_wellness_recently_fired_at(Some(exactly_at_gap), now, 1800),
+            "boundary off — exactly at gap is allowed (cooldown elapsed)"
+        );
+        let beyond_gap = now - std::time::Duration::from_secs(3600);
+        assert!(
+            !late_night_wellness_recently_fired_at(Some(beyond_gap), now, 1800),
+            "1h > 30 min → cooldown elapsed"
+        );
+    }
+
+    #[test]
+    fn active_composite_rule_labels_late_night_wellness_suppressed_in_cooldown() {
+        // Iter R8: when the rate limit is in effect, the rule must not fire even
+        // though hour + idle satisfy the trigger.
+        let labels = active_composite_rule_labels(false, false, Some(8), 0, 5, false, 0, 2, true);
+        assert!(
+            !labels.contains(&"late-night-wellness"),
+            "recently_fired_wellness=true should suppress"
+        );
     }
 
     #[test]
@@ -4133,6 +4282,7 @@ mod prompt_tests {
             false,
             LONG_ABSENCE_MINUTES + 60,
             14,
+            false,
         );
         assert_eq!(
             labels,
@@ -4244,9 +4394,10 @@ mod prompt_tests {
                     false,
                     LONG_ABSENCE_MINUTES + 60,
                     14,
+                    false,
                 ))
                 .chain(active_composite_rule_labels(
-                    false, false, None, 0, 5, false, 0, 2,
+                    false, false, None, 0, 5, false, 0, 2, false,
                 ))
                 .collect();
         let fingerprint_labels: std::collections::HashSet<&str> =
@@ -4353,8 +4504,10 @@ mod prompt_tests {
             false,
             LONG_ABSENCE_MINUTES + 60,
             14,
+            false,
         );
-        let composite_b = active_composite_rule_labels(false, false, None, 0, 5, false, 0, 2);
+        let composite_b =
+            active_composite_rule_labels(false, false, None, 0, 5, false, 0, 2, false);
         let backend: std::collections::HashSet<&'static str> = env
             .iter()
             .chain(data.iter())
@@ -4407,8 +4560,10 @@ mod prompt_tests {
             false,
             LONG_ABSENCE_MINUTES + 60,
             14,
+            false,
         );
-        let composite_b = active_composite_rule_labels(false, false, None, 0, 5, false, 0, 2);
+        let composite_b =
+            active_composite_rule_labels(false, false, None, 0, 5, false, 0, 2, false);
         let missing: Vec<&'static str> = env
             .iter()
             .chain(data.iter())

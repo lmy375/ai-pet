@@ -2,6 +2,34 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R8：late-night-wellness 30 分钟 rate limit + 后续路线
+- 现状缺口：R3 加的 late-night-wellness 规则只要 (hour<4 && idle<5min) 都会激活——按典型 5 分钟 proactive loop 间隔，半夜用户在键盘前一小时可能被提醒 12 次"该睡了"。这从关心变成骚扰。
+- 解法 — pure-helper 三层 + 一个 dispatch-time stamp：
+  - 新 const `LATE_NIGHT_WELLNESS_MIN_GAP_SECONDS = 1800` (30 分钟)
+  - 新 static `LAST_LATE_NIGHT_WELLNESS_AT: Mutex<Option<Instant>>`，process-wide
+  - `late_night_wellness_recently_fired_at(last, now, gap_secs) -> bool`：纯函数，给定 last + now + gap 直接返回是否在 cooldown
+  - `late_night_wellness_in_cooldown()`：production-side 包装器，读 static + Instant::now()
+  - `mark_late_night_wellness_fired()`：写 static
+- API 改动：`active_composite_rule_labels` 新增第 9 个参数 `recently_fired_wellness: bool`，late-night-wellness 仅当 `!recently_fired_wellness && hour<4 && idle<5min` 才 push label
+- PromptInputs 加 `recently_fired_wellness: bool` 字段，base_inputs 默认 false
+- 三个生产 call site：
+  - proactive_rules（PromptInputs 路径）：传 inputs.recently_fired_wellness
+  - get_tone_snapshot（panel surface）：传 late_night_wellness_in_cooldown()
+  - 后台 loop wrapper（dispatch tag 路径）：传 late_night_wellness_in_cooldown()，并在 active_labels 含此 label 时调 mark_late_night_wellness_fired() 锁定下个 30 min
+- run_proactive_turn PromptInputs：构建时也调 late_night_wellness_in_cooldown()
+- 决策 — dispatch-time stamp（不等 LLM Spoke 后才 stamp）：避免 near-edge 抖动 — LLM 收到 rule 但选择 silent 也消耗 30min 窗口。代价是"如果 LLM 多次拒绝 wellness"用户在 30 分钟内不会收到第二次。这个权衡 OK：边缘情况不该让普通流程变复杂；用户真要被提醒 30 分钟一次也不算少。
+- 决策 — pure helper 接 last + now 显式参数：纯函数 + 测试零 setup。production wrapper 调 Instant::now() / 读 static 后转交给 pure 版本。
+- 决策 — process-wide 而非 settings 配置：30 分钟是合理硬编码。让用户调反而暗示 "你应该思考多久打扰一次合适"——违背 "宠物有自己 opinion" 设定。如果未来真有 user complaint 再升级成 setting。
+- 测试（2 新单测）：
+  - `late_night_wellness_recently_fired_at_gates_window`：钉住 None / 15min(suppress) / 30min(allow boundary) / 60min(allow)
+  - `active_composite_rule_labels_late_night_wellness_suppressed_in_cooldown`：rule 在 cooldown 内不 push label，即使其他条件满足
+- 路线规划补全（gap analysis 后写入 TODO.md）：
+  - **Iter R6**：feedback_history.log 在 panel timeline 可见（R1 数据已有，需要 surface）
+  - **Iter R7**：feedback signal 驱动 cooldown 调整——高 ignore ratio → 自适应 silence
+  - 这俩自然把 R series 闭环：R1 采集，R6 surface，R7 用数据闭回行为
+- 测试结果：372 cargo（+2）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：半夜的 wellness ping 从"每 5 分钟一次" → "30 分钟最多一次"。R3 wellness 是关心，R8 才让它真的像关心而不是 nag。
+
 ## 2026-05-03 — Iter R4：PanelDebug 显示工具调用历史（purpose + risk + review）
 - 现状缺口：TR1 把 purpose 写进 app.log，TR2 写 risk 评估，TR3 写 approve/deny/timeout——但 panel 上要 prompt 调优时只能 grep app.log。本 iter 把这三层数据 surface 到一个 panel 折叠卡片。
 - 设计选择 — 结构化 ring buffer 而非日志解析：
