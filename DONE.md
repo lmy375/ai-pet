@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R22：active app 在 PanelToneStrip 加 🪟 chip（R15 → 用户可见）
+- 现状缺口：R20 原则 codify 后 R21 第一次 audit (R11 → panel)。R22 第二次 audit — R15 active_app duration 同样写 prompt 但没 panel surface。用户在 panel 看不到"现在 pet 觉得我在哪个 app / 几分钟了"，跟 R15 prompt 信号 disconnect。
+- 解法 — read-only inspect helper 避开 mutation hazard：
+  - active_app.rs：新 `pub fn snapshot_active_app() -> Option<ActiveAppSummary>` —— **不 mutate** LAST_ACTIVE_APP 静态。读 mutex → Instant::now() - since → 计 minutes → redact app name → return Summary。跟 `update_and_format_active_app_hint`（mutating wrapper）相区分 —— 后者重置 since 时钟，前者只观察。
+  - 新 `pub struct ActiveAppSummary { app: String, minutes: u64 }` serde-serializable。
+  - proactive.rs: ToneSnapshot 加 `active_app: Option<ActiveAppSummary>` 字段；build_tone_snapshot 内 `snapshot_active_app()` 调用直接 inline，路径短，单次 read 无 IO。
+  - panelTypes.ts: `active_app: { app: string; minutes: number } | null` 对应。
+  - PanelToneStrip: chip "🪟 {app}（{m}m）" 紧接 🔁 topic 后；橙色当 ≥15m（R15 prompt hint fire 阈值），灰色当 < 15m（observability only）。hover 文案分两套讲是否触发 prompt nudge。
+- 决策 — read-only helper 与 mutating wrapper 分离：诱惑是"复用 update_and_format_active_app_hint"。但那个函数会重置 since 当 prev_app != current_app — panel 每次 poll 调一次 = 不断让 since 跳到 now = duration 永远是 0。**read 路径必须不 mutate state**。新 helper 命名 snapshot_* 也是语义提示（snapshot = 拍照不动）。
+- 决策 — < 15m 也显示（灰色）：诱惑是 mirror prompt 路径"低于阈值不出现"。但 panel 是 observability — "我现在前台是什么" 即使 < 15m 也是用户想知道的信息。橙/灰二色：橙=信号已对 LLM fire，灰=只为面板存在。**panel surface 比 prompt 更宽**（panel = 全部 state，prompt = 异常时干预）；R20 mixed register 也是这个 pattern，R22 沿用。
+- 决策 — chip 文案显数字到分钟：例 "🪟 Cursor（45m）"。秒级精度无意义（R15 阈值是 15min），毫秒就更没意义。`{m}m` 紧凑、跟 ⏳ 冷却 chip 风格一致。
+- 决策 — chip 顺序：feedback 💬 / register 📏 / topic 🔁 / app 🪟 / period ⏱ ... 把 🪟 放在"宠物开口形态" cluster 之外但靠近 — 它是"用户上下文"层而不是"宠物开口"层。这两个 cluster 的过渡位置正好。
+- 决策 — 不写测试 for snapshot_active_app：依赖进程级 LAST_ACTIVE_APP 静态，并发测试 mutex 易 flaky。R15 已有 7 单测覆盖 compute_active_duration / format_active_app_hint 核心 logic。snapshot_active_app 是 thin glue（read mutex + arithmetic + redact），cargo build/clippy/tsc clean 已经验通。**测试 logic 而不是 wiring** 是 R21 IDEA 已写过的纪律。
+- 测试结果：464 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：panel 现在 4 chip cluster — 💬 feedback / 📏 register / 🔁 topic / 🪟 active app。"宠物开口形态" + "用户上下文" 两 cluster 之间的桥梁。R-series 的 prompt-side signal 几乎都已 panel-visible（剩 cross_day_hint / yesterday_recap_hint 是 first-of-day transient，等真正想做时再说）。R20 codified 原则两次还债完成 — 老信号们都进 panel 了。
+
 ## 2026-05-04 — Iter R21：repeated topic 在 PanelToneStrip 加 🔁 chip（R11 → 用户可见）
 - 现状缺口：R20 codify 了"所有 prompt 信号都该 panel 可见"原则。R11 detect_repeated_topic 是 R20 之前实现的信号，没还债 —— LLM 看到"你最近多次提到 X" prompt nudge，但用户在 panel 完全看不到 pet 在循环什么话题。R21 是该原则的第二次践行。
 - 解法 — fetch 共享 + chip 添加：

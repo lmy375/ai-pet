@@ -113,6 +113,11 @@ export interface ToneSnapshot {
   // here. Null when no ngram recurs across enough distinct lines —
   // healthy / varying default.
   repeated_topic: string | null;
+  // Iter R22: active app snapshot (R15's data, read-only panel inspection).
+  // App name is already redacted; minutes is wall-clock since the static
+  // first observed this app. Null on fresh process / non-macOS / when
+  // proactive loop hasn't run yet.
+  active_app: { app: string; minutes: number } | null;
 }
 
 /**
