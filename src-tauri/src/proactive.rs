@@ -130,6 +130,24 @@ pub fn effective_awaiting(raw_awaiting: bool, since_last_proactive_seconds: Opti
 /// the user to chat back; long enough that re-firing the gate later isn't rude.
 pub const AWAITING_AUTO_CLEAR_SECONDS: u64 = 4 * 3600;
 
+/// Iter E1: stash for the most recently constructed proactive prompt — the full
+/// system message the LLM saw on the last turn. Cleared on process restart;
+/// no persistent backing. Used by `get_last_proactive_prompt` so the panel can
+/// expose "what did the pet see right before deciding to speak / stay silent?"
+/// without scraping debug logs.
+pub static LAST_PROACTIVE_PROMPT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Tauri command — return the most recently built proactive prompt, or empty
+/// string if none has been built yet (fresh process, never fired).
+#[tauri::command]
+pub fn get_last_proactive_prompt() -> String {
+    LAST_PROACTIVE_PROMPT
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
+
 pub type InteractionClockStore = Arc<InteractionClock>;
 
 pub fn new_interaction_clock() -> InteractionClockStore {
@@ -1731,6 +1749,11 @@ async fn run_proactive_turn(
         butler_tasks_hint: &butler_tasks_hint,
         user_name: &user_name,
     });
+    // Iter E1: stash the prompt so the panel can show "what did the LLM see this
+    // turn?" — useful for prompt tuning without instrumenting log scraping.
+    if let Ok(mut g) = LAST_PROACTIVE_PROMPT.lock() {
+        *g = Some(prompt.clone());
+    }
 
     // Ensure system message anchors the conversation; build a temporary message list.
     if messages.is_empty() {

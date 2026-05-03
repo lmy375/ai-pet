@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter E1：proactive prompt 全文 panel 可看（开启 E series 工具向）
+- 现状缺口：D series 12 个 chip 把"现在 LLM 看到什么 ambient 信号"分维度可视化了，但**完整拼装好的 system prompt 全文**仍然不可见。要确认"今天 chatty rule 真的进 prompt 了吗"得去 panel logs 或 LLM 端 trace——多步、低效。研发自己 prompt 调优时尤其卡。
+- 解法：捕获最后一次构造的 proactive prompt，panel 上一键预览。
+  - `src-tauri/src/proactive.rs`：加 `pub static LAST_PROACTIVE_PROMPT: std::sync::Mutex<Option<String>>`（process 内）+ `run_proactive_turn` 在 `build_proactive_prompt(...)` 之后立刻 stash clone 到该 Mutex。process 重启后清空——不需要持久化"上次"，因为关心的是当下行为。
+  - 新 Tauri command `get_last_proactive_prompt() -> String`：读 Mutex，None 时返空字符串。
+  - `PanelDebug.tsx`：toolbar 加靛紫色 `看上次 prompt` 按钮（紧邻 `立即开口`）。点击 invoke + show modal：
+    - 全屏遮罩（rgba(0,0,0,0.4)）+ 居中卡片（max 780px width / 80vh height）
+    - 头部显字符长度 + 关闭按钮
+    - body 用 `<pre>` + `whiteSpace: pre-wrap`：保留 prompt 内的 `\n` 段落、长行 wrap 不溢出
+    - 空 prompt 提示"还没触发过——按 立即开口 试一次"
+- D series 是把 prompt 的"输入信号"维度拆开可视化；E series 第一刀是把"装配后的 prompt 全文"直接暴露。两者层级不同 — D 是 "decompose"，E 是 "as-is"。研发场景两者各擅胜场。
+- 不持久化（process 重启清空）：last prompt 是 transient 调试信息，写盘没意义；用户重启 app 通常意图就是 "重置状态"。
+- 测试：306 cargo 不变（透传无新逻辑）；tsc 干净。
+- 结果：研发可以一键看 LLM 实际看到的 prompt 全文 — 验证 D series 的 chip 显示是否和 prompt 内容一致、调 prompt 时 paste 进 LLM 跑 dry run、debug "为什么 LLM 选这个 register" 类问题。从面板看到决策的 raw input 全文。
+
 ## 2026-05-03 — Iter D12：surface "proactive 已关" 状态 — 关闭 disabled gate 可见性
 - 现状缺口：D10 + D11 完成 awaiting / cooldown 可视化和修复，但还有一个 gate 没暴露：disabled 自身。当 `settings.proactive.enabled = false` 时，整个 proactive 引擎 silent—不会有 Silent / Skip / Run 的 decision_log 条目，所有 chip 都按字面状态显示，但 gate 永不放行。结果：用户关了开关后忘记，半天没听到宠物说话以为 bug。这是 7 个 gate 中最后一个无 panel 提示的。
 - 解法（D series 模板复用第十二次）：

@@ -60,6 +60,10 @@
   （2026-05-03 完成）
 - D series 十二连完成；从黑盒打开成 11 个 chip 维度。
 
+### 路线 E：研发 / 高级用户工具向
+- [x] Iter E1：proactive prompt 全文 panel 可看 — LAST_PROACTIVE_PROMPT static Mutex
+  + "看上次 prompt" 按钮 + modal 预览（2026-05-03 完成）
+
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
 - [x] Iter Cδ：panel 顶部 "+ 委托任务" 快捷入口 + 模态分类 placeholder（2026-05-03 完成）
