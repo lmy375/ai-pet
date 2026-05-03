@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cρ 设计要点（已实现）
+- **data-driven 还是 environmental**：milestone 用 `companionship_days` 计算（counter，data 性质），但语义更像"今天是某种特殊环境状态"。最终选 data-driven 因为：(a) data-driven 已有 `chatty` 这种"基于 counter 的状态"先例；(b) environmental 已经 6 个字段了再加变沉重；(c) data-driven 加一个 u64 参数边际成本低。
+- **rule body 强调"作为底色"**：曾写过更激进的版本「告诉 ta 这是百日，要怎么纪念」——但和 Iter 5 cooldown / Iter 75 chatty 的"克制原则"冲突。LLM 容易把"今天是 100 天"当大事件、强行要求用户回应或开长篇感慨。明确写"轻轻提一句、不要要求 ta 回应、纪念日只做底色"是把这条规则定位成"语气微调"而不是"话题选择"——和 prior persona/mood register 系列同思路。
+- **365 之后每年一次 vs 复杂规则**：本来想加"满 1.5 年"、"500 天"等。但里程碑越多越频繁，每次都触发会让用户疲劳，反而失去仪式感。固定 6 档 + 周年是经过权衡的——保留稀缺度。
+- **base_inputs 默认 5 而不是 0 或 30**：天 0 会触发"今天初识" framing；天 30 触发新 milestone 让所有 base_inputs 测试间接踩到新规则。天 5 安全：既过了"第一天"特殊状态、又不是里程碑。这个 fixture 调整在 Iter Cξ first-of-day 时也做过同类操作（today_speech_count 0→1）。
+- **production 加 await**：spawn loop 和 get_tone_snapshot 现在多 1 次 `companionship_days().await`。companionship 的实现读 install_date.txt 一次 IO，几微秒可忽略。但是要注意 await 必须在 async 上下文——fortunately 这两处都已 async，没问题。
+- **ToneSnapshot 不暴露 milestone 字段**：panel "prompt: N hint" badge 已经覆盖（label 进 active_prompt_rules），不需要专门的字段告诉 panel "今天是百日"。如果未来要做"today is your X day" 视觉徽章，再加。
+
 ## Iter Cπ 设计要点（已实现）
 - **`[error]` description 约定，不引入新文件**：曾考虑加 `butler_errors.log`（类似 butler_history 但只记错误）。但那要：(a) 决定哪一层捕获错误（chat pipeline 太晚 / tool 层太杂 / proactive turn 后扫描 history 不准）、(b) 持久化模型一致问题、(c) 又一种文件用户搞不清。description 字段约定路径最低成本——LLM 自己负责写、prompt 教会、parse 一处、UI 一处，all done in 一 iter。
 - **不动 butler_history.log**：error 不是事件流，是状态。如果一个任务失败 5 次成功 1 次，butler_history 看到的还是最近一次 update（成功），description 里 error 被 LLM 移除。这种"状态而非事件"的建模更接近 user 心智："这个任务现在卡着吗？"答 yes/no，不需要看历史滚动。

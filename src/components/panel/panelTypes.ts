@@ -131,6 +131,11 @@ export const PROMPT_RULE_DESCRIPTIONS: Record<
     summary: "今天已经聊得不少；除非有新信号否则保持安静或极简一句。",
     nature: "restraint",
   },
+  "companionship-milestone": {
+    title: "纪念日",
+    summary: "陪伴满 7 / 30 / 100 / 180 天 / 周年；轻轻提一句这种相处时长，作为底色。",
+    nature: "engagement",
+  },
   "env-awareness": {
     title: "环境感知低",
     summary: "近几次开口很少看环境；本次先调 get_active_window 看用户在做啥。",
