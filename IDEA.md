@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R39 设计要点（已实现）
+- **lazy abstraction (use-3+) 第一次真正落地**：R32 IDEA 写"等到第 3 次重复再抽组件"，R38 IDEA 写"3rd timeline filter triggers extraction"，R39 当真做了。**纸上规则到实战践行的滞后**：从 R32 (cleanup iter 写 nudge) 到 R39 (实际 follow rule) 隔了 7 iter。R-series codified rule 的有效性 = "我以后真按这做吗"。R39 通过这关。
+- **generic on V<extends string>**：TypeScript generic 让 component 通用但 caller 保 narrow union ("all" | "Spoke" | ...)。如果用 plain string，caller 会失去 exhaustive matching 的安全。**generic 是 reuse + type-safety 双赢**——不要因为复用就退到 lowest common denominator (string)。
+- **caller 注入 accent vs component 内置色板**：generic component 不绑定具体语义。三个 caller 各自有自己的 kind→color mapping（feedback、decision、tool_risk），accent 由 caller 传入让 component 在不同 timeline 都正确。**如果 component 内置 "spoke = green / silent = purple" 等 mapping，第 4 个 caller 出现时要改组件**。注入方式让 component frozen-in-place。
+- **职责分离：row 给组件，body 留 caller**：empty filter 的"暂无匹配"文案 caller 自己渲染。如果组件统一渲染，三 caller 文案差异就要 prop 传文案 → 接近 "整个 list 渲染都进组件"。**抽得太多反而绑死**。R39 选择"组件管 row 一致性，caller 管 list 多样性" 是 sweet spot。
+- **R-series first shared component**：NumberField 是 R-series 之前就有的，PanelFilterButtonRow 是 R-series 第一个抽出的。**长 iter 系列的"首次抽组件"是里程碑** —— 之前所有抽象都是后端 logic helper（read_ai_insights_item, classify_speech_register, count_trailing_silent 等）。前端组件抽象更费心思因为涉及 prop 设计 + style flexibility。
+- **3 caller 同步重构是 high-leverage iter**：R39 一个 iter 同时做 (a) extract component, (b) refactor 2 existing callers, (c) add 3rd caller。三件事一起上比分 3 iter 各做 1 件干净 —— 因为 component design 必须满足 3 caller 的 union of 需求；单独抽出来再加 caller 容易让 component miss 某 caller 需求 → 二次返工。**多 caller 同步重构验证 component design**。
+- **不写组件单测的纪律延续**：纯 presentation, no state, no logic branches。tsc 验类型，三 caller 渲染验集成。R21 / R25 / R28 / R31 / R34 都同此原则。**前端组件单测应该聚焦 logic-bearing components**（state machines, hooks, pure transforms），不该测纯 presentational widgets — testing-library 风格的"render and check DOM" 边际收益低。
+- **Polish 期累积进入 codebase taxonomy**：R37 = first interaction，R38 = pattern 复用，R39 = component 抽取。**polish 期 iter 单看小，连起来看是 codebase 抽象层级在抬升**。30 iter innovation + 9 iter polish 后，前端 components 多了 1 个共享 widget，后端 helper 多了若干 pure fn — 这些都是 long-running project 的隐性资产。
+
 ## Iter R38 设计要点（已实现）
 - **codified pattern 第一次实战复用**：R37 IDEA 写"pattern reusable for other timelines"。R38 当下一个 iter 立刻验证。这是 codified-rule 落地的标准节奏：rule → first application → re-test on second → 沉淀为公认 pattern。**rule 的有效性必须靠多次复用验证** —— 一次写规矩不算 codified，第二次复用不修改才算稳定。R38 通过这关，`PanelFilterButtonRow` pattern 进入 R-series stable vocabulary。
 - **N=4 是 button row sweet spot 的反证**：原本 decision log 9 种 kind 都可以放 button。但 9-button row 横向会爆。**filter 的目的是 "isolate signal"**——只 surface 高频 + 有 retrospect 价值的 kinds。Run / Silent / LlmError / ToolReview* 都很罕见或语义独立，归"全部"反而更清。**不是所有 kinds 都该有 filter button** —— 只有 user 真想 "isolate this" 的 kinds 才需要。

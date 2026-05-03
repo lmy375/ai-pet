@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R39：抽 PanelFilterButtonRow 共享组件（R38 codified rule 还债）
+- 现状缺口：R37 (feedback timeline) + R38 (decision_log timeline) 两个独立 filter button row 实现 95% 同结构（4 buttons + count-in-label + active-color = accent + inactive-white + 空兜底）。R38 IDEA 写"第 3 个 filter 出现时正式抽 PanelFilterButtonRow component"。R39 找到第三个用例 — tool_call_history 按 risk_level 过滤 — 立刻还债。
+- 解法 — 抽 generic component + 三处 caller 同步重构：
+  - 新 `src/components/common/PanelFilterButtonRow.tsx`：generic on V extends string（preserve narrow union types per caller）。Props: `options: PanelFilterOption<V>[]` 含 value/label/count/accent/title，`active: V`，`onChange: (v: V) => void`，可选 `rowStyle: CSSProperties`。
+  - 渲染 buttons 数组 map：active accent bg + white text，inactive white bg + gray text + cbd5e1 border，count 嵌入 label。
+  - fontFamily inherit 让 component 在 mono 段（decision_log）和 sans-serif 段（feedback）都跟周围环境一致。
+  - **R37 feedback filter 重构**：移掉本地 btnStyle + 4 个手写 button，改成单 `<PanelFilterButtonRow>` 调用 + options array。
+  - **R38 decision filter 同款重构**：相同 pattern 应用。
+  - **R39 新加 tool_call risk filter**：4 按钮"全部/低险/中险/高险"，accent 跟 riskBadgeBg 同源（绿/橙/红）。空过滤兜底文案沿用。
+- 决策 — generic on V<extends string>：每个 caller 仍可保自己的 narrow string-union（`"all" | "Spoke" | ...`），不退化到 `string`。这种 type-safe 复用是 TypeScript generic 的最佳用例。
+- 决策 — accent 颜色由 caller 传入：诱惑是组件自带 default 色板。但 each timeline 有自己的 kind→color 语义（feedback 绿/灰/红，decision 绿/紫/橙，tool_call 绿/橙/红） — caller 注入 accent 让 component 不绑定具体语义。**generic component 不该 know 业务**。
+- 决策 — 空过滤兜底文案留 caller 处理：组件不渲染 empty state（只渲染按钮 row）。空过滤的 message 跟 timeline body 紧耦合（"暂无匹配条目" vs 工具版"无 *risk* 匹配"），caller 控制更灵活。**职责分离：组件管 row，caller 管 list rendering**。
+- 决策 — rowStyle prop 让 caller 调外边距：feedback 用 paddingTop:6px，decision 用 marginBottom:6px，tool 用 paddingTop:6px。三种 spacing 由 caller 传入。**风格 prop > 组件硬编码** —— 灵活复用。
+- 决策 — 不写组件单测：纯 presentation component，无 state / 无逻辑分支。tsc + 三 caller 渲染验证就够。**测 logic 不测 wiring** 又一次。
+- 决策 — common/ 而非 panel/common/：现已有 `src/components/common/NumberField.tsx`，沿用此目录放新组件。同级 layout = "panel-agnostic 共用 widget"。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：PanelFilterButtonRow 是 R-series **首个抽出的 panel 共享组件**（NumberField 是 R-series 之前就在的）。R37 + R38 + R39 三 caller 全调它，~80 行重复 → ~30 行调用代码 + ~80 行组件。net -30 + 单点 logic。第 4 个 timeline filter 上线时 1 行调用即可。**lazy abstraction 原则 (use-3+) 在 R39 第一次落地生根**。
+
 ## 2026-05-04 — Iter R38：decision_log timeline filter buttons（R37 pattern 复用）
 - 现状缺口：R37 IDEA 写"filter button row pattern reusable for decision_log"。R38 立刻验证 — 应用同 pattern 到 PanelDebug decision log timeline（最常用最长的 panel 区段，实际 9 种 kinds 混合显示，user 想"只看 LLM 选了沉默的轮"难找）。
 - 解法 — 复制 R37 的 pattern + 选 4 高频 kinds：
