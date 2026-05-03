@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R60：format_feedback_hint excerpt 加 redaction（privacy 漏洞补上）
+- 现状缺口：R1 format_feedback_hint 把 latest entry's excerpt 直接 inject 进 prompt：`"上次你说「{excerpt}」，..."`。**excerpt 没经过 redact_with_settings**。Pet 自己的 reply（excerpt 来源）可能含用户 redaction 模式中的私人词 —— LLM 在 reply 中可能 weave 用户 user_profile 里的私人内容（"company X 的工作进展"等），这条 reply 进 speech_history → 后续 feedback_hint 把它原样回喂 prompt，redaction 漏了。
+- audit 触发：Privacy 全 codebase 审计 grep redact_with_settings 调用点。speech_hint / cross_day_hint / yesterday_recap_hint / active_app_hint / reminders_hint / user_profile_hint / persona_hint / plan_hint 等都 redact ✓。**只有 format_feedback_hint 漏了**。
+- 解法 — 镜像 format_reminders_hint pattern：
+  - 改 signature: `pub fn format_feedback_hint(entries: &[FeedbackEntry], redact: &dyn Fn(&str) -> String) -> String`
+  - 内部 `let redacted = redact(&latest.excerpt)`；3 match arm 都用 `redacted` 替代 `latest.excerpt`。
+  - 注释明确 "redaction 是 prompt-boundary concern" — 不在 storage 层 redact (excerpt 落 disk 仍 raw)，只在 prompt 注入时 redact。
+  - 5 个测试更新签名 + 加 1 新测试 `format_feedback_hint_applies_redaction_to_excerpt` 用自定义 redact closure 验证调用。
+  - 生产 caller (run_proactive_turn) 传 `&|s| crate::redaction::redact_with_settings(s)` 闭包。
+- 决策 — redact at prompt boundary 不在 storage：speech_history.log / feedback_history.log 仍存原文，方便 panel 调试。**redact 是输出到外部（LLM）时的责任**，不是输入存储时的。Same R-series 一贯思路（QG4 等）。
+- 决策 — closure parameter 跟 R-series existing pattern 一致：format_reminders_hint, format_user_profile_hint, format_plan_hint, format_persona_hint 都是这种 `&dyn Fn(&str) -> String` 签名。**API 一致** —— 看到 closure 参数知道这个 fn 走 redaction-aware injection。
+- 决策 — id_redact test helper：测试用 identity 闭包让大多数已有断言不变（不调真 redaction 配置）。新 test_applies_redaction 才用自定义 closure 验证调用 path。**test isolation: 不让单测依赖真 redaction settings**。
+- 决策 — 不动 format_feedback_aggregate_hint：它只显 counts (replied/ignored/dismissed 数字)，没 user excerpt 内容。**redact 范围只覆盖含 excerpt / user-input 的 hints**，纯统计 hints 不 redact 浪费。
+- 决策 — 也不动 storage / panel 显示：feedback_history.log 仍存 raw excerpt（dev 调试需要 truth）；panel timeline 显示 raw（local-only display，user 自己看 self-data 不需 redact 自己）。**redact 仅在 prompt 路径** = LLM-out-of-process boundary。
+- 测试结果：519 cargo（+1 新 + 5 已有 sig 更新）；clippy clean；fmt clean；tsc 不需要（没 frontend 改动）。
+- 结果：feedback_hint 现在跟其他 prompt hint 一样走 redaction。**privacy hole 补上 + audit 一遍 codebase 其他 hint 都已 redact**。R-series 第一次主动 privacy audit (而不是被动响应 bug)，**proactive privacy audit 是 mature project 健康习惯** —— 隔一段时间 grep 一遍 prompt 注入点是否都 redacted。
+
 ## 2026-05-04 — Iter R59：抽 R52/R55 setter 纯函数 + 9 单测
 - 现状缺口：R52 set_mute_minutes / R55 set_transient_note 内 logic 是"compute new state from input + write to mutex" —— logic 跟 IO 耦合不可测。R53 / R56 已经测了"read" helpers（compute_mute_remaining / compute_transient_note_remaining），但 setter 的"compute"逻辑（boundary case 0/负数/empty/whitespace）从未测。
 - 解法 — R53/R56 pattern 应用到 setter side：

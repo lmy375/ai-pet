@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R60 设计要点（已实现）
+- **proactive privacy audit 是 mature project 健康习惯**：R-series 之前的 redaction 加点都是被动响应（QG4 等）。R60 是第一次主动 grep 全 codebase 查 redact 完整性。**长 lived project 应该周期性主动审 privacy boundary** —— 不等到 bug 报出来。这是除"react to incidents" 之外的 proactive security stance。
+- **storage 不 redact / prompt boundary 才 redact**：feedback_history.log 存原文，prompt 注入 redact。**redact 是 cross-process / cross-trust-domain boundary 的责任**，不是 inside-process 数据存储责任。Local 文件 / panel 显示都是 user-local，不需 redact 自己的数据；prompt 是发到 LLM (potentially external API)，必须 redact。这条边界划分清楚后所有 redact 调用点都该 audit "我跨 boundary 了吗？"。
+- **closure parameter 是 R-series codified pure helper redact pattern**：format_reminders_hint / format_user_profile_hint / format_plan_hint / format_persona_hint / format_feedback_hint (R60) 都是 `&dyn Fn(&str) -> String` 签名。**统一 API** 让 caller 看到签名就知道这是 redact-aware 函数。如果未来加新 prompt-injecting helper 也该跟此签名 —— 跟 testability 双赢（测试传 identity，prod 传 redact_with_settings）。
+- **excerpt 是 pet's own utterance 但仍可能含 private 内容**：第一直觉是"pet 自己说的不需要 redact"。但 LLM 写 reply 时可能 echo user_profile 里的私人词（用户告诉 pet 他在 company X，pet 在 reply 中提"X 的工作进展"）。**LLM 输出仍是 prompt 输入的"放大镜"** —— prompt 含的私人词 LLM 会传播到 reply，reply 进 history 又回到 prompt → 自循环。redaction at every prompt-boundary 让循环每一步都 hard-stop。
+- **R-series 600 tests 走在路上**：519 已经是 ratio 好。R60 +1 因为已有 5 个测试只是 signature 更新（不算新增 logic 测试）。每次 codebase 加新数据流就该问"测覆盖了吗"，每次新 audit 触发就该问"是否需要 nail 一个 test 防退化"。R60 加 redact-applied test 是后者的好例子。
+- **id_redact test helper 应该 codify**：测试 redact-aware 函数的 identity-closure pattern 重复出现 (format_reminders_hint tests / format_feedback_hint tests / format_*_hint tests)。**未来抽 shared test util module** if R-series 继续加这种 helper。同 R39 PanelFilterButtonRow 思路 —— use-3+ 才抽。当前 use 还在 2-3，先 copy。
+- **R60 是 R-series 第一个 "audit-without-trigger" iter**：没有报告说 feedback excerpt 泄漏，没有 user complaint。R60 仅是因为我决定"audit 一下 prompt redact" 而触发。**这种 self-initiated audit iter 是 mature project 跟 reactive project 的区别** —— 前者在 issue 出现前补，后者在 issue 出现后救。R-series 已经累积足够 codebase 复杂度让 audit iter 有真实价值。
+
 ## Iter R59 设计要点（已实现）
 - **read + write helper 对称是完整的 testability**：R53 + R56 测 read 路径 (compute_*_remaining)。R59 测 write 路径 (compute_new_*)。**每个 stateful 模块都应该有 read + write 两套 pure helpers**——单测覆盖才完整。如果只测 read 不测 write，setter boundary case (0/负数/empty/whitespace 等) 全是黑盒。R59 关闭这个 testability gap。
 - **defense in depth: whitespace as empty**：compute_new_transient_note 把 " "/"\t\n" 当 empty 处理。诱惑是"frontend 应该 trim，backend 信任输入"。但**pure helper 不依赖 caller 行为** —— defense at boundary。Trade-off: backend 多 1 行 trim 检查 vs 一旦 frontend bug 就保存了空白 note。明显前者收益。这条 R-series 早期已用过（R12 daily_review skip empty body / R26 feedback_aggregate skip < 5 samples 等）。

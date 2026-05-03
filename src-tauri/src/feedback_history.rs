@@ -343,22 +343,29 @@ pub fn format_feedback_aggregate_hint(entries: &[FeedbackEntry]) -> String {
 /// Format a feedback hint for the proactive prompt from the most recent
 /// entry. Empty list → empty string. Single entry → one-line nudge that the
 /// LLM can absorb. Pure / testable.
-pub fn format_feedback_hint(entries: &[FeedbackEntry]) -> String {
+pub fn format_feedback_hint(entries: &[FeedbackEntry], redact: &dyn Fn(&str) -> String) -> String {
     let Some(latest) = entries.last() else {
         return String::new();
     };
+    // Iter R60: redact the excerpt before injecting into the prompt.
+    // Pet's own past utterance can echo user-private terms (LLM might
+    // have woven a redacted-pattern back into a bubble reply); redacting
+    // here ensures the same user-configured patterns cover this self-loop
+    // input too. The on-disk speech_history / feedback_history files
+    // stay raw — redaction is a prompt-boundary concern.
+    let redacted = redact(&latest.excerpt);
     match latest.kind {
         FeedbackKind::Replied => format!(
             "上次你说「{}」，用户回复了 — 这次开口可以接着话题或换个新角度。",
-            latest.excerpt
+            redacted
         ),
         FeedbackKind::Ignored => format!(
             "上次你说「{}」，用户没回应 — 这次开口要更有钩子或干脆放短一点（甚至选择沉默）。",
-            latest.excerpt
+            redacted
         ),
         FeedbackKind::Dismissed => format!(
             "上次你说「{}」，用户**主动点掉了**气泡 — 比单纯没回应更明显的不感兴趣信号。这次开口要么换完全不同的话题，要么干脆沉默。",
-            latest.excerpt
+            redacted
         ),
     }
 }
@@ -419,26 +426,44 @@ mod tests {
         assert!(parse_line("").is_none());
     }
 
+    // R60: identity redact closure for tests — preserves text unchanged.
+    fn id_redact(s: &str) -> String {
+        s.to_string()
+    }
+
     #[test]
     fn format_feedback_hint_empty_returns_empty() {
-        assert_eq!(format_feedback_hint(&[]), "");
+        assert_eq!(format_feedback_hint(&[], &id_redact), "");
     }
 
     #[test]
     fn format_feedback_hint_replied_mentions_response() {
-        let h = format_feedback_hint(&[entry(FeedbackKind::Replied, "今天忙吗？")]);
+        let h = format_feedback_hint(&[entry(FeedbackKind::Replied, "今天忙吗？")], &id_redact);
         assert!(h.contains("用户回复了"));
         assert!(h.contains("今天忙吗"));
     }
 
     #[test]
     fn format_feedback_hint_ignored_mentions_no_response() {
-        let h = format_feedback_hint(&[entry(FeedbackKind::Ignored, "在忙工作？")]);
+        let h = format_feedback_hint(&[entry(FeedbackKind::Ignored, "在忙工作？")], &id_redact);
         assert!(h.contains("没回应") || h.contains("忽略"));
         assert!(
             h.contains("放短") || h.contains("沉默") || h.contains("钩子"),
             "must hint at adjustment direction"
         );
+    }
+
+    #[test]
+    fn format_feedback_hint_applies_redaction_to_excerpt() {
+        // R60: redact closure should be applied to the excerpt before
+        // injection. Test with a redact fn that replaces "项目X" with "(私人)".
+        let redact = |s: &str| s.replace("项目X", "(私人)");
+        let h = format_feedback_hint(
+            &[entry(FeedbackKind::Replied, "项目X 进展如何？")],
+            &redact,
+        );
+        assert!(h.contains("(私人)"));
+        assert!(!h.contains("项目X"));
     }
 
     #[test]
@@ -543,7 +568,7 @@ mod tests {
 
     #[test]
     fn format_feedback_hint_handles_dismissed_with_stronger_phrasing() {
-        let h = format_feedback_hint(&[entry(FeedbackKind::Dismissed, "在忙工作？")]);
+        let h = format_feedback_hint(&[entry(FeedbackKind::Dismissed, "在忙工作？")], &id_redact);
         assert!(h.contains("在忙工作？"));
         // Stronger phrasing — calls out active dismissal explicitly.
         assert!(h.contains("主动点掉"));
@@ -734,7 +759,7 @@ mod tests {
             entry(FeedbackKind::Ignored, "OLD utterance"),
             entry(FeedbackKind::Replied, "NEW utterance"),
         ];
-        let h = format_feedback_hint(&entries);
+        let h = format_feedback_hint(&entries, &id_redact);
         assert!(h.contains("NEW utterance"));
         assert!(!h.contains("OLD utterance"));
     }
