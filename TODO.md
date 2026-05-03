@@ -148,8 +148,12 @@
 ### 路线 R 后续候选（gap analysis 后写入，2026-05-03）
 - [x] R10：tone strip 加反馈率 chip（2026-05-03 完成 — Iter R10）
 - [x] R11：speech topic redundancy 检测器（2026-05-03 完成 — Iter R11）
-- [ ] R12：daily review 自动生成（22:00 触发器读 daily_plan + 当日 speech，写
-  ai_insights/daily_review，把"今天我们一起..."一句话总结写回 memory）
+- [x] R12：daily review 自动生成（2026-05-03 完成 — Iter R12 deterministic 版。22:00 后第一次
+  proactive tick 写 ai_insights/daily_review_YYYY-MM-DD：今日计划 + 今日开口 bullet list。
+  双重 idempotency：进程内 LAST_DAILY_REVIEW_DATE + 跨重启 index 存在性检查。11 单测）
+- [ ] R12b：LLM 一句话总结升级 — 从 deterministic 触发后，再用 silent LLM 调用
+  把 detail 转成"今天我们一起..." 自然语言开头。pet 早起开口可读到 yesterday review
+  的描述行，比纯 bullet list 更"伴侣感"
 - [x] R13：companion mode setting（2026-05-03 完成 — Iter R13。3 模式 balanced/chatty/quiet
   调 cooldown + chatty_threshold；前端 settings UI 留 R13b follow-up）
 - [x] R14：跨日记忆线（2026-05-03 完成 — Iter R14）

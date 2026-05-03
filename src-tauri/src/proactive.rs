@@ -22,6 +22,7 @@ use tokio::sync::Mutex as TokioMutex;
 // `crate::proactive::ReminderTarget` / `parse_reminder_prefix` paths.
 mod active_app;
 mod butler_schedule;
+mod daily_review;
 mod gate;
 mod prompt_assembler;
 mod prompt_rules;
@@ -30,6 +31,7 @@ mod telemetry;
 mod time_helpers;
 pub use self::active_app::*;
 pub use self::butler_schedule::*;
+pub use self::daily_review::*;
 pub use self::gate::*;
 pub use self::prompt_assembler::*;
 pub use self::prompt_rules::*;
@@ -856,6 +858,10 @@ async fn run_proactive_turn(
 
     let soul = get_soul().unwrap_or_default();
     let now_local = chrono::Local::now();
+    // Iter R12: silent end-of-day review write. Idempotent per day (LAST_DAILY_REVIEW_DATE
+    // + index existence check). Runs before the rest of the turn so the memory write
+    // happens even if the turn is later gated to Silent — the review is its own outcome.
+    maybe_run_daily_review(now_local).await;
     let idle_minutes = idle_seconds / 60;
     let input_hint = match input_idle_seconds {
         Some(secs) => format!("用户键鼠空闲约 {} 秒。", secs),
@@ -1446,6 +1452,84 @@ pub fn build_user_profile_hint() -> String {
         return String::new();
     }
     crate::redaction::redact_with_settings(&block)
+}
+
+/// Iter R12: bare description read of `ai_insights/daily_plan`. Used by the
+/// daily-review writer which needs the plan body without the prompt-hint
+/// header. Empty when nothing's been written. Stays unredacted because the
+/// review caller redacts at the bullet-line level.
+fn read_daily_plan_description() -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("ai_insights") else {
+        return String::new();
+    };
+    cat.items
+        .iter()
+        .find(|i| i.title == "daily_plan")
+        .map(|i| i.description.clone())
+        .unwrap_or_default()
+}
+
+/// Iter R12: index-existence check for cross-process-restart idempotency.
+/// LAST_DAILY_REVIEW_DATE only covers the current process; if the user
+/// restarts the app at 23:00 after the 22:00 review already wrote, the
+/// in-memory date is None and we'd otherwise re-fire. This catches that.
+fn daily_review_exists(title: &str) -> bool {
+    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
+        return false;
+    };
+    let Some(cat) = index.categories.get("ai_insights") else {
+        return false;
+    };
+    cat.items.iter().any(|i| i.title == title)
+}
+
+/// Iter R12: gate + write the end-of-day review. Idempotent per day via
+/// `LAST_DAILY_REVIEW_DATE` (in-process) + `daily_review_exists` (cross
+/// restart). Speech lines are redacted + timestamp-stripped before writing.
+/// Errors from `memory_edit` are swallowed — review is best-effort, not
+/// load-bearing for the proactive turn that called it.
+async fn maybe_run_daily_review(now_local: chrono::DateTime<chrono::Local>) {
+    use chrono::Timelike;
+    let today = now_local.date_naive();
+    let hour = now_local.hour() as u8;
+    let last = LAST_DAILY_REVIEW_DATE.lock().ok().and_then(|g| *g);
+    if !should_trigger_daily_review(hour, today, last) {
+        return;
+    }
+    let title = format!("daily_review_{}", today);
+    if daily_review_exists(&title) {
+        // Already on disk from a prior process — just mark in-memory and move on.
+        if let Ok(mut g) = LAST_DAILY_REVIEW_DATE.lock() {
+            *g = Some(today);
+        }
+        return;
+    }
+    // Cap at 100 entries — typical day is well under 30; bound just keeps the
+    // review file size sane on pathological cases.
+    let raw = crate::speech_history::speeches_for_date_async(today, 100).await;
+    let lines: Vec<String> = raw
+        .iter()
+        .map(|line| {
+            let stripped = crate::speech_history::strip_timestamp(line);
+            crate::redaction::redact_with_settings(stripped)
+        })
+        .collect();
+    let plan_raw = read_daily_plan_description();
+    let detail = format_daily_review_detail(&lines, &plan_raw, today);
+    let description = format_daily_review_description(lines.len(), !plan_raw.trim().is_empty());
+    let _ = crate::commands::memory::memory_edit(
+        "create".to_string(),
+        "ai_insights".to_string(),
+        title,
+        Some(description),
+        Some(detail),
+    );
+    if let Ok(mut g) = LAST_DAILY_REVIEW_DATE.lock() {
+        *g = Some(today);
+    }
 }
 
 /// Read the pet's own short-term plan from `ai_insights/daily_plan`. Returns the plan
