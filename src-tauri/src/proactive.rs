@@ -1402,11 +1402,20 @@ async fn run_proactive_turn(
             .ok()
             .and_then(|t| t.clone())
             .unwrap_or_default();
+        // Iter R25: classify outcome inline. Same condition the silent-marker
+        // check below uses — kept in sync so TurnRecord.outcome doesn't drift
+        // from the actual return path.
+        let outcome = if reply_trimmed.is_empty() || reply_trimmed.contains(SILENT_MARKER) {
+            "silent"
+        } else {
+            "spoke"
+        };
         g.push_back(TurnRecord {
             timestamp: ts,
             prompt: prompt.clone(),
             reply: reply.clone(),
             tools_used: tools_dedup,
+            outcome: outcome.to_string(),
         });
         while g.len() > PROACTIVE_TURN_HISTORY_CAP {
             g.pop_front();
