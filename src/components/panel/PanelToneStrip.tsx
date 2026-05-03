@@ -183,18 +183,23 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
         </span>
       )}
       {tone.last_prompt_chars !== null && (() => {
-        // R31: prompt size budget chip. Color bands match prompt budget
-        // perception — CJK conversational prompts hover in the 1500-3000
-        // range; >3000 is bloating territory. Useful for me-as-developer
-        // tuning prompt density iter-by-iter.
+        // R31 / R36: prompt size budget chip. Bands retuned in R36 based
+        // on R-series accumulated reality — R32→R35 added 4 hints,
+        // baseline shifted up. Original R31 thresholds (1500/3000) were
+        // calibrated before that and started flagging "normal" turns as
+        // orange. New bands:
+        //   < 2000  green  (lean — fewer hints fired this turn)
+        //   2000-3999 gray (normal — most hints firing)
+        //   ≥4000   orange (heavy — many composite signals + long
+        //           speech_hint bullets, audit which to drop next iter)
         const n = tone.last_prompt_chars;
         const bg =
-          n < 1500 ? "#16a34a"   // green: lean
-          : n < 3000 ? "#94a3b8" // gray: normal
+          n < 2000 ? "#16a34a"   // green: lean
+          : n < 4000 ? "#94a3b8" // gray: normal
           : "#d97706";           // orange: heavy
         return (
           <span
-            title={`上一次 proactive prompt 长度（chars，CJK-friendly）。绿 < 1500 / 灰 1500-2999 / 橙 ≥3000。当前 ${n} 字。R-series 累积 hint 让 prompt 越来越胖；这个 chip 是 budget 自检。`}
+            title={`上一次 proactive prompt 长度（chars，CJK-friendly）。绿 < 2000 / 灰 2000-3999 / 橙 ≥4000。当前 ${n} 字。R36 retuned: R-series 累积 hint 后 baseline 上移，原 1500/3000 阈值过严让常态显橙。新阈值给"hint 全 fire 时" 留 normal 空间，仅在异常胖时告警。`}
             style={{
               color: "#fff",
               background: bg,

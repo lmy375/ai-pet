@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R36 设计要点（已实现）
+- **absolute thresholds drift, percentile thresholds don't**：R31 阈值 (1500/3000) 是 absolute 数字。R-series 加 hint 后 baseline 上移，阈值过时。如果当时用 percentile（"prompt 比过去 80% 短" / "比过去 20% 长"），threshold 会跟着 baseline 一起移动 —— 不需手动 retune。**absolute thresholds = brittle，percentile/relative thresholds = self-adapting**。但 percentile 实现复杂（要历史数据、算分布）；R-series 项目里 absolute + 偶尔 retune 是更经济。每 5-10 iter audit 一次阈值是健康节奏。
+- **panel UI self-documents own evolution**：R36 hover 文案明示"R36 retuned: ..." 解释为什么这数。**threshold 不是 magic number，是设计决策**。把决策原因 inline 写进 panel hover 让未来的 maintainer / 自己 不需查 git log 就懂。这种 "self-documenting threshold" 是 long-running project 设计纪律 —— 数字旁边永远配 *为什么是这数字* 的解释。
+- **threshold retune iter 是 polish 周期的常态**：R-series 30+ iter 后核心结构 mature，不再加新轴线；后续多是这种"阈值微调 / 文案打磨 / chip 顺序优化" polish iter。**长系列 mature 期的 iter 尺寸应该缩小但保持节奏** — 大改动罕见，小调整保 codebase 健康。R32 deletion + R36 threshold retune 都是这种节奏。
+- **+1000 整数增量比精确算更干脆**：理论上能精确算"R32-R35 4 hints × 平均 X chars = Y bump"。但精算 noise 大（每 hint 字数取决于 input data）。**round number 易记忆且不假装精确** —— 选 +1000 是承认估算不精确，便于沟通。如果一个月后发现 +1000 不够 / 过头，再调一次也无负担。
+- **R31 IDEA "3 是甜蜜点" 持续践行**：R36 没拉到 4 段。诱惑是"加 ≥6000 红色 critical 段表达更细致"，但 chip 视觉空间有限，3 段 (lean / normal / heavy) 已经分类明确。**克制是 panel 设计的成熟度信号** —— 每多一段 = 多一种 cognitive 区分负担。R20 / R27 / R36 都用 3 段，应该 codify 作 default chip-segmentation count。
+- **iter 范围控制不 creep**：R36 完全没碰 chip 颜色 / icon / position / hover layout，只改阈值 const + 同步文案。诱惑是"既然在改 chip，顺便重写 hover 风格 / 加 emoji 装饰"。但 scope creep 让 iter 难以推理。**单 iter 单 atomic concern** 比 mixed iter 干净 —— 阈值调就只调阈值，UI 重写另起 iter。R32 IDEA 写过同样原则。
+- **R-series threshold 一致性是隐式 mental model**：R7 ratio 阈值 0.6/0.2，R-series streak 阈值都 3，feedback aggregate min sample 5，speech length thresh 25/8 —— 这些数字跨 iter 稳定。**变化的应该明显变化（如 R36 retune），稳定的应该明显稳定**。如果 R7 阈值随便调 0.6 → 0.55，认知锚就摇摆。**只有"baseline drift" 这种系统性原因才该 retune**，otherwise 数字不动。
+
 ## Iter R35 设计要点（已实现）
 - **mirror pair 完整 = closure**：R33/R34 给 pet 自我意识 ("我最近一直沉默")，R35 给 user-feedback 意识 ("用户最近一直拒绝")。两者完全对偶 —— pure fn 形态、threshold、UI chip 都 mirror。**Mirror feedback loops** 是 cognitive architecture 的 closure pattern：信号闭环既要 outbound（看用户）又要 inbound（看自己）。R26 + R33 第一次完成 mirror（aggregate vs streak 都两端均有），R35 把"trailing 维度" 也补全 mirror —— **mirror 的 mirror，对称完美**。
 - **同 sample threshold = mental model 锚**：3 出现在 R7 / R11 / R19 / R26 / R33 / R35。**项目内 "minimum confidence sample" 概念稳定 = 3**。当用户 / future maintainer 看到任意 R-series 阈值 3，知道意思是"够了不噪音"。如果每个子系统独立 tune，认知开销大。**跨子系统统一 magic numbers** 是反复践行的 IDEA。
