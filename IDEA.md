@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R13 设计要点（已实现）
+- **高层级 dial vs 低层级 knob**：cooldown_seconds + chatty_threshold 是工程师 mental model（"我想 30 分钟一次 + 5 句封顶"）。普通用户的 mental model 是"今天我希望宠物多说还是少说"。companion_mode 把后者直接 surface，前者作为底层用户可微调。两者并存的好处：高级用户精调，普通用户预设。
+- **String + fallback 比 enum 更宽容**：`enum CompanionMode { Balanced, Chatty, Quiet }` 看着 type-safe，但 (a) serde 序列化 enum 的 case-sensitivity 容易翻车（"Chatty" vs "chatty"）；(b) 用户手改 yaml 拼错 → reject 整个 settings 加载；(c) 未来加 mode 还要改 enum + serde。String + match + `_ =>` fallback 的代码 LOC 更少 + behavior 更宽容。这次选 String 是经过权衡的。
+- **`effective_*()` method on ProactiveConfig**：原本想各自 caller 调 `apply_companion_mode(&cfg.companion_mode, cfg.cooldown_seconds, cfg.chatty_day_threshold).1`。冗长 + 容易写错（拿 .0 vs .1）。method 把它封装成 cfg.effective_chatty_threshold() 一行。这是"对外暴露简单接口、隐藏内部协调" 的经典 OOP 优势。Rust 用 impl block 拿到同样收益。
+- **layered 设计：mode → R7 → 实际 cooldown**：用户 mode 选"chatty" → base 减半。然后实际跑了一段时间，R7 看到"用户其实经常忽略" → 在 mode 减半的 base 上再 ×2 还原回原值。两层叠加产生"用户想 chatty 但实际效果是 balanced" 的自适应行为。这种"高层意图 × 实测自适应" 是良好控制系统的健康架构。
+- **base=0 invariant 重申**：用户故意把 cooldown_seconds 设为 0（关闭 cooldown gate）后，无论 mode 怎么选都应该保持 0。`apply_companion_mode("chatty", 0, 0) -> (0, 0)` 通过整数除法自然成立，加 explicit test 钉死。同 R7 的 zero-base 处理。
+- **frontend UI 暂缺**：用户得手改 yaml 才能换 mode。这是 backend-first 路线的常见 trade-off — 后端契约稳定后，前端 dropdown 是 1-day iter（label / option / save → 调 save_config_raw）。R13b 留位。
+
 ## Iter R11 设计要点（已实现）
 - **machine 检测 vs LLM 自觉**：speech_hint 已经把过去 5 条 bullet list 给 LLM 看了，原则上 LLM 应该自觉避免重复。但实践中 LLM 在 prompt 整体很长时容易忽略 bullet list 的内容（"我看到了但没真的对照"）。R11 用机器代替 LLM 做对照，给出**结构化警报** "你说了 N 次 X" — 比让 LLM 自审更强信号。这是"explicit 比 implicit 强" 在 prompt 设计中的应用。
 - **char ngram 是 Chinese-friendly 的 lazy tokenization**：jieba / pkuseg 之类真分词依赖外部库 + Chinese training data + 大量启动成本。4-char sliding window 是 0-deps 的"足够好" 近似 — 4-gram 在 Chinese 里对应"双词组"的 95% 情况（"工作进展" / "项目早会" / "周末计划" 等）。stop-word 过滤通过 whitespace/uniform-char skip 简单规避。这种"用编程语言原生工具做 80% 的工作" 在多语言场景下经常优于"上重型 NLP 库"。

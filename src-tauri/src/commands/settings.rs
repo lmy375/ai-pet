@@ -104,6 +104,14 @@ pub struct ProactiveConfig {
     /// 0 disables the rule entirely (pet never gets a chatty-day nudge).
     #[serde(default = "default_chatty_day_threshold")]
     pub chatty_day_threshold: u64,
+    /// Iter R13: high-level companion temperament preset. One of `"balanced"`
+    /// (default — honor the explicit cooldown / chatty values above),
+    /// `"chatty"` (cooldown × 0.5, chatty threshold × 2), or `"quiet"`
+    /// (cooldown × 2.0, chatty threshold × 0.5). Lets users dial overall
+    /// "how much should the pet speak today?" without tuning two numbers.
+    /// Unknown values are treated as `"balanced"`.
+    #[serde(default = "default_companion_mode")]
+    pub companion_mode: String,
 }
 
 fn default_proactive_interval() -> u64 {
@@ -136,6 +144,56 @@ fn default_respect_focus_mode() -> bool {
 
 fn default_chatty_day_threshold() -> u64 {
     5
+}
+
+fn default_companion_mode() -> String {
+    "balanced".to_string()
+}
+
+/// Iter R13: high-level companion-mode coefficients. Pure helper — given a
+/// mode string and the user's base cooldown_seconds + chatty_day_threshold,
+/// returns the effective values the gate should honor. Unknown modes
+/// degrade to `"balanced"` (return base unchanged) so a typo / missing
+/// field doesn't break the loop.
+///
+/// Returns `(effective_cooldown, effective_chatty)`. Math is integer
+/// (`base × num / den`) so 0 stays 0 — preserves user's explicit opt-out
+/// of either gate, same way `adapted_cooldown_seconds` does.
+pub fn apply_companion_mode(mode: &str, base_cooldown: u64, base_chatty: u64) -> (u64, u64) {
+    match mode {
+        "chatty" => (base_cooldown / 2, base_chatty.saturating_mul(2)),
+        "quiet" => (base_cooldown.saturating_mul(2), base_chatty / 2),
+        _ => (base_cooldown, base_chatty), // balanced or unknown
+    }
+}
+
+impl ProactiveConfig {
+    /// Iter R13 convenience: chatty-day threshold after applying
+    /// companion_mode. Use this anywhere the prompt / gate / panel
+    /// compares today_speech_count against the threshold so all four
+    /// surfaces honor the user's mode choice consistently.
+    pub fn effective_chatty_threshold(&self) -> u64 {
+        apply_companion_mode(
+            &self.companion_mode,
+            self.cooldown_seconds,
+            self.chatty_day_threshold,
+        )
+        .1
+    }
+
+    /// Iter R13 convenience: cooldown after applying companion_mode but
+    /// *before* R7's ratio-driven adaptation. The gate path layers
+    /// `adapted_cooldown_seconds` on top of this; other readers (panel
+    /// chip, snapshot tooltips) can use this directly when they want the
+    /// "base after user dial" without the feedback-ratio fine-tune.
+    pub fn effective_cooldown_base(&self) -> u64 {
+        apply_companion_mode(
+            &self.companion_mode,
+            self.cooldown_seconds,
+            self.chatty_day_threshold,
+        )
+        .0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +291,7 @@ impl Default for ProactiveConfig {
             quiet_hours_end: default_quiet_hours_end(),
             respect_focus_mode: default_respect_focus_mode(),
             chatty_day_threshold: default_chatty_day_threshold(),
+            companion_mode: default_companion_mode(),
         }
     }
 }
@@ -404,4 +463,54 @@ pub fn save_soul(content: String) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
     }
     fs::write(&path, content).map_err(|e| format!("Failed to write SOUL.md: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- Iter R13: apply_companion_mode --------------------------------------
+
+    #[test]
+    fn apply_companion_mode_balanced_returns_base_unchanged() {
+        assert_eq!(apply_companion_mode("balanced", 1800, 5), (1800, 5));
+    }
+
+    #[test]
+    fn apply_companion_mode_chatty_halves_cooldown_and_doubles_chatty() {
+        // Chatty mode = "speak more freely": shorter gap between turns,
+        // higher threshold before "chatty today" rule kicks in.
+        assert_eq!(apply_companion_mode("chatty", 1800, 5), (900, 10));
+    }
+
+    #[test]
+    fn apply_companion_mode_quiet_doubles_cooldown_and_halves_chatty() {
+        // Quiet mode = "speak less": longer gap, lower threshold (chatty
+        // rule fires sooner so the pet self-restrains earlier).
+        assert_eq!(apply_companion_mode("quiet", 1800, 5), (3600, 2));
+    }
+
+    #[test]
+    fn apply_companion_mode_unknown_falls_back_to_balanced() {
+        // Typo / missing field — don't punish the user with surprise behavior.
+        assert_eq!(apply_companion_mode("typo", 1800, 5), (1800, 5));
+        assert_eq!(apply_companion_mode("", 1800, 5), (1800, 5));
+    }
+
+    #[test]
+    fn apply_companion_mode_zero_base_stays_zero() {
+        // User-explicit cooldown=0 (no gate) must NOT be re-enabled by mode.
+        // Same invariant as feedback_history::adapted_cooldown_seconds.
+        assert_eq!(apply_companion_mode("chatty", 0, 0), (0, 0));
+        assert_eq!(apply_companion_mode("quiet", 0, 0), (0, 0));
+    }
+
+    #[test]
+    fn apply_companion_mode_quiet_overflow_clamps_via_saturating() {
+        // Quiet mode multiplies cooldown by 2; saturating_mul ensures we
+        // don't wrap at u64::MAX. (Not realistic in production but the
+        // contract should be safe.)
+        let (cooldown, _) = apply_companion_mode("quiet", u64::MAX, 5);
+        assert_eq!(cooldown, u64::MAX, "saturating_mul keeps it pinned");
+    }
 }

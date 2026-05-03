@@ -2,6 +2,35 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R13：companion mode 高层级温度预设
+- 现状缺口：用户想"今天宠物多说一些"或"今天宠物安静一些" 没有简单 dial。改 cooldown_seconds 是低层级旋钮（用户得知道 1800 秒 vs 900 秒意味着什么）。chatty_day_threshold 也是。需要"温度预设" 高层级抽象。
+- 解法 — 三档预设：
+  - 新 settings 字段 `companion_mode: String`，默认 `"balanced"`，可选 `"chatty"` / `"quiet"`
+  - 纯函数 `apply_companion_mode(mode, base_cooldown, base_chatty) -> (u64, u64)`：
+    - balanced（或 unknown）→ 返 base 不变
+    - chatty → cooldown × 0.5 (saturating /2), chatty × 2 (saturating_mul)
+    - quiet → cooldown × 2 (saturating), chatty × 0.5
+    - base=0 始终返 0（保 R7 的 user-explicit-opt-out invariant）
+  - `impl ProactiveConfig { effective_chatty_threshold(), effective_cooldown_base() }` 两个 method 让 4 个调用方自然写 `cfg.effective_chatty_threshold()` 不用知道 mode 细节
+- 集成 — 4 个 chatty_threshold 调用点全切到 `effective_chatty_threshold()`：
+  - run_proactive_turn 顶部（构造 prompt）
+  - trigger_proactive_turn manual chatty_part 计算
+  - get_tone_snapshot panel
+  - evaluate_loop_tick dispatch-time chatty_tag
+- 集成 — gate.rs：原本 inline `apply_companion_mode(...).0`, 改成 `cfg.effective_cooldown_base()` 一行；R7 ratio adapter 在这之上 layered
+- 决策 — 不引入 enum：String 简单；`#[serde(default)]` + `_ => balanced` fallback 让"未知值"降级为 balanced，user 改字符串不会 panic 或 reject。比 enum + custom serde 干净 50%。
+- 决策 — 不加第 4-5 个模式（coaching / silent_present）：3 档够覆盖典型用户需求 + 减少 UI 复杂度。如果将来收到"我想要更细" 反馈再加。silent_present 可以让用户直接关 enabled 实现。
+- 决策 — frontend UI 留 follow-up：本 iter 重点是 backend 行为正确 + tests 完整。settings.yaml 改字符串就生效，而 panel UI 加 dropdown 是独立小 iter。
+- 测试（6 新单测）：
+  - balanced returns base unchanged
+  - chatty halves cooldown + doubles chatty
+  - quiet doubles cooldown + halves chatty
+  - unknown / empty falls back to balanced
+  - zero base stays zero (R7-style opt-out invariant)
+  - quiet overflow clamps via saturating_mul (u64::MAX edge)
+- 测试结果：400 cargo（+6）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：用户在 settings.yaml 加一行 `companion_mode: chatty`（或 quiet）就把整体节奏拨快/拨慢。R7 ratio adapter 在 mode 之上 layered → "我想 chatty + 但今天总被忽略 → 自动调回常规" 这种自适应行为成立。
+
 ## 2026-05-03 — Iter R11：speech topic redundancy 检测器 + 注入 proactive prompt
 - 现状缺口：proactive prompt 已经有 speech_hint（最近 5 条 bullet list）告诉 LLM"看一下避免重复"，但仍然依赖 LLM 自己审视并自觉换话题。如果模型在某 4-5 个 turn 都聊"工作进展"，prompt 没有显式的"重复警报"，LLM 可能仍重复。R11 加一个**机器检测** 层强制将"重复出现的字符 4-gram"作为 hint 注入。
 - 解法 — pure helper + prompt 注入：
