@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cv：redaction 计数 + panel "Redact M/N" chip
+- 在 `redaction.rs` 加两个 process-wide static atomic：`REDACTION_CALLS` / `REDACTION_HITS`。`redact_with_settings` 每次调用 fetch_add CALLS；当 `output != input`（即至少一个 pattern 命中并替换了内容）fetch_add HITS。
+- 静态而非 ProcessCounters：`redact_with_settings` 在 sync 路径被多处调用（`inject_mood_note`、`build_persona_hint` 等）这些位置没有 Tauri AppHandle / ProcessCountersStore 访问。静态 atomic 让任何代码路径都能 bump，零 wiring。
+- 新 Tauri commands `get_redaction_stats / reset_redaction_stats`，返 `RedactionStats { calls, hits }`。
+- 前端 `panelTypes.ts` 加 RedactionStats interface；PanelDebug fetch + state + 重置 handler。PanelChipStrip 在 prompt-tilt chip 之后插入"Redact M/N (X%)" chip：
+  - hits > 0 → 青色 `#0d9488`（隐私过滤在干活）
+  - hits = 0 但 calls > 0 → 灰 `#94a3b8`（filter 配置但没东西匹配，可能是 patterns 太严或没 leak 内容）
+  - calls = 0 → chip 不渲染（与其他 chip 一致）
+- tooltip 解释 calls vs hits 含义 + 调试方向（hits 突变可作 patterns 过松/过紧的反馈）。
+- 1 个新单测：RedactionStats serde 序列化包含 `calls` / `hits` 字段。两个 static atomic 的实际计数行为不写测试——多 test 同进程会互相 perturb，且行为是 trivial fetch_add；通过 redact_text / redact_regex 已有 14 个单测保障核心逻辑。
+- 现在 panel 工具栏 7 个 chip 全部 wired：Cache / Tag / LLM沉默 / 环境感知 / 倾向 / Redact / prompt hints。隐私过滤从"配置后看不出有没有用"变成"看到 N/M 数字才信任过滤生效"。
+- 229 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter Cz：redaction 加正则模式（信用卡 / 邮箱 / 任意结构化敏感词）
 - 加 `regex = "1"` 依赖（RE2-style 引擎，线性时间，无 backreference→天然 ReDoS 安全）。
 - `PrivacyConfig` 加 `regex_patterns: Vec<String>` 字段（serde default 空 Vec），与既有 `redaction_patterns`（子串）并列。

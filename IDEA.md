@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter Cv 设计要点（已实现）— redaction 命中可视化
+- **静态 atomic 而非 ProcessCounters**：`redact_with_settings` 调用方多数没有 ToolContext 或 AppHandle（`inject_mood_note` 是 sync 函数，`build_persona_hint` 同理）。要么改所有调用方 plumbing（上游 5 处全改 + 测试 churn），要么用全局 static atomic。后者写一次零 plumbing。Atomic 是 Send + Sync 默认，多线程访问安全。
+- **calls vs hits 双计数而非单计数**：单 hits 计数不够——用户看 "命中 5 次" 不知道 calls 是 5（100% 命中→ patterns 过松）还是 1000（0.5% 命中→正常环境干扰）。两个数字才能让用户判断过滤行为是否合理。
+- **hits = "input != output"** 而非 "n_replacements"：定义为粗粒度二元（这次有没有任何 pattern 命中），不算具体替换次数。简单 + 用户语义清晰（"这次 redact 起作用了"）。如果将来想细粒度（每个 pattern 命中多少次），再加分组 atomic。
+- **chip 颜色三态**：hits > 0 青色（filter 在干活）/ hits = 0 灰色（calls > 0 但没东西匹配，可能 patterns 太严或环境干净）/ calls = 0 不渲染。三态让用户一眼知道"过滤器在不在跑 vs 跑没跑出东西"。
+- **跨重启不持久**：与其他 ProcessCounters 一致——重启清零让用户能针对一段使用窗口测量 redaction 频率。如果想看"过去 30 天 redact 多少"需要文件持久化（类似 speech_daily），不在本 iter 范围。
+- **不写计数行为测试**：static atomic 在同进程内被多 test 共享，cargo test 默认并发会让"调用 N 次 → 期望计数 N"的断言不可靠。RedactionStats 的 serde 测试 + 既有 redact_text/redact_regex 14 个测试保障核心。如果将来 atomic 行为出现 bug，加 thread-local 或测试 fixture 隔离。
+- **路线 C 闭环 v3**：v1 子串 + v2 正则 + v3 命中可视化 = 用户能"配置→验证→调整"完整循环。下一阶段路线 C 候选：每 pattern 单独命中计数（panel 显示哪条 pattern 真正生效），但需要先看用户反馈再决定是否值得。
+
 ## Iter Cz 设计要点（已实现）— 路线 C 加正则维度
 - **regex crate 而非自写正则**：Rust `regex` crate 是 RE2-style——线性时间复杂度、不支持 backreference、不支持 lookaround。这些限制是 ReDoS 防御的核心：传统 PCRE 的灾难性回溯需要 backreference / 嵌套捕获组才能成立。用 `regex` crate 不需要单独做 ReDoS 防御，写多复杂的正则都不会让宠物卡死。
 - **每次重新编译而非 cache**：理论上可以缓存 `Regex` 对象。但 redaction 频率低（每次工具调用 / 每次 prompt 构建），编译成本是微秒级。缓存意味着维护 invalidation——用户改 settings 后旧 regex 不能继续用。简单重编译保正确性。
