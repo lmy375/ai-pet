@@ -30,6 +30,19 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 94 设计要点（已实现）
+- **4 类而非 2 类**：本可以二分 restraint/engagement，但 corrective（处理过去模式）和 instructional（具体操作步骤）都不是单纯的"压制"或"激发"。corrective 是"过去做错了，未来这样做"——半教训半行动；instructional 是"做这件事的时候按某种格式做"——技术细节。强行塞入 restraint/engagement 二元会丢失这两类的特殊价值。
+- **配色对应情绪谱系**：克制 = 红（停一下）、引导 = 绿（前进）、校正 = 橙（注意）、操作 = 青（中性技术）。和 panel 既有色系不冲突——quiet-soon 用红、Spoke 决策日志用绿、克制模式 badge 用橙、cache stat 用青——四个 nature 复用既定语义。
+- **聚合行 + 行内 badge 双层冗余**：聚合行让用户扫顶部就知道整体（"5 条里 3 条是克制"），行内 badge 让用户眼睛沿着列表向下移动时不丢上下文（每行哪类一目了然）。看似冗余，但分别服务"整体感知"和"逐条审视"两种使用模式。
+- **nature 在前端而非 backend**：nature 是 UI 概念（用于展示分类）。backend 关心"哪些规则活跃"，UI 关心"如何呈现"。和 title/summary 一样放前端字典，未来加多语言或重新分类不动 backend。如果将来 backend 需要 nature 做决策（比如"如果克制规则 ≥ 3 条则强制 silent"），再考虑迁到 backend。
+- **不引入第 5 个 nature**：考虑过 "encouragement"（区别于 engagement）、"informational"（区别于 instructional），但当前 10 条规则都能干净落入 4 类。增加分类容易把"分类"变成"为了分而分"。
+- **每条规则的 nature 选择需要思考**：
+  - icebreaker 表面上是 instructional（"问什么样的问题"），但核心精神是"避免 info-dense 话题"——是 restraint。我把它归到 restraint。
+  - wake-back 提示要 "简短克制" 是关键词，restraint。
+  - reminders 是"传达 + 删除"，二者都是具体操作，instructional。
+  - 如果将来某条规则同时具备多个 nature（如 chatty 又克制又教如何说），可以引入数组类型，但现在还没必要。
+- **不加 cargo test 守护 nature 字段**：Iter 89/90/91 已经守 label 对齐和 match arm，nature 是字典 metadata，缺失只影响 UI 展示美观度（fallback 为 "?" badge），不影响 prompt 行为。如果未来想严格守护，可加扫 PROMPT_RULE_DESCRIPTIONS 看每个 entry 是否有 nature 字段——但当前规模不必要。
+
 ## Iter 93 设计要点（已实现）
 - **None == long-idle 的语义选择**：从未开口（None）当作 long-idle 处理。理由：fresh session 时用户面对一个完全没说话过的宠物，宠物自己应该开第一口；如果 None 当作"未知，不触发"反而把 first-session 用户排除在外。这条规则的精神是"沉默太久"——None 是"沉默无穷大"，应该最满足条件。
 - **三参数门槛设计**：long-idle && under_chatty && !pre_quiet。三者都得满足才积极开口——单 long-idle 触发会跟 chatty / pre-quiet 冲突（已经聊够了 / 该睡了），过于鲁莽。三因素叠加才是真正的"安全开口窗口"。
