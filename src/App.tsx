@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Live2DCharacter } from "./components/Live2DCharacter";
 import { ChatBubble } from "./components/ChatBubble";
 import { ChatPanel } from "./components/ChatPanel";
@@ -39,6 +40,38 @@ function App() {
     const t = setTimeout(() => setBubbleDismissed(true), 60_000);
     return () => clearTimeout(t);
   }, [displayMessage, showBubble, isLoading]);
+
+  // Iter R45: count proactive messages that arrived while pet is auto-hidden
+  // (bubble suppressed via `visible={... && !hidden && ...}`). Tab indicator
+  // renders a badge when count > 0 so user sees "pet has unread things to
+  // say". Resets when hidden flips false (user mouse-entered → pet returned
+  // → bubble can now show next message normally).
+  //
+  // Why a ref + setState pair: the listener inside useEffect captures
+  // `hidden` only at mount; using a ref lets the listener always read the
+  // latest value without re-subscribing on every hidden flip.
+  const hiddenRef = useRef(hidden);
+  useEffect(() => {
+    hiddenRef.current = hidden;
+  }, [hidden]);
+  const [unreadWhileHidden, setUnreadWhileHidden] = useState(0);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await listen("proactive-message", () => {
+        if (hiddenRef.current) {
+          setUnreadWhileHidden((n) => n + 1);
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+  // Clear badge when pet un-hides (user is now seeing pet again).
+  useEffect(() => {
+    if (!hidden) setUnreadWhileHidden(0);
+  }, [hidden]);
 
   const handleBubbleClick = useCallback(() => {
     const shownAt = bubbleShownAt.current;
@@ -144,6 +177,35 @@ function App() {
                 borderRight: "6px solid rgba(255,255,255,0.8)",
               }}
             />
+            {/* Iter R45: unread badge — appears when pet spoke ≥1 time while
+                auto-hidden. Position top-right of tab so it doesn't fight
+                with the centered arrow. Number capped at 9+ so single
+                badge stays small at very chatty days. */}
+            {unreadWhileHidden > 0 && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "-4px",
+                  right: "-4px",
+                  minWidth: "14px",
+                  height: "14px",
+                  padding: "0 3px",
+                  background: "#dc2626",
+                  color: "#fff",
+                  fontSize: "10px",
+                  fontWeight: 700,
+                  borderRadius: "7px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  border: "1.5px solid #fff",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                }}
+                title={`pet 在隐藏期间主动开口了 ${unreadWhileHidden} 次（mouse-enter 让 pet 回来后会自动消失）`}
+              >
+                {unreadWhileHidden > 9 ? "9+" : unreadWhileHidden}
+              </div>
+            )}
           </div>
         </>
       )}
