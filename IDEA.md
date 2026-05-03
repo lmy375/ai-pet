@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter TR1 设计要点（已实现）
+- **TR 系列前置 = 给 risk decisioning 提供数据源**：TR2（risk assessment）和 TR3（人工审核 gate）的输入都包含 purpose。如果不先做 TR1，后续 risk_level 决策只能基于工具名 + args，缺少最关键的"模型为什么调它"。先建立 protocol 让数据就位，再决定怎么用。
+- **purpose 进 args 而不是 outer field**：OpenAI 和 Anthropic 的 tool calling 协议，`function.arguments` 是 LLM 唯一可控的 JSON。把 purpose 放进 args 让 LLM 通过现有协议传递，零网络/序列化改动；放到 outer 字段需要 wrapper 扩展协议层，跨 MCP 还要协调。
+- **recoverable error 设计很关键**：第一次写时考虑 hard error（return Err 给 caller），但那意味着第一轮 tool call 的 LLM 错误会让整个 chat 失败。改成 synthetic tool result 后，LLM 在自己的对话里看到 error JSON + hint，自然就在下一轮纠正。这是 LLM-loop pattern 里"用工具结果做协议"的优雅一面。
+- **`deny_unknown_fields` 不存在 = purpose 字段对所有工具透明**：搜了下 src/tools 没人用 `#[serde(deny_unknown_fields)]`，所有工具的 args 解析都是 `args["x"].as_str()` 风格，extra `purpose` 自动忽略。如果未来有人加 deny_unknown_fields，pipeline gate 会先剥 purpose 再传给 tool 是可能的下一步——但目前不必要。
+- **prompt-level "强制 / 必须" 措辞**：之前的 TOOL_USAGE_PROMPT 教 butler / user_profile 用"应该 / 可以" 偏建议性语气；purpose 是协议级要求，必须用"强制 / 必须" 让 LLM 第一轮就执行。和 QG2 的"硬上限" 同理——基础设施级 invariant 用强语气。
+- **未做：前端 purpose 展示**：TODO 原本要求"前端 ToolCallBlock / debug panel 展示 purpose"。决策延后到 TR2/TR3 一起做。理由：(a) purpose 现在已经在 sink.send_tool_start 的 args 字符串里了，前端 parse 一下就能拿到；(b) 但要做得好需要 UI 设计（purpose tooltip / inline / collapsed），不是几行 patch；(c) 协议先就位，UI 可以独立迭代不阻塞 TR2。
+
 ## Iter QG6 设计要点（已实现）
 - **跳过 QG5 (拆 proactive.rs)**：proactive.rs 现在 4500+ 行，按 gate / prompt rules / reminders / butler / telemetry 切是合理重构，但对单 iter 太重——纯移动代码 + 保持 API 稳定 + 每步跑测试是 multi-iter 工作。先做 QG6（contained scope，纯改前后端 IPC 协议）保留 QG5 等专门 session。
 - **聚合命令而非"少 polling"**：另一个解法是把 1 Hz polling 降到 5 Hz 或 push-based。但 (a) 1 Hz refresh 是 panel UX 重要（数字跳动让用户感觉 alive）；(b) push-based 需要 Tauri Channel/Event 改造，是大动作。聚合命令是"改 protocol 不改频率"——保留 UX，砍掉只有 IPC 序列化的损耗。
