@@ -277,6 +277,13 @@ pub struct AppSettings {
     pub chat: ChatConfig,
     #[serde(default)]
     pub privacy: PrivacyConfig,
+    /// Iter Cτ: how the pet should address its owner. Empty = no name known
+    /// (persona layer omits the line, LLM uses 「你」 default). Non-empty:
+    /// injected as「你的主人是「X」」into the persona layer so the LLM can
+    /// occasionally call the user by name. Plain string — no validation; if
+    /// users put weird values they'll see them echoed.
+    #[serde(default)]
+    pub user_name: String,
 }
 
 fn default_model_path() -> String {
@@ -304,6 +311,7 @@ impl Default for AppSettings {
             memory_consolidate: MemoryConsolidateConfig::default(),
             chat: ChatConfig::default(),
             privacy: PrivacyConfig::default(),
+            user_name: String::new(),
         }
     }
 }

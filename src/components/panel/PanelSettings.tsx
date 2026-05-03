@@ -60,6 +60,7 @@ export function PanelSettings() {
       redaction_patterns: [],
       regex_patterns: [],
     },
+    user_name: "",
   });
   const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);

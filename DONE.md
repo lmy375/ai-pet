@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cτ：settings.user_name + persona_layer 称呼注入
+- 现状缺口：宠物没有第一类的"主人名字"概念。SOUL.md 默认「叫主人」、persona_layer 用「你」、proactive prompt 全程「ta / 用户」。即使 user_profile 里手动写了名字，那也是嵌在 description 里要 LLM 自己 search 才能用。"我的宠物认识我、能叫我名字"这种最基本的关系绑定 affordance 缺失。
+- 解法：加一个 settings 里的 `user_name` 字段，注入 persona_layer 顶部。
+  - `AppSettings.user_name: String`（默 ""，serde default 空字符串）
+  - `format_persona_layer` 第 4 个参数 `user_name: &str`，非空 trim 后 prepend 一条 `你的主人是「X」——开口时可以用这个称呼或「你」自然交替，不必每句都喊名字`
+  - 顺序：user_name 行 → companionship 行 → persona_summary → mood_trend → tail。即"先告诉你跟谁、再说陪伴时长、再说自我画像、再说情绪走向"——从最具象到最抽象。
+  - `build_persona_layer_async` 拉 settings.user_name 喂给 helper。
+- 前端：
+  - `useSettings.ts`：AppSettings interface + DEFAULT_SETTINGS 加 `user_name: ""`
+  - `PanelSettings.tsx`：state 默认 user_name = ""
+  - `SettingsPanel.tsx`：加输入框「你的名字 (宠物会用它称呼你)」，placeholder「留空则用「你」」，紧跟在 SOUL.md 之后（identity 区聚拢）
+- 4 个 format_persona_layer 既有测试更新成 4-arg；3 个新测试覆盖 user_name 设了 / whitespace-only 视为空 / trim 前后 whitespace。测试总数 295 → 298。
+- proactive prompt 路径暂不接 user_name——build_persona_hint 是不同函数。reactive chat + Telegram 走 persona_layer，覆盖了主要对话面；proactive 也想用名字的话留作后续 Cυ 之类。
+- 效果：用户在设置里填上自己名字，下一次 reactive chat 宠物 system prompt 里就有「你的主人是「moon」」，LLM 会偶尔用名字称呼。Telegram bot 同理（因为 persona_layer_enabled 默开）。proactive 仍用「你」直到后续迭代扩展。
+- 不引入 nickname / 多用户支持：单用户前提（macOS 桌面宠物天然单 owner），保持 schema 简单。
+
 ## 2026-05-03 — Iter Cσ：reactive chat 的 user_profile 捕捉引导
 - 现状缺口：Iter Cα 把 user_profile 作为 ambient hint 注入 proactive prompt——但前提是 user_profile 里**有内容**。注入侧 OK 了，**捕捉侧**没有显式教学。LLM 听到「我每天 8 点起床」时全靠自己判断要不要 memory_edit create——而 reactive chat 大量这类 stable facts 被吸收进对话回复后就没了，下次再问还要问。Cι 教了 butler_tasks 委托，对称的"用户主动告知 stable fact 时该捕捉"完全空白。
 - 解法：在 TOOL_USAGE_PROMPT「任务委托判断」之后加一个新段「用户偏好捕捉（user_profile）」：

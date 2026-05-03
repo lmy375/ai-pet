@@ -96,6 +96,14 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
           style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
         />
 
+        <label style={sectionLabel}>你的名字 (宠物会用它称呼你)</label>
+        <input
+          value={form.user_name}
+          onChange={(e) => setForm({ ...form, user_name: e.target.value })}
+          placeholder="留空则用「你」"
+          style={inputStyle}
+        />
+
         <div style={groupHeaderStyle}>主动开口 (Proactive)</div>
 
         <label style={checkboxRow}>

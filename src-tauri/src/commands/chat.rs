@@ -100,9 +100,22 @@ pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 /// Always emits the companionship line (day 0 has its own framing); persona summary
 /// and mood-trend are appended only when their respective sources have produced
 /// content. Closes with a guidance tail asking the LLM to absorb these into tone
-/// rather than echo them back to the user verbatim.
-pub fn format_persona_layer(days: u64, persona: &str, mood_trend: &str) -> String {
-    let mut parts: Vec<String> = vec![crate::proactive::format_companionship_line(days)];
+/// rather than echo them back to the user verbatim. Iter Cτ: optional `user_name`
+/// is prepended when set so the LLM can address the owner by name.
+pub fn format_persona_layer(
+    days: u64,
+    persona: &str,
+    mood_trend: &str,
+    user_name: &str,
+) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+    if !user_name.trim().is_empty() {
+        parts.push(format!(
+            "你的主人是「{}」——开口时可以用这个称呼或「你」自然交替，不必每句都喊名字。",
+            user_name.trim()
+        ));
+    }
+    parts.push(crate::proactive::format_companionship_line(days));
     if !persona.trim().is_empty() {
         parts.push(persona.trim().to_string());
     }
@@ -124,7 +137,10 @@ pub async fn build_persona_layer_async() -> String {
     let days = crate::companionship::companionship_days().await;
     let persona = crate::proactive::build_persona_hint();
     let trend = crate::mood_history::build_trend_hint(50, 5).await;
-    format_persona_layer(days, &persona, &trend)
+    let user_name = crate::commands::settings::get_settings()
+        .map(|s| s.user_name)
+        .unwrap_or_default();
+    format_persona_layer(days, &persona, &trend, &user_name)
 }
 
 /// Inject the persona-layer system note into a chat message list. Uses the same
@@ -687,7 +703,7 @@ mod trim_tests {
 
     #[test]
     fn format_persona_layer_includes_companionship_at_day_zero() {
-        let body = format_persona_layer(0, "", "");
+        let body = format_persona_layer(0, "", "", "");
         assert!(body.starts_with("[宠物的长期人格画像]"));
         assert!(body.contains("第一天"));
         // Tail guidance always present so the LLM is told how to use the section.
@@ -696,7 +712,7 @@ mod trim_tests {
 
     #[test]
     fn format_persona_layer_includes_persona_when_set() {
-        let body = format_persona_layer(30, "我倾向短句，话题偏当下场景。", "");
+        let body = format_persona_layer(30, "我倾向短句，话题偏当下场景。", "", "");
         assert!(body.contains("30 天"));
         assert!(body.contains("我倾向短句"));
         assert!(!body.contains("情绪谱"));
@@ -708,6 +724,7 @@ mod trim_tests {
             45,
             "",
             "你最近 30 次心情记录里：Tap × 12、Idle × 10。",
+            "",
         );
         assert!(body.contains("45 天"));
         assert!(body.contains("Tap × 12"));
@@ -719,6 +736,7 @@ mod trim_tests {
             120,
             "我倾向短句。",
             "你最近 50 次心情记录里：Tap × 30、Flick × 15。",
+            "",
         );
         assert!(body.contains("120 天"));
         assert!(body.contains("我倾向短句"));
@@ -735,11 +753,35 @@ mod trim_tests {
     fn format_persona_layer_blank_inputs_still_safe() {
         // Whitespace-only persona/trend should be treated as absent — no empty
         // sections injected into the system note.
-        let body = format_persona_layer(7, "   \n  ", "\t");
+        let body = format_persona_layer(7, "   \n  ", "\t", "");
         assert!(body.contains("7 天"));
         // Body should have header + companionship + tail = 3 sections joined by \n\n.
         let blocks: Vec<&str> = body.split("\n\n").collect();
         assert_eq!(blocks.len(), 3, "unexpected block count: {:#?}", blocks);
+    }
+
+    #[test]
+    fn format_persona_layer_includes_user_name_when_set() {
+        // Iter Cτ: user_name should prepend a "你的主人是「X」" line and sit before
+        // the companionship line so the LLM reads "who I'm with" before "how long".
+        let body = format_persona_layer(30, "", "", "moon");
+        assert!(body.contains("你的主人是「moon」"));
+        let p_user = body.find("你的主人是").unwrap();
+        let p_companion = body.find("30 天").unwrap();
+        assert!(p_user < p_companion);
+    }
+
+    #[test]
+    fn format_persona_layer_omits_user_name_when_empty() {
+        // Whitespace-only user_name treated as absent — no awkward "「  」" line.
+        let body = format_persona_layer(30, "", "", "   ");
+        assert!(!body.contains("你的主人是"));
+    }
+
+    #[test]
+    fn format_persona_layer_trims_user_name_whitespace() {
+        let body = format_persona_layer(30, "", "", "  moon  ");
+        assert!(body.contains("你的主人是「moon」"));
     }
 
     #[test]
