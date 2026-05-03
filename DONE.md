@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D12：surface "proactive 已关" 状态 — 关闭 disabled gate 可见性
+- 现状缺口：D10 + D11 完成 awaiting / cooldown 可视化和修复，但还有一个 gate 没暴露：disabled 自身。当 `settings.proactive.enabled = false` 时，整个 proactive 引擎 silent—不会有 Silent / Skip / Run 的 decision_log 条目，所有 chip 都按字面状态显示，但 gate 永不放行。结果：用户关了开关后忘记，半天没听到宠物说话以为 bug。这是 7 个 gate 中最后一个无 panel 提示的。
+- 解法（D series 模板复用第十二次）：
+  - `ToneSnapshot.proactive_enabled: bool` —— 直接读 settings.proactive.enabled
+  - `PanelToneStrip` 渲染深灰底白字 🔕 proactive 已关 chip，圆角 10px 风格化为"配置告警"，置于 strip 首位最显眼
+  - tooltip 解释"主动开口循环不会触发"+ "其它 chip 仍按现状显示，只是 gate 不会放行"——避免用户对着其它 chip 困惑
+  - settings 读失败 fallback 到 enabled=true（不假告警）
+- 这是 D series 第 12 个、可能是最后一个 gate 类 iter。所有 7 个 proactive gate 现在 panel 都有显式或隐式信号：
+  - 1. disabled — 🔕 (D12) ← 本 iter
+  - 2. awaiting — 💭 (D10) + 4h 自动过期 (D11)
+  - 3. cooldown — ⏳ (D9)
+  - 4. quiet hours — 😴 (D4) + 🌙 pre-quiet
+  - 5. focus — 🎯 (D3)
+  - 6. idle threshold — 数字 in time line ⏱
+  - 7. input-idle — 数字 in time line ⏱
+- 测试：306 cargo 不变（纯透传，已被 enabled gate 测过）；tsc 干净。
+- 结果：用户在 panel 一眼看出 "宠物现在为什么不说话"——不论是因为开关关、cooldown、focus、quiet 还是 awaiting，都有对应 chip。从黑盒到全透明。
+
 ## 2026-05-03 — Iter D11：awaiting gate auto-expire 4h（修复"宠物永久 muted"潜在 bug）
 - 现状缺口（实际是个潜伏行为 bug）：D10 surfaced awaiting gate 后审视发现：mark_user_message 是**唯一**清除 awaiting_user_reply 的入口。如果用户在宠物刚说完话后没回应、关 laptop 走人、几小时甚至几天后回来——开机时 awaiting 还是 true，宠物会一直 skip 所有 proactive 评估。和 cooldown 的 wake_soft 不同（Iter 5 已经 soft 化），awaiting 没有任何时间维度的释放机制。"我以为它打不打理我了" 的体验源头之一。
 - 解法：在 `InteractionClock::snapshot` 加 `effective_awaiting(raw, since_proactive)` 纯函数判断：raw=true AND `since_last_proactive < AWAITING_AUTO_CLEAR_SECONDS (4h)` 才返 true。否则视作"过期了，原'别 double up'语义早不适用"。

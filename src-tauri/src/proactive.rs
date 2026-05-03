@@ -715,6 +715,11 @@ pub struct ToneSnapshot {
     /// is time-based, awaiting is state-based ("polite to wait until acked").
     /// Both gates can fire simultaneously; both visible separately.
     pub awaiting_user_reply: bool,
+    /// Iter D12: false when the user has turned `settings.proactive.enabled`
+    /// off — proactive engine silently no-ops and the pet appears mute
+    /// regardless of any other signal. Surfaced so users who toggled
+    /// proactive off and forgot get an immediate "🔕 proactive 已关" chip.
+    pub proactive_enabled: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -910,6 +915,13 @@ pub async fn get_tone_snapshot(
         },
         // Iter D10: pass through the awaiting-user-reply state from clock snapshot.
         awaiting_user_reply: snap.awaiting_user_reply,
+        // Iter D12: surface settings.proactive.enabled so users who flipped it
+        // off see why the pet has stopped speaking. Defaults to true if
+        // settings can't be read so we don't falsely show "disabled" on errors.
+        proactive_enabled: get_settings()
+            .ok()
+            .map(|s| s.proactive.enabled)
+            .unwrap_or(true),
     })
 }
 
