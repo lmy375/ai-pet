@@ -90,9 +90,16 @@ export interface ToneSnapshot {
   awaiting_user_reply: boolean;
   // Iter D12
   proactive_enabled: boolean;
-  // Iter R10: short-term feedback summary `{replied, total}` over the last
-  // 20 feedback_history entries. Null when no feedback recorded yet.
-  feedback_summary: { replied: number; total: number } | null;
+  // Iter R10 / R1c: short-term feedback summary over the last 20
+  // feedback_history entries. `dismissed` (R1c) breaks out the active-
+  // rejection count so the panel can render it distinctly from passive
+  // `ignored` (= total - replied - dismissed). Null when no feedback
+  // recorded yet.
+  feedback_summary: {
+    replied: number;
+    dismissed: number;
+    total: number;
+  } | null;
 }
 
 /**

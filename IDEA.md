@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R1c 设计要点（已实现）
+- **"写到" ≠ "看到"**：R1b 把 Dismissed 信号写进 feedback log + 接到 R7 ratio 计算，技术上完整。但 panel UI 依然只显示二元"回复/忽略"。这是个 hidden invariant 违例：**新增数据维度后，相关 surface 必须同步**，否则用户看到 panel 数字以为是旧二元，对系统行为产生误解（"我点了 dismiss 为什么 cooldown 没变?" → 实际变了，但没显示给用户看）。R1c 把这条 invariant 主动还掉。
+- **"replied/total" 仍然是正确的中心数字**：诱惑是改成 "replied / (ignored + dismissed)" 或三元数字。但 panel 是稀缺 visual budget，单 chip 只能讲 1-2 个数字。R7 adapter 阈值（>0.6 negative）跟"replied/total"是简单互补关系（ratio + negative = 1），所以 "replied/total" 已经完整表达了 cooldown 决策输入。dismissed 是细节维度，做尾巴小字而不是抢主标题。**主信号占 C 位、辅信号做修饰** 是 dashboard 设计经典原则。
+- **颜色对应信号强度梯度**：绿（replied 正）→ 灰（ignored 弱负）→ 红（dismissed 强负）。从左到右视觉重量递增，匹配 sentiment 强度。这种"色彩-语义一致" 是 panel 设计的 nice-to-have 但很值钱 — 用户扫一眼就 build 起 mental model，不需要 hover。
+- **`👋` icon 选型背后**：考虑过 ❌（拒绝感太强，user 不一定真的"恨"这条）/ 🚫（formal）/ 🗙（uncommon）/ 🚪（"出门"含义不直接）/ 👋（挥手 = 软告别）。最后选 👋 是因为它最匹配"我看到了，但 not now" 的实际心情 — confrontational 程度刚好。Iconography 选择不是装饰，是**语义打包**。
+- **timeline pill hover 文案做"自我解释"**：写"5s 内主动点掉 — 比被动忽略信号更强" 看似冗余（pill 颜色已经表达了），但**panel 不只是给我自己看，也是给未来回看的我或别人看**。一个月后用户看 panel 不记得 R1b 是怎么实现的、为什么红色比灰色"严重"，hover 文案就是 inline 文档。每个新 chip / pill 都应该带"为什么"。
+- **dismissed 字段加在已有 struct 而非新建**：诱惑是新建一个 `DismissSummary { count }`。但 dismissed 只是 feedback 的细分；强行划分子结构反而割裂 mental model。"加字段不加结构"是 schema 经济原则 — 只在确实有 *独立生命周期 / 独立 caller* 的概念才拆新结构。dismissed 跟 replied 是同一个 feedback 数据流的不同切片，留在 FeedbackSummary 内最自然。
+- **dismissed 后缀条件渲染**：`dismissed > 0 && <span>...</span>` 而不是永显 "👋0"。"显示 0" 是错的 — 用户大部分时间 dismissed 就是 0，永远显示一个 0 是 visual 噪音，让其他更有意义的 chip 视觉权重被稀释。Zero state 应该 *invisible* 而不是 *empty*。
+
 ## Iter R1b 设计要点（已实现）
 - **frontend gate vs backend gate 是 UX 边界判断**：threshold "5 秒内 = quick" 这个数字属于"用户视角的快慢" 不是业务规则。frontend 决定。后端 record_bubble_dismissed 只接受请求 — 信任 caller 已经做了过滤。这种 separation 让"调阈值" 是改 1 行 TS const 而不是后端逻辑变更。一般原则：**UX 决策不该跨语言**。
 - **rename `ignore_ratio` → `negative_signal_ratio` 是必要的**：诱惑是"加 Dismissed 但保持 ignore_ratio 名字" — 短期省 LOC 但长期误导（"为什么 ignore_ratio 包含 dismissed 项？"）。语义扩展时**rename 比加注释更便宜**。caller 只在 gate.rs 单点（grep 只 2 处），rename 成本极低。这是"refactor 时择捷径还是择正确" 的小型例题：选正确。

@@ -90,11 +90,13 @@ export function PanelDebug() {
   };
   const [toolCallHistory, setToolCallHistory] = useState<ToolCallRecord[]>([]);
   const [showToolHistory, setShowToolHistory] = useState(false);
-  // Iter R6: feedback timeline (replied / ignored). Surfaces R1's capture
-  // data so the user can see whether the pet is "learning" from outcomes.
+  // Iter R6: feedback timeline (replied / ignored / dismissed). Surfaces
+  // R1's capture data so the user can see whether the pet is "learning"
+  // from outcomes. R1c added "dismissed" — user clicked the bubble within
+  // 5s, distinct from passive ignore.
   type FeedbackEntry = {
     timestamp: string;
-    kind: "replied" | "ignored";
+    kind: "replied" | "ignored" | "dismissed";
     excerpt: string;
   };
   const [feedbackHistory, setFeedbackHistory] = useState<FeedbackEntry[]>([]);
@@ -1034,7 +1036,9 @@ export function PanelDebug() {
             💬 宠物反馈记录（{feedbackHistory.length}{
               feedbackHistory.length > 0 ? (() => {
                 const replied = feedbackHistory.filter((f) => f.kind === "replied").length;
-                return ` · ${replied}/${feedbackHistory.length} 回复`;
+                const dismissed = feedbackHistory.filter((f) => f.kind === "dismissed").length;
+                const dismissedSuffix = dismissed > 0 ? ` · 👋${dismissed} 点掉` : "";
+                return ` · ${replied}/${feedbackHistory.length} 回复${dismissedSuffix}`;
               })() : ""
             }）
           </span>
@@ -1073,14 +1077,28 @@ export function PanelDebug() {
                     fontSize: "10px",
                     padding: "1px 8px",
                     borderRadius: "10px",
-                    background: f.kind === "replied" ? "#16a34a" : "#94a3b8",
+                    background:
+                      f.kind === "replied" ? "#16a34a"
+                      : f.kind === "dismissed" ? "#dc2626"
+                      : "#94a3b8",
                     color: "#fff",
                     fontWeight: 600,
                     minWidth: "44px",
                     textAlign: "center",
                   }}
+                  title={
+                    f.kind === "dismissed"
+                      ? "用户在 5 秒内主动点掉了气泡（active rejection — 比被动忽略信号更强）"
+                      : f.kind === "ignored"
+                      ? "用户没有回应，气泡 60 秒自动消失（passive ignore）"
+                      : "用户回复了这次开口"
+                  }
                 >
-                  {f.kind === "replied" ? "回复" : "忽略"}
+                  {f.kind === "replied"
+                    ? "回复"
+                    : f.kind === "dismissed"
+                    ? "点掉"
+                    : "忽略"}
                 </span>
                 <span style={{ color: "#1e293b", flex: 1, wordBreak: "break-all" }}>
                   {f.excerpt}
