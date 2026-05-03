@@ -74,6 +74,22 @@ export function PanelDebug() {
     }[]
   >([]);
   const [reviewError, setReviewError] = useState<string>("");
+  // Iter R4: structured tool-call history (newest first) from the backend
+  // ring buffer. PanelDebug renders a collapsible "工具调用历史" card so
+  // prompt-tuning can see purpose / risk / review status at a glance.
+  type ToolCallRecord = {
+    timestamp: string;
+    name: string;
+    args_excerpt: string;
+    purpose: string;
+    risk_level: string;
+    reasons: string[];
+    safe_alternative: string | null;
+    review_status: string;
+    result_excerpt: string;
+  };
+  const [toolCallHistory, setToolCallHistory] = useState<ToolCallRecord[]>([]);
+  const [showToolHistory, setShowToolHistory] = useState(false);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
@@ -126,6 +142,7 @@ export function PanelDebug() {
           safe_alternative: string | null;
           timestamp: string;
         }[];
+        recent_tool_calls: ToolCallRecord[];
       }>("get_debug_snapshot");
       setLogs(snap.logs);
       setCacheStats(snap.cache_stats);
@@ -143,6 +160,7 @@ export function PanelDebug() {
       setCompanionshipDays(snap.companionship_days);
       setRedactionStats(snap.redaction_stats);
       setPendingReviews(snap.pending_tool_reviews ?? []);
+      setToolCallHistory(snap.recent_tool_calls ?? []);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -873,6 +891,111 @@ export function PanelDebug() {
         </div>
       )}
 
+      {/* Iter R4: 工具调用历史 collapsible. Surfaces purpose / risk / review
+          status from the tool_call_history ring buffer. Toggled via the
+          summary chip; not always-on because in long sessions the list
+          would dominate the panel. */}
+      <div
+        style={{
+          padding: "8px 16px",
+          borderBottom: "1px solid #e2e8f0",
+          background: "#fefce8",
+          fontSize: "12px",
+        }}
+      >
+        <div
+          onClick={() => setShowToolHistory((s) => !s)}
+          style={{
+            cursor: "pointer",
+            color: "#854d0e",
+            fontWeight: 600,
+            display: "flex",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>
+            🔧 工具调用历史（{toolCallHistory.length}）
+          </span>
+          <span>{showToolHistory ? "收起 ▾" : "展开 ▸"}</span>
+        </div>
+        {showToolHistory && toolCallHistory.length === 0 && (
+          <div style={{ color: "#92400e", paddingTop: "6px" }}>
+            暂无工具调用记录。reactive chat 期间发起的工具调用会出现在这里。
+          </div>
+        )}
+        {showToolHistory && toolCallHistory.length > 0 && (
+          <div style={{ paddingTop: "6px", maxHeight: "260px", overflowY: "auto" }}>
+            {toolCallHistory.map((c, i) => (
+              <div
+                key={i}
+                style={{
+                  border: "1px solid #fde68a",
+                  borderRadius: "6px",
+                  padding: "6px 10px",
+                  marginBottom: "6px",
+                  background: "#fffbeb",
+                }}
+              >
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontFamily: "monospace", color: "#1e293b", fontWeight: 600 }}>
+                    {c.name}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "10px",
+                      padding: "1px 6px",
+                      borderRadius: "10px",
+                      background: riskBadgeBg(c.risk_level),
+                      color: "#fff",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {c.risk_level}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "10px",
+                      padding: "1px 6px",
+                      borderRadius: "10px",
+                      background: reviewStatusBg(c.review_status),
+                      color: "#fff",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {reviewStatusLabel(c.review_status)}
+                  </span>
+                  <span style={{ color: "#94a3b8", fontFamily: "monospace", fontSize: "10px" }}>
+                    {c.timestamp.slice(11)}
+                  </span>
+                </div>
+                {c.purpose && (
+                  <div style={{ color: "#1e293b", marginTop: "3px" }}>
+                    <strong>用途：</strong>{c.purpose}
+                  </div>
+                )}
+                {c.reasons.length > 0 && (
+                  <div style={{ color: "#7c2d12", marginTop: "2px", fontSize: "11px" }}>
+                    <strong>风险：</strong>{c.reasons.join(" / ")}
+                  </div>
+                )}
+                {c.safe_alternative && (
+                  <div style={{ color: "#1e3a8a", marginTop: "2px", fontSize: "11px" }}>
+                    <strong>建议替代：</strong>{c.safe_alternative}
+                  </div>
+                )}
+                <details style={{ fontSize: "11px", color: "#475569", marginTop: "3px" }}>
+                  <summary style={{ cursor: "pointer" }}>
+                    args ({c.args_excerpt.length}) · result ({c.result_excerpt.length})
+                  </summary>
+                  <pre style={preStyle}>{c.args_excerpt}</pre>
+                  <pre style={preStyle}>{c.result_excerpt}</pre>
+                </details>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Pending user-set reminders — sourced from todo memory category */}
       {reminders.length > 0 && (
         <div
@@ -944,6 +1067,66 @@ export function PanelDebug() {
   );
 }
 
+
+// Iter R4: tool-call history badge palette. Match the backend's risk levels
+// (`low` / `medium` / `high`) and review status enum strings.
+function riskBadgeBg(level: string): string {
+  switch (level) {
+    case "high":
+      return "#dc2626";
+    case "medium":
+      return "#f59e0b";
+    case "low":
+      return "#16a34a";
+    default:
+      return "#94a3b8";
+  }
+}
+
+function reviewStatusBg(status: string): string {
+  switch (status) {
+    case "approved":
+      return "#0ea5e9";
+    case "denied":
+      return "#dc2626";
+    case "timeout":
+      return "#f97316";
+    case "missing_purpose":
+      return "#6b21a8";
+    case "not_required":
+    default:
+      return "#64748b";
+  }
+}
+
+function reviewStatusLabel(status: string): string {
+  switch (status) {
+    case "approved":
+      return "已允许";
+    case "denied":
+      return "被拒绝";
+    case "timeout":
+      return "超时拒绝";
+    case "missing_purpose":
+      return "缺 purpose";
+    case "not_required":
+    default:
+      return "无需审核";
+  }
+}
+
+const preStyle: React.CSSProperties = {
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-all",
+  background: "#f8fafc",
+  padding: "4px 6px",
+  borderRadius: "3px",
+  marginTop: "3px",
+  fontFamily: "monospace",
+  fontSize: "10px",
+  maxHeight: "120px",
+  overflowY: "auto",
+};
 
 function kindColor(kind: string): string {
   switch (kind) {

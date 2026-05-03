@@ -658,6 +658,14 @@ pub async fn run_chat_pipeline(
 
             sink.send_tool_start(tc_name, tc_args);
 
+            // Iter R4: capture per-call metadata for the structured tool-call
+            // history ring buffer. Mut vars set inside each branch below, then
+            // one record_tool_call after `result` is known.
+            let mut record_status = crate::tool_call_history::ToolCallReviewStatus::NotRequired;
+            let mut record_risk: String = "low".to_string();
+            let mut record_reasons: Vec<String> = Vec::new();
+            let mut record_safe_alt: Option<String> = None;
+
             // Iter TR1: pipeline-level purpose gate. Every tool call must carry a
             // one-sentence `purpose` so we have an audit trail of "why did the LLM
             // ask for this?". Missing → return a recoverable error result the LLM
@@ -670,6 +678,7 @@ pub async fn run_chat_pipeline(
                         "Tool call rejected (missing purpose): {}({})",
                         tc_name, tc_args
                     ));
+                    record_status = crate::tool_call_history::ToolCallReviewStatus::MissingPurpose;
                     missing_purpose_error_result()
                 }
                 Some(p) => {
@@ -683,6 +692,10 @@ pub async fn run_chat_pipeline(
                         tc_name,
                         &assessment,
                     ));
+                    // Iter R4: stash assessment fields for the post-call record.
+                    record_risk = assessment.risk_level.as_str().to_string();
+                    record_reasons = assessment.reasons.clone();
+                    record_safe_alt = assessment.safe_alternative.clone();
 
                     // Iter TR3: high-risk + review registry present → park for
                     // human approval. Default-deny on timeout. No registry
@@ -720,6 +733,8 @@ pub async fn run_chat_pipeline(
                                             tc_name,
                                         );
                                     }
+                                    record_status =
+                                        crate::tool_call_history::ToolCallReviewStatus::Approved;
                                     None // proceed to execute
                                 }
                                 Ok(Ok(crate::tool_review::ToolReviewDecision::Deny)) => {
@@ -735,6 +750,8 @@ pub async fn run_chat_pipeline(
                                             tc_name,
                                         );
                                     }
+                                    record_status =
+                                        crate::tool_call_history::ToolCallReviewStatus::Denied;
                                     Some(crate::tool_review::denied_result_json(
                                         "用户在审核界面拒绝了此次调用",
                                         assessment.safe_alternative.as_deref(),
@@ -755,6 +772,8 @@ pub async fn run_chat_pipeline(
                                             tc_name,
                                         );
                                     }
+                                    record_status =
+                                        crate::tool_call_history::ToolCallReviewStatus::Denied;
                                     Some(crate::tool_review::denied_result_json(
                                         "审核通道异常关闭",
                                         assessment.safe_alternative.as_deref(),
@@ -775,6 +794,8 @@ pub async fn run_chat_pipeline(
                                             tc_name,
                                         );
                                     }
+                                    record_status =
+                                        crate::tool_call_history::ToolCallReviewStatus::Timeout;
                                     Some(crate::tool_review::timeout_result_json(
                                         assessment.safe_alternative.as_deref(),
                                     ))
@@ -808,6 +829,20 @@ pub async fn run_chat_pipeline(
                 tc_name,
                 result.len()
             ));
+
+            // Iter R4: push the structured tool-call record onto the panel-readable
+            // ring buffer so PanelDebug's "工具调用历史" view can render it without
+            // re-parsing app.log. Captures purpose / risk / review status atomically.
+            crate::tool_call_history::record_tool_call(
+                tc_name,
+                tc_args,
+                purpose.as_deref().unwrap_or(""),
+                &record_risk,
+                &record_reasons,
+                record_safe_alt.as_deref(),
+                record_status,
+                &result,
+            );
 
             sink.send_tool_result(tc_name, &result);
 

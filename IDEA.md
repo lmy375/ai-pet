@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R4 设计要点（已实现）
+- **结构化捕获 vs 日志解析**：log line parsing 看似简单，实际维护噩梦——每改一次 log format 都要更新 regex 不然 panel "突然空了"。结构化 ring buffer 在 call site 原子写入，shape 由代码而非字符串契约定义。这是 Iter E4 的同模式（LAST_PROACTIVE_TURNS），证明可复用。
+- **5 个 review_status 分支映射 5 个 pipeline branch**：MissingPurpose（TR1）/ NotRequired（low/medium 直执行）/ Approved + Denied + Timeout（TR3 三种 outcome）。`Ok(Err(_))` channel-lost 收编进 Denied 因为效果一致。把这五个明确枚举出来给前端 badge 渲染零猜测。
+- **truncate_excerpt 用 chars().count() 而不是 bytes**：UTF-8 中文字符 3 字节但应算 1 字符。bytes 切割会断在 codepoint 中间 panic。这是 Rust 处理国际化文本的标准 gotcha，所有 truncate 应统一用 chars。
+- **测试隔离 mutex**：cargo 默认并行测试，static Mutex 状态共享 = 测试互相污染。`HISTORY_TEST_LOCK` 序列化访问。这是处理"全局可变状态测试" 的最小成本方案——不需要 serial-test crate dep。
+- **`#[allow(dead_code)]` on as_str()**：serde rename 已经能产生这些字符串，但 explicit fn 让测试不依赖 serde 实现细节。生产 path 真没调用，留作前端契约文档。这是"代码规范的成本是 < 1 行 attribute" vs "保留 design 意图清晰" 的权衡——选后者。
+- **collapsible default-collapsed**：长 session 可能有 30 条 tool call，always-on 会把 panel 撑死。用户主动展开看 = "我现在在调 prompt"，关闭 = "我在看其他 chip"。这是"高信号高密度数据 → opt-in 渲染"的 UX 模式。
+- **purpose / risk / status 三层 surface 同一张卡**：TR1/TR2/TR3 是 backend 抽象的递进，但前端用户只关心"那次调用怎么了"。把三层数据合一展示，对应"产品视角"而不是"实现视角"。这种"分层实现 + 合一展示" 是好的产品演进。
+
 ## Iter R5 设计要点（已实现）
 - **审计推翻 TODO 假设是健康事件**：原 TODO 写"SOUL.md 得重启 app 才生效" 是错的——proactive / telegram 都已 hot-reload。我自己作为前面 iter 写 TODO 的"人"，那时没 audit 当前路径就写下了假设。这次审计后发现真正 gap 在 reactive 会话烘焙。教训：写 TODO 时先看一眼当前实现再描述差距，避免盲写假需求。
 - **session 持久层不动是设计选择**：直觉上"既然 SOUL 变了，session 存的也要更"。但 session 是历史记录——它应该忠实保留对话当时的 system context，不该被未来 SOUL 编辑回写。"LLM 看到的"和"session 持久的" 分两套语义就清晰了。

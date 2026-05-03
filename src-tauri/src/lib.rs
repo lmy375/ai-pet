@@ -16,6 +16,7 @@ mod proactive;
 mod redaction;
 mod speech_history;
 mod telegram;
+mod tool_call_history;
 mod tool_review;
 mod tool_risk;
 mod tools;
@@ -126,6 +127,7 @@ pub fn run() {
             commands::debug::get_debug_snapshot,
             tool_review::submit_tool_review,
             tool_review::list_pending_tool_reviews,
+            tool_call_history::get_recent_tool_calls,
             redaction::get_redaction_stats,
             redaction::reset_redaction_stats,
             decision_log::get_proactive_decisions,

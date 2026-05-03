@@ -537,6 +537,11 @@ pub struct DebugSnapshot {
     /// Iter TR3: pending high-risk tool calls awaiting human approve / deny.
     /// Frontend renders a modal when this is non-empty.
     pub pending_tool_reviews: Vec<crate::tool_review::PendingToolReview>,
+    /// Iter R4: structured ring buffer of recent tool calls (newest first)
+    /// surfacing purpose / risk / review status. Frontend renders a
+    /// collapsible "工具调用历史" card so prompt tuning doesn't need
+    /// raw-app.log grep.
+    pub recent_tool_calls: Vec<crate::tool_call_history::ToolCallRecord>,
 }
 
 #[tauri::command]
@@ -567,6 +572,7 @@ pub async fn get_debug_snapshot(
     let companionship_days = crate::companionship::companionship_days().await;
     let redaction_stats = crate::redaction::get_redaction_stats();
     let pending_tool_reviews = tool_review.snapshot();
+    let recent_tool_calls = crate::tool_call_history::recent_tool_calls();
     Ok(DebugSnapshot {
         logs,
         cache_stats,
@@ -584,6 +590,7 @@ pub async fn get_debug_snapshot(
         companionship_days,
         redaction_stats,
         pending_tool_reviews,
+        recent_tool_calls,
     })
 }
 

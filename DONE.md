@@ -2,6 +2,39 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R4：PanelDebug 显示工具调用历史（purpose + risk + review）
+- 现状缺口：TR1 把 purpose 写进 app.log，TR2 写 risk 评估，TR3 写 approve/deny/timeout——但 panel 上要 prompt 调优时只能 grep app.log。本 iter 把这三层数据 surface 到一个 panel 折叠卡片。
+- 设计选择 — 结构化 ring buffer 而非日志解析：
+  - 解析 app.log 行能 work，但脆弱（regex 跟 log format 耦合 + 跨行 stitching 复杂）
+  - 后端在 chat pipeline 末尾原子捕获每次 tool call 的所有元数据，pushed 进静态 ring buffer (cap 30)
+  - 这是 E series 的同模式：LAST_PROACTIVE_TURNS 也是这么做的。复用成熟思路。
+- 后端 — 新模块 `src/tool_call_history.rs`：
+  - `enum ToolCallReviewStatus { NotRequired, Approved, Denied, Timeout, MissingPurpose }`：5 个 outcome 对应 chat pipeline 五个 branch
+  - `struct ToolCallRecord { timestamp, name, args_excerpt, purpose, risk_level, reasons, safe_alternative, review_status, result_excerpt }`：每次 call 一条
+  - `truncate_excerpt(text)` pure helper：args 和 result 都 cap 在 200 char + …，避免大文件 read/write 撑爆 buffer
+  - `record_tool_call(...)` 把所有字段 push 进 `static Mutex<VecDeque<ToolCallRecord>>`，cap 30 自动 roll
+  - `recent_tool_calls()` newest-first；`#[tauri::command] get_recent_tool_calls()`
+- 集成 — `chat.rs` 工具循环：
+  - 每个 tool call iteration 加 4 个 mut 变量：record_status / record_risk / record_reasons / record_safe_alt
+  - 五个 branch 各自设置 record_status：MissingPurpose（None purpose）/ Approved（review approve）/ Denied（review deny / channel-lost）/ Timeout（review 60s timeout）/ NotRequired（low/medium 直接执行）
+  - assessment.risk_level / reasons / safe_alternative stash 一次（仅 Some(p) branch 有 assessment）
+  - `result` 计算完后 `record_tool_call(...)` 一次 push
+- DebugSnapshot 加 `recent_tool_calls: Vec<ToolCallRecord>` 字段（QG6 模板）。
+- 前端 PanelDebug：
+  - 新 collapsible "🔧 工具调用历史（N）" 卡片（chevron 控制 show/hide，避免长 session 占满 panel）
+  - 每条记录显示：tool name + risk badge（low/med/high 三色）+ status badge（5 种 review status 不同色 + 中文 label）+ timestamp + purpose + reasons + safe_alternative + 折叠的 args/result excerpt 
+  - `riskBadgeBg` / `reviewStatusBg` / `reviewStatusLabel` 三个 helper 函数，badge 样式集中
+- 决策 — `#[allow(dead_code)]` on `as_str()`：serde 的 `rename_all = "lowercase"` 已经能把 enum 序列化成那些字符串。我加 `as_str()` 是给后端测试用的（不依赖 serde 内部）。生产 path 不调用，但保留作为公共契约文档。
+- 决策 — 测试用 HISTORY_TEST_LOCK serialize：record_tool_call 触摸静态 mutex；cargo 默认并行测试时 `record_tool_call_pushes_with_newest_first_order` + `record_tool_call_caps_at_history_max` 互相污染。一个 `static Mutex<()>` 测试 guard 序列化。`unwrap_or_else(|e| e.into_inner())` 处理 poison 让 panic 测试不阻塞后续 test。
+- 决策 — 不复用 LAST_PROACTIVE_TURNS：proactive turn 是 N 个 tool call + 1 个 LLM reply 的整体；tool call history 是 per-call 粒度。两者维度不同，不应混淆。
+- 测试（5 新单测）：
+  - truncate_excerpt 三个边界：空 / 短 / 长（含 ASCII + Chinese 不撞 byte boundary）
+  - record_tool_call newest-first push order
+  - record_tool_call 容量 cap (CAP+5 写入只剩最后 30，最旧的滚出)
+  - review_status as_str 5 个分支字符串映射钉死（前端依赖此契约）
+- 测试结果：370 cargo（+5）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：reactive chat tool 调用现在在 panel 顶部的"🔧 工具调用历史"折叠卡里实时可见——一条记录把"什么工具 + 为什么调（purpose）+ 多大风险（risk + reasons）+ 用户怎么决定（review status）+ 输入输出片段"全部显示。prompt 调优工作流不再需要 tail -f app.log。
+
 ## 2026-05-03 — Iter R5：reactive 会话 SOUL.md hot-reload（修补烘焙盲点）
 - 现状审计：原 TODO 写"SOUL.md 改了得重启 app 才生效"，但其实 proactive (`run_proactive_turn` line 1822) 和 telegram (`bot.rs:119`) 都在每次 turn 调 `get_soul()` —— 全是从磁盘读，无缓存层。所以这两条路径**已经自动 hot reload**。
 - 真正的 gap 在 reactive chat：`commands::session::create_session` 把 SOUL.md 烘焙进 `messages[0]`（系统消息），后续每次发消息时前端从 session 拉这个 stale system message 发回后端。session 一旦创建，SOUL 改动被忽略——直到用户开新 session。
