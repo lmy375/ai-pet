@@ -1485,7 +1485,10 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
 /// Iter 102: this is what the consolidate loop generates by reflecting on recent
 /// speech_history + user_profile. Returns the description verbatim with a header line,
 /// or empty when no summary has been written yet (fresh installs / not enough signal).
-fn build_persona_hint() -> String {
+///
+/// `pub` since Iter 104 — reactive chat reuses this to inject the same persona layer
+/// into its system prompt, so the long-term identity isn't proactive-only.
+pub fn build_persona_hint() -> String {
     let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
         return String::new();
     };

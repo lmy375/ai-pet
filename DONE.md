@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 104：路线 A 三层信息也注入反应式 chat 的 system prompt
+- `commands::chat` 新增 3 个公共函数：`format_persona_layer(days, persona, trend) -> String`（pure，可测）/ `build_persona_layer_async()`（pulls companionship_days + persona_summary + mood_trend from disk）/ `inject_persona_layer(messages)`（async，按 inject_mood_note 同样的 "before first non-system message" 规则插入）。
+- 反应式 chat handler `chat()` 在 inject_mood_note 之后链式调 inject_persona_layer，让用户主动来聊时也看到完整长期人格背景。
+- 持久层 system note 形如：`[宠物的长期人格画像]\n\n{companionship_line}\n\n{persona}\n\n{mood_trend}\n\n——这些是你的长期身份背景。回复用户时让它们自然渗进语气，不必生硬复述这些内容。` 其中 persona 和 trend 块仅在非空时插入。
+- `proactive::build_persona_hint` 升 pub（被 chat 复用）。整个 layer 只有 companionship 强制存在（day 0 也有 framing），其余按需。
+- 5 个新单测覆盖：day 0 含"第一天"+ tail guidance / 仅 persona 时不出 trend / 仅 trend 时不出 persona / 三者全在时出现顺序锁定（companionship → persona → trend，与 proactive 顺序一致）/ whitespace-only 当空处理只有 3 块。
+- 现在路线 A 三层信息（companionship / persona / mood_trend）覆盖 proactive + reactive 两条路径——宠物的长期身份在被动响应和主动开口都成立。这是把 Iter 101-103 的基础设施真正"绑在"用户互动上的关键步骤。
+- Telegram bot 也通过 `run_chat_pipeline` 共享相同的人格层（如果将来要选择性禁用，加 settings flag 即可）。
+- 213 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 103：mood_history.log + 长期情绪谱注入 prompt（路线 A 第三步）
 - 新模块 `src-tauri/src/mood_history.rs`：append-only 日志，cap 200 行 / 200KB rotation。每行格式 `<ISO ts> <motion> | <text>` 用 ` | ` 分隔保证 motion / text 解析无歧义即使 text 含管道符。
 - 写入时去重：read 文件最后一行，若 motion+text 与新条目完全一致则 skip——让 history 反映"心情转变"而非每次 proactive 都记一条同样的 Idle/平静。

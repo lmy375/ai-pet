@@ -12,13 +12,12 @@
 ### 路线 A：长期人格演化（已完成 Iter 101 / 102 / 103，路线 A 收官）
 
 下一步候选（路线 A 后续延展）：
-- [ ] Iter 104：把 companionship_days / persona_summary 摘要 / mood_trend 三层信息也透
-  传到反应式 chat（commands::chat）的 system prompt——目前只在 proactive 注入。让长期
-  人格在用户主动来聊时也成立。
 - [ ] Iter 105：panel 加 "Persona" tab 显示当前 install_date / companionship_days /
   persona_summary 描述 / 最近 mood trend，让用户能直接看到"宠物当前画像"。
 - [ ] Iter 106：给 panel stats 卡加"陪伴 N 天"chip（与今日 / 累计开口数并列），让用户
   在主面板就感知"和这只宠物相处多久了"。
+- [ ] Iter 107：把 inject_persona_layer 也接到 telegram/bot.rs，让 Telegram 用户也看到
+  长期人格层；附带 settings.persona_layer_enabled 让用户可关。
 
 ### 路线 B：表情系统升级
 - [ ] Iter 8b：扩展 mood 解析支持 expression 字段（如 [motion: Tap, expression: smile]），

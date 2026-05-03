@@ -91,6 +91,57 @@ pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     messages
 }
 
+/// Compose the long-term persona-layer system note (Iter 104) from raw inputs.
+/// Pure / testable — the async wrapper below pulls the inputs from disk and memory.
+///
+/// Always emits the companionship line (day 0 has its own framing); persona summary
+/// and mood-trend are appended only when their respective sources have produced
+/// content. Closes with a guidance tail asking the LLM to absorb these into tone
+/// rather than echo them back to the user verbatim.
+pub fn format_persona_layer(days: u64, persona: &str, mood_trend: &str) -> String {
+    let mut parts: Vec<String> = vec![crate::proactive::format_companionship_line(days)];
+    if !persona.trim().is_empty() {
+        parts.push(persona.trim().to_string());
+    }
+    if !mood_trend.trim().is_empty() {
+        parts.push(mood_trend.trim().to_string());
+    }
+    parts.push(
+        "——这些是你的长期身份背景。回复用户时让它们自然渗进语气，不必生硬复述这些内容。"
+            .to_string(),
+    );
+    format!("[宠物的长期人格画像]\n\n{}", parts.join("\n\n"))
+}
+
+/// Async builder: pulls companionship_days / persona_summary description / mood-trend
+/// from their respective storage sources and runs `format_persona_layer` over the
+/// result. Used by `inject_persona_layer`; lives standalone so other entry points
+/// (Telegram bot, future commands) can call it identically.
+pub async fn build_persona_layer_async() -> String {
+    let days = crate::companionship::companionship_days().await;
+    let persona = crate::proactive::build_persona_hint();
+    let trend = crate::mood_history::build_trend_hint(50, 5).await;
+    format_persona_layer(days, &persona, &trend)
+}
+
+/// Inject the persona-layer system note into a chat message list. Uses the same
+/// "before the first non-system message" insertion rule as `inject_mood_note` so the
+/// LLM sees system context together at the top.
+pub async fn inject_persona_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let body = build_persona_layer_async().await;
+    let note: ChatMessage = serde_json::from_value(serde_json::json!({
+        "role": "system",
+        "content": body,
+    }))
+    .expect("static persona layer JSON should always parse");
+    let insert_at = messages
+        .iter()
+        .position(|m| m.role != "system")
+        .unwrap_or(messages.len());
+    messages.insert(insert_at, note);
+    messages
+}
+
 /// System prompt for tool usage best practices, injected into every chat pipeline request.
 const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 
@@ -511,6 +562,10 @@ pub async fn chat(
     // frontend-side message arrays don't blow up token costs on long conversations.
     let trimmed = trim_to_context(messages, config.max_context_messages);
     let augmented = inject_mood_note(trimmed);
+    // Iter 104: route-A persona layers also feed the reactive chat so the pet's
+    // long-term identity (companionship_days / persona_summary / mood_trend) survives
+    // when the user pings it directly, not just during proactive turns.
+    let augmented = inject_persona_layer(augmented).await;
     let result = run_chat_pipeline(augmented, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
@@ -607,5 +662,62 @@ mod trim_tests {
         let out = trim_to_context(msgs, 2);
         assert_eq!(out.len(), 2);
         assert_eq!(roles(&out), vec!["user", "assistant"]);
+    }
+
+    #[test]
+    fn format_persona_layer_includes_companionship_at_day_zero() {
+        let body = format_persona_layer(0, "", "");
+        assert!(body.starts_with("[宠物的长期人格画像]"));
+        assert!(body.contains("第一天"));
+        // Tail guidance always present so the LLM is told how to use the section.
+        assert!(body.contains("自然渗进语气"));
+    }
+
+    #[test]
+    fn format_persona_layer_includes_persona_when_set() {
+        let body = format_persona_layer(30, "我倾向短句，话题偏当下场景。", "");
+        assert!(body.contains("30 天"));
+        assert!(body.contains("我倾向短句"));
+        assert!(!body.contains("情绪谱"));
+    }
+
+    #[test]
+    fn format_persona_layer_includes_trend_when_set() {
+        let body = format_persona_layer(
+            45,
+            "",
+            "你最近 30 次心情记录里：Tap × 12、Idle × 10。",
+        );
+        assert!(body.contains("45 天"));
+        assert!(body.contains("Tap × 12"));
+    }
+
+    #[test]
+    fn format_persona_layer_includes_all_three_when_present() {
+        let body = format_persona_layer(
+            120,
+            "我倾向短句。",
+            "你最近 50 次心情记录里：Tap × 30、Flick × 15。",
+        );
+        assert!(body.contains("120 天"));
+        assert!(body.contains("我倾向短句"));
+        assert!(body.contains("Tap × 30"));
+        // Companionship comes before persona, persona before trend — matches the
+        // section ordering chosen for the proactive prompt for visual consistency.
+        let p_companionship = body.find("120 天").unwrap();
+        let p_persona = body.find("我倾向短句").unwrap();
+        let p_trend = body.find("Tap × 30").unwrap();
+        assert!(p_companionship < p_persona && p_persona < p_trend);
+    }
+
+    #[test]
+    fn format_persona_layer_blank_inputs_still_safe() {
+        // Whitespace-only persona/trend should be treated as absent — no empty
+        // sections injected into the system note.
+        let body = format_persona_layer(7, "   \n  ", "\t");
+        assert!(body.contains("7 天"));
+        // Body should have header + companionship + tail = 3 sections joined by \n\n.
+        let blocks: Vec<&str> = body.split("\n\n").collect();
+        assert_eq!(blocks.len(), 3, "unexpected block count: {:#?}", blocks);
     }
 }
