@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cι 设计要点（已实现）
+- **改 TOOL_USAGE_PROMPT 而不是另起一段 system message**：Cγ 当时把 butler tooling 提示放在 proactive_rules 的 conditional rule 里——只在 butler_tasks_hint 非空时 fire。reactive 路径完全没看到 butler。本可以再起一段独立的 "butler delegation" system message 在 reactive 的 inject 链上加一道，但那意味着两个 prompt 来源（一个在 proactive、一个在 reactive）讲同一件事，将来语义漂移。改 TOOL_USAGE_PROMPT 是单一来源——它已经被 chat pipeline 的所有路径（reactive、proactive、telegram、consolidate）一致注入。一处改，处处生效。
+- **加一段而不是大改**：曾想把 TOOL_USAGE_PROMPT 整体重构成更结构化的格式（按工具分组、加更多对比例子）。但那会触发"重写一个一直管用的 prompt"的尴尬——既改动大、又难量化是否真的更好。增量加一节 "## 任务委托判断" 是最小风险路径，且新内容自然在末尾，不打扰前面的"工具选择" / "文件操作" 等已经稳定的指令。
+- **三个具体例子优于抽象规则**：之前 Cγ 在 memory_edit 工具描述里讲过 butler_tasks 的用法。但工具描述是工具调用前 LLM 看的，对话理解期不一定 active。在系统提示层面再 reinforce 一次、用对话例子，是"在不同语境下重复关键约定"的常见 prompt engineering 套路。
+- **对比例子选「提醒我喝水」vs「整理文件夹」**：这两类是用户最容易让 LLM 混淆的——表面都是"你帮我..."，但前者的"做"是在某个时刻提醒，本质是给用户的 nudge（todo），后者的"做"是 LLM 自己执行（butler_tasks）。明确给反例比单方向的"butler_tasks 该用于什么"更清晰。
+- **测试钉住关键字串**：内容测试 (a) "butler_tasks"、(b) "[every:" + "[once:"、(c) "todo" + "提醒我" 三组——任何一组缺失都说明那一节被改坏了。这种"prompt 字符串契约"测试在 TS 系统不常见，但 Rust 里很自然——constants are strings, tests can read them.
+- **不动 inject_persona_layer**：persona_layer 是"长期人格画像"——属于 identity context，不该混进操作指南。butler 委托是 how-to，归 TOOL_USAGE_PROMPT。两个 system message 各有各的 namespace，加错地方会让 LLM 把"我是会执行任务的小管家"当人格而非操作能力，可能漂移成炫耀型语气。
+
 ## Iter Cθ 设计要点（已实现）
 - **TS 重写而不是 Tauri command**：曾考虑加一个 `compute_due_butler_tasks` Rust 命令一次性返结构化数据。但 (a) 每个 task 只是几行算术，IPC overhead 占比反而高；(b) panel 已经在轮询 butler_history，重渲染时序天然，不需要刻意触发；(c) Rust 端要给 panel 暴露 schedule 详情就得新建一个 wire format（字段 ButlerScheduleDto / ButlerTaskWithDueDto），又是几十行 boilerplate。TS 重写两个 pure 函数 = 50 行，结束。Rust 端是 source of truth（决策路径），TS 端是 view-time mirror（显示路径），两端独立但语义对齐。
 - **风险：Rust/TS 漂移**：如果未来 Rust 改了 due 语义（比如加宽限期），TS 端不会自动跟。缓解：(a) 单元测 in Rust 锁定语义、(b) TS 函数注释明确指向 Rust 函数名。要 hardcore 防漂移就得做 wasm 模块共享，超出迭代范围。

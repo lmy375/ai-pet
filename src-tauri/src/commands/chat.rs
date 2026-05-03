@@ -171,7 +171,15 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 - 保持回复简洁直接
 - 不要创建不必要的文件
 - 不要在未阅读的情况下修改代码
-- 一次可以调用多个工具，如果它们之间没有依赖关系"#;
+- 一次可以调用多个工具，如果它们之间没有依赖关系
+
+## 任务委托判断（butler_tasks）
+你不只是聊天伙伴，也是用户的小管家。当用户在对话里**委托你做一件事**（不是问问题、不是聊天），不要只口头答应——用 `memory_edit create` 把任务写进 `butler_tasks` 类别，方便你之后真的去执行。
+- 「帮我每天 9 点写一份日报到 ~/today.md」→ `memory_edit create` 到 `butler_tasks`，title="日报"，description=`[every: 09:00] 写当日日报到 ~/today.md`
+- 「这周末整理一下 ~/Downloads」→ `[once: 2026-XX-XX 10:00] 整理 ~/Downloads`（XX 是即将到来的周末日期）
+- 「能不能时不时帮我看下日程」→ 没有明确时间 → 不带前缀直接写 description
+- 区分 `todo`（用户提醒自己 `[remind:]`）vs `butler_tasks`（用户委托给你做的事）：「提醒我喝水」是 todo，「帮我整理文件夹」是 butler_tasks
+创建后回复用户时简短确认（"好的，记下了，每天 9 点我会..."）——不要长篇复述。已经在 `butler_tasks` 里的任务后面会自动出现在你的 proactive prompt 里，到时候你会看到 `⏰ 到期` 标注，那时再去执行。"#;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatMessage {
@@ -722,5 +730,26 @@ mod trim_tests {
         // Body should have header + companionship + tail = 3 sections joined by \n\n.
         let blocks: Vec<&str> = body.split("\n\n").collect();
         assert_eq!(blocks.len(), 3, "unexpected block count: {:#?}", blocks);
+    }
+
+    #[test]
+    fn tool_usage_prompt_teaches_butler_delegation() {
+        // Iter Cι: pin the butler_tasks delegation guidance so a future refactor
+        // can't silently drop it. Without this section the LLM falls back to
+        // verbal-only acknowledgments and the user's "帮我每天 9 点 X" never lands
+        // in butler_tasks.
+        assert!(
+            TOOL_USAGE_PROMPT.contains("butler_tasks"),
+            "tool prompt must mention butler_tasks"
+        );
+        assert!(
+            TOOL_USAGE_PROMPT.contains("[every:") && TOOL_USAGE_PROMPT.contains("[once:"),
+            "tool prompt must teach the schedule prefixes by example"
+        );
+        assert!(
+            TOOL_USAGE_PROMPT.contains("todo")
+                && TOOL_USAGE_PROMPT.contains("提醒我"),
+            "tool prompt must contrast butler_tasks with todo[remind:]"
+        );
     }
 }
