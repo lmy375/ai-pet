@@ -149,6 +149,11 @@ pub struct PromptInputs<'a> {
     /// from `format_day_of_week_hint(now.weekday())` at the callsite.
     pub day_of_week: &'a str,
     pub idle_minutes: u64,
+    /// Iter Cμ: human-readable cue for how long the user has been away. Distinct
+    /// from `idle_tier` (pet-side cadence) and from the raw `idle_minutes` number —
+    /// gives the LLM language to register "用户走开有一两小时了" vs "用户刚刚还在"
+    /// without doing arithmetic itself. Built from `user_absence_tier(idle_minutes)`.
+    pub idle_register: &'a str,
     pub input_hint: &'a str,
     pub cadence_hint: &'a str,
     pub mood_hint: &'a str,
@@ -470,8 +475,13 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push("[系统提示·主动开口检查]".into());
     s.push(String::new());
     s.push(format!(
-        "现在是 {}（{}，{}）。距离上次和用户互动已经过去约 {} 分钟。{}",
-        inputs.time, inputs.period, inputs.day_of_week, inputs.idle_minutes, inputs.input_hint
+        "现在是 {}（{}，{}）。距离上次和用户互动已经过去约 {} 分钟（{}）。{}",
+        inputs.time,
+        inputs.period,
+        inputs.day_of_week,
+        inputs.idle_minutes,
+        inputs.idle_register,
+        inputs.input_hint
     ));
     s.push(inputs.cadence_hint.to_string());
     s.push(String::new());
@@ -719,6 +729,23 @@ pub fn idle_tier(minutes: u64) -> &'static str {
         61..=360 => "几小时没说话",
         361..=1440 => "已经隔了大半天",
         _ => "上次聊已经是昨天或更早",
+    }
+}
+
+/// Iter Cμ: map idle_minutes (since the *user* last interacted with the pet) into
+/// a register cue distinct from `idle_tier`. The pet's cadence ("我刚说过话")
+/// vs user absence ("用户刚走开几小时") are different axes — the prompt benefits
+/// from both. Used in the time line so the LLM can lean into "终于回来了" /
+/// "想你了一下" registers when warranted, instead of treating 5 minutes and 5 hours
+/// of absence the same way.
+pub fn user_absence_tier(idle_minutes: u64) -> &'static str {
+    match idle_minutes {
+        0..=15 => "用户刚刚还在",
+        16..=60 => "用户离开了一小会儿",
+        61..=180 => "用户走开有一两小时了",
+        181..=480 => "用户已经离开了大半天",
+        481..=1440 => "用户一整天没出现",
+        _ => "用户至少一天没和你互动",
     }
 }
 
@@ -1392,6 +1419,9 @@ async fn run_proactive_turn(
     // Iter Cβ: weekday/weekend label, e.g. "周日 · 周末". Joins with period in the
     // time line so the LLM can lean on "周五晚上"-flavor cues without parsing dates.
     let day_of_week = format_day_of_week_hint(now_local.weekday());
+    // Iter Cμ: register cue derived from idle_minutes — "用户刚刚还在" vs
+    // "用户至少一天没和你互动". Lets the LLM differentiate 5-min idle from 5-hour idle.
+    let idle_register = user_absence_tier(idle_minutes);
 
     // Scan the `todo` memory category for user-set reminders that have just come due.
     // Each becomes a bullet line. The whole hint is empty when nothing's due.
@@ -1458,6 +1488,7 @@ async fn run_proactive_turn(
         period,
         day_of_week: &day_of_week,
         idle_minutes,
+        idle_register,
         input_hint: &input_hint,
         cadence_hint: &cadence_hint,
         mood_hint: &mood_hint,
@@ -2025,6 +2056,8 @@ mod prompt_tests {
             // 2026-05-03 is a Sunday — matches the 周末 register tests assert.
             day_of_week: "周日 · 周末",
             idle_minutes: 20,
+            // 20 min idle = 用户离开了一小会儿 (16-60 band) — keeps existing tests stable.
+            idle_register: "用户离开了一小会儿",
             input_hint: "用户键鼠空闲约 60 秒。",
             cadence_hint: "距上次你主动开口约 8 分钟（刚说过话，话题还热）。",
             mood_hint: "你上次记录的心情/状态：「平静」。",
@@ -2847,6 +2880,32 @@ mod prompt_tests {
         // Time line is the first non-header line; assert the new label is right
         // after the period.
         assert!(p.contains("（下午，周一 · 工作日）"));
+    }
+
+    #[test]
+    fn user_absence_tier_maps_each_band() {
+        assert_eq!(user_absence_tier(0), "用户刚刚还在");
+        assert_eq!(user_absence_tier(15), "用户刚刚还在");
+        assert_eq!(user_absence_tier(16), "用户离开了一小会儿");
+        assert_eq!(user_absence_tier(60), "用户离开了一小会儿");
+        assert_eq!(user_absence_tier(61), "用户走开有一两小时了");
+        assert_eq!(user_absence_tier(180), "用户走开有一两小时了");
+        assert_eq!(user_absence_tier(181), "用户已经离开了大半天");
+        assert_eq!(user_absence_tier(480), "用户已经离开了大半天");
+        assert_eq!(user_absence_tier(481), "用户一整天没出现");
+        assert_eq!(user_absence_tier(1440), "用户一整天没出现");
+        assert_eq!(user_absence_tier(1441), "用户至少一天没和你互动");
+        assert_eq!(user_absence_tier(99999), "用户至少一天没和你互动");
+    }
+
+    #[test]
+    fn prompt_includes_idle_register_in_time_line() {
+        let mut inputs = base_inputs();
+        inputs.idle_register = "用户走开有一两小时了";
+        inputs.idle_minutes = 90;
+        let p = build_proactive_prompt(&inputs);
+        // The register sits inside the parenthetical right after the minute count.
+        assert!(p.contains("约 90 分钟（用户走开有一两小时了）"));
     }
 
     #[test]
