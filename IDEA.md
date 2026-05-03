@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R51 设计要点（已实现）
+- **long-term + short-term 双视角是 trend 揭示的最少工具**：单一 lifetime avg 看不出最近变化（一年数据稀释）。单一 week avg 看不出长期 character（一周可能是异常）。**两个一起 = 对比 = trend 直接可读**。这是金融 / 健身 / 学习 tracker 的共同 idiom：MA-7 vs MA-30 / 周均 vs 月均。R51 把它带进 pet panel。
+- **smart denominator 而不是 fixed period**：weekSpeechCount / min(7, days + 1) 让首周 user 拿到正确 avg。如果固定 / 7，day 3 用户 average always 被低估 4×。**首日体验是 onboarding 关键** —— 数据正确性应该 day 1 就准，不能让 user 等 7 天才看到 stable signal。**boundary correctness > formula simplicity**。
+- **dynamic tooltip 比 static label 信息密度高**：title 根据 weekAvg vs lifetimeAvg 比例动态生成"更健谈/更安静"文案。比"周 N 天均值"静态模板：(a) 直接告诉用户结论而不是数据；(b) 提供 actionable signal ("最近趋势"); (c) zero extra UI cost (already-present hover)。**dynamic content in static UI shells** 是 panel 信息密度优化的高阶手段。
+- **±30% 是 noise vs signal sweet spot**：太严的阈值（±10%）让自然波动都触发警报，太松（±50%）极端 case 才提。30% 是凭直觉拍 + 与 R-series 其他三档 (>60% / <20% / mid feedback band, R7) 的"明显偏离" 阈值大致一致。**跨子系统阈值一致**有助于 user 心智模型构建 ("R-series 的'明显偏离' 大概是 30-40%")。
+- **chip 主体简洁，hover 承担 trend signal**：诱惑是给 /周日均 chip 加 ↑↓ 箭头或换色 (绿 = 趋升 / 橙 = 趋降)。但 stats card 已 6 列，加 visual 复杂度让密度过载。**chip body simple, hover does the heavy lifting** —— visual 复杂度 vs 信息密度的 trade-off。R23/R28 cooldown chip + hover 同思路。
+- **derived stats expansion 走完一轮**：R-series stats card 现 7 列。R50 + R51 是 derived expansion 一轮 (lifetime avg / week avg)。下一轮可能：speech length avg over time? Daily mood distribution? 但**stats card 信息密度边际收益递减** —— 6-7 列已经接近 visual budget 极限。后续 derived stats 可能放进 expandable section / chart 而不是 chip 行。
+- **panel design = "多视角同数据"**：R50 / R51 / R23 cooldown breakdown / R26 feedback aggregate hint 都是同一原则的不同 surface —— 同 raw data 用 ratio / band / trend / aggregate 多视角呈现。**Mature panel 不是 "raw data dump" 而是 "perspective interface"** —— 让 user 选择"我现在想从哪个角度看"。这是 R-series mature 期 panel 设计的核心审美。
+
 ## Iter R50 设计要点（已实现）
 - **派生统计是 panel 高阶维度**：raw counts (today/week/lifetime) 是基础数据。avg = lifetime/days 是**它们之间的 ratio**，揭示 base data 不能直接显示的特性 ("intensity of engagement")。**panel 设计成熟期应该多投资 derived stats**，不只 surface raw counters。R-series 之前的 panel chip 都是 raw signal (count / boolean / category)，R50 第一次显式加 derived ratio。后续候选：speech length avg / day 内 hour 分布 / topic frequency rank 等。
 - **精度跟范围匹配**：小数值（< 10）保留 1 位小数，大数值（≥ 10）取整。原因：**0.5 vs 1.5 vs 2.0 对小数 avg 有 meaning**（区分"基本不说" vs "每日固定一两次" vs "频繁"），而 23.4 vs 23.0 几乎相同感受。这是统计 readout 设计的常见 idiom —— "absolute precision" 不如 "perceptually meaningful precision"。
