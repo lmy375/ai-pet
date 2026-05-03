@@ -1294,9 +1294,16 @@ async fn run_proactive_turn(
         if recent.is_empty() {
             String::new()
         } else {
+            // Iter Cy: redact each line before re-injecting into the prompt. The pet's
+            // own past utterances may have referenced private terms (the LLM doesn't
+            // know to self-redact); redacting at read-time prevents re-leak even
+            // though the on-disk history file stays pristine.
             let bullets: Vec<String> = recent
                 .iter()
-                .map(|line| format!("· {}", crate::speech_history::strip_timestamp(line)))
+                .map(|line| {
+                    let stripped = crate::speech_history::strip_timestamp(line);
+                    format!("· {}", crate::redaction::redact_with_settings(stripped))
+                })
                 .collect();
             format!(
                 "你最近主动说过的几句话（旧→新），开口前看一眼避免重复：\n{}",

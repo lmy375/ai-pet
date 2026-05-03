@@ -30,6 +30,13 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter Cy 设计要点（已实现）— redaction 扩到 self-loop 通道
+- **read-time 而非 write-time redaction**：speech_history.log 文件保持原文。如果在写入时 redact，用户改 patterns 后过往 leak 永远留在文件里。read-time redact 让"我刚加了新 pattern" → 下一次 prompt 注入时新+老内容都被覆盖。可逆 + 即时生效。
+- **redact_with_settings 抽成 helper**：Iter Cx 的两个工具入口手写 `get_settings().map(...).unwrap_or_default()` + `redact_text(...)` 4 行模板。Iter Cy 把它抽成一行 helper——3 处调用（active_window / calendar / mood note / speech_history）现在写法统一。如果将来加 ToneSnapshot.mood_text 也需要 redact，再加一处调用同样简洁。
+- **mood 是 self-loop 风险点**：LLM 写 mood 时不会自我 redact——它看到原文 active_window 就可能在 mood 里写"为 Dr. Smith 担心"。这是用户 pattern 还没生效或宠物历史早期没被覆盖的窗口期 leak。每次 inject_mood_note 重新 redact 是兜底。
+- **speech_history.log 文件不动**：宠物"实际说过什么"是宠物的人格记录，不应该被 redaction 改。如果将来想让用户审计 / 导出宠物语料，原文保留。redact 只在"对外发送给 LLM"那一瞬间应用。
+- **路线 C 现在覆盖 4 个 prompt 注入通道**：active_window 工具 / calendar 工具 / mood note system message / speech_history 反哺 prompt 段。剩余可能 leak 通道：persona_summary（LLM 自写人格画像可能带私人词）和 mood_trend_hint（仅含 motion 标签 + 数字，无文本，零 leak 风险）。persona_summary 加 redact 是 future iter 候选。
+
 ## Iter Cx 设计要点（已实现）— 路线 C 起步：本地 redaction
 - **substring 而非 regex**：用户场景是"我不想让宠物把 Slack DM 对方名字传给 LLM"——典型输入是公司名 / 客户名 / 项目代号这类硬字符串。regex 会带来 ReDoS 风险 + 用户得学语法 + 编辑器里写正则容易出错。明确选 substring：用户列出固定词，命中即替换。
 - **case-insensitive 默认**：用户输入"slack"应该也匹配"Slack"——大部分情况这是预期。如果有人想严格 case，未来可以加一个"严格大小写" toggle。当前 case-folding 通过 `to_lowercase` 镜像扫描实现，O(n*m) 但 m 很小（10-20 个 patterns × 短字符串），可忽略。
