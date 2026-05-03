@@ -1,5 +1,27 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG5e 设计要点 + QG5 全程总结（已实现）
+- **stashes + recorder 一个 mod**：两个子模块也合理，但合在一起的优势：(a) cohesion — 都 serve 同一目的（panel observability + 决策日志）；(b) future maintainer 一眼看到"telemetry 这片是什么" 不用跨 file；(c) test 命名也容易（`mod tests` 一个 mod）。模块化的目标是 readable 而不是"切到极致"。
+- **`ProactiveTurnOutcome` 留 parent 是 orchestrator 数据 vs telemetry 数据的边界**：record_proactive_outcome 拿这个数据来记录，但 outcome **本身** 是 orchestrator (run_proactive_turn) 的产物。把 ProactiveTurnOutcome 移到 telemetry 反而暗示"telemetry 决定 outcome 形态"——倒了。`use super::ProactiveTurnOutcome;` 显式 import 表达"我消费这个 type，但不拥有它"。
+
+### QG5 全程回顾（5500 → 3028，~45% 缩小，6 个 sub-modules）
+
+- **incremental beat big-bang**：开始时 QG5 是 single TODO，多次 deferred ("too big")。改成"一次切一片" 后用 6 iter 完成（QG5a/b/c-prep/c1/c2/d/e）。每片：
+  - reminders (110)
+  - butler_schedule (642)
+  - time_helpers (308)
+  - prompt_rules (229)
+  - prompt_assembler (342)
+  - gate (640)
+  - telemetry (204)
+  - 累计 2475 行减小（vs 实测 2470 — 数字对得上）
+- **glob `pub use` 是 backward-compat 的银弹**：每片新模块抽离都通过 `pub use self::sub::*;` 让 spawn loop body / run_proactive_turn / 外部 caller (consolidate.rs / chat.rs) 0 修改。这种"切代码不切 API" 是模块化重构的关键 invariant。
+- **测试与代码同居 vs 留 parent 的判断**：butler_schedule / gate / time_helpers / reminders 测试随源走（mod tests in sub）；prompt_rules / prompt_assembler / telemetry 测试留 prompt_tests in parent。判断标准：tests 是 self-contained mod 还是依赖 base_inputs() / 跨多模块 fns？前者随源，后者留 parent。
+- **proactive.rs 最终 3028 行的健康终态**：剩 spawn loop / run_proactive_turn / InteractionClock / ToneSnapshot data type / Tauri commands / spawn function。这些是 orchestration "胶水代码"——绑定子系统、暴露 IPC 接口。再切下去会破碎主流程。
+- **6 个 sub-modules 平均 380 行**：从 reminders (283) 到 gate (654)，每个都是可独立阅读的 cohesive unit。打开 `proactive/butler_schedule.rs` 你看到一整片管家逻辑；打开 `gate.rs` 你看到一整片决策门——这是模块化重构想要的体感。
+- **Iter 间 mechanically 重复 = 有信心继续**：6 iter 的 cargo test count 从 383 一动不动。不变行为是 hard contract，glob re-export 让外部不破坏。每 iter ~500 行 diff，review-friendly。这种"重复且单调" 的执行节奏是大型重构的健康信号。
+- **下一步如果还要切**：可以再考虑提 InteractionClock 到 sub-module（"clock.rs"），把 spawn loop body 单独提（"loop.rs"）。但 ROI 越来越低——剩下的就是真正的胶水。我会停在 3028 行 acceptable。
+
 ## Iter QG5d 设计要点（已实现）
 - **gate 子系统的 cohesion**：7 个 gate（disabled/awaiting/cooldown/quiet/focus/idle/input-idle）+ 一个调度器 evaluate_loop_tick + 一个 LoopAction enum + 一组 wake softening helpers — 这一片自然成 unit。Tests 多达 25 个 + 470 行也合理：每个 gate 都有 active/inactive/boundary 三种至少一种 case。
 - **测试整体迁移 vs 留 prompt_tests 的对照**：gate_tests 是 self-contained mod（只用 super::* + ProactiveConfig + ClockSnapshot），所以可以整个搬走。prompt_tests 因为 base_inputs 跨多模块依赖留在 proactive.rs。判断标准简单：tests 用 super:: 解析的 items 是不是大部分跟 source 一起搬？是 → 跟着搬。否 → 留 parent。
