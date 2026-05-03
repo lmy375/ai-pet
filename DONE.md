@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cπ：butler_tasks 执行失败回退 — `[error]` 标记 + 红 chip
+- 现状缺口：butler 路径里 LLM 真去执行（read_file / write_file / edit_file / bash）时偶尔会失败——文件不存在、权限不够、命令报错。失败时 LLM 通常只能默默放弃，连 butler_history 都没记录（因为没走 memory_edit 的 update/delete）。用户看到的是「这个任务一直挂着」、「⏰ 到期 半天没动」，但不知道为什么。这是 Route F 的最后一个明显裂缝。
+- 解法：约定 `[error: 简短原因]` 标记由 LLM 自己写进 description——失败时 update 加这段，重试成功时 update 把它去掉。零基础设施改动（不需要新 log / 新 IPC / 新调度），靠 prompt + 渲染层把"失败状态"做出来。
+- 后端 `proactive.rs`:
+  - 新 pure 函数 `has_butler_error(desc)`：检查 `[error` 子串。LLM 实际写法 `[error: x]` / `[error :x]` / `[error]` 都识别。case-sensitive 比 regex 简单且对中文没误伤。
+  - `format_butler_tasks_block` 加第三状态 `errored`。每条 item 现在 annotate (due, errored)。marker 顺序：`❌ 错误` 在前、`⏰ 到期` 在后（错误更紧迫）。两者可共存（最常见场景：`[every: 09:00] [error: ...]` 上次失败、今天 fire 又到期）。
+  - header 改成 4 路 match：(0,0) / (d,0) / (0,e) / (d,e)，分别报「共 N 条」/「N 条 D 条到期」/「N 条 E 条上次失败」/「N 条，D 条到期、E 条上次失败」——一眼看到队列健康度。
+  - footer 增加一段【执行失败处理】文字，明确教 LLM：tool 调用失败 → update description 里加 `[error: 简短原因]`、保留原有 schedule 前缀；下次重试成功 → 移除标记。看到 ❌ 标记说明上次失败，按描述里的原因决定是否重试。
+- 5 个新 unit test 覆盖：has_butler_error 正负各 4 例、format 单错误标注、错误 + 到期共存且 marker 顺序固定。测试总数 286 → 290。
+- 前端 `PanelMemory.tsx`:
+  - TS mirror `parseButlerError(desc)`：返回 `{ hasError, reason }`。reason 是 `[error: <body>]` 的 body，帮 chip 显示具体原因。malformed `[error` 没闭合也算 errored（信任 LLM 写了 marker）。
+  - butler_tasks item 渲染加红色 ❌ 失败 chip：
+    - 背景 `#fef2f2` + 文字 `#991b1b` + 边框 `#fecaca`（比 ⏰ 到期 chip 更"软红"，区分语义）
+    - chip 文本 `❌ 失败：原因前 30 字`，tooltip 显示完整原因
+    - chip 顺序：错误在前、到期在后，与后端 marker 顺序一致
+  - description 显示时 strip 掉 `[error: ...]` block，避免 chip 已显示又在正文重复
+- 不写 Tauri 调用 / 不接事件流 / 不动 butler_history.log——纯 description 字段约定 + 视觉分发。LLM 会写、面板会显示、用户看到，闭环就成了。
+- 结果：butler 任务的"我已经尝试了但失败了"状态从无形变可见。用户在 panel 上立刻分得清"这个任务在等我（到期）"vs"这个任务我搞砸了"vs"这个任务还顺利"。Route F 真正闭环。
+
 ## 2026-05-03 — Iter Cο：PanelPersona 加"当下心情"区
 - 现状缺口：PanelPersona 之前有三块：陪伴时长 / 自我画像 / 心情谱（长期 motion 分布）。"当下心情" 这种 live state 只在 PanelDebug 的 ToneStrip 里以一条小字显示——但 ToneStrip 是 debug 视角；用户从「我的宠物现在什么感觉」语义出发会看 Persona 而不是 Debug。结果导致 user 看不到当下心情这个本应该是 persona 重点的信息。
 - 解法：

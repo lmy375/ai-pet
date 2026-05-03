@@ -1662,36 +1662,47 @@ pub fn format_butler_tasks_block(
     if items.is_empty() || max_items == 0 {
         return String::new();
     }
-    // Compute due-ness once per item (parse + clock check) and stable-sort.
-    let mut annotated: Vec<(&(String, String, String), bool)> = items
+    // Compute due-ness + error state once per item and stable-sort.
+    let mut annotated: Vec<(&(String, String, String), bool, bool)> = items
         .iter()
         .map(|i| {
             let due = parse_butler_schedule_prefix(&i.1)
                 .map(|(sched, _)| is_butler_due(&sched, now, &i.2))
                 .unwrap_or(false);
-            (i, due)
+            let errored = has_butler_error(&i.1);
+            (i, due, errored)
         })
         .collect();
-    // Due → not-due primary, updated_at ascending secondary. Stable-friendly via slice
-    // sort_by on a tuple of comparators.
-    annotated.sort_by(|(a, a_due), (b, b_due)| match (a_due, b_due) {
+    // Due → not-due primary, updated_at ascending secondary. Errored items keep
+    // their primary slot — they're often also due (last execution failed) so they
+    // bubble up naturally; if not due, they stay in normal order so the user
+    // doesn't drown in stale errors.
+    annotated.sort_by(|(a, a_due, _), (b, b_due, _)| match (a_due, b_due) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
         _ => a.2.cmp(&b.2),
     });
     let n = annotated.len().min(max_items);
-    let due_count = annotated.iter().take(n).filter(|(_, d)| *d).count();
+    let due_count = annotated.iter().take(n).filter(|(_, d, _)| *d).count();
+    let err_count = annotated.iter().take(n).filter(|(_, _, e)| *e).count();
     let mut lines: Vec<String> = Vec::with_capacity(n + 2);
-    let header = if due_count > 0 {
-        format!(
+    let header = match (due_count, err_count) {
+        (0, 0) => format!("用户委托给你的管家任务（共 {} 条，按最早委托排在前）：", n),
+        (d, 0) => format!(
             "用户委托给你的管家任务（共 {} 条，其中 {} 条到期，按到期 → 最早委托排在前）：",
-            n, due_count
-        )
-    } else {
-        format!("用户委托给你的管家任务（共 {} 条，按最早委托排在前）：", n)
+            n, d
+        ),
+        (0, e) => format!(
+            "用户委托给你的管家任务（共 {} 条，其中 {} 条上次执行失败需要复查）：",
+            n, e
+        ),
+        (d, e) => format!(
+            "用户委托给你的管家任务（共 {} 条，{} 条到期、{} 条上次失败）：",
+            n, d, e
+        ),
     };
     lines.push(header);
-    for ((title, desc, _), due) in annotated.iter().take(n) {
+    for ((title, desc, _), due, errored) in annotated.iter().take(n) {
         let trimmed = desc.trim();
         let truncated: String = if trimmed.chars().count() <= max_desc_chars {
             trimmed.to_string()
@@ -1699,16 +1710,35 @@ pub fn format_butler_tasks_block(
             let head: String = trimmed.chars().take(max_desc_chars).collect();
             format!("{}…", head)
         };
-        let marker = if *due { "⏰ 到期 · " } else { "" };
+        // Marker order: error first (most urgent) → due second. Both can co-occur.
+        let mut marker = String::new();
+        if *errored {
+            marker.push_str("❌ 错误 · ");
+        }
+        if *due {
+            marker.push_str("⏰ 到期 · ");
+        }
         lines.push(format!("- {}{}：{}", marker, title.trim(), truncated));
     }
     lines.push(
         "执行完一项后用 `memory_edit update` 更新进度（标题前加 [done] / 写最后执行时间），\
 完全不需要的用 `memory_edit delete` 移除。带 `[every: HH:MM]` 或 `[once: ...]` 前缀的任务标记了到期窗口——\
-看到「⏰ 到期」就该这一轮优先处理它。"
+看到「⏰ 到期」就该这一轮优先处理它。\n\
+**执行失败处理**：如果你这一轮调用 read_file / write_file / edit_file / bash 时失败（文件不存在、权限不够、命令报错等），\
+用 `memory_edit update` 在 description 里加一段 `[error: 简短原因]`（保留原有 `[every:]` / `[once:]` 前缀，error 段贴在它后面）。\
+下次重试成功时记得移除这段 error 标记。看到「❌ 错误」标记的任务说明上次失败了，请检查描述里的失败原因再决定要不要重试。"
             .to_string(),
     );
     lines.join("\n")
+}
+
+/// Iter Cπ: detect whether a butler task description is currently flagged as errored.
+/// Convention: LLM prepends or embeds `[error: brief reason]` after a tool failure
+/// during execution. We only check the substring `[error` — case-sensitive, no
+/// regex — to keep this cheap and tolerant of `[error:`, `[error :`, `[error]`
+/// variants the LLM might write.
+pub fn has_butler_error(desc: &str) -> bool {
+    desc.contains("[error")
 }
 
 /// Schedule for a butler task (Iter Cζ). Distinct from `ReminderTarget` semantically:
@@ -2692,6 +2722,58 @@ mod prompt_tests {
             out.contains("memory_edit update") || out.contains("memory_edit delete"),
             "footer should tell LLM how to retire completed tasks"
         );
+    }
+
+    #[test]
+    fn has_butler_error_detects_marker() {
+        assert!(has_butler_error("[error: file not found] write report"));
+        assert!(has_butler_error("[every: 09:00] [error: permission denied] morning"));
+        assert!(has_butler_error("some text [error] more text"));
+        assert!(has_butler_error("[error :spaced] x"));
+    }
+
+    #[test]
+    fn has_butler_error_negative_cases() {
+        assert!(!has_butler_error(""));
+        assert!(!has_butler_error("normal task description"));
+        assert!(!has_butler_error("[every: 09:00] write daily.md"));
+        assert!(!has_butler_error("[once: 2026-05-10 14:00] one-shot"));
+        // Word "error" alone must not trigger — the marker is `[error`.
+        assert!(!has_butler_error("had an error earlier but recovered"));
+    }
+
+    #[test]
+    fn format_butler_tasks_block_marks_errored_tasks() {
+        let items = vec![(
+            "morning-report".into(),
+            "[every: 09:00] [error: file not found] write today.md".into(),
+            "2026-05-03T09:30:00+08:00".into(),
+        )];
+        let out = format_butler_tasks_block(&items, 6, 200, fixed_now());
+        // Error marker should appear on the task line; header should mention 失败.
+        assert!(out.contains("❌ 错误"));
+        let header = out.lines().next().unwrap();
+        assert!(header.contains("上次执行失败"), "header: {}", header);
+    }
+
+    #[test]
+    fn format_butler_tasks_block_due_and_errored_co_occur() {
+        // [every: 09:00] not yet served today (updated_at = yesterday) AND errored.
+        // Marker order: 错误 first, then 到期.
+        let items = vec![(
+            "report".into(),
+            "[every: 09:00] [error: prev fail] write today.md".into(),
+            "2026-05-02T08:00:00+08:00".into(),
+        )];
+        let out = format_butler_tasks_block(&items, 6, 200, fixed_now());
+        let body = out.lines().nth(1).unwrap();
+        let err_idx = body.find("❌ 错误").unwrap();
+        let due_idx = body.find("⏰ 到期").unwrap();
+        assert!(err_idx < due_idx, "error marker should precede due marker");
+        // Header lists both counts.
+        let header = out.lines().next().unwrap();
+        assert!(header.contains("到期"));
+        assert!(header.contains("失败"));
     }
 
     #[test]
