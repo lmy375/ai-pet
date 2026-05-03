@@ -361,7 +361,7 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
     let chatty_today = crate::speech_history::today_speech_count().await;
     let chatty_threshold = get_settings()
         .ok()
-        .map(|s| s.proactive.chatty_day_threshold)
+        .map(|s| s.proactive.effective_chatty_threshold())
         .unwrap_or(5);
     let chatty_part =
         chatty_mode_tag(chatty_today, chatty_threshold).unwrap_or_else(|| "-".to_string());
@@ -424,7 +424,7 @@ pub async fn build_tone_snapshot(
     let proactive_count = crate::speech_history::lifetime_speech_count().await;
     let chatty_day_threshold = get_settings()
         .ok()
-        .map(|s| s.proactive.chatty_day_threshold)
+        .map(|s| s.proactive.effective_chatty_threshold())
         .unwrap_or(5);
     let today_count_for_rules = crate::speech_history::today_speech_count().await;
     let env_counters_for_rules = &counters.env_tool;
@@ -630,7 +630,7 @@ pub fn spawn(app: AppHandle) {
             // post-LLM outcome with the same numbers — keeps the decision log explainable
             // when the pet stays silent because of a prompt-level rule rather than a gate.
             let chatty_today = crate::speech_history::today_speech_count().await;
-            let chatty_threshold = settings.proactive.chatty_day_threshold;
+            let chatty_threshold = settings.proactive.effective_chatty_threshold();
             let chatty_tag = chatty_mode_tag(chatty_today, chatty_threshold);
             // Snapshot the data-driven prompt rules that *will* fire this turn (icebreaker /
             // chatty / env-awareness). Computed at dispatch time so every decision-log
@@ -1028,7 +1028,7 @@ async fn run_proactive_turn(
     let today_speech_count = crate::speech_history::today_speech_count().await;
     let chatty_day_threshold = get_settings()
         .ok()
-        .map(|s| s.proactive.chatty_day_threshold)
+        .map(|s| s.proactive.effective_chatty_threshold())
         .unwrap_or(5);
     // Env-awareness ratio over the recent window (process-wide atomic, reset by panel).
     // Drives a self-correction rule: when the model's been ignoring env tools, nudge it

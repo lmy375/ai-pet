@@ -175,15 +175,16 @@ pub async fn evaluate_loop_tick(
         .last_wake_seconds_ago()
         .await;
 
-    // Iter R7: derive effective cooldown from base + recent feedback ratio.
-    // 20-entry window matches the panel timeline (R6) so panel and gate see
-    // the same denominator. None ratio (no feedback yet) leaves base intact.
+    // Iter R13: companion-mode preset shapes the base cadence (high-level
+    // dial). Iter R7 ratio adaptation layers on top of that base. Order
+    // matters — mode is user intent, R7 is observed-feedback fine-tune.
+    let mode_cooldown = cfg.effective_cooldown_base();
     let recent_fb = crate::feedback_history::recent_feedback(20).await;
     let effective_cooldown = match crate::feedback_history::ignore_ratio(&recent_fb) {
         Some((ratio, n)) => {
-            crate::feedback_history::adapted_cooldown_seconds(cfg.cooldown_seconds, ratio, n)
+            crate::feedback_history::adapted_cooldown_seconds(mode_cooldown, ratio, n)
         }
-        None => cfg.cooldown_seconds,
+        None => mode_cooldown,
     };
 
     if let Err(action) = evaluate_pre_input_idle(
@@ -218,6 +219,9 @@ mod tests {
             quiet_hours_end: 0,
             respect_focus_mode: true,
             chatty_day_threshold: 5,
+            // Iter R13: tests run in balanced mode so companion-mode multipliers
+            // don't fold into existing gate-test expectations.
+            companion_mode: "balanced".to_string(),
         }
     }
 
