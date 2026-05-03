@@ -1748,9 +1748,16 @@ async fn run_proactive_turn(
         .state::<crate::tool_review::ToolReviewRegistryStore>()
         .inner()
         .clone();
+    // Iter R2: forward the decision_log so review outcomes show up alongside
+    // proactive Spoke / Silent / Skip entries in the panel.
+    let decision_log_for_ctx = app
+        .state::<crate::decision_log::DecisionLogStore>()
+        .inner()
+        .clone();
     let ctx = ToolContext::new(log_store, shell_store, process_counters)
         .with_tools_used_collector(tools_used.clone())
-        .with_tool_review(tool_review);
+        .with_tool_review(tool_review)
+        .with_decision_log(decision_log_for_ctx);
 
     // Try to load the latest session so the proactive turn has the recent context. If none
     // exists yet, fall back to a system-only conversation.

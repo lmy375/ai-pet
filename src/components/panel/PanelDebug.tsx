@@ -959,6 +959,13 @@ function kindColor(kind: string): string {
       return "#f59e0b";
     case "Silent":
       return "#94a3b8";
+    // Iter R2: tool-review outcomes share the timeline with proactive decisions.
+    case "ToolReviewApprove":
+      return "#0ea5e9";
+    case "ToolReviewDeny":
+      return "#dc2626";
+    case "ToolReviewTimeout":
+      return "#f97316";
     default:
       return "#475569";
   }
@@ -1018,6 +1025,16 @@ function localizeReason(kind: string, reason: string): string {
       return "macOS Focus / 勿扰已开启";
     }
     return stripped;
+  }
+  // Iter R2: tool-review timeline entries — reason is "{review_id} {tool_name}".
+  if (kind === "ToolReviewApprove") {
+    return `用户允许了高风险工具调用（${reason}）`;
+  }
+  if (kind === "ToolReviewDeny") {
+    return `用户拒绝了高风险工具调用（${reason}）`;
+  }
+  if (kind === "ToolReviewTimeout") {
+    return `60秒未审核，按默认策略拒绝（${reason}）`;
   }
   return reason;
 }
