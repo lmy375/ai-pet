@@ -42,7 +42,12 @@ pub fn redact_with_settings(text: &str) -> String {
     use std::sync::atomic::Ordering;
     REDACTION_CALLS.fetch_add(1, Ordering::Relaxed);
     let (subs, regexes) = crate::commands::settings::get_settings()
-        .map(|s| (s.privacy.redaction_patterns.clone(), s.privacy.regex_patterns.clone()))
+        .map(|s| {
+            (
+                s.privacy.redaction_patterns.clone(),
+                s.privacy.regex_patterns.clone(),
+            )
+        })
         .unwrap_or_default();
     let after_substr = redact_text(text, &subs);
     let after_regex = redact_regex(&after_substr, &regexes);
@@ -249,7 +254,10 @@ mod tests {
     fn redact_regex_multiple_patterns_apply_in_order() {
         let patterns = vec![r"\d+".to_string(), r"[a-z]+".to_string()];
         // Numbers first, then lowercase words — both replaced.
-        assert_eq!(redact_regex("abc 123 xyz", &patterns), "(私人) (私人) (私人)");
+        assert_eq!(
+            redact_regex("abc 123 xyz", &patterns),
+            "(私人) (私人) (私人)"
+        );
     }
 
     #[test]
@@ -271,10 +279,7 @@ mod tests {
 
     #[test]
     fn redaction_stats_struct_serializes() {
-        let s = RedactionStats {
-            calls: 10,
-            hits: 3,
-        };
+        let s = RedactionStats { calls: 10, hits: 3 };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"calls\":10"));
         assert!(json.contains("\"hits\":3"));

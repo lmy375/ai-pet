@@ -76,7 +76,7 @@ async fn record_speech_inner(text: &str) -> std::io::Result<()> {
     let ts = chrono::Local::now()
         .format("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
-    let flat = text.replace('\n', " ").replace('\r', " ");
+    let flat = text.replace(['\n', '\r'], " ");
     entries.push(format!("{} {}", ts, flat));
     if entries.len() > SPEECH_HISTORY_CAP {
         let drop = entries.len() - SPEECH_HISTORY_CAP;
@@ -196,17 +196,22 @@ pub fn prune_daily(
 ) -> BTreeMap<String, u64> {
     let cutoff = today - chrono::Duration::days(retain_days as i64);
     let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
-    map.retain(|k, _| match chrono::NaiveDate::parse_from_str(k, "%Y-%m-%d") {
-        Ok(_) => k.as_str() >= cutoff_str.as_str(),
-        Err(_) => true,
-    });
+    map.retain(
+        |k, _| match chrono::NaiveDate::parse_from_str(k, "%Y-%m-%d") {
+            Ok(_) => k.as_str() >= cutoff_str.as_str(),
+            Err(_) => true,
+        },
+    );
     map
 }
 
 /// Today's date in `YYYY-MM-DD` form using local time — same timezone as the speech log
 /// timestamps so "今天" matches what the user's clock shows.
 fn today_key() -> String {
-    chrono::Local::now().date_naive().format("%Y-%m-%d").to_string()
+    chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// Best-effort: increment today's bucket and prune any entries beyond the retain window.
@@ -248,11 +253,7 @@ pub async fn get_today_speech_count() -> u64 {
 /// ending at `today` (inclusive). Used by `week_speech_count` so the same
 /// arithmetic is unit-testable without the on-disk daily file. `n=7` gives
 /// "today + 6 prior days = rolling week".
-pub fn sum_recent_days(
-    map: &BTreeMap<String, u64>,
-    today: chrono::NaiveDate,
-    n: usize,
-) -> u64 {
+pub fn sum_recent_days(map: &BTreeMap<String, u64>, today: chrono::NaiveDate, n: usize) -> u64 {
     let mut total: u64 = 0;
     for offset in 0..n {
         let d = today - chrono::Duration::days(offset as i64);

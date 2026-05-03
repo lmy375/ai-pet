@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, WebviewWindowBuilder, WebviewUrl};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[tauri::command]
 pub async fn open_panel(app: AppHandle) -> Result<(), String> {

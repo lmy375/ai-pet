@@ -38,7 +38,7 @@ mod macos {
         for line in stdout.lines() {
             // Looking for: `    | | |   "HIDIdleTime" = 60042178833`
             if let Some(rest) = line.split_once("\"HIDIdleTime\"") {
-                let value = rest.1.trim_start_matches(|c: char| c == ' ' || c == '=');
+                let value = rest.1.trim_start_matches([' ', '=']);
                 let nanos: u64 = value.trim().parse().ok()?;
                 return Some(nanos / 1_000_000_000);
             }

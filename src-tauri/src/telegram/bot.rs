@@ -7,8 +7,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::commands::chat::{
     inject_mood_note, inject_persona_layer, run_chat_pipeline, trim_to_context, ChatDonePayload,
-    ChatMessage,
-    CollectingSink,
+    ChatMessage, CollectingSink,
 };
 use crate::commands::debug::{LogStore, ProcessCountersStore};
 use crate::commands::session;
@@ -58,13 +57,19 @@ impl TelegramBot {
         let bot = Bot::new(&config.bot_token);
 
         // Verify bot token by calling getMe
-        let _me: Me = bot.get_me().await.map_err(|e| format!("Telegram bot auth failed: {}", e))?;
+        let _me: Me = bot
+            .get_me()
+            .await
+            .map_err(|e| format!("Telegram bot auth failed: {}", e))?;
 
         // Load or create the dedicated Telegram session
         let (session_id, messages) = load_or_create_session();
 
         let state = Arc::new(HandlerState {
-            allowed_username: config.allowed_username.trim_start_matches('@').to_lowercase(),
+            allowed_username: config
+                .allowed_username
+                .trim_start_matches('@')
+                .to_lowercase(),
             persona_layer_enabled: config.persona_layer_enabled,
             mcp_store,
             log_store,
@@ -98,7 +103,10 @@ impl TelegramBot {
         // the shutdown — spawning it is sufficient.
         let token = self.shutdown_token.clone();
         tokio::spawn(async move {
-            token.shutdown().expect("Failed to shutdown Telegram bot").await;
+            token
+                .shutdown()
+                .expect("Failed to shutdown Telegram bot")
+                .await;
         });
     }
 }
@@ -112,7 +120,9 @@ fn load_or_create_session() -> (String, Vec<serde_json::Value>) {
             let system_msg = serde_json::json!({ "role": "system", "content": soul });
             let messages = vec![system_msg];
 
-            let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+            let now = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                .to_string();
             let s = session::Session {
                 id: TELEGRAM_SESSION_ID.to_string(),
                 title: "Telegram".to_string(),
@@ -142,8 +152,11 @@ async fn handle_message(
         .unwrap_or_default();
 
     if !state.allowed_username.is_empty() && username != state.allowed_username {
-        bot.send_message(msg.chat.id, "Sorry, you are not authorized to chat with me.")
-            .await?;
+        bot.send_message(
+            msg.chat.id,
+            "Sorry, you are not authorized to chat with me.",
+        )
+        .await?;
         return Ok(());
     }
 
@@ -222,7 +235,9 @@ async fn handle_message(
         session_msgs.push(assistant_msg);
 
         // Persist to disk
-        let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+        let now = chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string();
         let items: Vec<serde_json::Value> = session_msgs
             .iter()
             .filter_map(|m| {
@@ -230,7 +245,9 @@ async fn handle_message(
                 let content = m["content"].as_str()?;
                 match role {
                     "user" => Some(serde_json::json!({ "type": "user", "content": content })),
-                    "assistant" => Some(serde_json::json!({ "type": "assistant", "content": content })),
+                    "assistant" => {
+                        Some(serde_json::json!({ "type": "assistant", "content": content }))
+                    }
                     _ => None,
                 }
             })
@@ -241,7 +258,11 @@ async fn handle_message(
             .and_then(|i| i["content"].as_str())
             .map(|c| {
                 let t = c.chars().take(20).collect::<String>();
-                if c.len() > 20 { format!("{}...", t) } else { t }
+                if c.len() > 20 {
+                    format!("{}...", t)
+                } else {
+                    t
+                }
             })
             .unwrap_or_else(|| "Telegram".to_string());
 

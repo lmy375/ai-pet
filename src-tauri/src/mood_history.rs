@@ -50,7 +50,7 @@ async fn record_mood_inner(text: &str, motion: &Option<String>) -> std::io::Resu
 
     // Skip when the most recent line records exactly the same motion + text — keeps
     // the log focused on transitions instead of identical re-reads.
-    if let Some(last) = existing.lines().filter(|l| !l.is_empty()).next_back() {
+    if let Some(last) = existing.lines().rfind(|l| !l.is_empty()) {
         if let Some((last_motion, last_text)) = parse_motion_text(last) {
             if last_motion == motion_str && last_text == trimmed {
                 return Ok(());
@@ -66,7 +66,7 @@ async fn record_mood_inner(text: &str, motion: &Option<String>) -> std::io::Resu
     let ts = chrono::Local::now()
         .format("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
-    let flat = trimmed.replace('\n', " ").replace('\r', " ");
+    let flat = trimmed.replace(['\n', '\r'], " ");
     entries.push(format!("{} {} | {}", ts, motion_str, flat));
     if entries.len() > MOOD_HISTORY_CAP {
         let drop = entries.len() - MOOD_HISTORY_CAP;

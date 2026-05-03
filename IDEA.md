@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG1 设计要点（已实现）
+- **从堆功能切到质量收口**：D / E / F 系列连续加 surfacing / devtools / UX 后，TODO.md 顶部新加了 "下一阶段：质量收口" 段——这是一个明确信号（来自代码质量评估），下一批工作应该是 "把 alpha 推向可维护"。QG1 是入门门槛最低、最少改业务行为的一项，先做掉建立 baseline。
+- **"先 fmt 再 clippy" 顺序**：fmt 是机械重排，对 clippy 的代码定位行号会有影响——先 fmt 后 clippy 让所有 clippy 报错的行号都基于已格式化代码，未来对照 git blame 时不会被搞混。
+- **`#[allow(clippy::too_many_arguments)]` vs 重构成 struct**：两处选 allow。原因：(a) Tauri command 的 `State<'_, T>` DI 必须每个 state 一个独立 param，无法合并；(b) write_llm_log 是 thin wrapper，9 个字段都来自不同上游来源（StreamEvent 监听 / Instant timer / serde_json::Value），打包成 struct 实际上把 plumbing 推到调用点，那里是 hot path。allow + 一行 comment 解释 reasoning，比"为了 lint 干净而强行重构"诚实。
+- **`is_some_and` vs `map_or(false, ...)`**：clippy 1.94 主推的，比 map_or(false, ...) 语义更直接。这是最近几个 Rust 版本里最常见的"小升级"，每次 toolchain 升级都会冒出几个。批量修是合理时机。
+- **doc_lazy_continuation**：proactive.rs 那两处 doc 注释把"列表 + 总结句"挤一起，clippy 现在要求列表项后空一行才知道下面不是列表 continuation。这是 markdown 渲染的合理诉求，加空行不影响人类阅读。
+- **不做 CI hook 这一步**：QG1 只是清掉债务，建立"下次再红就立刻能查"的 baseline。把 fmt/clippy 接进 pre-commit/CI 是后续 QG（更大动作，需要协调）的事。
+
 ## Iter F1 设计要点（已实现）
 - **F series 拐回用户体验**：D 是 surfacing，E 是 dev tool，F 是 user UX 改进。这次发现"bubble 永久挂屏幕"是个真实长期 gap—只是前面 30 多个 iter 集中在功能加成，没人审视过 bubble lifecycle。
 - **60s 选择**：30s 太短（用户走开倒杯水回来错过）；120s 太长（视觉负担）。60s 是 "能读到 + 不烦人" 的舒适带。后续若用户反馈再调；不暴露到 settings 避免配置项又一个不必要选项。

@@ -23,8 +23,7 @@ pub struct FocusStatus {
 #[cfg(target_os = "macos")]
 pub async fn focus_status() -> Option<FocusStatus> {
     let home = std::env::var("HOME").ok()?;
-    let path = std::path::PathBuf::from(home)
-        .join("Library/DoNotDisturb/DB/Assertions.json");
+    let path = std::path::PathBuf::from(home).join("Library/DoNotDisturb/DB/Assertions.json");
     let bytes = tokio::fs::read(&path).await.ok()?;
     let val: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     Some(parse_focus_status(&val))

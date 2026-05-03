@@ -275,6 +275,8 @@ pub fn memory_edit(
             Ok("Deleted.".to_string())
         }
 
-        _ => Err(format!("Unknown action: {action}. Use create/update/delete.")),
+        _ => Err(format!(
+            "Unknown action: {action}. Use create/update/delete."
+        )),
     }
 }

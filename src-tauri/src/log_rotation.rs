@@ -53,7 +53,10 @@ mod tests {
     #[test]
     fn rotated_path_appends_dot_one() {
         let p = PathBuf::from("/some/dir/focus_history.log");
-        assert_eq!(rotated_path(&p), PathBuf::from("/some/dir/focus_history.log.1"));
+        assert_eq!(
+            rotated_path(&p),
+            PathBuf::from("/some/dir/focus_history.log.1")
+        );
     }
 
     #[test]

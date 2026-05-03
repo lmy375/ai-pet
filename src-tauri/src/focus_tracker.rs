@@ -101,7 +101,8 @@ async fn append_event(event: &str) -> Result<(), std::io::Error> {
         .append(true)
         .open(&path)
         .await?;
-    f.write_all(format!("{} {}\n", ts, event).as_bytes()).await?;
+    f.write_all(format!("{} {}\n", ts, event).as_bytes())
+        .await?;
     Ok(())
 }
 

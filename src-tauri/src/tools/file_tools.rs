@@ -173,7 +173,7 @@ async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
     if file_path.is_empty() {
         return r#"{"error": "missing 'file_path' parameter"}"#.to_string();
     }
-    if !args.get("content").map_or(false, |v| v.is_string()) {
+    if !args.get("content").is_some_and(|v| v.is_string()) {
         return r#"{"error": "missing 'content' parameter"}"#.to_string();
     }
 
@@ -191,7 +191,10 @@ async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
         return format!(r#"{{"error": "failed to write file: {}"}}"#, e);
     }
 
-    ctx.log(&format!("write_file: {} ({} bytes)", file_path, bytes_written));
+    ctx.log(&format!(
+        "write_file: {} ({} bytes)",
+        file_path, bytes_written
+    ));
 
     serde_json::json!({
         "file_path": file_path,

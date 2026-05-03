@@ -113,7 +113,12 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         cleanup_old_tasks(&mut map);
         map.insert(
             task_id.clone(),
-            crate::commands::shell::ShellTask::new(pid, stdout_path.clone(), stderr_path.clone(), started_at),
+            crate::commands::shell::ShellTask::new(
+                pid,
+                stdout_path.clone(),
+                stderr_path.clone(),
+                started_at,
+            ),
         );
     }
 

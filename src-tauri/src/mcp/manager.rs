@@ -76,10 +76,9 @@ impl McpManager {
                         manager.tool_map.insert(tool_name, name.clone());
                         manager.tool_definitions.push(openai_def);
                     }
-                    manager.connections.insert(
-                        name.clone(),
-                        McpConnection { service, tools },
-                    );
+                    manager
+                        .connections
+                        .insert(name.clone(), McpConnection { service, tools });
                     manager.statuses.push(McpServerStatus {
                         name: name.clone(),
                         connected: true,
@@ -126,10 +125,11 @@ impl McpManager {
             cmd.env(key, value);
         }
 
-        let transport = TokioChildProcess::new(cmd)
-            .map_err(|e| format!("Failed to spawn process: {}", e))?;
+        let transport =
+            TokioChildProcess::new(cmd).map_err(|e| format!("Failed to spawn process: {}", e))?;
 
-        let service: RunningService<RoleClient, ()> = ().serve(transport)
+        let service: RunningService<RoleClient, ()> = ()
+            .serve(transport)
             .await
             .map_err(|e| format!("Failed to initialize MCP client: {}", e))?;
 
@@ -164,7 +164,8 @@ impl McpManager {
             StreamableHttpClientTransport::from_config(http_config)
         };
 
-        let service: RunningService<RoleClient, ()> = ().serve(transport)
+        let service: RunningService<RoleClient, ()> = ()
+            .serve(transport)
             .await
             .map_err(|e| format!("Failed to initialize MCP client: {}", e))?;
 

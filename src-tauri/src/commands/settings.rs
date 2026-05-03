@@ -317,8 +317,7 @@ impl Default for AppSettings {
 }
 
 fn config_dir() -> Result<PathBuf, String> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| "Cannot determine config directory".to_string())?;
+    let dir = dirs::config_dir().ok_or_else(|| "Cannot determine config directory".to_string())?;
     Ok(dir.join("pet"))
 }
 
@@ -340,10 +339,9 @@ pub fn get_settings() -> Result<AppSettings, String> {
     if !path.exists() {
         return Ok(AppSettings::default());
     }
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read config: {}", e))?;
-    let settings: AppSettings = serde_yaml::from_str(&content)
-        .map_err(|e| format!("Failed to parse config: {}", e))?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
+    let settings: AppSettings =
+        serde_yaml::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?;
     Ok(settings)
 }
 
@@ -351,13 +349,11 @@ pub fn get_settings() -> Result<AppSettings, String> {
 pub fn save_settings(settings: AppSettings) -> Result<(), String> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
     }
     let yaml = serde_yaml::to_string(&settings)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&path, yaml)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    fs::write(&path, yaml).map_err(|e| format!("Failed to write config: {}", e))?;
     Ok(())
 }
 
@@ -375,8 +371,7 @@ pub fn get_soul() -> Result<String, String> {
     if !path.exists() {
         return Ok(default_soul());
     }
-    fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read SOUL.md: {}", e))
+    fs::read_to_string(&path).map_err(|e| format!("Failed to read SOUL.md: {}", e))
 }
 
 #[tauri::command]
@@ -387,31 +382,26 @@ pub fn get_config_raw() -> Result<String, String> {
         return serde_yaml::to_string(&default_settings)
             .map_err(|e| format!("Failed to serialize default config: {}", e));
     }
-    fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read config: {}", e))
+    fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))
 }
 
 #[tauri::command]
 pub fn save_config_raw(content: String) -> Result<(), String> {
     // Validate YAML parses as AppSettings before saving
-    let _: AppSettings = serde_yaml::from_str(&content)
-        .map_err(|e| format!("YAML 解析失败: {}", e))?;
+    let _: AppSettings =
+        serde_yaml::from_str(&content).map_err(|e| format!("YAML 解析失败: {}", e))?;
     let path = config_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
     }
-    fs::write(&path, &content)
-        .map_err(|e| format!("Failed to write config: {}", e))
+    fs::write(&path, &content).map_err(|e| format!("Failed to write config: {}", e))
 }
 
 #[tauri::command]
 pub fn save_soul(content: String) -> Result<(), String> {
     let path = soul_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
     }
-    fs::write(&path, content)
-        .map_err(|e| format!("Failed to write SOUL.md: {}", e))
+    fs::write(&path, content).map_err(|e| format!("Failed to write SOUL.md: {}", e))
 }

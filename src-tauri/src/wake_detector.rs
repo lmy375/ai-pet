@@ -44,9 +44,9 @@ impl WakeDetector {
     pub async fn observe(&self) -> Option<Duration> {
         let now = Instant::now();
         let mut g = self.inner.lock().await;
-        let elapsed = g.last_observation.and_then(|prev| {
-            detect_wake(Some(prev), now, WAKE_GAP_THRESHOLD_SECS)
-        });
+        let elapsed = g
+            .last_observation
+            .and_then(|prev| detect_wake(Some(prev), now, WAKE_GAP_THRESHOLD_SECS));
         g.last_observation = Some(now);
         if elapsed.is_some() {
             g.last_wake_at = Some(now);
@@ -68,11 +68,7 @@ impl WakeDetector {
 /// Pure detection function — given the previous observation time and now, returns
 /// `Some(gap)` if the gap exceeds `threshold_secs`. Extracted so tests can pass
 /// arbitrary Instants without sleeping.
-pub fn detect_wake(
-    prev: Option<Instant>,
-    now: Instant,
-    threshold_secs: u64,
-) -> Option<Duration> {
+pub fn detect_wake(prev: Option<Instant>, now: Instant, threshold_secs: u64) -> Option<Duration> {
     prev.and_then(|p| {
         let d = now.checked_duration_since(p)?;
         if d.as_secs() > threshold_secs {
