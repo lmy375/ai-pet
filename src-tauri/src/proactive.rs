@@ -207,6 +207,12 @@ pub struct PromptInputs<'a> {
     /// not enough recorded mood history to summarize. Sits next to `persona_hint`
     /// so the LLM gets both "how I see myself" + "how I've been feeling lately".
     pub mood_trend_hint: &'a str,
+    /// Compact digest of the `user_profile` memory category — what the pet has
+    /// learned about the user's habits/preferences (Iter Cα). Empty when the
+    /// category has no entries. Surfaces ambient context so the LLM doesn't
+    /// have to fire a `memory_search` tool call to know basic things it has
+    /// already written down. Already redacted via `redact_with_settings`.
+    pub user_profile_hint: &'a str,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -452,6 +458,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push(format_companionship_line(inputs.companionship_days));
     push_if_nonempty(&mut s, inputs.persona_hint);
     push_if_nonempty(&mut s, inputs.mood_trend_hint);
+    push_if_nonempty(&mut s, inputs.user_profile_hint);
     push_if_nonempty(&mut s, inputs.focus_hint);
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
@@ -1337,6 +1344,10 @@ async fn run_proactive_turn(
     // Window is generous because mood is deduped against the last entry, so 50 lines
     // typically span 1-2 weeks of distinct mood changes. min=5 avoids early-day noise.
     let mood_trend_hint = crate::mood_history::build_trend_hint(50, 5).await;
+    // Iter Cα: surface user_profile memory as ambient context so the LLM sees
+    // basic user habits without firing memory_search every turn. Empty until
+    // the pet has written at least one user_profile entry.
+    let user_profile_hint = build_user_profile_hint();
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
@@ -1399,6 +1410,7 @@ async fn run_proactive_turn(
         companionship_days,
         persona_hint: &persona_hint,
         mood_trend_hint: &mood_trend_hint,
+        user_profile_hint: &user_profile_hint,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1541,6 +1553,87 @@ pub fn build_persona_hint() -> String {
     }
 }
 
+/// Cap on how many `user_profile` entries to surface in the proactive prompt. Above
+/// this the digest gets long enough to dominate the prompt and dilute its other
+/// signals; the LLM can still call `memory_search` for the older ones if a topic
+/// asks for them.
+pub const USER_PROFILE_HINT_MAX_ITEMS: usize = 6;
+/// Per-entry description char cap. Long bios become noisy when stacked 6 deep, so
+/// the prompt sees a one-liner per habit; the full body is one tool call away.
+pub const USER_PROFILE_HINT_DESC_CHARS: usize = 80;
+
+/// Pure helper — formats a list of `(title, description, updated_at)` tuples into
+/// the user-profile prompt block. Sorted by `updated_at` descending so the most
+/// recently-touched habits surface first. Returns "" when items is empty so the
+/// prompt builder's `push_if_nonempty` skips the line cleanly.
+///
+/// Extracted from `build_user_profile_hint` so the truncation / sort / header logic
+/// is unit-testable without going through `memory_list`'s on-disk index.
+pub fn format_user_profile_block(
+    items: &[(String, String, String)],
+    max_items: usize,
+    max_desc_chars: usize,
+) -> String {
+    if items.is_empty() || max_items == 0 {
+        return String::new();
+    }
+    let mut sorted: Vec<&(String, String, String)> = items.iter().collect();
+    // updated_at is ISO-8601 with offset → string compare matches chronological
+    // order; descending = most recent first.
+    sorted.sort_by(|a, b| b.2.cmp(&a.2));
+    let n = sorted.len().min(max_items);
+    let mut lines: Vec<String> = Vec::with_capacity(n + 1);
+    lines.push(format!(
+        "你了解的用户习惯（来自 user_profile 记忆，最新 {} 条）：",
+        n
+    ));
+    for (title, desc, _) in sorted.iter().take(n) {
+        let trimmed = desc.trim();
+        let truncated: String = if trimmed.chars().count() <= max_desc_chars {
+            trimmed.to_string()
+        } else {
+            let head: String = trimmed.chars().take(max_desc_chars).collect();
+            format!("{}…", head)
+        };
+        lines.push(format!("- {}：{}", title.trim(), truncated));
+    }
+    lines.join("\n")
+}
+
+/// Read `user_profile` memory entries and format a compact digest block for the
+/// proactive prompt (Iter Cα). Returns empty when the category has no entries —
+/// `push_if_nonempty` then skips it cleanly. Output is redacted via
+/// `redact_with_settings` so any private terms the LLM stored in habit
+/// descriptions don't leak back into a fresh proactive prompt.
+pub fn build_user_profile_hint() -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("user_profile".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("user_profile") else {
+        return String::new();
+    };
+    let tuples: Vec<(String, String, String)> = cat
+        .items
+        .iter()
+        .map(|i| {
+            (
+                i.title.clone(),
+                i.description.clone(),
+                i.updated_at.clone(),
+            )
+        })
+        .collect();
+    let block = format_user_profile_block(
+        &tuples,
+        USER_PROFILE_HINT_MAX_ITEMS,
+        USER_PROFILE_HINT_DESC_CHARS,
+    );
+    if block.is_empty() {
+        return String::new();
+    }
+    crate::redaction::redact_with_settings(&block)
+}
+
 /// Read the pet's own short-term plan from `ai_insights/daily_plan`. Returns the plan
 /// description verbatim with a header line, or empty when nothing's been written. The
 /// plan format is intentionally open — the LLM owns the structure (bullet list with
@@ -1658,6 +1751,9 @@ mod prompt_tests {
             // Default empty — pre-Iter 103 state, no mood trend yet. Tests for the
             // trend hint set this explicitly.
             mood_trend_hint: "",
+            // Default empty — pre-Iter Cα state, no user_profile entries surfaced.
+            // Tests for the user-profile hint set this explicitly.
+            user_profile_hint: "",
         }
     }
 
@@ -2027,6 +2123,103 @@ mod prompt_tests {
         let inputs = base_inputs(); // default mood_trend_hint = ""
         let p = build_proactive_prompt(&inputs);
         assert!(!p.contains("长期的情绪谱"));
+    }
+
+    #[test]
+    fn prompt_includes_user_profile_hint_when_set() {
+        let mut inputs = base_inputs();
+        inputs.user_profile_hint =
+            "你了解的用户习惯（来自 user_profile 记忆，最新 2 条）：\n- 起床时间：通常 8:30 起床\n- 喜欢：偏好 dark theme 编辑器";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("用户习惯"));
+        assert!(p.contains("起床时间"));
+        assert!(p.contains("dark theme"));
+    }
+
+    #[test]
+    fn prompt_omits_user_profile_hint_when_empty() {
+        let inputs = base_inputs(); // default user_profile_hint = ""
+        let p = build_proactive_prompt(&inputs);
+        assert!(!p.contains("用户习惯"));
+    }
+
+    #[test]
+    fn format_user_profile_block_empty_returns_empty() {
+        assert_eq!(
+            format_user_profile_block(&[], 6, 80),
+            String::new(),
+            "no items → no block",
+        );
+    }
+
+    #[test]
+    fn format_user_profile_block_zero_max_returns_empty() {
+        let items = vec![("habit".into(), "desc".into(), "2026-05-03T10:00:00+08:00".into())];
+        assert_eq!(format_user_profile_block(&items, 0, 80), String::new());
+    }
+
+    #[test]
+    fn format_user_profile_block_sorts_by_updated_at_desc() {
+        let items = vec![
+            ("旧习惯".into(), "desc-a".into(), "2026-04-01T10:00:00+08:00".into()),
+            ("新习惯".into(), "desc-b".into(), "2026-05-03T10:00:00+08:00".into()),
+            ("中习惯".into(), "desc-c".into(), "2026-04-20T10:00:00+08:00".into()),
+        ];
+        let out = format_user_profile_block(&items, 6, 80);
+        let new_idx = out.find("新习惯").unwrap();
+        let mid_idx = out.find("中习惯").unwrap();
+        let old_idx = out.find("旧习惯").unwrap();
+        assert!(new_idx < mid_idx, "newest should be first");
+        assert!(mid_idx < old_idx, "middle should precede oldest");
+    }
+
+    #[test]
+    fn format_user_profile_block_caps_item_count() {
+        let items: Vec<(String, String, String)> = (0..10)
+            .map(|i| {
+                (
+                    format!("habit-{i}"),
+                    format!("desc-{i}"),
+                    format!("2026-05-{:02}T10:00:00+08:00", i + 1),
+                )
+            })
+            .collect();
+        let out = format_user_profile_block(&items, 3, 80);
+        assert!(out.contains("最新 3 条"));
+        // Top-3 by date = day 10, 9, 8 (i = 9, 8, 7).
+        assert!(out.contains("habit-9"));
+        assert!(out.contains("habit-8"));
+        assert!(out.contains("habit-7"));
+        assert!(!out.contains("habit-6"), "4th-newest should be excluded");
+    }
+
+    #[test]
+    fn format_user_profile_block_truncates_long_descriptions() {
+        let long_desc: String = "字".repeat(120);
+        let items = vec![("habit".into(), long_desc, "2026-05-03T10:00:00+08:00".into())];
+        let out = format_user_profile_block(&items, 6, 20);
+        assert!(out.contains("…"), "should append ellipsis when truncated");
+        // Body line should be 1 title + ：+ 20 chars + … = well under the 120.
+        let body_chars = out
+            .lines()
+            .nth(1)
+            .unwrap()
+            .chars()
+            .filter(|c| *c == '字')
+            .count();
+        assert_eq!(body_chars, 20, "should keep exactly 20 chars before ellipsis");
+    }
+
+    #[test]
+    fn format_user_profile_block_no_truncation_when_under_cap() {
+        let items = vec![(
+            "habit".into(),
+            "短描述".into(),
+            "2026-05-03T10:00:00+08:00".into(),
+        )];
+        let out = format_user_profile_block(&items, 6, 80);
+        assert!(out.contains("- habit：短描述"));
+        assert!(!out.contains("…"));
     }
 
     #[test]

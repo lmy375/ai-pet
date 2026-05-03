@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cα 设计要点（已实现）
+- **加 ambient block 而不是加 rule**：曾考虑做"如果 user_profile 非空 → 加一条规则提示 LLM 在开口前 search"——但那只是把"调工具的责任"换种方式重申，根本问题（每轮都要 tool round-trip）还在。直接把摘要塞进 prompt 是同一个 token 预算下的更好交换：6 条 × 80 字 ≈ 500 tokens，远低于一次 memory_search 调用 + 结果回灌的开销，并且节省一次 round-trip 的延迟。
+- **跟 persona_hint 同级而不是嵌进 rules**：`persona_hint`（自我画像）/ `mood_trend_hint`（情绪走向）/ 现在的 `user_profile_hint`（对用户的认知）三者都是"长期记忆 → 当前 prompt"的注射点，结构上对称。放一起方便将来一起调（比如做"长期画像被静音"开关）。
+- **按 updated_at 降序而非按 created_at**：用户习惯会变（用户从 dark theme 换到 light theme），最近更新的版本更可能反映现状。如果按 created 排，老旧描述会挤掉新的。代价是 `MemoryItem.updated_at` 写不规范（缺值时为空串）会被排到末尾，但目前 memory_edit 强制写 updated_at，没这个风险。
+- **6 条上限够吗**：当前 user_profile 通常只有 0-5 条（启动初期），6 条上限给了 buffer。如果未来 LLM consolidate 后膨胀到 20+，再考虑把上限和 desc cap 暴露到 settings。先按 6 / 80 跑一段，看 panel chip"环境感知 spoke_with_any" 比例是不是上来了——上来了说明 LLM 现在不需要靠 memory_search 也能开聊。
+- **pure helper 的小坚持**：`build_user_profile_hint` 走 disk，没法干净测。拆 `format_user_profile_block(items: &[(String, String, String)])` 出来后，所有排序/截断/cap 逻辑都成了纯函数测试。下次如果 LLM 写了某种格式问题（比如 description 里有换行），测试可以直接喂进 tuples，不必 mock 文件系统。这种拆分套路在 Iter 6/19/93 等也用过，是项目里反复证明值的一招。
+- **redact 还是不 redact**：内部记忆经过用户视角是"我自己写的"，但下一次 LLM 还是 outbound——同样的 LLM provider 看到。所以也走 `redact_with_settings`，跟 `build_persona_hint` 在 Iter Cw 的处理一致。`memory_list` 直接面板视图（`PanelMemory.tsx`）不走这个路径，看到的还是原文，不影响用户调试体验。
+- **不做 vs 做新的 prompt rule**：`active_*_rule_labels` 系统是为"上下文条件 → 提示文本"设计的，user_profile 是"有没有数据 → 要不要加这一段"——更像 persona_hint 的开关式插入，不需要进规则面板（panel 上的"prompt: N 条 hint"badge）。所以不动 panelTypes 也不动 PROMPT_RULE_DESCRIPTIONS。
+
 ## 目标
 让 AI 宠物像真实伙伴一样陪伴用户：除了被动回复，还能后台运行，主动观察用户在干嘛，在合适的时机主动开口。
 

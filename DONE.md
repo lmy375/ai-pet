@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cα：user_profile 摘要注入 proactive prompt
+- 现状缺口：`user_profile` memory 类别只通过 `memory_search` 工具暴露给 LLM，每次主动开口要花一次 tool call 才能拿到"用户喜欢什么 / 几点起床"这种基础信息。env-tool 计数显示 memory_search 调用率不到 1/3，多数时候 LLM 直接凭空起话题，与"伙伴感"目标背离。
+- 解法：把 user_profile 摘要做成 prompt 里的 ambient block，跟 `persona_hint` / `mood_trend_hint` 同级——LLM 不调工具就能看到。
+- `proactive.rs` 新增 `build_user_profile_hint()` + 纯函数 `format_user_profile_block(items, max_items, max_chars)`：
+  - 读 `user_profile` 类别条目；空则返 ""（`push_if_nonempty` 跳过）
+  - 按 `updated_at` 降序排（ISO-8601 字符串可直接 lex sort）
+  - 取前 6 条；每条 description 超过 80 字符截断 + `…` 后缀
+  - 整段过 `redact_with_settings`——LLM 写进 user_profile 的内容可能含私人信息（"liang 在 cobo 上班"），不能原样回流到下一轮 LLM 输入
+- `PromptInputs` 加 `user_profile_hint: &'a str`，`build_proactive_prompt` 在 `mood_trend_hint` 之后 push（同样跳过空串）。
+- 常量化 `USER_PROFILE_HINT_MAX_ITEMS=6` / `USER_PROFILE_HINT_DESC_CHARS=80`，便于将来调；与 `LONG_IDLE_MINUTES` 等同级。
+- 8 个新单测：prompt 注入 / 省略、空列表 / 0-cap 返空、按 updated_at 降序、超 cap 取最新、长描述截断含 `…`、短描述不截断。所有 `format_user_profile_block` 测试都纯——不读盘、不依赖 Tauri state。
+- 拆 pure helper 的动机：`build_user_profile_hint` 走 `memory_list`（要 ~/.config 路径），无法在 unit test 里干净测；提取出来的 format_helper 只接 `(title, description, updated_at)` 元组，所有排序/截断逻辑都覆盖到了。
+- 测试总数 229 → 237。
+- 结果：proactive prompt 在 user_profile 非空时多一段约 7 行的 ambient context（header + 最多 6 条 bullet）。和 `persona_hint` / `mood_trend_hint` 一起形成"宠物认识自己 + 认识用户 + 认识自己情绪走向"三轴长期画像，全都不需要 LLM 主动调工具。
+
 ## 2026-05-03 — Iter Cv：redaction 计数 + panel "Redact M/N" chip
 - 在 `redaction.rs` 加两个 process-wide static atomic：`REDACTION_CALLS` / `REDACTION_HITS`。`redact_with_settings` 每次调用 fetch_add CALLS；当 `output != input`（即至少一个 pattern 命中并替换了内容）fetch_add HITS。
 - 静态而非 ProcessCounters：`redact_with_settings` 在 sync 路径被多处调用（`inject_mood_note`、`build_persona_hint` 等）这些位置没有 Tauri AppHandle / ProcessCountersStore 访问。静态 atomic 让任何代码路径都能 bump，零 wiring。
