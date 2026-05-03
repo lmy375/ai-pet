@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 97：抽出 PanelChipStrip，chips 升到 toolbar 上方独立成行
+- 新文件 `src/components/panel/PanelChipStrip.tsx`：纯展示组件，封装 6 个 chip + log count（cache / tag / llm 沉默 / 环境感知 / 倾向 / prompt hints button），通过 props 接收所有 stat / tone / handlers。共用 `resetBtnStyle` const 把原本散落的 5 处重复样式收敛成一处。
+- PanelDebug.tsx：把所有 chip JSX（240+ 行）替换成单个 `<PanelChipStrip {...} />` 调用；位置从 toolbar 内部右侧移到 toolbar **上方**独立成行。布局：`#f8fafc` 浅背景 + 水平 flex-wrap + `padding: 8px 16px` 让多 chip 时自动换行而不挤压。
+- 操作 toolbar（刷新 / 清空 / 立即开口 / DevTools）现在不再被 chips 抢空间——4 个按钮 + proactiveStatus 文本独占一行，更宽松的视觉节奏。
+- chip 触发的 `showPromptHints` 展开仍保留在 toolbar 下方（与展开块紧邻），保持"trigger / detail panel"的视觉关联。
+- 共享类型 `CacheStats / MoodTagStats / LlmOutcomeStats / EnvToolStats / PromptTiltStats / ToneSnapshot` 加 `export`；`PromptRuleNature / PROMPT_RULE_DESCRIPTIONS / NATURE_META` 也加 export 让 ChipStrip import。
+- 三层守护测试更新：`parse_prompt_rule_dict_keys` 现在接受 `const` 和 `export const` 两种声明前缀（Iter 87/89/90/91 的逻辑保持不变）。
+- 184 tests + tsc 全过；零 warning。
+- 净行数变化：PanelDebug 减 240 行（chip JSX 移走）+ PanelChipStrip 加 250 行（含组件 boilerplate + 1 处 reset 样式整合）。略微增长但 PanelDebug 主组件从 ~770 行降到 ~530 行，更专注于 state + layout，可读性提升。
+
 ## 2026-05-03 — Iter 96：长跑 prompt 倾斜计数 + panel "倾向 X%" chip
 - 新 `PromptTiltCounters { restraint_dominant, engagement_dominant, balanced, neutral: AtomicU64 }` 加到 `ProcessCounters`，4 个 bucket 互斥求和 = Run 总数。
 - 方法 `record_dispatch(&[label])`：按 active labels 中 restraint vs engagement 数量分类——> 大者归 dominant，相等且都 > 0 归 balanced，相等且都 = 0 归 neutral。语义和 panel badge 颜色（Iter 95）一致，让长跑统计聚合的就是用户看到的同一种倾向。

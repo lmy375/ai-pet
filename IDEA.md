@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 97 设计要点（已实现）
+- **纯展示组件 + state 留在 parent**：PanelChipStrip 不持有任何 useState，全部 state 还在 PanelDebug。组件接收 props（stats / handlers）输出 JSX——单一职责清晰。如果将来想做 Storybook 测试或单独渲染 chip，组件签名就是契约。
+- **导出 types + 字典而非新建 shared file**：本可以建 `src/components/panel/types.ts` 把 6 个 interface + PROMPT_RULE_DESCRIPTIONS 都搬过去。但现有 cargo 对齐测试（Iter 89/90/91）扫的是 PanelDebug.tsx；改动结构需要同步更新测试路径。直接 `export` 既有 const 是最小变更——TS import 可工作，cargo 测试只需要识别 `export const` 前缀（一行代码改动）。
+- **chips 上方而非下方**：原 toolbar 是 panel 第一行，chips 嵌在右侧。把 chips 提到 toolbar 之上意味着用户打开 panel 第一眼看到的是数据状态（"现在 prompt 倾向 60% 克制"），其次才是动作按钮。"诊断"用例（占 panel 主要使用场景）优先级 > "操作"用例，所以 data-first 排序合理。
+- **expansion 仍跟在 toolbar 下方**：理论上 prompt-hint 展开应该紧贴 chip 行（trigger 在那）。但展开是临时审视行为，每次出现尺寸 ~120px 高，把它放 toolbar 之上会让 toolbar 在用户审视规则时跳出视野。妥协：展开放 toolbar 下方，与 trigger 视觉距离稍远但 toolbar 位置稳定。
+- **resetBtnStyle 抽常量**：5 处 chip 都有 "重置" 按钮共享同一套 10 行样式。原本散落 5 份，组件内提取成 `resetBtnStyle` const。这是抽组件的"副产品红利"——以前在大文件里重复因为重构成本高，搬进新组件的 fresh slate 自然可以做这种小整理。
+- **flex-wrap 应对多 chip**：6 个 chip + 重置按钮在小屏可能超过宽度。`flexWrap: "wrap"` 让超出部分自动换行成第二行，`gap: "12px"` 保证行内行间间距一致。比之前 toolbar 单行硬挤更耐受窗口缩放。
+- **alignment test 改最小化**：Iter 89/90/91 的 parser 只判 `starts_with("const PROMPT_RULE_DESCRIPTIONS")` → 加一个 `|| starts_with("export const ...")`。一行变两行，覆盖现状。如果未来有更激进的语法变化（如 `export const PROMPT_RULE_DESCRIPTIONS satisfies ...`）再升级 parser，但目前不必要。
+
 ## Iter 96 设计要点（已实现）
 - **4 bucket 互斥求和=N 而非各自独立累加**：本可以简单两个 atomic（restraint_count_total / engagement_count_total），看到 R=12 E=4 推断"克制主导"。但单 Run 可能有多条 restraint 规则，求和会高估发生频率。每 Run 单一分类 bump 互斥 bucket，4 个 bucket 加起来 = Run 总次数，比例直接等于"那一类 dispatch 的占比"。
 - **classification 与 panel badge 完全一致**：Iter 95 badge 颜色 = `restraint > engagement ? red : engagement > restraint ? green : (R+E==0 ? purple-neutral : purple-balanced)`。record_dispatch 完全镜像这个判断——保证"长期 chip 显示克制 60%"和"打开 panel 时 badge 是红色"两个观察是相同事实的两个时间尺度展示。
