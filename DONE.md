@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R35：trailing-negative streak — R33/R34 的 user-side mirror
+- 现状缺口：R33+R34 给 pet 自我感知"我最近连续沉默 N 次"。**对偶的"用户连续不接受我 N 次" 信号缺位** — R26 给的是 20-window ratio（aggregate / 平滑），不是 trailing streak（recent uninterrupted run / urgency）。两者侧重不同：smoothed 反映长期趋势，streak 反映"现在正在被拒绝"的紧迫感。
+- 解法 — 完全 mirror R33+R34：
+  - feedback_history.rs 加纯 `count_trailing_negative(entries) -> usize` 跟 `count_trailing_silent` 同形态：从最新一条往前数，take_while kind ∈ Ignored | Dismissed（R1c 同源原则）。
+  - 配套 `format_consecutive_negative_hint(streak, threshold) -> String`：< threshold 返空；≥ 触发 "你最近连续 N 次开口都被用户忽略或主动点掉了。这是个明显的「我说的不对」信号 — 这次试试完全不同的角度（换话题 / 极简关心 / 或者干脆这次沉默也行）。"
+  - PromptInputs 加 `consecutive_negative_hint`，紧接 R33 silent_hint。run_proactive_turn 复用 R26 的 recent_feedback fetch (20)，inline call helper。
+  - ToneSnapshot 加 `consecutive_negative_streak: usize`；build_tone_snapshot 同 fetch + count_trailing_negative。
+  - PanelToneStrip 🙉 chip 红色（比 silence 🤐 橙色更强 —— 用户拒绝是更直接的负反馈），文案"🙉 拒绝 ×N"，hover 解释 R35 nudge + Replied 清零。
+- 决策 — 红色（不橙色）：R34 silence 用橙（"卡住"）。R35 拒绝用红（"明确反对"）。**信号严重程度梯度通过色彩区分** — 同被忽略的 monotone 卡（黄/橙）vs 用户主动拒绝（红）。
+- 决策 — 与 R26 互补不重复：R26 把 20-window 的 X 回复 / Y 静默 / Z 主动点掉 trend 给 LLM 看。R35 给 trailing streak 紧迫感。**不同 time-window 视角** — 一个长一个短，一个 average 一个 streak。LLM 同时看到两条不会冗余因为各自表达"长期趋势 vs 当前急迫"。
+- 决策 — Rust 字符串里的 ASCII `"`：第一版 format! 字符串里写"我说的不对" 然后被 Rust 解析成"先关闭字符串再开新字符串"导致编译错。中文文案有引号时**用「」 不用 ""** —— 既符合中文排版习惯又躲过转义陷阱。这是 prompt-text 写作的 latent gotcha。
+- 决策 — 软 nudge phrasing 一致（"或者干脆这次沉默也行"）：R27 deep-focus / R33 silent / R35 negative 都给 escape hatch。**prompt 软指令 grammar** 在 R-series 已 codify —— 任何 directive 必须有"如果你判断不必要，跳过也无妨" 的退出方式。这避免硬指令把 LLM 的合理判断 override。
+- 决策 — 阈值 3 跟 R33 一致：项目内 minimum-confidence sample 数稳定为 3。
+- 测试（5 新 trailing_negative + 3 新 negative_hint = 8 单测）：empty → 0 / last replied → 0 / 全 negative run → full / mixed only count tail / dismissed 与 ignored 同等 / hint < threshold 返空 / hint at threshold fires / hint preserves judgment phrasing。
+- 测试结果：495 cargo（+8）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：proactive prompt 现在含**完整的 trailing-streak mirror pair**：
+  - R33 self-side: "你已经连续 N 次选择沉默"
+  - R35 user-side: "你最近连续 N 次开口都被忽略或主动点掉"
+  Panel chip 也对应：🤐 (silence streak, 橙) + 🙉 (negative streak, 红)。R-series meta-cognitive feedback loops 完整闭合 —— pet 既看自己的行为模式 又看用户的反应模式。
+
 ## 2026-05-04 — Iter R34：silent streak panel chip（自我纠正 R33 IDEA 的判断）
 - 现状缺口：R33 IDEA 写"silent streak 是 transient state，留 prompt 即可，panel chip 会 flicker"。这个判断**错了** —— turn 之间间隔 ≥5 分钟（proactive interval_seconds），panel 每秒 poll 看到的 streak 在两 turn 间是 stable 数字。所谓"flicker" 是想象出来的误判。R34 自我纠正，加 panel chip。
 - 解法 — 复用 R33 的纯函数 + 新 chip：

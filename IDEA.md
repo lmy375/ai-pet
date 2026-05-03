@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R35 设计要点（已实现）
+- **mirror pair 完整 = closure**：R33/R34 给 pet 自我意识 ("我最近一直沉默")，R35 给 user-feedback 意识 ("用户最近一直拒绝")。两者完全对偶 —— pure fn 形态、threshold、UI chip 都 mirror。**Mirror feedback loops** 是 cognitive architecture 的 closure pattern：信号闭环既要 outbound（看用户）又要 inbound（看自己）。R26 + R33 第一次完成 mirror（aggregate vs streak 都两端均有），R35 把"trailing 维度" 也补全 mirror —— **mirror 的 mirror，对称完美**。
+- **同 sample threshold = mental model 锚**：3 出现在 R7 / R11 / R19 / R26 / R33 / R35。**项目内 "minimum confidence sample" 概念稳定 = 3**。当用户 / future maintainer 看到任意 R-series 阈值 3，知道意思是"够了不噪音"。如果每个子系统独立 tune，认知开销大。**跨子系统统一 magic numbers** 是反复践行的 IDEA。
+- **色彩升级表达严重度**：R34 🤐 silence 橙色（"卡住" — 中性，pet 自身问题）；R35 🙉 拒绝 红色（"明确反对" — 用户问题，更紧迫）。**color escalation = severity gradient**。这扩展 R-series 视觉 taxonomy：橙色 = "stuck pattern worth noting"，红色 = "active negative signal needs response"。R20-R34 之前红色只用于 R27 deep-focus 锁标，现在 R35 加入"用户拒绝" 同色 —— **同色等价是"高 stakes 等待响应" 状态**。
+- **CJK 引号在 Rust format!: "" → 「」**：第一版我写"我说的不对" 用 ASCII 双引号，Rust 编译报错 "expected `,` found...". 因为 ASCII `"` 在 format! 字符串字面量里就是字符串结束符。中文 quote 用「」既符合中文排版又**避免 escape 陷阱**。这是 prompt 文案写作的 i18n hygiene —— **多语言 fallback：在 i18n 字符串里偏好 native quote marks 而非 ASCII**。
+- **软 nudge phrasing 已成 R-series grammar**：R27 "极简或选择沉默"，R33 "否则继续沉默也无妨"，R35 "或者干脆这次沉默也行"。三个 directive 都给 LLM escape hatch，没一个是硬命令。**这种 grammar 已稳定** —— 未来加新 directive 时该 audit "有 escape hatch 吗"，否则 LLM 在合理判断时会被强迫 override。
+- **R26 vs R35 不重复 是 different lenses**：R26 是 20-window ratio（如 "20 次里 12 次被忽略 60%"），是平均水平。R35 是 trailing streak（如 "最近 4 次连续都被拒"），是急迫程度。**两者用同 underlying 数据但不同 lens**：smoothed 反映长期 trend，streak 反映 acute pattern。LLM 同时看到不冗余因为各自承载不同语义。**多 lens 看同数据是 prompt design 的 sophistication**。
+- **R-series 30+ iter 后的 closure 节点**：R33-R35 把"meta-cognitive mirror" 完整闭合后，R-series 信号设计可能进入 polishing 期 — 后续不太可能再加新轴线，多是这些 axis 的 fine-tuning（threshold 调 / 颜色调 / hover 文案 polish）。**长 iter 系列的 closure** 不是 abrupt 停下，而是核心结构 mature 后渐入 polish 节奏。
+
 ## Iter R34 设计要点（已实现）
 - **IDEA 决策不是不可纠错**：R33 IDEA 写"streak 是 transient → no panel chip"，R34 重新审视后发现该判断**错的**——polling rate (每秒) vs turn rate (≥5min) 让 streak 在两 turn 间完全 stable，没有 flicker。所谓"transient" 是基于错误的 polling-vs-turn rate 直觉。**R-series IDEA 是 reasoning artifact 不是 immutable rule** ——发现旧决策错了就改，而不是为了保面子继续延续。这是 long iter 系列健康的标志：能看见自己的错。
 - **flicker vs stable 看 update frequency**：决定一个状态是否适合 panel chip 的关键不是"它最终会变化吗"，而是"在 panel polling 周期内它会频繁变化吗"。Streak 一次更新需要新 turn → 5 分钟级。Panel 每秒 poll → 数百次看到同一个值。**"看似 transient" 但 update frequency 远低于 polling 时，实质是 stable**。这条原则补充 R20-codified "stable 上 panel / transient 留 prompt"——具体看 update granularity，不要靠直觉拍。
