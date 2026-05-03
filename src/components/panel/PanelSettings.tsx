@@ -44,6 +44,7 @@ export function PanelSettings() {
       quiet_hours_end: 7,
       respect_focus_mode: true,
       chatty_day_threshold: 5,
+      companion_mode: "balanced",
     },
     memory_consolidate: {
       enabled: false,
@@ -571,6 +572,41 @@ export function PanelSettings() {
               })
             }
           />
+        </div>
+        {/* Iter R29: companion_mode dropdown — high-level dial layered on
+            cooldown + chatty_threshold. R13 added the backend field but the
+            UI was deferred ("R13b"); R29 ships it. Three options map to
+            apply_companion_mode multipliers (×1 / ×0.5cooldown+×2chatty /
+            ×2cooldown+×0.5chatty). */}
+        <div style={{ marginTop: "10px" }}>
+          <label style={{ display: "block", fontSize: "12px", color: "#475569", marginBottom: "4px" }}>
+            高层级"陪伴模式"（叠加 cooldown / chatty 后的实际效果）
+          </label>
+          <select
+            value={form.proactive.companion_mode}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                proactive: { ...form.proactive, companion_mode: e.target.value },
+              })
+            }
+            style={{
+              width: "100%",
+              padding: "6px 8px",
+              fontSize: "13px",
+              border: "1px solid #cbd5e1",
+              borderRadius: "6px",
+              background: "#fff",
+            }}
+          >
+            <option value="balanced">balanced — 默认（不改 base）</option>
+            <option value="chatty">chatty — ×0.5 cooldown · ×2 chatty 阈值（多说）</option>
+            <option value="quiet">quiet — ×2 cooldown · ×0.5 chatty 阈值（少说）</option>
+          </select>
+          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px", lineHeight: 1.5 }}>
+            base cooldown=0 时三档都返 0，保留"显式关闭" 语义。R7 反馈适配器在此模式之上再叠加
+            ratio 调整（&gt;0.6 ×2 / &lt;0.2 ×0.7）。
+          </div>
         </div>
       </div>
 

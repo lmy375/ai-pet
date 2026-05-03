@@ -28,6 +28,11 @@ export interface ProactiveConfig {
   quiet_hours_end: number;
   respect_focus_mode: boolean;
   chatty_day_threshold: number;
+  /** Iter R13 / R29: high-level dial layered over cooldown_seconds and
+   * chatty_day_threshold. "balanced" = no change, "chatty" = ×0.5 cooldown
+   * + ×2 chatty threshold (talkative day), "quiet" = ×2 cooldown + ×0.5
+   * chatty (low-key day). Backend default is "balanced". */
+  companion_mode: string;
 }
 
 export interface MemoryConsolidateConfig {
@@ -79,6 +84,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     quiet_hours_end: 7,
     respect_focus_mode: true,
     chatty_day_threshold: 5,
+    companion_mode: "balanced",
   },
   memory_consolidate: {
     enabled: false,
