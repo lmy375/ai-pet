@@ -659,6 +659,11 @@ pub struct ToneSnapshot {
     /// via a separate Tauri command, but bundling it here lets the strip render
     /// the milestone cue without a second IPC.
     pub companionship_days: u64,
+    /// Iter D3: macOS Focus mode label when active, None otherwise. Same signal
+    /// the proactive engine reads via `focus_mode::focus_status` to decide
+    /// whether to gate. Surfaced so the panel can show 🎯 「work」 chip and
+    /// the user can immediately see why the pet may be especially quiet.
+    pub focus_mode: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -824,6 +829,12 @@ pub async fn get_tone_snapshot(
         companionship_milestone: companionship_milestone(companionship_days_for_rules)
             .map(|s| s.to_string()),
         companionship_days: companionship_days_for_rules,
+        // Iter D3: macOS Focus state — same source as the gate path uses.
+        // Returns None on non-macOS or when no Focus is active.
+        focus_mode: match crate::focus_mode::focus_status().await {
+            Some(s) if s.active => s.name.or_else(|| Some("active".to_string())),
+            _ => None,
+        },
     })
 }
 

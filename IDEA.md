@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D3 设计要点（已实现）
+- **复用 focus_status() 的代价是再做一次 IO**：每次 get_tone_snapshot 调用都会读 `~/Library/DoNotDisturb/DB/Assertions.json`。panel 1s 轮询 → 每秒一次 disk read。考虑成本：单文件几 KB，OS 读缓存友好，几乎无开销。但如果 panel 多窗口同开（每窗口 1s 轮询），IO 会乘数。先用简单方案，必要时 cache 100ms 也容易做。
+- **fallback to "active"**：当 macOS 不能解析出 focus name（旧版本格式不同）但 active=true 时返回 "active" 字符串。chip 显 "🎯 focus: active" 比直接 None 更有信息——告诉用户"我们看到 focus 在跑，只是不知道是哪个"。
+- **chip 紫色加粗 vs 红/橙**：Focus 不是"警报"，是"用户在专注"——紫色（identity / persona 用色）传达"这是用户当下身份状态的事实"。加粗略提示重要性但不抢眼。
+- **不在 stats card 加 focus**：stats card 是聚合数字 + 长期 identity；focus 是 live transient signal——属于 strip。和 D2 把 milestone 放 stats card 反过来（milestone 罕见但持久整天，focus 频繁但短暂）。
+- **D series 收官 mostly**：经过 D1/D2/D3 三连，proactive prompt 的所有 ambient 信号（除了 user_name 这种纯静态 settings 字段）panel 都能可视化。如果未来 prompt 加新 signal，D 系列 pattern 就是直接答案：ToneSnapshot 暴露 + panel 加一个 chip。
+
 ## Iter D2 设计要点（已实现）
 - **复用 Cρ helper**：companionship_milestone 已经是 pure 函数，Tauri 端直接调用 + map to String。和 D1 一样都体现"single source of truth": prompt rule 和 panel chip 都从同一个函数读，不会因为某天扩展阈值（比如加 14 天里程碑）而漂移。
 - **chip 在 stats card 而不是 tone strip**：D1 把 day_of_week / idle_register 加进 strip 是因为它们是高频变化的信号（time line 每分钟变）；milestone 一年才几次，放高频区域突兀。stats card 的"陪伴 N 天" column 是 milestone 信号自然的承载位置。
