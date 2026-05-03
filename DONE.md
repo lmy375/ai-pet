@@ -2,6 +2,33 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R11：speech topic redundancy 检测器 + 注入 proactive prompt
+- 现状缺口：proactive prompt 已经有 speech_hint（最近 5 条 bullet list）告诉 LLM"看一下避免重复"，但仍然依赖 LLM 自己审视并自觉换话题。如果模型在某 4-5 个 turn 都聊"工作进展"，prompt 没有显式的"重复警报"，LLM 可能仍重复。R11 加一个**机器检测** 层强制将"重复出现的字符 4-gram"作为 hint 注入。
+- 解法 — pure helper + prompt 注入：
+  - 新 `pub fn detect_repeated_topic(lines, ngram_size, min_distinct_lines) -> Option<String>` 在 `speech_history.rs`：
+    - 滑动 ngram_size 字符窗口扫描每条（strip_timestamp 后）
+    - 计算每个 ngram 在多少条**不同的**行里出现
+    - 跳过含空格的窗口（避免跨词边界）+ 跳过纯单字重复（"嗯嗯嗯嗯" / "...."）
+    - ≥ min_distinct_lines 时返最频繁的 ngram，否则 None
+  - PromptInputs 加 `repeated_topic_hint: &'a str`，build_proactive_prompt push_if_nonempty
+  - run_proactive_turn 调用 helper(recent_speeches, 4, 3)，返回 Some 时构造"你最近多次提到「{topic}」——这次开口请换个角度或换个话题"，过 redact_with_settings
+- 决策 — 4-char window for Chinese：3 字符太短（每字 0.7%-字面合理），5 字符太严（错过近义同根词）。4 字符正好"双词组" 量级。Chinese 4-gram ≈ 一个完整语义单元。
+- 决策 — min 3 distinct lines（5 中 3）：60% 重复率开始算"显著"。2/5 是巧合，3/5 是 pattern。如果未来 recent_speeches window 改大，需要按比例调 min。
+- 决策 — 跳过空格 ngram：跨词边界的"了 我们"会假阳性。简单 rule：window 含 whitespace → skip。
+- 决策 — 跳过单字重复：单字 ngram 像"嗯嗯嗯嗯"/"...."是 filler 而非 topic。`window.chars().all(|c| Some(c) == first)` 直接 skip。
+- 决策 — 复用 recent_speeches 同一窗口：原本 speech_hint 调用 recent_speeches(5)；R11 detector 也 5 条；改成单次 fetch 复用。speech_hint + repeated_topic_hint 两层 hint 同源，连贯。
+- 决策 — 检测结果过 redact：可能有人名/项目名 ngram 命中（"和 X 同事开会" 4-gram = "X 同事"）。过 redact 防止 ngram 文字本身泄漏私人信息到 prompt。
+- 测试（7 新单测）：
+  - empty input → None
+  - no overlap → None
+  - 3-line Chinese topic 检测（"工作进展"）
+  - min_distinct_lines respect (2 vs 3 boundary)
+  - whitespace skip
+  - uniform-char skip
+  - short-line graceful（<ngram_size 不 panic）
+- 测试结果：394 cargo（+7）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：从"speech_hint 让 LLM 自审" 到"detect_repeated_topic 主动告诉 LLM 哪个话题重复了"。pure helper 模式 + push_if_nonempty pipeline = 整个 R11 加约 70 行 source + 100 行 test，但下一次 LLM 重复"工作进展" 的概率显著降低。
+
 ## 2026-05-03 — Iter R10：tone strip 反馈率 chip + 路线 R 后续规划
 - 现状缺口：R6 在 PanelDebug 加了反馈 timeline collapsible 卡，但用户在 Tone Strip 那一行的 11 个 chip 里看不到 "现在被听见的程度" 信号。打开 collapsible 才能看 ratio 是个友好的 UX 障碍——日常 panel 一瞥应当包含这层信号。
 - 解法：

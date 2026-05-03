@@ -147,8 +147,7 @@
 
 ### 路线 R 后续候选（gap analysis 后写入，2026-05-03）
 - [x] R10：tone strip 加反馈率 chip（2026-05-03 完成 — Iter R10）
-- [ ] R11：speech topic redundancy 检测器（pure helper，扫描最近 5 句子的字符 4-gram
-  overlap，检测重复话题，作为 prompt hint 注入"换个角度"）
+- [x] R11：speech topic redundancy 检测器（2026-05-03 完成 — Iter R11）
 - [ ] R12：daily review 自动生成（22:00 触发器读 daily_plan + 当日 speech，写
   ai_insights/daily_review，把"今天我们一起..."一句话总结写回 memory）
 - [ ] R13：companion mode setting（chatty / quiet / coaching / silent_present 预设，

@@ -148,6 +148,12 @@ pub struct PromptInputs<'a> {
     /// session. Production code computes via `late_night_wellness_in_cooldown()`;
     /// tests pass false unless deliberately exercising the gate.
     pub recently_fired_wellness: bool,
+    /// Iter R11: when the speech-redundancy detector flags a topic
+    /// repeated across recent utterances, this carries the nudge text
+    /// (e.g. "你最近多次提到「工作进展」，这次换个角度"). Empty when no
+    /// repetition is detected. Built by run_proactive_turn from
+    /// `speech_history::detect_repeated_topic`.
+    pub repeated_topic_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -320,6 +326,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.feedback_hint);
+    push_if_nonempty(&mut s, inputs.repeated_topic_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);

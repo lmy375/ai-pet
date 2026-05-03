@@ -123,6 +123,67 @@ pub fn strip_timestamp(line: &str) -> &str {
     line.split_once(' ').map(|(_, rest)| rest).unwrap_or(line)
 }
 
+/// Iter R11: coarse Chinese-friendly topic-redundancy detector. Slides a
+/// `ngram_size`-character window across each line (after `strip_timestamp`)
+/// and counts how many *distinct lines* each ngram appears in. Returns the
+/// ngram appearing in the most lines, but only if it crosses
+/// `min_distinct_lines`. Returns `None` when no ngram qualifies.
+///
+/// The pet uses this on its own recent speeches to detect "I keep saying
+/// the same thing" — the proactive prompt can then nudge the LLM with
+/// "你最近 N 句都聊到了 X，这次换个角度". 4-char windows are roughly
+/// word-level for Chinese without needing tokenization.
+///
+/// Pure / testable so the wiring layer doesn't need to mock IO. Skips
+/// ngrams containing whitespace (avoids matching trivial "了 " or "  X"
+/// patterns that span word boundaries). Also skips ngrams that are pure
+/// ASCII punctuation / single repeated char.
+pub fn detect_repeated_topic(
+    lines: &[String],
+    ngram_size: usize,
+    min_distinct_lines: usize,
+) -> Option<String> {
+    if lines.is_empty() || ngram_size == 0 || min_distinct_lines == 0 {
+        return None;
+    }
+    use std::collections::HashMap;
+    // Map ngram → set of line indices it appears in (use bitset via u64
+    // for small line counts, but HashMap<String, HashSet<usize>> is simplest).
+    let mut counts: HashMap<String, std::collections::HashSet<usize>> = HashMap::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        let text = strip_timestamp(raw);
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() < ngram_size {
+            continue;
+        }
+        for i in 0..=(chars.len() - ngram_size) {
+            let window: String = chars[i..i + ngram_size].iter().collect();
+            // Skip whitespace-bearing windows — those span word/sentence
+            // boundaries and produce noisy matches like "了 哎".
+            if window.chars().any(|c| c.is_whitespace()) {
+                continue;
+            }
+            // Skip windows that are all the same char (e.g. "...." or "了了了了") —
+            // those are formatting artifacts, not topics.
+            let first = window.chars().next();
+            if window.chars().all(|c| Some(c) == first) {
+                continue;
+            }
+            counts.entry(window).or_default().insert(idx);
+        }
+    }
+    // Pick the ngram with the highest distinct-line count, tie-break by
+    // shorter alphabetical for stability across runs.
+    let (best_ngram, best_set) = counts.into_iter().max_by(|a, b| {
+        a.1.len().cmp(&b.1.len()).then_with(|| b.0.cmp(&a.0)) // alphabetical reverse for ties so smaller wins
+    })?;
+    if best_set.len() >= min_distinct_lines {
+        Some(best_ngram)
+    } else {
+        None
+    }
+}
+
 /// Tauri command exposing the most recent N speech entries to the panel UI. Each entry
 /// is the raw "<ts> <text>" line — the frontend strips the timestamp itself for display
 /// flexibility (could show as relative time later). Default n=10 if not supplied.
@@ -450,5 +511,103 @@ mod tests {
         // After trimming the first 5, lines 5..(50+5) remain; last 3 are 52, 53, 54.
         assert!(recent[2].ends_with("line 54"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Iter R11: detect_repeated_topic -------------------------------------
+
+    fn line(text: &str) -> String {
+        format!("2026-05-03T10:00:00+08:00 {}", text)
+    }
+
+    #[test]
+    fn detect_repeated_topic_returns_none_for_empty_input() {
+        assert!(detect_repeated_topic(&[], 4, 3).is_none());
+    }
+
+    #[test]
+    fn detect_repeated_topic_returns_none_when_no_overlap() {
+        let lines = vec![
+            line("早上好今天怎么样"),
+            line("最近天气不错适合散步"),
+            line("中午吃了什么"),
+        ];
+        // No 4-char window appears in 3 distinct lines.
+        assert!(detect_repeated_topic(&lines, 4, 3).is_none());
+    }
+
+    #[test]
+    fn detect_repeated_topic_finds_chinese_topic_across_three_lines() {
+        // "工作进展" appears in three lines → flagged.
+        let lines = vec![
+            line("看你在专心工作进展不错"),
+            line("工作进展怎么样了"),
+            line("聊聊你今天的工作进展吧"),
+        ];
+        let topic = detect_repeated_topic(&lines, 4, 3).expect("should detect");
+        assert!(
+            topic.contains("工作进展"),
+            "expected to surface 工作进展, got '{}'",
+            topic
+        );
+    }
+
+    #[test]
+    fn detect_repeated_topic_respects_min_distinct_lines() {
+        // Only 2 lines share "周末出去" — below min_distinct_lines=3 → None.
+        let lines = vec![
+            line("周末出去走走吧"),
+            line("周末出去吃饭怎么样"),
+            line("今天天气不错"),
+        ];
+        assert!(detect_repeated_topic(&lines, 4, 3).is_none());
+        // But min=2 → fires.
+        assert!(detect_repeated_topic(&lines, 4, 2).is_some());
+    }
+
+    #[test]
+    fn detect_repeated_topic_skips_whitespace_bearing_windows() {
+        // "了 我" / " 我们" sliding across word boundary should not be flagged
+        // even though it'd technically appear multiple times.
+        let lines = vec![
+            line("吃饭了 我们走"),
+            line("回来了 我们一起"),
+            line("睡觉了 我们再聊"),
+        ];
+        // Distinct words; only artifact "了 我" or " 我们" connects them across
+        // whitespace — those are explicitly skipped.
+        let topic = detect_repeated_topic(&lines, 4, 3);
+        if let Some(t) = topic {
+            assert!(
+                !t.contains(' '),
+                "topic should not contain whitespace, got '{}'",
+                t
+            );
+        }
+    }
+
+    #[test]
+    fn detect_repeated_topic_skips_uniform_char_windows() {
+        // Test sentinel: "...." or "嗯嗯嗯嗯" are formatting/filler not topics.
+        let lines = vec![
+            line("嗯嗯嗯嗯继续吧"),
+            line("好的嗯嗯嗯嗯"),
+            line("嗯嗯嗯嗯让我想想"),
+        ];
+        let topic = detect_repeated_topic(&lines, 4, 3);
+        // If anything fires it must NOT be the uniform-char window.
+        if let Some(t) = topic {
+            assert!(
+                t != "嗯嗯嗯嗯",
+                "uniform-char windows should be filtered, got '{}'",
+                t
+            );
+        }
+    }
+
+    #[test]
+    fn detect_repeated_topic_handles_short_lines() {
+        // Lines shorter than ngram_size are silently skipped — no panic.
+        let lines = vec![line("嗨"), line("好"), line("不错")];
+        assert!(detect_repeated_topic(&lines, 4, 1).is_none());
     }
 }
