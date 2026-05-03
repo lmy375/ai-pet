@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cz：redaction 加正则模式（信用卡 / 邮箱 / 任意结构化敏感词）
+- 加 `regex = "1"` 依赖（RE2-style 引擎，线性时间，无 backreference→天然 ReDoS 安全）。
+- `PrivacyConfig` 加 `regex_patterns: Vec<String>` 字段（serde default 空 Vec），与既有 `redaction_patterns`（子串）并列。
+- 新纯函数 `redaction::redact_regex(text, patterns) -> String`：每条 pattern 编译一次（Regex::new），失败的 silently skip——一个 pattern 写错不会让整个过滤失效。空 pattern trim 后被跳过。
+- `redact_with_settings` 改成两阶段 pipeline：先子串、再正则。顺序刻意——子串通常更具体（命名词），正则抓结构（信用卡 / 邮箱）；先做具体再做泛化让 marker 顺序自然。
+- 5 个注入通道（Iter Cx + Cy + Cw 累加的 active_window / calendar / mood note / speech_history / persona_summary）现在自动获得正则覆盖——无新 callsite 改动，因为它们都走同一个 `redact_with_settings` helper。
+- 7 个新单测：empty / blank / 邮箱模式 / 信用卡模式 / 非法 pattern silently skipped 但其他 pattern 仍生效 / 多 pattern 顺序 / 中文支持。
+- 前端 `PrivacyConfig` interface + 默认值同步加 `regex_patterns: []`。`PanelSettings.tsx` 隐私过滤区扩为两个 textarea：子串 + 正则，每个独立 update（注意保留另一字段不被覆盖）。footer 文案更新为 "覆盖 5 个 prompt 注入通道；子串先于正则；Rust regex 线性时间，无反向引用——天然 ReDoS 安全"。
+- 228 cargo tests + tsc 全过；零 warning。
+- 路线 C v2：本地子串过滤（人/项目/公司命名词） + 正则结构化过滤（卡号/邮箱/电话/任意 pattern）= 完整可配置隐私层。
+
 ## 2026-05-03 — Iter Cw：redaction 扩展到 persona_summary 自循环入口
 - `proactive::build_persona_hint`：把 `item.description.trim()` 在格式化进 prompt 前用 `redact_with_settings` 过一遍。这是 self-loop 入口的最后一处——LLM 自己写 persona_summary 时不会主动 redact，但用户标记的私人词应当在每次注入 prompt 时被覆盖。
 - `get_persona_summary` Tauri command（panel 的人格 tab 用）**不**走 redaction：那是本地 panel 显示，用户看到原文是合理的；redaction 只在"对外发到 LLM"那一刻应用。注释里写明这个语义不对称的设计选择。

@@ -44,6 +44,7 @@ export interface ChatConfig {
 
 export interface PrivacyConfig {
   redaction_patterns: string[];
+  regex_patterns: string[];
 }
 
 export interface AppSettings {
@@ -89,6 +90,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   privacy: {
     redaction_patterns: [],
+    regex_patterns: [],
   },
 };
 

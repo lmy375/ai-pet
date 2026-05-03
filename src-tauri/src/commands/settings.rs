@@ -234,6 +234,14 @@ pub struct PrivacyConfig {
     /// match. Empty list disables redaction. Backed by `crate::redaction`.
     #[serde(default)]
     pub redaction_patterns: Vec<String>,
+    /// Regular-expression patterns redacted from the same prompt-injection channels
+    /// (Iter Cz). Lets users catch structured sensitive data — credit-card-shaped
+    /// digit groups, email addresses, phone numbers — that fixed-substring patterns
+    /// can't express. Backed by the `regex` crate (RE2-style: linear time, no
+    /// catastrophic backtracking, ReDoS-safe by construction). Invalid patterns are
+    /// silently ignored at runtime so a typo doesn't disable the whole filter.
+    #[serde(default)]
+    pub regex_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -32,4 +32,5 @@ rmcp = { version = "1.2", features = [
 ] }
 teloxide = { version = "0.13", features = ["macros"] }
 log = "0.4"
+regex = "1"
 
