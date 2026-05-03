@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R12 设计要点（已实现）
+- **deterministic vs LLM 总结分两步**：第一直觉是"R12 必须有 LLM 一句话总结，否则不是 review"。但实测 deterministic bullet list 已经回答了"今天发生了什么"的核心问题。LLM 总结是 polish，不是 fundament。先把 deterministic 路径打通 + 完成 idempotency / 触发逻辑 / memory schema —— 这些 LLM 升级路径后也用得上。R12b 仅替换 description 文案 + 可选追加 detail 顶部的总结段，对底层 schema 零冲击。"先 backend 后 polish" 在多步 feature 里是通用模式。
+- **22:00 trigger gate 的"first tick after"语义**：天真做法是开个 cron-like 后台 task 在 22:00:00 准点 fire。但 (a) 多一个 background loop 是多一个失败点；(b) 用户不在桌前的 22:00 fire 没意义；(c) Tauri 的进程模型不保证后台 task 在 22:00 还活着。复用 proactive loop tick + "first eligible tick wins" — 用户人在的时候才 review，逻辑简单 + 不需新基础设施。这是 R15 active_app "复用 proactive cadence" 模式的延续。
+- **双重 idempotency 是必然的**：单纯 LAST_DAILY_REVIEW_DATE（进程内 mutex）会在 app restart 后 None — 如果用户 22:30 review 完后 23:00 重启 app，下次 tick 再 fire → 二次写入。单纯 index existence 检查 O(n) 每 tick 都查，量大就慢。两者叠加：fast path（mutex 命中）跳过 disk read，cold start 才查 disk。这是 cache + persistence 的经典层叠 pattern。
+- **title 用 date 后缀而非 daily_plan 单条覆盖式**：daily_plan 是"今天的目标"——只有一份才有意义，明天会被新 plan 覆盖。daily_review 是"每天的日记"——每天独立才能"翻看"。两者用不同 schema 反映了"覆盖型 vs append 型" memory 的本质区别。如果做"宠物的回忆录"功能，date-suffixed schema 让 panel 可以直接列出最近 7 天 review，daily_plan-style 单条覆盖就做不到。
+- **`[review]` description 前缀是为未来 R12b 留接口**：第一次写 description 是 deterministic 的"今天主动开口 N 次"。R12b 升级 LLM 总结后会变成"今天我们一起..."。两种格式都需要被识别（panel UI / future prompt），加 [review] 前缀是 namespace 划分 — 类似 [error:] / [every:] / [once:] 这些 schema 标记。在 codebase 里已经形成统一惯例，新场景沿用。
+- **silent write 不进 mood / speech_history**：诱惑是"review 写完后 push 一条 'review 完成' 到 chat 里"。但那会 (a) 占今天的 chatty quota 影响后续判断 (b) 让 review 看起来是"宠物开口" 但其实是后台沉淀。silent 是正确的 trade-off — review artifact 沉默存在 memory 里，等明天 prompt / panel UI 主动读它，是"宠物大脑长期记忆" 而不是"宠物当下话语"。
+- **R12 把 R14 的"昨日尾声"升级到"昨日全貌"的可能性**：R14 提取昨日最后 2 条 speeches 作 cross_day_hint。有了 R12 之后，理论上下一步可以让 cross_day_hint 改读昨日 review.md 的"今日开口记录" 段——拿到昨日全 speeches + 计划完成度，比尾声 2 条更丰富。但 (a) prompt 长度膨胀、(b) 当下"昨晚最后说过的话"反而比"昨日全部"更适合作开场白引子。这是 信息密度 vs 信息量 trade-off — R14 留 2 条本身是判断过的，R12 sediment 不强求 R14 改 schema。
+
 ## Iter R15 设计要点（已实现）
 - **后台 baseline vs LLM-call tool**：get_active_window 是 LLM 自助 tool — 它要主动调才有数据。Iter R4 已经看到 env tool spoke_with_any 比例不高，意味着 LLM 经常"开口前没看一眼"。R15 不依赖 LLM 主动 — 后台每 tick 拉，注入 prompt 当 baseline。"LLM 自由 tool" + "loop 强制 baseline" 双轨提供同源数据：LLM 想精确就调 tool，想顺手就读 hint。
 - **15 分钟阈值 = 信号-噪声 trade-off**：1 分钟太敏感（"用户在 Slack 里 1 分钟" 没意义）；30 分钟太钝（错过"专注 20 分钟该歇一下"窗口）。15 分钟 ≈ 一次 deep-work 段 / 一次会议 / 一次专注阅读。低于这个值 hint 完全不出现，避免噪声污染 prompt。是"sparseness as a feature" 的应用。

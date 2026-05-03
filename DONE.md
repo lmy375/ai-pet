@@ -2,6 +2,32 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R12：daily review 自动生成（22:00 写 ai_insights/daily_review_YYYY-MM-DD）
+- 现状缺口：pet 每天的"经验"有 mood / persona / butler_history / speech_history 各自分散。"今天我们一起做了什么"没有统一的 retrospective artifact — 隔天没办法快速 reload 昨天上下文，跨日叙事（R14）只能拉昨日 speeches 的尾声 2 条，看不到"今天的全貌"。R12 把"日终回顾"沉淀成 ai_insights memory entry，结构化、可读、可被未来 prompt/UI 复用。
+- 解法 — pure gate + thin async writer：
+  - 新模块 `src/proactive/daily_review.rs`：`DAILY_REVIEW_HOUR = 22`，`LAST_DAILY_REVIEW_DATE: Mutex<Option<NaiveDate>>` 进程单例，`should_trigger_daily_review(hour, today, last) -> bool` 纯 gate，`format_daily_review_detail(speeches, plan, date)` 纯 markdown 生成器，`format_daily_review_description(count, has_plan)` 纯一行 index 文案。
+  - proactive.rs 加 3 个私有 helper：`read_daily_plan_description()` 拉 ai_insights/daily_plan 原始 description；`daily_review_exists(title)` 跨重启 idempotency 检查；`maybe_run_daily_review(now_local)` async 编排（gate → exists check → fetch speeches → format → memory_edit create → mark date）。
+  - run_proactive_turn 第二行（紧跟 now_local 计算）调一次 `maybe_run_daily_review(now_local).await`。在所有 gate 之前 — review 是独立 outcome，不受 quiet/cooldown/awaiting 影响。
+- 决策 — deterministic 版先行，LLM 总结留 R12b：deterministic（bullet list 拼接）已经能产生"昨天主动开口 7 次：· 早安 · 中午吃饭了吗 ..." 的可用 artifact。LLM 一句话总结是锦上添花但不是关键路径。R12b 之后再升级。
+- 决策 — 22:00 触发：用户大致还在桌前（不像凌晨 0:00 触发会错过用户），但又"够晚"让今天的对话基本结束。允许的迟到时刻一直到 23:59 都能 fire。
+- 决策 — 双重 idempotency：进程内 LAST_DAILY_REVIEW_DATE + 跨进程 index existence 检查。光靠前者会在用户 23:00 重启 app 时（已写过的 case）二次写入并 disambiguate 成 `daily_review_YYYY-MM-DD_1`。光靠后者每次都要扫 index O(n) 浪费。两者叠加：fast path 命中就 skip，cold start 才查盘。
+- 决策 — title 用 `daily_review_YYYY-MM-DD`：每天独立 entry，不像 daily_plan 是单条覆盖。便于"翻日记本"，每天能独立查看 + 不丢失任何一天的记录。180 天累积 ≈ 180 个 .md，按月分类的话改 title schema 不破坏旧数据（`daily_review_2026-05-03` 是字典序友好，前缀 grep 即可）。
+- 决策 — `[review]` 前缀 description：让未来的 R12b LLM-summary pass 能识别"哪些是 deterministic、哪些已升级 LLM 总结"，不会撞车其他 ai_insights 条目（mood / persona / daily_plan）。
+- 决策 — speech 100 上限：典型一天 < 30 条主动开口，100 是健壮兜底。极端 chatty mode 可能跑到 50+，仍在范围内。
+- 决策 — best-effort 写：memory_edit 错误吞掉。review 是装饰性的 — 失败不能让正常 proactive turn 也卡住。
+- 决策 — 不动 mood / 不进 speech_history：review 写动作完全 silent，不计 chatty quota，不影响心情判断。是后台沉淀，不是"宠物开口"。
+- 测试（11 新单测）：
+  - gate 在 hour < 22 全 false（00 / 12 / 21 三档 boundary）
+  - gate 在 22 / 23 + 无 prior 时 true
+  - gate 在已 review today 时 false（22 / 23 两档）
+  - gate 在 last == yesterday 时 22 fire
+  - gate 在 21 + 旧 review 时 false（hour 仍是首要条件）
+  - format detail：完整 plan + speeches → 标题 + 计划段 + 开口段都在
+  - format detail：empty plan / empty speeches / 都空 → 各自的"没有..."提示文案
+  - format description：count 0/7/15 + has_plan true/false 各种组合
+- 测试结果：424 cargo（+11）；clippy --all-targets clean（被 clippy 提示用 `!matches!` 替换 match-arm，照做）；fmt clean。
+- 结果：每天 22:00 后第一次 proactive tick 自动产出"今日回顾" memory 条目。Pet 长期记忆从"零散信号"升级到"每日结构化日记本" — 可被未来 panel UI 翻阅、可被 cross-day prompt 升级（R14 的下一步），可被 R12b LLM 总结再回写。retrospective layer 的 foundation 就位。
+
 ## 2026-05-03 — Iter R15：active app 时长追踪（"用户在 X 已经 N 分钟"）
 - 现状缺口：proactive prompt 里有 mood / cadence / focus / idle / cross_day / repeated_topic… 唯独缺"用户**当下**在做什么"。get_active_window 是 LLM 自助 tool（要它主动调），后台 loop 没有 baseline 的 hint，导致"用户已经在 Cursor 里写了一小时" 这种最日常的伴随感知缺位。
 - 解法 — pure state machine + thin wrapper：
