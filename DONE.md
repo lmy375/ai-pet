@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R38：decision_log timeline filter buttons（R37 pattern 复用）
+- 现状缺口：R37 IDEA 写"filter button row pattern reusable for decision_log"。R38 立刻验证 — 应用同 pattern 到 PanelDebug decision log timeline（最常用最长的 panel 区段，实际 9 种 kinds 混合显示，user 想"只看 LLM 选了沉默的轮"难找）。
+- 解法 — 复制 R37 的 pattern + 选 4 高频 kinds：
+  - 9 种 decision kinds: Run / Silent / Skip / Spoke / LlmSilent / LlmError / ToolReviewApprove / ToolReviewDeny / ToolReviewTimeout
+  - 4 button filter row: 全部 / 开口 (Spoke) / 沉默 (LlmSilent) / 跳过 (Skip) —— 选最常出现 + 最有 retrospection 价值的 4 个
+  - 其他 5 个 (Run / Silent / LlmError / ToolReview*) 不单独按钮，走"全部"。Run 是 wrapper，Silent 是 pre-LLM gate-passed-but-quiet，少见；LlmError 罕见；ToolReview* 是另一概念（人类审核工具调用）
+  - 按钮 active 颜色复用 R37 / decision kindColor 同源（开口绿 #16a34a / 沉默紫 #a855f7 / 跳过琥珀 #f59e0b）
+  - 空过滤兜底文案 "当前过滤下没有匹配条目" 沿用 R37 同款
+  - filtered list 渲染保持原 logic（└ 连接器 / kindColor / localizeReason）
+- 决策 — 不全 9 种 kind 各一按钮：会让 button row 太宽（9 button × 8 字 ≈ 72 字宽），panel 显示过载。**N=4 是 button row sweet spot** —— R37 IDEA 已 codify "3-5 用 segmented buttons"。
+- 决策 — 同 R37 共享 btnStyle 私函数：复用 button style 一致性，但因为 PanelDebug.tsx 是个大文件没有公共 utils，每个 filter 块自己定义 btnStyle。**短期复制粘贴胜过抽 utility for 2 callers** — R32 IDEA "premature abstraction" 同思路。如果再加第 3 个 filter，提取一份 PanelFilterButtonRow component。
+- 决策 — 按钮带 fontFamily: inherit：decision_log 区段用 monospace 字体（'SF Mono', 'Menlo'）。按钮如果默认 sans-serif 在 mono 段里突兀，inherit 让 button 跟周围环境一致。**继承 styling 跟着 context 走** 是细节品质。
+- 决策 — 不动 localizeReason / kindColor：filtered list 还是用同样的 cell 渲染。**不要 scope creep**——R37 IDEA "iter 范围控制不 creep" 同纪律。
+- 决策 — Run 不在 button 但 outcome 仍含 └ 前缀：filter 到 Spoke/LlmSilent/LlmError 时 isOutcome=true 仍会画 └ 连接器。视觉上"└ Spoke ... └ Spoke ..." 看着同 kind 重复 — acceptable，反正 user 选了 filter 知道在看同 kind。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：decision_log timeline 现在能 1 click 隔离"开口" / "沉默" / "跳过" retrospective view。R-series 首次成功复用 codified pattern 到第二个 surface — verify R37 IDEA 提的"pattern reusable" claim 不是空话。下次还可应用到 butler_history / tool_call_history / mood_history 等 timeline。
+
 ## 2026-05-04 — Iter R37：feedback timeline filter buttons（panel 首次交互控件）
 - 现状缺口：PanelDebug R6 反馈 timeline 列出全部 replied / ignored / dismissed 混合的 entries。R1c+R24 让用户能精确点掉气泡 + 看到 chip 反馈，但**回看历史 dismissals 要在所有 entries 里手动找**。如果用户想问"我最近点掉了哪些 turn？"得 scroll 整个 timeline。**retrospection 缺 filtering 工具**。
 - 解法 — 4 按钮 filter row + isolate logic：

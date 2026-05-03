@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R38 设计要点（已实现）
+- **codified pattern 第一次实战复用**：R37 IDEA 写"pattern reusable for other timelines"。R38 当下一个 iter 立刻验证。这是 codified-rule 落地的标准节奏：rule → first application → re-test on second → 沉淀为公认 pattern。**rule 的有效性必须靠多次复用验证** —— 一次写规矩不算 codified，第二次复用不修改才算稳定。R38 通过这关，`PanelFilterButtonRow` pattern 进入 R-series stable vocabulary。
+- **N=4 是 button row sweet spot 的反证**：原本 decision log 9 种 kind 都可以放 button。但 9-button row 横向会爆。**filter 的目的是 "isolate signal"**——只 surface 高频 + 有 retrospect 价值的 kinds。Run / Silent / LlmError / ToolReview* 都很罕见或语义独立，归"全部"反而更清。**不是所有 kinds 都该有 filter button** —— 只有 user 真想 "isolate this" 的 kinds 才需要。
+- **复制粘贴 vs 抽 component 的纪律**：R37 + R38 都各自定义 btnStyle 私函数。诱惑是抽 `PanelFilterButtonRow` shared component。但 (a) PanelDebug.tsx 是大 monolith，没 utils 子目录；(b) 2 个 caller 抽 component 是 R18 之前的 case；(c) 第 3 个 filter button row 出现时再抽。**lazy abstraction 在 polish 期同样适用**，don't refactor at use-2 — wait until use-3+。
+- **fontFamily inherit 是细节品质**：decision_log 区段用 monospace。普通 button 默认 sans-serif 会让 button 在 mono 段里"跳出" 感觉错位。`fontFamily: "inherit"` 让 button 跟周围环境一致。**继承 styling 跟着 context** 是 panel 设计成熟度信号 —— user 不会注意到 "对" 的细节，但会注意到"错" 的不一致。
+- **Pattern reusability 验证 = surface duplication**：R37 + R38 共有同样代码结构（4 buttons + filtered list + 空文案兜底）。**完成同 pattern 第二次实例化后，duplication 已经显式可见**。如果继续走相似路径，第 3 个 timeline filter 上线时正式 refactor 抽 PanelFilterButtonRow。**duplication 不是 evil，但有 critical mass** —— 2 次属于"留着观察"，3+ 次进 backlog refactor。
+- **decision filter "Run" 不入按钮但 └ 仍画**：filter 到 Spoke 时 outcome 行画 └ 连接器，看着同 kind 重复。Acceptable trade-off ——保持 visual consistency 比 special-case "filter 时去掉 connector" 简单。**"非完美但内部一致" 优于 "局部完美但需特例**" 是 UI 实现的常见 trade-off。
+- **R-series polish 期价值在 audit + 复用**：R36 retune（数字调）+ R37 新交互（功能加）+ R38 pattern 复用（rule 验证）— 三种 polish iter 各 1 次。**polish 期的 iter 多样性** = 数字 / 功能 / 复用 / cleanup / refactor。比 innovation 期的 "加新轴" 节奏更细碎，但持续推进 codebase 健康。
+
 ## Iter R37 设计要点（已实现）
 - **panel 从只读 dashboard → 渐进交互**：R-series 之前 panel 几乎全是只读：chips, hover tooltips, modal viewers, timeline lists。R37 是首次加交互按钮（filter row）。**dashboard 的渐进演化** —— 早期阶段重信息密度，成熟期加 retrospection 工具。filter 是最低成本的交互（1 click toggle, 0 typing）。后续可以考虑给其他 timeline（decision_log / butler_history）同 pattern 加 filter，形成 dashboard 操作 vocabulary。
 - **active button color = matching pill color**：filter 按钮 active 时颜色跟它 filter 出的 pill 颜色一致。**color reuse 让 cross-component mental model 稳定** —— user 看到红色 active 按钮 "点掉" + 红色 pill "点掉" 知道这俩讲的同一件事。这种 visual coupling 比"按钮和内容用不同色 + 文字解释" 高效。
