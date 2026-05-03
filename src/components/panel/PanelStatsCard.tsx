@@ -135,6 +135,52 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           <span style={{ fontSize: "11px", color: "#94a3b8" }}>/日均</span>
         </span>
       )}
+      {/* Iter R51: 7-day rolling average — distinct from lifetime avg (R50)
+          because the week window reveals *recent* trend that lifetime
+          smooths out. lifetime avg = "long-term character"; week avg =
+          "recent state". Both visible lets user spot drift like
+          "lifetime 2 / week 5" → "trending more chatty recently".
+          Divisor capped at min(7, companionshipDays + 1) so first-week
+          users get a fair denominator instead of always /7. */}
+      {companionshipDays >= 1 && (
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "baseline",
+            gap: "4px",
+            marginLeft: "8px",
+            paddingLeft: "12px",
+            borderLeft: "1px solid #e2e8f0",
+          }}
+          title={(() => {
+            const denom = Math.min(7, companionshipDays + 1);
+            const lifetimeAvg = lifetimeSpeechCount / companionshipDays;
+            const weekAvg = weekSpeechCount / denom;
+            const direction =
+              weekAvg > lifetimeAvg * 1.3 ? "（最近比长期均值更健谈）"
+              : weekAvg < lifetimeAvg * 0.7 ? "（最近比长期均值更安静）"
+              : "";
+            return `本周 ${weekSpeechCount} 次 / ${denom} 天 = ${weekAvg.toFixed(1)} 次/天${direction}。对比长期 ${lifetimeAvg.toFixed(1)} 次/天看 trend。`;
+          })()}
+        >
+          <span
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "#0d9488",
+              lineHeight: 1,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+          >
+            {(() => {
+              const denom = Math.min(7, companionshipDays + 1);
+              const avg = weekSpeechCount / denom;
+              return avg < 10 ? avg.toFixed(1) : Math.round(avg).toString();
+            })()}
+          </span>
+          <span style={{ fontSize: "11px", color: "#94a3b8" }}>/周日均</span>
+        </span>
+      )}
       <span
         style={{
           display: "inline-flex",

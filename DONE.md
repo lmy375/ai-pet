@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R51：PanelStatsCard 加 /周日均 trend 列（R50 lifetime + R51 week 双视角）
+- 现状缺口：R50 加了 lifetime / 陪伴天数 = "/日均" 列，揭示**长期 engagement** 强度。但**没有"最近 trend"** —— lifetime avg 把所有数据均等加权，掩盖最近变化。如果用户最近一周更频繁跟 pet 互动，lifetime 1 年的均值是看不出来的。**需要短期 rolling avg 跟长期 avg 配对** 才能看 drift。
+- 解法 — 7-day rolling avg + smart denominator：
+  - 计算：`weekAvg = weekSpeechCount / min(7, companionshipDays + 1)` —— 用 min 让首周 user 不被强制 /7（5 天 user 应该 weekCount/5 不是 weekCount/7）。
+  - 显示：< 10 取 1 位小数，≥ 10 取整数（跟 R50 同精度规则）。
+  - 色 teal #0d9488 跟 R50 同色 —— 都是 derived from companionship 时间维度。
+  - hover title 自动判断 weekAvg 跟 lifetimeAvg 的 ratio：
+    - `weekAvg > lifetimeAvg * 1.3` → "(最近比长期均值更健谈)"
+    - `weekAvg < lifetimeAvg * 0.7` → "(最近比长期均值更安静)"
+    - else → 无附加文案（中等区段不需提醒）
+  - 位置：紧接 R50 /日均 列后，让两列形成 long-term ↔ short-term comparison cluster。
+- 决策 — 不显示 trend arrow / 不变 chip 颜色：诱惑是 chip 旁加 ↑↓ 箭头或换色显 trend direction。但 (a) 增加 visual 复杂度，stats card 已经 6 列；(b) hover title 文字描述比 emoji arrow 准确（"更健谈/更安静" 描述比"↑/↓" 信息密度更高）。**hover title 承担 trend signal 而 chip 主体保持简洁** —— 视觉密度跟信息密度匹配。
+- 决策 — denominator min(7, days+1) 而不是 7：首周用户的 week count 不是 7 天累积。如果 day 3 用户 week count=10，10/7 ≈ 1.4 是错的（应该是 10/4 = 2.5）。+1 因为今天也算 1 day（day 0 = day_count 1 day_dayspan）。**精确分母比固定 7** —— 让首周 stats 也有 fair representation。
+- 决策 — ±30% 是 trend 触发阈值：太严（±10%）会让 weekly 自然波动都触发，太松（±50%）极端 case 才提。30% 是 noise vs signal sweet spot。R-series feedback 三档 (>60% / <20% / mid) 也用类似阈值哲学：**clear band > continuous gradient** 更可读。
+- 决策 — title 自动文案 vs 静态：title 文字根据 ratio 动态变化。这是 **dynamic tooltip** —— hover 文案随当前 stat 变化。比固定 "周 N 天均值" 模板信息量大 —— 直接告诉用户 ratio 含义。
+- 决策 — 不写测试：UI derived stat，类型 + cargo build clean。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：PanelStatsCard 现在 7 列 surface 全维度速看：今日 / 本周 / 累计 / **/日均 (R50)** / **/周日均 (R51)** / 前开口 / 陪伴。R50 + R51 是双视角 derived stats —— **long-term character + recent trend**。用户一眼对比知道"我跟 pet 关系是稳定 / 升温 / 降温"。R-series stats card 走完一轮 derived expansion。
+
 ## 2026-05-04 — Iter R50：PanelStatsCard 加 avg-per-day 派生统计
 - 现状缺口：PanelStatsCard 显 today / 本周 / 累计 / 前开口 / 陪伴 五列。但**缺一个 lifetime / 陪伴天数 的 ratio** —— 即"平均每天 N 次主动开口"。这个 derived stat 揭示**长期 engagement 强度**："是常聊伴侣还是少聊伴侣"。0.5/天 = 安静陪伴，5/天 = 健谈日常。这条信号对比 today / week 的 short-window 视角更有 long-term character signal。
 - 解法 — 派生统计 column：
