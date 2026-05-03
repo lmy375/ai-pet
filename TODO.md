@@ -22,7 +22,8 @@
   （2026-05-03 完成）
 - [x] Iter Cτ：settings.user_name 字段 + persona_layer 称呼注入（reactive chat / Telegram）
   （2026-05-03 完成）
-- [ ] Iter Cυ（候选）：把 user_name 也注入 proactive prompt — 让 bubble 主动开口偶尔用名字称呼
+- [x] Iter Cυ：把 user_name 也注入 proactive prompt — 让 bubble 主动开口偶尔用名字称呼
+  （2026-05-03 完成）
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
