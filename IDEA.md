@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 99 设计要点（已实现）
+- **stats card vs chip strip 是不同职责**：StatsCard 是首屏"大数字 + 一个 badge"形态——核心数据高 typographic emphasis；ChipStrip 是细分指标的水平阵列——多 chip 紧凑显示。两者视觉密度不同，分两组件清晰。
+- **ToneStrip 自带 null guard**：`if (!tone) return null;` 让外层 `<PanelToneStrip tone={tone} />` 无需 conditional 渲染。组件契约："给我 tone，可以是 null"——内部决定怎么处理。比外层 `tone && <ToneStrip />` 干净。
+- **不再在 props 里传 NATURE 等字典**：StatsCard 和 ToneStrip 都不依赖 PROMPT_RULE_DESCRIPTIONS。如果将来要在 ToneStrip 里加 rule-aware 着色（比如按 active_prompt_rules 数量调整 mood 色），再 import 就好——目前不必要。
+- **保留 IIFE 风格的派生计算**：StatsCard 内对 restraining/todayColor/todayTitle 的派生从原来的 IIFE 简化为顶层 const——组件作用域已经局部化了，不再需要 IIFE 隔离作用域。代码更平。
+- **PanelDebug 还能继续拆吗？**：剩余的几个块（prompt-hints 展开 / decisions list / recent speeches / reminders / logs view）都和 state 耦合较紧（showPromptHints toggle、scrollRef 自动滚动、过滤展示）。继续拆需要 props 数量增加，性价比下降——目前拆到这个粒度合适。
+- **依赖关系**：panelTypes（数据契约）→ PanelStatsCard / PanelToneStrip / PanelChipStrip（pure presentation） → PanelDebug（编排 + state）。三层清晰单向。
+
 ## Iter 98 设计要点（已实现）
 - **打破组件循环依赖**：Iter 97 把 ChipStrip 抽成 PanelDebug 子组件，但类型定义还在 PanelDebug 里——ChipStrip import PanelDebug 类型，PanelDebug import ChipStrip 组件。这是循环依赖（虽然 TS 不报错因为 ChipStrip 只 import type）。Iter 98 把类型搬到独立 panelTypes.ts，两个组件都从中性第三方 import，依赖图变成 Y 字而非环形。
 - **`.ts` 而非 `.tsx`**：纯类型 + 数据无 JSX。`.ts` 后缀让导入者一眼知道这是 data-only 模块。如果将来加面板专用 hooks 或非组件的辅助函数，也可以放这里或并列建 `panelHooks.ts`。

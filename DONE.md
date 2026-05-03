@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 99：再拆出 PanelStatsCard + PanelToneStrip
+- 新文件 `src/components/panel/PanelStatsCard.tsx`：封装 lifetime + today 大数字 + 克制模式 / 破冰阶段 badge。props 仅 3 个（todaySpeechCount / lifetimeSpeechCount / tone），逻辑（restraining 派生 + 颜色切换 + 文案分支）全部内化。
+- 新文件 `src/components/panel/PanelToneStrip.tsx`：封装 tone snapshot 一行 chip strip（period / cadence / wake / pre-quiet / 破冰 / mood / motion）。tone null 时直接 return null，外层无需 conditional render。
+- PanelDebug.tsx：~120 行 inline JSX 被替换成 7 行 `<PanelStatsCard {...} />` + `<PanelToneStrip tone={tone} />`。
+- 现在 panel 子组件三件套：PanelChipStrip（数据 chip 行）/ PanelStatsCard（大数字卡）/ PanelToneStrip（tone 信号条）。每个组件单一职责：纯 presentation，依赖 panelTypes 的类型契约。
+- PanelDebug 现在 569 行（从 Iter 98 的 ~590 进一步压缩），剩下 toolbar、handlers、prompt-hints expansion、decisions、recent-speeches、reminders、logs view 等本就难以拆分（与父组件 state 高耦合）的部分。
+- 184 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 98：抽 panelTypes.ts，PanelDebug 只剩 state + layout
 - 新文件 `src/components/panel/panelTypes.ts`：搬入 8 个 interface（CacheStats / ProactiveDecision / MoodTagStats / LlmOutcomeStats / EnvToolStats / PromptTiltStats / PendingReminder / ToneSnapshot）+ `PromptRuleNature` type + `PROMPT_RULE_DESCRIPTIONS` + `NATURE_META` 字典。共 ~150 行的 type/data 定义集中一处。
 - PanelDebug.tsx 顶部把 8 个 interface 块替换成单个 `import { ... } from "./panelTypes"`，去掉 ~62 行类型定义和 ~80 行字典定义。文件从 ~770 行降到 ~590 行，纯粹只剩 useState + fetchLogs + JSX layout。
