@@ -153,8 +153,10 @@
 - [x] R13：companion mode setting（2026-05-03 完成 — Iter R13。3 模式 balanced/chatty/quiet
   调 cooldown + chatty_threshold；前端 settings UI 留 R13b follow-up）
 - [x] R14：跨日记忆线（2026-05-03 完成 — Iter R14）
-- [ ] R15：active app 时长追踪（proactive loop 顺手记 current window，1 分钟粒度，
-  proactive prompt 注入"用户在 X app 已经 N 分钟"）
+- [x] R15：active app 时长追踪（2026-05-03 完成 — Iter R15。proactive loop 每 tick 通过
+  `current_active_window` 拉取前台 app，与上次快照比对计算停留分钟数；≥15 分钟才注入
+  "用户在「X」里已经待了 N 分钟" 提示。粒度=interval_seconds，redaction 在 hint 格式
+  化时应用，snapshot 留原文以稳定 transition 比较。7 单测）
 
 ### 路线 B：表情系统升级
 - [ ] Iter 8b：扩展 mood 解析支持 expression 字段（如 [motion: Tap, expression: smile]），

@@ -20,6 +20,7 @@ use tokio::sync::Mutex as TokioMutex;
 // glob `pub use` re-exports the public API so external callers
 // (`consolidate.rs`, panel commands) keep reaching items via the historical
 // `crate::proactive::ReminderTarget` / `parse_reminder_prefix` paths.
+mod active_app;
 mod butler_schedule;
 mod gate;
 mod prompt_assembler;
@@ -27,6 +28,7 @@ mod prompt_rules;
 mod reminders;
 mod telemetry;
 mod time_helpers;
+pub use self::active_app::*;
 pub use self::butler_schedule::*;
 pub use self::gate::*;
 pub use self::prompt_assembler::*;
@@ -1030,6 +1032,15 @@ async fn run_proactive_turn(
         .ok()
         .map(|s| s.proactive.effective_chatty_threshold())
         .unwrap_or(5);
+    // Iter R15: snapshot the foreground app + update the duration tracker.
+    // Hint fires when the user has been in the same app ≥ MIN_DURATION_MINUTES;
+    // empty otherwise. Reads via the same osascript path as get_active_window
+    // tool — non-macOS / failure → None → empty hint, no panic.
+    let current_app = crate::tools::system_tools::current_active_window()
+        .await
+        .map(|(app, _)| app);
+    let active_app_hint = update_and_format_active_app_hint(current_app.as_deref());
+
     // Iter R14: at the first proactive turn of a new day, surface yesterday's
     // last 2 utterances so the pet can pick up a thread instead of starting
     // cold every morning. Empty when (a) not first-of-day or (b) yesterday
@@ -1114,6 +1125,7 @@ async fn run_proactive_turn(
         recently_fired_wellness: late_night_wellness_in_cooldown(),
         repeated_topic_hint: &repeated_topic_hint,
         cross_day_hint: &cross_day_hint,
+        active_app_hint: &active_app_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -1561,6 +1573,8 @@ mod prompt_tests {
             // Default empty — pre-Iter R14 state, no cross-day hint. Tests
             // exercising the first-of-day continuity layer set this explicitly.
             cross_day_hint: "",
+            // Default empty — pre-Iter R15 state, no active-app duration tracker.
+            active_app_hint: "",
         }
     }
 

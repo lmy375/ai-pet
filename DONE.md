@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R15：active app 时长追踪（"用户在 X 已经 N 分钟"）
+- 现状缺口：proactive prompt 里有 mood / cadence / focus / idle / cross_day / repeated_topic… 唯独缺"用户**当下**在做什么"。get_active_window 是 LLM 自助 tool（要它主动调），后台 loop 没有 baseline 的 hint，导致"用户已经在 Cursor 里写了一小时" 这种最日常的伴随感知缺位。
+- 解法 — pure state machine + thin wrapper：
+  - 新模块 `src/proactive/active_app.rs`：`MIN_DURATION_MINUTES = 15` const + `ActiveAppSnapshot { app, since: Instant }` + `LAST_ACTIVE_APP: Mutex<Option<...>>` 进程单例。
+  - 纯 `compute_active_duration(prev, current_app, now) -> (new_snapshot, Option<minutes>)`：3 分支 — 无 prev → 新 snapshot/None；app 变 → 重置 since/None；app 不变 → 保留 since/Some(elapsed_min)。
+  - 纯 `format_active_app_hint(app, minutes) -> String`：低于 15 分钟或空 app → ""；否则 "用户在「{app}」里已经待了 {N} 分钟。"
+  - thin wrapper `update_and_format_active_app_hint(Option<&str>) -> String`：读 static → 调 compute → 写回 → 对 app 名做 `redact_with_settings` → 调 format。
+- 集成 — `current_active_window()` 复用：把 system_tools.rs 的 osascript 拉成纯 Rust async fn `pub async fn current_active_window() -> Option<(String, String)>`，无 logging / 无 ToolContext，让 proactive loop 和 get_active_window tool 共用同一份 osascript。run_proactive_turn 每 tick 调一次（已有的 5min cadence），落到 PromptInputs.active_app_hint。
+- 决策 — 15 分钟阈值：短跳（开 Slack 看一眼回 IDE）不该 surface 成"专注于 Slack"。15 min ≈ "认真投入"门槛，不会过早噪声。
+- 决策 — redact 在 hint format 时，不在 snapshot 时：snapshot 留原文（vs redacted）确保 transition 检测稳定 — 用户中途改 redaction patterns 不会让"还在 Cursor"误判成"切换了 app"。
+- 决策 — Instant（monotonic）而非 SystemTime：用户睡眠/系统时钟调整不污染分钟计算。
+- 决策 — 颗粒度=interval_seconds（默认 5min）：不另起 background loop。短期跳变穿透不到 hint（被 15min 阈值过滤），长期停留误差±5min 可接受。
+- 决策 — 复用 osascript 调用：避免双份"获取 active window"实现飘移。Tool 路径 = wrapper（带 logging + redact + 给 LLM）；loop 路径 = wrapper（带 redact + 注入 prompt）。osascript 只一份。
+- 测试（7 新单测）：compute 三分支（no prior / app change resets / same app carries since），format 四种（短 duration 空 / 阈值 fires / 空 app / 长 duration 240min）。
+- 测试结果：413 cargo（+7）；clippy --all-targets clean；fmt 自动修了 system_tools 末尾空行。
+- 结果：proactive loop 现在自带"用户已经在 X 待了 N 分钟" 的环境感知。Pet 不需要等 LLM 主动调 tool — 后台 baseline 就有，开口的连贯性大幅提升（"还在写代码呀，注意脖子" / "Slack 看半天了，是不是有事在烧"）。
+
 ## 2026-05-03 — Iter R14：跨日记忆线（first-of-day 注入昨日尾声）
 - 现状缺口：每天的第一次 proactive 都从零开始 — pet 不"记得"昨晚最后说了什么。如果昨晚说"睡前看会儿小说"，今早开口理应是"昨晚那本书看完了？" 而不是泛泛"早安"。R14 让叙事跨日延续。
 - 解法 — 纯函数 + first-of-day 触发：
