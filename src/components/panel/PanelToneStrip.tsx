@@ -154,6 +154,31 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           </span>
         );
       })()}
+      {tone.last_prompt_chars !== null && (() => {
+        // R31: prompt size budget chip. Color bands match prompt budget
+        // perception — CJK conversational prompts hover in the 1500-3000
+        // range; >3000 is bloating territory. Useful for me-as-developer
+        // tuning prompt density iter-by-iter.
+        const n = tone.last_prompt_chars;
+        const bg =
+          n < 1500 ? "#16a34a"   // green: lean
+          : n < 3000 ? "#94a3b8" // gray: normal
+          : "#d97706";           // orange: heavy
+        return (
+          <span
+            title={`上一次 proactive prompt 长度（chars，CJK-friendly）。绿 < 1500 / 灰 1500-2999 / 橙 ≥3000。当前 ${n} 字。R-series 累积 hint 让 prompt 越来越胖；这个 chip 是 budget 自检。`}
+            style={{
+              color: "#fff",
+              background: bg,
+              padding: "1px 8px",
+              borderRadius: "10px",
+              fontWeight: 600,
+            }}
+          >
+            📝 {n}字
+          </span>
+        );
+      })()}
       <span title="period_of_day(now)">⏱ {tone.period}</span>
       {tone.day_of_week && (
         <span title="weekday + 工作日/周末（Iter Cβ — proactive prompt 时间行已包含）">

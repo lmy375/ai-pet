@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R31 设计要点（已实现）
+- **dev-facing observability 也是 codebase health surface**：R31 chip 给"我"（持续维护者）看的多过给最终用户。但持续维护是 long-running system 的 lifeblood —— **panel 应该有 dev-mode chips 不只 user-mode chips**。如果系统设计只考虑 end-user surface，maintainer 调优时就要盲操作。R31 把"R-series 累积 prompt 是否过胖" 的反馈循环 panel 化，类似一种"实时 lint warning"。
+- **CJK chars().count() 是 i18n 代码的 baseline 纪律**：R19 第一次踩坑，R23 / R31 反复践行。任何"长度感知" 业务（threshold band / display digit / pagination）必须用 chars 不 byte。**Rust String::len() 是 byte 长度** 这个事实在多语言项目里反复给开发者上课 — codify 这条 rule 让未来不再踩。
+- **meta signal 应该 visually 区别于 data signal**：📝 prompt 大小 是关于 *prompt 自身* 的，不是 user / pet 的状态。chip 放置选择反映这层 — 不混进"宠物开口形态"或"用户上下文"集群，作 visual transition。**meta = how the system measures itself**, 区别 data = what the system measures of the world。两层信息不应该 visually 混淆。
+- **band 阈值经验拍 vs schema lock**：1500 / 3000 是经验数字，不是从某规范来的。**经验阈值应该 inline comment 解释来源** 让未来 maintainer 知道这是 cardinal 决策点。R31 IDEA 写"R-series 现状大概 2500-3500" 是 data anchor。如果未来 prompt 重新 lean 到 1000-1500，阈值可以下调；阈值不该 unchanged 当 baseline 移动。
+- **null vs zero 在 fresh process 区分**：第一次 process 启动，没 prompt 历史。null 表达 "无数据" — chip 不渲染。如果用 0 表示，chip 显 "📝 0字" 是 misleading "prompt 是空的"。**null = absent，0 = empty value** —— 在 UI 数字字段尤其重要。
+- **codified rule 自带 testing surface**：R31 chip 让"prompt 太胖" 状态 visible，等于给 R-series 加一道 visual lint。下次写新 hint 时如果让 chip 变 orange，**视觉会喊我"考虑裁旧 hint 才加新"**。这是 codified rule 之外的 *visual reminder rule* — 阈值 + 颜色 = 自动 review。
+- **dev-tool chip 的克制**：诱惑是再加 "📝 last_reply_chars" / "📝 N tool_uses_count" 等 dev meta chips。但 R31 一个 chip 已经表达了"prompt 体量" 维度；more 都是 marginal。**克制 dev surface** 跟 user surface 一样重要 — chip strip 不是 dashboard，是 status bar。
+
 ## Iter R30 设计要点（已实现）
 - **codified rule audit 是常态而不是一次性事件**：R20 codified "prompt 信号 = panel surface"，触发 R21 + R22 两次 audit。R29 codified "settings field = same-iter UI"，触发 R30 audit。**每个 codified rule 通常需要 1-2 次 audit-and-backfill 才完全落地** —— rule 之前的所有 violations 都欠债。系列开发的健康姿态：codify rule 后立刻 audit，不要等下次违反时再回头查。
 - **两同性质 debt 一次还**：发现 stale_once_butler_hours + stale_daily_review_days 都欠 UI。诱惑是分两 iter 各自做。但 (a) 两者结构完全相同（都是 number field），(b) 同 PanelNumberField 行 layout 就能放，(c) 两者都属于"memory_consolidate 字段补全" 一类操作。**同性质 debt 一次清干净** 比拖两次更经济 —— 减少 commit 数 + 减少 PR review 负担。

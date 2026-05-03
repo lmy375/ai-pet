@@ -321,6 +321,12 @@ pub struct ToneSnapshot {
     /// gate is enforcing this number specifically. None when proactive
     /// is disabled or configured cooldown is 0 (gate effectively off).
     pub cooldown_breakdown: Option<CooldownBreakdown>,
+    /// Iter R31: char count of the last proactive prompt — gives a
+    /// budget chip for "how much context is the LLM seeing each turn?".
+    /// None when no turn has fired yet (fresh process). Counts via
+    /// `chars().count()` so multibyte CJK doesn't inflate the number
+    /// 3× the way `len()` would.
+    pub last_prompt_chars: Option<usize>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -761,6 +767,12 @@ pub async fn build_tone_snapshot(
         // panel polling is safe.
         active_app: snapshot_active_app(),
         cooldown_breakdown,
+        // Iter R31: count chars of the last constructed prompt. chars().count()
+        // not len() so 30 char CJK doesn't read as 90 byte budget.
+        last_prompt_chars: LAST_PROACTIVE_PROMPT
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|s| s.chars().count())),
     })
 }
 
