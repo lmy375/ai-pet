@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter TR3 设计要点（已实现）
+- **TR1 → TR2 → TR3 递进式安全设计**：先有 purpose（每次调用要写明意图），再有 classifier（按工具名 + args 分级），最后有 enforcement（高风险阻塞）。每步都独立可工作 + 数据上下游兼容。这是"安全机制循序渐进"的范式：先 audit，再 classify，再 enforce。如果一开始就直接做 review gate，没有 purpose 字段 panel 就显示不出"为什么 LLM 要调它"。
+- **polling 设计的杠杆**：QG6 把 panel 收敛成 1 Hz 单 IPC，TR3 直接复用——`pending_tool_reviews` 加进 snapshot 字段就完了，前端 polling 自然检测到。架构投资在 N 个 iter 后产生复利：QG6 是抽象基础，TR3 是受益方。
+- **`oneshot::Sender` + `tokio::time::timeout` 是 Rust async coordination 教科书 pattern**：register 时建 channel，等待方 await receiver，submit 方 send。timeout 包装让超时变成 Err 分支，可统一处理。Future 被 drop 时 receiver 失效，PendingEntry.sender 留在 map 里——所以需要 cancel() 手动清。
+- **default-deny 不是 default-permit**：高风险按定义就是"不该自动跑"。如果 user 60 秒内不响应，更可能是 ta 离开了/没看到——那么自动允许 = 把脚塞进门里跑路；自动拒绝 = LLM 收到结构化错误 + safe_alternative，下一轮自己绕开。这是 fail-safe 思维的一阶应用。
+- **`ToolContext.tool_review: Option` 是 backward compat 利器**：telegram / consolidate 早就跑通了，加 review gate 会破坏 autonomous 流程。Optional 让 desktop 路径有 review、自动化路径无 review，不需要 if/else 重构。这是 Rust 语境下"渐进式扩展接口"的常用做法。
+- **结构化 JSON tool result 是 LLM-loop 的设计哲学**：denied_result_json / timeout_result_json 都给 LLM 看 `{error, reason, safe_alternative}`。LLM 在自己的下一轮里看到这个结果就懂——不需要让 LLM 学我们的内部协议，它能从语义读懂。这是"用工具结果做沟通通道"的优雅一面（TR1 的 missing_purpose_error_result 已经验证过）。
+- **未做的扩展**：(a) review 决定写入 decision_log（TR2 的 reasons 已经在 PendingToolReview 里，但 panel 决策日志没记录"用户对 tr-N 的判定"）；(b) 重复同名工具调用的"记住选择" 选项（"允许 + 30 分钟内同 args 的相同工具自动允许"）；(c) telegram 端 reply-button approve / deny。这些都是后续打磨方向，TR3 的核心 ship 已经完成。
+
 ## Iter TR2 设计要点（已实现）
 - **observe-only 是 security 工作里的杀手锏**：直接上"高风险即阻塞" 等于把 bash / write_file / memory delete 全停掉，宠物可能整周无法做任何事。observe-only = 分类逻辑就位 + 数据流通 + 真实场景跑过几天，看到具体 high-risk pattern 后再设计 gate UX。这是"先收集 ground truth 再设计 enforcement" 的 shadow-deploy pattern。
 - **`_purpose` 参数留位但本 iter 不用**：保留签名让 TR3 + 未来语义策略（"purpose 含 'cleanup'+'rm -rf' 直接拒"）不需要再改 callers。这是 TR1 的"对未来留口子" 设计的延续。

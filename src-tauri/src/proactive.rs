@@ -1741,8 +1741,16 @@ async fn run_proactive_turn(
 
     let tools_used: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // Iter TR3: proactive turns also flow through the human-review gate. The
+    // panel modal can resolve a parked tool call regardless of which entry
+    // point initiated it.
+    let tool_review = app
+        .state::<crate::tool_review::ToolReviewRegistryStore>()
+        .inner()
+        .clone();
     let ctx = ToolContext::new(log_store, shell_store, process_counters)
-        .with_tools_used_collector(tools_used.clone());
+        .with_tools_used_collector(tools_used.clone())
+        .with_tool_review(tool_review);
 
     // Try to load the latest session so the proactive turn has the recent context. If none
     // exists yet, fall back to a system-only conversation.

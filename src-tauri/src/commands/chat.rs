@@ -650,16 +650,87 @@ pub async fn run_chat_pipeline(
                         "Tool call: {}({}) purpose=\"{}\"",
                         tc_name, tc_args, p
                     ));
-                    // Iter TR2: classify risk + log assessment line. Observe-only —
-                    // execution still proceeds. TR3 will turn requires_human_review
-                    // into an actual gate; the audit trail this writes is exactly
-                    // what TR3 needs to flip the switch.
+                    // Iter TR2: classify risk + log assessment line.
                     let assessment = crate::tool_risk::assess_tool_risk(tc_name, tc_args, p);
                     ctx.log(&crate::tool_risk::format_assessment_log(
                         tc_name,
                         &assessment,
                     ));
-                    if registry.is_mcp_tool(tc_name) {
+
+                    // Iter TR3: high-risk + review registry present → park for
+                    // human approval. Default-deny on timeout. No registry
+                    // (telegram / consolidate path) → execute as before so
+                    // autonomous flows aren't accidentally muted.
+                    let review_outcome: Option<String> = if assessment.requires_human_review {
+                        if let Some(reg) = ctx.tool_review.clone() {
+                            let (review_id, rx) = reg.register(
+                                tc_name,
+                                tc_args,
+                                p,
+                                &assessment.reasons,
+                                assessment.safe_alternative.as_deref(),
+                            );
+                            ctx.log(&format!(
+                                "Tool review parked [{}] {} — awaiting up to {}s",
+                                review_id,
+                                tc_name,
+                                crate::tool_review::REVIEW_TIMEOUT_SECONDS,
+                            ));
+                            let timeout = std::time::Duration::from_secs(
+                                crate::tool_review::REVIEW_TIMEOUT_SECONDS,
+                            );
+                            match tokio::time::timeout(timeout, rx).await {
+                                Ok(Ok(crate::tool_review::ToolReviewDecision::Approve)) => {
+                                    ctx.log(&format!(
+                                        "Tool review approved [{}] {}",
+                                        review_id, tc_name
+                                    ));
+                                    None // proceed to execute
+                                }
+                                Ok(Ok(crate::tool_review::ToolReviewDecision::Deny)) => {
+                                    ctx.log(&format!(
+                                        "Tool review denied [{}] {}",
+                                        review_id, tc_name
+                                    ));
+                                    Some(crate::tool_review::denied_result_json(
+                                        "用户在审核界面拒绝了此次调用",
+                                        assessment.safe_alternative.as_deref(),
+                                    ))
+                                }
+                                Ok(Err(_)) => {
+                                    // sender dropped — registry cleanup race
+                                    reg.cancel(&review_id);
+                                    ctx.log(&format!(
+                                        "Tool review channel lost [{}] {} — default-deny",
+                                        review_id, tc_name
+                                    ));
+                                    Some(crate::tool_review::denied_result_json(
+                                        "审核通道异常关闭",
+                                        assessment.safe_alternative.as_deref(),
+                                    ))
+                                }
+                                Err(_) => {
+                                    // 60s timeout — clean up and apply default policy
+                                    reg.cancel(&review_id);
+                                    ctx.log(&format!(
+                                        "Tool review timed out [{}] {} — default-deny",
+                                        review_id, tc_name
+                                    ));
+                                    Some(crate::tool_review::timeout_result_json(
+                                        assessment.safe_alternative.as_deref(),
+                                    ))
+                                }
+                            }
+                        } else {
+                            None // no registry → autonomous flow → execute
+                        }
+                    } else {
+                        None // not high-risk → execute
+                    };
+
+                    if let Some(synth) = review_outcome {
+                        synth
+                    } else if registry.is_mcp_tool(tc_name) {
                         let args_value: serde_json::Value =
                             serde_json::from_str(tc_args).unwrap_or(serde_json::Value::Null);
                         let mcp_manager = mcp_store.lock().await;
@@ -703,9 +774,11 @@ pub async fn chat(
     mcp_store: State<'_, McpManagerStore>,
     interaction_clock: State<'_, InteractionClockStore>,
     process_counters: State<'_, ProcessCountersStore>,
+    tool_review: State<'_, crate::tool_review::ToolReviewRegistryStore>,
 ) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
-    let ctx = ToolContext::from_states(&log_store, &shell_store, &process_counters);
+    let ctx = ToolContext::from_states(&log_store, &shell_store, &process_counters)
+        .with_tool_review(tool_review.inner().clone());
     let mcp = mcp_store.inner().clone();
     let clock = interaction_clock.inner().clone();
     // Inbound user message — clears the "awaiting reply to previous proactive" flag so the

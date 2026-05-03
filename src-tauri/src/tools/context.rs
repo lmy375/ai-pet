@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::commands::debug::{write_log, LogStore, ProcessCountersStore};
 use crate::commands::shell::ShellStore;
+use crate::tool_review::ToolReviewRegistryStore;
 
 /// Shared context passed to all tools during execution
 pub struct ToolContext {
@@ -17,6 +18,11 @@ pub struct ToolContext {
     /// pipeline's `Result<String, _>` return type. Stays `None` for callers that don't
     /// care (consolidate, telegram, generic chat command).
     pub tools_used: Option<Arc<Mutex<Vec<String>>>>,
+    /// Iter TR3: optional registry for human-review of high-risk tool calls.
+    /// `Some` for the desktop chat path (where the panel can render the modal);
+    /// `None` for telegram / consolidate / autonomous flows that have no UX
+    /// surface — those paths skip review and execute high-risk tools directly.
+    pub tool_review: Option<ToolReviewRegistryStore>,
 }
 
 impl ToolContext {
@@ -30,6 +36,7 @@ impl ToolContext {
             log_store,
             process_counters,
             tools_used: None,
+            tool_review: None,
         }
     }
 
@@ -43,7 +50,16 @@ impl ToolContext {
             log_store: LogStore(log_store.0.clone()),
             process_counters: process_counters.inner().clone(),
             tools_used: None,
+            tool_review: None,
         }
+    }
+
+    /// Builder method — attach a tool-review registry (Iter TR3). The desktop
+    /// `chat` Tauri command wires this so high-risk tool calls can park here
+    /// for user approve/deny before execution.
+    pub fn with_tool_review(mut self, registry: ToolReviewRegistryStore) -> Self {
+        self.tool_review = Some(registry);
+        self
     }
 
     /// Constructor for unit tests that don't go through Tauri State. Builds fresh empty
