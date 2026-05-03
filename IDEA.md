@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 89 设计要点（已实现）
+- **跨语言对齐用 Rust test 而非前端 test runner**：项目还没有 vitest / jest 之类前端测试基础设施。引入只为这一个 invariant 不划算。Rust 已有 cargo test 跑得起来，IO + string scan 能覆盖此场景，零新依赖。
+- **literal 字符串扫描而非 TS 解析**：tree-sitter / oxc 之类能 robust 解 TS object literal，但是 over-engineering。当前 8 条 label 都是字符串字面量 + kebab-case，contains check 误判概率 ≈ 0。如果未来 label 集合膨胀或者命名碰撞，再升级为 oxc parser 一次性投入。
+- **覆盖 quoted 和 bare 两种 JS key 形式**：对象字面量的 key 在合法标识符（`plan`、`icebreaker`、`reminders`、`chatty`）下可省引号；非法标识符（`wake-back` 含 `-`）必须加引号。两个 substring 模式合起来 OR 覆盖。
+- **CARGO_MANIFEST_DIR + 相对路径**：`env!("CARGO_MANIFEST_DIR")` 是 cargo test 必有的，避免硬编码绝对路径。`../src/components/panel/PanelDebug.tsx` 跟随当前 monorepo 结构；如果将来重排，测试 panic 信息会显式提示 path 错位。
+- **sanity check 字典存在**：如果未来重构把字典名改了或删了，单看"每个 label 是否能找到"会全部找不到，错误信息没头绪。先 assert 字典名出现，让"字典本身没了"和"少几条 label"两种失败模式区分清楚。
+- **all-true / extreme inputs 触发全集**：`active_environmental_rule_labels(true,true,true,true,true)` + `active_data_driven_rule_labels(0, 999, 1, 999, 0)` 显式凑参让两边都返完整 label 集。这是测试的"输入选择"——不是 prod 场景，但 prod 也不会一次性触发全部 8 条；测试目的是覆盖 label 全集。
+- **panic 信息列举 missing labels**：`assert!(missing.is_empty(), "missing: {:?}", missing)`——开发者看到失败信息直接知道要加哪几行 dict entry。比 `assert_eq!(left.len(), right.len())` 那种数字断言对调试友好得多。
+- **不让测试自己修复**：测试只检测，不自动给 PanelDebug.tsx 写默认 entry。失败时让 dev 显式做"加 title + summary 中文"的本地化决策——title/summary 文本是设计选择，不是机械填充。
+
 ## Iter 88 设计要点（已实现）
 - **summary 字典在前端而非 backend**：原 TODO 提议 backend 返 `Vec<{label, summary}>`。但 summary 是面向用户的中文 UI 文案，应当和其他 UI 文案一起在前端维护——backend 关心"哪些规则活跃"（数据），UI 关心"怎么呈现"（文案）。分层清晰。如果将来想多语言，前端字典可改成 `Record<string, {title_zh, title_en, summary_zh, summary_en}>` 不动 backend。
 - **fallback 路径明确**：lookup 失败显示 `(label "xxx" 暂无中文描述)`，让用户立刻知道"哪个 label 在 backend 出现但前端字典没补"——而不是让缺失静默成空字符串。和 backend 的 `(规则文本待补)` fallback 同理：缺失要可见。

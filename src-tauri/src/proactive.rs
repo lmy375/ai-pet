@@ -1737,6 +1737,62 @@ mod prompt_tests {
     }
 
     #[test]
+    fn frontend_prompt_rule_descriptions_cover_every_backend_label() {
+        // Iter 89 — guard the contract between the Rust label helpers and the frontend
+        // PROMPT_RULE_DESCRIPTIONS dictionary in PanelDebug.tsx. If either side adds a
+        // label without updating the other, the panel falls back to "(label X 暂无中文
+        // 描述)" — visible but easy to miss in dev. This test fails CI instead.
+        //
+        // We scan PanelDebug.tsx for literal `"<label>":` occurrences inside the dict.
+        // Rust labels are kebab-case (`wake-back`, `env-awareness`) and unique enough
+        // that incidental substring matches elsewhere in the file are vanishingly
+        // unlikely; if a future label collides, escalate to a real TS parser.
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR is set during cargo test runs");
+        let panel_path = std::path::PathBuf::from(manifest_dir)
+            .join("..")
+            .join("src")
+            .join("components")
+            .join("panel")
+            .join("PanelDebug.tsx");
+        let panel_src = std::fs::read_to_string(&panel_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read PanelDebug.tsx at {}: {}. \
+                 Did the path move? Adjust this test if so.",
+                panel_path.display(),
+                e
+            )
+        });
+        // Sanity: the dictionary itself must exist; otherwise our coverage check is
+        // vacuously true for every label.
+        assert!(
+            panel_src.contains("const PROMPT_RULE_DESCRIPTIONS"),
+            "PROMPT_RULE_DESCRIPTIONS dictionary not found in PanelDebug.tsx — \
+             the frontend may have moved or renamed it. Update this test."
+        );
+        // All-true inputs surface every possible label both helpers can ever return.
+        let env = active_environmental_rule_labels(true, true, true, true, true);
+        let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
+        let mut missing = Vec::new();
+        for label in env.iter().chain(data.iter()) {
+            // Match either `"label":` (when key is quoted, mandatory for kebab-case
+            // identifiers like wake-back) or `label:` (used by the JS-shorthand bare
+            // identifier when label is a valid ECMAScript identifier, e.g. `plan`).
+            let quoted = format!("\"{}\":", label);
+            let bare = format!("\n  {}:", label);
+            if !panel_src.contains(&quoted) && !panel_src.contains(&bare) {
+                missing.push(*label);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "PanelDebug.tsx PROMPT_RULE_DESCRIPTIONS missing entries for backend \
+             labels: {:?}. Add a {{title, summary}} row for each.",
+            missing
+        );
+    }
+
+    #[test]
     fn proactive_rules_contextual_count_matches_label_count() {
         // The match-by-label refactor (Iter 87) means the number of contextual rules
         // pushed must equal env_labels.len() + data_labels.len(). If a future helper
