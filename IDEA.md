@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R57 设计要点（已实现）
+- **transient state 跟 frontend cache 的同步陷阱**：R55 mount 时 fetch 一次，之后 frontend useState 当 truth。但 backend 在 expiry 时自动改状态，frontend 不知道。**任何 transient backend state 都需要在 user-interaction entry point refresh**——开 popover 是 user-interaction，应该 fetch。这条是普适原则：long-lived component 持有 transient state 时，每次 user 触碰该 state 入口都 refetch。
+- **stale-state bug 在 mature feature 上的隐性出现**：R55 ship 时 mount-fetch 看似够。R57 才意识到"60 min 后 expire 期间 popover 不会主动 refresh"。**transient state 的 lifecycle 测试需要超过 mount window 的场景**——但单测不容易模拟"60 min 后再交互"。靠 IDEA + 经验觉察 vs 测试覆盖。
+- **preserve draft 是防数据丢失的小细节**：if (text) load else don't clear。用户如果 type "我今天身体..." 但还没 save 就关闭 popover，重开仍显 draft 不丢。如果 R57 改成"始终 reset to backend"，draft 会被覆盖成空 = 数据丢失。**任何 user-typed text 都不该被 system 自动清** unless 用户明确表达"不要这条" (e.g. 解除按钮)。
+- **open async vs sync trade-off**：handleNoteToggle async。设计选择：(a) sync set state + later async update (popover 先显 stale 然后跳); (b) await fetch then set state (popover 显示前 100ms 等)。选 (b)。**flash of stale state 比 100ms 等待更糟糕** —— 用户看到 popover 后 "已激活" 然后变 "未激活" 会觉得"出 bug 了？"，而 100ms 加载延迟在 popover 打开时几乎察觉不到。
+- **fetch 仅在 state 可能 stale 时触发**：close 时不 fetch。理由：close 是 user 主动关，state 不会因为关闭而变 —— 没必要 fetch。**减少不必要 IPC** 是健康 frontend 设计纪律，每次 fetch 都该问"这一刻 state 真的可能改了吗"。
+- **R55→R56→R57 三 iter ship feature 后立刻 polish 完整**：R55 backend+frontend feature；R56 加 remaining display；R57 修 stale-state bug。**feature 完整化需要 follow-up iter**。R52→R53→R54 mute 也是同样三 iter pattern (feature → test → polish)。**polish iter 是 feature ship 的隐性配套** —— ship 时不可能想全 edge case，靠后续 iter 补完。
+- **codified pattern: refresh on user-interaction entry**：未来加 transient backend state (mood preset / focus level / etc) 时同 R57 模式 —— 任何 popup / modal / panel 打开时 refetch。这个 refresh 模式是 R55 引入 transient state 后的 codified hygiene。
+
 ## Iter R56 设计要点（已实现）
 - **对称 surface 是 mature UX 标志**：mute chip 显"剩 30m"，note chip 不显—— 这种**不对称** 让用户疑惑"为什么 mute 有时长 note 没有？"。R56 加 transient_note_remaining_seconds 让 note chip 也显时长，**双工具对称完整**。同 user-domain 的相似工具应该尽量对称 surface，不一致 = mental friction。这条原则适用所有 R-series user-control 工具：未来加第三 transient feature 也该有 remaining。
 - **镜像 helper 是 R-series codified 模式**：compute_mute_remaining (R52) + compute_transient_note_remaining (R56) 形态、boundary semantics、测试结构都对称。**同 pattern 重复让代码可预测** —— 看一个 helper 知道另一个怎么写。R23 / R34 / R35 / R51 都是这种"镜像 pair" 设计。

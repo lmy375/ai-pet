@@ -113,6 +113,33 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
       })
       .catch(() => setNoteActive(false));
   }, []);
+  // Iter R57: refresh popover state on each open. Without this, an
+  // auto-expired note still shows its stale text and noteActive=true.
+  // Behavior:
+  //   - if backend has active note → load text into textarea + mark active
+  //   - if backend has no note → mark inactive but **don't wipe noteText**
+  //     so a user-typed draft survives close→reopen (preserve draft on
+  //     unsaved popover dismissal)
+  // Closes when popover is already open (toggle).
+  const handleNoteToggle = async () => {
+    if (showNotePopover) {
+      setShowNotePopover(false);
+      return;
+    }
+    try {
+      const [text] = await invoke<[string, string]>("get_transient_note");
+      if (text) {
+        setNoteText(text);
+        setNoteActive(true);
+      } else {
+        setNoteActive(false);
+        // Don't clear noteText — preserve in-progress draft.
+      }
+    } catch (e) {
+      console.error("get_transient_note failed:", e);
+    }
+    setShowNotePopover(true);
+  };
   const handleNoteSubmit = async () => {
     try {
       const result = await invoke<string>("set_transient_note", {
@@ -286,7 +313,7 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
             className="pet-settings-btn"
             onClick={(e) => {
               e.stopPropagation();
-              setShowNotePopover((v) => !v);
+              handleNoteToggle();
             }}
             style={{
               width: "36px",
