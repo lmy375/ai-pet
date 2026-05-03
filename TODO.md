@@ -6,5 +6,5 @@
 ## 下一迭代候选（优先级从高到低）
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，配合 panel 里 Iter 40 加的 Tag 统计观察实际命中率，决定是否要再加强 prompt。
 - [ ] Iter 74：speech_daily.json 已经记了过去 90 天，扩展 panel stats 卡为"今日 / 本周 / 累计"三列，本周走 `recent_days_speech_count(7) -> sum`。或加一行 sparkline（7 天柱状）让用户看到趋势。
-- [ ] Iter 94：在 `PROMPT_RULE_DESCRIPTIONS` panel 字典中加"性质"分类标记（restraint / corrective / instructional / engagement），让用户能在展开列表里看到"3 条克制 + 2 条引导"这种 prompt 整体倾向感知。当前 8 条规则的 active 列表显示后，用户得自己判断哪些是限制哪些是激发。
+- [ ] Iter 95：把 panel "prompt: N 条 hint" badge 自身的颜色根据 nature 倾向自动调整——比如克制 ≥ 引导时偏红，引导 > 克制时偏绿，纯 instructional/corrective 保持紫。让 badge 不点开就能传递"现在是被压还是被激发"信号。
 - [ ] Iter 7c (deferred)：macOS 系统通知读取或 hook（NotificationCenter.db 或 user-script）。需 Full Disk Access、schema 不稳定、隐私风险高。

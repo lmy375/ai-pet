@@ -419,8 +419,10 @@ export function PanelDebug() {
       </div>
 
       {/* Inline expansion of the active prompt hints — only renders when the user has
-          clicked the badge. Each hint shows its title + a one-line plain-Chinese summary
-          of what the rule asks the LLM to do, sourced from PROMPT_RULE_DESCRIPTIONS. */}
+          clicked the badge. Each hint shows its nature badge + title + a one-line summary,
+          plus an aggregate "克制 × N / 引导 × N / ..." line so the user gets an at-a-glance
+          read on whether the prompt is currently shaping the pet toward quiet or active
+          behavior. */}
       {showPromptHints && tone && tone.active_prompt_rules.length > 0 && (
         <div
           style={{
@@ -430,13 +432,62 @@ export function PanelDebug() {
             fontSize: "12px",
           }}
         >
-          <div style={{ color: "#6b21a8", marginBottom: "4px", fontSize: "11px" }}>
-            当前 prompt 软规则 ({tone.active_prompt_rules.length})：
-          </div>
+          {(() => {
+            const counts: Record<PromptRuleNature, number> = {
+              restraint: 0,
+              engagement: 0,
+              corrective: 0,
+              instructional: 0,
+            };
+            for (const label of tone.active_prompt_rules) {
+              const n = PROMPT_RULE_DESCRIPTIONS[label]?.nature;
+              if (n) counts[n] += 1;
+            }
+            const segments = (Object.keys(counts) as PromptRuleNature[])
+              .filter((n) => counts[n] > 0)
+              .map((n) => (
+                <span key={n} style={{ color: NATURE_META[n].color, fontWeight: 600 }}>
+                  {NATURE_META[n].label} × {counts[n]}
+                </span>
+              ));
+            return (
+              <div
+                style={{
+                  display: "flex",
+                  gap: "10px",
+                  marginBottom: "6px",
+                  fontSize: "11px",
+                  alignItems: "baseline",
+                }}
+              >
+                <span style={{ color: "#6b21a8" }}>
+                  当前 prompt 软规则 ({tone.active_prompt_rules.length})：
+                </span>
+                {segments}
+              </div>
+            );
+          })()}
           {tone.active_prompt_rules.map((label) => {
             const desc = PROMPT_RULE_DESCRIPTIONS[label];
+            const natureColor = desc ? NATURE_META[desc.nature].color : "#94a3b8";
+            const natureLabel = desc ? NATURE_META[desc.nature].label : "?";
             return (
-              <div key={label} style={{ display: "flex", gap: "8px", lineHeight: "1.5" }}>
+              <div key={label} style={{ display: "flex", gap: "8px", lineHeight: "1.6" }}>
+                <span
+                  title={desc ? `nature: ${desc.nature}` : undefined}
+                  style={{
+                    fontSize: "10px",
+                    color: "#fff",
+                    background: natureColor,
+                    padding: "1px 5px",
+                    borderRadius: "4px",
+                    minWidth: "26px",
+                    textAlign: "center",
+                    alignSelf: "center",
+                  }}
+                >
+                  {natureLabel}
+                </span>
                 <span
                   style={{
                     color: "#7c3aed",
@@ -721,47 +772,79 @@ export function PanelDebug() {
  *
  * Order doesn't matter; lookup is by label string.
  */
-const PROMPT_RULE_DESCRIPTIONS: Record<string, { title: string; summary: string }> = {
+/**
+ * Each backend prompt rule label has a "nature" describing the *kind* of guidance it
+ * pushes at the LLM. Lets the panel show "you've got 3 restraint hints + 2 engagement
+ * hints active" as an at-a-glance prompt-tilt summary.
+ *
+ * - restraint: tells the pet to stay quiet, brief, or low-key.
+ * - engagement: encourages the pet to open up / take initiative.
+ * - corrective: addresses a past behavioral pattern (e.g., ignoring tools).
+ * - instructional: prescribes a specific operation when the pet does speak.
+ */
+type PromptRuleNature = "restraint" | "engagement" | "corrective" | "instructional";
+
+const PROMPT_RULE_DESCRIPTIONS: Record<
+  string,
+  { title: string; summary: string; nature: PromptRuleNature }
+> = {
   "wake-back": {
     title: "刚回桌",
     summary: "用户的电脑刚从休眠唤醒；问候要简短克制，先轻打招呼。",
+    nature: "restraint",
   },
   "first-mood": {
     title: "首次开口",
     summary: "还没有 mood 记忆条目；开口后用 memory_edit create 初始化。",
+    nature: "instructional",
   },
   "pre-quiet": {
     title: "近安静时段",
     summary: "再过几分钟到夜里安静时段；语气往收尾靠，简短晚安/睡前关心。",
+    nature: "restraint",
   },
   reminders: {
     title: "到期提醒",
     summary: "用户设置的 todo 到期了；自然带进开口里，并 memory_edit delete。",
+    nature: "instructional",
   },
   plan: {
     title: "今日计划",
     summary: "ai_insights/daily_plan 有未完成项；优先推进一条并 update 进度。",
+    nature: "instructional",
   },
   icebreaker: {
     title: "破冰阶段",
     summary: "之前主动开口 < 3 次；偏向问简短低压力的了解性问题。",
+    nature: "restraint",
   },
   chatty: {
     title: "今日克制",
     summary: "今天已经聊得不少；除非有新信号否则保持安静或极简一句。",
+    nature: "restraint",
   },
   "env-awareness": {
     title: "环境感知低",
     summary: "近几次开口很少看环境；本次先调 get_active_window 看用户在做啥。",
+    nature: "corrective",
   },
   "engagement-window": {
     title: "积极开口",
     summary: "刚回桌 + 有今日 plan：是「先关心、再带 plan」串起来的复合时机。",
+    nature: "engagement",
   },
   "long-idle-no-restraint": {
     title: "久未开口",
     summary: "≥ 60min 没主动说话 + 不在克制态：找个贴合用户当下的轻话题。",
+    nature: "engagement",
   },
+};
+
+const NATURE_META: Record<PromptRuleNature, { label: string; color: string }> = {
+  restraint: { label: "克制", color: "#dc2626" },
+  engagement: { label: "引导", color: "#16a34a" },
+  corrective: { label: "校正", color: "#ea580c" },
+  instructional: { label: "操作", color: "#0891b2" },
 };
 
 function kindColor(kind: string): string {

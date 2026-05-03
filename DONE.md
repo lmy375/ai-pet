@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 94：prompt 规则 nature 分类 + panel 展开聚合显示
+- `PROMPT_RULE_DESCRIPTIONS` 每条 entry 加 `nature: "restraint" | "engagement" | "corrective" | "instructional"` 字段。10 条规则分类：
+  - restraint × 4：wake-back / pre-quiet / icebreaker / chatty
+  - engagement × 2：engagement-window / long-idle-no-restraint
+  - corrective × 1：env-awareness
+  - instructional × 3：first-mood / reminders / plan
+- 新 `NATURE_META` 字典：每个 nature → `{label: 中文(克制/引导/校正/操作), color: hex}`。配色：克制 #dc2626 红、引导 #16a34a 绿、校正 #ea580c 橙、操作 #0891b2 青。
+- panel 展开列表现在两层信息：
+  - 顶部聚合行：`当前 prompt 软规则 (N)：克制 × 3、引导 × 2、操作 × 2`，颜色化 nature 标签让用户一眼看到 prompt 整体倾向（"克制居多" vs "引导发力中"）
+  - 每行规则前加 28px 圆角小 nature badge（红/绿/橙/青），与文字颜色一致——同色让纵向扫描时立即识别哪些是同类规则
+- 完整满足"让用户能感知 prompt 整体倾向"目标：之前 panel 只是列出规则文字，现在能直接表达"宠物现在被压制 vs 被激发"。
+- 三层守护测试自动跟随：parse_prompt_rule_dict_keys 仍只匹配 top-level `<key>: {` 模式，新增的 `nature: "..."` 是字符串值不会误匹配。Iter 89/90/91 全部通过零修改。
+- 181 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 93：第二条积极复合规则 long-idle-no-restraint
 - `PromptInputs` 加 `since_last_proactive_minutes: Option<u64>` 数字字段（与现有字符串 `cadence_hint` 互补，让规则能精确比较）。base_inputs 默认 `Some(8)` 与 cadence_hint 文案一致。
 - 新常量 `pub const LONG_IDLE_MINUTES: u64 = 60`。
