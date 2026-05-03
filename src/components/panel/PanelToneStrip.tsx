@@ -28,6 +28,20 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
         gap: "12px",
       }}
     >
+      {!tone.proactive_enabled && (
+        <span
+          title="settings.proactive.enabled = false — 主动开口循环不会触发任何 LLM 评估。所有其它 chip 仍按现状显示，只是 gate 不会真的放行。"
+          style={{
+            color: "#fff",
+            background: "#475569",
+            padding: "1px 8px",
+            borderRadius: "10px",
+            fontWeight: 600,
+          }}
+        >
+          🔕 proactive 已关
+        </span>
+      )}
       <span title="period_of_day(now)">⏱ {tone.period}</span>
       {tone.day_of_week && (
         <span title="weekday + 工作日/周末（Iter Cβ — proactive prompt 时间行已包含）">

@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D12 设计要点（已实现）
+- **disabled chip 设计 vs 隐藏**：本来 chip 在 strip 里通常表"激活信号"（chip 出现 = 状态成立）。disabled 是"禁用状态" — chip 出现就表示问题。这种"反向 chip"在视觉上稍特别，但语义上正确：用户看到 chip = 有事。
+- **置于 strip 首位**：最显眼。其它 chip 虽然按"时间维度→用户→宠物→gate"分组，但 disabled 状态一旦出现要压过所有其它 — 因为后续的所有信号都"不会被引擎使用"。把 chip 放最前是 visual hierarchy 的应用。
+- **深灰底白字**：和其它 inline 文字 chip 不同，用胶囊形 background 表"系统级状态告警"。和 ✨ companionship 的彩色渐变（庆祝感）形成对比 — 这是"该处理"chip。
+- **fallback enabled=true**：settings 读失败时 chip 不显示。错误情况不显示等于"假告警"和"假静默"之间选后者——前者会引导用户去关一个本来已开的开关。
+- **D series 总体回顾**：12 iter 把"为什么宠物现在如此"从黑盒打开成 11 个 chip 维度（period / day_of_week / idle_register / cadence / wake / pre_quiet / in_quiet / focus / cooldown / awaiting / disabled）+ 时间行隐含的 idle/input_idle 数字。如果未来加新 gate 或 prompt signal，pattern 是 ToneSnapshot 字段 + chip。
+- **没有把所有 chip 套个 "gate 类" / "context 类" 分隔**：本可以加 vertical separators 把 "context"（period 等）和 "gate"（cooldown 等）视觉分开。但 strip 现在已经 11 个 chip 满满当当，加 separators 反而拥挤。让 user 自己用 emoji 类型快速识别——⏱📆👤💬 是时间维度，☀🌙😴⏳💭🎯🔕 是 gate 维度。
+
 ## Iter D11 设计要点（已实现）
 - **看到 D10 之后立刻意识到这是 bug**：D10 加 chip 时检查 awaiting 的 lifecycle，发现"只有 mark_user_message 清"。Cooldown 有 wake_soft 软化，awaiting 没任何 time-based 释放。这是项目里被搁置了很久的潜伏问题。如果不是 D10 强迫我盯着这个 gate，可能再过几个月才发现。
 - **state vs effective 双轨**：raw 状态留在 ClockInner，effective 在 snapshot 返回。这种"权威态/视图态"分离让"用户回了一句"仍然是清除 awaiting 的唯一权威路径——可以追溯、可以 invariant-check；effective 是 snapshot 时的视图，可以根据时间衰减。这个 pattern 借自 D5 的"updated_at 是 schema 真值，前端把它转成相对时间"。
