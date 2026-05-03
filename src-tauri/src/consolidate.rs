@@ -299,13 +299,7 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
 /// `cutoff_hours`. Returns true if the entry was deleted, false otherwise (no plan, or
 /// plan still fresh, or any IO/parse failure).
 pub fn sweep_stale_plan(now: chrono::NaiveDateTime, cutoff_hours: u64) -> bool {
-    let Ok(index) = memory::memory_list(Some("ai_insights".to_string())) else {
-        return false;
-    };
-    let Some(cat) = index.categories.get("ai_insights") else {
-        return false;
-    };
-    let Some(plan) = cat.items.iter().find(|i| i.title == "daily_plan") else {
+    let Some(plan) = memory::read_ai_insights_item("daily_plan") else {
         return false;
     };
     // updated_at is written as "%Y-%m-%dT%H:%M:%S%:z" — RFC3339 compatible.
@@ -319,7 +313,7 @@ pub fn sweep_stale_plan(now: chrono::NaiveDateTime, cutoff_hours: u64) -> bool {
     memory::memory_edit(
         "delete".to_string(),
         "ai_insights".to_string(),
-        plan.title.clone(),
+        plan.title,
         None,
         None,
     )

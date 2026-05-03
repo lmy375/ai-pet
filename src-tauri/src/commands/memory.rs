@@ -66,6 +66,22 @@ pub struct MemoryIndex {
     pub categories: BTreeMap<String, CategoryData>,
 }
 
+/// Iter R18: shared helper for the "look up a single item by title in
+/// `ai_insights`" pattern that was duplicated 7+ times across proactive.rs
+/// and consolidate.rs (find persona_summary / daily_plan / daily_review_*).
+/// Returns a cloned `MemoryItem` so callers can take description /
+/// updated_at / detail_path without holding a borrow into the index.
+///
+/// Returns `None` for any failure mode (memory_list error, missing
+/// category, missing title) — callers that want to distinguish these
+/// rare failure shapes can still call `memory_list` directly. So far no
+/// caller has needed that level of detail.
+pub fn read_ai_insights_item(title: &str) -> Option<MemoryItem> {
+    let index = memory_list(Some("ai_insights".to_string())).ok()?;
+    let cat = index.categories.get("ai_insights")?;
+    cat.items.iter().find(|i| i.title == title).cloned()
+}
+
 impl Default for MemoryIndex {
     fn default() -> Self {
         let mut categories = BTreeMap::new();

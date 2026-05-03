@@ -1339,24 +1339,10 @@ pub struct PersonaSummary {
 /// can display freshness ("X 天前更新").
 #[tauri::command]
 pub fn get_persona_summary() -> PersonaSummary {
-    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
-        return PersonaSummary {
-            text: String::new(),
-            updated_at: String::new(),
-        };
-    };
-    let Some(cat) = index.categories.get("ai_insights") else {
-        return PersonaSummary {
-            text: String::new(),
-            updated_at: String::new(),
-        };
-    };
-    cat.items
-        .iter()
-        .find(|i| i.title == "persona_summary")
+    crate::commands::memory::read_ai_insights_item("persona_summary")
         .map(|i| PersonaSummary {
             text: i.description.trim().to_string(),
-            updated_at: i.updated_at.clone(),
+            updated_at: i.updated_at,
         })
         .unwrap_or_else(|| PersonaSummary {
             text: String::new(),
@@ -1372,30 +1358,24 @@ pub fn get_persona_summary() -> PersonaSummary {
 /// `pub` since Iter 104 — reactive chat reuses this to inject the same persona layer
 /// into its system prompt, so the long-term identity isn't proactive-only.
 pub fn build_persona_hint() -> String {
-    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
+    let Some(item) = crate::commands::memory::read_ai_insights_item("persona_summary") else {
         return String::new();
     };
-    let Some(cat) = index.categories.get("ai_insights") else {
+    if item.description.trim().is_empty() {
         return String::new();
-    };
-    let summary = cat.items.iter().find(|i| i.title == "persona_summary");
-    match summary {
-        Some(item) if !item.description.trim().is_empty() => {
-            // Iter Cw: redact the persona summary before re-injecting into the
-            // proactive prompt. The LLM-authored description may have echoed private
-            // terms (active_window app names / user_profile entries it didn't know
-            // were sensitive when it wrote them); redacting here ensures the same
-            // user-configured patterns cover this self-loop input too. The on-disk
-            // memory file stays pristine — the panel's `get_persona_summary` command
-            // intentionally returns the unredacted text since that view is local.
-            let redacted = crate::redaction::redact_with_settings(item.description.trim());
-            format!(
-                "你最近一次自我反思的画像（来自 consolidate）：\n{}",
-                redacted
-            )
-        }
-        _ => String::new(),
     }
+    // Iter Cw: redact the persona summary before re-injecting into the
+    // proactive prompt. The LLM-authored description may have echoed private
+    // terms (active_window app names / user_profile entries it didn't know
+    // were sensitive when it wrote them); redacting here ensures the same
+    // user-configured patterns cover this self-loop input too. The on-disk
+    // memory file stays pristine — the panel's `get_persona_summary` command
+    // intentionally returns the unredacted text since that view is local.
+    let redacted = crate::redaction::redact_with_settings(item.description.trim());
+    format!(
+        "你最近一次自我反思的画像（来自 consolidate）：\n{}",
+        redacted
+    )
 }
 
 /// Cap on how many `user_profile` entries to surface in the proactive prompt. Above
@@ -1478,16 +1458,8 @@ pub fn build_user_profile_hint() -> String {
 /// header. Empty when nothing's been written. Stays unredacted because the
 /// review caller redacts at the bullet-line level.
 fn read_daily_plan_description() -> String {
-    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
-        return String::new();
-    };
-    let Some(cat) = index.categories.get("ai_insights") else {
-        return String::new();
-    };
-    cat.items
-        .iter()
-        .find(|i| i.title == "daily_plan")
-        .map(|i| i.description.clone())
+    crate::commands::memory::read_ai_insights_item("daily_plan")
+        .map(|i| i.description)
         .unwrap_or_default()
 }
 
@@ -1498,12 +1470,7 @@ fn read_daily_plan_description() -> String {
 /// to reframe past-tense for the prompt.
 fn read_daily_review_description(date: chrono::NaiveDate) -> Option<String> {
     let title = format!("daily_review_{}", date);
-    let index = crate::commands::memory::memory_list(Some("ai_insights".to_string())).ok()?;
-    let cat = index.categories.get("ai_insights")?;
-    cat.items
-        .iter()
-        .find(|i| i.title == title)
-        .map(|i| i.description.clone())
+    crate::commands::memory::read_ai_insights_item(&title).map(|i| i.description)
 }
 
 /// Iter R12: index-existence check for cross-process-restart idempotency.
@@ -1511,13 +1478,7 @@ fn read_daily_review_description(date: chrono::NaiveDate) -> Option<String> {
 /// restarts the app at 23:00 after the 22:00 review already wrote, the
 /// in-memory date is None and we'd otherwise re-fire. This catches that.
 fn daily_review_exists(title: &str) -> bool {
-    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
-        return false;
-    };
-    let Some(cat) = index.categories.get("ai_insights") else {
-        return false;
-    };
-    cat.items.iter().any(|i| i.title == title)
+    crate::commands::memory::read_ai_insights_item(title).is_some()
 }
 
 /// Iter R12: gate + write the end-of-day review. Idempotent per day via
@@ -1575,19 +1536,10 @@ async fn maybe_run_daily_review(now_local: chrono::DateTime<chrono::Local>) {
 /// plan format is intentionally open — the LLM owns the structure (bullet list with
 /// progress markers like `[1/2]` is the suggested convention but not enforced).
 fn build_plan_hint() -> String {
-    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
-        return String::new();
-    };
-    let Some(cat) = index.categories.get("ai_insights") else {
-        return String::new();
-    };
-    let description = cat
-        .items
-        .iter()
-        .find(|i| i.title == "daily_plan")
-        .map(|i| i.description.as_str())
-        .unwrap_or("");
-    format_plan_hint(description, &|s| crate::redaction::redact_with_settings(s))
+    let description = crate::commands::memory::read_ai_insights_item("daily_plan")
+        .map(|i| i.description)
+        .unwrap_or_default();
+    format_plan_hint(&description, &|s| crate::redaction::redact_with_settings(s))
 }
 
 /// Load the most recent session's messages (without the proactive prompt). Returns

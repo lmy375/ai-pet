@@ -2,6 +2,27 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R18：抽取 read_ai_insights_item 共享 helper（refactor / 还 R16 IDEA 标记的债）
+- 现状缺口：proactive.rs 有 5 个 helper（get_persona_summary / build_persona_hint / read_daily_plan_description / read_daily_review_description / daily_review_exists / build_plan_hint），consolidate.rs 有 1 个（sweep_stale_plan）— **6 处都做同一件事**：memory_list("ai_insights") → categories.get("ai_insights") → items.iter().find(|i| i.title == ?)。R16 IDEA.md 已记下这债："当 helper 数到 6 时强制 refactor"。R17 又新增了一个调用面，正好踩到阈值。
+- 解法 — 单点 thin helper：
+  - `commands/memory.rs` 新加 `pub fn read_ai_insights_item(title: &str) -> Option<MemoryItem>`：3 行 ok? + ?；返 cloned MemoryItem。
+  - 6 个调用点全部精简：
+    - get_persona_summary：`Option<MemoryItem> → PersonaSummary` 1 行 .map + 兜底 unwrap_or_else
+    - build_persona_hint：let-else + 提前 trim 检查 + redact + format
+    - read_daily_plan_description：1 行 .map(|i| i.description).unwrap_or_default()
+    - read_daily_review_description：1 行 .map(|i| i.description)
+    - daily_review_exists：1 行 .is_some()
+    - build_plan_hint：1 行 .map + 1 行 format_plan_hint
+    - sweep_stale_plan（consolidate）：let-else + RFC3339 parse + age check + delete
+- 决策 — 返回 cloned MemoryItem 而非 description 字符串：诱惑是 `read_ai_insights_description(title) -> Option<String>` 直接给 description（5 个 caller 之 4 都只要 description）。但 get_persona_summary 要 updated_at（D5），sweep_stale_plan 要 updated_at + title。返 MemoryItem 让所有 caller 都能各自 take 想要的 field — 一个 helper 服 6 种 caller 模式。`.clone()` 成本可忽略（MemoryItem 字符串都是短的，每天调用次数级别）。
+- 决策 — 命名"read_ai_insights_item"：考虑过 "find_ai_insights_item" / "get_ai_insights_item" / "lookup_ai_insights_item"。"read" 跟现有 read_current_mood / read_daily_plan_description 用词一致，最融入 codebase 语境。"get" 太空泛（跟 Tauri 命令的 get_* 命名空间冲突），"find" 容易让人以为返第一个（实际返 None / Some），"lookup" 罗嗦。
+- 决策 — 不抽 `read_ai_insights_items_filter`（Pattern B）：consolidate.sweep_stale_daily_reviews 是唯一一处遍历整个 ai_insights category 的 caller。**单一调用点不抽抽象** 是 R12b IDEA 写过的纪律 ("late abstraction > early abstraction")。Pattern B 留 inline。
+- 决策 — 不改 consolidate.rs 顶部 use 语句：原 `use crate::commands::memory;` 已经 import 整个 module；新 `read_ai_insights_item` 通过 `memory::read_ai_insights_item` 访问，无需重新 import。
+- 决策 — 修复 build_plan_hint 的 borrow 模式：原本 `cat.items.iter().find().map(|i| i.description.as_str())` 借 cat。新版返 cloned MemoryItem 后 .map(|i| i.description) 拿 owned String，再 `format_plan_hint(&description, ...)` 借引用。语义不变，避免新版本嵌套 lifetimes。
+- 决策 — fmt 把 build_plan_hint 改后的 closure call 重新换行（保 80-col）：`format_plan_hint(&description, &|s| { redact(s) })` 自动换行成多行。functional 不变。
+- 测试：纯 refactor，不修测试。452 cargo 全过（无变化），证明语义保不变。clippy / fmt clean。
+- 结果：proactive.rs 从 1700+ 行减到 1670 行（-30 行 net），代码密度提升。`memory_list(Some("ai_insights"))` 调用从 8 处降到 2 处（保留 sweep_stale_daily_reviews + 大概外部某处 panel call）。**重复模式抽象化是技术债 maintenance** — R-iter 路上每隔几次刻意还一笔，避免后期 refactor 大爆炸。
+
 ## 2026-05-04 — Iter R17：consolidate 自动清理 30 天前的 daily_review 条目（防 unbounded growth）
 - 现状缺口：R12 / R12b 让 pet 每天 22:00 后写一条 daily_review_YYYY-MM-DD 到 ai_insights memory。一年 = 365 个 .md 文件 + 365 行 YAML index 条目。从未实现 retention，会无限增长 — 不仅磁盘空间，更糟的是 panel memory list 渲染会被几百行历史污染。
 - 解法 — 复用 consolidate sweep 模式：

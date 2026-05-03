@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R18 设计要点（已实现）
+- **"等到第 N 次再抽象" 比"看到 2 次就抽象" 健康得多**：R16 IDEA 写下"当 helper 数到 6 时强制 refactor"。R17 把数字推到 7。R18 抽。**lazy abstraction** 的好处：(1) 让具体调用点先涌现各种变化（有的要 description、有的要 updated_at、有的要 trim、有的要 default），帮助你设计正确签名；(2) 避免给只用过 1-2 次的"抽象" 浪费命名/位置思考。premature abstraction = 选错位置 / 选错签名 / 选错命名概率高。看到 7 次同样模式时，签名设计已被实战验证过 — 抽出来一气呵成。
+- **返 cloned struct 比返单字段精简**：诱惑是 `fn read_ai_insights_description(title) -> Option<String>` — caller 主路径就是要 description。但 helper 要服 6 种 caller，其中 2 种要 updated_at。如果做"description 专用 helper"，updated_at caller 还得 inline 写老 boilerplate，refactor 不彻底。**helper 的 surface area 应该匹配 callers 的 superset**，不是匹配 majority caller。clone() 在这里是 cheap insurance — 字符串短 / 调用频率低 / 收益大。
+- **Pattern A 抽，Pattern B 不抽**：6 个 caller 都是"找特定 title 的单条" (Pattern A)；1 个 caller 是"遍历整个 category 过滤" (Pattern B)。把 A 抽成 helper，B 留 inline。**抽象单一 modality**，不强求 generic — 通用 `query_ai_insights<F: Fn(&MemoryItem) -> bool>(predicate)` 看着优雅但只有 1 个 Pattern B caller，其本身复杂度大于目前的 inline boilerplate。R12 IDEA 已写过"single caller 不抽抽象" 的纪律，R18 再次实践。
+- **重命名 vs 用旧名**：原本 4 个 helper 都叫 `read_*` (read_daily_plan_description, read_daily_review_description)。新 helper 起名 read_ai_insights_item 跟它们 family 一致。命名一致性让 grep / 阅读 codebase 时 mental model 稳定 — 看到 `read_*_*` 知道是"按某种条件读 memory"。**命名是文档的隐藏部分** — 不一致的命名让读者每次需要重新建立"这是什么类型函数" 的判断。
+- **抽 helper ≠ 必然 LOC 减少**：6 个原 boilerplate 段落每段 8-10 行 = 50-60 行总。new helper 5 行 + 6 个 caller refactor 后每个 1-3 行 = 13-23 行调用 + 5 helper = 18-28 行。**净减少 ~30 行**。但 LOC 不是抽 helper 的真正目标 —— 真正目标是**单点真相**：未来要改"读 ai_insights"语义（比如加缓存、加 panic-safe 包装、加 metrics）只改一处而不是 6 处。"refactor 主要为 LOC 减" 是错误价值观；"refactor 主要为 single-point change" 才对。
+- **fmt 的换行重写 = 隐藏的代码风格审查**：build_plan_hint 改完后 fmt 把 `format_plan_hint(&description, &|s| crate::redaction::redact_with_settings(s))` 强制换成 multi-line，保持 80-col。这种 fmt 自动调整反而暴露代码 readability —— 一行写不下意味着 inlined arg 太多，应该考虑提个变量。R18 这个 case 是 closure literal 太长，不是真问题。**rustfmt 是隐性 reviewer**。
+
 ## Iter R17 设计要点（已实现）
 - **每个写入信号都欠一笔 retention 债**：R12 写 daily_review 当时只考虑了 happy path（"每天写一条很好"），没考虑 365 天后会怎样。**任何长期 append 数据流都隐藏一个未付的 retention 设计** — reminder 有 stale_reminder_hours，plan 有 stale_plan_hours，butler-once 有 stale_once_butler_hours，daily_review 终于有 stale_daily_review_days。R17 是补 R12 时欠下的债。规则：**新建 append-style 数据流时立即想好 retention 策略**，否则下一次 R-iter 就要回来还。
 - **schema-based protection > hardcoded allowlist**：sweep 用 `parse_daily_review_date` 的 None/Some 来决定要不要删，不是维护一个"protected_titles = ['current_mood', 'daily_plan', 'persona_summary']"。后者每次加新 protected 项都得改 sweep 函数 + 测试。前者 schema 自然演化 — 加新 item title 不需要碰 sweep 代码，只要 title 不匹配 daily_review_YYYY-MM-DD pattern 就自动安全。**让 schema 自己说话** > **维护 list 同步**。
