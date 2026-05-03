@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 105：panel 人格 tab——把长期身份层 surface 给用户
+- 3 个新 Tauri command 暴露 prompt 注入用的长期身份数据：
+  - `companionship::get_install_date()` → "YYYY-MM-DD" 字符串（reuse ensure_install_date）
+  - `proactive::get_persona_summary()` → ai_insights/persona_summary description（无 header 包装，原始文本）
+  - `mood_history::get_mood_trend_hint()` → 同 proactive prompt 用的格式化 trend hint
+  + 已存在的 `companionship::get_companionship_days`
+- 新组件 `src/components/panel/PanelPersona.tsx`：3 个 Section 卡（陪伴时长 / 自我画像 / 心情谱）+ footer 解释这些数据怎么进入 prompt。
+  - 陪伴时长：44px 青色大数字 + "起始 2026-05-03" 起始日期补充
+  - 自我画像：persona_summary description 用 `whiteSpace: "pre-wrap"` 保留换行；空时 italic 灰提示"开口几次后等下一次 consolidate"
+  - 心情谱：mood_trend_hint 全文显示；不足 5 条时 italic 灰提示"数据不足"
+  - footer 一段 11px 灰字解释"这三层信息会被注入 proactive / desktop chat / Telegram 的 system prompt"，让用户知道这不只是装饰，而是 prompt 真正读到的数据
+- `PanelApp` 加 "人格" tab 在"记忆"之后；activeTab 添加新分支渲染 PanelPersona
+- 5 秒间隔轻量 polling（vs PanelDebug 1 秒），因为这些数据变化频率低（consolidate 周期 / mood 转变都不是秒级）
+- 路线 A 现在三层数据全部对用户可见：proactive / chat / Telegram prompt 层（LLM 看到）+ stats card 单 chip + 完整 Persona tab（用户看到）。从输入到输出全链路的可见闭环。
+- 213 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 107：Telegram 路径也注入长期人格层（带 opt-out 开关）
 - `TelegramConfig` 加 `persona_layer_enabled: bool` 字段（serde default = true）。改成手写 Default impl 因为多了一个非默认 false 的字段。
 - `HandlerState` 加 `persona_layer_enabled` 字段：bot 启动时从 config 抓取一次，运行期不重新读 settings——和 bot_token / allowed_username 同生命周期，需要重启 bot 才生效，符合 telegram bot 一贯模式。

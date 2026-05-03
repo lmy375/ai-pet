@@ -143,6 +143,14 @@ pub async fn build_trend_hint(window: usize, min_entries: u64) -> String {
     format_trend_hint(&content, window, min_entries).unwrap_or_default()
 }
 
+/// Tauri command returning the formatted mood-trend hint (Iter 105). Same window /
+/// min-entries the proactive prompt uses, so the panel and the LLM see the exact
+/// same trend description — no source-of-truth divergence.
+#[tauri::command]
+pub async fn get_mood_trend_hint() -> String {
+    build_trend_hint(50, 5).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

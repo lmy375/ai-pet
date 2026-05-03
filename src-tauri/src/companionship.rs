@@ -71,6 +71,14 @@ pub async fn get_companionship_days() -> u64 {
     companionship_days().await
 }
 
+/// Tauri command exposing the install date as YYYY-MM-DD (Iter 105). Empty string
+/// when the file doesn't exist yet — frontend treats that as "首次启动后会自动写入".
+#[tauri::command]
+pub async fn get_install_date() -> String {
+    let install = ensure_install_date().await;
+    install.format("%Y-%m-%d").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

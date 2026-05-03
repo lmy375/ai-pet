@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 105 设计要点（已实现）— Persona panel tab
+- **三个 section 一对一映射 prompt 三层**：陪伴时长（companionship_days）/ 自我画像（persona_summary）/ 心情谱（mood_trend）—— UI 结构镜像 prompt 注入的三层结构。用户看到的"宠物当前画像"和 LLM 看到的"长期身份背景"是同一份数据的两种 surface，只是给人 vs 给模型。
+- **复用 prompt 用的 mood_trend_hint 格式 vs 单独画图**：本可以让 panel 把 mood 计数变成柱状图。但选 plain text trend hint 让 panel 显示的就是"LLM 实际读到的那段话"——零 surprise，用户看 panel = 看 prompt 真相。chart 反而是另一种 view，需要解释。
+- **persona_summary 显示原始 description，不加 header**：proactive prompt 里给 LLM 看的是带 header `你最近一次自我反思的画像（来自 consolidate）：` 的版本。panel 用户看不需要这个 meta-框——他们已经在"自我画像" section 里了。所以新加 `get_persona_summary` 命令而非 reuse `build_persona_hint`。
+- **轻量 5 秒 polling vs 1 秒**：PanelDebug 1 秒 poll 是因为决策日志 / 计数器要做 live dashboard。Persona tab 是 review 性质，5 秒足够——consolidate 周期 6 小时，mood 几分钟级转变，没必要更密。同时减少 Tauri invoke 频率。
+- **"今天初识" 在 PanelStatsCard 已有，PanelPersona 也保留**：两处都用相同 day 0 文案（Iter 106 + Iter 105），让 panel 不同入口显示一致——StatsCard 是首屏 chip，Persona 是详细页，但两处看到的都是 "0 天（今天初识）"。
+- **footer 解释数据流向**：用户看到一堆 panel 数据可能不知道这有什么用——加一条 dashed 分隔线下方的 footer 说明"这些会被注入到 prompt 中影响宠物行为"。建立"看到的数字 ↔ 宠物的行为"心理映射，让 panel 不只是装饰。
+- **不加编辑能力**：persona_summary 当前是 LLM 自己写的，user 不能编辑。理论上加个"重写"按钮也行，但那破坏了"自我反思"的语义——summary 是宠物自己得出的，不是 user 设定的。如果用户真要改可以直接编辑 `~/.config/pet/memory/ai_insights/persona_summary.md` 文件——明确的 escape hatch。
+- **路线 A 全链路可见**：现在 Iter 101-107 累积起来形成完整可观察的人格层：backend 生成 → prompt 注入 → 宠物行为 → 用户在 panel 看到 → 心智模型形成。
+
 ## Iter 107 设计要点（已实现）— Telegram 也接入人格层 + opt-out
 - **Telegram 加 opt-out 而非 desktop 也加**：desktop 用户和宠物的关系紧密，几乎全程使用——人格层默认开启且没必要给 toggle。Telegram 是"远程 / 偶尔 / 工具向"使用场景：用户可能就想问"今天天气"或"提醒我吃药"，不需要宠物每条消息前都灌"我们认识 N 天 + 我观察自己倾向短句"——长 system note 也烧 token。所以 Telegram 唯一带 opt-out。
 - **存在 HandlerState 而非每条消息读 settings**：每条 Telegram 消息都重新 `get_settings()` 浪费 IO，且语义上"切换 persona_layer_enabled" 应该需要 restart bot 才"立刻生效"——用户改这个 setting 不太可能希望立刻看到效果，多半是配置完一并启动。如果将来需要热切换再加 reload 逻辑。

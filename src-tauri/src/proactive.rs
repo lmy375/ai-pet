@@ -1481,6 +1481,25 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
     }
 }
 
+/// Tauri command returning the raw persona-summary description (Iter 105) — without
+/// the "你最近一次自我反思的画像（来自 consolidate）：" header `build_persona_hint`
+/// adds. The Persona panel surfaces this directly so users can read what the pet
+/// has written about itself. Empty when no summary exists yet.
+#[tauri::command]
+pub fn get_persona_summary() -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("ai_insights") else {
+        return String::new();
+    };
+    cat.items
+        .iter()
+        .find(|i| i.title == "persona_summary")
+        .map(|i| i.description.trim().to_string())
+        .unwrap_or_default()
+}
+
 /// Read the pet's self-authored persona summary from `ai_insights/persona_summary`.
 /// Iter 102: this is what the consolidate loop generates by reflecting on recent
 /// speech_history + user_profile. Returns the description verbatim with a header line,

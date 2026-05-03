@@ -9,11 +9,7 @@
 参 STATUS.md "未来路线"。从 A 路线（长期人格演化）切入，因为它把已有 infra 真正绑
 在一起；其余路线作为辅助优先级。
 
-### 路线 A：长期人格演化（已完成 Iter 101 / 102 / 103，路线 A 收官）
-
-下一步候选（路线 A 后续延展）：
-- [ ] Iter 105：panel 加 "Persona" tab 显示当前 install_date / companionship_days /
-  persona_summary 描述 / 最近 mood trend，让用户能直接看到"宠物当前画像"。
+### 路线 A：长期人格演化（Iter 101-107 全部完成，路线 A 真正收官）
 
 ### 路线 B：表情系统升级
 - [ ] Iter 8b：扩展 mood 解析支持 expression 字段（如 [motion: Tap, expression: smile]），
