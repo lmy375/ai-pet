@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cκ：butler_tasks 过期指示 + 一键"立即处理"逃生口
+- 现状缺口：Cθ 的 panel 已经能显示 ⏰ 到期，但用户没有反馈"宠物为什么没动"——任务可能因为 cooldown / quiet hours / focus mode / LLM 自主沉默而被搁置。即使开 panel 看到 ⏰，也不知道"等了多久"，更没有"现在就去做"的逃生口。这是 dashboard 缺的最后一环。
+- 解法分两块：
+  - **过期分钟可视化**：客户端按 schedule 算 most_recent_fire 到 now 的分钟差。超过 60 分钟阈值的 due 任务，旁边追加一个琥珀色 "等了 Nh" / "等了 NhMm" chip。tooltip 解释"宠物可能在 quiet/focus/cooldown 窗口"+ 提示如何绕过。
+  - **section 级"立即处理"按钮**：butler_tasks 区头部，当 overdueCount ≥ 1 时显示一个红色 `立即处理 (N)` 按钮。点击调 `trigger_proactive_turn`（已有 Tauri command，bypass 全部 gate），把状态写进 message banner、刷新 history + index。
+- 提取 `mostRecentFire(schedule, now)` 出来——TS 里 isButlerDue 现在直接拿这个值用，overdueMinutes 也复用，避免重复推算。这是把 Cθ 加的 schedule 计算函数稍微 refactor 一层，更可组合。
+- `formatOverdue(mins)`：< 60 → `等了 Nm`，整小时 → `等了 Nh`，含余分 → `等了 NhMm`。让指示器在不同时间尺度下读起来都自然。
+- `OVERDUE_THRESHOLD_MIN = 60`：低于这个不显示 chip。一来"刚 due 1 分钟"显示等候没意义，二来不和 ⏰ 到期 badge 视觉打架。60 分钟是最弱的"明显过期"门槛——proactive 默认 5 分钟一 tick，1 小时是 12 个 tick 都没动，明显异常。
+- "立即处理"行为：用现有的 `trigger_proactive_turn` 命令，因为它已经 bypass 所有 gate 且 LLM 看到 ⏰ 标注会自然优先选过期任务。不需要新写一个 butler-scoped 的 trigger——pipeline 共享是优点。
+- 不需要 cargo test 改动：纯前端改动 + 一段 TS pure helper（mostRecentFire / overdueMinutes / formatOverdue），都是 client-side 计算。tsc 严格通过；没破现有 cargo 272 测。
+- 结果：用户 dashboard 现在闭合得更好——能看到「这个任务到期了 + 等了多久」，并能一键绕过所有 gate 让宠物立即处理。"宠物管家"的 trust 需要这种"即使节奏不对劲我也能干预"的开关。
+
 ## 2026-05-03 — Iter Cι：reactive chat 的 butler 委托引导
 - 现状缺口：Cγ–Cθ 把 butler 系统建起来了，但只有 proactive 路径 prompt 强制 LLM 看到 butler_tasks 列表。reactive 聊天里用户说「你每天 9 点帮我写日报」时，LLM 没有被特别提示把这件事写进 butler_tasks——很可能口头答应一句"好"就过去了，下次再问就忘了。这相当于"管家功能开着，但用户的自然请求路径没接进去"。
 - 解法：扩展 `TOOL_USAGE_PROMPT`（chat pipeline 每轮注入，reactive + proactive 共享）一段「任务委托判断」章节：

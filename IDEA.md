@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cκ 设计要点（已实现）
+- **客户端时钟而不是 Rust 命令**：和 Cθ 一致——overdue 计算也是 view-time。每秒重渲染未必需要，但 panel 既然 15s 已经在 poll butler_history，那个 setInterval 触发的 setState 会让 React 重渲染，overdue 计算会随之刷新。
+- **复用 trigger_proactive_turn**：曾考虑写一个 butler-scoped 的 manual trigger（只把 due 任务带进 prompt、跳过 mood/persona/etc）。优点是 LLM 不会被无关 context 分心。但坏处明显：(a) 又一条独立路径，要维护；(b) 失去"管家任务和聊天伙伴是同一个宠物"的一致性，user 会感觉 ⏰ 触发的回复语气和正常 proactive 不一样；(c) 现有 prompt 已经把 butler 任务标 ⏰，LLM 看到自然会选。共享 pipeline 的简洁性赢。
+- **mostRecentFire 提到独立 helper**：原 isButlerDue 内部就有这段逻辑，但 overdueMinutes 也要算同一个时间点，提出来后两个函数都用一行调用——既消除重复，也让"什么是最近一次 fire"在一个地方有定义。这种 small refactor 的价值容易被忽略，但对长期维护是关键。
+- **OVERDUE_THRESHOLD_MIN = 60 而不是更激进**：曾想用 30 分钟——更早提示。但 panel 上 ⏰ 到期 chip 已经先红，再加一个琥珀 chip 太挤；而且 30 分钟挂着可能是用户出门吃午饭，不是 bug。60 分钟是"明显异常但不会误报"的中间值。
+- **"立即处理"在 section 级而不是 per-task**：每个 due task 都加一个 button → 视觉重复、且按钮多容易误点。一个全局按钮在 section 头部、count 显式，点了 LLM 自己挑——契合「LLM 是 agent」的范式而非「button = trigger task X」的命令式 UI。
+- **复用 message state**：触发后用 `setMessage` 写状态——和 handleConsolidate / handleSaveEdit / handleDelete 一致。不再起一个 `proactiveStatus`-like 独立 state，state 越多越乱。
+
 ## Iter Cι 设计要点（已实现）
 - **改 TOOL_USAGE_PROMPT 而不是另起一段 system message**：Cγ 当时把 butler tooling 提示放在 proactive_rules 的 conditional rule 里——只在 butler_tasks_hint 非空时 fire。reactive 路径完全没看到 butler。本可以再起一段独立的 "butler delegation" system message 在 reactive 的 inject 链上加一道，但那意味着两个 prompt 来源（一个在 proactive、一个在 reactive）讲同一件事，将来语义漂移。改 TOOL_USAGE_PROMPT 是单一来源——它已经被 chat pipeline 的所有路径（reactive、proactive、telegram、consolidate）一致注入。一处改，处处生效。
 - **加一段而不是大改**：曾想把 TOOL_USAGE_PROMPT 整体重构成更结构化的格式（按工具分组、加更多对比例子）。但那会触发"重写一个一直管用的 prompt"的尴尬——既改动大、又难量化是否真的更好。增量加一节 "## 任务委托判断" 是最小风险路径，且新内容自然在末尾，不打扰前面的"工具选择" / "文件操作" 等已经稳定的指令。
