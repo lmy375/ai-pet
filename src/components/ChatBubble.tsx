@@ -18,10 +18,19 @@ interface Props {
 // it, click → bubble disappears with no transition felt → user wonders
 // "did the click register?". The press scale is the universal "I felt
 // your tap" affordance from native UI.
+//
+// Iter R42: hover lift completes the interaction state machine
+// (mount fadeIn / hover lift / active press). Hover deepens border
+// color + lifts 1px so cursor entering signals "you can interact".
+// :active overrides :hover transform via CSS source order.
 const BUBBLE_STYLES = `
 @keyframes pet-bubble-fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+.pet-bubble:hover {
+  border-color: #7dd3fc;
+  transform: translateY(-1px);
 }
 .pet-bubble:active {
   transform: scale(0.97);
@@ -56,7 +65,7 @@ export function ChatBubble({ message, visible, onClick }: Props) {
           wordBreak: "break-word",
           cursor: onClick ? "pointer" : "default",
           animation: "pet-bubble-fade-in 220ms ease-out",
-          transition: "transform 80ms ease-out",
+          transition: "transform 80ms ease-out, border-color 120ms ease-out",
         }}
       >
         {/* Iter R24: subtle dismiss affordance — the bubble was already
