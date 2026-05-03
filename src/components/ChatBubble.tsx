@@ -12,10 +12,19 @@ interface Props {
 // translateY(4px) → 0 gives a faint "settle" feel — bubble doesn't pop
 // in flat. 220ms is short enough to feel responsive; longer lags the
 // utterance vs reading the text.
-const FADE_IN_KEYFRAMES = `
+//
+// Iter R41: also adds a `:active` press feedback so the click that
+// triggers dismiss has a tactile reaction (scale 0.97 for 80ms). Without
+// it, click → bubble disappears with no transition felt → user wonders
+// "did the click register?". The press scale is the universal "I felt
+// your tap" affordance from native UI.
+const BUBBLE_STYLES = `
 @keyframes pet-bubble-fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+.pet-bubble:active {
+  transform: scale(0.97);
 }
 `;
 
@@ -24,8 +33,9 @@ export function ChatBubble({ message, visible, onClick }: Props) {
 
   return (
     <>
-      <style>{FADE_IN_KEYFRAMES}</style>
+      <style>{BUBBLE_STYLES}</style>
       <div
+        className="pet-bubble"
         onClick={onClick}
         style={{
           position: "absolute",
@@ -46,6 +56,7 @@ export function ChatBubble({ message, visible, onClick }: Props) {
           wordBreak: "break-word",
           cursor: onClick ? "pointer" : "default",
           animation: "pet-bubble-fade-in 220ms ease-out",
+          transition: "transform 80ms ease-out",
         }}
       >
         {/* Iter R24: subtle dismiss affordance — the bubble was already

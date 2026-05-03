@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R41 设计要点（已实现）
+- **CSS pseudo-class 是 native UI feedback 的极简正解**：press feedback 一种实现是 React state (`isPressing` + onMouseDown/Up listeners)，另一种是 CSS `:active` pseudo-class。React state 涉及 re-render + 多 event handler 写法。CSS `:active` 是浏览器 native — 0 JS 开销，0 state machine。**当 native CSS 解能实现需求时，don't reach for React state**。这条原则适用所有 hover / focus / active 等纯 visual 状态。
+- **subtle 动画的双重 budget**：duration + magnitude 都要小。R41 是 80ms × scale(0.97) — 时间短 + 幅度小。如果 200ms × scale(0.92) 就会变成"按钮被按瘪"。**这两个维度 multiplicative**：duration 长 + magnitude 小可接受（缓慢柔和），duration 短 + magnitude 大也行（快速回弹）；duration 长 + magnitude 大 = 卡顿臃肿。R-series polish 从来都选 small × fast。
+- **CSS animation + transition 共存的 transform 协调**：fadeIn (R40) 用 `transform: translateY(...)` via animation，press (R41) 用 `transform: scale(...)` via :active rule。两者都改 transform 属性。但 animation 只在 mount 后 220ms 内 active，之后 transform 回归 inline style 的 base value (translateY(0))。`:active` 期间 pseudo-class CSS 覆盖 inline style — scale(0.97) 取代 translateY(0)。**CSS specificity ordering 自然解决冲突** — 不需要手动协调。
+- **user-visible polish 应该连续 cluster**：R40 fadeIn → R41 press feedback 是连续 2 iter 在同一 component 上叠 polish。**polish 投资分布应该 cluster 而不是 scatter** —— 一段时间深耕一处比每周散投更有累积感。R-series 后续 polish 也该按这个节奏：选定一个 component / view，连续 2-3 iter 集中投入直到完整再换下一处。**深度 > 广度** 在 polish 期。
+- **R-series 之前的"假交互"债**：R1b dismiss + R24 ✕ 角标 + R40 fadeIn — 这些都说"bubble 是 interactive"，但 R41 之前**点击时没有 visual press**。功能链完整但触觉环节缺。**discoverability triple (function / feedback / discoverability)** 之前以为 R24 完成了，R41 又补一层 ——"discoverability" 不只视觉提示也包括"按下时的反馈"。R-series 的 codified principles 在 polish 期反复 audit 出新债。
+- **className "pet-bubble" 不会碰名**：诱惑是 `bubble:active`、`pet:active` 等更短 selector。但 codebase grow 后命名碰撞概率增加。`pet-bubble` 是 namespace + 用途 双关 — pet 是 product 名，bubble 是组件名。**naming with namespace prefix** 是大 codebase 的小代价。
+- **R40 + R41 验证 inline `<style>` 模式**：R40 单一 keyframes，R41 加 :active rule。两者复用同一 `<style>` tag （rename const + 扩展内容）。**inline style scope 越用越值** — 比拆 CSS file 局部 + 比 CSS-in-JS lib 轻量。但只适合 short / 共关联的 styles； 长 CSS 仍该拆 .css。
+
 ## Iter R40 设计要点（已实现）
 - **invisible signals 期投资到 visible UX 期的转换**：R20-R39 主要在打磨 *invisible* 系统 — prompt hints, panel chips, codified rules, signal mirroring。这些都是 dev-facing observability 或 LLM-facing context。**真正的 end-user 看到的 UX 几乎没动**。R40 是 conscious 转向 — 220ms fadeIn 是用户能直接感觉到的差别，不是 panel chip / prompt hint。**长 iter 系列应该周期性回头投 user-visible polish**，否则 codebase 越来越聪明但用户看不出。
 - **物理直觉驱动动画 timing**：220ms 不是 magic number — 100-150ms = perceptible but feel "snappy"，200-300ms = perceptible "settle" 节奏，>400ms = 拖沓。ease-out (开始快，结束缓) 模拟"物体被放下"的减速。**timing function 选择应该匹配 metaphor**：bubble 是被"放下"，所以 ease-out。如果是被"扔上去"用 ease-in。
