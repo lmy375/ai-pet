@@ -173,6 +173,11 @@ export const PROMPT_RULE_DESCRIPTIONS: Record<
     summary: "用户走开 ≥ 4h；问候带重逢感，简短关心 + 一句轻松归来话题，不要扔信息密集内容。",
     nature: "engagement",
   },
+  "late-night-wellness": {
+    title: "深夜该睡了",
+    summary: "凌晨 0-4 点 + 用户键鼠还活跃：直接关心 ta 该休息了，不起新话题、不追问工作。",
+    nature: "engagement",
+  },
 };
 
 export const NATURE_META: Record<PromptRuleNature, { label: string; color: string }> = {

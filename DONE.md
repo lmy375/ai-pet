@@ -2,6 +2,30 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R3：late-night-wellness 复合规则（凌晨该睡了硬提醒）
+- 现状缺口：宠物的 wellness 关怀是软的——靠 plan_hint 让 LLM "看到深夜还在工作时主动关心"，但前提是宠物自己写过 daily_plan + LLM 当下判断决定提。如果用户连续好几个深夜都加班，pet 没机制硬性 override，可能继续 chatty / icebreaker / engagement 那几套常规规则。
+- 解法 — 第四个 composite rule `late-night-wellness`：
+  - 触发条件：`hour < LATE_NIGHT_END_HOUR (4)` AND `idle_minutes < LATE_NIGHT_ACTIVE_MAX_IDLE_MIN (5)`。即 0:00-3:59 且键鼠 5 分钟内有动作（确实坐在电脑前）。
+  - **不**像 long-idle/long-absence 那样 gate on chatty / pre_quiet。pet 健康优先于 cadence——chatty 已超也得说，pre_quiet 也照说。
+  - prompt 文本：直接关心+建议睡（"哎，{hour} 点了还在忙啊？该睡了"），明确 **不要** 起新话题/追问工作/长篇——一句关心 + 一句"该睡了"。如果用户在做收尾动作可以更轻盈说晚安。
+- 改动：
+  - PromptInputs 加 `hour: u8` 字段（base_inputs 默认 14 = 下午，对老 tests 中性）
+  - `active_composite_rule_labels` 加第 8 个参数 `hour: u8` + 新分支
+  - 3 个生产 call site 都 wire `now_local.hour() as u8` / `now_for_rules.hour() as u8`
+  - proactive_rules 加 match arm，使用 hour + idle_minutes 拼出 wellness 文本
+  - 鉴于这是 engagement-type 规则（push pet to speak），分类时落入 prompt_tilt 的 engagement bucket（已在 PromptTiltCounters::record_dispatch 的 match 之外，会归入"corrective/instructional"——OK 因为这本质是硬规则不是 tone tilt 信号）
+  - panelTypes.ts PROMPT_RULE_DESCRIPTIONS 加 "late-night-wellness" 行
+  - fingerprint 表加 ("late-night-wellness", "深夜还在用电脑")
+- 测试：
+  - 新 unit test `active_composite_rule_labels_late_night_wellness_gating` —— 钉住四种边界：hours 0-3 都 fire / hour=4 不 fire / idle=5 不 fire / chatty+pre_quiet 都 set 时仍 fire（验证 wellness override）
+  - `proactive_rules_has_match_arm_for_every_backend_label` 测试加第三个 scenario s3（hour=2, idle=1）以让 fingerprint 覆盖到新 label
+  - 全 universe-enumeration 测试也分两步 chain composite calls：一次 idle 高（covers long-absence），一次 idle 低 + hour=2（covers late-night）。两组 label set 互斥不能同 call 拿到。
+- 决策 — wellness 不 gate 在 chatty / pre_quiet：原本想加保护 ("不在 chatty 上加 wellness")，但 wellness 的整个意义就是 override 常规 cadence。如果半夜两点用户连续 3 小时活跃，chatty=10 也得说；pre_quiet 也得说（甚至更应该说，pre_quiet 是预告 quiet 时段，wellness 在 quiet 之前介入正合适）。
+- 决策 — `hour < 4` 用 const `LATE_NIGHT_END_HOUR`：直接 magic number 4 不可读；提到 const 让"什么时候算晚" 这个 policy 单点定义，未来调到 5 / 3 改一处即可。idle 阈值同理用 LATE_NIGHT_ACTIVE_MAX_IDLE_MIN。
+- 决策 — 不写专门 settings 项：wellness 太小一个 policy，加 setting 反而让普通用户 nervous（"我能调多晚才不该睡？" 暗示 ta 应该自己想清楚）。两个 const 写死，行为隐式但符合"宠物有自己 opinion" 的设定。
+- 测试结果：359 cargo（+1 net，新 4 旧测加 hour 参数）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：现在凌晨 0-4 点用户还在键盘前，pet 必然 dispatch 一条 wellness 关心——即使：今天已经 chatty、pre_quiet 已开、用户还没"长 absent"过。是 plan_hint 之外第一个**硬规则** wellness 介入。
+
 ## 2026-05-03 — Iter R1：用户反馈信号采集 + 注入下次 proactive prompt
 - 现状缺口：宠物每次 proactive 都是"开完口就发了"——没有反馈循环。同样话术不管用户上一句是回应了还是完全无视，都会用同样的语气重复。要变成"会学" 的伴侣，得至少把"上次开口的下场" 喂回 prompt。
 - 解法 — 在 InteractionClock 的 awaiting flag 上做被动观测：用户在两次 proactive 之间发消息会触发 `mark_user_message`（清 awaiting）；如果一直没发，下次 proactive fire 时 awaiting 仍是 true。这两个信号刚好对应 replied / ignored，**完全不需要前端 UI 改动**。

@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R3 设计要点（已实现）
+- **硬规则 vs 软规则的边界是 wellness 标志位**：proactive_rules 之前都是"在合适条件下推荐 LLM 怎么开口" 的软引导。wellness 这个第一次出现"无视常规 cadence/chatty/pre_quiet 的硬 override"。这个区分以后会有更多：例如 "用户当前 mood 是焦虑 + idle 长 → 强制柔和 register"，也是硬 override。把 wellness 做出来给后面这种规则建立模式：override 时不应 gate on 那些通常的克制信号。
+- **hour 之前没有进 PromptInputs 是历史遗留**：period 是早就有的（"上午/下午/晚上"），但 raw hour 直到现在都通过 inputs.time 字符串隐式传递。本 iter 把 raw hour 暴露出来后，未来其它规则（深夜 / 清晨开机 / 中午午休等）都能用具体小时数判断而不需要 parse 字符串。这是"原始数据进结构、派生字段进 prompt"的清洁分层。
+- **LATE_NIGHT_END_HOUR=4 vs 3**：spec 写的是 0-3 点。我用 4 是为了包含整 03:xx 段——03:30 仍在工作的人和 02:30 不应该有差别。4 点这个边界 → 凌晨 04:00 准时 silent → 这时候大概是早起人群，他们值得不被打扰。
+- **chatty/pre_quiet override 是设计的关键**：wellness 是关于"健康"，不是关于 "cadence"。如果今天 pet 已经聊了 10 句而用户半夜还在工作，那是"今天聊得多" + "今天该睡了"两件独立的事——wellness 不该被 chatty 抑制。这是 rule layer 设计上的语义清晰：每条 rule 应有自己独立的"是否触发"逻辑，而不是层层 gate。
+- **测试三 scenario 的 fingerprint coverage 是非平凡的**：late-night 触发条件（hour<4 + idle<5）和 long-absence（idle≥240）+ wake-back（wake_hint 非空）+ pre-quiet 等条件互斥，不能同时单 call 验证。已有 fingerprint test 加 s3 scenario + universe enumeration 加 chained second composite call，是这种"高维状态 space" 测试的常用模式。
+- **`labels.contains(&"x")` 比 `iter().any(|l| *l == "x")` 更地道**：clippy 的 `or_fun_call`/`needless_collect` 一类的 idiom lint 在这里命中。Vec<&str> 的 contains 接 `&&str` 引用，这是 Rust slice contains 标准 API。
+- **不暴露 settings**：wellness 是宠物的"opinion"——"我觉得你应该睡了"。如果让用户调阈值，就把判断责任推回了用户，违背"宠物有自己性格" 的产品设定。两个 const 写死即使有边界 case（用户是夜班 / 习惯凌晨工作）也接受，那种用户自己会忽略宠物。
+
 ## Iter R1 设计要点（已实现）
 - **state machine 的隐藏复利**：本来打算搞一套 ChatBubble 点击事件 + 倒计时 + Tauri 命令记 dismiss/timeout/reply 三档。后来注意到 InteractionClock.awaiting_user_reply 已经是被动观察"用户回没回"的真值——读它就能分类，**前端零改动**。早期投资在"对的状态机"会在后续 N 个 iter 里反复变现。
 - **raw vs effective 分两套语义很关键**：D11 给 awaiting 加了 4h 自动过期，是为了 GATE 不让宠物永久哑巴。但 FEEDBACK 分类需要的是"用户事实上有没有回"——和时间无关。所以加了 `raw_awaiting` 单独暴露不带 expire 的真值。同一字段两种读法，对应两种业务语义。
