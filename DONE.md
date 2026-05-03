@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cx：隐私过滤——env 工具结果可配置 redaction（路线 C 第一刀）
+- 新模块 `src-tauri/src/redaction.rs`：纯函数 `redact_text(text, patterns) -> String`，对 patterns 中的每条做大小写不敏感子串匹配，命中处替换为 `(私人)`。空 / whitespace-only patterns 被跳过避免空串无限循环陷阱。UTF-8 安全（中文 / emoji）通过 char_boundary 推进实现。
+- `replace_case_insensitive` 用 lowercase 镜像扫描而非 regex——零依赖，无 ReDoS 风险，对子串场景足够。
+- `commands/settings.rs` 加 `PrivacyConfig { redaction_patterns: Vec<String> }`（serde default 空 Vec），并入 `AppSettings.privacy` 字段。
+- `tools/system_tools.rs` 的 `get_active_window_impl` 在构造 JSON 前对 `app_name` 和 `window_title` 都套 redact_text（读 settings 拿 patterns）。`tools/calendar_tool.rs` 的 `get_upcoming_events_impl` 对 event title + location 套相同处理。
+- 前端 `useSettings.ts` 新 `PrivacyConfig` interface + DEFAULT_SETTINGS 同步加。`PanelSettings.tsx` 在"对话上下文"之后插入"隐私过滤"section：textarea 一行一个 keyword，placeholder 例 "Slack / 某客户公司名 / 项目代号"，footer 解释作用范围 + 即时生效。
+- 8 个新单测覆盖：empty/blank patterns 跳过 / 大小写不敏感 / 多 patterns 顺序 / 中文 / emoji 安全 / 重叠 patterns 优先匹配 / 多次出现全部替换。
+- 现在用户首次能让宠物在不可信环境（active window 标题 / calendar event）面前对私人信息保持沉默——LLM 只看到 `(私人)` 占位，本机不外发。路线 C 起步。
+- 221 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 105：panel 人格 tab——把长期身份层 surface 给用户
 - 3 个新 Tauri command 暴露 prompt 注入用的长期身份数据：
   - `companionship::get_install_date()` → "YYYY-MM-DD" 字符串（reuse ensure_install_date）

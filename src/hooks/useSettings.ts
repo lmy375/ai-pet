@@ -42,6 +42,10 @@ export interface ChatConfig {
   max_context_messages: number;
 }
 
+export interface PrivacyConfig {
+  redaction_patterns: string[];
+}
+
 export interface AppSettings {
   live_2d_model_path: string;
   api_base: string;
@@ -52,6 +56,7 @@ export interface AppSettings {
   proactive: ProactiveConfig;
   memory_consolidate: MemoryConsolidateConfig;
   chat: ChatConfig;
+  privacy: PrivacyConfig;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -81,6 +86,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   chat: {
     max_context_messages: 50,
+  },
+  privacy: {
+    redaction_patterns: [],
   },
 };
 

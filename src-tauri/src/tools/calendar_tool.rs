@@ -126,12 +126,20 @@ end run
         if parts.len() < 4 {
             continue;
         }
+        // Iter Cx: redact title / location based on user-configured privacy patterns
+        // before passing to the LLM. Calendar event titles often contain client names
+        // or sensitive subjects.
+        let patterns = crate::commands::settings::get_settings()
+            .map(|s| s.privacy.redaction_patterns.clone())
+            .unwrap_or_default();
+        let title = crate::redaction::redact_text(parts[0], &patterns);
+        let location = crate::redaction::redact_text(parts.get(4).copied().unwrap_or(""), &patterns);
         events.push(serde_json::json!({
-            "title": parts[0],
+            "title": title,
             "start": parts[1],
             "end": parts[2],
             "calendar": parts[3],
-            "location": parts.get(4).copied().unwrap_or(""),
+            "location": location,
         }));
         if events.len() >= MAX_EVENTS_RETURNED {
             break;

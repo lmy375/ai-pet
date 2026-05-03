@@ -226,6 +226,16 @@ impl Default for ProactiveConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PrivacyConfig {
+    /// Substring patterns redacted (case-insensitive) from environment-aware tool
+    /// output before the LLM sees it. Keep terms personal / specific (names, project
+    /// codenames, sensitive client substrings) — the marker `(私人)` replaces each
+    /// match. Empty list disables redaction. Backed by `crate::redaction`.
+    #[serde(default)]
+    pub redaction_patterns: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_model_path")]
@@ -246,6 +256,8 @@ pub struct AppSettings {
     pub memory_consolidate: MemoryConsolidateConfig,
     #[serde(default)]
     pub chat: ChatConfig,
+    #[serde(default)]
+    pub privacy: PrivacyConfig,
 }
 
 fn default_model_path() -> String {
@@ -272,6 +284,7 @@ impl Default for AppSettings {
             proactive: ProactiveConfig::default(),
             memory_consolidate: MemoryConsolidateConfig::default(),
             chat: ChatConfig::default(),
+            privacy: PrivacyConfig::default(),
         }
     }
 }
