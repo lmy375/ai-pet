@@ -45,33 +45,58 @@ const PANEL_STYLES = `
 .pet-loading-dot:nth-child(3) {
   animation-delay: 0.36s;
 }
+.pet-mute-menu-item {
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+  font-family: inherit;
+  transition: background 100ms ease-out;
+}
+.pet-mute-menu-item:hover {
+  background: #f1f5f9;
+}
 `;
 
 export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Iter R52: 🔇 mute button cycles through quick presets. Polls
-  // get_mute_until on click so display reflects backend truth (not stale
-  // local state). Cycle: not muted → 30 min → 60 min → cleared. Each
-  // click invokes set_mute_minutes; backend returns ISO timestamp or
-  // empty string for "cleared".
+  // Iter R52 / R54: 🔇 mute button. Left-click toggles 30 min default
+  // (R52 fast-path); right-click opens preset menu with 15/30/60/120
+  // min options + clear (R54 flexible-path). Two paths cover the two
+  // user types — quick mute users and granular-control users.
   const [muted, setMuted] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   useEffect(() => {
     // Initial probe so the button starts in correct state on mount.
     invoke<string>("get_mute_until")
       .then((iso) => setMuted(iso !== ""))
       .catch(() => setMuted(false));
   }, []);
-  const handleMuteClick = async () => {
+  const applyMute = async (minutes: number) => {
     try {
-      // Toggle: if currently muted → clear; else set 30 min.
-      const minutes = muted ? 0 : 30;
       const result = await invoke<string>("set_mute_minutes", { minutes });
       setMuted(result !== "");
     } catch (e) {
       console.error("set_mute_minutes failed:", e);
     }
+    setShowMenu(false);
   };
+  const handleMuteClick = () => applyMute(muted ? 0 : 30);
+  const handleMuteContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setShowMenu((v) => !v);
+  };
+  // Close menu when clicking anywhere outside it.
+  useEffect(() => {
+    if (!showMenu) return;
+    const close = () => setShowMenu(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [showMenu]);
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -137,28 +162,74 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
             to mute pet for 30 min (skips proactive gate); click again to
             unmute. Visible state via emoji + opacity (muted = 1.0 + red
             tint; unmuted = 0.7 + neutral). */}
-        <div
-          className="pet-settings-btn"
-          onClick={handleMuteClick}
-          style={{
-            width: "36px",
-            height: "36px",
-            borderRadius: "50%",
-            background: muted ? "rgba(220,38,38,0.9)" : "rgba(255,255,255,0.9)",
-            backdropFilter: "blur(8px)",
-            border: muted ? "1px solid rgba(220,38,38,0.5)" : "1px solid rgba(200,200,200,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            fontSize: "15px",
-            flexShrink: 0,
-            boxSizing: "border-box",
-            color: muted ? "#fff" : "inherit",
-          }}
-          title={muted ? "宠物已静音 30 分钟 — 点击解除" : "静音宠物 30 分钟（仅跳过 proactive，reactive chat 不影响）"}
-        >
-          🔇
+        <div style={{ position: "relative" }}>
+          <div
+            className="pet-settings-btn"
+            onClick={handleMuteClick}
+            onContextMenu={handleMuteContextMenu}
+            style={{
+              width: "36px",
+              height: "36px",
+              borderRadius: "50%",
+              background: muted ? "rgba(220,38,38,0.9)" : "rgba(255,255,255,0.9)",
+              backdropFilter: "blur(8px)",
+              border: muted ? "1px solid rgba(220,38,38,0.5)" : "1px solid rgba(200,200,200,0.5)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              fontSize: "15px",
+              flexShrink: 0,
+              boxSizing: "border-box",
+              color: muted ? "#fff" : "inherit",
+            }}
+            title={muted ? "宠物已静音 — 点击解除（右键选时长）" : "左键 30 分钟静音 / 右键选时长（仅跳 proactive，reactive 不影响）"}
+          >
+            🔇
+          </div>
+          {/* Iter R54: preset menu opened via right-click. Click on item
+              applies, then closes; outside click also closes. */}
+          {showMenu && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                bottom: "44px",
+                right: 0,
+                background: "rgba(255,255,255,0.98)",
+                backdropFilter: "blur(8px)",
+                border: "1px solid rgba(200,200,200,0.5)",
+                borderRadius: "10px",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                padding: "4px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "1px",
+                minWidth: "120px",
+                zIndex: 100,
+              }}
+            >
+              {[
+                { label: "静音 15 分钟", minutes: 15 },
+                { label: "静音 30 分钟", minutes: 30 },
+                { label: "静音 60 分钟", minutes: 60 },
+                { label: "静音 120 分钟", minutes: 120 },
+                { label: "解除静音", minutes: 0 },
+              ].map((opt) => (
+                <button
+                  key={opt.minutes}
+                  type="button"
+                  className="pet-mute-menu-item"
+                  onClick={() => applyMute(opt.minutes)}
+                  style={{
+                    color: opt.minutes === 0 ? "#dc2626" : "#1e293b",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {/* Iter R48: AI-thinking pulsing dots when isLoading. Sits between
             textarea and ⚙ button so it doesn't fight either's space. */}
