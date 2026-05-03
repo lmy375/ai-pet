@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 95：badge 颜色根据 nature 倾向自适应
+- "prompt: N 条 hint" badge 不再固定紫色——按 active_prompt_rules 的 restraint vs engagement 数量决定主色：
+  - restraint > engagement → 红色 #dc2626（深 #991b1b）
+  - engagement > restraint → 绿色 #16a34a（深 #15803d）
+  - 相等（含 0=0）→ 紫色 #7c3aed（深 #5b21b6，原默认）
+- corrective 和 instructional 规则不计入倾向——它们是"做什么"的指导，不是"压"或"激"的方向。让 badge 颜色只反映真正的行为倾斜。
+- tooltip 文案根据情况切换：
+  - "偏克制（克制 × 3、引导 × 1）"
+  - "偏引导（引导 × 2、克制 × 0）"
+  - "平衡（克制 2 ↔ 引导 2）"
+  - "中性（仅 instructional/corrective 规则）"
+- 现在不点开 badge 就能感知 prompt 倾向——红色 chip 出现 = "宠物被多重压制"，绿色 = "正在被激发开口"，紫色 = "中性 / 平衡"。配合 Iter 94 的展开聚合行，单击前后两层信息密度递进。
+- 闭合 IIFE 派生：扫 active_prompt_rules → lookup PROMPT_RULE_DESCRIPTIONS.nature → 累加 → 选色。零额外 state，每次 ToneSnapshot 更新自动重算。
+- 181 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 94：prompt 规则 nature 分类 + panel 展开聚合显示
 - `PROMPT_RULE_DESCRIPTIONS` 每条 entry 加 `nature: "restraint" | "engagement" | "corrective" | "instructional"` 字段。10 条规则分类：
   - restraint × 4：wake-back / pre-quiet / icebreaker / chatty

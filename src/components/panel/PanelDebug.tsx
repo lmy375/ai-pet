@@ -388,31 +388,64 @@ export function PanelDebug() {
             </button>
           </span>
         )}
-        {tone && tone.active_prompt_rules.length > 0 && (
-          <button
-            onClick={() => setShowPromptHints((v) => !v)}
-            title={`点击展开/收起规则详情。当前活跃：${tone.active_prompt_rules.join("、")}`}
-            style={{
-              fontSize: "11px",
-              color: "#fff",
-              background: showPromptHints ? "#5b21b6" : "#7c3aed",
-              padding: "2px 8px",
-              borderRadius: "10px",
-              alignSelf: "center",
-              fontFamily: "'SF Mono', 'Menlo', monospace",
-              cursor: "pointer",
-              border: "none",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "4px",
-            }}
-          >
-            prompt: {tone.active_prompt_rules.length} 条 hint
-            <span style={{ fontSize: "9px", opacity: 0.85 }}>
-              {showPromptHints ? "▾" : "▸"}
-            </span>
-          </button>
-        )}
+        {tone && tone.active_prompt_rules.length > 0 && (() => {
+          // Compute dominant nature so the closed badge alone signals "pet is being
+          // restrained vs engaged vs neutral". Count only restraint and engagement —
+          // corrective and instructional don't push the pet's behavior in either
+          // direction so they leave the badge in its neutral purple register.
+          let restraint = 0;
+          let engagement = 0;
+          for (const label of tone.active_prompt_rules) {
+            const n = PROMPT_RULE_DESCRIPTIONS[label]?.nature;
+            if (n === "restraint") restraint += 1;
+            else if (n === "engagement") engagement += 1;
+          }
+          // closed → 中度色，open → 深一档（与之前 5b21b6 ↔ 7c3aed 对比相同）
+          let bg: string;
+          let bgOpen: string;
+          let tilt: string;
+          if (restraint > engagement) {
+            bg = "#dc2626";
+            bgOpen = "#991b1b";
+            tilt = `偏克制（克制 × ${restraint}、引导 × ${engagement}）`;
+          } else if (engagement > restraint) {
+            bg = "#16a34a";
+            bgOpen = "#15803d";
+            tilt = `偏引导（引导 × ${engagement}、克制 × ${restraint}）`;
+          } else {
+            bg = "#7c3aed";
+            bgOpen = "#5b21b6";
+            tilt =
+              restraint + engagement === 0
+                ? "中性（仅 instructional/corrective 规则）"
+                : `平衡（克制 ${restraint} ↔ 引导 ${engagement}）`;
+          }
+          return (
+            <button
+              onClick={() => setShowPromptHints((v) => !v)}
+              title={`点击展开/收起规则详情。当前 ${tilt}。活跃规则：${tone.active_prompt_rules.join("、")}`}
+              style={{
+                fontSize: "11px",
+                color: "#fff",
+                background: showPromptHints ? bgOpen : bg,
+                padding: "2px 8px",
+                borderRadius: "10px",
+                alignSelf: "center",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                cursor: "pointer",
+                border: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+              }}
+            >
+              prompt: {tone.active_prompt_rules.length} 条 hint
+              <span style={{ fontSize: "9px", opacity: 0.85 }}>
+                {showPromptHints ? "▾" : "▸"}
+              </span>
+            </button>
+          );
+        })()}
         <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>
           {logs.length} 条日志
         </span>

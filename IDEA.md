@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 95 设计要点（已实现）
+- **只数 restraint vs engagement，忽略 corrective/instructional**：badge 颜色应该传递"宠物现在被压还是被激发"。corrective（"过去做错了，注意改"）和 instructional（"做事时按某种格式"）都不直接影响"开不开口"，纳入计数会污染倾向信号。例如纯 instructional 规则一堆活跃，红色或绿色都是误导——保持紫色（中性）正确。
+- **strict > 而非 ≥**：tilt 判断用严格大于。1 vs 1 仍然紫色；2 vs 2 也紫色。"平衡"也是一种状态，不应该归到任何一边。如果用 >=，1==1 时会被随便归到 restraint（因为先判），破坏对称性。
+- **bg 和 bgOpen 分开两色**：closed 状态用中度色（#dc2626），open 状态深一档（#991b1b）。不用单色 + opacity，因为 opacity 在白色背景上会让 badge 文字掉对比度（白字 + 半透明红 → 文字可能变灰）。两套硬编码颜色稳定。
+- **tooltip 4 种文案分支**：根据具体情况给精确描述，避免"current tilt: restraint" 这种英文 + 模糊。文案直接说"偏克制（克制 × 3、引导 × 1）"——既给类别又给数字，用户不需要展开就能猜出 prompt 长什么样。
+- **闭合 IIFE 而非 useState 派生**：badge 颜色完全派生自 ToneSnapshot.active_prompt_rules，不需要 state——直接 IIFE 里算好返 JSX。useMemo 也不必要——active_prompt_rules 是 backend 字符串数组，每秒 refresh 一次，每次 10 条以下规则做 reduce 几乎零成本。
+- **不引入 "warning" / "alert" 颜色**：本可以让 restraint ≥ 5 时切橙红 / 暗红进一步分级。但 5 条 restraint 已经是相当严重的克制状态，红色已经传递这个意思——再分级反而过度。简单二值（restraint vs engagement）最清晰。
+- **badge 是 "prompt 整体心电图"**：和 panel 既有 chip strip 配合，badge 报告 prompt 顶层倾向，chip 报告各类细分指标（cache hit、tag 命中率、env 感知率、LLM 沉默率），点开 badge 后看到的是规则列表细节。三层信息密度：粗 → 中 → 细。
+
 ## Iter 94 设计要点（已实现）
 - **4 类而非 2 类**：本可以二分 restraint/engagement，但 corrective（处理过去模式）和 instructional（具体操作步骤）都不是单纯的"压制"或"激发"。corrective 是"过去做错了，未来这样做"——半教训半行动；instructional 是"做这件事的时候按某种格式做"——技术细节。强行塞入 restraint/engagement 二元会丢失这两类的特殊价值。
 - **配色对应情绪谱系**：克制 = 红（停一下）、引导 = 绿（前进）、校正 = 橙（注意）、操作 = 青（中性技术）。和 panel 既有色系不冲突——quiet-soon 用红、Spoke 决策日志用绿、克制模式 badge 用橙、cache stat 用青——四个 nature 复用既定语义。
