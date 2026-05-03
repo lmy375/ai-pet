@@ -80,6 +80,8 @@ export interface ToneSnapshot {
   // Iter D2
   companionship_milestone: string | null;
   companionship_days: number;
+  // Iter D3
+  focus_mode: string | null;
 }
 
 /**

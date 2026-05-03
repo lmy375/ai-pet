@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D3：ToneSnapshot 暴露 focus_mode + 🎯 chip
+- 现状缺口：proactive engine 已经会读 macOS Focus state 来决定是否 gate（Iter 21-25）+ 写 focus_hint 进 prompt（Iter Cw redaction也覆盖）。但 panel 不知道——用户开着 Work focus、宠物因此一直安静，user 看到的是"宠物今天怎么没说话"，要去 logs 才能找到原因。observability 缺最后一段。
+- 解法（继续 D series 风格）：
+  - `ToneSnapshot.focus_mode: Option<String>`：当 macOS Focus 模式激活时 Some(label)，否则 None。复用 `crate::focus_mode::focus_status()`——和 gate 路径同一个数据源、同一个 IO。Some(s) if s.active 的逻辑分支 s.name 或 fallback "active"。
+  - TS interface 镜像（`focus_mode: string | null`）。
+  - PanelToneStrip 渲染 `🎯 focus: work` chip，紫色加粗（视觉上比 ☀ wake 的青、🌙 pre_quiet 的红更显眼，和 ★ motion 的紫共用色系）。tooltip 解释默认会 gate，让 user 立刻明白宠物为什么静默。
+- 不接 settings.respect_focus_mode：那是配置不是 live 信号，不该上 strip。Tooltip 文案提及 "看 settings.respect_focus_mode" 让用户知道开关在哪。
+- 301 cargo 不变；focus_status 已被 Iter 21 的单测覆盖。前端无单测体系。
+- 结果：proactive prompt 用的 9 个时间/状态信号现在 panel 都能直接看到——⏱ period / 📆 day_of_week / 👤 idle_register / 💬 cadence / ☀ wake / 🌙 pre_quiet / 🎯 focus / 🤝 lifetime / ★ motion / ☁ mood。LLM 视野和 user 视野完全 1:1 对齐。D series 三连 closes the parity gap。
+
 ## 2026-05-03 — Iter D2：ToneSnapshot 暴露 companionship_milestone + 节日 chip
 - 现状缺口：Cρ 加了 companionship-milestone 规则——满 7/30/100/180/365/周年时触发"轻轻提一句"engagement 提示。但这个信号没在 panel 上对用户显式呈现：用户看到 PanelStatsCard 的"陪伴 100 天"只是一个数字，不知道今天是宠物视角的"百日纪念"，要在 PanelDebug → "prompt: N hint" 展开里才能看到 companionship-milestone label。
 - 解法：与 D1 同思路——把信号从 prompt 复制到 ToneSnapshot 让 panel 直接读：

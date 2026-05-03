@@ -51,6 +51,14 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           ☀ wake {tone.wake_seconds_ago}s
         </span>
       )}
+      {tone.focus_mode && (
+        <span
+          title={`用户开着 macOS Focus 模式: ${tone.focus_mode}。proactive engine 默认会 gate（看 settings.respect_focus_mode），所以宠物可能会更安静。`}
+          style={{ color: "#7c3aed", fontWeight: 600 }}
+        >
+          🎯 focus: {tone.focus_mode}
+        </span>
+      )}
       {tone.pre_quiet_minutes !== null && (
         <span title="距离配置的 quiet hours 开始时间" style={{ color: "#dc2626" }}>
           🌙 距安静时段 {tone.pre_quiet_minutes}m
