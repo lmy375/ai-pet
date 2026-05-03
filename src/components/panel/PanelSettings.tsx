@@ -51,6 +51,7 @@ export function PanelSettings() {
       min_total_items: 12,
       stale_reminder_hours: 24,
       stale_plan_hours: 24,
+      stale_once_butler_hours: 48,
     },
     chat: {
       max_context_messages: 50,

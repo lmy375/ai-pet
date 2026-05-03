@@ -1745,6 +1745,36 @@ pub fn is_butler_due(
     }
 }
 
+/// Iter Cλ: pure decider — given a butler task's description, updated_at, current
+/// time, and grace hours, return true iff this is a `[once: ...]` task that has
+/// been executed (updated_at >= target) AND is now safely past the configured
+/// retention grace period. Used by `sweep_completed_once_butler_tasks` so the
+/// consolidate loop can auto-clean finished one-shot tasks the way it already
+/// cleans stale reminders. Recurring `[every: ...]` tasks return false — they
+/// re-fire and shouldn't be deleted.
+pub fn is_completed_once(
+    desc: &str,
+    last_updated: &str,
+    now: chrono::NaiveDateTime,
+    grace_hours: u64,
+) -> bool {
+    let Some((sched, _)) = parse_butler_schedule_prefix(desc) else {
+        return false;
+    };
+    let target = match sched {
+        ButlerSchedule::Once(dt) => dt,
+        ButlerSchedule::Every(_, _) => return false,
+    };
+    let Some(last) = parse_updated_at_local(last_updated) else {
+        return false;
+    };
+    if last < target {
+        return false; // executed before target = invalid; treat as not-yet-done
+    }
+    let grace_end = target + chrono::Duration::hours(grace_hours as i64);
+    now >= grace_end
+}
+
 /// Read butler_tasks memory entries and format the prompt-side digest. `now` is
 /// injected so the call site (run_proactive_turn) shares one clock anchor with the
 /// rest of the prompt build. Returns "" when the category is empty. Output is redacted
@@ -2737,6 +2767,64 @@ mod prompt_tests {
                 .unwrap(),
         );
         assert!(!is_butler_due(&future, now, ""));
+    }
+
+    #[test]
+    fn is_completed_once_basic_flow() {
+        // Target was 2026-05-03 10:00. Grace 48h means safe-to-delete at 2026-05-05 10:00.
+        let desc = "[once: 2026-05-03 10:00] do something";
+        let target_done = "2026-05-03T10:30:00+08:00"; // executed at 10:30, after target
+        // 1 hour after target → done but inside grace → keep.
+        let now1 = chrono::NaiveDate::from_ymd_opt(2026, 5, 3)
+            .unwrap()
+            .and_hms_opt(11, 30, 0)
+            .unwrap();
+        assert!(!is_completed_once(desc, target_done, now1, 48));
+        // 49 hours after target → past grace → sweep.
+        let now2 = chrono::NaiveDate::from_ymd_opt(2026, 5, 5)
+            .unwrap()
+            .and_hms_opt(11, 0, 0)
+            .unwrap();
+        assert!(is_completed_once(desc, target_done, now2, 48));
+    }
+
+    #[test]
+    fn is_completed_once_not_yet_executed() {
+        // Past target but updated_at is before target → not done → keep (still due).
+        let desc = "[once: 2026-05-03 10:00] do something";
+        let last = "2026-05-02T08:00:00+08:00";
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 6).unwrap()
+            .and_hms_opt(0, 0, 0).unwrap();
+        assert!(!is_completed_once(desc, last, now, 48));
+    }
+
+    #[test]
+    fn is_completed_once_skips_every_tasks() {
+        // every is recurring — sweep must never delete it.
+        let desc = "[every: 09:00] daily report";
+        let last = "2026-05-03T09:30:00+08:00";
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap()
+            .and_hms_opt(15, 0, 0).unwrap();
+        assert!(!is_completed_once(desc, last, now, 48));
+    }
+
+    #[test]
+    fn is_completed_once_skips_unprefixed_tasks() {
+        let desc = "no schedule prefix here";
+        let last = "2026-05-03T09:30:00+08:00";
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap()
+            .and_hms_opt(0, 0, 0).unwrap();
+        assert!(!is_completed_once(desc, last, now, 48));
+    }
+
+    #[test]
+    fn is_completed_once_unparseable_updated_at_keeps_task() {
+        // Bad updated_at → treat as not-yet-executed → keep so user notices.
+        let desc = "[once: 2026-05-03 10:00] x";
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()
+            .and_hms_opt(0, 0, 0).unwrap();
+        assert!(!is_completed_once(desc, "garbage", now, 48));
+        assert!(!is_completed_once(desc, "", now, 48));
     }
 
     #[test]

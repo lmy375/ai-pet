@@ -246,6 +246,19 @@ export function SettingsPanel({ settings, soul, onSave, onClose }: Props) {
             }
           />
         </div>
+        <div style={twoColRow}>
+          <NumberField
+            label="清理已完成 [once] butler 任务 (小时)"
+            value={form.memory_consolidate.stale_once_butler_hours}
+            min={1}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: { ...form.memory_consolidate, stale_once_butler_hours: v },
+              })
+            }
+          />
+        </div>
 
         <div style={groupHeaderStyle}>对话上下文 (Chat)</div>
         <div style={twoColRow}>

@@ -124,6 +124,24 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
         );
     }
 
+    // Iter Cλ: also sweep completed [once: ...] butler tasks past their grace period.
+    // Mirrors the reminder/plan sweeps — keeps the queue from accumulating finished
+    // one-shots that the LLM would otherwise have to triage every consolidate.
+    let once_butler_cutoff = cfg_settings
+        .as_ref()
+        .map(|s| s.memory_consolidate.stale_once_butler_hours)
+        .unwrap_or(48);
+    let butler_swept = sweep_completed_once_butler_tasks(now_naive, once_butler_cutoff).await;
+    if butler_swept > 0 {
+        write_log(
+            &log_store.0,
+            &format!(
+                "Consolidate: swept {} completed [once] butler task(s) past {}h grace",
+                butler_swept, once_butler_cutoff
+            ),
+        );
+    }
+
     // Iter Cη: derive today's butler-task summary from butler_history.log and
     // upsert into butler_daily.log so the user has a per-day "今天我帮你 ..."
     // trail surfaced in the panel. Pre-LLM and deterministic — survives even if
@@ -299,6 +317,53 @@ pub fn sweep_stale_reminders(now: chrono::NaiveDateTime, cutoff_hours: u64) -> u
         )
         .is_ok()
         {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Iter Cλ: sweep completed `[once: ...]` butler_tasks past the configured grace
+/// period. Each deleted task is also recorded into `butler_history.log` as a delete
+/// event so the panel timeline / daily summary still reflects the cleanup.
+/// Returns the number of tasks deleted.
+///
+/// Async because butler_history::record_event is async; consolidate's outer
+/// `run_consolidation` is already in a tokio context.
+pub async fn sweep_completed_once_butler_tasks(
+    now: chrono::NaiveDateTime,
+    grace_hours: u64,
+) -> usize {
+    let Ok(index) = memory::memory_list(Some("butler_tasks".to_string())) else {
+        return 0;
+    };
+    let Some(cat) = index.categories.get("butler_tasks") else {
+        return 0;
+    };
+    // Snapshot first so iter / mutation don't race.
+    let to_delete: Vec<(String, String)> = cat
+        .items
+        .iter()
+        .filter(|it| {
+            crate::proactive::is_completed_once(&it.description, &it.updated_at, now, grace_hours)
+        })
+        .map(|it| (it.title.clone(), it.description.clone()))
+        .collect();
+    let mut count = 0;
+    for (title, desc) in to_delete {
+        if memory::memory_edit(
+            "delete".to_string(),
+            "butler_tasks".to_string(),
+            title.clone(),
+            None,
+            None,
+        )
+        .is_ok()
+        {
+            // Tools-layer memory_edit_impl normally writes butler_history; we go
+            // through commands::memory directly so we log manually here, marking
+            // the action source so it's clear in the log.
+            crate::butler_history::record_event("delete", &title, &desc).await;
             count += 1;
         }
     }
