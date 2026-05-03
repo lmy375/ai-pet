@@ -145,6 +145,18 @@
 
 ### 路线 A：长期人格演化（Iter 101-107 全部完成，路线 A 真正收官）
 
+### 路线 R 后续候选（gap analysis 后写入，2026-05-03）
+- [x] R10：tone strip 加反馈率 chip（2026-05-03 完成 — Iter R10）
+- [ ] R11：speech topic redundancy 检测器（pure helper，扫描最近 5 句子的字符 4-gram
+  overlap，检测重复话题，作为 prompt hint 注入"换个角度"）
+- [ ] R12：daily review 自动生成（22:00 触发器读 daily_plan + 当日 speech，写
+  ai_insights/daily_review，把"今天我们一起..."一句话总结写回 memory）
+- [ ] R13：companion mode setting（chatty / quiet / coaching / silent_present 预设，
+  调 cooldown + chatty_threshold + tone bias）
+- [ ] R14：跨日记忆线（proactive 第一次开口当天，注入 yesterday's last 2 speech excerpts）
+- [ ] R15：active app 时长追踪（proactive loop 顺手记 current window，1 分钟粒度，
+  proactive prompt 注入"用户在 X app 已经 N 分钟"）
+
 ### 路线 B：表情系统升级
 - [ ] Iter 8b：扩展 mood 解析支持 expression 字段（如 [motion: Tap, expression: smile]），
   前端读到后切 Live2D expression 而不只是 motion group。

@@ -90,6 +90,9 @@ export interface ToneSnapshot {
   awaiting_user_reply: boolean;
   // Iter D12
   proactive_enabled: boolean;
+  // Iter R10: short-term feedback summary `{replied, total}` over the last
+  // 20 feedback_history entries. Null when no feedback recorded yet.
+  feedback_summary: { replied: number; total: number } | null;
 }
 
 /**
