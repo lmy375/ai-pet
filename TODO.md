@@ -14,8 +14,6 @@
 下一步候选（路线 A 后续延展）：
 - [ ] Iter 105：panel 加 "Persona" tab 显示当前 install_date / companionship_days /
   persona_summary 描述 / 最近 mood trend，让用户能直接看到"宠物当前画像"。
-- [ ] Iter 107：把 inject_persona_layer 也接到 telegram/bot.rs，让 Telegram 用户也看到
-  长期人格层；附带 settings.persona_layer_enabled 让用户可关。
 
 ### 路线 B：表情系统升级
 - [ ] Iter 8b：扩展 mood 解析支持 expression 字段（如 [motion: Tap, expression: smile]），

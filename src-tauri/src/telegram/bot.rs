@@ -6,7 +6,8 @@ use teloxide::types::{ChatAction, Me};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::commands::chat::{
-    inject_mood_note, run_chat_pipeline, trim_to_context, ChatDonePayload, ChatMessage,
+    inject_mood_note, inject_persona_layer, run_chat_pipeline, trim_to_context, ChatDonePayload,
+    ChatMessage,
     CollectingSink,
 };
 use crate::commands::debug::{LogStore, ProcessCountersStore};
@@ -26,6 +27,10 @@ pub struct TelegramBot {
 /// Persistent state shared across message handlers.
 struct HandlerState {
     allowed_username: String,
+    /// Whether the bot's chat pipeline injects the route-A persona layer (Iter 107).
+    /// Captured at bot start time from `TelegramConfig.persona_layer_enabled`. Bot
+    /// must be restarted for changes to take effect — same lifecycle as bot_token.
+    persona_layer_enabled: bool,
     mcp_store: McpManagerStore,
     log_store: LogStore,
     shell_store: ShellStore,
@@ -60,6 +65,7 @@ impl TelegramBot {
 
         let state = Arc::new(HandlerState {
             allowed_username: config.allowed_username.trim_start_matches('@').to_lowercase(),
+            persona_layer_enabled: config.persona_layer_enabled,
             mcp_store,
             log_store,
             shell_store,
@@ -168,6 +174,15 @@ async fn handle_message(
         .unwrap_or(50);
     let chat_messages = trim_to_context(chat_messages, max_context);
     let chat_messages = inject_mood_note(chat_messages);
+    // Iter 107: optionally inject the route-A persona layer (companionship days /
+    // persona summary / mood trend) into the Telegram chat path too. Gated on
+    // `telegram.persona_layer_enabled` (captured at bot start) so users who prefer
+    // terse Telegram chat can opt out without affecting the desktop chat path.
+    let chat_messages = if state.persona_layer_enabled {
+        inject_persona_layer(chat_messages).await
+    } else {
+        chat_messages
+    };
 
     // Run the LLM pipeline
     let reply_text = match AiConfig::from_settings() {

@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 107 设计要点（已实现）— Telegram 也接入人格层 + opt-out
+- **Telegram 加 opt-out 而非 desktop 也加**：desktop 用户和宠物的关系紧密，几乎全程使用——人格层默认开启且没必要给 toggle。Telegram 是"远程 / 偶尔 / 工具向"使用场景：用户可能就想问"今天天气"或"提醒我吃药"，不需要宠物每条消息前都灌"我们认识 N 天 + 我观察自己倾向短句"——长 system note 也烧 token。所以 Telegram 唯一带 opt-out。
+- **存在 HandlerState 而非每条消息读 settings**：每条 Telegram 消息都重新 `get_settings()` 浪费 IO，且语义上"切换 persona_layer_enabled" 应该需要 restart bot 才"立刻生效"——用户改这个 setting 不太可能希望立刻看到效果，多半是配置完一并启动。如果将来需要热切换再加 reload 逻辑。
+- **Default 手写而非 derive**：`#[derive(Default)]` 在 bool 字段会得到 `false`，但我希望 `persona_layer_enabled` 默认 `true`（与 desktop chat 默认行为一致）。手写 impl 让 default 和 serde-default 都一致，避免 toml 缺字段时反而禁用人格层。
+- **复用 inject_persona_layer 而非重写 Telegram 专用版本**：人格层文案、注入位置、ordering 完全跨路径一致——Telegram 走特殊版本会让"宠物在不同路径上像不同的宠物"。这个一致性是路线 A 的设计核心。
+- **PanelSettings checkbox 文案明确列出三个组成部分**：「注入长期人格层（陪伴天数 + 自我画像 + 心情谱）」让用户看到 toggle 时直接理解关掉会失去什么——比 "Enable persona layer" 的英文/笼统措辞决策成本低。
+- **路线 A 三路覆盖完成**：proactive 路径 + desktop chat 路径 + Telegram 路径都已注入。如果将来加新对话路径（比如 watch app / 桌面快捷键 ad-hoc query），照同样模式 inject 即可——build_persona_layer_async 是 single source of truth。
+
 ## Iter 106 设计要点（已实现）— 陪伴天数面板可见
 - **数字层级 28 → 20 → 16**：lifetime 是品牌数字（"我们一共聊了多少次"），today 是状态数字（"现在是不是克制日"），companionship 是身份数字（"我们认识多久了"）。三者重要性递减，字号也递减让视觉自动按价值密度排序。
 - **左侧 1px 分隔线**：把 companionship 与前面的"今日 / 累计"块视觉上分开——它们计的是同一件事（开口次数），companionship 是不同维度的概念（时间）。一道分隔线让"两类信息"在 1 行内并存而不混淆。

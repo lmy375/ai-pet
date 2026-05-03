@@ -36,7 +36,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramConfig {
     #[serde(default)]
     pub bot_token: String,
@@ -44,6 +44,28 @@ pub struct TelegramConfig {
     pub allowed_username: String,
     #[serde(default)]
     pub enabled: bool,
+    /// Whether the bot's chat pipeline injects the route-A persona layer
+    /// (companionship_days / persona_summary / mood_trend) into the LLM system
+    /// prompt. Default true for parity with desktop chat. Users who only use
+    /// Telegram for terse / utility queries can flip this off to keep the prompt
+    /// minimal — the pet still answers, just without the long-term identity layer.
+    #[serde(default = "default_telegram_persona_layer_enabled")]
+    pub persona_layer_enabled: bool,
+}
+
+fn default_telegram_persona_layer_enabled() -> bool {
+    true
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            bot_token: String::new(),
+            allowed_username: String::new(),
+            enabled: false,
+            persona_layer_enabled: default_telegram_persona_layer_enabled(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 107：Telegram 路径也注入长期人格层（带 opt-out 开关）
+- `TelegramConfig` 加 `persona_layer_enabled: bool` 字段（serde default = true）。改成手写 Default impl 因为多了一个非默认 false 的字段。
+- `HandlerState` 加 `persona_layer_enabled` 字段：bot 启动时从 config 抓取一次，运行期不重新读 settings——和 bot_token / allowed_username 同生命周期，需要重启 bot 才生效，符合 telegram bot 一贯模式。
+- bot 的 `handle_message` 在 `inject_mood_note` 之后链式调 `inject_persona_layer(chat_messages).await` 当 enabled，保持与 desktop chat 完全一致的 system note 形态。
+- frontend `useSettings.ts` 的 TelegramConfig interface + DEFAULT_SETTINGS 同步加字段 `persona_layer_enabled: true`；`PanelSettings.tsx` 在 Telegram 区块的"允许的用户名"输入框下方加 checkbox "注入长期人格层（陪伴天数 + 自我画像 + 心情谱）"，手动展开 setForm 与现有 telegram 字段更新模式保持一致。
+- 路线 A 的人格层覆盖现在三路：proactive prompt（Iter 101-103）+ desktop chat（Iter 104）+ Telegram chat（Iter 107），三处共享同一份 build_persona_layer_async 实现。Telegram 是唯一带 opt-out 的——desktop 上当前永远开启（如未来用户反馈再决定要不要也加 toggle）。
+- 213 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 106：panel stats 卡加"陪伴 N 天"指示
 - 新 Tauri command `companionship::get_companionship_days() -> u64`：薄封装现有 `companionship_days()`，调用即首次会触发 install_date.txt 自动初始化（zero-config）。注册到 invoke handler。
 - 前端 PanelDebug fetchLogs 的 Promise.all 加 `invoke("get_companionship_days")`；新 state `companionshipDays` 透传到 PanelStatsCard。
