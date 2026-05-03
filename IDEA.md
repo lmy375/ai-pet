@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cμ 设计要点（已实现）
+- **新函数 vs 复用 `idle_tier`**：`idle_tier` 已有，但其 framing 是 pet 自身视角（"刚说过话还热着" / "几小时没说话"）。如果给 user-absence 用同一个函数，文字会错位——pet 不是"自己几小时没说话"了，是"用户几小时没出现"了。两个 axis 各自的措辞独立，pure-function 多一个比挤进同一个更清楚。Iter Cβ 加 weekday 也是同思路：每个语义维度独立 helper。
+- **register 注入位置**：放在已经存在的"约 N 分钟"后面括号里，最小破坏现有 prompt 结构。曾考虑做成独立一行 hint section，像 wake_hint / speech_hint 那样，但那会把"距用户互动 X 分钟"的语义切成两片：数字一行、register 另一行。括号同行更紧凑、阅读 flow 不断。
+- **6 档 vs 5 档**：用户视角的时间分辨率比宠物自身高——"一整天没出现"和"至少一天没互动"在 register 上有差别（前者今天还在、只是没找你；后者已经过夜）。pet 视角"上次聊已经是昨天或更早"压在一起没关系，因为反正已经"很久没聊"。这不是技术 trade-off，是语言密度选择。
+- **不和 `cadence_hint` 合并**：cadence_hint 表示 pet "上次自己开口" 的时间感，是 since-last-proactive 数字 + idle_tier 文字。user_absence 与之并列但 source-of-truth 不同（since-last-interaction）。两个一起存在让 LLM 看到完整时间矩阵：宠物自己上次说话什么时候、用户上次互动什么时候。这种信息密度提升的边际成本（几个 token）远低于 register 选错的概率收益。
+- **不写 contextual rule**：曾想加一条 "long-user-absence" rule（"用户已经走超过 N 小时，开口偏向问候而非续话题"）。但 register 本身已经是行为引导——LLM 看到 "用户至少一天没和你互动" 会自然按那个 register 开口，再加一条规则是过度规定。规则系统适合"硬约束"（如 chatty_day 上限），不适合"语气微调"。
+- **base_inputs 设 `idle_register="用户离开了一小会儿"` 而不是 `""`**：因为 idle_register 是 ambient 总在的字段，没有"空"语义。把 fixture 设成与 idle_minutes=20 自洽的值，避免出现 "20 分钟（）" 那种错乱 prompt。
+
 ## Iter Cλ 设计要点（已实现）
 - **复用 sweep 模式比创新好**：reminder / plan 都是 deterministic 时间窗口 + memory_edit delete + 写日志。butler once 完全是同型问题——同样的 cutoff 字段、同样的 sweep 函数形态、同样的 settings 字段。沿用模式 → 三周后看代码也能立刻识别"这是 sweep family"。如果发明了新接口（比如 lifecycle policy），多一种结构对维护无益。
 - **手动 butler_history.record_event**：Cε 设的钩子在 tools/memory_tools::memory_edit_impl 那一层。consolidate 直接调 commands::memory::memory_edit（绕过 tools 层），就不会触发 hook。这其实是个一直存在但未被注意的不对称——本 iter 把它显式 patch 上：sweep 函数自己 record。如果以后给 memory_edit 增加更多副作用（比如 dispatch 事件），同样的 pattern 还是适用：低层 API 调用方负责镜像副作用，或者升迁到一个共享的 wrapper。我倾向于后者，但暂且只做眼前最小修补。

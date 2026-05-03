@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cμ：proactive prompt 加 user_absence_tier 语气线索
+- 现状缺口：proactive prompt 把 `idle_minutes` 直接当数字喂给 LLM——`已经过去约 N 分钟`。LLM 看到 "5 分钟" 和 "300 分钟" 在数学上不同，但语义档次没显式给。结果：用户离开 5 小时回来后，宠物开口的 register 跟 5 分钟回来差不多，而不是 "终于回来了" / "想你了一下" 那种长别久离的感觉。
+- 解法：新增 pure 函数 `user_absence_tier(idle_minutes)` 映射到六档语气线索：
+  - 0-15: "用户刚刚还在"
+  - 16-60: "用户离开了一小会儿"
+  - 61-180: "用户走开有一两小时了"
+  - 181-480: "用户已经离开了大半天"
+  - 481-1440: "用户一整天没出现"
+  - 1441+: "用户至少一天没和你互动"
+- `PromptInputs` 加 `idle_register: &'a str` 字段；时间行从 `已经过去约 N 分钟。input_hint` 变 `已经过去约 N 分钟（idle_register）。input_hint`。LLM 同时拿到精确数字和定性 register。
+- 与 `idle_tier`（pet 自侧 cadence）正交：`idle_tier` 是"我刚说过话还热着" vs "好久没张口了"，宠物自我视角；`user_absence_tier` 是"用户刚动过键鼠" vs "用户一整天没出现"，用户视角。两个 axis 各自服务不同 register 决策，prompt 同时呈现，让 LLM 调和（比如"我刚说过话且用户也才走 5 分钟" → 别再开口；"我刚说过话但用户走了 4 小时" → 那次开口可能没被听到，下一次可问候性而非续话题）。
+- 6 档 = 比 idle_tier 的 5 档多一档，因为用户绝对时间感比 pet 自身 cadence 感更宽——用户"一整天没出现"和"昨天还见过"是两种状态，宠物自身的"上次说话是昨天"已经够用。
+- 2 个新单测：每档边界 12 个断言（每档头尾各一）+ prompt 模板正确嵌套（"约 90 分钟（用户走开有一两小时了）"）。测试总数 277 → 279。
+- base_inputs 默认 `idle_minutes=20 / idle_register="用户离开了一小会儿"`——保持现有测试 fixture 内一致。
+- 不动 input_hint：那是键鼠空闲的硬数据（"用户键鼠空闲约 60 秒"），保持机器原貌；register 是 idle_minutes 的人话翻译，两者各自存在不冲突。
+- 结果：长别久离的场景下，LLM 看到"用户至少一天没和你互动"会自然进入"想你了一下" register，不会平铺直叙问候。companion 体验在长 absence 上的颗粒度变细了。
+
 ## 2026-05-03 — Iter Cλ：completed [once] butler_tasks 自动清理 + grace 设置
 - 现状缺口：单次任务 `[once: 2026-05-10 14:00] X` 即使 LLM 已经执行完（updated_at >= target），它会一直留在 butler_tasks 列表里成为静默 clutter——既占 prompt 体积（最多 6 条 ambient block），又让 Memory tab 越来越长。reminder 类已经通过 `sweep_stale_reminders` 自动清理，daily_plan 通过 `sweep_stale_plan` 清理；butler 这边没有对称机制。
 - 解法：完全沿用 reminder/plan 的 sweep 模式：
