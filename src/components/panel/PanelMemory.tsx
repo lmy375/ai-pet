@@ -52,6 +52,7 @@ export function PanelMemory() {
   const [consolidating, setConsolidating] = useState(false);
   const [butlerHistory, setButlerHistory] = useState<string[]>([]);
   const [butlerDaily, setButlerDaily] = useState<string[]>([]);
+  const [firingProactive, setFiringProactive] = useState(false);
 
   const loadIndex = async () => {
     try {
@@ -136,9 +137,7 @@ export function PanelMemory() {
     };
   };
 
-  const isButlerDue = (schedule: ButlerSchedule, lastUpdated: string, now: Date): boolean => {
-    const last = lastUpdated ? new Date(lastUpdated) : null;
-    const lastValid = last && !isNaN(last.getTime()) ? last : null;
+  const mostRecentFire = (schedule: ButlerSchedule, now: Date): Date | null => {
     if (schedule.kind === "once") {
       const target = new Date(
         schedule.year,
@@ -147,10 +146,8 @@ export function PanelMemory() {
         schedule.hour,
         schedule.minute,
       );
-      if (now < target) return false;
-      return !lastValid || lastValid < target;
+      return now >= target ? target : null;
     }
-    // every
     const targetToday = new Date(
       now.getFullYear(),
       now.getMonth(),
@@ -158,10 +155,36 @@ export function PanelMemory() {
       schedule.hour,
       schedule.minute,
     );
-    const mostRecentFire =
-      now >= targetToday ? targetToday : new Date(targetToday.getTime() - 24 * 3600 * 1000);
-    return !lastValid || lastValid < mostRecentFire;
+    return now >= targetToday ? targetToday : new Date(targetToday.getTime() - 24 * 3600 * 1000);
   };
+
+  const isButlerDue = (schedule: ButlerSchedule, lastUpdated: string, now: Date): boolean => {
+    const fire = mostRecentFire(schedule, now);
+    if (!fire) return false;
+    const last = lastUpdated ? new Date(lastUpdated) : null;
+    const lastValid = last && !isNaN(last.getTime()) ? last : null;
+    return !lastValid || lastValid < fire;
+  };
+
+  // Iter Cκ: how long the task has been overdue, in minutes since most_recent_fire.
+  // Returns null when not due / no fire yet. Only meaningful for due tasks; UI gates
+  // on the indicator threshold to avoid spamming "等了 1m" on tasks that just hit.
+  const overdueMinutes = (schedule: ButlerSchedule, now: Date): number | null => {
+    const fire = mostRecentFire(schedule, now);
+    if (!fire) return null;
+    return Math.floor((now.getTime() - fire.getTime()) / 60_000);
+  };
+
+  const formatOverdue = (mins: number): string => {
+    if (mins < 60) return `等了 ${mins}m`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m === 0 ? `等了 ${h}h` : `等了 ${h}h${m}m`;
+  };
+  // Threshold above which a due task gets a visible "等了..." chip. 60 min = 1 hour
+  // — short enough to surface a forgotten task before the user notices, long enough
+  // that the chip doesn't fight with the ⏰ 到期 badge that just appeared.
+  const OVERDUE_THRESHOLD_MIN = 60;
 
   // Pure helper: parse a butler-history line into structured fields.
   // Format: "<ts> <action> <title> :: <desc>". Falls back gracefully on malformed lines.
@@ -196,6 +219,22 @@ export function PanelMemory() {
       setSearchResults(results);
     } catch (e: any) {
       setMessage(`搜索失败: ${e}`);
+    }
+  };
+
+  const handleFireProactive = async () => {
+    setFiringProactive(true);
+    setMessage("正在让宠物处理…");
+    try {
+      const status = await invoke<string>("trigger_proactive_turn");
+      setMessage(status);
+      // Likely just touched a butler_task — refresh both views.
+      await loadButlerHistory();
+      await loadIndex();
+    } catch (e: any) {
+      setMessage(`触发失败: ${e}`);
+    } finally {
+      setFiringProactive(false);
     }
   };
 
@@ -431,13 +470,43 @@ export function PanelMemory() {
         CATEGORY_ORDER.map((catKey) => {
           const cat = index.categories[catKey];
           if (!cat) return null;
+          // Iter Cκ: compute how many butler tasks are overdue past the threshold
+          // so the section header can offer a manual fire button when at least one
+          // is stale. Cheap — items are ≤6 in practice.
+          const now = new Date();
+          const overdueCount =
+            catKey === "butler_tasks"
+              ? cat.items.filter((it) => {
+                  const p = parseButlerSchedule(it.description);
+                  if (!p) return false;
+                  if (!isButlerDue(p.schedule, it.updated_at, now)) return false;
+                  const mins = overdueMinutes(p.schedule, now);
+                  return mins !== null && mins >= OVERDUE_THRESHOLD_MIN;
+                }).length
+              : 0;
           return (
             <div key={catKey} style={s.section}>
               <div style={s.sectionTitle}>
                 {cat.label}
                 <span style={s.badge}>{cat.items.length}</span>
+                {catKey === "butler_tasks" && overdueCount > 0 && (
+                  <button
+                    style={{
+                      ...s.btn,
+                      background: firingProactive ? "#94a3b8" : "#ef4444",
+                      color: "#fff",
+                      borderColor: "transparent",
+                      marginLeft: 8,
+                    }}
+                    onClick={handleFireProactive}
+                    disabled={firingProactive}
+                    title={`${overdueCount} 个任务已过期超过 ${OVERDUE_THRESHOLD_MIN} 分钟。点击立即触发一次主动开口（绕过 cooldown / quiet hours），让宠物现在去看任务列表并选一项处理。`}
+                  >
+                    {firingProactive ? "处理中…" : `立即处理 (${overdueCount})`}
+                  </button>
+                )}
                 <button
-                  style={{ ...s.btn, marginLeft: "auto" }}
+                  style={{ ...s.btn, marginLeft: catKey === "butler_tasks" && overdueCount > 0 ? 4 : "auto" }}
                   onClick={() =>
                     setEditingItem({ category: catKey, title: "", description: "", isNew: true })
                   }
@@ -621,6 +690,26 @@ export function PanelMemory() {
                             ⏰ 到期
                           </span>
                         )}
+                        {due &&
+                          parsed &&
+                          (() => {
+                            const mins = overdueMinutes(parsed.schedule, now);
+                            if (mins === null || mins < OVERDUE_THRESHOLD_MIN) return null;
+                            return (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "1px 6px",
+                                  borderRadius: 4,
+                                  background: "#fef3c7",
+                                  color: "#92400e",
+                                }}
+                                title={`已过计划时刻 ${mins} 分钟 — 宠物还没动手。可能是在 quiet hours / focus / cooldown 窗口里；点上面"立即处理"可绕过 gate。`}
+                              >
+                                {formatOverdue(mins)}
+                              </span>
+                            );
+                          })()}
                       </div>
                       <div style={{ display: "flex", gap: 4 }}>
                         <button
