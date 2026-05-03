@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG3 设计要点（已实现）
+- **prompt_tilt 故意不为 manual 计入** —— 这是设计上的硬决策。tilt 桶（restraint/engagement/balanced/neutral）是 *prompt 内容*的统计，依赖 `active_labels`；manual 旁路了 gates，也没"针对性应用规则"。如果硬塞空 labels 进 record_dispatch，会全部归入 neutral，把 panel 的 tilt 饼图扭歪——尤其在用户高频手动 fire 验证 prompt 时。明确不计 = tilt 永远反映"loop 行为"这一种数据源。如果未来真要 surface "manual 触发了 N 次"，加一个独立 manual_trigger_total counter 比污染 tilt 更干净。
+- **source 用 reason 字符串里的 `source=X` tag 而不是 ProactiveDecision 加新字段**：panel 已经渲染 reason 字符串，加新字段需要前后端 schema 联动 + 类型生成。tag-in-reason 是零 schema 改动，前端如果要硬解析也只是 `reason.includes('source=manual')`。decision_log 本来就是 free-form reason，再加结构化字段才是技术债。
+- **rules_tag 是 `Option<&str>` 不是 `&[&str]`**：helper 接 caller 传来的现成字符串，不在内部从 labels join。loop 已经在 dispatch 时 join 过一次给 Run 决策用，传引用最便宜；manual 直接传 None。如果让 helper 自己 join，签名就要带 `&[&'static str]` + 拷贝逻辑，反而把决策耦合下来。
+- **`append_outcome_tag` 提升为 pub module-level**：原本是 loop 内嵌的 closure 风格 inner fn（line 1522）。提到 module 顶层后立刻被三个 path 复用：loop Run 决策 reason、helper 自己、未来的 manual rules_tag 拼接。pure 函数 + 测试覆盖三种边界（空 / dash / chained），就是 D series "view-time mirror" 思路的延续。
+- **不做整套 active_labels 抽取到 async helper**：本来想顺手把 1535-1601 那段 70 行的 labels 计算也抽成 `async fn compute_active_prompt_labels(app)` 给 manual 用。但那意味着 manual 也要付那笔 IO（mood / wake / build_*_hint / snap）的开销，每次手动 fire 多 ~50ms 不必要的等待——因为 manual 完全不需要这些 labels（gate 都没走）。决策：manual 让 prompt_tilt 留空 + rules_tag=None；如果未来真有"我想看 manual 触发时也带规则上下文"的需求，再做提取。
+- **测试用 ProcessCounters::default() 而不是 mock**：counter 类型自己是 Default + 原子，可以直接构造一份"干净 process"出来，不需要 Tauri State / mock 框架。这种"可单独构造的 state object" pattern 给单测帮了大忙——所有 D 系列、E 系列的 panel 数据测试也是一个套路。
+
 ## Iter QG2 设计要点（已实现）
 - **8 是个工程值**：1-3 轮覆盖大多数；5 轮以内是 tool-heavy（butler 委托后还要查 memory 再 search）；6-7 轮已经在循环边缘。8 留 1 轮 buffer，再上去基本是失控。如果实际生产观测到合法 turn 卡 5+ 轮，再调高，但不会突破 32。
 - **const 而不 settings**：刚做 QG1 时把同样的 trade-off 做了一次（fmt allow 或重构）。这次再次选"硬编码 + 充分 comment"。理由：(a) 新 settings 字段意味着前端 UI、reload 逻辑、迁移、文档全要跟；(b) 普通用户调这个 const 等于"让宠物允许更长循环"——不是健康的可配置项；(c) 真要做成动态配置，是 QG3-style 大题（会带 settings 模式扩展、加测试），不是 QG2 范围。

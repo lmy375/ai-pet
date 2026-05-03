@@ -754,6 +754,88 @@ pub fn chatty_mode_tag(today: u64, threshold: u64) -> Option<String> {
     }
 }
 
+/// Append a comma-separated tag onto a decision-log reason string. Centralizes the
+/// `", "` separator so reasons stay parseable by the panel and so multiple call sites
+/// can't drift on the format. The `"-"` placeholder is treated as empty: passing it as
+/// a starting reason then appending tags overwrites the dash.
+pub fn append_outcome_tag(reason: &mut String, tag: &str) {
+    if !reason.is_empty() && reason != "-" {
+        reason.push_str(", ");
+    } else if reason == "-" {
+        reason.clear();
+    }
+    reason.push_str(tag);
+}
+
+/// Centralizes the post-LLM telemetry side effects of a proactive turn so manual
+/// triggers (panel "fire now") and the background loop both bump the same counter
+/// set and produce the same decision-log entries. Three counters and one log entry
+/// are touched per outcome:
+///
+/// - `counters.llm_outcome.{spoke,silent,error}` — atomic bump of exactly one bucket
+/// - `counters.env_tool.record_spoke(&tools)` — only on the Spoke path
+/// - `decisions.push(kind, reason)` — `Spoke` / `LlmSilent` / `LlmError`
+///
+/// `source` is one of `"loop"` / `"manual"` and is embedded as `source=X` in the
+/// decision-log reason so the panel can distinguish manual triggers from genuine
+/// loop dispatches without inflating the loop's outcome counters with phantom data.
+///
+/// Note: `prompt_tilt.record_dispatch` is intentionally NOT done here. Tilt depends on
+/// the active rule labels, which only the loop computes (the manual trigger bypasses
+/// gates and so has no labels to classify). Skipping keeps tilt stats meaningful.
+pub fn record_proactive_outcome(
+    counters: &crate::commands::debug::ProcessCounters,
+    decisions: &crate::decision_log::DecisionLog,
+    source: &str,
+    chatty_part: &str,
+    rules_tag: Option<&str>,
+    outcome: &Result<ProactiveTurnOutcome, String>,
+) {
+    let outcome_counters = &counters.llm_outcome;
+    let env_tool_counters = &counters.env_tool;
+    let source_tag = format!("source={}", source);
+    match outcome {
+        Ok(o) if o.reply.is_some() => {
+            outcome_counters
+                .spoke
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            env_tool_counters.record_spoke(&o.tools);
+            let mut reason = chatty_part.to_string();
+            append_outcome_tag(&mut reason, &source_tag);
+            if let Some(t) = rules_tag {
+                append_outcome_tag(&mut reason, t);
+            }
+            if !o.tools.is_empty() {
+                let tools_tag = format!("tools={}", o.tools.join("+"));
+                append_outcome_tag(&mut reason, &tools_tag);
+            }
+            decisions.push("Spoke", reason);
+        }
+        Ok(_) => {
+            outcome_counters
+                .silent
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut reason = chatty_part.to_string();
+            append_outcome_tag(&mut reason, &source_tag);
+            if let Some(t) = rules_tag {
+                append_outcome_tag(&mut reason, t);
+            }
+            decisions.push("LlmSilent", reason);
+        }
+        Err(e) => {
+            outcome_counters
+                .error
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut tail = chatty_part.to_string();
+            append_outcome_tag(&mut tail, &source_tag);
+            if let Some(t) = rules_tag {
+                append_outcome_tag(&mut tail, t);
+            }
+            decisions.push("LlmError", format!("{} ({})", e, tail));
+        }
+    }
+}
+
 /// Snapshot of all the "conversational tone" signals the proactive prompt currently
 /// uses. Exposed via `get_tone_snapshot` so the panel can render the same info the LLM
 /// would see — handy for debugging "why did the pet say *that* right now?".
@@ -871,13 +953,39 @@ pub fn get_pending_reminders() -> Vec<PendingReminder> {
 /// quiet hours / focus / input-idle). Real values are still passed through into the
 /// prompt so the LLM sees the actual idle stats. Used by panel "fire now" / demo flows
 /// and for prompt iteration without waiting for natural conditions.
+///
+/// Iter QG3: routes the same outcome through `record_proactive_outcome` so manual
+/// triggers update llm_outcome counters, env_tool stats and the decision-log just
+/// like the loop. `source="manual"` keeps the panel able to tell them apart.
 #[tauri::command]
 pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, String> {
     let clock = app.state::<InteractionClockStore>().inner().clone();
     let snap = clock.snapshot().await;
     let input_idle = crate::input_idle::user_input_idle_seconds().await;
     let started = std::time::Instant::now();
-    let outcome = run_proactive_turn(&app, snap.idle_seconds, input_idle).await?;
+    let result = run_proactive_turn(&app, snap.idle_seconds, input_idle).await;
+
+    // Sample chatty_tag fresh so the manual trigger gets the same annotation
+    // shape as the loop. rules_tag is None for manual: gates were bypassed so
+    // there's no "this rule fired" set to record (see helper doc).
+    let chatty_today = crate::speech_history::today_speech_count().await;
+    let chatty_threshold = get_settings()
+        .ok()
+        .map(|s| s.proactive.chatty_day_threshold)
+        .unwrap_or(5);
+    let chatty_part =
+        chatty_mode_tag(chatty_today, chatty_threshold).unwrap_or_else(|| "-".to_string());
+    let counters = app
+        .state::<crate::commands::debug::ProcessCountersStore>()
+        .inner()
+        .clone();
+    let decisions = app
+        .state::<crate::decision_log::DecisionLogStore>()
+        .inner()
+        .clone();
+    record_proactive_outcome(&counters, &decisions, "manual", &chatty_part, None, &result);
+
+    let outcome = result?;
     let elapsed_ms = started.elapsed().as_millis();
     Ok(match outcome.reply {
         Some(text) => format!(
@@ -1517,16 +1625,6 @@ pub fn spawn(app: AppHandle) {
             } else {
                 Some(format!("rules={}", active_labels.join("+")))
             };
-            // Append optional comma-separated tag onto a reason string. Centralizes the
-            // ", " separator so reasons stay parseable by the panel.
-            fn append_tag(reason: &mut String, tag: &str) {
-                if !reason.is_empty() && reason != "-" {
-                    reason.push_str(", ");
-                } else if reason == "-" {
-                    reason.clear();
-                }
-                reason.push_str(tag);
-            }
             match &action {
                 LoopAction::Silent { reason } => {
                     decisions.push("Silent", (*reason).to_string());
@@ -1577,54 +1675,18 @@ pub fn spawn(app: AppHandle) {
                         .record_dispatch(&active_labels);
                     let outcome = run_proactive_turn(&app, idle_seconds, input_idle_seconds).await;
                     let chatty_part = chatty_tag.clone().unwrap_or_else(|| "-".to_string());
-                    let outcome_counters = &app
+                    let counters_for_outcome = app
                         .state::<crate::commands::debug::ProcessCountersStore>()
                         .inner()
-                        .llm_outcome;
-                    let env_tool_counters = &app
-                        .state::<crate::commands::debug::ProcessCountersStore>()
-                        .inner()
-                        .env_tool;
-                    match &outcome {
-                        Ok(o) if o.reply.is_some() => {
-                            outcome_counters
-                                .spoke
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            env_tool_counters.record_spoke(&o.tools);
-                            let mut reason = chatty_part.clone();
-                            if let Some(t) = &rules_tag {
-                                append_tag(&mut reason, t);
-                            }
-                            if !o.tools.is_empty() {
-                                let tools_tag = format!("tools={}", o.tools.join("+"));
-                                append_tag(&mut reason, &tools_tag);
-                            }
-                            if reason.is_empty() {
-                                reason = "-".to_string();
-                            }
-                            decisions.push("Spoke", reason);
-                        }
-                        Ok(_) => {
-                            outcome_counters
-                                .silent
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let mut reason = chatty_part.clone();
-                            if let Some(t) = &rules_tag {
-                                append_tag(&mut reason, t);
-                            }
-                            decisions.push("LlmSilent", reason);
-                        }
-                        Err(e) => {
-                            outcome_counters
-                                .error
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let mut tail = chatty_part.clone();
-                            if let Some(t) = &rules_tag {
-                                append_tag(&mut tail, t);
-                            }
-                            decisions.push("LlmError", format!("{} ({})", e, tail));
-                        }
-                    }
+                        .clone();
+                    record_proactive_outcome(
+                        &counters_for_outcome,
+                        &decisions,
+                        "loop",
+                        &chatty_part,
+                        rules_tag.as_deref(),
+                        &outcome,
+                    );
                     if let Err(e) = outcome {
                         eprintln!("Proactive turn failed: {}", e);
                     }
@@ -4151,6 +4213,126 @@ mod prompt_tests {
     fn chatty_mode_tag_at_or_above_threshold_formats() {
         assert_eq!(chatty_mode_tag(5, 5), Some("chatty=5/5".to_string()));
         assert_eq!(chatty_mode_tag(7, 5), Some("chatty=7/5".to_string()));
+    }
+
+    #[test]
+    fn append_outcome_tag_handles_empty_and_dash_and_chained() {
+        // Iter QG3: shared decision-log reason builder. Empty start, then dash sentinel,
+        // then plain chaining — three behaviors the loop and manual-trigger paths both
+        // depend on.
+        let mut empty = String::new();
+        append_outcome_tag(&mut empty, "source=loop");
+        assert_eq!(empty, "source=loop");
+
+        let mut dash = "-".to_string();
+        append_outcome_tag(&mut dash, "source=manual");
+        assert_eq!(dash, "source=manual", "dash placeholder must be replaced");
+
+        let mut chained = "chatty=5/5".to_string();
+        append_outcome_tag(&mut chained, "source=loop");
+        append_outcome_tag(&mut chained, "rules=icebreaker");
+        assert_eq!(chained, "chatty=5/5, source=loop, rules=icebreaker");
+    }
+
+    #[test]
+    fn record_proactive_outcome_spoke_path_bumps_counters_and_logs_source() {
+        use crate::commands::debug::ProcessCounters;
+        use crate::decision_log::DecisionLog;
+        let counters = ProcessCounters::default();
+        let decisions = DecisionLog::new();
+        let outcome: Result<ProactiveTurnOutcome, String> = Ok(ProactiveTurnOutcome {
+            reply: Some("hello".to_string()),
+            tools: vec!["get_active_window".to_string()],
+        });
+        record_proactive_outcome(&counters, &decisions, "manual", "-", None, &outcome);
+        // llm_outcome.spoke bumped, env_tool counted as spoke_with_any.
+        assert_eq!(
+            counters
+                .llm_outcome
+                .spoke
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            counters
+                .env_tool
+                .spoke_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            counters
+                .env_tool
+                .spoke_with_any
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let snap = decisions.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].kind, "Spoke");
+        assert!(snap[0].reason.contains("source=manual"));
+        assert!(snap[0].reason.contains("tools=get_active_window"));
+    }
+
+    #[test]
+    fn record_proactive_outcome_silent_path_bumps_silent_and_tags_loop() {
+        use crate::commands::debug::ProcessCounters;
+        use crate::decision_log::DecisionLog;
+        let counters = ProcessCounters::default();
+        let decisions = DecisionLog::new();
+        let outcome: Result<ProactiveTurnOutcome, String> = Ok(ProactiveTurnOutcome {
+            reply: None,
+            tools: vec![],
+        });
+        record_proactive_outcome(
+            &counters,
+            &decisions,
+            "loop",
+            "chatty=5/5",
+            Some("rules=chatty"),
+            &outcome,
+        );
+        assert_eq!(
+            counters
+                .llm_outcome
+                .silent
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        // env_tool MUST stay zero on silent — it would skew the env-aware ratio otherwise.
+        assert_eq!(
+            counters
+                .env_tool
+                .spoke_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        let snap = decisions.snapshot();
+        assert_eq!(snap[0].kind, "LlmSilent");
+        assert!(snap[0].reason.contains("source=loop"));
+        assert!(snap[0].reason.contains("rules=chatty"));
+        assert!(snap[0].reason.contains("chatty=5/5"));
+    }
+
+    #[test]
+    fn record_proactive_outcome_error_path_bumps_error_and_includes_message() {
+        use crate::commands::debug::ProcessCounters;
+        use crate::decision_log::DecisionLog;
+        let counters = ProcessCounters::default();
+        let decisions = DecisionLog::new();
+        let outcome: Result<ProactiveTurnOutcome, String> = Err("network down".to_string());
+        record_proactive_outcome(&counters, &decisions, "manual", "-", None, &outcome);
+        assert_eq!(
+            counters
+                .llm_outcome
+                .error
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let snap = decisions.snapshot();
+        assert_eq!(snap[0].kind, "LlmError");
+        assert!(snap[0].reason.contains("network down"));
+        assert!(snap[0].reason.contains("source=manual"));
     }
 
     #[test]

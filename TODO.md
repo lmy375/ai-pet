@@ -11,8 +11,7 @@
 
 - [x] Quality Gate 2：给 LLM tool-call loop 增加最大轮数和明确失败路径（2026-05-03 完成 — Iter QG2）
 
-- [ ] Quality Gate 3：统一手动 proactive trigger 与后台 loop 的 telemetry。
-  - AI prompt：让 `trigger_proactive_turn` 和后台 proactive loop 共享 outcome counters、decision log、prompt tilt、tools_used 等统计路径。手动触发可以标记 source=manual，但不能绕开核心观测数据。补测试或手动验证记录。
+- [x] Quality Gate 3：统一手动 proactive trigger 与后台 loop 的 telemetry（2026-05-03 完成 — Iter QG3）
 
 - [ ] Quality Gate 4：补齐 prompt reinjection redaction。
   - AI prompt：审计 proactive / reactive / consolidate 中所有把 memory、mood、daily_plan、reminder、speech history、persona summary、butler task 重新注入 prompt 的路径。把未过滤内容统一接入 `redact_with_settings`，并补针对 mood/reminder/plan 的回归测试。

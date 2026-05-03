@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG3：统一手动 trigger 与后台 loop 的 proactive telemetry
+- 现状缺口：panel 上点 "立即触发" 走 `trigger_proactive_turn`，结果 outcome 不进 llm_outcome 计数、env_tool 不 record_spoke、decision_log 不 push。这意味着开发者用 panel 手动触发开口的所有数据都"消失"——既看不到 panel 的 "LLM 沉默率"，"环境感知率" 也漏统计，decision log 不显示。完全形成观察盲区。
+- 解法：抽出 `record_proactive_outcome` 共享 helper（pure-ish，touches atomics + decisions log）放到 proactive.rs 中游：
+  - 三件事并行：(a) `counters.llm_outcome.{spoke,silent,error}` 原子 +1；(b) Spoke 路径调用 `counters.env_tool.record_spoke(&tools)`；(c) `decisions.push(kind, reason)` 用统一 reason builder
+  - 新参数 `source: &str`（"loop" / "manual"）以 `source=X` tag 形式埋进 reason，panel 一眼能区分
+  - 同时把 loop 内嵌的 `append_tag` 提到 module-level `pub fn append_outcome_tag`，loop 和 helper 都用
+  - prompt_tilt 故意不做：tilt 依赖 active_labels 计算，loop 才有这套。manual 不计入 tilt 反而保留 tilt 统计的纯净性（详见 IDEA.md 的设计要点）
+- 重构：loop 原 ~50 行的 inline match 现在缩成 7 行 `record_proactive_outcome(...)` 调用 + Err log。trigger_proactive_turn 加 ~25 行：fresh chatty sample + counters/decisions clone + helper 调用，并改为 `await` 后保留 Result（不 unwrap），让错误也能记入 telemetry 再 propagate。
+- 决策 — manual 的 rules_tag 选 None：gates 被 manual 旁路了，没有"实际触发的规则集"概念。如果硬塞 active_labels 算出 fake tag，反而误导 panel 用户以为 manual 触发也走完了 gate 评估。明确 None + source=manual 让语义清晰。
+- 决策 — 沿用既有 ProcessCounters 而非新增 store：所有 counter 在 `ProcessCounters` 里，clone Arc 即可在 helper 间传递，不动 Tauri State 拓扑。
+- 测试（4 新单测）：
+  - `append_outcome_tag_handles_empty_and_dash_and_chained`：钉住 reason builder 三种边界
+  - `record_proactive_outcome_spoke_path_bumps_counters_and_logs_source`：Spoke 路径 spoke +1, env_tool spoke_total +1, decisions[0] 含 source=manual + tools=...
+  - `record_proactive_outcome_silent_path_bumps_silent_and_tags_loop`：silent +1, env_tool 必须为 0（不污染分母），decisions reason 含 source=loop + rules + chatty
+  - `record_proactive_outcome_error_path_bumps_error_and_includes_message`：error +1, decisions reason 含原始错误 + source=manual
+- 测试结果：313 cargo（+4）；clippy clean；fmt clean；tsc clean。
+- 结果：手动 trigger 现在和 loop 走同一套 telemetry。panel 任何 chip / counter / decision-log 视图都不再因"用户走 panel 触发了几次"出现盲区。research workflow（手动 fire 验证 prompt 改动）也终于会被统计。
+
 ## 2026-05-03 — Iter QG2：LLM tool-call loop 加最大轮数 + 明确失败路径
 - 现状缺口：`run_chat_pipeline` 注释自己写"unlimited rounds"。如果模型陷入循环（反复读同一个 memory 类，或调用 → 工具 error → 再调用 → 同样 error），就会无限消耗 token + API 配额，最坏可能挂住 turn 直到外部超时。同时缺乏对外的可解释错误：当模型坏掉时用户只能看到 chat panel 没反应。
 - 解法（最小可观测集）：
