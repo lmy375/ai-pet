@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG5a 设计要点（已实现）
+- **"切大象的时候用刀，不要用挖土机"**：proactive.rs 5500 行，QG5 卡在"太大" 状态多 iter 没动。换成一次切一片（reminders / butler / prompt rules / gate / telemetry 五片独立提炼），每片可独立 ship + revert。这是"big refactor 卡住时的标准对策" — turn it into a series.
+- **`pub use self::sub::*;` 是 backward-compat 的银弹**：consolidate.rs / panel commands 都用 `crate::proactive::ReminderTarget`。glob re-export 让外部代码完全不知道发生了什么，0-line external diff。如果某天想把它们全部 promotion 到 `proactive::reminders::ReminderTarget` 让 namespace 更明确，可以做单独的 cleanup iter。
+- **Rust 2018 module nesting (`proactive.rs` + `proactive/sub.rs`) vs mod.rs**：选前者保留 git blame。如果重命名 proactive.rs → proactive/mod.rs，git 看到的是"删除 proactive.rs + 新建 mod.rs"——blame 会断。Rust 2018 的双格式让我们能避开这个 trap。
+- **测试同居 (mod tests inside sub.rs) 比 mod sub_tests 在 parent.rs 更健康**：测试和代码同文件，scrolling 之间不远，未来对 proactive_rules 改一行能立刻看到对应测试。Rust 这个 convention 比 Python 的 tests/ 子目录更适合"behavior shaping" 类代码。
+- **挑 reminders 当首片不是随便选**：完全 self-contained（不持有 InteractionClock 等共享状态），有清晰公共界面，外部已有调用者（consolidate.rs）—— 是验证"glob re-export 真的 work" 的 minimum-risk 切口。如果第一片选 prompt rules（最大），失败的话 revert 成本巨大。"先用最简单的形状证明流程对，再上复杂形状" 是 refactor 顺序的常识。
+- **行有余力 vs 强迫症**：每个子模块抽出来后，理论上可以再做一些"内部清理"——比如让 reminder 解析有 explicit `Result<>` 错误而不是 `Option<>`。决策：第一波只做"行为不变的纯移动"；任何 nontrivial 改动留给后续 iter，让 diff 干净易 review。
+- **预期 5 iter 完成 QG5**：reminders / butler / prompt rules / gate / telemetry。当前每 iter 25 分钟节奏下，约一个工作日全完。比"一次大爆炸式重构 + 数小时 review" 健康得多。
+
 ## Iter R7 设计要点（已实现）
 - **capture → surface → drive 三段范式 ship 完整**：R1 采集，R6 显示，R7 让数据真正影响行为。这种顺序很关键——如果先 R7 后 R6，行为变了但用户不知道为什么；先 R6 后 R7，用户先看到了"原来宠物在记账"，再放心让账本驱动行为。这是产品安全感的递进。
 - **step function vs smooth curve**：smooth 看起来"科学"（adapted = base × (1 + α·(ratio−0.5))）但实际不可审计——panel 用户看 ratio chip 没法预测 cooldown。step 是 "ratio 跳到 0.6 以上 cooldown 直接翻倍"，肉眼可证。这是对"behavior-shaping logic 必须 auditable" 的让步。
