@@ -20,8 +20,8 @@
 
 - [x] Quality Gate 6：减少 panel 高频 IPC（2026-05-03 完成 — Iter QG6）
 
-- [ ] Tool Review 1：工具调用目的字段与展示。
-  - AI prompt：扩展工具调用协议，让每次 LLM 请求工具时都必须提供 `purpose`（一句话说明为什么现在需要这个工具、期望用结果做什么）。后端在执行前解析并记录该字段；前端 ToolCallBlock / debug panel 展示 purpose。缺失 purpose 时不要静默执行，返回可恢复错误，引导模型补齐目的说明。
+- [x] Tool Review 1：工具调用目的字段与展示（2026-05-03 完成 — Iter TR1。后端 gate +
+  app.log 记录已实现；前端 ToolCallBlock 展示 purpose 留待 follow-up iter）
 
 - [ ] Tool Review 2：AI 工具调用风险审核。
   - AI prompt：在工具执行前增加风险评估层，输入包括工具名、参数、purpose、当前上下文摘要和调用来源。输出结构化结论：`risk_level`、`reasons`、`requires_human_review`、`safe_alternative`。低风险只记录审核结果后继续执行；高风险进入人工审核流程；审核结果写入 decision log 和 app log。

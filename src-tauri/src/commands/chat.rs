@@ -184,6 +184,12 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 - 不要在未阅读的情况下修改代码
 - 一次可以调用多个工具，如果它们之间没有依赖关系
 
+## 工具调用必须带 purpose（强制）
+**每次** 调用任何工具时，都必须在 `arguments` JSON 里加一个 `purpose` 字段，用一句话说明：为什么现在需要这个工具，以及打算用结果做什么。这是协议级要求，缺失会被拒绝并要求你重试。
+- 例：调 `read_file` 看 `~/.zshrc` → arguments: `{"file_path":"~/.zshrc","purpose":"查看用户当前 shell 配置以判断是否要建议加 alias"}`
+- 例：调 `memory_edit create` 写 user_profile → arguments: `{"action":"create","category":"user_profile","title":"作息","description":"通常 8:00 起床","purpose":"用户刚说了起床时间，记录下来用于后续 proactive 时机判断"}`
+- purpose 不需要长——一句话讲清「现在要它做什么」即可。该字段会被记入 app.log，未来用于审计 / 高风险工具的人工审核。
+
 ## 任务委托判断（butler_tasks）
 你不只是聊天伙伴，也是用户的小管家。当用户在对话里**委托你做一件事**（不是问问题、不是聊天），不要只口头答应——用 `memory_edit create` 把任务写进 `butler_tasks` 类别，方便你之后真的去执行。
 - 「帮我每天 9 点写一份日报到 ~/today.md」→ `memory_edit create` 到 `butler_tasks`，title="日报"，description=`[every: 09:00] 写当日日报到 ~/today.md`
@@ -438,6 +444,32 @@ async fn stream_llm_request(
 /// abort and surface a clear error rather than burn tokens forever.
 pub const MAX_TOOL_CALL_ROUNDS: usize = 8;
 
+/// Iter TR1: extract the `purpose` field from a tool call's JSON arguments. Convention
+/// (taught via `TOOL_USAGE_PROMPT`) is that every tool call must carry a one-sentence
+/// `purpose` explaining why the LLM is invoking the tool and what it plans to do with
+/// the result. Pipeline-level enforcement keeps the protocol from drifting per-tool.
+///
+/// Returns `Some(trimmed)` when the field is present and non-empty; `None` for missing
+/// field, blank string, non-string value, or unparseable args. Pure / testable so the
+/// gate in `run_chat_pipeline` has a unit-tested boundary independent of HTTP / network.
+pub fn extract_tool_purpose(args_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(args_json).ok()?;
+    let p = v.get("purpose")?.as_str()?.trim();
+    if p.is_empty() {
+        None
+    } else {
+        Some(p.to_string())
+    }
+}
+
+/// Synthetic tool result returned when a tool call arrives without a `purpose` field.
+/// Returned directly to the LLM as if it were the tool's response, so the model sees
+/// a structured error and can self-correct on the next round. The hint message is
+/// intentionally Chinese to match the rest of the system prompt register.
+pub fn missing_purpose_error_result() -> String {
+    r#"{"error":"missing 'purpose' field","hint":"在 arguments 里加 \"purpose\" 字段（一句话说明为什么现在需要这个工具、打算用结果做什么），然后重新调用同一个工具。"}"#.to_string()
+}
+
 // Compile-time sanity bound — guards against accidental "bump to 1000" PRs.
 const _: () = assert!(MAX_TOOL_CALL_ROUNDS >= 4 && MAX_TOOL_CALL_ROUNDS <= 32);
 
@@ -599,19 +631,37 @@ pub async fn run_chat_pipeline(
 
             sink.send_tool_start(tc_name, tc_args);
 
-            let result = if registry.is_mcp_tool(tc_name) {
-                // Route to MCP manager
-                ctx.log(&format!("MCP tool call: {}({})", tc_name, tc_args));
-                let args_value: serde_json::Value =
-                    serde_json::from_str(tc_args).unwrap_or(serde_json::Value::Null);
-                let mcp_manager = mcp_store.lock().await;
-                match mcp_manager.call_tool(tc_name, args_value).await {
-                    Ok(r) => r,
-                    Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+            // Iter TR1: pipeline-level purpose gate. Every tool call must carry a
+            // one-sentence `purpose` so we have an audit trail of "why did the LLM
+            // ask for this?". Missing → return a recoverable error result the LLM
+            // sees on the next round; the model retries with a purpose. Skipping
+            // execution keeps side-effecting tools from firing without accountability.
+            let purpose = extract_tool_purpose(tc_args);
+            let result = match purpose.as_deref() {
+                None => {
+                    ctx.log(&format!(
+                        "Tool call rejected (missing purpose): {}({})",
+                        tc_name, tc_args
+                    ));
+                    missing_purpose_error_result()
                 }
-            } else {
-                // Built-in tool
-                registry.execute(tc_name, tc_args, ctx).await
+                Some(p) => {
+                    ctx.log(&format!(
+                        "Tool call: {}({}) purpose=\"{}\"",
+                        tc_name, tc_args, p
+                    ));
+                    if registry.is_mcp_tool(tc_name) {
+                        let args_value: serde_json::Value =
+                            serde_json::from_str(tc_args).unwrap_or(serde_json::Value::Null);
+                        let mcp_manager = mcp_store.lock().await;
+                        match mcp_manager.call_tool(tc_name, args_value).await {
+                            Ok(r) => r,
+                            Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+                        }
+                    } else {
+                        registry.execute(tc_name, tc_args, ctx).await
+                    }
+                }
             };
 
             ctx.log(&format!(
@@ -913,5 +963,83 @@ mod trim_tests {
             "must signal abort"
         );
         assert!(msg.contains("8"), "must include round count for debug");
+    }
+
+    // -- Iter TR1: tool-call purpose gate -----------------------------------------
+
+    #[test]
+    fn extract_tool_purpose_returns_some_for_valid_one_liner() {
+        let args = r#"{"file_path":"~/.zshrc","purpose":"check shell config"}"#;
+        assert_eq!(
+            extract_tool_purpose(args),
+            Some("check shell config".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_tool_purpose_trims_surrounding_whitespace() {
+        let args = r#"{"purpose":"  spaced reason  "}"#;
+        assert_eq!(
+            extract_tool_purpose(args),
+            Some("spaced reason".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_tool_purpose_returns_none_for_missing_field() {
+        let args = r#"{"file_path":"foo"}"#;
+        assert!(extract_tool_purpose(args).is_none());
+    }
+
+    #[test]
+    fn extract_tool_purpose_returns_none_for_blank_string() {
+        // Empty string and whitespace-only must both fail — accepting them would
+        // defeat the protocol (LLMs would game the gate by passing "").
+        assert!(extract_tool_purpose(r#"{"purpose":""}"#).is_none());
+        assert!(extract_tool_purpose(r#"{"purpose":"   "}"#).is_none());
+    }
+
+    #[test]
+    fn extract_tool_purpose_returns_none_for_non_string_value() {
+        // Numbers, bools, nulls, objects must all fail rather than coerce — the
+        // contract is "string sentence", anything else is malformed.
+        assert!(extract_tool_purpose(r#"{"purpose":42}"#).is_none());
+        assert!(extract_tool_purpose(r#"{"purpose":null}"#).is_none());
+        assert!(extract_tool_purpose(r#"{"purpose":true}"#).is_none());
+        assert!(extract_tool_purpose(r#"{"purpose":{"x":1}}"#).is_none());
+    }
+
+    #[test]
+    fn extract_tool_purpose_returns_none_for_unparseable_json() {
+        // Garbage args (rare but possible — proxy bug, model misformat) must not panic.
+        assert!(extract_tool_purpose("not json").is_none());
+        assert!(extract_tool_purpose("").is_none());
+    }
+
+    #[test]
+    fn missing_purpose_error_result_carries_retry_hint() {
+        let r = missing_purpose_error_result();
+        // Must be parseable JSON so the LLM's tool-result handler can introspect it.
+        let v: serde_json::Value = serde_json::from_str(&r).expect("must be valid JSON");
+        assert!(v.get("error").is_some(), "must carry error field");
+        let hint = v.get("hint").and_then(|h| h.as_str()).unwrap_or("");
+        assert!(hint.contains("purpose"), "hint must name the missing field");
+        assert!(hint.contains("重新调用"), "hint must instruct retry");
+    }
+
+    #[test]
+    fn tool_usage_prompt_teaches_purpose_protocol() {
+        // Iter TR1: pin the purpose-protocol guidance — without it the LLM's first
+        // tool call after a fresh prompt will be rejected; the gate's recoverable
+        // error gets the model to comply, but only if the prompt has set the
+        // expectation up front.
+        assert!(
+            TOOL_USAGE_PROMPT.contains("purpose"),
+            "tool prompt must teach purpose convention"
+        );
+        assert!(
+            TOOL_USAGE_PROMPT.contains("强制") || TOOL_USAGE_PROMPT.contains("必须"),
+            "tool prompt must signal that purpose is required, not optional"
+        );
     }
 }

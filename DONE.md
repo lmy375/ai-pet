@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter TR1：工具调用必须带 purpose 字段（pipeline-level gate）
+- 现状缺口：所有工具调用都是黑盒触发——LLM 可能突然调 read_file、memory_edit、shell、weather，但开发者只能在 app.log 看到工具名 + 原始 args。**为什么** 这次 turn 调了这个工具？没有显式记录。这影响 (a) 调试（"哪条 prompt 让它调 weather？"）；(b) 安全审计（高风险工具下未来需要审核流程，没有 purpose 字段就无法做出 risk decision）；(c) 模型自我约束（要求模型每次声明 purpose 会让它的工具调用更"想清楚"再发）。
+- 解法 — pipeline-level enforcement：
+  - 新 pure helper `extract_tool_purpose(args_json) -> Option<String>`：JSON 解析 + 取 `purpose` 字段 + trim + 非空检查。所有失败路径返 None（缺字段 / 空串 / 非字符串 / 不可解析 JSON），无 panic。
+  - 新 helper `missing_purpose_error_result() -> String`：合法 JSON，含 error + hint 字段，hint 中文教 LLM 在 arguments 里加 purpose 重试。
+  - `run_chat_pipeline` 工具循环改造：每个 tool call 在 send_tool_start 后先 `extract_tool_purpose`，命中 None 直接 return synthetic error result（**不执行工具**），命中 Some(p) 才走原 MCP / registry 路径。app.log 写"Tool call: {name}({args}) purpose=\"{p}\""或"Tool call rejected (missing purpose): {name}({args})"。
+  - `TOOL_USAGE_PROMPT` 加"工具调用必须带 purpose"段，含两个具体例子（read_file / memory_edit）+ "强制" 关键词，让 LLM 第一次 turn 就遵守而不是挨过 8-round 上限。
+- 决策 — pipeline 而不是 per-tool schema 强制：tools 的 JSON Schema 加 required: ["purpose"] 也能挡住缺失，但 (a) 要改每个工具定义；(b) Schema 校验失败的错误信息是 framework 风格，不如 pipeline-level 自定义 error 友好；(c) MCP 工具 schema 是远端定义的，不能本地改。pipeline gate 是单一控制点，覆盖 built-in 和 MCP。
+- 决策 — recoverable error 而不是 hard block：missing purpose 不抛错给 caller，而是把 synthetic JSON error 当 tool result 喂给 LLM。LLM 下一轮看到 hint 后重试。配合 QG2 的 MAX_TOOL_CALL_ROUNDS=8，最坏情况就是 LLM 撞上限被 abort，不会无限循环。
+- 决策 — purpose 字段对所有 tool 生效，不分类：考虑过"只对高风险工具（write_file / shell）要 purpose"，但分类本身就是 TR2 的事；TR1 先建立"每个调用都要解释自己"的协议基础，TR2 再在此基础上加 risk_level + 可能跳过 low-risk 的 purpose 要求。
+- 风险与缓解：协议变化可能让模型第一轮 tool call 全 reject。缓解：(a) TOOL_USAGE_PROMPT 已用"强制 / 必须"措辞 + 两个 args 完整示例；(b) reject 的 error 是合法 JSON + hint 中文，LLM 看后基本必能补；(c) MAX_TOOL_CALL_ROUNDS=8 兜底防失控；(d) tool args 没有 deny_unknown_fields，purpose 不影响任何工具实现，只是元数据。
+- 测试（8 新单测）：
+  - `extract_tool_purpose`：valid one-liner / 空白 trim / 缺字段 / blank string / whitespace-only / 非字符串（数字/null/bool/object）/ 不可解析 JSON / 空字符串 input — 6 个边界全覆盖。
+  - `missing_purpose_error_result_carries_retry_hint`：parseable JSON + 含 error + 含 purpose + 含"重新调用"。
+  - `tool_usage_prompt_teaches_purpose_protocol`：钉住 prompt 含"purpose" + "强制 / 必须" 关键词。
+- 测试结果：328 cargo（+8）；clippy clean；fmt clean；tsc clean。
+- 后续 — 留 follow-up：前端 ToolCallBlock / PanelDebug 显示 purpose（TR1 的 UX 部分）。本 iter 重点是建立协议 + audit trail；UI 渲染是分立工程，等 TR2/TR3 一起做更经济。
+- 结果：从"工具调用是黑盒，看 app.log 只知道做了什么不知道为什么" 到"每次 tool call 自带一句话 purpose，写入 app.log，缺失即拦截 + 可恢复"。为 TR2（risk assessment）+ TR3（人工审核 gate）打地基。
+
 ## 2026-05-03 — Iter QG6：PanelDebug IPC 收敛——15 invokes/秒 → 1 invoke/秒
 - 现状缺口：`PanelDebug.tsx` `fetchLogs` 每秒 fire 15 个独立 Tauri invoke (get_logs / get_cache_stats / get_proactive_decisions / get_mood_tag_stats / get_recent_speeches / get_tone_snapshot / get_pending_reminders / get_lifetime/today/week_speech_count / get_llm_outcome_stats / get_env_tool_stats / get_prompt_tilt_stats / get_companionship_days / get_redaction_stats)。每个 invoke 一次完整 IPC 往返（serialize → bridge → deserialize），15× per second 是真实的 CPU 与电池负担——尤其用户 panel 长时间打开的 case。
 - 解法：后端加 `DebugSnapshot` 聚合结构 + `get_debug_snapshot` 单一 Tauri 命令，前端 fetchLogs 收敛成一次 invoke。15 个旧命令保留兼容（PanelPersona 等其他调用方靠它们）。
