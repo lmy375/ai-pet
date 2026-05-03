@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R42 设计要点（已实现）
+- **interaction state machine 完整 = polish 完成**：4 micro-states (idle / fadeIn-mount / hover / press) 每个有自己的 visual transition。这是 desktop UI 的 mature interaction model —— 缺一种状态都会让 affordance 模糊。R40-R42 三连 iter 把 bubble 从"显示文字的盒子" 升级到"可交互的活物"。**polish phase 的"完成" 标志 = state machine 的 N 状态都有 visual signature**。
+- **transition timing 跟 metaphor 匹配**：transform 80ms 快（press 是物理瞬时反应），border-color 120ms 慢（hover 是视觉渐进强调）。两者不同 timing 让 affordance 自然区分 "我感觉到了" (fast) vs "我变得显眼了" (slow)。**timing function 不是装饰参数，是 metaphor 的物理建模**。新加 transition 时该问"这个变化是物理动作还是视觉强化？"。
+- **CSS source order 是 specificity 决战的第二维度**：:hover 和 :active 都 1 specificity unit。同 source 文件中后写赢。让 :active 排 :hover 之后 = press 期间 transform 取代 hover translateY 的自然 cascading。**了解 CSS specificity tie-break by source order 让多 pseudo-class 互动可控**。如果 :active 写在 :hover 前，press 时 hover translateY 会赢，press scale 失效。
+- **风格 inertia 是 visual coherence 护城河**：诱惑是 hover 加 box-shadow 让 bubble "浮起"。但 R-series 早期决策"无 boxShadow"，加 shadow 破坏 visual identity。**新 effect 之前先 audit "R-series 一贯做法是什么"** —— 风格统一比每处局部最优更重要。translateY(-1px) 是符合 R-series 极简风格的 lift 实现。
+- **R40+R41+R42 cluster = depth > breadth 验证**：R41 IDEA 提了"polish phase 选 component 投 2-3 iter 直到完整"。R-series 30+ iter 中第一次践行这条 — 三连 iter 都聚焦 ChatBubble.tsx 一个文件。**结果：bubble UX 在 3 iter 内从 functional → polished → interactive**。如果分散投资（R40 在 bubble，R41 在 panel chip，R42 在 settings），每处都半成。**集中投资在 polish 阶段比 innovation 阶段更重要** —— innovation 时分散加新轴，polish 时集中收 endings。
+- **interaction state machine 的 4 micro-affordances**：fadeIn (宠物开口) + hover (你看到了) + press (你点了) + dismiss (你说不要)。**每个状态都传达不同的 social signal** —— bubble 不只是显示文字，是"宠物 - 用户"两端互动的 visual mediator。这种 "every state has meaning" 设计比"加几个动画装饰" 深一层 —— 让 user 感觉到 reciprocity。
+- **下一 polish cluster 候选**：bubble 完整后，下一个 3-iter cluster 该选哪个 component？候选：(a) ChatPanel (聊天主面板) — 输入聚焦 / 发送动画 / message bubble。(b) Live2DCharacter — tap motion / hover gaze / 空闲呼吸。(c) Tab indicator (auto-hide tab) — hover / pulse / drag。Live2D 最高价值（pet 主体），ChatPanel 次之，Tab 最低。**polish cluster 的优先级 = 用户停留时间 × 视觉重要性**。
+
 ## Iter R41 设计要点（已实现）
 - **CSS pseudo-class 是 native UI feedback 的极简正解**：press feedback 一种实现是 React state (`isPressing` + onMouseDown/Up listeners)，另一种是 CSS `:active` pseudo-class。React state 涉及 re-render + 多 event handler 写法。CSS `:active` 是浏览器 native — 0 JS 开销，0 state machine。**当 native CSS 解能实现需求时，don't reach for React state**。这条原则适用所有 hover / focus / active 等纯 visual 状态。
 - **subtle 动画的双重 budget**：duration + magnitude 都要小。R41 是 80ms × scale(0.97) — 时间短 + 幅度小。如果 200ms × scale(0.92) 就会变成"按钮被按瘪"。**这两个维度 multiplicative**：duration 长 + magnitude 小可接受（缓慢柔和），duration 短 + magnitude 大也行（快速回弹）；duration 长 + magnitude 大 = 卡顿臃肿。R-series polish 从来都选 small × fast。

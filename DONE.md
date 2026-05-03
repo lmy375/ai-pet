@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R42：ChatBubble hover lift（interaction 三态完成 cluster）
+- 现状缺口：R40 加 mount fadeIn，R41 加 active press，但**hover 状态空白** —— 鼠标悬停在 bubble 上没任何视觉变化。Desktop UX 惯例 hover = "你在这里，我看到了" 信号；缺失会让 bubble 显得"死板" 即便能 click。R41 IDEA 写过"depth > breadth" - 选定 component 投 2-3 iter 直到完整。R42 是 bubble polish cluster 的第三也是最后一 iter。
+- 解法 — `:hover` pseudo-class + 同时升级 transition：
+  - 新 `.pet-bubble:hover` rule：`border-color: #7dd3fc` (从 #bae6fd → #7dd3fc，加深一档蓝) + `transform: translateY(-1px)` (轻微 1px 上抬)。
+  - bubble div 的 base transition 扩展：`transform 80ms ease-out, border-color 120ms ease-out`。border-color 比 transform 慢一点（120ms vs 80ms）— hover 进入时颜色淡淡渗入更柔和。
+  - CSS source order：fadeIn keyframes → :hover → :active。:active 排最后，press transform 自然覆盖 hover translateY (CSS specificity tied 时按 source order 后写赢)。
+- 决策 — translateY(-1px) 而非 box-shadow lift：诱惑是加 box-shadow 让 hover "浮起" 看起来 elevated。但 box-shadow + transform 同时 transition 容易 flicker，且 shadow 跟 R-series 至今"无 boxShadow" 的极简风格冲突（bubble border R-series 一直 boxShadow: none）。**1px translateY 是 minimal-dependency lift 信号** — 没有 shadow 也表达 "我可以被点"。
+- 决策 — border-color #7dd3fc：原 border 是 #bae6fd（淡天蓝）。hover 加深一档到 #7dd3fc（中天蓝）。**色调升级 1 step 不换色相** — 保持 visual identity，只增加 attention 重量。
+- 决策 — border-color transition 比 transform 慢（120ms vs 80ms）：transform 是物理动作（"立刻反应"），border 是视觉强调（"渐进强化"）。两者不同 timing 自然区分 affordance 的物理感 vs 视觉感。**transition timing 跟 metaphor 匹配** —— transform 配快，颜色配慢。
+- 决策 — :active 排在 :hover 之后：CSS specificity 相同时按 source order 后写赢。:active 期间 user 一定也 :hover（鼠标在 bubble 上才能 click），两 rule 都匹配。让 :active 在后让 press scale(0.97) 取代 hover translateY(-1px)。**source order 是 CSS 第二优先级** — 配合 specificity 决策。
+- 决策 — 不加 box-shadow / glow：保持 R-series 极简风格。bubble 一直没 boxShadow（R-series 早期决策），保持一致。**风格 inertia 是 visual coherence 的护城河** —— 想加 fancy effect 时先问"R-series 一贯做法是什么？"。
+- 决策 — 不写测试：CSS pseudo-class 行为 native 浏览器保证。tsc + cargo build 验证 wiring。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：bubble interaction 三态 cluster 完成 (R40 mount fadeIn / R42 hover lift / R41 active press)。每个 visual transition 都有意义：fadeIn = "宠物开口"，hover = "你看到了"，press = "你点了"，dismiss = "你说不要"。**4 个 micro-affordance 共同传达"这是个活的可交互对象"**。R-series UX cluster 第一次跨多 iter 完整 —— polish phase 的"depth > breadth" rule 验证可行。
+
 ## 2026-05-04 — Iter R41：ChatBubble :active press feedback（click 触觉反馈）
 - 现状缺口：R40 给 bubble 加了 fadeIn 入场动画，但 click 时**没有 visual feedback** 表示"点击被收到"。点 bubble → 80ms 后 dismiss 状态生效 → bubble 消失。这 80ms 内用户没看到任何"reaction"，体验上像"我点了，但好像没反应... 哦它消失了"。**native UI 点击感的缺失** —— 普通按钮 / 链接都有 :active 压感，pet bubble 也该有。
 - 解法 — CSS `:active` pseudo-class + transition：
