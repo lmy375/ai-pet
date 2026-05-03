@@ -844,17 +844,15 @@ pub async fn get_tone_snapshot(
 /// frontend can show a confirmation chip / countdown.
 #[tauri::command]
 pub fn set_mute_minutes(minutes: i64) -> String {
-    if minutes <= 0 {
-        if let Ok(mut g) = MUTE_UNTIL.lock() {
-            *g = None;
-        }
-        return String::new();
-    }
-    let until = chrono::Local::now() + chrono::Duration::minutes(minutes);
+    // R59: pure helper extracted; Tauri command is now thin wrapper that
+    // computes new state + writes to mutex + formats response.
+    let new_until = compute_new_mute_until(minutes, chrono::Local::now());
     if let Ok(mut g) = MUTE_UNTIL.lock() {
-        *g = Some(until);
+        *g = new_until;
     }
-    until.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    new_until
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+        .unwrap_or_default()
 }
 
 /// Iter R52: read the current MUTE_UNTIL state. Returns ISO timestamp
@@ -877,21 +875,16 @@ pub fn get_mute_until() -> String {
 /// when active, empty when cleared.
 #[tauri::command]
 pub fn set_transient_note(text: String, minutes: i64) -> String {
-    let trimmed = text.trim().to_string();
-    if trimmed.is_empty() || minutes <= 0 {
-        if let Ok(mut g) = TRANSIENT_NOTE.lock() {
-            *g = None;
-        }
-        return String::new();
-    }
-    let until = chrono::Local::now() + chrono::Duration::minutes(minutes);
+    // R59: pure helper extracted; Tauri command thin wrapper.
+    let new_note = compute_new_transient_note(&text, minutes, chrono::Local::now());
+    let until_iso = new_note
+        .as_ref()
+        .map(|n| n.until.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+        .unwrap_or_default();
     if let Ok(mut g) = TRANSIENT_NOTE.lock() {
-        *g = Some(TransientNote {
-            text: trimmed,
-            until,
-        });
+        *g = new_note;
     }
-    until.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    until_iso
 }
 
 /// Iter R55: read current TRANSIENT_NOTE state. Returns `(text, until_iso)`

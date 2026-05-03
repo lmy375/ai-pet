@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R59：抽 R52/R55 setter 纯函数 + 9 单测
+- 现状缺口：R52 set_mute_minutes / R55 set_transient_note 内 logic 是"compute new state from input + write to mutex" —— logic 跟 IO 耦合不可测。R53 / R56 已经测了"read" helpers（compute_mute_remaining / compute_transient_note_remaining），但 setter 的"compute"逻辑（boundary case 0/负数/empty/whitespace）从未测。
+- 解法 — R53/R56 pattern 应用到 setter side：
+  - 新 `compute_new_mute_until(minutes, now) -> Option<DateTime<Local>>`：≤0 → None；正数 → Some(now + minutes)。
+  - 新 `compute_new_transient_note(text: &str, minutes, now) -> Option<TransientNote>`：empty/whitespace text → None；≤0 minutes → None；valid → Some(trimmed text + until)。
+  - Tauri 命令变 thin wrapper：调 helper + write mutex + format response。
+  - 9 新单测：
+    - new_mute_until: 0 / 负数 / 30 / 1 min boundary
+    - new_transient_note: empty text / whitespace text / 0 / 负数 / trim 验证 / until 计算正确
+- 决策 — `&str` 而非 `String` for compute_new_transient_note text param：pure helper 接 borrowed slice，caller 转换。**纯函数应该 borrow 不 own**，让 caller 决定 ownership。Tauri 命令拿 `String` 参数，传 `&text` 给 helper，helper 内部 `text.trim().to_string()` 才 own 转换。
+- 决策 — whitespace-only text 视为 empty：" " / "\t\n" 等 → None。**pure helper 处理"degenerate input" 而不是依赖 caller validate** —— defense in depth，避免意外保存空白 note。R59 测试明确钉死这条 contract。
+- 决策 — internal whitespace preserved：trim 仅去 leading / trailing，不动中间空格。"in a meeting" 保持。**trim ≠ collapse**，只去边缘 noise，保用户语义。
+- 决策 — Tauri 命令仍调 chrono::Local::now()：thin wrapper 还是依赖系统时钟。**logic 测试用 deterministic now，wrapper 不测**——pure helper 本身已被 9 case 覆盖。
+- 决策 — set_transient_note 拿 `String` Tauri arg 后 pass &text：Tauri 把 frontend args parse 成 owned String。helper 接 &str 让 sig 通用 —— if 未来某 caller 已有 &str 不需要再 clone。这是 Rust ownership minor optimization。
+- 决策 — Tauri command return 字符串保不变：result format unchanged (ISO timestamp 或 empty)。**API 兼容** —— frontend 不用改。
+- 测试结果：**518 cargo（+9）**；clippy clean；fmt clean；tsc clean。
+- 结果：R52/R55 setter logic 现在完全可测。R-series test count 518 ——**对每个 stateful Tauri 命令的 compute 逻辑都该 audit "可测吗"**。R53→R56→R59 是 user-control 模块"读 + 写"双向 helper extraction 完整 — read helper (compute_*_remaining) 跟 write helper (compute_new_*) 对称完整。
+
 ## 2026-05-04 — Iter R58：mute 按钮 refresh-on-click（R57 codified rule audit）
 - 现状缺口：R57 IDEA 写"any transient backend state needs refresh fetch at each user-interaction entry point"。R57 修了 note popover。**但 R52 mute button 同样 latent bug 没修** —— mute 自动到期后 frontend `muted=true` 仍 stale，button 仍显红色"已静音 30 分钟"。R58 audit-and-backfill。
 - 解法 — 镜像 R57 patten：
