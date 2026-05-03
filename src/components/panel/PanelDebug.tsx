@@ -81,40 +81,43 @@ export function PanelDebug() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Iter QG6: collapsed 15 independent invokes-per-second into one bundled
+  // get_debug_snapshot call. Keeps the same shape on the frontend (one
+  // setState per field) but cuts IPC overhead by ~14× per refresh.
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, week, llmOut, envT, tilt, days, redact] = await Promise.all([
-        invoke<string[]>("get_logs"),
-        invoke<CacheStats>("get_cache_stats"),
-        invoke<ProactiveDecision[]>("get_proactive_decisions"),
-        invoke<MoodTagStats>("get_mood_tag_stats"),
-        invoke<string[]>("get_recent_speeches", { n: 10 }),
-        invoke<ToneSnapshot>("get_tone_snapshot"),
-        invoke<PendingReminder[]>("get_pending_reminders"),
-        invoke<number>("get_lifetime_speech_count"),
-        invoke<number>("get_today_speech_count"),
-        invoke<number>("get_week_speech_count"),
-        invoke<LlmOutcomeStats>("get_llm_outcome_stats"),
-        invoke<EnvToolStats>("get_env_tool_stats"),
-        invoke<PromptTiltStats>("get_prompt_tilt_stats"),
-        invoke<number>("get_companionship_days"),
-        invoke<RedactionStats>("get_redaction_stats"),
-      ]);
-      setLogs(result);
-      setCacheStats(stats);
-      setDecisions(dec);
-      setMoodTagStats(mts);
-      setRecentSpeeches(speeches);
-      setTone(toneSnap);
-      setReminders(reminderList);
-      setLifetimeSpeechCount(lifetime);
-      setTodaySpeechCount(today);
-      setWeekSpeechCount(week);
-      setLlmOutcomeStats(llmOut);
-      setEnvToolStats(envT);
-      setPromptTiltStats(tilt);
-      setCompanionshipDays(days);
-      setRedactionStats(redact);
+      const snap = await invoke<{
+        logs: string[];
+        cache_stats: CacheStats;
+        decisions: ProactiveDecision[];
+        mood_tag_stats: MoodTagStats;
+        recent_speeches: string[];
+        tone: ToneSnapshot;
+        reminders: PendingReminder[];
+        lifetime_speech_count: number;
+        today_speech_count: number;
+        week_speech_count: number;
+        llm_outcome_stats: LlmOutcomeStats;
+        env_tool_stats: EnvToolStats;
+        prompt_tilt_stats: PromptTiltStats;
+        companionship_days: number;
+        redaction_stats: RedactionStats;
+      }>("get_debug_snapshot");
+      setLogs(snap.logs);
+      setCacheStats(snap.cache_stats);
+      setDecisions(snap.decisions);
+      setMoodTagStats(snap.mood_tag_stats);
+      setRecentSpeeches(snap.recent_speeches);
+      setTone(snap.tone);
+      setReminders(snap.reminders);
+      setLifetimeSpeechCount(snap.lifetime_speech_count);
+      setTodaySpeechCount(snap.today_speech_count);
+      setWeekSpeechCount(snap.week_speech_count);
+      setLlmOutcomeStats(snap.llm_outcome_stats);
+      setEnvToolStats(snap.env_tool_stats);
+      setPromptTiltStats(snap.prompt_tilt_stats);
+      setCompanionshipDays(snap.companionship_days);
+      setRedactionStats(snap.redaction_stats);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }

@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG6 设计要点（已实现）
+- **跳过 QG5 (拆 proactive.rs)**：proactive.rs 现在 4500+ 行，按 gate / prompt rules / reminders / butler / telemetry 切是合理重构，但对单 iter 太重——纯移动代码 + 保持 API 稳定 + 每步跑测试是 multi-iter 工作。先做 QG6（contained scope，纯改前后端 IPC 协议）保留 QG5 等专门 session。
+- **聚合命令而非"少 polling"**：另一个解法是把 1 Hz polling 降到 5 Hz 或 push-based。但 (a) 1 Hz refresh 是 panel UX 重要（数字跳动让用户感觉 alive）；(b) push-based 需要 Tauri Channel/Event 改造，是大动作。聚合命令是"改 protocol 不改频率"——保留 UX，砍掉只有 IPC 序列化的损耗。
+- **`from_counters` 是抽象的最低要求**：Tauri 命令本质上是"取 State → 拼 struct"。把"拼 struct"提成 from_counters，"取 State" 留在命令里，是经典 thin-controller pattern。同样适用于 build_tone_snapshot——它 body 就是 "拿 deps → 计算"，State 取 deps 是命令责任，计算是纯函数。
+- **`State<'_, Arc<X>>::inner() -> &Arc<X>` 自动 Deref 到 &X**：这是 Rust 隐藏的便利。我本来要写 `clock.inner().as_ref()` 或 `&**clock.inner()`，结果直接传 `clock.inner()` 给 `&InteractionClock` 参数，编译器通过 `Arc::deref` 自动转。签名干净，调用点也不需要解释 Arc 包装。
+- **Inline anonymous type in invoke generic**：前端写 `invoke<{ logs: string[]; ... }>("get_debug_snapshot")` 而不是导出 DebugSnapshotType。理由：(a) PanelDebug 是唯一调用方；(b) panelTypes.ts 已经够大，不需要为聚合类型再加；(c) 如果以后要复用，提取成本一行的事。"内联到能被自动复用为止"是 TS 项目里减少 type-noise 的 pragmatic 做法。
+- **保留旧 Tauri 命令**：删除等于 lib.rs handler list 翻动 + 大概率漏掉某个调用方（PanelPersona 已经撞上 `get_companionship_days`）。保留的代价：每个旧命令 ~3 行 + handler entry，binary 大小 negligible。删除的收益：清单短一点点。trade-off 不成立。
+- **不引入 watcher pattern / event push**：考虑过让后端在 stat 改变时 emit Tauri event，前端订阅。但 (a) stat 不是事件驱动——atomics 持续被 increment，没有"事件"；(b) 1 Hz polling + 1 IPC 是合理 baseline；(c) Tauri event 有自己的开销（subscription 管理、序列化）。Pull-based aggregator 是这种场景的对症解。
+
 ## Iter QG4 设计要点（已实现）
 - **三个漏点正好揭示了"redact 不是一次性补丁，是 design pattern"**：早期 inject_mood_note 加 redact 时是按"补漏"思路写的——遇到一个补一个。结果 build_persona / butler / user_profile 后续做了，但 mood_hint 的另一个 entry point（proactive）漏了；reminders 和 plan 是后期 Iter Cβ/Cγ 加的，作者没意识到要 redact。QG4 应该订下一条：**任何把 memory description / title 拼回 prompt 的新 builder，必须有对应的 format_X_hint pure helper + 闭包 redact 参数 + 至少一个 redact 测试**。
 - **closure (impl Fn / dyn Fn) 比 patterns: &[String] 灵活**：闭包 = wrapper 决定怎么 redact（substr / regex / 两段都做），formatter 不知不论；patterns 强迫 wrapper 二选一。代价是签名带个泛型/dyn —— 调用点不知道实际是哪种 impl，但调用点也不需要知道。这是把"实现细节" inflate 进 type system 而不让它泄到 caller 体感。

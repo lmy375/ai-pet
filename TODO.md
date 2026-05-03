@@ -18,8 +18,7 @@
 - [ ] Quality Gate 5：拆分 `src-tauri/src/proactive.rs`。
   - AI prompt：在不改变行为的前提下，把 proactive 的纯逻辑按 gate、prompt rules、reminders、butler schedule、telemetry 拆到子模块。先移动代码和测试，保持 public API 稳定；每一步都运行 `cargo test`，避免大爆炸式重构。
 
-- [ ] Quality Gate 6：减少 panel 高频 IPC。
-  - AI prompt：把 `PanelDebug` 每秒发起的多个独立 invoke 收敛为一个后端 snapshot command，保留现有 UI 行为和类型安全。补一个后端聚合结构，并在前端用单次调用更新状态。
+- [x] Quality Gate 6：减少 panel 高频 IPC（2026-05-03 完成 — Iter QG6）
 
 - [ ] Tool Review 1：工具调用目的字段与展示。
   - AI prompt：扩展工具调用协议，让每次 LLM 请求工具时都必须提供 `purpose`（一句话说明为什么现在需要这个工具、期望用结果做什么）。后端在执行前解析并记录该字段；前端 ToolCallBlock / debug panel 展示 purpose。缺失 purpose 时不要静默执行，返回可恢复错误，引导模型补齐目的说明。

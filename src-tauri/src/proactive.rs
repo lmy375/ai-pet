@@ -999,11 +999,13 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
     })
 }
 
-#[tauri::command]
-pub async fn get_tone_snapshot(
-    clock: tauri::State<'_, InteractionClockStore>,
-    wake: tauri::State<'_, crate::wake_detector::WakeDetectorStore>,
-    counters: tauri::State<'_, crate::commands::debug::ProcessCountersStore>,
+/// Compute the tone snapshot from inner deps. Iter QG6 extracted this from
+/// `get_tone_snapshot` so the bundled `get_debug_snapshot` aggregator can reuse
+/// the body without re-walking the Tauri State plumbing.
+pub async fn build_tone_snapshot(
+    clock: &InteractionClock,
+    wake: &crate::wake_detector::WakeDetector,
+    counters: &crate::commands::debug::ProcessCounters,
 ) -> Result<ToneSnapshot, String> {
     let now = chrono::Local::now();
     let hour = now.hour() as u8;
@@ -1035,7 +1037,7 @@ pub async fn get_tone_snapshot(
         .map(|s| s.proactive.chatty_day_threshold)
         .unwrap_or(5);
     let today_count_for_rules = crate::speech_history::today_speech_count().await;
-    let env_counters_for_rules = &counters.inner().env_tool;
+    let env_counters_for_rules = &counters.env_tool;
     let env_total = env_counters_for_rules
         .spoke_total
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -1148,6 +1150,17 @@ pub async fn get_tone_snapshot(
             .map(|s| s.proactive.enabled)
             .unwrap_or(true),
     })
+}
+
+/// Tauri command thin wrapper. Body lives in `build_tone_snapshot` so the
+/// debug-snapshot aggregator can reuse it. Iter QG6.
+#[tauri::command]
+pub async fn get_tone_snapshot(
+    clock: tauri::State<'_, InteractionClockStore>,
+    wake: tauri::State<'_, crate::wake_detector::WakeDetectorStore>,
+    counters: tauri::State<'_, crate::commands::debug::ProcessCountersStore>,
+) -> Result<ToneSnapshot, String> {
+    build_tone_snapshot(clock.inner(), wake.inner(), counters.inner()).await
 }
 
 /// Map an elapsed-minutes count (since the pet last spoke proactively) to a Chinese
