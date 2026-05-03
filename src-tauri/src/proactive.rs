@@ -1783,6 +1783,81 @@ mod prompt_tests {
     }
 
     #[test]
+    fn proactive_rules_has_match_arm_for_every_backend_label() {
+        // Iter 91 — guard the proactive_rules match against the helper label set. If a
+        // label ships from a helper but proactive_rules has no arm for it, the unknown
+        // fallback `(规则文本待补)` slips into the prompt — visible in panel logs but
+        // easy to miss in CI. This test fails immediately instead.
+        //
+        // Setup: build inputs that simultaneously trigger every contextual rule. Then
+        // run proactive_rules once, scan for the fallback marker, and verify each
+        // backend label produced a recognizable rule (via a per-label fingerprint
+        // substring unique to that arm's rule text).
+        let mut inputs = base_inputs();
+        inputs.wake_hint = "（用户的电脑在大约 60 秒前刚从休眠唤醒。）";
+        inputs.is_first_mood = true;
+        inputs.pre_quiet_minutes = Some(10);
+        inputs.reminders_hint = "你有以下到期的用户提醒：\n· something";
+        inputs.plan_hint = "你今天的小目标：\n· something";
+        inputs.proactive_history_count = 0;
+        inputs.today_speech_count = inputs.chatty_day_threshold;
+        inputs.env_spoke_total = 12;
+        inputs.env_spoke_with_any = 1;
+        let rules = proactive_rules(&inputs);
+
+        assert!(
+            !rules.iter().any(|r| r.contains("规则文本待补")),
+            "proactive_rules emitted the unknown-label fallback. A helper added a \
+             label without a matching arm in proactive_rules.\nRules: {:#?}",
+            rules
+        );
+
+        // Each (label, fingerprint) pair: fingerprint is a substring guaranteed to
+        // appear *only* in that label's rule text. If a future arm rewrite changes
+        // the rule wording, update the fingerprint here — the lock-in is intentional
+        // so refactors that accidentally swap arms (icebreaker text into chatty arm)
+        // still trip the test.
+        let fingerprints: &[(&str, &str)] = &[
+            ("wake-back", "用户刚从离开桌子回来"),
+            ("first-mood", "第一次开口"),
+            ("pre-quiet", "快进入安静时段"),
+            ("reminders", "有到期的用户提醒"),
+            ("plan", "你有今日计划在执行中"),
+            ("icebreaker", "你和用户还不熟"),
+            ("chatty", "今天已经聊了不少"),
+            ("env-awareness", "最近你开口前几乎都没看环境"),
+        ];
+        // Sanity: the fingerprint table must cover every label the helpers emit, so a
+        // new backend label without a fingerprint entry here forces the test author
+        // to consciously add one (rather than silently leaving the new arm untested).
+        let backend_labels: std::collections::HashSet<&'static str> =
+            active_environmental_rule_labels(true, true, true, true, true)
+                .into_iter()
+                .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0))
+                .collect();
+        let fingerprint_labels: std::collections::HashSet<&str> =
+            fingerprints.iter().map(|(l, _)| *l).collect();
+        let untested: Vec<&&'static str> = backend_labels
+            .iter()
+            .filter(|l| !fingerprint_labels.contains(*l))
+            .collect();
+        assert!(
+            untested.is_empty(),
+            "fingerprint table missing entries for backend labels: {:?}. Add a row \
+             with a substring unique to that label's rule text.",
+            untested
+        );
+        for (label, fp) in fingerprints {
+            assert!(
+                rules.iter().any(|r| r.contains(fp)),
+                "label '{}' should have produced a rule containing '{}', but none \
+                 of the rules matched. Either the arm is missing or its text changed.",
+                label, fp
+            );
+        }
+    }
+
+    #[test]
     fn frontend_prompt_rule_descriptions_have_no_ghost_labels() {
         // Iter 90 — reverse of Iter 89's coverage check. A "ghost" entry is a key in
         // PROMPT_RULE_DESCRIPTIONS that no backend label helper ever returns; it
