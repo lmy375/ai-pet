@@ -1909,7 +1909,11 @@ mod prompt_tests {
         let mut keys: Vec<String> = Vec::new();
         let mut in_dict = false;
         for line in panel_src.lines() {
-            if line.starts_with("const PROMPT_RULE_DESCRIPTIONS") {
+            // Accept both `const ...` and `export const ...` forms — Iter 97 made the
+            // dict an export so a sibling component can import it.
+            if line.starts_with("const PROMPT_RULE_DESCRIPTIONS")
+                || line.starts_with("export const PROMPT_RULE_DESCRIPTIONS")
+            {
                 in_dict = true;
                 continue;
             }
