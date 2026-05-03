@@ -195,7 +195,20 @@ export function PanelSettings() {
   const totalToolCount = mcpStatuses.reduce((sum, s) => sum + s.tool_count, 0);
 
   return (
-    <div style={containerStyle}>
+    <div className="pet-settings-root" style={containerStyle}>
+      {/* Iter R47: focus ring audit — inputStyle had `outline: none` with
+          no replacement, same accessibility hole R46 fixed in ChatPanel.
+          Scoped descendant selector here covers every input/textarea/select
+          inside this panel without touching each call site. */}
+      <style>{`
+        .pet-settings-root input:focus,
+        .pet-settings-root textarea:focus,
+        .pet-settings-root select:focus {
+          border-color: #38bdf8;
+          box-shadow: 0 0 0 2px rgba(56,189,248,0.18);
+          transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+        }
+      `}</style>
       {/* View mode toggle */}
       <div style={{ display: "flex", gap: "4px", marginBottom: "16px", background: "#e2e8f0", borderRadius: "8px", padding: "3px" }}>
         <button

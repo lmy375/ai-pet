@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R47：focus ring audit 推广到 PanelSettings + PanelChat
+- 现状缺口：R46 IDEA 提了"R-series 类似 outline: none 的潜在 issues 该 audit 一遍"。R47 立刻执行 —— `grep 'outline: none'` 全 codebase 找到另外两处：
+  1. `PanelSettings.tsx` 的 `inputStyle` const，被 4+ 个 `<input>` / `<textarea>` 用。
+  2. `PanelChat.tsx` 的聊天 input。
+  两者都跟 R46 ChatPanel 同样症状 —— 移除 browser default outline 但无 replacement focus ring。
+- 解法 — descendant selector 一次覆盖整 component：
+  - PanelSettings 的 root div 加 className "pet-settings-root"；inline `<style>` 加 `.pet-settings-root input:focus, .pet-settings-root textarea:focus, .pet-settings-root select:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,0.18); transition: ... }`。
+  - PanelChat 同样模式：root className "pet-panelchat-root" + descendant focus selector。
+  - **零 input call-site 改动**：scope 在 root，selector 自动 cover 所有 child input/textarea。如果用 className-per-input 方式得改 10+ 处。
+- 决策 — descendant selector 比 className-per-input 经济 N 倍：PanelSettings 有 ~10 个 input/textarea/select uses。给每个加 className 是 10+ edits + 维护负担（新加 input 要记得加 className）。**descendant selector 一次性永久覆盖** —— 包括未来添加的 input 自动被 cover。这是 CSS scope 的强项。
+- 决策 — 不删 `outline: none` 注释 / 写法保留：删除 outline:none 让浏览器 default outline 重新显示。但 default outline (蓝色 dotted) 跟 R-series 视觉风格冲突 + 在不同浏览器形态不同。**保留 outline:none + 加 :focus replacement** = 控权 + 一致 visual。这才是"修 accessibility hole" 的正解，不是简单"重启 default"。
+- 决策 — 跨 component 同 visual recipe (R46 + R47)：focus ring 用同 #38bdf8 + 同 alpha 0.18 + 同 transition timing。**R-series visual identity 跨 panel 一致** —— 用户在不同 panel 内输入，focus 视觉一致 = 同一个 app 的感觉。
+- 决策 — R47 是"audit 闭环 iter"：R46 修一处 + IDEA 提 audit。R47 audit 完整 codebase + 修剩余两处。**codified rule audit 在每次 codify 后 1-2 iter 内完成** R20→R21→R22 / R29→R30 同样节奏。R-series 已经是稳定 audit-and-backfill cadence。
+- 决策 — 不写测试：CSS native + 渲染，类型对齐 tsc 验。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。grep 验证 outline:none 还在但每处都有 corresponding :focus replacement。
+- 结果：codebase 内 3/3 outline:none input 都有 focus ring。未来加 input 在已 scoped components 自动 cover。**R-series accessibility audit 闭环** —— 比 R20 codified 的"prompt 信号 = panel surface" 更基础的 accessibility chunk 还了。
+
 ## 2026-05-04 — Iter R46：ChatPanel ⚙ CSS :hover + textarea focus ring（ChatPanel cluster 起点）
 - 现状缺口：ChatPanel 两个 issue：
   1. ⚙ 设置按钮 hover 用 onMouseEnter/onMouseLeave 修改 inline style.opacity —— R41 IDEA codified "CSS pseudo-class > React state for pure visual states"，这是 outdated pattern。
