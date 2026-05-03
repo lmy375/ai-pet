@@ -77,6 +77,9 @@ export interface ToneSnapshot {
   day_of_week: string;
   idle_register: string;
   idle_minutes: number;
+  // Iter D2
+  companionship_milestone: string | null;
+  companionship_days: number;
 }
 
 /**

@@ -157,6 +157,25 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           {companionshipDays === 0 ? "天（今天初识）" : "天陪伴"}
         </span>
       </span>
+      {/* Iter D2: celebration cue on milestone days (7 / 30 / 100 / 180 / 365 /
+          yearly). The same signal drives the proactive prompt's
+          companionship-milestone rule (Cρ). */}
+      {tone?.companionship_milestone && (
+        <span
+          title={`今天是和宠物相处的「${tone.companionship_milestone}」 — 同样的信号会让 proactive 提示触发 companionship-milestone 规则。`}
+          style={{
+            fontSize: "11px",
+            color: "#fff",
+            background: "linear-gradient(90deg, #f59e0b 0%, #ec4899 100%)",
+            padding: "2px 8px",
+            borderRadius: "10px",
+            fontWeight: 600,
+            alignSelf: "center",
+          }}
+        >
+          ✨ {tone.companionship_milestone}
+        </span>
+      )}
       {restraining && (
         <span
           title={`已超过设置的 chatty_day_threshold (${threshold})，prompt 里加了"今天聊得不少了"的克制规则`}

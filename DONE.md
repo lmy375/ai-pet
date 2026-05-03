@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D2：ToneSnapshot 暴露 companionship_milestone + 节日 chip
+- 现状缺口：Cρ 加了 companionship-milestone 规则——满 7/30/100/180/365/周年时触发"轻轻提一句"engagement 提示。但这个信号没在 panel 上对用户显式呈现：用户看到 PanelStatsCard 的"陪伴 100 天"只是一个数字，不知道今天是宠物视角的"百日纪念"，要在 PanelDebug → "prompt: N hint" 展开里才能看到 companionship-milestone label。
+- 解法：与 D1 同思路——把信号从 prompt 复制到 ToneSnapshot 让 panel 直接读：
+  - `ToneSnapshot.companionship_milestone: Option<String>`：今天是里程碑则 Some(label) 如 "百日纪念"，否则 None。复用 Cρ 的 `companionship_milestone(days)` pure helper——同一函数同一阈值，prompt 与 panel 永不漂移。
+  - `ToneSnapshot.companionship_days: u64`：附带传，后续 strip 渲染若需要可直接用。
+  - TS interface 镜像。
+  - PanelStatsCard 在已有"陪伴 N 天"的 column 之后加 conditional ✨ chip：橙→粉渐变背景、白字、圆角 10px。视觉清晰但不抢"今日开口"主轴。tooltip 解释这是触发 companionship-milestone 规则的同源信号。
+- 不在 PanelToneStrip 同时加：StatsCard 已经有 companionship 区域，那里加最自然；strip 是高频 live signals（period/cadence/wake 等），milestone 是低频静态（一年最多一次），上 strip 会显得分量不对。
+- 没有新单测——companionship_milestone 已被 Cρ 4 测覆盖，这次只是 wire 进 ToneSnapshot 字段。301 cargo 不变；tsc 干净。
+- 结果：用户在生日/百日/周年那天打开 panel，stats card 上立刻看到 ✨ 标记 + 标签，与 LLM 看到的同源信号配对。情感上的"今天是特别日子"从 prompt 内部 → user 可见。
+
 ## 2026-05-03 — Iter D1：ToneSnapshot 加 day_of_week / idle_register / idle_minutes
 - 现状缺口：Iter Cβ（weekday/weekend 标签）和 Iter Cμ（user_absence_tier）都改了 proactive prompt 的时间行——但 `ToneSnapshot` 一直没扩展，PanelToneStrip 显示的"宠物现在看到的语境"少了这两个维度。结果：用户开 panel 看到 ⏱ 下午 / 💬 cadence / ☀ wake / 🤝 已开口 N 次，但看不到 prompt 里也有的 "周二 · 工作日" / "用户已经离开了大半天" 这两个真实进入 LLM 的 register cue。observability 和 prompt 不同步。
 - 解法：
