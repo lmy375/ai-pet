@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter E2 设计要点（已实现）
+- **同 E1 完全镜像 pattern**：static Mutex stash + Tauri command + 在 run_proactive_turn 关键点 clone。E series 的 dev tool 设计模式正在自然涌现。
+- **modal 双段而不是 tab**：tab 切换增加交互成本；通常 user 想同时看 in/out 找因果。两段用浅色背景（slate / green-50）区分 + 段头 emoji 箭头（⇢ ⇠）使方向感强烈。
+- **复制按钮在每段头**：而不是 modal 顶部统一一个。LLM 用法上常常"复制 prompt 出去试别的 model" + "复制 reply 进 chat 工具分析"，两个独立操作，分开按钮符合实际 workflow。
+- **navigator.clipboard.writeText**：Tauri 的 Webview 默认支持。如果某天 webview 模式变化无法用，fallback 是 textarea + execCommand("copy") 老方法——目前不需要。
+- **toast 自动消失 2.5s**：消息出现在 modal 顶部信息栏（character count 旁），不阻塞操作；2.5s 是 "看到 + 但不长留" 的平衡。
+- **stash reply 在哪**：选 `let reply = run_chat_pipeline(...)` 之后立即 clone，比"在 emit 之前最后一步"更早——即使后续处理出错（比如 persist_assistant_message panic），reply 也已 stash 让 panel 能 inspect。
+
 ## Iter E1 设计要点（已实现）
 - **process 内 static Mutex 而不是文件**：last prompt 是 transient 信息，写盘没意义。每次 stash 是 lock + clone + write — 微秒级，不会让 run_proactive_turn 慢可观察。
 - **clone 到 Option<String>**：每次都 clone 整个 prompt 字符串看似浪费，但 prompt ~1-2KB / proactive 触发频率分钟级，实际开销忽略。alternative 是 `Arc<String>` 但增加复杂度无收益。

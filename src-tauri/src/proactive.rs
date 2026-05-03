@@ -137,11 +137,27 @@ pub const AWAITING_AUTO_CLEAR_SECONDS: u64 = 4 * 3600;
 /// without scraping debug logs.
 pub static LAST_PROACTIVE_PROMPT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Iter E2: companion to LAST_PROACTIVE_PROMPT — the raw LLM reply for the same
+/// turn (or `<silent>` when the model chose silence). Pair "in" + "out" lets the
+/// panel show the full request/response loop without log scraping.
+pub static LAST_PROACTIVE_REPLY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// Tauri command — return the most recently built proactive prompt, or empty
 /// string if none has been built yet (fresh process, never fired).
 #[tauri::command]
 pub fn get_last_proactive_prompt() -> String {
     LAST_PROACTIVE_PROMPT
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
+
+/// Tauri command — return the LLM's raw reply text from the last proactive turn.
+/// Empty string when no turn has fired or when the reply is unavailable.
+#[tauri::command]
+pub fn get_last_proactive_reply() -> String {
+    LAST_PROACTIVE_REPLY
         .lock()
         .ok()
         .and_then(|g| g.clone())
@@ -1769,6 +1785,11 @@ async fn run_proactive_turn(
     let sink = CollectingSink::new();
     let reply = run_chat_pipeline(chat_messages, &sink, &config, &mcp_store, &ctx).await?;
     let reply_trimmed = reply.trim();
+    // Iter E2: stash the raw reply so the panel modal can pair it with the
+    // prompt — full request/response loop in one view.
+    if let Ok(mut g) = LAST_PROACTIVE_REPLY.lock() {
+        *g = Some(reply.clone());
+    }
 
     let tools = tools_used.lock().map(|g| g.clone()).unwrap_or_default();
 
