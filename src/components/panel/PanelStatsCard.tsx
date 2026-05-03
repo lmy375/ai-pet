@@ -1,22 +1,26 @@
 import type { ToneSnapshot } from "./panelTypes";
 
 /**
- * Prominent lifetime stats card (Iter 99 — extracted from PanelDebug).
+ * Prominent lifetime stats card (Iter 99 — extracted from PanelDebug; Iter 106 —
+ * companionship-days indicator added).
  *
- * Renders the 28px lifetime + 20px today big numbers under a soft purple→sky
- * gradient. Adds a "克制模式" pill when today_speech_count crosses the user-
- * configured chatty_day_threshold; otherwise shows a "破冰阶段" hint while
- * the pet is still under 3 lifetime utterances. Pure presentation — all
- * state lives in PanelDebug.
+ * Renders three stats horizontally: today's count (20px sky blue / orange when
+ * restraining), lifetime count (28px purple, the dominant number), and companionship
+ * days (16px muted teal — quieter so it sits as identity context rather than primary
+ * data). A single trailing badge shows either "克制模式" (when chatty threshold
+ * crossed) or "破冰阶段" (when lifetime < 3); both states are mutually exclusive.
+ *
+ * Pure presentation — all state lives in PanelDebug.
  */
 interface PanelStatsCardProps {
   todaySpeechCount: number;
   lifetimeSpeechCount: number;
+  companionshipDays: number;
   tone: ToneSnapshot | null;
 }
 
 export function PanelStatsCard(props: PanelStatsCardProps) {
-  const { todaySpeechCount, lifetimeSpeechCount, tone } = props;
+  const { todaySpeechCount, lifetimeSpeechCount, companionshipDays, tone } = props;
   const threshold = tone?.chatty_day_threshold ?? 0;
   const restraining = threshold > 0 && todaySpeechCount >= threshold;
   const todayColor = restraining ? "#ea580c" : "#0ea5e9";
@@ -67,6 +71,32 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
         <span style={{ fontSize: "11px", color: "#64748b" }}>累计</span>
       </div>
       <span style={{ fontSize: "12px", color: "#64748b" }}>次主动开口</span>
+      <span
+        title={`你和宠物已经一起走过 ${companionshipDays} 天（自首次启动起算）。来自 ~/.config/pet/install_date.txt。`}
+        style={{
+          display: "inline-flex",
+          alignItems: "baseline",
+          gap: "4px",
+          marginLeft: "8px",
+          paddingLeft: "12px",
+          borderLeft: "1px solid #e2e8f0",
+        }}
+      >
+        <span
+          style={{
+            fontSize: "16px",
+            fontWeight: 600,
+            color: "#0d9488",
+            lineHeight: 1,
+            fontFamily: "'SF Mono', 'Menlo', monospace",
+          }}
+        >
+          {companionshipDays}
+        </span>
+        <span style={{ fontSize: "11px", color: "#64748b" }}>
+          {companionshipDays === 0 ? "天（今天初识）" : "天陪伴"}
+        </span>
+      </span>
       {restraining && (
         <span
           title={`已超过设置的 chatty_day_threshold (${threshold})，prompt 里加了"今天聊得不少了"的克制规则`}

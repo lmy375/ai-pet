@@ -62,6 +62,15 @@ pub async fn companionship_days() -> u64 {
     days_between(install, today)
 }
 
+/// Tauri command exposing companionship days to the panel UI (Iter 106). Lets the
+/// stats card show "陪伴 N 天" alongside today's and lifetime utterance counts.
+/// Uses `ensure_install_date` so the first time the panel polls also bootstraps
+/// the install_date.txt file — no need to wait for the first proactive turn.
+#[tauri::command]
+pub async fn get_companionship_days() -> u64 {
+    companionship_days().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 106 设计要点（已实现）— 陪伴天数面板可见
+- **数字层级 28 → 20 → 16**：lifetime 是品牌数字（"我们一共聊了多少次"），today 是状态数字（"现在是不是克制日"），companionship 是身份数字（"我们认识多久了"）。三者重要性递减，字号也递减让视觉自动按价值密度排序。
+- **左侧 1px 分隔线**：把 companionship 与前面的"今日 / 累计"块视觉上分开——它们计的是同一件事（开口次数），companionship 是不同维度的概念（时间）。一道分隔线让"两类信息"在 1 行内并存而不混淆。
+- **青色 #0d9488 而非紫绿橙红**：现有 panel 颜色系统中 #7c3aed 紫（lifetime）、#0ea5e9 蓝（today）、#dc2626 红（克制/沉默警告）、#16a34a 绿（spoke / 引导）、#ea580c 橙（环境感知低 / 克制模式）、#a855f7 紫（mood/motion）已经被占用。青色 #0d9488 是 tailwind teal-600，在 panel 既有颜色系统里相对中性，不与任何"警告 / 鼓励"类语义冲突——适合标识"长期陪伴"这种中性身份信息。
+- **day 0 文案分支 "今天初识"**：与其显示"0 天陪伴"（数字读着像负面 / 冷冰冰），不如改写成"今天初识"——表达友好的"刚认识今天"。N ≥ 1 用"N 天陪伴"，"陪伴"二字是这个 chip 的情感锚点。
+- **不再加重置按钮**：companionship 是单调递增的 lifetime stat，"重置"会破坏整个路线 A 的语义（让数据看起来像是"陪伴 0 天"）。如果将来用户真的想重置（搬到新设备 / 装在新机器），删除 install_date.txt 即可——明确的低频高代价操作不应该一键化。
+- **复用 ensure_install_date 的 zero-config 写入**：get_companionship_days 命令调用 → 内部走 ensure_install_date → 文件不存在则写今天。意味着新装用户打开 panel 第一秒，install_date.txt 就被自动写好。无需任何 setup 流程。
+- **接入 PanelStatsCard 而非新 chip**：companionship 是身份层信息，应该和 lifetime 这种"长期账目"放一起，而不是和 cache hit / LLM 沉默率这种 process-level chip 混。stats card 有更高 typographic weight 也合理——这个数字值得被看到。
+
 ## Iter 104 设计要点（已实现）— 路线 A 延展到反应式路径
 - **proactive 注入 vs chat 注入**：proactive 的"长期人格" hints 是嵌在大块 `[系统提示·主动开口检查]` 里的 sections。reactive chat 走另一种语境（用户来聊），人格背景应该是**独立 system note**，让 LLM 看到"这是宠物长期身份描述，与具体对话无关"。所以做了独立的 `[宠物的长期人格画像]` 包装。
 - **format_persona_layer 是 pure 而非 async**：把 IO 抽到外层 wrapper（build_persona_layer_async）。pure 函数能被单测精确锁顺序、空处理、whitespace 等行为，IO 部分只剩薄薄一层组装。这是 Iter 89/90/91 alignment 测试同样的设计哲学：业务逻辑可测，IO 边界扁平。
