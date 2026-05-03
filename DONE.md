@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R1c：panel UI 区分 Dismissed vs Ignored（R1b 信号 surface 闭合）
+- 现状缺口：R1b 加了 Dismissed kind 进 backend，但 panel UI（PanelToneStrip "💬 N/M" chip + PanelDebug 反馈 timeline）依然只显示"回复 / 忽略"二元 — Dismissed 被静默归到"忽略" 灰色 pill 里。用户没法 inspect 自己的 dismiss 行为是否真被记录、R7 cooldown 是否真的因此响应。**写了的信号 panel 看不见 = 半闭环**。
+- 解法 — 三段 surface 升级：
+  - Backend：FeedbackSummary 加 `dismissed: u64` 字段。build_tone_snapshot 多扫一遍 entries filter Dismissed，count 进 dismissed 字段。replied + dismissed + ignored = total（ignored 是计算项）。
+  - PanelToneStrip：chip 文案不变（"💬 5/10"），dismissed > 0 时加紫色 "· 👋3" 后缀；hover title 升级到三段："过去 N 次：回复 X，被动忽略 Y，主动点掉 Z" + R7 阈值文案改成"负反馈率（忽略+点掉）> 60% → cooldown × 2"。
+  - PanelDebug timeline：FeedbackEntry kind union 加 "dismissed"。pill 三色三 label：绿 / 灰 / 红 + "回复 / 忽略 / 点掉"。每个 pill 加 hover title 解释信号强度（"5s 内主动点掉 — 比被动忽略信号更强"）。summary 行加 "· 👋N 点掉" 后缀（仅 dismissed > 0 时）。
+- 决策 — chip 文案保持 "replied/total" 不变：诱惑是改成 "replied / negative" 或 "replied : ignored : dismissed" 三元。但单 chip 信息密度极限就是 2 个数字。"replied/total" 是反馈率天然分数。dismissed 信息走"小尾巴"加号位不抢中心。
+- 决策 — chip dismissed 后缀仅在 > 0 时显示：dismissed 0 是常态（用户不主动 click 是常态行为），永远显示"· 👋0"会噪音。条件渲染 zero-noise。
+- 决策 — pill 颜色编码强度梯度：绿（回复）= 正信号；灰（被动忽略）= 弱负；红（主动点掉）= 强负。从左往右 visual 强度递增，匹配信号强度。Panel reader 一眼区分"宠物被冷落 vs 被嫌弃"。
+- 决策 — "👋"作 dismissed icon：手势"再见 / 拒绝" 含义直观；且与 "💬" 形成 dialogue/wave 对比。诱惑用 ❌ 但太 confrontational；🚫 太正式。"挥手"是软拒绝 — 跟"用户嫌弃但不愤怒"的实际语义对齐。
+- 决策 — hover 文案明确"信号强度差"：写"主动点掉是比被动忽略信号更强"是 explicit education — 让 power user 理解为什么 cooldown 会因此变长。这种"为什么这样 = panel 自我解释" 是 R 系列 chip 一直的设计原则（R7 阈值文案在 hover、D series chip 用 hover 解释 gate 状态）。
+- 测试：仅 backend 类型变化 (FeedbackSummary 加字段) — 现有 build_tone_snapshot 未单测（需要 tauri State fixture），结构上是 trivial filter+count；现有 443 cargo test 通过。前端：tsc clean 检验类型对齐；运行时验证留实机。
+- 测试结果：443 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：用户 click bubble dismiss 现在 panel 立刻 reflect — chip 显示 "👋N" 计数，timeline 红色 pill 标"点掉"，hover 解释为什么这个信号比 ignored 重。R1b 信号"写得到" + R1c "看得见" = 反馈闭环视觉完成。
+
 ## 2026-05-04 — Iter R1b：ChatBubble 5 秒内点击 = active dismiss 反馈信号
 - 现状缺口：R1 实现了 ignored/replied 二分但仅作"是否在下一次 tick 前回复" 推断 — 用户**主动**点掉气泡的强信号丢了。pet 说"在忙吗"，用户立刻 click 关掉 → 是清晰的"我看到了，我不想理"，比"60s 后自动消失" 的 ignored 信号强得多。R1 任务 deliberately 留了 R1b 后续做这个 UI hookup。
 - 解法 — 三段式分工：

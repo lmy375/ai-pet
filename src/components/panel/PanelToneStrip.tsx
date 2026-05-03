@@ -43,19 +43,22 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
         </span>
       )}
       {tone.feedback_summary && (() => {
-        const { replied, total } = tone.feedback_summary;
+        const { replied, dismissed, total } = tone.feedback_summary;
         const ratio = total === 0 ? 0 : replied / total;
-        // Color logic mirrors R7's adapter bands (>0.6 high ignore = back
+        // Color logic mirrors R7's adapter bands (>0.6 high negative = back
         // off → red-orange; <0.2 high reply = great → green; else neutral).
         // The chip surfaces "is the pet currently being heard?" at a glance.
-        const ignore = 1 - ratio;
+        // R1c: negative = ignored + dismissed; ratio = replied/total still
+        // captures the same band semantics (replied + negative = total).
+        const negative = 1 - ratio;
         const bg =
-          ignore > 0.6 ? "#dc2626"
-          : ignore < 0.2 ? "#16a34a"
+          negative > 0.6 ? "#dc2626"
+          : negative < 0.2 ? "#16a34a"
           : "#64748b";
+        const ignored = total - replied - dismissed;
         return (
           <span
-            title={`过去 ${total} 次主动开口里，用户回复了 ${replied} 次。R7 cooldown 调整阈值：忽略率 > 60% → cooldown × 2，< 20% → cooldown × 0.7。`}
+            title={`过去 ${total} 次主动开口：用户回复 ${replied}，被动忽略 ${ignored}，主动点掉 ${dismissed}。R7 cooldown 调整阈值：负反馈率（忽略+点掉）> 60% → cooldown × 2，< 20% → cooldown × 0.7。`}
             style={{
               color: "#fff",
               background: bg,
@@ -65,6 +68,11 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
             }}
           >
             💬 {replied}/{total}
+            {dismissed > 0 && (
+              <span style={{ marginLeft: "4px", opacity: 0.85 }}>
+                · 👋{dismissed}
+              </span>
+            )}
           </span>
         );
       })()}

@@ -299,12 +299,15 @@ pub struct ToneSnapshot {
     pub feedback_summary: Option<FeedbackSummary>,
 }
 
-/// Iter R10: simple shape for the tone-strip feedback chip. Two counts is
-/// enough — frontend renders "{replied}/{total}" and the user reads both
-/// the absolute volume and the ratio.
+/// Iter R10: simple shape for the tone-strip feedback chip. R1c added
+/// `dismissed` so the panel can distinguish *active* rejection (user
+/// clicked the bubble within 5s) from *passive* ignore (no interaction).
+/// `total` includes all three kinds; `replied + ignored + dismissed = total`
+/// where `ignored = total - replied - dismissed`.
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct FeedbackSummary {
     pub replied: u64,
+    pub dismissed: u64,
     pub total: u64,
 }
 
@@ -557,8 +560,13 @@ pub async fn build_tone_snapshot(
                     .iter()
                     .filter(|e| matches!(e.kind, crate::feedback_history::FeedbackKind::Replied))
                     .count() as u64;
+                let dismissed = recent
+                    .iter()
+                    .filter(|e| matches!(e.kind, crate::feedback_history::FeedbackKind::Dismissed))
+                    .count() as u64;
                 Some(FeedbackSummary {
                     replied,
+                    dismissed,
                     total: recent.len() as u64,
                 })
             }
