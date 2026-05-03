@@ -5,8 +5,8 @@ import type {
   MoodTagStats,
   PromptTiltStats,
   ToneSnapshot,
-} from "./PanelDebug";
-import { PROMPT_RULE_DESCRIPTIONS } from "./PanelDebug";
+} from "./panelTypes";
+import { PROMPT_RULE_DESCRIPTIONS } from "./panelTypes";
 
 /**
  * Props for the data-chip strip extracted from PanelDebug's toolbar (Iter 97).
