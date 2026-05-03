@@ -50,6 +50,7 @@ export function PanelMemory() {
   } | null>(null);
   const [message, setMessage] = useState("");
   const [consolidating, setConsolidating] = useState(false);
+  const [butlerHistory, setButlerHistory] = useState<string[]>([]);
 
   const loadIndex = async () => {
     try {
@@ -62,9 +63,45 @@ export function PanelMemory() {
     }
   };
 
+  const loadButlerHistory = async () => {
+    try {
+      const lines = await invoke<string[]>("get_butler_history", { n: 5 });
+      setButlerHistory(lines);
+    } catch (e: any) {
+      console.error("Failed to load butler history:", e);
+    }
+  };
+
   useEffect(() => {
     loadIndex();
+    loadButlerHistory();
+    // Refresh history every 15s while panel is open. butler events come from LLM
+    // tool calls in proactive turns, which fire at minute scale — 15s polling is
+    // cheap and gives "I just saw the pet act on my task" feedback within seconds.
+    const t = setInterval(loadButlerHistory, 15_000);
+    return () => clearInterval(t);
   }, []);
+
+  // Pure helper: parse a butler-history line into structured fields.
+  // Format: "<ts> <action> <title> :: <desc>". Falls back gracefully on malformed lines.
+  const parseButlerLine = (line: string) => {
+    const firstSpace = line.indexOf(" ");
+    if (firstSpace < 0) return { ts: "", action: "", title: "", desc: line };
+    const ts = line.slice(0, firstSpace);
+    const rest = line.slice(firstSpace + 1);
+    const sepIdx = rest.indexOf(" :: ");
+    if (sepIdx < 0) return { ts, action: "", title: rest, desc: "" };
+    const head = rest.slice(0, sepIdx);
+    const desc = rest.slice(sepIdx + 4);
+    const headSpace = head.indexOf(" ");
+    if (headSpace < 0) return { ts, action: head, title: "", desc };
+    return {
+      ts,
+      action: head.slice(0, headSpace),
+      title: head.slice(headSpace + 1),
+      desc,
+    };
+  };
 
   const handleSearch = async () => {
     if (!searchKeyword.trim()) {
@@ -101,6 +138,7 @@ export function PanelMemory() {
       await invoke("memory_edit", { action: "delete", category, title });
       setMessage("已删除");
       await loadIndex();
+      if (category === "butler_tasks") await loadButlerHistory();
       setSearchResults(null);
     } catch (e: any) {
       setMessage(`删除失败: ${e}`);
@@ -127,8 +165,10 @@ export function PanelMemory() {
         });
         setMessage("已更新");
       }
+      const wasButler = editingItem.category === "butler_tasks";
       setEditingItem(null);
       await loadIndex();
+      if (wasButler) await loadButlerHistory();
     } catch (e: any) {
       setMessage(`保存失败: ${e}`);
     }
@@ -324,6 +364,65 @@ export function PanelMemory() {
                   + 新建
                 </button>
               </div>
+              {/* Iter Cε: butler_tasks gets a "最近执行" mini-timeline showing the
+                  last few times the LLM updated/deleted a task — closes the
+                  feedback loop between assignment and execution. */}
+              {catKey === "butler_tasks" && butlerHistory.length > 0 && (
+                <div
+                  style={{
+                    background: "#f0f9ff",
+                    border: "1px solid #bae6fd",
+                    borderRadius: 6,
+                    padding: "8px 10px",
+                    marginBottom: 8,
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: "#0369a1", marginBottom: 4, fontWeight: 600 }}>
+                    最近执行 ({butlerHistory.length})
+                  </div>
+                  {butlerHistory
+                    .slice()
+                    .reverse()
+                    .map((line, i) => {
+                      const p = parseButlerLine(line);
+                      const when = p.ts.slice(5, 16).replace("T", " ");
+                      const actionColor = p.action === "delete" ? "#dc2626" : "#0d9488";
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            fontSize: 11,
+                            color: "#475569",
+                            marginTop: 2,
+                            display: "flex",
+                            gap: 6,
+                            alignItems: "baseline",
+                          }}
+                        >
+                          <span style={{ color: "#94a3b8", fontFamily: "'SF Mono', monospace" }}>
+                            {when}
+                          </span>
+                          <span style={{ color: actionColor, fontWeight: 600 }}>{p.action}</span>
+                          <span style={{ fontWeight: 500 }}>{p.title}</span>
+                          {p.desc && (
+                            <span
+                              style={{
+                                color: "#64748b",
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                flex: 1,
+                              }}
+                              title={p.desc}
+                            >
+                              :: {p.desc}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
               {cat.items.length === 0 && (
                 <div style={{ color: "#94a3b8", fontSize: 12, paddingLeft: 4 }}>暂无记忆</div>
               )}
