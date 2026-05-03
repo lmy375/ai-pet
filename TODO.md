@@ -10,6 +10,8 @@
 
 ### 路线 G：companion register 细化（小迭代）
 - [x] Iter Cμ：proactive prompt 时间行加 user_absence_tier 语气线索（2026-05-03 完成）
+- [x] Iter Cν：long-absence-reunion 复合规则（≥4h 用户离开 + under_chatty + !pre_quiet
+  → 触发"重逢感"提示）（2026-05-03 完成）
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）

@@ -141,6 +141,11 @@ export const PROMPT_RULE_DESCRIPTIONS: Record<
     summary: "≥ 60min 没主动说话 + 不在克制态：找个贴合用户当下的轻话题。",
     nature: "engagement",
   },
+  "long-absence-reunion": {
+    title: "重逢",
+    summary: "用户走开 ≥ 4h；问候带重逢感，简短关心 + 一句轻松归来话题，不要扔信息密集内容。",
+    nature: "engagement",
+  },
 };
 
 export const NATURE_META: Record<PromptRuleNature, { label: string; color: string }> = {

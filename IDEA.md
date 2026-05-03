@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cν 设计要点（已实现）
+- **rule 而不是延 idle_register**：本来犹豫——既然 Cμ 已经 ambient 加了 `user_absence_tier`，是不是没必要再加 rule？但 rule 的价值是 **structured guidance** + 进 active_prompt_rules 标签系统：(a) 进 panel "prompt: N hints" badge，让用户看得到这次开口被这个 register 塑造；(b) 触发 PROMPT_TILT 累计统计——长久看 engagement 倾向。ambient 字段是 hint，rule 是政策；两者都需要。
+- **240 分钟（4 小时）**：阈值取偏保守值。曾考虑 120（午休回来），但很多人午休 90 分钟内，不算"长别"——不如保持午餐回来时不触发，留给"上下班"或"出门半天"那种真离开。如果实际使用觉得太迟再调。和 LONG_IDLE_MINUTES (60) 拉开倍数关系（4×），不会和它互相干扰。
+- **wake_back vs long-absence**：本来想合并——"反正都是回来"。但触发源不同：wake_back 来自 wake_detector 的系统级 event（OS 休眠唤醒），long-absence 来自 InteractionClock 的 idle_seconds（用户没操作宠物）。两者都可能单独发生：lid-closed laptop 唤醒 + 用户 5 秒前才动过键鼠 → 只 wake_back（用户根本没"离开"）；laptop 一直亮 + 用户去开会 4 小时 → 只 long-absence（系统没休眠）。两个都需要。语气也不同：wake_back 是"你电脑刚开机，先克制"，reunion 是"你不在了好久，欢迎回来"。
+- **不和 chatty / pre_quiet 共触发**：under_chatty 和 !pre_quiet 是常见的"engagement 类规则的两个守门员"——chatty 说今天聊够了，pre_quiet 说要进入安静时段；任一为 true 都不该再开新 register。和 long-idle-no-restraint 共享这两个守门员是有意为之，让"engagement 类规则集"行为一致。
+- **三条 composite 共存**：engagement-window + long-idle-no-restraint + long-absence-reunion 同时 fire 时，label 顺序按 push 顺序确定，rule 文本也按这个顺序。新增的共存测试钉住排序——测试名 `_three_can_coexist` 配套 `_both_can_fire_together`，按数量顺位扩展。如果以后还加复合规则，再写 `_four_...`。
+- **base_inputs 默认 idle_minutes=20 不变**：不让现有测试默触发新 rule。idle_minutes=20 远低于 240，所以现有测试如 `prompt_includes_required_sections` 不会突然发现多了一条新规则。新 rule 由专门的 boundary test 单独覆盖。
+- **production callsite 把 snapshot 合并**：spawn loop 原来分两次 await `clock.snapshot()`（一次 since_last，一次别的）。Cν 第三个 callsite 加 idle_minutes 时把它合到一个 snapshot 变量——race 风险消除（两次 snapshot 之间 clock 状态可能变），代码也更直白。这是顺手 refactor，本来不在 iter scope 但成本低且消一种潜在 bug。
+
 ## Iter 74 设计要点（已实现）
 - **挑这个迭代是因为路线 F 已收官、路线 G 还很轻**：companion register 大改动需要更深的设计迭代（mood/persona/语气都已经很多互动），而这个 cosmetic 增量是低风险高频可见——天天打开 panel 就能看到。
 - **"本周" = 今天 + 过去 6 天 = 滚动 7 天**：而不是"自然周一到当前"。理由：(a) 滚动避免周一早上"本周"显示 0 的尴尬；(b) 用户感知"上周这时候"更接近"7 天前"而不是"上一个 ISO 周"。代价是周界限不再对齐 ISO 周，但这层显示是体感量化、不是统计学。
