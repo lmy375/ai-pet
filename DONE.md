@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cη：butler_tasks 每日小结 + panel "每日小结" 区
+- 现状缺口：Cε 的 butler_history.log 给了事件级流水（每次 update/delete 一条），但事件多了用户回看就累——"今天宠物到底为我做了哪些事"需要用户自己拼接 N 行。Cη 把"事件流→人类回看"补齐：consolidate 跑一次就 derive 一段"今天我帮你 推进了「X」「Y」，撤销/移除了「Z」"。
+- `butler_history.rs` 加 3 个能力：
+  - `summarize_events_for_date(events, date)` 纯函数：扫 butler_history 行，只看以 `<date>` 起头的（避免 description 里恰好包含日期字串误匹配），按 action 分桶 update/delete，每桶按出现顺序去重，输出 `今天我帮你 推进了「A」「B」，撤销/移除了「C」`，无事件返 None。
+  - `record_daily_summary(date, summary)`：upsert 进 `butler_daily.log`（一行 `<YYYY-MM-DD> <summary>`），同日重写、跨日 append，cap 90 行（约一季度）。
+  - `recent_summaries(n)` + Tauri command `get_butler_daily_summaries(n=7)`。
+- 6 个新单测覆盖：空集合返 None、其他日期不算今日、单条 update、多 action 混合、同任务多次去重、严格按日期前缀过滤（不被 description 里的日期字串骗到）。测试总数 265 → 271。
+- consolidate 钩子：`run_consolidation` 在 LLM 阶段之前 deterministic 算今天的 summary 并 upsert。这意味着即使 LLM 整理失败，今日小结依然写入；不依赖 LLM 也避免它幻觉/省略。
+- `lib.rs` 注册 `get_butler_daily_summaries`。
+- 前端 `PanelMemory.tsx`：
+  - 新 state + loadButlerDaily()，挂载 + 15s 轮询（与 history poll 共用 interval，省 timer）
+  - butler_tasks section 顶部加一块浅黄色 "每日小结 (N)"，每行 `<date>` + 摘要正文，最新在最上，区别于下面青色"最近执行"块的颜色
+- 不污染 speech_history：曾权衡是否把摘要塞进 speech_history.log（TODO 原文确实如此），但 speech 计数会让 chatty_day_threshold 失真；改用独立 `butler_daily.log` 隔离，panel 上仍能看到。
+- Consolidate 是天然触发点：用户手动"立即整理"或后台定时（默认 24h）跑一次，对一天一个摘要的频率刚好。
+- 结果：用户在 Memory tab 看到三层 butler 信息：每日小结（人类语气 daily recap）→ 最近执行（事件流水 timestamp 级）→ 任务列表 + 到期标注。从"机器日志"过渡到"宠物日记"。
+
 ## 2026-05-03 — Iter Cζ：butler_tasks 调度前缀（[every]/[once]）+ 到期标注
 - 现状缺口：Cγ–Cε 闭合了"委托 → 看到任务 → 执行后留痕"的 loop，但任务什么时候 *该* 被执行还完全靠 LLM 主观判断。"每天 9 点写日报"被 LLM 看到时已经 14:30 了——LLM 既不知道这件事现在就该做、也不知道这个早上有没有人做过。这是 Cζ 要解的。
 - `proactive.rs` 新增 schedule layer：

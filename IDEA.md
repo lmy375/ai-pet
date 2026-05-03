@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cη 设计要点（已实现）
+- **不塞 speech_history**：原 TODO 是"塞进 speech_history 让用户回看"。但 speech_history 同时驱动 chatty_day_threshold / today_speech_count / lifetime 三个计数，加 daily_summary 进去会让"今天宠物开口了几次"虚增——一个 consolidate 自动写的句子被算成"主动开口"，会让 chatty rule 误触发，prompt 输出"今天聊了不少了"——但其实 N 句里大半是 summary。隔离到独立 `butler_daily.log` 是一行代码改动，零认知耦合。
+- **每日只一行 vs 每次 consolidate 一行**：consolidate 默认 24h 触发，但用户可以"立即整理"——这意味着同一天可能跑两次。每次都 append 会让今日有多个"今天我帮你..."摘要，多余且自相矛盾。用 `<date>` 作为 key upsert，最新一次 wins，自然解决。代价是不知道"上午跑过一次的中间态"——但那是开发期 debug 才需要的细节，正式用户不会关心。
+- **deterministic 在 LLM 之前**：摘要不需要 LLM——它是机械聚合。放在 LLM 之前还有一个好处：即使 LLM 阶段崩了（OpenAI 限流、tool 失败），今日的摘要也已经持久化。consolidate 的"反思 + 整理"是 LLM 工作的核心，但 daily_summary 是数据的展示层，自然属于 deterministic 部分。
+- **过滤用 `starts_with(date_prefix)`**：曾考虑用 `contains` 简化代码，但 description 里可能写日期字符串（"提醒我 2026-05-03 看医生"被记进 butler_history 的 desc-snippet）→ 误匹配。`starts_with` 正确利用了"butler_history 行强制以 ISO 时间戳开头"的格式 invariant。这种"利用格式 invariant 减少边界情况"的小决定，比"防御性多过滤一遍"成本低也更准。
+- **dedup 按出现顺序**：用 HashSet 做去重但保 Vec 的顺序——同一任务一天 3 次 update 折叠成一次。这在 prompt 角度是冗余收敛，在 UI 角度避免"今天我帮你 推进了「早报」「早报」「早报」"的尴尬。代价是 hash 操作小成本，但每天 ~10 任务级别完全可忽略。
+- **Updates 在前 Deletes 在后**：句法上"推进了 X，撤销了 Y"读起来比"撤销了 Y，推进了 X"自然——人类倾向先讲做了什么再讲拒了什么。这是个微小但能感受到的措辞选择。
+- **panel 颜色与 timeline 区分**：每日小结用浅黄 `#fefce8` + 琥珀色 header（高信息密度的 daily summary），最近执行用浅蓝 `#f0f9ff` + 蓝色 header（事件流水）。同一区域两块视觉就明确区分"概览 vs 流水"。
+- **不做"昨天的对比"**：曾想加"昨天我帮你做了 X，今天 Y"对比格式。但这增加 prompt token 与 UI 复杂度，且大多数日子是相似的事——对比意义低。先做最小可用，"对比/趋势"留给后续 weekly retro 能力。
+
 ## Iter Cζ 设计要点（已实现）
 - **不开新调度线程**：原来想加一个独立的 tokio task 按分钟级 tick 检查每个 butler_tasks 的 schedule，到期就 emit。但那意味着：(a) 又一条独立循环，要小心和 proactive、consolidate 协调（比如 quiet hours 是不是也应用到 schedule 触发？）；(b) 通讯路径：调度线程触发 → 怎么走 LLM？如果直接 invoke proactive turn，等于强插一次跳过 gate 的开口。整套链路复杂度超出单 iter。
   - 选 pure-function 路线：proactive 已经按 N 秒 tick 跑了，每 tick 构造 prompt 时顺手用 `is_butler_due` 检查每个任务，到期的标 ⏰、推到顶。唯一代价是检测精度 = proactive interval；对"每天 9 点"足够，对"上午 9:00 整"也足够。"我每分钟都要做点什么"那种 cron 用例不打算支持。

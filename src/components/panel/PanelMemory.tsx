@@ -51,6 +51,7 @@ export function PanelMemory() {
   const [message, setMessage] = useState("");
   const [consolidating, setConsolidating] = useState(false);
   const [butlerHistory, setButlerHistory] = useState<string[]>([]);
+  const [butlerDaily, setButlerDaily] = useState<string[]>([]);
 
   const loadIndex = async () => {
     try {
@@ -72,13 +73,28 @@ export function PanelMemory() {
     }
   };
 
+  const loadButlerDaily = async () => {
+    try {
+      const lines = await invoke<string[]>("get_butler_daily_summaries", { n: 7 });
+      setButlerDaily(lines);
+    } catch (e: any) {
+      console.error("Failed to load butler daily summaries:", e);
+    }
+  };
+
   useEffect(() => {
     loadIndex();
     loadButlerHistory();
+    loadButlerDaily();
     // Refresh history every 15s while panel is open. butler events come from LLM
     // tool calls in proactive turns, which fire at minute scale — 15s polling is
     // cheap and gives "I just saw the pet act on my task" feedback within seconds.
-    const t = setInterval(loadButlerHistory, 15_000);
+    // Daily summaries change at most once per consolidate run (hours apart) but the
+    // poll is cheap so we just piggyback on the same interval.
+    const t = setInterval(() => {
+      loadButlerHistory();
+      loadButlerDaily();
+    }, 15_000);
     return () => clearInterval(t);
   }, []);
 
@@ -364,6 +380,50 @@ export function PanelMemory() {
                   + 新建
                 </button>
               </div>
+              {/* Iter Cη: per-day "今日小结" rolled up by consolidate. Each line is
+                  "<date> <summary>". Newest day rendered at the top in a slightly
+                  bolder treatment than the per-event timeline below. */}
+              {catKey === "butler_tasks" && butlerDaily.length > 0 && (
+                <div
+                  style={{
+                    background: "#fefce8",
+                    border: "1px solid #fde68a",
+                    borderRadius: 6,
+                    padding: "8px 10px",
+                    marginBottom: 8,
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: "#a16207", marginBottom: 4, fontWeight: 600 }}>
+                    每日小结 ({butlerDaily.length})
+                  </div>
+                  {butlerDaily
+                    .slice()
+                    .reverse()
+                    .map((line, i) => {
+                      const firstSpace = line.indexOf(" ");
+                      const date = firstSpace > 0 ? line.slice(0, firstSpace) : "";
+                      const text = firstSpace > 0 ? line.slice(firstSpace + 1) : line;
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            fontSize: 12,
+                            color: "#374151",
+                            marginTop: 2,
+                            display: "flex",
+                            gap: 6,
+                            alignItems: "baseline",
+                          }}
+                        >
+                          <span style={{ color: "#a16207", fontFamily: "'SF Mono', monospace", fontSize: 11 }}>
+                            {date}
+                          </span>
+                          <span style={{ flex: 1 }}>{text}</span>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
               {/* Iter Cε: butler_tasks gets a "最近执行" mini-timeline showing the
                   last few times the LLM updated/deleted a task — closes the
                   feedback loop between assignment and execution. */}
