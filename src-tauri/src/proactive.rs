@@ -300,6 +300,7 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         inputs.pre_quiet_minutes.is_some(),
         !inputs.reminders_hint.trim().is_empty(),
         !inputs.plan_hint.trim().is_empty(),
+        inputs.today_speech_count == 0,
     );
     let data_labels = active_data_driven_rule_labels(
         inputs.proactive_history_count,
@@ -330,6 +331,9 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
                 "- **第一次开口**：你还没有写过 `{}/{}` 记忆条目，开口后应当用 `memory_edit create` 而非 `update` 来初始化它（按上面格式）。",
                 MOOD_CATEGORY, MOOD_TITLE
             ),
+            "first-of-day" => {
+                "- **今天的第一次开口**：今天还没主动开过口。如果决定开口，请用当下时段对应的问候打底（清晨/上午→「早」「早安」；中午/下午→「下午好」「忙不忙」；傍晚/晚上→「晚上好」「今天怎么样」；深夜→简短关心或不打扰）。一句暖场就够，再决定要不要带话题。和 `wake-back`（系统刚唤醒）/ `long-absence-reunion`（用户长别）正交——这只关乎日界节奏。".to_string()
+            }
             "pre-quiet" => format!(
                 "- **快进入安静时段**：再过约 {} 分钟就到夜里的安静时段了。语气要往收尾靠——简短的晚安/睡前关心比新话题合适。",
                 inputs.pre_quiet_minutes.unwrap_or(0)
@@ -425,13 +429,17 @@ pub fn active_environmental_rule_labels(
     pre_quiet: bool,
     reminders_due: bool,
     has_plan: bool,
+    first_of_day: bool,
 ) -> Vec<&'static str> {
-    let mut labels: Vec<&'static str> = Vec::with_capacity(5);
+    let mut labels: Vec<&'static str> = Vec::with_capacity(6);
     if wake_back {
         labels.push("wake-back");
     }
     if first_mood {
         labels.push("first-mood");
+    }
+    if first_of_day {
+        labels.push("first-of-day");
     }
     if pre_quiet {
         labels.push("pre-quiet");
@@ -706,6 +714,7 @@ pub async fn get_tone_snapshot(
         pre_quiet,
         reminders_due,
         has_plan,
+        today_count_for_rules == 0,
     );
     let data_labels = active_data_driven_rule_labels(
         proactive_count as usize,
@@ -1173,6 +1182,7 @@ pub fn spawn(app: AppHandle) {
                 pre_quiet_for_rules,
                 !build_reminders_hint(now_for_rules.naive_local()).is_empty(),
                 has_plan_for_rules,
+                chatty_today == 0,
             );
             let data_label_set = active_data_driven_rule_labels(
                 lifetime_count as usize,
@@ -2099,9 +2109,10 @@ mod prompt_tests {
             // Default well past the icebreaker threshold so existing tests stay at the
             // base 6 rule count; icebreaker tests bump this down explicitly.
             proactive_history_count: 100,
-            // Default below the chatty-day threshold so existing tests don't pick up the
-            // new rule; the chatty-day tests bump this above chatty_day_threshold.
-            today_speech_count: 0,
+            // Default 1 = above the first-of-day trigger (Iter Cξ requires == 0)
+            // and still below the default chatty_day_threshold of 5 — keeps existing
+            // tests neutral on both rules. Tests for either bump this explicitly.
+            today_speech_count: 1,
             // Mirrors the production default (5) — keeps existing tests stable while
             // letting chatty-day tests assert behavior at exact threshold boundary.
             chatty_day_threshold: 5,
@@ -2399,39 +2410,62 @@ mod prompt_tests {
 
     #[test]
     fn active_environmental_rule_labels_empty_when_all_false() {
-        assert!(active_environmental_rule_labels(false, false, false, false, false).is_empty());
+        assert!(active_environmental_rule_labels(false, false, false, false, false, false).is_empty());
     }
 
     #[test]
     fn active_environmental_rule_labels_picks_each_independently() {
         assert_eq!(
-            active_environmental_rule_labels(true, false, false, false, false),
+            active_environmental_rule_labels(true, false, false, false, false, false),
             vec!["wake-back"],
         );
         assert_eq!(
-            active_environmental_rule_labels(false, true, false, false, false),
+            active_environmental_rule_labels(false, true, false, false, false, false),
             vec!["first-mood"],
         );
         assert_eq!(
-            active_environmental_rule_labels(false, false, true, false, false),
+            active_environmental_rule_labels(false, false, true, false, false, false),
             vec!["pre-quiet"],
         );
         assert_eq!(
-            active_environmental_rule_labels(false, false, false, true, false),
+            active_environmental_rule_labels(false, false, false, true, false, false),
             vec!["reminders"],
         );
         assert_eq!(
-            active_environmental_rule_labels(false, false, false, false, true),
+            active_environmental_rule_labels(false, false, false, false, true, false),
             vec!["plan"],
+        );
+        assert_eq!(
+            active_environmental_rule_labels(false, false, false, false, false, true),
+            vec!["first-of-day"],
         );
     }
 
     #[test]
+    fn first_of_day_only_fires_when_today_count_is_zero() {
+        // Iter Cξ: first-of-day is wired in proactive_rules from
+        // `inputs.today_speech_count == 0`. Pin the integration here so a future
+        // refactor (e.g., changing how the env_labels callsite reads the count)
+        // doesn't silently break the trigger.
+        let mut inputs = base_inputs();
+        inputs.today_speech_count = 0;
+        let rules_zero = proactive_rules(&inputs);
+        assert!(rules_zero.iter().any(|r| r.contains("今天的第一次开口")));
+
+        inputs.today_speech_count = 1;
+        let rules_one = proactive_rules(&inputs);
+        assert!(!rules_one.iter().any(|r| r.contains("今天的第一次开口")));
+    }
+
+    #[test]
     fn active_environmental_rule_labels_combine_in_firing_order() {
-        let labels = active_environmental_rule_labels(true, true, true, true, true);
+        let labels = active_environmental_rule_labels(true, true, true, true, true, true);
+        // Iter Cξ: first-of-day slots between first-mood and pre-quiet so the
+        // greeting register comes after mood bootstrap but before quiet-hours
+        // wind-down.
         assert_eq!(
             labels,
-            vec!["wake-back", "first-mood", "pre-quiet", "reminders", "plan"],
+            vec!["wake-back", "first-mood", "first-of-day", "pre-quiet", "reminders", "plan"],
         );
     }
 
@@ -3165,6 +3199,7 @@ mod prompt_tests {
         let fingerprints: &[(&str, &str)] = &[
             ("wake-back", "用户刚从离开桌子回来"),
             ("first-mood", "第一次开口"),
+            ("first-of-day", "今天的第一次开口"),
             ("pre-quiet", "快进入安静时段"),
             ("reminders", "有到期的用户提醒"),
             ("plan", "你有今日计划在执行中"),
@@ -3179,7 +3214,7 @@ mod prompt_tests {
         // Sanity: the fingerprint table must cover every label the helpers emit. Use
         // each helper's max-trigger inputs to enumerate the universe.
         let backend_labels: std::collections::HashSet<&'static str> =
-            active_environmental_rule_labels(true, true, true, true, true)
+            active_environmental_rule_labels(true, true, true, true, true, true)
                 .into_iter()
                 .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0))
                 .chain(active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60))
@@ -3259,7 +3294,7 @@ mod prompt_tests {
         );
         // All-true / max-trigger inputs surface every label all backend helpers can
         // ever produce. Same input recipe as Iter 89's test for consistency.
-        let env = active_environmental_rule_labels(true, true, true, true, true);
+        let env = active_environmental_rule_labels(true, true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
         let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
         let backend: std::collections::HashSet<&'static str> = env
@@ -3300,7 +3335,7 @@ mod prompt_tests {
         let frontend_set: std::collections::HashSet<&str> =
             frontend_keys.iter().map(|s| s.as_str()).collect();
         // All-true inputs surface every possible label all helpers can ever return.
-        let env = active_environmental_rule_labels(true, true, true, true, true);
+        let env = active_environmental_rule_labels(true, true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
         let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
         let missing: Vec<&'static str> = env
@@ -3337,14 +3372,16 @@ mod prompt_tests {
         inputs.env_spoke_with_any = 1;
         // pre-quiet on AND long-idle are mutually exclusive by design (long-idle
         // requires !pre_quiet). Likewise chatty (today_count >= threshold) and
-        // long-idle exclude each other. This scenario: pre-quiet on, today=0 (no
-        // chatty), long-idle won't fire — so we expect:
-        // 6 base + 5 env + 2 data (icebreaker + env-awareness) + 1 composite
-        // (engagement-window) = 14. The fingerprint test below covers long-idle and
-        // chatty in a separate scenario, so combined coverage is still complete.
+        // long-idle exclude each other. This scenario: pre-quiet on, today=0
+        // (no chatty AND first-of-day fires — Iter Cξ added that 6th env label),
+        // long-idle won't fire — so we expect:
+        // 6 base + 6 env (wake-back/first-mood/first-of-day/pre-quiet/reminders/plan)
+        // + 2 data (icebreaker + env-awareness) + 1 composite (engagement-window)
+        // = 15. The fingerprint test below covers long-idle / chatty / long-absence
+        // in a separate scenario, so combined coverage is still complete.
         inputs.today_speech_count = 0;
         let rules = proactive_rules(&inputs);
-        assert_eq!(rules.len(), 6 + 5 + 2 + 1, "rules: {:#?}", rules);
+        assert_eq!(rules.len(), 6 + 6 + 2 + 1, "rules: {:#?}", rules);
         assert!(!rules.iter().any(|r| r.contains("规则文本待补")));
     }
 

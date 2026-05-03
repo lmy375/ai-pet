@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cξ：first-of-day 环境规则
+- 现状缺口：用户每天打开 panel 第一次看到宠物开口时，希望感觉像"早安"那种打底问候——但 prompt 没有告诉 LLM "这是今天第一次开口"。结果第一次开口的语气和第十次没分别，"日界"这个对人类很重要的节奏感对宠物完全不存在。
+- 解法：新增环境规则 `first-of-day`，与 wake-back / first-mood / pre-quiet / reminders / plan 同列：
+  - 触发条件：`today_speech_count == 0`（今天还没主动开过口）
+  - rule body 引导 LLM 用当下时段问候打底（清晨/上午→早安；中午/下午→下午好；傍晚/晚上→晚上好；深夜→简短关心或不打扰），简短一句暖场再决定话题
+  - 与 wake-back（系统刚唤醒）/ long-absence-reunion（用户长别）正交——这只关乎日界节奏，不关心系统状态或用户在哪
+  - nature: engagement
+- 改动：
+  - `active_environmental_rule_labels` 加 `first_of_day: bool` 第 6 个参数 + 新 label。三个 production callsite + 测试 callsite 全部更新。
+  - 新 label 在助记顺序里排在 `first-mood` 之后、`pre-quiet` 之前——mood bootstrap 优先于日界问候，问候完成后再考虑 quiet hours 收尾，逻辑层级合理。
+  - 三处 production callsite 都从已有 `today_count` 派生：`run_proactive_turn`/`get_tone_snapshot`/spawn loop 都已经在拿 today_speech_count，加 `== 0` 判断零成本。
+  - panelTypes.ts 加 `first-of-day: { title: "今日首开", summary: ..., nature: "engagement" }`。
+  - 三向对齐：fingerprint 表加 `("first-of-day", "今天的第一次开口")`，scenario 1 用 today_speech_count=5 不触发、scenario 2 用 today_speech_count=0 触发，组合覆盖完整。
+- base_inputs 默认 `today_speech_count` 从 0 改为 1：避免现有所有 base_inputs 测试默触发新规则。1 仍然 < chatty_day_threshold (5)，所以 chatty 规则也不会误触发——单点改动维持所有现有测试中性。
+- 1 个新 unit test 锁住集成（today=0 时规则文本含「今天的第一次开口」，today=1 时不含）+ 既有的 firing_order 共存测试加 first-of-day 一个分支。
+- rules count test 同步更新：scenario 里 today=0 时 env labels 从 5 升到 6，期望 rules 数从 14 升到 15。
+- 测试总数 285 → 286。
+- 结果：用户每天第一次看到宠物开口的体验有了"日界感"——清晨开 panel 听到「早安」、深夜回家看到的是简短关心而非又一波话题，宠物的节奏感和真实伙伴对齐了一档。
+
 ## 2026-05-03 — Iter Cν：long-absence-reunion 复合规则
 - 现状缺口：Cμ 给 prompt 加了 `user_absence_tier` 的语气线索，但仅作为 ambient 信息塞进时间行——LLM 看到"用户至少一天没和你互动"是知道，但没有结构化规则告诉它"这意味着开口要带重逢感"。`wake-back` 规则覆盖系统休眠 → 唤醒的瞬间，但用户离开 4 小时不一定伴随系统休眠（合上盖子但持续运行 / 上下班 / 开会），那种长别久离没规则覆盖。
 - 解法：新增一条复合规则 `long-absence-reunion`，与 `engagement-window` / `long-idle-no-restraint` 并列：
