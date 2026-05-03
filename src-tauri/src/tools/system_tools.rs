@@ -91,11 +91,13 @@ async fn get_active_window_impl(ctx: &ToolContext) -> String {
         // Iter Cx: apply user-configured privacy redaction before either logging or
         // returning to the LLM. Both `app` and `window_title` can contain personal
         // names / project codenames; user lists patterns in settings.privacy.
-        let patterns = crate::commands::settings::get_settings()
-            .map(|s| s.privacy.redaction_patterns.clone())
-            .unwrap_or_default();
-        let app_name = crate::redaction::redact_text(&app_name, &patterns);
-        let window_title = crate::redaction::redact_text(&window_title, &patterns);
+        //
+        // Iter R61: switched from `redact_text` (substring-only) to
+        // `redact_with_settings` (substring + regex). Tool outputs were
+        // previously bypassing the regex patterns, missing structural
+        // matches like emails / project IDs that don't trigger substring.
+        let app_name = crate::redaction::redact_with_settings(&app_name);
+        let window_title = crate::redaction::redact_with_settings(&window_title);
 
         ctx.log(&format!(
             "get_active_window: app={:?} window={:?}",
