@@ -1,4 +1,4 @@
-import { useRef, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { Live2DCharacter } from "./components/Live2DCharacter";
@@ -15,6 +15,19 @@ function App() {
   const modelRef = useRef<any>(null);
   const { hidden, handleMouseEnter } = useAutoHide();
   useMoodAnimation(modelRef);
+
+  // Iter F1: bubble auto-dismiss after 60s of being visible. Without this the
+  // desktop bubble stays showing the last assistant message forever — proactive
+  // utterances at 9am stuck on screen all day. 60s is enough to read; if the
+  // user wants the message back they can open the chat panel for full history.
+  // Loading bubbles (mid-stream) and the message arrival reset the timer.
+  const [bubbleDismissed, setBubbleDismissed] = useState(false);
+  useEffect(() => {
+    setBubbleDismissed(false);
+    if (!showBubble || !displayMessage || isLoading) return;
+    const t = setTimeout(() => setBubbleDismissed(true), 60_000);
+    return () => clearTimeout(t);
+  }, [displayMessage, showBubble, isLoading]);
 
   const handleModelReady = useCallback((model: any) => {
     modelRef.current = model;
@@ -85,7 +98,10 @@ function App() {
         </div>
       )}
 
-      <ChatBubble message={displayMessage} visible={showBubble && !hidden} />
+      <ChatBubble
+        message={displayMessage}
+        visible={showBubble && !hidden && !bubbleDismissed}
+      />
       <Live2DCharacter
         key={settings.live_2d_model_path}
         modelPath={settings.live_2d_model_path}

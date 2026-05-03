@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter F1：桌面 bubble 60s 自动消失（开启 F series 用户体验向）
+- 现状缺口：宠物的桌面气泡只要存在 lastAssistantMsg 就一直显示。早上 proactive 说"早安"——这条 bubble 挂屏幕直到下次说话（可能下午 5 点）。screen clutter + 看着 stuck。
+- 解法：App.tsx 加 `bubbleDismissed: bool` state + useEffect timer：
+  - 当 displayMessage 非空 + showBubble true + 非 isLoading 时，启动 60s 定时器
+  - 定时器到 → setBubbleDismissed(true) → ChatBubble 渲染 visible=false
+  - 新消息（displayMessage 变化）会重新触发 useEffect → 重置 dismissed=false → 新 60s 计时
+  - cleanup return clearTimeout 防 memory leak
+- 60s 选择：阅读一条句子 + 几秒思考充足；不会因为太短让 user 错过；不会因为太长继续 cluttering。如果未来要更精细控制再 hoist 到 settings。
+- 不区分 reactive vs proactive：reactive 也 60s 消失合理——ChatPanel 完整聊天历史一直可见，bubble 是临时通知。
+- isLoading 期间不计时：流式回复期间 bubble 持续显示直到生成完，再开始 60s 倒计时。这是 reactive 路径的正确顺序。
+- 不动 ChatBubble 组件本身：visibility prop 即可，state 上提到 App.tsx 让"桌面屏幕清理"逻辑在统一处。
+- 测试：tsc 干净；306 cargo 不变（纯前端改动）。
+- 结果：proactive 早上说"早安"→ 60s 消失；用户没看到？打开 Panel Chat tab 完整记录在那。从"屏幕被一句话占着" 到"通知一闪而过即可"。
+
 ## 2026-05-03 — Iter E4：prompt-preview ring buffer of last 5 turns + 导航
 - 现状缺口：E1/E2/E3 只看 last 1 turn。研发改 prompt 后想"看这次 vs 上次差在哪"得在两个 trigger 之间手动记下 — modal 不能比较。
 - 解法：环形缓冲 last 5 turns，panel modal 加 prev/next 按钮：

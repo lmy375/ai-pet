@@ -70,6 +70,10 @@
 - [x] Iter E4：proactive turn ring buffer (cap 5) + panel modal « / » 导航 — 比较
   prompt 跨 run 变化（2026-05-03 完成）
 
+### 路线 F：用户体验回归
+- [x] Iter F1：桌面 bubble 60s 自动消失 — 修复 proactive 后 bubble 永久挂屏幕的 UX bug
+  （2026-05-03 完成）
+
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
 - [x] Iter Cδ：panel 顶部 "+ 委托任务" 快捷入口 + 模态分类 placeholder（2026-05-03 完成）

@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter F1 设计要点（已实现）
+- **F series 拐回用户体验**：D 是 surfacing，E 是 dev tool，F 是 user UX 改进。这次发现"bubble 永久挂屏幕"是个真实长期 gap—只是前面 30 多个 iter 集中在功能加成，没人审视过 bubble lifecycle。
+- **60s 选择**：30s 太短（用户走开倒杯水回来错过）；120s 太长（视觉负担）。60s 是 "能读到 + 不烦人" 的舒适带。后续若用户反馈再调；不暴露到 settings 避免配置项又一个不必要选项。
+- **不区分 reactive / proactive**：本来想"reactive 用户主动发起的，可能想细看，不该自动消失"。但 reactive 的完整对话已经在 ChatPanel 里随时可读；bubble 是临时表层通知，60s 消失对所有路径都合适。
+- **state 上提到 App.tsx**：bubble 自身没法干净地 owns auto-dismiss——它接 message prop 但不控制 visibility 来源。把状态在 App 层管，ChatBubble 仍是 dumb display 组件。
+- **isLoading 期间不计时**：reactive 流式回复 isLoading=true，需要 bubble 持续显示直到生成完。useEffect 依赖 [displayMessage, showBubble, isLoading]，isLoading 切换 false 时 useEffect re-run，这次 timer 真的开始。
+- **不写新 cargo / tsc 测试**：纯前端 useEffect timer，无 Rust 接口变更。前端无 React 测试 harness。
+
 ## Iter E4 设计要点（已实现）
 - **VecDeque 在 const Mutex**：`Mutex::new(VecDeque::new())` 在 Rust const context 也成立——VecDeque::new 是 const fn。这种细节让 static 初始化无需 lazy_static / once_cell，干净。
 - **保留 E1/E2/E3 mutex**：本可以全砍掉、所有 Tauri 命令从 ring buffer 读 last。但 E1/E2/E3 命令对外 API 是 `String` 单值；如果切到从 buffer 读 last 还要 unwrap empty case。多保留两个独立 mutex 的代价是几行复制——换得 backward compatibility 简洁。如果未来确认 panel 是唯一调用方，可以再清理。
