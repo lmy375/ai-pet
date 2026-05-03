@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG2：LLM tool-call loop 加最大轮数 + 明确失败路径
+- 现状缺口：`run_chat_pipeline` 注释自己写"unlimited rounds"。如果模型陷入循环（反复读同一个 memory 类，或调用 → 工具 error → 再调用 → 同样 error），就会无限消耗 token + API 配额，最坏可能挂住 turn 直到外部超时。同时缺乏对外的可解释错误：当模型坏掉时用户只能看到 chat panel 没反应。
+- 解法（最小可观测集）：
+  - 新 `pub const MAX_TOOL_CALL_ROUNDS: usize = 8`（典型 1-3 轮收敛，5 轮以内是 tool-heavy 任务，>=8 几乎必定坏掉）
+  - 编译时 sanity bound：`const _: () = assert!(MAX_TOOL_CALL_ROUNDS >= 4 && <= 32)` —— 防止未来"调到 1000"的 PR 偷偷漏过
+  - 两个纯 helper：
+    - `tool_call_limit_message(rounds, max) -> String`：中文用户可读 + 包含 round 计数和 max 便于 debug
+    - `enforce_tool_round_limit(round, max) -> Option<String>`：>= max 返 Some(message)，否则 None。pure 因为这层逻辑必须独立于 HTTP 实测可测
+  - run_chat_pipeline loop 头部加 gate：返 Some 时三件事并行 — `ctx.log` 写 ERROR 到 app.log + `sink.send_error` 推前端 stream + `return Err(msg)` 给 caller
+- 测试：
+  - `enforce_tool_round_limit_passes_under_max` (round=0, 7 都返 None)
+  - `enforce_tool_round_limit_aborts_at_or_over_max` (round=8 / 99 都返 Some 且消息含 round 数)
+  - `tool_call_limit_message_is_user_meaningful`：钉住消息含「工具调用循环」+「已中止」+ 数字
+- 决策：选 const 而不 settings.max_tool_call_rounds —— 8 是个工程合理上限，普通用户不需要调；如果未来有需求再把 const 升级成 settings 字段。少一个 settings 项 = 少一个忘了重启就不生效的坑。
+- 决策：不做完整 HTTP mock 集成测试 —— pure helper 已覆盖 limit 逻辑，loop 控制流靠 inspection 验证。HTTP mock 会让 PR 翻倍长但只多 cover "确实没多发一次 LLM 请求" 这点，回报率低。
+- 测试结果：309 cargo tests（+3）；clippy --all-targets clean（const_assert 通过 const _ pattern 而不是 assert!，避免 assertions_on_constants 警告）；fmt clean；tsc clean。
+- 结果：从"unlimited rounds 注释 + 实际无限循环可能"到"硬上限 8 + 用户可读错误 + app.log + frontend stream 全路径告警"。坏掉的 turn 现在 fail-loud 而不是 silent burn。
+
 ## 2026-05-03 — Iter QG1：清理 Rust 格式与 lint（开启 Quality Gate 系列）
 - 现状缺口：项目快速堆功能阶段，`cargo fmt --check` 输出 ~2100 行 diff、`cargo clippy --all-targets -- -D warnings` 报 13 个 error。alpha 阶段累计的格式 / 习语债务，CI 接入和未来 PR review 都需要清零。
 - 解法分两步走，纯机械整理 + 局部惯用法升级，零业务行为变化：

@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG2 设计要点（已实现）
+- **8 是个工程值**：1-3 轮覆盖大多数；5 轮以内是 tool-heavy（butler 委托后还要查 memory 再 search）；6-7 轮已经在循环边缘。8 留 1 轮 buffer，再上去基本是失控。如果实际生产观测到合法 turn 卡 5+ 轮，再调高，但不会突破 32。
+- **const 而不 settings**：刚做 QG1 时把同样的 trade-off 做了一次（fmt allow 或重构）。这次再次选"硬编码 + 充分 comment"。理由：(a) 新 settings 字段意味着前端 UI、reload 逻辑、迁移、文档全要跟；(b) 普通用户调这个 const 等于"让宠物允许更长循环"——不是健康的可配置项；(c) 真要做成动态配置，是 QG3-style 大题（会带 settings 模式扩展、加测试），不是 QG2 范围。
+- **`const _: () = assert!(...)` 是 Rust 隐藏宝石**：编译时 const 断言不需要 macro。用它把 magic number 的合理范围锁在编译器层。clippy 不会嫌（因为这是 const context，永远评估到固定 bool），同时它比 runtime test 强：没人能 ship 一个值 100 的 const，因为根本编译不过。test 里的 assert! on const 反而被 clippy 嫌（`assertions_on_constants`），那是 lint 提示用 const _ 这条路。
+- **三路 fail-loud**：ctx.log（持久 + LogStore in-mem）+ sink.send_error（前端 stream）+ Err(_) (caller-level)。一开始考虑只 sink.send_error，但那只到 frontend；server-side 调用方（Telegram bot 用 CollectingSink）不 send_error，所以必须 Err(_) 让外层处理。三路并行的代价是几行；遗漏任一路就会出现"某入口 silent fail"。
+- **pure helper enforce_tool_round_limit**：把 gate 做成 `usize → Option<String>` 而不是直接 inline 写 `if round >= MAX { ... }`。这样测试不需要任何 HTTP 模拟，纯函数 in/out 就 cover 边界。是 D series "view-time mirror" 思路的延伸——所有重要决策都有 pure helper。
+- **不写 HTTP mock 集成测试**：mock 一个返 tool_calls 的 LLM endpoint 来 drive 真实 loop，能验证"确实没多发一次 LLM 请求"。但 (a) 工程量是本 iter 的 3-5 倍；(b) 只 cover 一个边界；(c) 现有 inspect 已确认 loop 头部 gate 在 LLM call 之前。投资回报率不够，拒掉，留笔记给未来 QG。
+
 ## Iter QG1 设计要点（已实现）
 - **从堆功能切到质量收口**：D / E / F 系列连续加 surfacing / devtools / UX 后，TODO.md 顶部新加了 "下一阶段：质量收口" 段——这是一个明确信号（来自代码质量评估），下一批工作应该是 "把 alpha 推向可维护"。QG1 是入门门槛最低、最少改业务行为的一项，先做掉建立 baseline。
 - **"先 fmt 再 clippy" 顺序**：fmt 是机械重排，对 clippy 的代码定位行号会有影响——先 fmt 后 clippy 让所有 clippy 报错的行号都基于已格式化代码，未来对照 git blame 时不会被搞混。
