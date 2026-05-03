@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG5d 设计要点（已实现）
+- **gate 子系统的 cohesion**：7 个 gate（disabled/awaiting/cooldown/quiet/focus/idle/input-idle）+ 一个调度器 evaluate_loop_tick + 一个 LoopAction enum + 一组 wake softening helpers — 这一片自然成 unit。Tests 多达 25 个 + 470 行也合理：每个 gate 都有 active/inactive/boundary 三种至少一种 case。
+- **测试整体迁移 vs 留 prompt_tests 的对照**：gate_tests 是 self-contained mod（只用 super::* + ProactiveConfig + ClockSnapshot），所以可以整个搬走。prompt_tests 因为 base_inputs 跨多模块依赖留在 proactive.rs。判断标准简单：tests 用 super:: 解析的 items 是不是大部分跟 source 一起搬？是 → 跟着搬。否 → 留 parent。
+- **LoopAction private → pub 升级**：spawn loop body 在 proactive.rs，需要 match `LoopAction::Silent / Skip / Run` 三种 variant。pub 化是必要的。同 SILENT_MARKER 在 QG5c2 时的处理。
+- **`super::ClockSnapshot` 跨子模块依赖的标准模式**：gate 里需要 ClockSnapshot 但它定义在 proactive.rs (parent)。`use super::{ClockSnapshot, InteractionClockStore};` 干净显式。如果将来想再细分 InteractionClock 自己到 sub-module，gate 就 import 更深 — `super::clock::ClockSnapshot` 之类。子模块 import parent 项是 backward-compatible 的稳定设计。
+- **41% 累计 = QG5 已经 mostly done**：起 5500 → 3232。还剩 ~3200 行的 telemetry (record_proactive_outcome / append_outcome_tag) + run_proactive_turn + Tauri commands + InteractionClock + spawn loop。最后 QG5e 后 proactive.rs 大概会稳定在 2500-3000 行的 orchestration-only 体量——基本是 spawn loop + 一个 run_proactive_turn 巨函数 + Tauri command surface + InteractionClock。这是 acceptable 的 mid-term 终态。
+- **没必要再切到极致**：proactive.rs 最终 2500-3000 行 acceptable，因为 spawn loop body + run_proactive_turn 是"上层 orchestration"，再切只是把"上下游连接代码" 也分文件，反而难追踪。优秀的 module split 应该让"独立 cohesive unit" 有自己文件，但"主流程胶水代码" 留 parent。
+
 ## Iter QG5c2 设计要点（已实现）
 - **决策 / 渲染分两层是干净的 prompt 体系**：QG5c1 抽走了 rule-label 决策器（哪个 rule 该 fire），QG5c2 抽走渲染器（rule-label → 文本，PromptInputs 数据 → prompt 字符串）。两层分立后，未来想换 prompt 模板（紧凑版 vs 详尽版 vs 多语言）只动 assembler；想加新 rule 类别只动 rules。
 - **超大 prompt_tests 测试 mod 不挪是被 super::* 习惯绑住**：1620 行的测试 mod 用 super::* 解析十几个跨多个新 sub-module 的 fn。如果挪到任何一个 sub-module，super 变窄丢失可见性。若挪到 proactive 自己的 ./tests/ 目录又意味着把它从 cfg(test) inline 模块变成 integration test (different test binary, no access to private items)。最低 friction = 留在 proactive.rs。这是"测试 vs 代码 colocation 完美" 的小妥协；可接受。
