@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelChipStrip } from "./PanelChipStrip";
+import { PanelStatsCard } from "./PanelStatsCard";
+import { PanelToneStrip } from "./PanelToneStrip";
 import {
   CacheStats,
   EnvToolStats,
@@ -332,125 +334,13 @@ export function PanelDebug() {
         </div>
       )}
 
-      {/* Prominent lifetime stats — single big number for the "we've talked N times" feel.
-          Sourced from speech_count.txt sidecar (persisted across restarts). The same value
-          is also surfaced in the chip strip below; here it gets a bigger typographic moment
-          for users who actually want to see the long-running total. */}
-      <div
-        style={{
-          padding: "10px 16px",
-          borderBottom: "1px solid #e2e8f0",
-          background: "linear-gradient(135deg, #fdf4ff 0%, #f0f9ff 100%)",
-          display: "flex",
-          alignItems: "baseline",
-          gap: "16px",
-        }}
-      >
-        {(() => {
-          const threshold = tone?.chatty_day_threshold ?? 0;
-          const restraining = threshold > 0 && todaySpeechCount >= threshold;
-          const todayColor = restraining ? "#ea580c" : "#0ea5e9";
-          const todayTitle = restraining
-            ? `今日 ${todaySpeechCount} 次 ≥ 阈值 ${threshold}：宠物已进入克制模式（prompt 软规则建议保持安静，除非有新信号）`
-            : "今天（本机时区）记录的主动开口次数。来自 ~/.config/pet/speech_daily.json";
-          return (
-            <>
-              <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }} title={todayTitle}>
-                <span style={{ fontSize: "20px", fontWeight: 600, color: todayColor, lineHeight: 1, fontFamily: "'SF Mono', 'Menlo', monospace" }}>
-                  {todaySpeechCount}
-                </span>
-                <span style={{ fontSize: "11px", color: "#64748b" }}>今日</span>
-              </div>
-              <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }} title="持久化在 speech_count.txt，跨重启不归零">
-                <span style={{ fontSize: "28px", fontWeight: 600, color: "#7c3aed", lineHeight: 1, fontFamily: "'SF Mono', 'Menlo', monospace" }}>
-                  {lifetimeSpeechCount}
-                </span>
-                <span style={{ fontSize: "11px", color: "#64748b" }}>累计</span>
-              </div>
-              <span style={{ fontSize: "12px", color: "#64748b" }}>次主动开口</span>
-              {restraining && (
-                <span
-                  title={`已超过设置的 chatty_day_threshold (${threshold})，prompt 里加了"今天聊得不少了"的克制规则`}
-                  style={{
-                    fontSize: "11px",
-                    color: "#ea580c",
-                    marginLeft: "auto",
-                    background: "#fff7ed",
-                    border: "1px solid #fed7aa",
-                    padding: "2px 8px",
-                    borderRadius: "10px",
-                  }}
-                >
-                  克制模式
-                </span>
-              )}
-              {!restraining && lifetimeSpeechCount < 3 && (
-                <span style={{ fontSize: "11px", color: "#d97706", marginLeft: "auto" }}>
-                  破冰阶段
-                </span>
-              )}
-            </>
-          );
-        })()}
-      </div>
+      <PanelStatsCard
+        todaySpeechCount={todaySpeechCount}
+        lifetimeSpeechCount={lifetimeSpeechCount}
+        tone={tone}
+      />
 
-      {/* Conversational tone snapshot — what signals the proactive prompt is seeing */}
-      {tone && (
-        <div
-          style={{
-            padding: "6px 16px",
-            borderBottom: "1px solid #e2e8f0",
-            background: "#f1f5f9",
-            fontSize: "11px",
-            color: "#475569",
-            fontFamily: "'SF Mono', 'Menlo', monospace",
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "12px",
-          }}
-        >
-          <span title="period_of_day(now)">⏱ {tone.period}</span>
-          {tone.cadence && tone.since_last_proactive_minutes !== null && (
-            <span title="距上次宠物主动开口">
-              💬 {tone.cadence}（{tone.since_last_proactive_minutes}m）
-            </span>
-          )}
-          {tone.wake_seconds_ago !== null && tone.wake_seconds_ago <= 600 && (
-            <span title="刚检测到 wake-from-sleep" style={{ color: "#0891b2" }}>
-              ☀ wake {tone.wake_seconds_ago}s
-            </span>
-          )}
-          {tone.pre_quiet_minutes !== null && (
-            <span title="距离配置的 quiet hours 开始时间" style={{ color: "#dc2626" }}>
-              🌙 距安静时段 {tone.pre_quiet_minutes}m
-            </span>
-          )}
-          <span
-            title={
-              tone.proactive_count < 3
-                ? "破冰阶段——前 3 次主动开口走探索性话题"
-                : "宠物累计主动开口次数（持久化在 speech_count.txt，跨重启不归零）"
-            }
-            style={{ color: tone.proactive_count < 3 ? "#d97706" : "#64748b" }}
-          >
-            🤝 已开口 {tone.proactive_count} 次
-            {tone.proactive_count < 3 ? "（破冰）" : ""}
-          </span>
-          {tone.mood_motion && (
-            <span title="LLM 当前 motion 标签" style={{ color: "#a855f7" }}>
-              ★ motion: {tone.mood_motion}
-            </span>
-          )}
-          {tone.mood_text && (
-            <span
-              style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-              title={tone.mood_text}
-            >
-              ☁ mood: {tone.mood_text}
-            </span>
-          )}
-        </div>
-      )}
+      <PanelToneStrip tone={tone} />
 
       {/* Recent proactive decisions — answers "why didn't the pet say anything?" */}
       {decisions.length > 0 && (
