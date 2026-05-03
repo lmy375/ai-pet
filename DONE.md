@@ -2,6 +2,28 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R1：用户反馈信号采集 + 注入下次 proactive prompt
+- 现状缺口：宠物每次 proactive 都是"开完口就发了"——没有反馈循环。同样话术不管用户上一句是回应了还是完全无视，都会用同样的语气重复。要变成"会学" 的伴侣，得至少把"上次开口的下场" 喂回 prompt。
+- 解法 — 在 InteractionClock 的 awaiting flag 上做被动观测：用户在两次 proactive 之间发消息会触发 `mark_user_message`（清 awaiting）；如果一直没发，下次 proactive fire 时 awaiting 仍是 true。这两个信号刚好对应 replied / ignored，**完全不需要前端 UI 改动**。
+- 新模块 `src/feedback_history.rs`：
+  - `enum FeedbackKind { Replied, Ignored }` + `struct FeedbackEntry { timestamp, kind, excerpt }`
+  - `format_line(ts, kind, excerpt) -> String` / `parse_line(line) -> Option<FeedbackEntry>`：单行 round-trip 格式 `{ts} {kind} | {excerpt}`，excerpt 截 40 字符
+  - `record_event(kind, prev_speech_excerpt)` async：append + 200 行 cap 自动 roll
+  - `recent_feedback(n)` async：读最近 N 条
+  - `format_feedback_hint(entries)` pure：取最新一条产出 prompt 提示文字
+- InteractionClock 加 `pub async fn raw_awaiting()`：feedback 分类需要"用户实际是否回了"（不应用 D11 4h 自动 expire）。effective_awaiting 仍管 gate 行为不变。
+- 在 `run_proactive_turn` 头部分两步：(1) 看 LAST_PROACTIVE_TIMESTAMP + LAST_PROACTIVE_REPLY 是否有上一轮，配合 LAST_FEEDBACK_RECORDED_FOR 去重，根据 `clock.raw_awaiting()` 分类并 record_event；(2) 读 recent_feedback(1) + format_feedback_hint 得到一行字符串。
+- PromptInputs 加 `feedback_hint: &'a str`，build_proactive_prompt 在 speech_hint 之后插入 `push_if_nonempty`。base_inputs 默认空。
+- 决策 — 不做 dismiss < 5s（"快速关掉"）信号：原 TODO 写了三档分类，但 dismiss 需要 ChatBubble 加点击事件 + 时间戳记录 + Tauri 命令——是单独前端 iter 的工作量。R1 做最大杠杆的两档（replied / ignored），dismiss <5s 留 R1b。
+- 决策 — passive 观测 vs 主动埋点：完全靠 InteractionClock 已有信号推导，不需要 frontend 任何调用。`mark_user_message` 早就存在，没改任何 UX 路径。这是 hidden leverage：合适的 state machine 让"加一层数据流" 变成 0 行前端代码。
+- 决策 — `LAST_FEEDBACK_RECORDED_FOR` 用 prev timestamp 做 dedup key：proactive turn 可能因为 proactive loop 跑了多次导致重复 record。timestamp 是天然 unique 的"prev turn 标识"。
+- 测试（8 新单测）：
+  - format_line 截断 / newline 转义 - 2 个
+  - parse_line round-trip + reject 未知 kind / malformed - 2 个
+  - format_feedback_hint 空 / replied / ignored / 用最新一条而不是历史 - 4 个
+- 测试结果：358 cargo（+8）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：从"宠物开完口不知道用户怎么想" 到"下次开口前 prompt 里告诉它『上次你说 X，用户没回应——这次要么放短要么沉默』"。LLM 自己读这一行后会调整 register。后续 R3-R5 都可以基于 feedback_history 进一步分析（比如"过去 24h ignored 比例 → 降低 chatty 上限"）。
+
 ## 2026-05-03 — Iter R2：TR3 review 结果写入 decision_log + 路线规划补全
 - 现状缺口：TR3 把 high-risk approve / deny / timeout 写到 app.log，但 panel 的 "recent decisions" view（QG3 时设置好的时间线）只看到 Spoke / Silent / Skip。tool-review 是真正"宠物想做的事被拦下" 决策事件，理应共享同一个 timeline——让用户在一条时间线里看完"宠物今天试图做什么 + 哪些被你拦了"。
 - 解法：

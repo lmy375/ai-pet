@@ -136,11 +136,8 @@
 QG1-6 + TR1-3 把质量基线和工具审计闭环了。现在的差距在"真实伙伴感"上 — 不是
 更多功能，而是把现有信号闭回宠物的判断里。优先级从高到低：
 
-- [ ] Iter R1：用户反馈信号采集 + 注入 proactive prompt。
-  - AI prompt：在 ChatBubble 的 60s 自动消失之外，区分 (a) 用户主动 dismiss（< 5s 关掉）
-    (b) 用户回复 (c) 用户忽略到 60s 超时。把这三种结果记到 speech_history 同级的
-    `feedback_history.log`，proactive prompt 加 hint："上次你说『X』，用户 N 秒后忽略了"。
-    让 LLM 学着调整开口节奏 / 内容。补 unit test 钉住注入字段。
+- [x] Iter R1：用户反馈信号采集 + 注入 proactive prompt（2026-05-03 完成 — 实现
+  ignored / replied 二分，dismiss <5s 留作 R1b 后续 — 需 ChatBubble UI 改动）
 
 - [x] Iter R2：TR3 review 结果写入 decision_log（2026-05-03 完成 — Iter R2）
 
