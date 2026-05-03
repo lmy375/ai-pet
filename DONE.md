@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R6：panel feedback timeline（surface R1 capture data）
+- 现状缺口：R1 把每次 proactive 后用户的 replied/ignored 写到 feedback_history.log，但 panel 没显示。"宠物在学习吗？" 这个问题没有可观察答案。
+- 解法 — R4 同模式：
+  - FeedbackKind 加 `#[derive(Serialize)] + #[serde(rename_all = "lowercase")]` 让 IPC 输出 "replied" / "ignored" 字符串
+  - FeedbackEntry 加 `#[derive(Serialize)]`，去掉 timestamp 上的 `#[allow(dead_code)]`（现在被 panel 真用了）
+  - 新 `#[tauri::command] get_recent_feedback()` 异步读取 + reverse 成 newest-first
+  - DebugSnapshot 加 `recent_feedback: Vec<FeedbackEntry>` 字段，在 get_debug_snapshot 中拉 20 条 reverse
+- Frontend — PanelDebug 加"💬 宠物反馈记录" collapsible:
+  - 标题里嵌入 "{回复数}/{总数} 回复" 即时反馈率（用户一眼能看到 "今天 3/8 回复" 倾向）
+  - 展开后 timeline：HH:MM + 回复/忽略 pill + 截断 excerpt
+  - 默认收起（避免长 session 撑开 panel；和 R4 工具调用历史同 UX 决策）
+- 测试 — 2 个新单测，专钉 IPC 边界契约：
+  - `feedback_kind_serializes_as_lowercase_for_frontend`：钉死 "replied" / "ignored" 字符串。如果有人把 enum 名字改了或漏了 rename_all，panel 渲染会变成空 pill —— 这测试在 backend 阻挡这个回归
+  - `feedback_entry_serializes_with_all_three_fields`：sanity 检查 timestamp / kind / excerpt 都进 JSON
+- 决策 — title 里嵌反馈率而不是单独 metric：节省 panel 空间 + 给"是否要展开看细节" 一个判断依据。如果反馈率明显低（比如 1/10 回复），用户会主动点开看是哪些 utterance 被忽略——是 design-for-curiosity。
+- 决策 — newest-first（reverse）：和 R4 工具调用历史一致。chat panel 上"刚发生" 的事在最上面更符合直觉。
+- 决策 — 20 条窗口：FEEDBACK_HISTORY_CAP=200，但 panel 看 20 够了。R7（自适应 cooldown）需要更宽窗口（24h ratio）时再独立读。
+- 测试结果：374 cargo（+2）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：R1（采集）→ R6（surface）链路打通。下次开口前 panel 用户能看到"过去 20 次中 12 次被回复" 这种倾向数据。R7 可以基于这层数据闭回 cooldown 行为。
+
 ## 2026-05-03 — Iter R8：late-night-wellness 30 分钟 rate limit + 后续路线
 - 现状缺口：R3 加的 late-night-wellness 规则只要 (hour<4 && idle<5min) 都会激活——按典型 5 分钟 proactive loop 间隔，半夜用户在键盘前一小时可能被提醒 12 次"该睡了"。这从关心变成骚扰。
 - 解法 — pure-helper 三层 + 一个 dispatch-time stamp：

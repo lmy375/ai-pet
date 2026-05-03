@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R6 设计要点（已实现）
+- **R 系列 capture → surface → drive 三段式**：R1 采集（capture），R6 暴露（surface），R7 才会回填到 cooldown 决策（drive）。先 surface 再 drive 是 product 级安全：让用户先在 panel 看到"反馈数据是真实的、合理的"，再放心让它影响行为。如果直接 R1→R7，用户没办法 audit 这层数据，黑盒了一段非平凡逻辑。
+- **title 里嵌核心 metric**：3/8 回复 这种数字嵌在 collapsible header 里，等于"标题就是一个迷你 dashboard"。这比另起一行显示节省空间，且让 collapsed 状态也有信息密度。这是从 D series chip strip 学来的"多信息一行" 思维延伸到 collapsible UI。
+- **`#[serde(rename_all = "lowercase")]` + 显式 as_str() 二选一其实可以共存**：序列化由 serde rename_all 处理，as_str() 服务测试 + 内部 format_line 调用。两者结果相同 = 不会漂移。这是 Iter R4 也用过的模式：测试不依赖 serde 内部，但实际序列化也用同一格式。
+- **测试钉 serde 字符串契约**：跨语言 IPC 的 enum→string 映射如果改了 enum 名字 + 漏了 rename_all，编译过 + cargo test 过 + 前端 panel 渲染挂掉。这种"编译期通过但运行时坏" 的回归只能靠前置 contract test 拦。这是面向 IPC 系统的标准防御。
+- **预测 R7 入口**：R6 完成后，"feedback ignored ratio drives cooldown" 的实现会很自然——已经有 `recent_feedback(window)` 异步函数，加一个 ratio 计算 helper 就能在 gate 路径用。R6 让 R7 实现成本降到几十行。这是"surface 是 drive 的 substrate" 的杠杆。
+
 ## Iter R8 设计要点（已实现）
 - **R3 上线后的真实 bug 反思**：R3 完成时还自我感觉良好（"硬规则 wellness override 是设计闪光"），但漏掉了"硬规则需要节流" 这个常识。任何"无论如何都要触发" 的事件都需要 rate limit；wellness 没节流 = harassment 而非 care。这是"feature 与 rate-limit 应该一起设计" 的教训。
 - **三层 helper 模式 (pure / wrapper / writer)**：late_night_wellness_recently_fired_at 是纯函数；late_night_wellness_in_cooldown 是封装 production-side 副作用的 thin wrapper；mark_late_night_wellness_fired 是写副作用。三层让测试只动 pure 部分，production 路径只调 wrapper，符合 D series 以来的"view-time mirror" 思路。

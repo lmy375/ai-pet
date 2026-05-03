@@ -90,6 +90,15 @@ export function PanelDebug() {
   };
   const [toolCallHistory, setToolCallHistory] = useState<ToolCallRecord[]>([]);
   const [showToolHistory, setShowToolHistory] = useState(false);
+  // Iter R6: feedback timeline (replied / ignored). Surfaces R1's capture
+  // data so the user can see whether the pet is "learning" from outcomes.
+  type FeedbackEntry = {
+    timestamp: string;
+    kind: "replied" | "ignored";
+    excerpt: string;
+  };
+  const [feedbackHistory, setFeedbackHistory] = useState<FeedbackEntry[]>([]);
+  const [showFeedbackHistory, setShowFeedbackHistory] = useState(false);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
@@ -143,6 +152,7 @@ export function PanelDebug() {
           timestamp: string;
         }[];
         recent_tool_calls: ToolCallRecord[];
+        recent_feedback: FeedbackEntry[];
       }>("get_debug_snapshot");
       setLogs(snap.logs);
       setCacheStats(snap.cache_stats);
@@ -161,6 +171,7 @@ export function PanelDebug() {
       setRedactionStats(snap.redaction_stats);
       setPendingReviews(snap.pending_tool_reviews ?? []);
       setToolCallHistory(snap.recent_tool_calls ?? []);
+      setFeedbackHistory(snap.recent_feedback ?? []);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -990,6 +1001,90 @@ export function PanelDebug() {
                   <pre style={preStyle}>{c.args_excerpt}</pre>
                   <pre style={preStyle}>{c.result_excerpt}</pre>
                 </details>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Iter R6: feedback timeline. Surfaces R1's capture data so the user
+          can audit what the pet "saw" — whether each prior proactive turn
+          was replied to or ignored. Pure data view; the prompt-side hint is
+          built from the same log. Default-collapsed; chip shows count + a
+          summary ratio of recent replies. */}
+      <div
+        style={{
+          padding: "8px 16px",
+          borderBottom: "1px solid #e2e8f0",
+          background: "#f0fdf4",
+          fontSize: "12px",
+        }}
+      >
+        <div
+          onClick={() => setShowFeedbackHistory((s) => !s)}
+          style={{
+            cursor: "pointer",
+            color: "#065f46",
+            fontWeight: 600,
+            display: "flex",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>
+            💬 宠物反馈记录（{feedbackHistory.length}{
+              feedbackHistory.length > 0 ? (() => {
+                const replied = feedbackHistory.filter((f) => f.kind === "replied").length;
+                return ` · ${replied}/${feedbackHistory.length} 回复`;
+              })() : ""
+            }）
+          </span>
+          <span>{showFeedbackHistory ? "收起 ▾" : "展开 ▸"}</span>
+        </div>
+        {showFeedbackHistory && feedbackHistory.length === 0 && (
+          <div style={{ color: "#15803d", paddingTop: "6px" }}>
+            暂无反馈记录。proactive 开口被回复 / 忽略后会出现在这里。
+          </div>
+        )}
+        {showFeedbackHistory && feedbackHistory.length > 0 && (
+          <div style={{ paddingTop: "6px", maxHeight: "240px", overflowY: "auto" }}>
+            {feedbackHistory.map((f, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  gap: "8px",
+                  alignItems: "center",
+                  padding: "4px 0",
+                  borderBottom: i === feedbackHistory.length - 1 ? "none" : "1px dashed #d1fae5",
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: "'SF Mono', 'Menlo', monospace",
+                    color: "#15803d",
+                    fontSize: "10px",
+                    minWidth: "44px",
+                  }}
+                >
+                  {f.timestamp.length >= 16 ? f.timestamp.slice(11, 16) : f.timestamp}
+                </span>
+                <span
+                  style={{
+                    fontSize: "10px",
+                    padding: "1px 8px",
+                    borderRadius: "10px",
+                    background: f.kind === "replied" ? "#16a34a" : "#94a3b8",
+                    color: "#fff",
+                    fontWeight: 600,
+                    minWidth: "44px",
+                    textAlign: "center",
+                  }}
+                >
+                  {f.kind === "replied" ? "回复" : "忽略"}
+                </span>
+                <span style={{ color: "#1e293b", flex: 1, wordBreak: "break-all" }}>
+                  {f.excerpt}
+                </span>
               </div>
             ))}
           </div>
