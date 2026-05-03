@@ -18,9 +18,9 @@
 ### 路线 C：隐私 filter
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，配合 Iter 40 的
   Tag 统计观察实际命中率，决定是否要再加强 prompt。
-- [ ] Iter Cz：redaction patterns 加 regex 模式（settings.privacy.regex_patterns），让用户
-  能匹配如 `\b\d{4}-\d{4}-\d{4}-\d{4}\b`（信用卡）/ 邮件地址等结构化敏感信息。当前
-  substring 模式只能 match 固定词。需注意 ReDoS 防御。
+- [ ] Iter Cv：redaction 命中计数 atomic，panel 加"今天 redact 了 N 次"chip。让用户
+  看到隐私过滤实际生效频率，间接验证 patterns 是否过松/过紧。需要 ProcessCounters 加
+  RedactionCounters。
 
 ### 路线 D：记忆 surface
 - [ ] Iter Dx：panel 加 Memory tab（已有 PanelMemory.tsx，需要从 yaml 索引展开成可读 UI），

@@ -23,12 +23,40 @@ pub const REDACTION_MARKER: &str = "(私人)";
 /// Apply redaction using the user's currently configured privacy patterns. Sync
 /// wrapper that reads settings on every call so user edits take effect immediately
 /// (same model as the env-tool sites in Iter Cx). Failure to read settings yields
-/// an empty pattern list — text passes through unchanged rather than blocking.
+/// empty pattern lists — text passes through unchanged rather than blocking.
+///
+/// Iter Cz: applies substring patterns first, then regex patterns. Two-pass order
+/// is deliberate — substring matches are typically more specific (named terms),
+/// regex catches structural patterns; running substrings first means specific
+/// names get the marker before a wide email regex could swallow context around them.
 pub fn redact_with_settings(text: &str) -> String {
-    let patterns = crate::commands::settings::get_settings()
-        .map(|s| s.privacy.redaction_patterns.clone())
+    let (subs, regexes) = crate::commands::settings::get_settings()
+        .map(|s| (s.privacy.redaction_patterns.clone(), s.privacy.regex_patterns.clone()))
         .unwrap_or_default();
-    redact_text(text, &patterns)
+    let after_substr = redact_text(text, &subs);
+    redact_regex(&after_substr, &regexes)
+}
+
+/// Apply regex redaction. Each pattern is compiled fresh per call — there's no
+/// shared cache. Invalid patterns are silently skipped (logged at debug level if
+/// the caller wants observability later). RE2-style regex semantics (no
+/// backreferences, linear time) defend against ReDoS by construction. Empty patterns
+/// behave like empty substrings: skipped.
+pub fn redact_regex(text: &str, patterns: &[String]) -> String {
+    let mut out = text.to_string();
+    for pat in patterns {
+        let p = pat.trim();
+        if p.is_empty() {
+            continue;
+        }
+        // `replace_all` with an empty match is well-defined (matches between every
+        // char). We only fire if the regex actually compiled and matches something
+        // meaningful — empty pattern is already filtered above.
+        if let Ok(re) = regex::Regex::new(p) {
+            out = re.replace_all(&out, REDACTION_MARKER).to_string();
+        }
+    }
+    out
 }
 
 /// Apply substring redaction. Patterns matching case-insensitively in `text` are
@@ -139,5 +167,61 @@ mod tests {
     fn redact_repeated_occurrences_all_replaced() {
         let patterns = vec!["x".to_string()];
         assert_eq!(redact_text("xxx", &patterns), "(私人)(私人)(私人)");
+    }
+
+    // ---- Iter Cz: regex pattern redaction ----
+
+    #[test]
+    fn redact_regex_empty_patterns_is_identity() {
+        assert_eq!(redact_regex("hello world", &[]), "hello world");
+    }
+
+    #[test]
+    fn redact_regex_skips_blank_patterns() {
+        let patterns = vec!["".to_string(), "   ".to_string()];
+        assert_eq!(redact_regex("hello world", &patterns), "hello world");
+    }
+
+    #[test]
+    fn redact_regex_email_pattern() {
+        let patterns = vec![r"[\w.+-]+@[\w-]+\.[\w.-]+".to_string()];
+        assert_eq!(
+            redact_regex("write to alice@example.com later", &patterns),
+            "write to (私人) later",
+        );
+    }
+
+    #[test]
+    fn redact_regex_credit_card_pattern() {
+        let patterns = vec![r"\b\d{4}-\d{4}-\d{4}-\d{4}\b".to_string()];
+        assert_eq!(
+            redact_regex("card 1234-5678-9012-3456 to charge", &patterns),
+            "card (私人) to charge",
+        );
+    }
+
+    #[test]
+    fn redact_regex_invalid_pattern_silently_skipped() {
+        // Unbalanced bracket — re::new returns Err. Should not panic, should not
+        // disable other patterns; just ignored.
+        let patterns = vec!["[unclosed".to_string(), r"\d{3}".to_string()];
+        assert_eq!(redact_regex("call 911", &patterns), "call (私人)");
+    }
+
+    #[test]
+    fn redact_regex_multiple_patterns_apply_in_order() {
+        let patterns = vec![r"\d+".to_string(), r"[a-z]+".to_string()];
+        // Numbers first, then lowercase words — both replaced.
+        assert_eq!(redact_regex("abc 123 xyz", &patterns), "(私人) (私人) (私人)");
+    }
+
+    #[test]
+    fn redact_regex_handles_chinese_text() {
+        // 4 consecutive digits anywhere in the string.
+        let patterns = vec![r"\d{4}".to_string()];
+        assert_eq!(
+            redact_regex("订单号 8801 已发货", &patterns),
+            "订单号 (私人) 已发货",
+        );
     }
 }

@@ -57,6 +57,7 @@ export function PanelSettings() {
     },
     privacy: {
       redaction_patterns: [],
+      regex_patterns: [],
     },
   });
   const [soul, setSoul] = useState("");
@@ -663,7 +664,7 @@ export function PanelSettings() {
       <div style={sectionStyle}>
         <h4 style={sectionTitle}>隐私过滤</h4>
         <label style={labelStyle}>
-          要从环境工具结果里隐去的关键词（一行一个，大小写不敏感；匹配位置替换为 `(私人)`）
+          子串关键词（一行一个，大小写不敏感；匹配位置替换为 `(私人)`）
         </label>
         <textarea
           value={(form.privacy?.redaction_patterns ?? []).join("\n")}
@@ -675,6 +676,7 @@ export function PanelSettings() {
                   .split("\n")
                   .map((s) => s.trim())
                   .filter((s) => s.length > 0),
+                regex_patterns: form.privacy?.regex_patterns ?? [],
               },
             })
           }
@@ -682,9 +684,32 @@ export function PanelSettings() {
           style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px" }}
           placeholder={"Slack\n某客户公司名\n项目代号"}
         />
+
+        <label style={{ ...labelStyle, marginTop: "10px" }}>
+          正则模式（一行一个；匹配命中也替换为 `(私人)`；非法语法自动跳过）
+        </label>
+        <textarea
+          value={(form.privacy?.regex_patterns ?? []).join("\n")}
+          onChange={(e) =>
+            setForm({
+              ...form,
+              privacy: {
+                redaction_patterns: form.privacy?.redaction_patterns ?? [],
+                regex_patterns: e.target.value
+                  .split("\n")
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0),
+              },
+            })
+          }
+          rows={3}
+          style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px" }}
+          placeholder={String.raw`\b\d{4}-\d{4}-\d{4}-\d{4}\b
+[\w.+-]+@[\w-]+\.[\w.-]+`}
+        />
         <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
-          应用于 `get_active_window`（app + 标题）和 `get_upcoming_events`（标题 + 地点）。
-          每次工具调用时实时套用，留空则不过滤。修改即时生效（下一次工具调用读最新设置）。
+          覆盖 5 个 prompt 注入通道：active_window 工具、calendar 工具、mood note、speech_history 反哺、persona_summary 反哺。
+          子串先于正则应用。Rust regex 引擎线性时间，不支持反向引用——天然 ReDoS 安全。修改即时生效。
         </div>
       </div>
 

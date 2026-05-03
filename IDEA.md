@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter Cz 设计要点（已实现）— 路线 C 加正则维度
+- **regex crate 而非自写正则**：Rust `regex` crate 是 RE2-style——线性时间复杂度、不支持 backreference、不支持 lookaround。这些限制是 ReDoS 防御的核心：传统 PCRE 的灾难性回溯需要 backreference / 嵌套捕获组才能成立。用 `regex` crate 不需要单独做 ReDoS 防御，写多复杂的正则都不会让宠物卡死。
+- **每次重新编译而非 cache**：理论上可以缓存 `Regex` 对象。但 redaction 频率低（每次工具调用 / 每次 prompt 构建），编译成本是微秒级。缓存意味着维护 invalidation——用户改 settings 后旧 regex 不能继续用。简单重编译保正确性。
+- **两阶段顺序：子串先 / 正则后**：思路是"具体优先泛化"。如果用户配子串 "Bob" + 正则 `[A-Z][a-z]+`：子串先把 "Bob" 替换为 "(私人)"——marker 不会再被正则匹配（"私人" 不符 `[A-Z][a-z]+`）。如果反过来，"Bob" 先被正则匹配为 "(私人)"，然后子串再扫——已经没目标。两个顺序结果相同的场景下选先具体（用户期望），让顺序在边界场景也合理。
+- **invalid pattern silently skip**：用户 textarea 多行编辑容易写错一条。如果一条错误 pattern 让整个过滤抛错，所有真私人内容都漏到 LLM——隐私故障应当 fail-safe 而非 fail-loud。silently skip 错误 pattern + 仍然应用其他 pattern 是正确的"部分失败优于全部失败"语义。后续可加面板侧 lint UI 提示哪条 invalid。
+- **统一 settings update 模式**：textarea onchange 必须同时设两个数组（`redaction_patterns` 不变 + `regex_patterns` 新值）。React 浅 merge 的坑——直接 `privacy: { regex_patterns: ... }` 会丢掉子串字段。两个 textarea 各自显式保留另一个的旧值，模式重复但安全。
+- **placeholder 给经典样例**：`\b\d{4}-\d{4}-\d{4}-\d{4}\b` 信用卡 + `[\w.+-]+@[\w-]+\.[\w.-]+` 邮箱——非高级用户也知道这两类该被 redact。让首次接触 regex pattern 的用户能"复制 + 修改"出符合自己需求的 pattern。
+- **路线 C v2 闭环**：v1（Iter Cx-Cw）= 子串覆盖 5 通道；v2（Iter Cz）= 加正则覆盖 5 通道。下一步可能是 redaction logging / 面板上看"过去 N 次工具调用 redact 了 M 个 match"——但只在用户实际使用后反馈再做。
+
 ## Iter Cw 设计要点（已实现）— persona_summary 自循环入口也 redact
 - **build_persona_hint redact，get_persona_summary 不 redact**：刻意的不对称。前者是 prompt 注入通道（送给 LLM），后者是 panel 显示通道（给本地用户）。同一份原始数据，两种 surface，不同处理——redaction 是"对外可见性"过滤而非"数据修改"。注释明确写出这个区分，避免后续维护者困惑。
 - **5 个通道闭环**：active_window 工具 → calendar 工具 → mood note → speech_history hint → persona_summary hint。这 5 个是 LLM 能从 prompt 读到的所有"用户/历史相关"自由文本字段，全部经过 redact。剩余字段（companionship_days / cadence / motion 标签 / 时间戳 / 设置参数）都是结构化数字或固定文案，无 leak 通道。
