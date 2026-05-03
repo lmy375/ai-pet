@@ -131,6 +131,39 @@ pub fn parse_plan_progress(plan_description: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// Iter R16: reframe a yesterday-review description into a first-of-day
+/// prompt hint. Closes the write→read loop on R12 review entries — the
+/// pet now reads its own retrospective the next morning, not just dumps
+/// it to disk.
+///
+/// Empty string when:
+/// - description is `None` (no review yesterday — pet wasn't running, or
+///   the day had no speeches and the gate didn't fire)
+/// - description doesn't start with `[review]` (someone manually wrote a
+///   non-review item under the same title shape — skip rather than
+///   misinterpret)
+///
+/// Output drops the `[review]` machine-tag and reframes for the LLM:
+/// "[昨日总览] 我们昨天 ... 。" — phrased as recap, paired with R14's
+/// "昨日尾声" bullets to give two layers (high-level + specific).
+pub fn format_yesterday_recap_hint(description: Option<&str>) -> String {
+    let Some(desc) = description else {
+        return String::new();
+    };
+    let trimmed = desc.trim();
+    let Some(rest) = trimmed.strip_prefix("[review]") else {
+        return String::new();
+    };
+    let body = rest.trim();
+    if body.is_empty() {
+        return String::new();
+    }
+    // The deterministic body opens with "今天主动开口 N 次..."; reframe to
+    // past-tense "昨天" for the LLM's morning context.
+    let reframed = body.replacen("今天", "昨天", 1);
+    format!("[昨日总览] 我们{}。", reframed)
+}
+
 /// Short one-line index description, surfaces in the panel memory list.
 /// Leading `[review]` lets a future LLM-summary pass identify and upgrade
 /// these entries without overwriting non-review items.
@@ -323,5 +356,49 @@ mod tests {
     fn parse_progress_handles_whitespace_inside_marker() {
         // Be lenient about [ 1 / 2 ] style — humans type with spaces.
         assert_eq!(parse_plan_progress("· task [ 1 / 2 ]"), Some((1, 2)));
+    }
+
+    #[test]
+    fn yesterday_recap_returns_empty_for_none() {
+        assert_eq!(format_yesterday_recap_hint(None), "");
+    }
+
+    #[test]
+    fn yesterday_recap_returns_empty_for_non_review_description() {
+        assert_eq!(format_yesterday_recap_hint(Some("普通备注")), "");
+        assert_eq!(format_yesterday_recap_hint(Some("[review]")), "");
+        assert_eq!(format_yesterday_recap_hint(Some("[review]   ")), "");
+    }
+
+    #[test]
+    fn yesterday_recap_reframes_today_to_yesterday() {
+        let out = format_yesterday_recap_hint(Some("[review] 今天主动开口 7 次，计划 3/5"));
+        assert_eq!(out, "[昨日总览] 我们昨天主动开口 7 次，计划 3/5。");
+    }
+
+    #[test]
+    fn yesterday_recap_reframes_count_only() {
+        let out = format_yesterday_recap_hint(Some("[review] 今天主动开口 3 次"));
+        assert_eq!(out, "[昨日总览] 我们昨天主动开口 3 次。");
+    }
+
+    #[test]
+    fn yesterday_recap_reframes_with_plan_fallback() {
+        let out = format_yesterday_recap_hint(Some("[review] 今天主动开口 5 次，有计划"));
+        assert_eq!(out, "[昨日总览] 我们昨天主动开口 5 次，有计划。");
+    }
+
+    #[test]
+    fn yesterday_recap_only_replaces_first_occurrence_of_today() {
+        // Robust: even if the description has multiple "今天" tokens (which
+        // current writers don't produce, but we shouldn't over-replace).
+        let out = format_yesterday_recap_hint(Some("[review] 今天 X，今天 Y"));
+        assert_eq!(out, "[昨日总览] 我们昨天 X，今天 Y。");
+    }
+
+    #[test]
+    fn yesterday_recap_handles_review_with_leading_whitespace() {
+        let out = format_yesterday_recap_hint(Some("  [review] 今天主动开口 1 次"));
+        assert_eq!(out, "[昨日总览] 我们昨天主动开口 1 次。");
     }
 }

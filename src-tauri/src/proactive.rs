@@ -1051,8 +1051,12 @@ async fn run_proactive_turn(
     // last 2 utterances so the pet can pick up a thread instead of starting
     // cold every morning. Empty when (a) not first-of-day or (b) yesterday
     // has no recorded speeches. Each line is timestamp-stripped + redacted.
+    //
+    // Iter R16: also pull yesterday's `daily_review_YYYY-MM-DD` description as
+    // a separate "总览" hint — pairs with the speeches as high-level + specific
+    // two-layer recap. Same first-of-day gate.
+    let yesterday = now_local.date_naive() - chrono::Duration::days(1);
     let cross_day_hint = if today_speech_count == 0 {
-        let yesterday = now_local.date_naive() - chrono::Duration::days(1);
         let lines = crate::speech_history::speeches_for_date_async(yesterday, 2).await;
         if lines.is_empty() {
             String::new()
@@ -1069,6 +1073,12 @@ async fn run_proactive_turn(
                 bullets.join("\n")
             )
         }
+    } else {
+        String::new()
+    };
+    let yesterday_recap_hint = if today_speech_count == 0 {
+        let desc = read_daily_review_description(yesterday);
+        format_yesterday_recap_hint(desc.as_deref())
     } else {
         String::new()
     };
@@ -1132,6 +1142,7 @@ async fn run_proactive_turn(
         repeated_topic_hint: &repeated_topic_hint,
         cross_day_hint: &cross_day_hint,
         active_app_hint: &active_app_hint,
+        yesterday_recap_hint: &yesterday_recap_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -1472,6 +1483,21 @@ fn read_daily_plan_description() -> String {
         .unwrap_or_default()
 }
 
+/// Iter R16: read the description of `ai_insights/daily_review_YYYY-MM-DD`
+/// for the given date. Returns the raw description (e.g.
+/// "[review] 今天主动开口 7 次，计划 3/5") or None if the entry doesn't
+/// exist. Caller (proactive turn) hands it to `format_yesterday_recap_hint`
+/// to reframe past-tense for the prompt.
+fn read_daily_review_description(date: chrono::NaiveDate) -> Option<String> {
+    let title = format!("daily_review_{}", date);
+    let index = crate::commands::memory::memory_list(Some("ai_insights".to_string())).ok()?;
+    let cat = index.categories.get("ai_insights")?;
+    cat.items
+        .iter()
+        .find(|i| i.title == title)
+        .map(|i| i.description.clone())
+}
+
 /// Iter R12: index-existence check for cross-process-restart idempotency.
 /// LAST_DAILY_REVIEW_DATE only covers the current process; if the user
 /// restarts the app at 23:00 after the 22:00 review already wrote, the
@@ -1661,6 +1687,7 @@ mod prompt_tests {
             // Default empty — pre-Iter R14 state, no cross-day hint. Tests
             // exercising the first-of-day continuity layer set this explicitly.
             cross_day_hint: "",
+            yesterday_recap_hint: "",
             // Default empty — pre-Iter R15 state, no active-app duration tracker.
             active_app_hint: "",
         }

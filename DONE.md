@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R16：yesterday review description 注入 first-of-day prompt（write→read 闭环）
+- 现状缺口：R12 每天 22:00 后写 daily_review 到 ai_insights memory，R12b 把 description 升级到含 progress 标记。但**这些条目从来没被读回来**。memory 里有"今天主动开口 7 次，计划 3/5"，但今天的 first-of-day proactive prompt 看不到 — pet 写完日记自己再也不翻。R14 cross_day_hint 提取昨日尾声 2 条 speeches 是"具体片段" 维度，缺"全貌"维度。
+- 解法 — pure reframer + first-of-day 触发：
+  - 新 `pub fn format_yesterday_recap_hint(description: Option<&str>) -> String` 在 daily_review.rs：None / 非 [review] 前缀 / 空 body → ""；否则 strip "[review]" 前缀 → `replacen("今天", "昨天", 1)` → 包成 "[昨日总览] 我们{}。"。
+  - 新 helper `read_daily_review_description(date: NaiveDate) -> Option<String>` 在 proactive.rs：扫 ai_insights category 找 `daily_review_YYYY-MM-DD` title 拉 description。
+  - PromptInputs 加 `yesterday_recap_hint: &'a str`。run_proactive_turn 在 first-of-day（today_speech_count == 0）拉昨日 review description → format → push_if_nonempty。
+  - prompt assembler push 顺序：yesterday_recap_hint 在 cross_day_hint 之前 — 总览先看，尾声后看，符合"先粗后细" 阅读逻辑。
+- 决策 — `replacen("今天", "昨天", 1)`：deterministic description 起首是"今天主动开口 N 次..."，第二个"今天"如果未来 R12c LLM 改写有可能出现（虽然现在不会）。replacen(.., 1) 只替换第一个，避免误改后文。
+- 决策 — 完全独立 hint 而非合并 cross_day_hint：两者可以独立失败 — 昨日有 review 但没 speeches（quiet 整天但 22:00 fire 了）→ 只有 recap 没尾声；反之亦然。两个独立 push 让两层可以各自存在或不存在，组合上更 robust。
+- 决策 — 走 description 而非 detail：detail .md 包含完整 bullet 列表（昨日全部 speeches），太长，会把 prompt 撑大。description 是 panel index 行，已经经过 R12 / R12b 两层 deterministic 压缩成"今天主动开口 N 次，计划 X/Y" — 信息密度极高，正适合 prompt 注入。"用最浓缩的 surface 喂 prompt" 是正确取舍。
+- 决策 — 不写 panel UI：用户在 panel 已经能直接看到 ai_insights/daily_review_YYYY-MM-DD 条目（PanelMemory 渲染所有 categories）。没必要再做专门 yesterday-recap 卡片 — 现有 memory list view 就够。
+- 决策 — `replacen` skip 条件 (Some(rest) = strip_prefix("[review]")) `body.is_empty()` 提前返回：避免出现 "[昨日总览] 我们。" 退化空尾声。
+- 测试（7 新单测）：
+  - None / non-review prefix / empty body 各返 ""
+  - 完整 case 1: "[review] 今天主动开口 7 次，计划 3/5" → "[昨日总览] 我们昨天主动开口 7 次，计划 3/5。"
+  - count only / 有计划兜底 / 多个"今天"只换第一个 / leading whitespace 容忍
+- 测试结果：439 cargo（+7）；clippy --all-targets clean；fmt clean。
+- 结果：早起第一次主动开口现在带"[昨日总览] 我们昨天主动开口 7 次，计划 3/5。" + "[昨日尾声] 昨天最后说过：· line · line" 两层 callback。R12 写的回顾本不再是孤岛 — 写→读 闭合，pet 读自己的日记本，叙事密度比之前的 "尾声 2 条" 单层提升一档。
+
 ## 2026-05-03 — Iter R12b：daily review 加入 plan progress 解析（"计划 N/M" 替代"有计划"）
 - 现状缺口：R12 description 写"今天主动开口 7 次，有计划"。"有计划" 没说明做了多少 — 用户瞄一眼 panel 看不到 progress。daily_plan 本身已经用 `[N/M]` 标记进度（如"· 关心工作 [1/2]"），但这个信号没被 review 摘要复用。
 - 解法 — 纯解析器 + description 升级：

@@ -167,6 +167,13 @@ pub struct PromptInputs<'a> {
     /// less than that, or active-window read failed. Built from
     /// `active_app::update_and_format_active_app_hint`.
     pub active_app_hint: &'a str,
+    /// Iter R16: yesterday-recap hint — "[昨日总览] 我们昨天主动开口 N 次，
+    /// 计划 X/Y。" Sourced from yesterday's `daily_review_YYYY-MM-DD`
+    /// memory description (written by R12 the previous evening) and
+    /// reframed past-tense by `format_yesterday_recap_hint`. Fires only
+    /// at first-of-day (alongside `cross_day_hint`); empty when no
+    /// review exists or the description isn't `[review]`-prefixed.
+    pub yesterday_recap_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -340,6 +347,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.feedback_hint);
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
+    push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);
     push_if_nonempty(&mut s, inputs.active_app_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);

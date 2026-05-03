@@ -157,6 +157,10 @@
 - [ ] R12c：LLM 一句话总结升级（路由 AppHandle + chat pipeline 进 daily_review，把
   description 改成"[review] 今天我们一起..."自然语言。需要把 maybe_run_daily_review
   从 clock-pure 升级到 app-aware）
+- [x] R16：yesterday review description 注入 first-of-day prompt 作 "[昨日总览]" hint
+  （2026-05-04 完成 — Iter R16。闭合 R12 review 的 write→read 循环。format_yesterday_recap_hint
+  把 "[review] 今天主动开口 N 次，计划 X/Y" 改写成 "[昨日总览] 我们昨天主动开口 N 次，计划 X/Y。"
+  与 R14 cross_day_hint 共同形成"高层总览 + 具体尾声"两层早起 callback。7 单测）
 - [x] R13：companion mode setting（2026-05-03 完成 — Iter R13。3 模式 balanced/chatty/quiet
   调 cooldown + chatty_threshold；前端 settings UI 留 R13b follow-up）
 - [x] R14：跨日记忆线（2026-05-03 完成 — Iter R14）
