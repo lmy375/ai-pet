@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R44 设计要点（已实现）
+- **ambient animation = 新动画维度**：R-series 之前的动画都是 *event-driven* — mount fadeIn / hover lift / press scale 都响应特定 event。R44 是 *持续运行* —— infinite loop，独立于 user action。**ambient 是 long-running UI 必备**，让"安静等待中" 的 visual 不至于死板。比如 OS 系统的 Spinner / Pulse light / Cursor blink 都属此类。
+- **subtle magnitude > dramatic magnitude**：translateX(-2px) 是 1/3 箭头宽度。诱惑是 -4 / -6 / -8 让动作明显。但 ambient 的本质是"持续低强度提醒"——动作太大变成"持续高强度干扰"。**用户应该几乎不察觉 ambient 但视觉皮层处理到了**。这种"sub-conscious attention" 是 ambient 设计的核心。
+- **timing = mood**：0.5-1s 节奏 → 焦虑 ("hurry up")；1.5-2s → 等待 ("ready when you are")；3-5s → 沉睡 ("I'm here but no rush")。R44 选 1.6s 表达"在等你但不催你"。**ambient 节奏选择直接传 mood signal** —— 比文字解释快 10 倍。
+- **ease-in-out for organic vs linear for mechanical**：bob 用 ease-in-out 加速度变化让运动像 "subtle swing" / "呼吸节奏" 而非 metronome ticking。**机器人运动用 linear，活物用 ease-in-out** 是动画 design 的 binary 直觉。Pet 是活物，所有动画都该 ease。
+- **state 优先级：hover > ambient**：hover 期间 animation-play-state: paused 暂停 bob。如果不暂停，bob translateX 跟 hover 加宽叠加，箭头 drift 出 tab 边界 visual 错乱。**explicit state 比 ambient state 优先级高**——user 行动时 ambient 让位。同样适用未来设计：focused element 暂停其 ambient pulse / wallpaper 动态在窗口前不显眼等。
+- **`animation-play-state` is the right primitive**：不需要 JS 控制 animation 的 play/pause。CSS pseudo-class + animation-play-state combo 是 native 一行解决。**了解 CSS 高级 primitive 让 React state 减负**——这是 R41 IDEA "CSS > React state" 原则的延续。
+- **修饰元素 bob 不抢戏**：tab 主体（背景 gradient 渐变 box）静止，仅内部箭头 bob。**ambient 应该作用在"次要 visual"** —— 让 user 感知 ambient 但不让他视觉中心转移。如果 tab 主体 pulse，会让"用户找回 pet 入口"变成"pet 在自己跳舞" — 角色错位。
+- **R44 是 R-series first infinite animation**：之前所有 keyframes 都是 fadeIn 一次性。infinite ambient 是新工具加进 vocabulary。**未来候选**：bubble 在等用户回复 N 秒后微微 pulse？panel 等数据加载时 spinner？需要 "持续等待" 状态的地方都可考虑。但 R-series 极简风格 = 用 ambient 要慎，太多反而 noise。
+
 ## Iter R43 设计要点（已实现）
 - **inline `<style>` + className pattern 跨 component 复用**：R40-R42 在 ChatBubble.tsx 用了"inline `<style>` 嵌 component-scoped CSS" 模式。R43 把它复用到 App.tsx 的 inline tab JSX。**pattern 复用 ≠ 一定要抽组件** —— R39 抽 PanelFilterButtonRow 是因为 3 caller 同样形态。R43 的 Tab inline JSX 只有 1 caller，pattern 复制即可。**当 visual recipe 跨组件相似但实现细节不同时，复制 recipe 比抽组件经济**。
 - **transform 已用就别再加 transform**：tab 用 transform: translateY(-50%) 居中。诱惑是用 transform: translateX(-100%) 做滑入。但叠加 transform 容易冲突 — keyframe 写 `transform: translateX(-100%)` 会覆盖 translateY(-50%) 让 tab 失去居中。**用其他属性 (left)** 做滑入避免冲突。这是 CSS animation 的 footgun pattern — animation 的 from/to 属性会替换整个 transform，不是 merge。

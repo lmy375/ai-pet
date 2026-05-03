@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R44：Tab arrow ambient bob 动画（持续召唤）
+- 现状缺口：R43 给 tab 加了 slide-in 入场 + hover widen。但 tab 长时间 hidden 后**静态在那里**，user 5+ 分钟后可能忘记 pet 还在。tab 需要 ambient 提醒 — 不打扰但持续 visible。
+- 解法 — infinite loop 箭头 bob：
+  - 新 keyframe `pet-tab-arrow-bob` 0%→100% loop：transform translateX(0) → -2px → 0。1.6s ease-in-out 让动作柔和。
+  - 内部 ▶ 箭头加 className "pet-tab-arrow"，绑 `animation: pet-tab-arrow-bob 1.6s ease-in-out infinite`。
+  - hover 时 pause：`.pet-tab:hover .pet-tab-arrow { animation-play-state: paused; }` —— hover state 加宽 tab 更显眼，bob 停止避免 visual noise 重叠。
+- 决策 — translateX(-2px) 不更大：箭头本身只 6px 宽（borderRight: 6px white triangle）。-2px 是 1/3 宽度的偏移，subtle 但可见。-4px+ 会变成"明显左右晃" 像故障，破坏 ambient。**ambient 动画的 magnitude 应该 small** —— 让人察觉到但不看着累。
+- 决策 — 1.6s period：ambient 节奏不能像心跳（0.8-1s 太快显焦虑）也不能像呼吸（2-4s 太慢看不到节奏）。1.6s 是"slow attention pulse" —— 给 visual cortex 慢慢拉回注意力但不躁动。
+- 决策 — ease-in-out 而非 linear / ease：linear bob 看着机械（"摇 摇 摇"），ease-in-out 加速度变化模拟自然弹性（"晃 一 晃 一晃"）。**ambient 动画 timing 模拟有机运动**比机械好。
+- 决策 — 仅箭头 bob，tab 主体不动：诱惑是整 tab 也 pulse opacity 营造氛围。但 R-series 之前决策"无 boxShadow / 极简"，主体晃动会 visual 太重。**修饰元素 (箭头) bob 不抢戏，主体保持 stable** — 视觉重心不变，但 affordance 持续召唤。
+- 决策 — hover pause via animation-play-state：CSS native 暂停动画。如果不暂停 hover widen + bob 同时跑，箭头位置会 drift 让 hover 加宽视觉混乱。**state 优先级：hover > ambient** — hover 期间停 ambient 让用户 focus on hover affordance。
+- 决策 — 不用 React state pause：CSS animation-play-state 配 :hover selector 是 native 一行解决，不需要 useState + 事件 listeners。延续 R41 IDEA "CSS pseudo-class > React state" 原则。
+- 决策 — 不写测试：CSS animation 由浏览器保证。tsc + cargo build 验证。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：tab 现在有"稳定背景的 ambient invite" — 箭头持续 bob 提醒"pet 在这里召回"，hover 时升级为加宽 + bob 停的 explicit affordance。**R-series 第一次用 infinite ambient animation** —— 之前都是 mount/transition 一次性动画。Ambient 是新维度，可以扩展到其他"等待用户行动"的 UI 元素（如 chat panel "宠物在等你回应" 提示？）。
+
 ## 2026-05-04 — Iter R43：Tab indicator slide-in 入场 + hover 扩展（新 cluster 起点）
 - 现状缺口：bubble UX cluster (R40-R42) 完成。R42 IDEA 提了下一 polish cluster 候选：Live2DCharacter / ChatPanel / Tab indicator。Tab indicator 是最小但视觉 critical 的 — 当 pet auto-hide 后，tab 是用户唯一能"找回 pet" 的入口。但目前 tab 出现时是**瞬间 pop**（`{hidden && (<div ...>)}`），且 hover 无任何反应。
 - 解法 — 复用 R40-R42 的 inline `<style>` + className pattern：
