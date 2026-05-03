@@ -99,8 +99,18 @@ function App() {
               from { left: -16px; opacity: 0; }
               to   { left: 0; opacity: 1; }
             }
+            @keyframes pet-tab-arrow-bob {
+              0%, 100% { transform: translateX(0); }
+              50%      { transform: translateX(-2px); }
+            }
             .pet-tab:hover {
               width: 22px;
+            }
+            .pet-tab-arrow {
+              animation: pet-tab-arrow-bob 1.6s ease-in-out infinite;
+            }
+            .pet-tab:hover .pet-tab-arrow {
+              animation-play-state: paused;
             }
           `}</style>
           <div
@@ -125,6 +135,7 @@ function App() {
             }}
           >
             <div
+              className="pet-tab-arrow"
               style={{
                 width: "0",
                 height: "0",
