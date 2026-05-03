@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cχ：butler_tasks 一键"清除失败标记"按钮
+- 现状缺口：Cπ 加了 `[error: 原因]` description 标记 + ❌ 红 chip。但用户想清除标记需要 4 步：点编辑 → 模态打开 → 手动删除 `[error: ...]` 段 → 保存。即使 LLM 后续重试成功会自动 update 移除——但很多失败是用户已经手动修复了根因（文件路径换了 / 权限给了），LLM 下一轮 proactive 才有机会再试，此期间红 chip 一直挂着。
+- 解法：在每个 errored butler_tasks item 的 ❌ 失败 chip 紧跟一个小 ✕ 按钮：
+  - 点击调 `handleClearError(title, fullDesc)`：用 regex `/\[error[^\]]*\]\s*/i` strip `[error: ...]` 部分，保留 description 其余（包括 `[every:]` / `[once:]` schedule 前缀和正文），然后 memory_edit update 写回。
+  - 失败 toast 走 message banner（已有 message 状态机）。
+  - 成功后 loadIndex 刷新——红 chip 立刻消失。
+- 设计选择：
+  - 不写 butler_history.log 事件——这是用户配置变更而非宠物执行，timeline 应该只反映 LLM 行为（和 Cλ 的 sweep 决策对称）。
+  - 不引入新 Tauri command——直接复用 commands::memory::memory_edit("update")，TS 端 strip 后 invoke 即可。规则系统的"前端能做的就别加 Rust 接口"原则。
+  - chip 旁的 ✕ 按钮颜色和边框继承自 chip 自身（红色系），视觉上像是 chip 的一部分；fontSize 10 + padding 1px 5px 让它紧凑不抢戏。
+  - tooltip 解释清楚"保留 schedule 和正文，只去掉 [error: ...] 前缀"——避免用户误以为会清除整个任务。
+- 测试：tsc 严格类型 + 既有 cargo 测试。无新单测——纯前端 1-line regex + invoke wrap，由 cargo Iter Cπ 的 has_butler_error 钉死的 marker 解析逻辑兜底。301 cargo 不变。
+- 结果：用户在 panel 看到 ❌ 失败 chip → 评估原因 → 已经修复 / 不重试 → 点 ✕ → chip 消失。从 4 步变 1 步。Cπ 闭环 ↔ Cχ 提供 escape hatch，配合形成"flag → triage → clear"完整 affordance。
+
 ## 2026-05-03 — Iter Cφ：PanelPersona "自我画像" 空态加"立即生成"动作
 - 现状缺口：consolidate 默认关（settings.memory_consolidate.enabled=false），且即使开了也是 6 小时间隔——意味着新装用户开 PanelPersona 看到的"自我画像"很可能始终为空。原来空态文案只说"开口几次后等下一次 consolidate 跑（默认 6 小时间隔，或在调试 → 立即整理）"——指引用户跨 tab 跳转去 Memory 才能找到按钮。摩擦大，体验断裂。
 - 解法：把 trigger_consolidate 按钮直接做进 Persona tab 的"自我画像"空态：
