@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R34：silent streak panel chip（自我纠正 R33 IDEA 的判断）
+- 现状缺口：R33 IDEA 写"silent streak 是 transient state，留 prompt 即可，panel chip 会 flicker"。这个判断**错了** —— turn 之间间隔 ≥5 分钟（proactive interval_seconds），panel 每秒 poll 看到的 streak 在两 turn 间是 stable 数字。所谓"flicker" 是想象出来的误判。R34 自我纠正，加 panel chip。
+- 解法 — 复用 R33 的纯函数 + 新 chip：
+  - ToneSnapshot 加 `consecutive_silent_streak: usize`，build_tone_snapshot 复用 R33 同 `count_trailing_silent(&snap)` 助手 — chip + prompt 单一真相源，阈值不会 drift。
+  - panelTypes.ts 同步加字段。PanelToneStrip 在 prompt-size chip 之前加 🤐 chip：仅当 streak ≥ 3 时渲染，橙色 "沉默 ×N"。hover 文案解释 R33 nudge 已 fire + 下次 spoke 自动清零。
+- 决策 — 自我纠正 vs 自卫：诱惑是"R33 IDEA 写过的 trade-off 不动"。但**纸上推理不该凌驾于事实**。重新仔细想 polling rate vs turn rate 后发现 IDEA 的"flicker" 是误判 —— stable between turns。**写下的纪律不是教条，发现错就改**。R-series 30+ iter 中第一次 explicit 自我纠正前 iter IDEA 决策 —— 这种 visibility 比假装从来没误判更有意义。
+- 决策 — 阈值 3 跟 prompt 一致：避免 panel "streak 2 已经显" 但 prompt 没 fire 的不对齐。**chip 出现的瞬间 = prompt 已经 nudge 的瞬间**，user 看到 chip 就知道"R33 在工作"。
+- 决策 — 仅 ≥3 渲染 chip：streak=0/1/2 是常态（pet 偶尔 silent 是健康），永显会 noise。R1c "👋N 仅 N>0 时显" / R20 "mixed 不要 nudge 但 panel 显" 不同类决策——R34 选 R1c 模式因为 0-2 streak 没意义。**chip 显隐应跟"是否 actionable signal" 对齐**。
+- 决策 — 橙色与 R20/R21/R22 monotone 警示同色：streak ≥3 = "stuck pattern"（与 register monotone / topic repetition / app deep-focus 同性质）。**"卡住" signal 视觉 family 用同色** 让 user 一眼识别"哪些维度在告警"。
+- 决策 — single source of truth helper 强调：build_tone_snapshot 用 `count_trailing_silent(&snap)` 跟 run_proactive_turn 一样。**不要复制粘贴 trailing-count 逻辑**。如果未来改 streak 定义（比如改成允许 1 个 spoke 间隔），改一处所有 caller 同步。R23 `classify_feedback_band` 同思路 —— logic 抽 helper 让 chip / gate 不可能 drift。
+- 决策 — 不加新单测：R33 已 9 单测覆盖 count_trailing_silent + format_*。R34 只加 view-layer 渲染 + ToneSnapshot 字段，类型对齐由 cargo build/tsc 自动验。**测 logic 不测 wiring** 是 R21/R25/R28/R31 一直的纪律。
+- 测试结果：487 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：panel 现在显 🤐 chip 当 pet stuck silent。R33 信号从 prompt-only 升级到 prompt + panel 双 surface（**R20 codified rule 又一次践行**）。Codified meta-rule extension：**前 iter IDEA 的 trade-off 决策应该可以被后 iter 重新审视并纠正** —— 决策不是 immutable，新 information 应该改 decision。
+
 ## 2026-05-04 — Iter R33：trailing-silent streak 检测 + prompt nudge 破沉默循环
 - 现状缺口：R25 加 outcome 字段后，TurnRecord 知道每轮 spoke / silent。但**没机制识别"宠物连续沉默 N 次"** 这个模式。LLM 可能陷入"perpetual silence"：每次都判断"信号不够想说"，但其实**累计连续 silent 本身就是一个该被打破的状态信号**。R7 cooldown adapter 调 cooldown 但不直接阻止 LLM 选择 silent。
 - 解法 — 纯函数 + soft nudge：

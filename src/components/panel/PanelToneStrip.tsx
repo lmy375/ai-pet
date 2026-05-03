@@ -154,6 +154,20 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           </span>
         );
       })()}
+      {tone.consecutive_silent_streak >= 3 && (
+        <span
+          title={`pet 已经连续 ${tone.consecutive_silent_streak} 次选择沉默（trailing-silent streak ≥ 3）— R33 prompt nudge 已 fire 提醒它考虑开口。spoke 一次自动清零。`}
+          style={{
+            color: "#fff",
+            background: "#d97706",
+            padding: "1px 8px",
+            borderRadius: "10px",
+            fontWeight: 600,
+          }}
+        >
+          🤐 沉默 ×{tone.consecutive_silent_streak}
+        </span>
+      )}
       {tone.last_prompt_chars !== null && (() => {
         // R31: prompt size budget chip. Color bands match prompt budget
         // perception — CJK conversational prompts hover in the 1500-3000

@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R34 设计要点（已实现）
+- **IDEA 决策不是不可纠错**：R33 IDEA 写"streak 是 transient → no panel chip"，R34 重新审视后发现该判断**错的**——polling rate (每秒) vs turn rate (≥5min) 让 streak 在两 turn 间完全 stable，没有 flicker。所谓"transient" 是基于错误的 polling-vs-turn rate 直觉。**R-series IDEA 是 reasoning artifact 不是 immutable rule** ——发现旧决策错了就改，而不是为了保面子继续延续。这是 long iter 系列健康的标志：能看见自己的错。
+- **flicker vs stable 看 update frequency**：决定一个状态是否适合 panel chip 的关键不是"它最终会变化吗"，而是"在 panel polling 周期内它会频繁变化吗"。Streak 一次更新需要新 turn → 5 分钟级。Panel 每秒 poll → 数百次看到同一个值。**"看似 transient" 但 update frequency 远低于 polling 时，实质是 stable**。这条原则补充 R20-codified "stable 上 panel / transient 留 prompt"——具体看 update granularity，不要靠直觉拍。
+- **single source of truth helper 是反 drift 的护身符**：build_tone_snapshot + run_proactive_turn 都调 `count_trailing_silent(&snap)`。如果 R-future 改 trailing 定义（比如允许 1-spoke 间隔），改一处所有 caller 同步。如果两处分别 inline 同样 logic，drift 就成了潜在 bug —— "为什么 panel chip 显 streak=3 但 prompt 没 nudge?"。**核心 logic 永远抽 pure fn，让 caller 共用**。R23 `classify_feedback_band` / R20 `classify_speech_register` 同思路。
+- **chip 显隐 trigger 跟 prompt actionability 对齐**：panel chip 出现的瞬间 = prompt 已经 nudge 的瞬间。如果 chip 在 streak=2 就显但 prompt 在 streak=3 才 nudge，user 看到 chip 时会困惑"那为啥 prompt 没动"。**chip threshold === prompt threshold** 让两个 surface 时间同步，user mental model 简单。
+- **"卡住" 信号视觉 family**：📏 monotone register / 🔁 repeated topic / 🪟 deep focus / 🤐 silent streak —— 都用橙色，都表达"系统当前停滞 / stuck"。**chip 颜色作分类语义** —— 同语义同色，user 一眼分群。这是 panel design 的 implicit visual taxonomy，不显式说出来但累积起来非常稳固。
+- **R20 codified rule 第三次 audit**：R20 codified "prompt 信号 = panel surface"，R21+R22 是第一轮 audit，R29+R30 是 settings 字段扩展，R34 是回头审视 R33 时漏的 surface。**rule audit 不是一次性事件**——每个新 prompt 信号 same-iter surface 之外，还需要 *re-audit 旧 trade-off 决策是否仍然成立*。R-series 后期会反复 cycle through 这种 audit。
+- **explicit 自我纠正 IDEA 比假装从未误判更有价值**：R34 不只是改 code，IDEA 明确写"R33 当时判断错了"。**版本历史可见 reasoning 演化** 让未来的 maintainer 看到不只决定，也看到何时为何 decision 改变。这是 long-running project 的隐性 documentation 价值。
+
 ## Iter R33 设计要点（已实现）
 - **meta-cognitive signals 是 prompt design 的高阶层**：R-series 之前给 LLM 的信号大多是关于 *外部世界* —— 用户反馈、active app、time of day、recent speeches。R33 是第一个 *关于 LLM 自己行为模式* 的信号 —— "你自己最近一直沉默"。这种 self-aware feedback loop 是真实智能体的特征，把 pet 从"接收 + 响应外部" 升级到"observe self + act"。**外部信号 → 内部信号** 是 R-series 后期的方向。
 - **trailing-only > majority-in-window**：诱惑是用 "last 5 中 4 次 silent" 触发。但 trailing-only 严格得多 —— 它意味着"现在正在 silent loop"，而 majority 可能只是"过去碰巧多次 silent 但已经 broken 了"。**streak 才有 actionable urgency**，scattered count 没有。这条原则适用所有"streak detection"场景：邮件提醒 / 健身打卡 / 学习连续天数 —— uninterrupted tail 才是真信号。
