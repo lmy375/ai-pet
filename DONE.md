@@ -2,6 +2,13 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cw：redaction 扩展到 persona_summary 自循环入口
+- `proactive::build_persona_hint`：把 `item.description.trim()` 在格式化进 prompt 前用 `redact_with_settings` 过一遍。这是 self-loop 入口的最后一处——LLM 自己写 persona_summary 时不会主动 redact，但用户标记的私人词应当在每次注入 prompt 时被覆盖。
+- `get_persona_summary` Tauri command（panel 的人格 tab 用）**不**走 redaction：那是本地 panel 显示，用户看到原文是合理的；redaction 只在"对外发到 LLM"那一刻应用。注释里写明这个语义不对称的设计选择。
+- 路线 C 的注入通道现在 5 个全部覆盖：active_window 工具 / calendar 工具 / mood note / speech_history hint / persona_summary hint。剩余 prompt 注入字段（companionship line / mood_trend hint / cadence_hint / wake_hint 等）都是 backend 自己生成的固定文案 + 数字，无 leak 通道，不需要 redact。
+- 这一刀是路线 C 的"完整闭环 v1"——再加新通道时记得也加 redact_with_settings 即可，pattern 已稳定。
+- 221 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter Cy：redaction 扩展到 mood note 和 speech_history 注入
 - 新公共 helper `redaction::redact_with_settings(text) -> String`：sync wrapper，每次调用读 settings.privacy.redaction_patterns（fallback 空 list），套 redact_text。Iter Cx 的工具入口本来手动展开 settings 读取，现在抽成一行 helper——两处调用都简化。
 - `commands::chat::inject_mood_note`：mood text 在格式化进 system message 前用 redact_with_settings 过一遍。这关键——mood 是 LLM 自己之前写的，可能含 active_window 漏过来的人名 / 项目名；不 redact 的话每次对话都 re-leak。

@@ -1524,9 +1524,17 @@ pub fn build_persona_hint() -> String {
     let summary = cat.items.iter().find(|i| i.title == "persona_summary");
     match summary {
         Some(item) if !item.description.trim().is_empty() => {
+            // Iter Cw: redact the persona summary before re-injecting into the
+            // proactive prompt. The LLM-authored description may have echoed private
+            // terms (active_window app names / user_profile entries it didn't know
+            // were sensitive when it wrote them); redacting here ensures the same
+            // user-configured patterns cover this self-loop input too. The on-disk
+            // memory file stays pristine — the panel's `get_persona_summary` command
+            // intentionally returns the unredacted text since that view is local.
+            let redacted = crate::redaction::redact_with_settings(item.description.trim());
             format!(
                 "你最近一次自我反思的画像（来自 consolidate）：\n{}",
-                item.description.trim()
+                redacted
             )
         }
         _ => String::new(),
