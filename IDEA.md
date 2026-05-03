@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cβ 设计要点（已实现）
+- **拼字符串还是加结构化字段**：可以选 (a) PromptInputs 加两个字段 `weekday: &str` + `weekday_kind: &str`，prompt builder 自己拼；(b) 加一个合并字段 `day_of_week: &str`，调用方拼好。选 (b)：builder 是格式化模板，多接收一个独立字段会让 time 行变成 `format!("现在是 {}（{}，{} · {}）...", time, period, weekday, kind)` 同时引入 `·` 这个表示分隔的字符到模板里——一旦未来想给周末特殊渲染（比如 emoji），就要改模板。把拼接逻辑放在 `format_day_of_week_hint` helper 里，模板只负责"插一个 string"，分离得更干净。
+- **三个函数还是一个**：`weekday_zh` / `weekday_kind_zh` / `format_day_of_week_hint` 拆开。如果合一个 `format(...)`，未来 ToneStrip 想单独显示"周日"就得复制一份逻辑。三个 pure 函数 = 三段独立可测可复用的小积木。这种"小函数比合并大函数更值"的取舍在项目里反复出现（period_of_day 也是同样的形态）。
+- **不重新加 active_prompt_rules 标签**：weekday/weekend 是 ambient context（始终告知），不是条件触发的"规则"。规则系统（panel "倾向 X%" chip）是用于"这个开口是被某些克制/引导规则塑造的"——day_of_week 不影响倾向分布，所以不进规则枚举。和 Iter Cα 的 user_profile_hint 一样的判断。
+- **不做"周五晚上"特殊处理**：曾考虑加一个 "weekend_eve"（周五傍晚 + 周六凌晨）特殊语气标签——但这种细分把简单逻辑复杂化，而 LLM 看到 `周五 · 工作日` + `傍晚` 完全够用。加更多枚举会让 prompt builder 越变越像查找表。先跑简单版本，看 panel 上 LLM 沉默率 / spoke 比例是否在周五傍晚 vs 周一上午之间真的有可观察的差再说。
+- **2026-05-03 = 周日**：base_inputs 把默认改成 "周日 · 周末" 而不是占位字符串——保持测试 fixture 内部一致，避免出现 "time = 2026-05-03 但 day_of_week = 周二" 这种自相矛盾的测试 setup。
+- **Datelike 和 Timelike 两个 trait 都 use**：chrono 把 hour() 和 weekday() 分别放在 Timelike / Datelike 里，必须 `use chrono::{Datelike, Timelike}` 才能调到。一开始想偷懒只加 Datelike 让 hour() fallback，但 cargo check 就提醒了。
+
 ## Iter Cα 设计要点（已实现）
 - **加 ambient block 而不是加 rule**：曾考虑做"如果 user_profile 非空 → 加一条规则提示 LLM 在开口前 search"——但那只是把"调工具的责任"换种方式重申，根本问题（每轮都要 tool round-trip）还在。直接把摘要塞进 prompt 是同一个 token 预算下的更好交换：6 条 × 80 字 ≈ 500 tokens，远低于一次 memory_search 调用 + 结果回灌的开销，并且节省一次 round-trip 的延迟。
 - **跟 persona_hint 同级而不是嵌进 rules**：`persona_hint`（自我画像）/ `mood_trend_hint`（情绪走向）/ 现在的 `user_profile_hint`（对用户的认知）三者都是"长期记忆 → 当前 prompt"的注射点，结构上对称。放一起方便将来一起调（比如做"长期画像被静音"开关）。

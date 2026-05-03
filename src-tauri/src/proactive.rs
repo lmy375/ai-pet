@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Timelike;
+use chrono::{Datelike, Timelike};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex as TokioMutex;
@@ -143,6 +143,11 @@ enum LoopAction {
 pub struct PromptInputs<'a> {
     pub time: &'a str,
     pub period: &'a str,
+    /// Combined weekday + weekend/weekday label, e.g. "周日 · 周末" or "周二 · 工作日".
+    /// Iter Cβ — appended to the time line so the LLM can pick a register that fits
+    /// "周五晚上" vs "周一上午" instead of inferring it from the date string. Built
+    /// from `format_day_of_week_hint(now.weekday())` at the callsite.
+    pub day_of_week: &'a str,
     pub idle_minutes: u64,
     pub input_hint: &'a str,
     pub cadence_hint: &'a str,
@@ -449,8 +454,8 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push("[系统提示·主动开口检查]".into());
     s.push(String::new());
     s.push(format!(
-        "现在是 {}（{}）。距离上次和用户互动已经过去约 {} 分钟。{}",
-        inputs.time, inputs.period, inputs.idle_minutes, inputs.input_hint
+        "现在是 {}（{}，{}）。距离上次和用户互动已经过去约 {} 分钟。{}",
+        inputs.time, inputs.period, inputs.day_of_week, inputs.idle_minutes, inputs.input_hint
     ));
     s.push(inputs.cadence_hint.to_string());
     s.push(String::new());
@@ -714,6 +719,41 @@ pub fn period_of_day(hour: u8) -> &'static str {
         19..=21 => "晚上",
         _ => "深夜", // 22, 23, 0..=4
     }
+}
+
+/// Chinese label for a weekday. Used by `format_day_of_week_hint` so the LLM sees
+/// "今天是周X（工作日/周末）" instead of just date arithmetic; weekday vs weekend
+/// shifts what topics make sense (Friday-night slack vs Monday-morning ramp-up).
+pub fn weekday_zh(wd: chrono::Weekday) -> &'static str {
+    use chrono::Weekday::*;
+    match wd {
+        Mon => "周一",
+        Tue => "周二",
+        Wed => "周三",
+        Thu => "周四",
+        Fri => "周五",
+        Sat => "周六",
+        Sun => "周日",
+    }
+}
+
+/// "周末" (Sat / Sun) vs "工作日" (Mon–Fri). Distinct from `weekday_zh` because the
+/// prompt phrases both — the LLM benefits from being told the category explicitly
+/// instead of inferring it from "周六" alone (less robust across model versions).
+pub fn weekday_kind_zh(wd: chrono::Weekday) -> &'static str {
+    use chrono::Weekday::*;
+    match wd {
+        Sat | Sun => "周末",
+        _ => "工作日",
+    }
+}
+
+/// Format the combined day-of-week hint that the proactive time line embeds.
+/// Pure for testability — the `run_proactive_turn` callsite passes `now_local.weekday()`.
+/// Output example: "周日 · 周末" / "周二 · 工作日". Joined by `·` to read naturally
+/// when concatenated into "（下午，周二 · 工作日）".
+pub fn format_day_of_week_hint(wd: chrono::Weekday) -> String {
+    format!("{} · {}", weekday_zh(wd), weekday_kind_zh(wd))
 }
 
 /// What kind of time a parsed reminder is targeting. `TodayHour` is the lightweight form
@@ -1332,6 +1372,9 @@ async fn run_proactive_turn(
 
     let period = period_of_day(now_local.hour() as u8);
     let time_str = now_local.format("%Y-%m-%d %H:%M").to_string();
+    // Iter Cβ: weekday/weekend label, e.g. "周日 · 周末". Joins with period in the
+    // time line so the LLM can lean on "周五晚上"-flavor cues without parsing dates.
+    let day_of_week = format_day_of_week_hint(now_local.weekday());
 
     // Scan the `todo` memory category for user-set reminders that have just come due.
     // Each becomes a bullet line. The whole hint is empty when nothing's due.
@@ -1390,6 +1433,7 @@ async fn run_proactive_turn(
     let prompt = build_proactive_prompt(&PromptInputs {
         time: &time_str,
         period,
+        day_of_week: &day_of_week,
         idle_minutes,
         input_hint: &input_hint,
         cadence_hint: &cadence_hint,
@@ -1713,6 +1757,8 @@ mod prompt_tests {
         PromptInputs {
             time: "2026-05-03 14:30",
             period: "下午",
+            // 2026-05-03 is a Sunday — matches the 周末 register tests assert.
+            day_of_week: "周日 · 周末",
             idle_minutes: 20,
             input_hint: "用户键鼠空闲约 60 秒。",
             cadence_hint: "距上次你主动开口约 8 分钟（刚说过话，话题还热）。",
@@ -2208,6 +2254,47 @@ mod prompt_tests {
             .filter(|c| *c == '字')
             .count();
         assert_eq!(body_chars, 20, "should keep exactly 20 chars before ellipsis");
+    }
+
+    #[test]
+    fn prompt_includes_day_of_week_in_time_line() {
+        let mut inputs = base_inputs();
+        inputs.day_of_week = "周一 · 工作日";
+        let p = build_proactive_prompt(&inputs);
+        // Time line is the first non-header line; assert the new label is right
+        // after the period.
+        assert!(p.contains("（下午，周一 · 工作日）"));
+    }
+
+    #[test]
+    fn weekday_zh_maps_each_weekday() {
+        use chrono::Weekday::*;
+        assert_eq!(weekday_zh(Mon), "周一");
+        assert_eq!(weekday_zh(Tue), "周二");
+        assert_eq!(weekday_zh(Wed), "周三");
+        assert_eq!(weekday_zh(Thu), "周四");
+        assert_eq!(weekday_zh(Fri), "周五");
+        assert_eq!(weekday_zh(Sat), "周六");
+        assert_eq!(weekday_zh(Sun), "周日");
+    }
+
+    #[test]
+    fn weekday_kind_zh_distinguishes_weekend() {
+        use chrono::Weekday::*;
+        for wd in [Mon, Tue, Wed, Thu, Fri] {
+            assert_eq!(weekday_kind_zh(wd), "工作日", "{:?} should be 工作日", wd);
+        }
+        assert_eq!(weekday_kind_zh(Sat), "周末");
+        assert_eq!(weekday_kind_zh(Sun), "周末");
+    }
+
+    #[test]
+    fn format_day_of_week_hint_combines_label_and_kind() {
+        use chrono::Weekday::*;
+        assert_eq!(format_day_of_week_hint(Sun), "周日 · 周末");
+        assert_eq!(format_day_of_week_hint(Mon), "周一 · 工作日");
+        assert_eq!(format_day_of_week_hint(Fri), "周五 · 工作日");
+        assert_eq!(format_day_of_week_hint(Sat), "周六 · 周末");
     }
 
     #[test]
