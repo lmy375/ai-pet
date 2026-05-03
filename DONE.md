@@ -2,6 +2,29 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R14：跨日记忆线（first-of-day 注入昨日尾声）
+- 现状缺口：每天的第一次 proactive 都从零开始 — pet 不"记得"昨晚最后说了什么。如果昨晚说"睡前看会儿小说"，今早开口理应是"昨晚那本书看完了？" 而不是泛泛"早安"。R14 让叙事跨日延续。
+- 解法 — 纯函数 + first-of-day 触发：
+  - 新 `pub fn speeches_for_date(content, target_date, max) -> Vec<String>` 在 speech_history.rs：扫每行的 ISO 时间戳，filter 到本地时区对应 target_date 的，返回最后 max 条。Pure / testable / 不依赖系统时钟（caller 传 NaiveDate）。
+  - 异步包装 `pub async fn speeches_for_date_async(target_date, max)`：读文件 + 调 pure。
+  - run_proactive_turn：如果 `today_speech_count == 0` → 算 `yesterday = now.date_naive() - 1 day` → 取 `speeches_for_date_async(yesterday, 2)` → 包成"[昨日尾声] 昨天最后说过：· line\n· line\n如果话题自然能续上就续，不必生硬呼应。"
+  - 每行过 strip_timestamp + redact_with_settings 再注入。
+  - PromptInputs 加 `cross_day_hint: &'a str`，build_proactive_prompt push_if_nonempty。
+- 决策 — 仅 first-of-day 触发：复用 today_speech_count == 0 已有信号，避免每次 proactive 都拉昨天历史。新一天的"打开" 时刻自然是"叙事接续" 时刻；之后不需要重复。
+- 决策 — 2 条窗口（不是 5 条）：跨日 hint 是"昨晚的尾声"，不是"昨天全程"。多了反而冲淡今天的话题。2 条 ≈ 昨晚最后 1-2 句 — 紧凑。
+- 决策 — pure helper 接 NaiveDate 而非 chrono::Local::now()：测试不依赖运行时钟。Production 路径调 helper 时拿 now_local.date_naive() - 1 day 算 yesterday。这是 D series time-helpers 一直延续的"pure parameter, impure caller" pattern。
+- 决策 — "如果话题自然能续上就续，不必生硬呼应" 收尾 instruction：避免 LLM 强行复读昨天主题。让续接是"自然，可选"，不是"必须"。
+- 决策 — 时间戳过滤兼容多时区：`DateTime::parse_from_rfc3339` 接 RFC3339 含 offset；`with_timezone(&chrono::Local)` 转本地后比较 NaiveDate。如果用户跨时区使用（旅行），昨天的判定按当前本地时区，是直觉行为。
+- 测试（6 新单测）：
+  - empty content → empty
+  - max=0 → empty
+  - filters by date 正确（4 行 cross 3 天，target 5/3 → 2 条 5/3）
+  - last `max` when more match (4 条都是 5/3，max=2 → 取最后 2)
+  - malformed lines silently skipped (garbage / no-timestamp / valid → 1 valid)
+  - target with no matches → empty
+- 测试结果：406 cargo（+6）；clippy --all-targets clean（修了 3 处 useless `vec!` → `[]`）；fmt clean；tsc clean。
+- 结果：每天的第一次主动开口现在带着昨晚最后 1-2 句的 echo。叙事跨日续上 — 用户半夜睡前 pet 说了"早点睡，明天又是新一天"，今早 pet 看到这条 hint 后说"昨晚那个 「明天又是新一天」 算数么？" 体感截然不同。
+
 ## 2026-05-03 — Iter R13：companion mode 高层级温度预设
 - 现状缺口：用户想"今天宠物多说一些"或"今天宠物安静一些" 没有简单 dial。改 cooldown_seconds 是低层级旋钮（用户得知道 1800 秒 vs 900 秒意味着什么）。chatty_day_threshold 也是。需要"温度预设" 高层级抽象。
 - 解法 — 三档预设：

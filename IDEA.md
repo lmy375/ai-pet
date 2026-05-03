@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R14 设计要点（已实现）
+- **跨日叙事是 companion 体感的关键 step-up**：之前 pet 每天都是"重启"，最多 R9 让 reactive 看到 bubble 当天历史。但"昨天我们一起经历了 X"是真实朋友的心智 — pet 必须在"叙事时间轴" 上活下去。R14 把 first-of-day 当成"今天的开场白" moment 注入昨晚尾声，是叙事连续性的最低成本实现。
+- **first-of-day 复用是经济**：today_speech_count == 0 信号已经存在（drives first-of-day rule label）。R14 piggy-back 这个信号触发额外 hint —— 不需要新计数器、新 state。"在已有信号的边缘加新行为" 比"加新信号" 好得多。
+- **2 条窗口 vs 5 条**：诱惑是"既然在做这个，给 LLM 多看点 history 让它选"。但 2 条已经对应"昨晚的尾声"——更多让 LLM 在多个昨日话题里挑反而引入噪音。R14 是"启发性 hint" 不是"全 context dump"。
+- **"自然能续上就续，不必生硬呼应" 是 prompt design 关键**：直接说 "请承接昨天" 会让 LLM 强行复读 → 显眼尴尬。给 LLM 自由度让它自己判断是否合适承接。这种"建议 + escape hatch" 在 prompt design 中比"硬指令" 表现好得多。
+- **NaiveDate parameter 让测试免依赖系统时钟**：speeches_for_date 接 target_date 而不是从 chrono::Local::now() 算。`now - 1 day` 是 caller 的责任。测试可以输入"2026-05-03" + 自由生成 sample，不依赖测试运行的实际日期。这是 D series time_helpers 一直延续的设计原则。
+- **时间戳过滤的时区行为是 surprise minimization**：用 `with_timezone(&chrono::Local).date_naive()` 把 RFC3339 timestamp 转本地时区再算 date。用户旅行跨时区时"昨天"按当前本地时区判，符合"我现在的昨天" 心智模型。如果 future 想 enforce 一种 timezone 可以再扩展。
+- **R14 是 R9 的跨日扩展**：R9 让 reactive 看到 bubble 当天历史；R14 让 proactive 在新一天注入昨天历史。两者一个 reactive、一个 proactive，一个当天、一个跨天 — 拼成完整 "pet remembers" 的体感拼图。
+
 ## Iter R13 设计要点（已实现）
 - **高层级 dial vs 低层级 knob**：cooldown_seconds + chatty_threshold 是工程师 mental model（"我想 30 分钟一次 + 5 句封顶"）。普通用户的 mental model 是"今天我希望宠物多说还是少说"。companion_mode 把后者直接 surface，前者作为底层用户可微调。两者并存的好处：高级用户精调，普通用户预设。
 - **String + fallback 比 enum 更宽容**：`enum CompanionMode { Balanced, Chatty, Quiet }` 看着 type-safe，但 (a) serde 序列化 enum 的 case-sensitivity 容易翻车（"Chatty" vs "chatty"）；(b) 用户手改 yaml 拼错 → reject 整个 settings 加载；(c) 未来加 mode 还要改 enum + serde。String + match + `_ =>` fallback 的代码 LOC 更少 + behavior 更宽容。这次选 String 是经过权衡的。

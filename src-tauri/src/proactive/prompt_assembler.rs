@@ -154,6 +154,13 @@ pub struct PromptInputs<'a> {
     /// repetition is detected. Built by run_proactive_turn from
     /// `speech_history::detect_repeated_topic`.
     pub repeated_topic_hint: &'a str,
+    /// Iter R14: cross-day continuity hint — at the first proactive turn
+    /// of a new day, surfaces yesterday's last utterance(s) so the pet
+    /// can pick up a thread instead of starting cold every morning.
+    /// Empty when (a) it's not the first turn of today, or (b) yesterday
+    /// has no recorded speeches. Built by run_proactive_turn from
+    /// `speech_history::speeches_for_date_async`.
+    pub cross_day_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -327,6 +334,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.feedback_hint);
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
+    push_if_nonempty(&mut s, inputs.cross_day_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);
