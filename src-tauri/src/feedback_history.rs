@@ -264,6 +264,51 @@ pub fn classify_feedback_band(entries: &[FeedbackEntry]) -> (&'static str, f64) 
     }
 }
 
+/// Iter R26: aggregate feedback summary for the proactive prompt — gives the
+/// LLM "trend" awareness on top of `format_feedback_hint`'s "latest event"
+/// signal. Returns one line like "你最近 N 次主动开口里，X 回复 / Y 忽略 /
+/// Z 主动点掉。" Empty when fewer than `FEEDBACK_AGGREGATE_MIN_SAMPLES`
+/// entries (low signal — would mislead the LLM more than help).
+///
+/// Counts include Dismissed because R1c added it as a distinct negative
+/// signal. The aggregate hint surfaces it separately from Ignored so the
+/// LLM can distinguish active rejection from passive pass-by.
+pub const FEEDBACK_AGGREGATE_MIN_SAMPLES: usize = 5;
+
+pub fn format_feedback_aggregate_hint(entries: &[FeedbackEntry]) -> String {
+    if entries.len() < FEEDBACK_AGGREGATE_MIN_SAMPLES {
+        return String::new();
+    }
+    let mut replied = 0;
+    let mut ignored = 0;
+    let mut dismissed = 0;
+    for e in entries {
+        match e.kind {
+            FeedbackKind::Replied => replied += 1,
+            FeedbackKind::Ignored => ignored += 1,
+            FeedbackKind::Dismissed => dismissed += 1,
+        }
+    }
+    // Suppress the dismissed count when zero — keeps the line tight on the
+    // common case (most users won't actively click-to-dismiss often).
+    if dismissed > 0 {
+        format!(
+            "你最近 {} 次主动开口里，{} 回复 / {} 静默忽略 / {} 主动点掉。这是你当前被接受度的整体画面，结合上一句反馈一起判断 register。",
+            entries.len(),
+            replied,
+            ignored,
+            dismissed
+        )
+    } else {
+        format!(
+            "你最近 {} 次主动开口里，{} 回复 / {} 静默忽略。这是你当前被接受度的整体画面，结合上一句反馈一起判断 register。",
+            entries.len(),
+            replied,
+            ignored
+        )
+    }
+}
+
 /// Format a feedback hint for the proactive prompt from the most recent
 /// entry. Empty list → empty string. Single entry → one-line nudge that the
 /// LLM can absorb. Pure / testable.
@@ -512,6 +557,74 @@ mod tests {
         // intentionally turned off in settings.
         assert_eq!(adapted_cooldown_seconds(0, 0.9, 10), 0);
         assert_eq!(adapted_cooldown_seconds(0, 0.1, 10), 0);
+    }
+
+    #[test]
+    fn aggregate_hint_returns_empty_below_min_samples() {
+        // R26: < 5 entries → empty (signal too thin).
+        assert_eq!(format_feedback_aggregate_hint(&[]), "");
+        let entries = vec![entry(FeedbackKind::Replied, "a"); 4];
+        assert_eq!(format_feedback_aggregate_hint(&entries), "");
+    }
+
+    #[test]
+    fn aggregate_hint_omits_dismissed_when_zero() {
+        // 3 replied + 2 ignored + 0 dismissed → no "主动点掉" segment.
+        let entries = vec![
+            entry(FeedbackKind::Replied, "a"),
+            entry(FeedbackKind::Replied, "b"),
+            entry(FeedbackKind::Replied, "c"),
+            entry(FeedbackKind::Ignored, "d"),
+            entry(FeedbackKind::Ignored, "e"),
+        ];
+        let hint = format_feedback_aggregate_hint(&entries);
+        assert!(hint.contains("5 次"));
+        assert!(hint.contains("3 回复"));
+        assert!(hint.contains("2 静默忽略"));
+        assert!(!hint.contains("主动点掉"));
+    }
+
+    #[test]
+    fn aggregate_hint_includes_dismissed_when_nonzero() {
+        // 2 replied + 1 ignored + 2 dismissed → all three counts shown.
+        let entries = vec![
+            entry(FeedbackKind::Replied, "a"),
+            entry(FeedbackKind::Replied, "b"),
+            entry(FeedbackKind::Ignored, "c"),
+            entry(FeedbackKind::Dismissed, "d"),
+            entry(FeedbackKind::Dismissed, "e"),
+        ];
+        let hint = format_feedback_aggregate_hint(&entries);
+        assert!(hint.contains("5 次"));
+        assert!(hint.contains("2 回复"));
+        assert!(hint.contains("1 静默忽略"));
+        assert!(hint.contains("2 主动点掉"));
+    }
+
+    #[test]
+    fn aggregate_hint_handles_all_replied() {
+        let entries = vec![entry(FeedbackKind::Replied, "x"); 6];
+        let hint = format_feedback_aggregate_hint(&entries);
+        assert!(hint.contains("6 次"));
+        assert!(hint.contains("6 回复"));
+        assert!(hint.contains("0 静默忽略"));
+        // No dismiss in mix → segment omitted.
+        assert!(!hint.contains("主动点掉"));
+    }
+
+    #[test]
+    fn aggregate_hint_handles_at_min_samples_threshold() {
+        // Exactly 5 — boundary case, gate is `< 5` so 5 should fire.
+        let entries = vec![
+            entry(FeedbackKind::Replied, "a"),
+            entry(FeedbackKind::Ignored, "b"),
+            entry(FeedbackKind::Replied, "c"),
+            entry(FeedbackKind::Ignored, "d"),
+            entry(FeedbackKind::Replied, "e"),
+        ];
+        let hint = format_feedback_aggregate_hint(&entries);
+        assert!(!hint.is_empty());
+        assert!(hint.contains("5 次"));
     }
 
     #[test]

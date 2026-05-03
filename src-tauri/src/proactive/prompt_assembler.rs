@@ -137,6 +137,12 @@ pub struct PromptInputs<'a> {
     /// learns from outcomes round to round. Built by
     /// `feedback_history::format_feedback_hint`.
     pub feedback_hint: &'a str,
+    /// Iter R26: aggregate of recent feedback (last 20 entries) — gives the
+    /// LLM a "trend" picture to complement `feedback_hint`'s last-event
+    /// signal. Empty when fewer than `FEEDBACK_AGGREGATE_MIN_SAMPLES`
+    /// entries (signal too thin to bias prompt). Built by
+    /// `feedback_history::format_feedback_aggregate_hint`.
+    pub feedback_aggregate_hint: &'a str,
     /// Iter R3: current local hour (0-23). Used by composite rules that need
     /// time-of-day specificity beyond the coarse `period` label — currently
     /// the late-night-wellness rule (0:00-3:59 + active idle).
@@ -352,6 +358,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.feedback_hint);
+    push_if_nonempty(&mut s, inputs.feedback_aggregate_hint);
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
     push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);
