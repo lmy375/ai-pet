@@ -286,6 +286,22 @@ pub struct ToneSnapshot {
     /// regardless of any other signal. Surfaced so users who toggled
     /// proactive off and forgot get an immediate "🔕 proactive 已关" chip.
     pub proactive_enabled: bool,
+    /// Iter R10: short-term feedback summary `{replied, total}` over the same
+    /// 20-entry window the panel timeline (R6) and gate-side adaptation
+    /// (R7) read. None when no feedback has been recorded yet (fresh
+    /// install / first-day session). Surfaced so the tone strip can show a
+    /// "💬 N/M" chip at-a-glance instead of users digging into the
+    /// feedback timeline collapsible.
+    pub feedback_summary: Option<FeedbackSummary>,
+}
+
+/// Iter R10: simple shape for the tone-strip feedback chip. Two counts is
+/// enough — frontend renders "{replied}/{total}" and the user reads both
+/// the absolute volume and the ratio.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct FeedbackSummary {
+    pub replied: u64,
+    pub total: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -525,6 +541,24 @@ pub async fn build_tone_snapshot(
             .ok()
             .map(|s| s.proactive.enabled)
             .unwrap_or(true),
+        // Iter R10: feedback summary (last 20 entries) for the tone-strip
+        // chip. Same window the panel timeline (R6) and adapted-cooldown
+        // gate (R7) read, so chip / timeline / gate share one denominator.
+        feedback_summary: {
+            let recent = crate::feedback_history::recent_feedback(20).await;
+            if recent.is_empty() {
+                None
+            } else {
+                let replied = recent
+                    .iter()
+                    .filter(|e| matches!(e.kind, crate::feedback_history::FeedbackKind::Replied))
+                    .count() as u64;
+                Some(FeedbackSummary {
+                    replied,
+                    total: recent.len() as u64,
+                })
+            }
+        },
     })
 }
 

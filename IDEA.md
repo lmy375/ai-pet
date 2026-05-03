@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R10 设计要点（已实现）
+- **R series 的"chip 化"是 R6/R7 之后的自然下一步**：R6 在 PanelDebug 加了反馈 timeline，R7 用 ratio 改 cooldown。但 timeline collapsible 默认收起，用户日常 panel 看不到。chip 化让"宠物现在被听见多少" 进入 always-visible 一行。这是 D series chip strip 的延续 design pattern：每个有意义的 binary/ratio signal 应该有一个 chip。
+- **chip 颜色与 R7 adapter 临界点对齐**：>0.6 红 / <0.2 绿 / else 灰，正好对应 cooldown ×2 / ×0.7 / unchanged。这种"chip 颜色 = 系统行为预测器" 的契约让用户的 mental model 很清晰：看到红色 → 知道宠物会自动安静下来 → 不需要 manual settings 调整。
+- **共用 20 entries 窗口的健康选择**：R6 panel 显示 20 条 + R7 gate 用 20 条 + R10 chip 用 20 条。三处共用同一个 magic number 让"看到的就是发生的"。如果将来某层想换窗口（比如 R7 想用 50 条更稳）该单独提取一个 const，但 yet ROI 不到。
+- **chip 是 ratio 的 ambient surface vs timeline 的 detail surface**：UX hierarchy 清晰：chip 看一眼"是不是有问题"；timeline 展开"问题在哪些 utterance"；R7 adapted cooldown 自动调整"我做了什么"。三层 surface 各自负责一种用户问询深度。
+- **不加 prompt 提示**：考虑过 "如果忽略率 > 0.6 就在 proactive prompt 里加一行 hint"。但 R7 已经通过 cooldown 调整间接传达了信号——pet 自然变安静。再在 prompt 里加 "你最近被忽略多了" 容易让 LLM 产生"自我责备" 语气，反 effect。让数据通过 mechanism 影响行为，但 prompt 里不直接 nag the LLM。
+- **路线 R 系列还有 5 个候选**：R11-R15 写到 TODO。每个都是独立小 iter，重点在"丰富宠物对环境/状态的感知" + "让积累的数据反哺行为"。整体目标：宠物从"开口判断" 进化到"全方位 contextual presence"。
+
 ## Iter R9 设计要点（已实现）
 - **bubble 历史 ≠ chat session 历史是产品理念分裂**：bubble 是即时通知（F1 自动消失 60s），chat session 是持久对话。但用户心智里两者是"同一只宠物在跟我说话" — pet 自己看不到自己的 bubble 是个 broken mental model。R9 用一层 system 消息把两者粘合，用户问"刚才说啥" 终于能得到答案。
 - **inject_*_layer 已经成 idiomatic pattern**：mood_note + persona_layer + soul_refresh + 现在 recent_speech。每个都是 "在 first non-system 位置插入一条系统消息" 的同模式。chat() 顶部的"信息分层" 架构清晰可扩展——下一个想塞的 context（最近 mood 趋势？管家任务摘要？）都按这模板加。

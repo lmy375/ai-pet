@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R10：tone strip 反馈率 chip + 路线 R 后续规划
+- 现状缺口：R6 在 PanelDebug 加了反馈 timeline collapsible 卡，但用户在 Tone Strip 那一行的 11 个 chip 里看不到 "现在被听见的程度" 信号。打开 collapsible 才能看 ratio 是个友好的 UX 障碍——日常 panel 一瞥应当包含这层信号。
+- 解法：
+  - ToneSnapshot 加 `feedback_summary: Option<FeedbackSummary>`，FeedbackSummary { replied, total }
+  - build_tone_snapshot 读 recent_feedback(20)（与 R6 / R7 同窗口）+ 计 replied count + 装载
+  - panelTypes.ts 加对应 TS 类型 + PanelToneStrip 加 chip：💬 N/M（颜色按 R7 adapter 阈值——忽略率 >0.6 红、<0.2 绿、否则灰）
+  - 空数据 → None → 不渲染 chip（新装机用户 panel 干净）
+- 决策 — 同窗口 20：保持 panel 显示与 gate 行为同源。如果 chip 显示 6/20 (70% ignore)，下一次 cooldown 会 ×2（R7）— 用户能预测系统行为。
+- 决策 — 复用 R7 的 ratio band 颜色：>0.6 红 / <0.2 绿 / else 灰，同 adapter 决策的 step function 临界点。chip 颜色就是 visual proxy of "this triggered cooldown adjustment yes/no"。
+- 决策 — title 里写"R7 阈值" 文字解释：用户 hover chip 能看到为什么颜色这样——避免 magic colors 的认知负担。
+- 路线 R 后续 5 个 TODO 写入（gap analysis 后）：
+  - R11: speech topic redundancy detector（chinese ngram overlap）
+  - R12: daily review 自动生成（22:00 trigger）
+  - R13: companion mode setting（chatty/quiet/coaching/silent_present 预设）
+  - R14: 跨日记忆线（注入昨天 speech excerpts）
+  - R15: active app 时长追踪（per-minute window snapshot）
+- 测试结果：387 cargo（无新增 — 数据 plumbing only，serde flow 已经有信任）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：tone strip 现在第 12 维 chip：feedback summary。用户日常 panel 一瞥就能看到"是不是说太多了"——直接对应 R7 cooldown 调节行为。R1 capture → R6 surface → R7 drive → R10 ambient surface 闭环更紧。
+
 ## 2026-05-03 — Iter R9：reactive chat 注入"最近主动开口" system layer
 - 现状缺口：proactive 的 bubble 说了"看你还在写 Rust"，用户点开 chat 面板回"刚才说啥来着？"——pet 一脸茫然。bubble 历史不在 chat session 的消息列表里。proactive prompt 已经有 `speech_hint`（避免重复），但 reactive 路径完全看不到自己最近的主动话语。
 - 解法 — 第三个 inject_*_layer：
