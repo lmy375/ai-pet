@@ -2,6 +2,27 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R27：active_app deep-focus directive + 3-band panel chip
+- 现状缺口：R15 把 active_app 注入 prompt 是描述性的："用户在「Cursor」里已经待了 90 分钟。" LLM 看到能 *infer* 是深度工作，但不一定每次都做对——尤其是 prompt 里其他信号（如"用户已经 X 分钟没回应"）拉它打断。**长时间专注是强 contextual signal，应该 explicit directive 而不是 implicit 描述**。15-60 分钟范围还可以打断（pomodoro 间隙），≥60 是真深度，干扰成本陡增。
+- 解法 — prompt 升级 + panel 3 段色：
+  - active_app.rs 加 `DEEP_FOCUS_MINUTES = 60` 常量。`format_active_app_hint` 三分支：< 15 空 / 15-59 描述 / ≥60 directive："...深度专注期 ≥60m。这次开口应当极简或选择沉默，避免打断长时间工作流。"
+  - PanelToneStrip active_app chip 三段色：< 15m 灰 / 15-59 橙 / ≥60m 红 + 🔒 锁标。chip hover 三种文案明确"哪个 prompt 路径在 fire"，跟后端 directive 一一对应。
+  - 没有新数据字段 —— 段位计算在 frontend / prompt formatter 里基于现有 minutes 字段。**计算下放到 view layer** 让 backend struct 不膨胀。
+- 决策 — 60 分钟阈值：双倍 pomodoro / 一个典型 deep-work block。短于此打断是 pomodoro 间歇可接受，长于此打断成本陡升。**用人类已知的工作节奏单位作锚** > 任意拍数字。
+- 决策 — directive 文案"极简或选择沉默"而非"沉默"：保留 LLM judgment 余地。如果用户明确做了"求关心"等触发，pet 仍可极简一句话；硬"沉默" 太刚性。**指令应该是 nudge 不是 lock**——R7/R11/R19 系列 prompt 鬼一直延续这个软指令哲学。
+- 决策 — 不加新 backend 字段（is_deep_focus / band 字段）：minutes 字段已有，frontend if/else 判段；prompt formatter if/else 判 directive。**band 是计算属性而不是数据属性**——backend 字段化反而引入分歧风险（panel 跟 prompt formatter 阈值不一致）。同一 raw value 两边各自 derive 同 logic 反而严格。
+- 决策 — 红色 + 🔒 锁标：复用 R-series 颜色梯度（绿 → 橙 → 红 = 信号强度递增）。🔒 锁强化"sealed period 别打扰"语义视觉。chip 文案多 1 字符 cost 低，user 一眼区分"工作中 vs 深度工作中"。
+- 决策 — 3 段色不 4 段：考虑过 ≥120m 加第 4 段 "极深"。但已是边际收益 —— red + 🔒 已表达"严肃"，再加分级是过度。**3 是 panel 视觉的甜蜜点**：少了不区分，多了认知 overhead。
+- 决策 — 不再加任何"被记录"的 panel chip：R-series codified rule "prompt 信号 = panel surface"。R27 算扩展 R22 chip（add severity bands）而非新 chip，所以 surface 已自然完成。
+- 决策 — 不加新 panel UI test：颜色 / chip 文案是 inline 渲染逻辑，无新 logic 分支，tsc + cargo test 验类型安全 + backend pure fn 边界。
+- 测试（4 新单测）：
+  - format_below_deep_focus_threshold_uses_descriptive_form（30m 不 fire directive）
+  - format_at_deep_focus_threshold_fires_directive（60m boundary fire）
+  - format_above_deep_focus_threshold_fires_directive（90m 含"打断长时间工作流"）
+  - format_just_below_deep_focus_keeps_descriptive（59m boundary 不 fire）
+- 测试结果：478 cargo（+4）；clippy --all-targets clean；fmt clean（fmt 加了一行 import 排序）；tsc clean。
+- 结果：当用户连续在 Cursor 工作 90 min，pet 看 prompt 立刻知道"该闭嘴"，panel 显红色 🪟 Cursor（90m 🔒）chip。**3-band 阈值结构（< 15 / 15-60 / ≥60）匹配人类工作节奏感受**——quick check / sustained focus / deep flow 三种 mode 各对应不同的同伴打断策略。
+
 ## 2026-05-04 — Iter R26：feedback aggregate hint 注入 prompt（trend + latest 双层）
 - 现状缺口：R1 的 format_feedback_hint 只把**最后一条** feedback 注入 prompt（"上次你说 X，用户回复了 / 没回应 / 主动点掉"）。LLM 看到的是单点事件，看不到趋势。如果用户最近 20 句被静默忽略 8 次但最后一句意外 replied，LLM 看到 "用户回复了" 会过度乐观调升频率。**latest event ≠ trend**，prompt 应该两个都看。
 - 解法 — 纯函数 + 共享 fetch：

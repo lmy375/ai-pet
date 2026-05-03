@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R27 设计要点（已实现）
+- **descriptive vs directive 的 prompt 升级路径**：R15 写 "用户在 X 已经 N 分钟"，是事实陈述。LLM 自己得 infer "所以我该闭嘴吗？"。R27 升级为 "...这次开口应当极简或选择沉默" 直接告诉 LLM 怎么做。**信号强度 dial**：低强度信号给事实，让 LLM 自己 judge；高强度信号给 directive，减 LLM 误判风险。Pet design 学问 — 哪些 case 值得 directive 升级，哪些保 descriptive 让 LLM 自由发挥。R27 的判断是 ≥60min = 高 stakes 不容犹豫，需要 directive。15-59min 还可酌情 → 留 descriptive。
+- **threshold 用人类时间单位锚**：60min = 2 pomodoro / 一个 deep-work block。这是用户**已经熟悉的时间单位**。任意拍数字（45 / 90）听上去差不多但 lacks anchor。**用 widely-shared mental unit 比经验拍数字更稳** — 用户 / 同伴模型 / 设计者三方对 60min 同样理解 "深度专注"。
+- **band 计算下放 view 层**：backend 没新字段（band/is_deep_focus）。Frontend if/else 判 minute → color；prompt formatter if/else 判 minute → directive。乍看违反 single source of truth。但**band 是 derivable 不是 stored**：raw value 是 minutes，band 由 same threshold 在两端独立 derive。两端用同 const 算 → 必然一致。如果 backend 加 band 字段反而引入"backend 算的 vs frontend 显示的"分歧风险（万一 frontend 写错 const）。**when value derivable from primitive, prefer derive at edge**。
+- **directive 文案保留 judgment 空间**："极简或选择沉默" 不是"必须沉默"。LLM 有时遇 reminder due / butler task scheduled / late-night-wellness 触发等强 prompt 拉它说话 — 这种 case 极简（一句话）也算 valid。硬指令"不许说"会让这些合法触发被吞。**prompt 设计哲学：保留 escape hatch** —— LLM 是判断者不是奴隶。
+- **softer cool 色阶 vs harder warning 色阶**：R-series 之前 chip 都是绿 / 橙 / 红 + 灰背景，现在 R27 引入红 + 🔒 锁标，是第一个"严肃" 信号视觉。**信号梯度跟视觉强度梯度对齐** — 红色 + emoji 锁是 most prominent visual statement，对应 most prominent prompt directive。当系统稳定后，新加 chip 可以参考这个映射 —— 多严肃信号 = 多视觉冲击。
+- **derived band ≠ data band，纪律**：R20 / R21 / R22 都用 derived view-layer banding（minutes → color，ratio → color）。R27 延续。这是个隐含 codified rule —— 一旦 raw 数据足够 (minutes / ratio / count)，**前端 derive 比后端塞 band 字段干净**。后端只算 primitive，前端做 visual encoding。**MVC 分层在 panel chip 里成熟体现**。
+- **3-band 比 4-band 是甜蜜点**：考虑过 ≥120m 加"极深" 第 4 段。但 chip 视觉负载 / 阈值新增 ROI 都低。**视觉 quantization 应当少而粗**：3 段（OK / mild / severe）已能抓住"哪个区域"，4+ 段只是装饰。Panel design 中"克制是成熟"。
+- **R27 不加 panel UI test**：chip color / 文案是 inline 渲染分支，没有跨函数 logic。**渲染分支** vs **业务 logic 分支** —— 后者必须测，前者 tsc + cargo build 已验类型 + 边界。这条纪律延续 R21 / R25 IDEA 写过的"测 logic 不测 wiring"。
+
 ## Iter R26 设计要点（已实现）
 - **latest event vs trend = 树 vs 林**：单点 latest 信号容易被异常值误导（最后一条恰巧是 dismissed → LLM 认为"用户讨厌我" 但其实是个 outlier）。aggregate trend 平滑掉 outlier 反映真实 base rate。但只有 trend 没 latest 也有问题 —— LLM 看不到刚才发生了什么具体事件，会缺乏 contextual reaction。**两层都给** 让 LLM 既看 *what just happened* 又看 *what's been happening*。这是 prompt design 的经典对偶。
 - **min_samples = 5 是 R-series 跨函数稳定阈值**：FEEDBACK_ADAPT_MIN_SAMPLES (R7), SPEECH_LENGTH_MIN_SAMPLES (R19), FEEDBACK_AGGREGATE_MIN_SAMPLES (R26) — 三个都是 5。这是有意识的一致：跨子系统用同一个 "low-confidence cutoff" 让 mental model 简单。**common knobs should have common values** —— 设计 trade-off 一致比每处独立 tune 更可读。如果未来发现某场景需要不同阈值，再 case-by-case 拉开。
