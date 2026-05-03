@@ -33,6 +33,10 @@
 - [x] Iter Cω：修复 LLM沉默 chip 颜色 bug（恒为紫，从未变橙）+ 加红色"失败 K" 子标签
   surface API 错误（2026-05-03 完成）
 
+### 路线 D（series 2）：dashboard surface 与 prompt 对齐
+- [x] Iter D1：ToneSnapshot 暴露 day_of_week / idle_register / idle_minutes，PanelToneStrip
+  渲染 📆 / 👤 chip，让 strip 与 prompt 时间维度 1:1 对齐（2026-05-03 完成）
+
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
 - [x] Iter Cδ：panel 顶部 "+ 委托任务" 快捷入口 + 模态分类 placeholder（2026-05-03 完成）

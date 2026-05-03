@@ -73,6 +73,10 @@ export interface ToneSnapshot {
   proactive_count: number;
   chatty_day_threshold: number;
   active_prompt_rules: string[];
+  // Iter D1
+  day_of_week: string;
+  idle_register: string;
+  idle_minutes: number;
 }
 
 /**

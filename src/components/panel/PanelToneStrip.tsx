@@ -29,6 +29,18 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
       }}
     >
       <span title="period_of_day(now)">⏱ {tone.period}</span>
+      {tone.day_of_week && (
+        <span title="weekday + 工作日/周末（Iter Cβ — proactive prompt 时间行已包含）">
+          📆 {tone.day_of_week}
+        </span>
+      )}
+      {tone.idle_register && (
+        <span
+          title={`用户上次互动距今 ${tone.idle_minutes}m（Iter Cμ — proactive prompt 时间行已含此 register cue）`}
+        >
+          👤 {tone.idle_register}
+        </span>
+      )}
       {tone.cadence && tone.since_last_proactive_minutes !== null && (
         <span title="距上次宠物主动开口">
           💬 {tone.cadence}（{tone.since_last_proactive_minutes}m）

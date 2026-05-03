@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D1 设计要点（已实现）
+- **route 命名转 D 系列**：Greek 字母用到 ω 后再延续会进入 unicode 怪区（𝝰 等），且没人想打那种符号。从 D1 开始作为 "diagnostics / dashboard surface" 的新轨——和 Iter Dx（Memory tab）共享 D 前缀但用数字区分。
+- **复用 helpers 而不是从零计算**：format_day_of_week_hint 和 user_absence_tier 是 Cβ/Cμ 的 pure 函数；get_tone_snapshot 直接复用——保证 prompt 和 panel 永远不会漂移。这是"single source of truth"原则的一次硬规整。
+- **idle_minutes 透传 vs idle_register only**：曾犹豫只暴露 register 字符串。但精确数字给 tooltip / 调试有用——chip 显示文字、tooltip 显示数字，两层信息密度。
+- **chip 顺序：⏱ period → 📆 day_of_week → 👤 idle_register → 💬 cadence**：从"现在几点"→"今天什么日子"→"用户在哪"→"宠物自己有多久没说话"，认知顺序自然。
+- **不在 strip 里加新 chip 表示 user_name**：name 是 settings 静态值不变化，每秒打到 strip 上是噪声。Persona tab 已经 implicit 承载这个（用户在 Settings 里改、看到自己输入即知）。
+- **没有新 cargo 测试**：这次只是数据透传 + 渲染层；guards 来自既有 day_of_week / user_absence_tier 单测（覆盖了 source）。前端 strip 没有测试 harness，这一点是项目的长期 gap，不在本 iter scope。
+
 ## Iter Cω 设计要点（已实现）
 - **发现 bug 的过程**：本来打算"加一个 API health 指示器"。审查现有 chip 时直接看代码`silent + error > spoke + silent + error`——脑子里立刻消去左右公共项：`0 > spoke`。永远 false。这种"代数化简找 bug"的微习惯救过我多次；以后还得保持。
 - **整数算术 vs float**：本来写 `(silent + error) / total > 0.5`。但 `silent * 2 > total` 等价、避免 float、和后端 redaction.rs / data_driven helper 用过的整数比较模式一致。

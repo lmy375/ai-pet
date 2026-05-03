@@ -640,6 +640,16 @@ pub struct ToneSnapshot {
     /// — the prompt is in its "neutral" state. Computed once on the backend so the panel
     /// doesn't need to know each rule's threshold logic.
     pub active_prompt_rules: Vec<String>,
+    /// Iter D1: weekday + weekend/weekday combined label, e.g. "周二 · 工作日".
+    /// Same value the proactive prompt's time line uses (Cβ).
+    pub day_of_week: String,
+    /// Iter D1: human-readable user-absence cue, e.g. "用户离开了一小会儿". Same value
+    /// the proactive prompt's time line uses (Cμ). Surfaced so the panel can render
+    /// the register the LLM is currently reading.
+    pub idle_register: String,
+    /// Iter D1: minutes since last user interaction. Pairs with `idle_register` —
+    /// register is the human cue, this is the precise number for tooltip / debug.
+    pub idle_minutes: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -796,6 +806,9 @@ pub async fn get_tone_snapshot(
         proactive_count,
         chatty_day_threshold,
         active_prompt_rules,
+        day_of_week: format_day_of_week_hint(now.weekday()),
+        idle_register: user_absence_tier(idle_min_for_rules).to_string(),
+        idle_minutes: idle_min_for_rules,
     })
 }
 
