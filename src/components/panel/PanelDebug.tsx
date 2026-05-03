@@ -64,6 +64,10 @@ export function PanelDebug() {
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
   const [lastPrompt, setLastPrompt] = useState<string>("");
   const [lastReply, setLastReply] = useState<string>("");
+  const [lastTurnMeta, setLastTurnMeta] = useState<{ timestamp: string; tools_used: string[] }>({
+    timestamp: "",
+    tools_used: [],
+  });
   const [showLastPrompt, setShowLastPrompt] = useState(false);
   const [copyMsg, setCopyMsg] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -250,6 +254,30 @@ export function PanelDebug() {
               <span style={{ fontSize: "11px", color: "#94a3b8" }}>
                 {lastPrompt ? `prompt ${lastPrompt.length} / reply ${lastReply.length} chars` : "（还没触发过）"}
               </span>
+              {lastTurnMeta.timestamp && (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    color: "#475569",
+                    fontFamily: "'SF Mono', 'Menlo', monospace",
+                  }}
+                  title="prompt 构造时刻（Iter E3）"
+                >
+                  ⏱ {lastTurnMeta.timestamp}
+                </span>
+              )}
+              {lastTurnMeta.tools_used.length > 0 && (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    color: "#0891b2",
+                    fontWeight: 600,
+                  }}
+                  title="LLM 这一轮调用过的去重工具列表（Iter E3）"
+                >
+                  🔧 {lastTurnMeta.tools_used.join(" · ")}
+                </span>
+              )}
               {copyMsg && (
                 <span style={{ fontSize: "11px", color: "#0d9488" }}>{copyMsg}</span>
               )}
@@ -415,15 +443,17 @@ export function PanelDebug() {
         <button
           onClick={async () => {
             try {
-              const [p, r] = await Promise.all([
+              const [p, r, m] = await Promise.all([
                 invoke<string>("get_last_proactive_prompt"),
                 invoke<string>("get_last_proactive_reply"),
+                invoke<{ timestamp: string; tools_used: string[] }>("get_last_proactive_meta"),
               ]);
               setLastPrompt(p);
               setLastReply(r);
+              setLastTurnMeta(m);
               setShowLastPrompt(true);
             } catch (e) {
-              console.error("get_last_proactive_prompt/reply failed:", e);
+              console.error("get_last_proactive_prompt/reply/meta failed:", e);
             }
           }}
           title="查看上次构造的 proactive prompt + LLM reply 全文（process 重启后清空）— 一眼看到 in/out。"

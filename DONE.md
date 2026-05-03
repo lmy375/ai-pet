@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter E3：prompt-preview modal 加 timestamp 和 tools_used 元数据
+- 现状缺口：E1+E2 后 modal 显完整 prompt + reply，但缺两个关键 meta：(a) 这一对是哪个时刻的？(b) LLM 这一轮调了什么工具？没 timestamp 的话，user 看到 modal 内容不知道是 30 秒前还是 30 分钟前的；没 tools_used 的话，prompt 里 env-awareness rule 是否真的让 LLM 调 active_window 没有直接答案。
+- 解法（再次复用 E series static Mutex 模板）：
+  - 加两个新 stash：`LAST_PROACTIVE_TIMESTAMP: Mutex<Option<String>>` + `LAST_PROACTIVE_TOOLS: Mutex<Vec<String>>`
+  - timestamp 在 prompt build 后立刻 set（与 prompt clone 同位置）；用 `now_local.format("%Y-%m-%d %H:%M:%S")` 给 user 友好的本地时间
+  - tools_used 在 LLM 调完之后 set，去重：BTreeSet collect → 排序好 + 唯一。原 `tools` Vec 可能含同名重复（多次 call），UI 不需要那种粒度
+  - 新 Tauri command `get_last_proactive_meta() -> ProactiveTurnMeta { timestamp, tools_used }`：一次拉两个字段，避免 panel 三次 IPC
+  - Modal 头部加两个 inline pills：⏱ timestamp（slate 等宽）+ 🔧 tools (cyan 加粗，工具名以 ` · ` 连接)
+  - `Promise.all` 升级为三件并行（prompt + reply + meta）
+- 不动 E1/E2 已有命令——保持向后兼容；新 meta 命令是 additive。
+- 测试：306 cargo 不变；tsc 干净。
+- 用例：研发改了 env-awareness 规则 → 立即开口 → 看上次 prompt → modal header 立刻看到 `🔧 get_active_window · memory_edit`，确认 LLM 真的去看了环境。验证 prompt → 行为 链路在一个 round 闭合。
+- E3 收尾 modal 形态：prompt + reply + timestamp + tools 四件。E series 工具向已经覆盖"看现在 prompt 的 in/out 是什么、什么时候、调了什么"。
+
 ## 2026-05-03 — Iter E2：modal 同时显示 LLM reply + 复制按钮 — 全 in/out 可见
 - 现状缺口：E1 的 modal 只显 prompt（input）。但调试 / 调优经常要的是 "看 prompt + 看 LLM 输出"——一个 chat round 完整双向。E1 后用户得开 logs 找 reply。
 - 解法：同 E1 模板镜像加 reply：

@@ -65,6 +65,8 @@
   + "看上次 prompt" 按钮 + modal 预览（2026-05-03 完成）
 - [x] Iter E2：modal 同时显示 LLM reply + 每段独立复制按钮 — 全 in/out 可见
   （2026-05-03 完成）
+- [x] Iter E3：modal 头部加 ⏱ timestamp + 🔧 tools_used 元数据 — 完整 chat round
+  meta 一眼可见（2026-05-03 完成）
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
