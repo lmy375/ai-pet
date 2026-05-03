@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R36：retune R31 prompt size 📝 chip 阈值（baseline drift 修正）
+- 现状缺口：R31 (Iter 31) 加 chip 时阈值 < 1500 绿 / 1500-2999 灰 / ≥3000 橙。当时 R-series prompt baseline 估 ~2000-3500。但 R32→R35 又加了 4 个 hint（silent_hint, consecutive_silent_hint, consecutive_negative_hint, feedback_aggregate_hint），baseline 上移。**原阈值让"正常 turn" 常显橙色 warning，warning 信号失去意义**。这是经典"absolute threshold drift" 问题 —— 阈值是过去的快照，环境变化后没同步更新。
+- 解法 — 拉高所有阈值约 +1000 chars：
+  - 绿 < 1500 → 绿 < 2000
+  - 灰 1500-2999 → 灰 2000-3999
+  - 橙 ≥3000 → 橙 ≥4000
+  - 文案同步更新解释新阈值 + R36 retune 原因（hover 文案告诉 user 为什么改）
+- 决策 — +1000 增量：粗估每个 R-series hint 平均 ~50-150 chars 当 fire。R32-R35 加 4 个 hint × 100-150 avg = 400-600 chars。再加 "stuck pattern" / "trend" 段加长 = 接近 1000。**经验拍 +1000** 比小调小调多次更干脆。
+- 决策 — 保 3 段 不升 4 段：R27 IDEA 写"3 是 panel 视觉甜蜜点"。诱惑是加"红 ≥6000"作 critical 段，但 4 band 让 chip 文字密度太大且复杂。3 band 表达力够 —— 真要 critical bloat 时 user 会自己看到橙色不断升高。
+- 决策 — 不改 chip rendering 颜色 / icon：只改阈值数字 + 文案。**最小可行修正** —— iter 范围控制在阈值，不让范围 creep 到样式调整。
+- 决策 — hover 解释 retune reason：**panel UI 应该 surface 自己的设计 evolution**。"R36 retuned: ..." 文案让 future-me 看 panel 时知道"为啥这阈值这数"，不需查 git history。这种 self-documenting threshold 是 long-running project 的友善设计。
+- 决策 — 不需要单测：阈值改是 const value 调整，无新 logic。tsc + cargo build clean 验证类型 safety。
+- 决策 — 不写 backend："chip 阈值" 是前端 visual decision，跟 backend 没关系。R31 IDEA "band derive at view edge" 原则继续 — 阈值在前端 hardcoded 即可。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：📝 chip 现在常态显灰色"normal"，仅当 prompt 异常臃肿（≥4000 chars）时才橙色 warn。R31 budget 自检功能恢复有效 —— warning 重新有了"该 audit 哪条 hint" 的信号意义，而不是常态噪音。**长 iter 系列的 threshold 偶尔需要 retune** —— 设过的数字不是永恒，环境变化阈值要跟。
+
 ## 2026-05-04 — Iter R35：trailing-negative streak — R33/R34 的 user-side mirror
 - 现状缺口：R33+R34 给 pet 自我感知"我最近连续沉默 N 次"。**对偶的"用户连续不接受我 N 次" 信号缺位** — R26 给的是 20-window ratio（aggregate / 平滑），不是 trailing streak（recent uninterrupted run / urgency）。两者侧重不同：smoothed 反映长期趋势，streak 反映"现在正在被拒绝"的紧迫感。
 - 解法 — 完全 mirror R33+R34：
