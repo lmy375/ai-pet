@@ -1,5 +1,16 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cγ 设计要点（已实现）
+- **方向变了，前移管家方向**：用户明确把目标从"实时陪伴 = 主动观察 + 攀谈"扩展为"实时陪伴 + 实用管家"。这意味着以后选迭代时优先级要重排：能让宠物**真正帮用户做事**的能力 > 单纯让宠物**说更贴的话**的微调。Iter Cγ 是这个方向的第一刀。
+- **新建类别而不是复用 todo**：开头犹豫过——是不是把"用户委托给宠物的事"都塞进 `todo` 用前缀区分（比如 `[butler] xxx`）？ 反例：`todo` 里的 reminder 已经是用前缀 `[remind: HH:MM]` 标记的，再加一种前缀就会让 prefix 解析复杂；而且 `todo` 在面板上是"用户的待办"语义，前端 / consolidate / reminder sweep 都基于这层语义。**类别才是 namespace**，前缀是 namespace 内的 sub-format。把 butler_tasks 单独成类后，所有"我做的事"和"我提醒用户的事"自然分离，将来给 butler 做触发器 / 报告 / panel UI 时不会撞上现有 reminder 流程。
+- **按 updated_at 升序而不是降序**：这是和 user_profile_hint（Iter Cα，降序）相反的选择，理由：user_profile 是"我对用户的认知"——最近更新的版本最准确；butler_tasks 是"我的待办 backlog"——最早委托的最不能让我忘了。两种 ordering 服务两种语义。
+- **block 内自带 footer 而不是另起一条 rule**：footer 写"完成后用 memory_edit update / 不需要的 delete"——本来可以做成另一条 contextual rule，但 footer 离任务列表近，LLM 看的时候上下文耦合度更高，比拆到 rules 段里更不容易漏。
+- **rule 是 conditional 的**：只有 hint 非空才把"你也是小管家"这条规则推进 rules——避免在没有任务时浪费 token，也避免给"prompt: N 条 hint" 面板 chip 加噪声（rule 用条件化方式不进 active_prompt_rules 系统）。
+- **不进 active_prompt_rules 标签系统的取舍**：rules 系统现在分四种 nature（restraint / engagement / corrective / instructional），butler-task 哪种都不像——它不是"对开口语气的塑造"而是"对工具调用范围的扩展"。加进去会让"倾向 X%" chip 失真。后面如果 butler 任务多到值得专门统计 LLM 接管率，再单建一个统计维度（类似 env_spoke_with_any 那样的 atomic 计数器）。
+- **不立即做触发器**：单 iter 不做"按时间自动执行 butler_task"——那需要从 cron / chrono 任务调度切入，工程量过大。当前迭代只让 LLM 在每次 proactive turn 看到任务列表，由 LLM 自己判断要不要这一轮执行某项。先看 LLM 自治能不能动起来，再决定要不要加机械触发器。
+- **写 panel 顺序成 actionable-first**：`PanelMemory.tsx` CATEGORY_ORDER 改成 `[butler_tasks, todo, ai_insights, user_profile, general]`。butler_tasks 是新加的"用户最常 add"类别——置顶让用户加任务就能看到。todo 紧跟（也是用户写作）。下面三类是宠物自己写的，下沉。这种"按谁是 author / actionability 排序"也许该写成更显式的 metadata，但现在两类太少先用顺序表达。
+- **consolidate 加一行而不是重写整段**：consolidate prompt 已经够长，只在第 2 条"过期/失效"的现有列表里加一句 butler_tasks 也归这一类，零结构改动。等 LLM 实际开始用 butler_tasks 后看 consolidate 的整理质量是否需要更精细的指引。
+
 ## Iter Cβ 设计要点（已实现）
 - **拼字符串还是加结构化字段**：可以选 (a) PromptInputs 加两个字段 `weekday: &str` + `weekday_kind: &str`，prompt builder 自己拼；(b) 加一个合并字段 `day_of_week: &str`，调用方拼好。选 (b)：builder 是格式化模板，多接收一个独立字段会让 time 行变成 `format!("现在是 {}（{}，{} · {}）...", time, period, weekday, kind)` 同时引入 `·` 这个表示分隔的字符到模板里——一旦未来想给周末特殊渲染（比如 emoji），就要改模板。把拼接逻辑放在 `format_day_of_week_hint` helper 里，模板只负责"插一个 string"，分离得更干净。
 - **三个函数还是一个**：`weekday_zh` / `weekday_kind_zh` / `format_day_of_week_hint` 拆开。如果合一个 `format(...)`，未来 ToneStrip 想单独显示"周日"就得复制一份逻辑。三个 pure 函数 = 三段独立可测可复用的小积木。这种"小函数比合并大函数更值"的取舍在项目里反复出现（period_of_day 也是同样的形态）。

@@ -2,6 +2,27 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cγ：butler_tasks 类别 + 宠物管家方向首切
+- 用户给出新方向：放弃跨设备同步（已从 TODO/STATUS 删除），转向 "宠物管家" — 让宠物执行用户委托的实际工作。这是 Iter Cγ 的起点。
+- 新增 `butler_tasks` 记忆类别，与 `ai_insights / user_profile / todo / general` 并列：
+  - `commands/memory.rs` 默认类别加 `butler_tasks: 管家任务`。
+  - `tools/memory_tools.rs` 三处 enum + 描述更新：memory_list 描述列出五个类别，memory_edit 的 enum 加 `butler_tasks`，并加一段 LLM 指引——"butler_tasks 是用户委托给你做的事，不要和 todo（用户提醒自己）混淆"。
+- `proactive.rs` 新增 `build_butler_tasks_hint()` + 纯函数 `format_butler_tasks_block(items, max_items, max_chars)`：
+  - 读 `butler_tasks` 类别条目；空则返 ""
+  - **按 `updated_at` 升序**（与 user_profile_hint 相反——任务是 backlog，最久没动的应该最先看到，不能让任务自然 rot 到底部）
+  - 取前 6 条；description 超 100 字符截断
+  - 块尾 footer 提示 LLM 完成后用 `memory_edit update` 记录、撤销用 `delete`——把"如何 retire 任务"塞进 prompt 让 LLM 不必猜约定
+  - 输出过 `redact_with_settings`
+- `PromptInputs` 加 `butler_tasks_hint: &'a str`，prompt builder 在 `plan_hint` 之后 push（保留时间顺序：先看用户给我的提醒、再看我自己的计划、再看用户委托的任务）。
+- 在 proactive_rules 加一条 **conditional rule**：仅当 `butler_tasks_hint` 非空时 push一句"你也是用户的小管家——可以调 read_file / write_file / edit_file / bash 真去执行任务"。提示 LLM file/bash 工具在 butler 路径里是合法的（之前的 always-fired 规则只列了 env tools + memory_search）。
+- 不进 active_prompt_rules 标签系统：butler-task 触发是"有任务就提"的开关式，不属于 restraint/engagement/corrective/instructional 任一 nature——加进规则面板会污染倾向统计。先做 ambient hint + 局部 rule，未来观察使用情况再决定是否升格为有 nature 的规则。
+- `consolidate.rs` prompt 第 2 条扫除规则补充："butler_tasks 类下用户已经撤回 / 已完成且不再 recurring，归过期/失效"——让定时整理也覆盖这个类别。
+- 前端 `PanelMemory.tsx` CATEGORY_ORDER 调整为 `[butler_tasks, todo, ai_insights, user_profile, general]`，让"用户委托"和"提醒"两个 actionable 类别置顶；以前的纯展示类下沉。
+- 7 个新单测：prompt 注入 / 省略、空列表 / 0-cap、按 updated_at 升序（相对 user_profile 的降序）、cap+footer 校验、长描述截断含 `…`。
+- 1 处既有 prompt 模板修改通过 hint-conditional 化避免破坏 `prompt_omits_butler_tasks_hint_when_empty`——基础输入里 hint=空，规则就不 push，prompt 不含 "管家"。
+- 测试总数 241 → 248。
+- 结果：宠物现在有了一个区分于 todo 的"我的工作清单"。LLM 收到 prompt 时看到这段管家任务列表 + 知道可以用 file/bash 真执行。后续 Iter 可以接：(1) 触发器（"每天 8 点跑一次某任务"）、(2) 自动汇报（执行结果直接进 speech_history）、(3) 用户在 panel 上直接 add/edit 任务的 UI、(4) "刚执行完任务"的 motion / 心情反馈。
+
 ## 2026-05-03 — Iter Cβ：proactive prompt 加 weekday/weekend awareness
 - 现状缺口：proactive prompt 里有 time + period（清晨/上午/.../深夜）但没有 weekday vs weekend 区分。LLM 看到 `2026-05-03 14:30（下午）` 要自己反推今天是周几——某些模型版本对日期算术不可靠，且即使算对了也不会在语气上区分"周五晚上 vs 周一上午"。
 - 解法：在 time 行 inline 加一个 `周X · 工作日/周末` 标签。一行字 + 一个枚举，零额外分支，零成本，但能给 LLM 一个清晰的语气切换信号——"周五晚上别再写代码"、"周末早上要不要慢点起"这类话题就有触发面。

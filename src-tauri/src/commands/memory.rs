@@ -91,6 +91,13 @@ impl Default for MemoryIndex {
             },
         );
         categories.insert(
+            "butler_tasks".to_string(),
+            CategoryData {
+                label: "管家任务".to_string(),
+                items: vec![],
+            },
+        );
+        categories.insert(
             "general".to_string(),
             CategoryData {
                 label: "其他".to_string(),

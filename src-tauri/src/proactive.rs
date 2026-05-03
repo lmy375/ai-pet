@@ -218,6 +218,13 @@ pub struct PromptInputs<'a> {
     /// have to fire a `memory_search` tool call to know basic things it has
     /// already written down. Already redacted via `redact_with_settings`.
     pub user_profile_hint: &'a str,
+    /// Owner-assigned task queue (Iter Cγ). Reads from the `butler_tasks` memory
+    /// category. Surfaced every proactive turn so the pet remembers what the user
+    /// has asked it to do — info gathering, scheduled reports, recurring chores.
+    /// Empty until the first task is created. This is the seed of the 宠物管家
+    /// direction: the pet's "to-do FOR you" list, distinct from `reminders_hint`
+    /// (the user's own due nudges).
+    pub butler_tasks_hint: &'a str,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -254,6 +261,15 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
     ));
     rules.push("- 只说一句话，简短自然，像伙伴一样。".into());
     rules.push("- 必要时可以调用工具：`get_active_window`（看用户在用什么 app，开口前优先调一次让话题贴合当下）、`get_upcoming_events`（看用户接下来几小时有没有日程，可用于提醒类话题，记得日程是私人内容不要原样念出）、`get_weather`（看下天气当作闲聊话题，偶尔用一次就好不要每次都查）、`memory_search`（翻一下用户偏好）。".into());
+    if !inputs.butler_tasks_hint.trim().is_empty() {
+        rules.push(
+            "- **你也是用户的小管家**：上面「管家任务」段列出了用户委托给你的事，你可以用 \
+`read_file` / `write_file` / `edit_file` / `bash` 真去执行（读 ta 的某个文件、写一份日报、\
+整理目录都行），完成后用 `memory_edit update` 在 `butler_tasks` 里记录这次执行时间和结果。\
+一次开口推进一项就够，不必一次清空。如果当下不是合适执行时机，也可以只做轻提及。"
+                .into(),
+        );
+    }
     rules.push("- 这三个环境工具（`get_active_window` / `get_weather` / `get_upcoming_events`）每次调用都有真实的 IO 成本，并且**同一次主动开口检查内重复调用同样的参数会拿到完全一样的结果**——所以一次足够了，不要为了「再确认一下」反复调，相信首次返回值直接做判断。".into());
     rules.push(format!(
         "- **决定开口后**：请用 `memory_edit` 更新 `{cat}` 类别下 `{title}` 的记忆（不存在就 `create`，存在就 `update`）。description 必须以这种格式开头：`[motion: X] 你此刻的心情和想法`，其中 X 是你想做的 Live2D 动作分组，从这四个里选一个：`Tap`（开心/活泼/兴奋）、`Flick`（想分享/有兴致/活力）、`Flick3`（焦虑/烦躁/不安）、`Idle`（平静/低落/累/沉静）。前缀后面才是自由文字。例：`[motion: Tap] 看用户在专心写代码，有点替他高兴`。沉默时无需更新。",
@@ -469,6 +485,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
+    push_if_nonempty(&mut s, inputs.butler_tasks_hint);
     s.push(String::new());
     s.push(
         "请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。".into()
@@ -1391,6 +1408,10 @@ async fn run_proactive_turn(
     // basic user habits without firing memory_search every turn. Empty until
     // the pet has written at least one user_profile entry.
     let user_profile_hint = build_user_profile_hint();
+    // Iter Cγ: surface owner-assigned butler tasks each proactive turn so the
+    // pet's task queue stays visible — the pet shouldn't forget the user asked
+    // it to "每天早上发日历" between turns. Empty when no butler_tasks entries.
+    let butler_tasks_hint = build_butler_tasks_hint();
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
@@ -1455,6 +1476,7 @@ async fn run_proactive_turn(
         persona_hint: &persona_hint,
         mood_trend_hint: &mood_trend_hint,
         user_profile_hint: &user_profile_hint,
+        butler_tasks_hint: &butler_tasks_hint,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1542,6 +1564,90 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+/// Cap on how many `butler_tasks` entries to surface in the proactive prompt. Above
+/// this the block dominates the prompt; the LLM can still call `memory_list` to see
+/// the full backlog if it needs to triage.
+pub const BUTLER_TASKS_HINT_MAX_ITEMS: usize = 6;
+/// Per-task description char cap. Long task specs become noisy when stacked; the
+/// detail.md is one read_file call away when the LLM actually picks one up.
+pub const BUTLER_TASKS_HINT_DESC_CHARS: usize = 100;
+
+/// Pure formatter for the butler-tasks block. Items are `(title, description, updated_at)`.
+/// Sorted by `updated_at` ascending — oldest pending tasks bubble to the top so the LLM
+/// sees what's been waiting longest. Empty list / zero cap → empty string so
+/// `push_if_nonempty` skips the section.
+///
+/// Iter Cγ: distinct from reminders_hint (which is *user's* time-bound nudges) — this
+/// is the pet's own assignment queue, surfaced every proactive turn so it doesn't
+/// vanish into memory_list.
+pub fn format_butler_tasks_block(
+    items: &[(String, String, String)],
+    max_items: usize,
+    max_desc_chars: usize,
+) -> String {
+    if items.is_empty() || max_items == 0 {
+        return String::new();
+    }
+    let mut sorted: Vec<&(String, String, String)> = items.iter().collect();
+    // Ascending = oldest first. Pending tasks should not silently rot at the bottom.
+    sorted.sort_by(|a, b| a.2.cmp(&b.2));
+    let n = sorted.len().min(max_items);
+    let mut lines: Vec<String> = Vec::with_capacity(n + 2);
+    lines.push(format!(
+        "用户委托给你的管家任务（共 {} 条，按最早委托排在前）：",
+        n
+    ));
+    for (title, desc, _) in sorted.iter().take(n) {
+        let trimmed = desc.trim();
+        let truncated: String = if trimmed.chars().count() <= max_desc_chars {
+            trimmed.to_string()
+        } else {
+            let head: String = trimmed.chars().take(max_desc_chars).collect();
+            format!("{}…", head)
+        };
+        lines.push(format!("- {}：{}", title.trim(), truncated));
+    }
+    lines.push(
+        "执行完一项后用 `memory_edit update` 更新进度（标题前加 [done] / 写最后执行时间），\
+完全不需要的用 `memory_edit delete` 移除。"
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+/// Read butler_tasks memory entries and format the prompt-side digest. Returns "" when
+/// the category is empty so the prompt builder skips it. Output is redacted via
+/// `redact_with_settings` for the same reason as `build_user_profile_hint` — the
+/// description may include private terms that shouldn't re-leak.
+pub fn build_butler_tasks_hint() -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("butler_tasks") else {
+        return String::new();
+    };
+    let tuples: Vec<(String, String, String)> = cat
+        .items
+        .iter()
+        .map(|i| {
+            (
+                i.title.clone(),
+                i.description.clone(),
+                i.updated_at.clone(),
+            )
+        })
+        .collect();
+    let block = format_butler_tasks_block(
+        &tuples,
+        BUTLER_TASKS_HINT_MAX_ITEMS,
+        BUTLER_TASKS_HINT_DESC_CHARS,
+    );
+    if block.is_empty() {
+        return String::new();
+    }
+    crate::redaction::redact_with_settings(&block)
 }
 
 /// Tauri command returning the raw persona-summary description (Iter 105) — without
@@ -1800,6 +1906,9 @@ mod prompt_tests {
             // Default empty — pre-Iter Cα state, no user_profile entries surfaced.
             // Tests for the user-profile hint set this explicitly.
             user_profile_hint: "",
+            // Default empty — pre-Iter Cγ state, no owner-assigned butler tasks yet.
+            // Tests for the butler_tasks hint set this explicitly.
+            butler_tasks_hint: "",
         }
     }
 
@@ -2254,6 +2363,90 @@ mod prompt_tests {
             .filter(|c| *c == '字')
             .count();
         assert_eq!(body_chars, 20, "should keep exactly 20 chars before ellipsis");
+    }
+
+    #[test]
+    fn prompt_includes_butler_tasks_hint_when_set() {
+        let mut inputs = base_inputs();
+        inputs.butler_tasks_hint =
+            "用户委托给你的管家任务（共 1 条，按最早委托排在前）：\n- 早报：每天 8 点把日历发给我";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("管家任务"));
+        assert!(p.contains("早报"));
+        assert!(p.contains("把日历发给我"));
+    }
+
+    #[test]
+    fn prompt_omits_butler_tasks_hint_when_empty() {
+        let inputs = base_inputs();
+        let p = build_proactive_prompt(&inputs);
+        assert!(!p.contains("管家任务"));
+    }
+
+    #[test]
+    fn format_butler_tasks_block_empty_returns_empty() {
+        assert_eq!(format_butler_tasks_block(&[], 6, 100), String::new());
+    }
+
+    #[test]
+    fn format_butler_tasks_block_zero_max_returns_empty() {
+        let items = vec![("t".into(), "d".into(), "2026-05-03T10:00:00+08:00".into())];
+        assert_eq!(format_butler_tasks_block(&items, 0, 100), String::new());
+    }
+
+    #[test]
+    fn format_butler_tasks_block_sorts_oldest_first() {
+        let items = vec![
+            ("新任务".into(), "d-new".into(), "2026-05-03T10:00:00+08:00".into()),
+            ("老任务".into(), "d-old".into(), "2026-04-01T10:00:00+08:00".into()),
+            ("中任务".into(), "d-mid".into(), "2026-04-20T10:00:00+08:00".into()),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100);
+        let old_idx = out.find("老任务").unwrap();
+        let mid_idx = out.find("中任务").unwrap();
+        let new_idx = out.find("新任务").unwrap();
+        assert!(old_idx < mid_idx, "oldest should be first (don't let tasks rot)");
+        assert!(mid_idx < new_idx);
+    }
+
+    #[test]
+    fn format_butler_tasks_block_caps_count_and_includes_footer() {
+        let items: Vec<(String, String, String)> = (0..10)
+            .map(|i| {
+                (
+                    format!("task-{i}"),
+                    format!("desc-{i}"),
+                    format!("2026-05-{:02}T10:00:00+08:00", i + 1),
+                )
+            })
+            .collect();
+        let out = format_butler_tasks_block(&items, 3, 100);
+        assert!(out.contains("共 3 条"));
+        // Top-3 oldest = days 01, 02, 03 = task-0, task-1, task-2.
+        assert!(out.contains("task-0"));
+        assert!(out.contains("task-2"));
+        assert!(!out.contains("task-3"), "4th-oldest should be excluded");
+        // Footer instructs how to mark done — important for the user trust path.
+        assert!(
+            out.contains("memory_edit update") || out.contains("memory_edit delete"),
+            "footer should tell LLM how to retire completed tasks"
+        );
+    }
+
+    #[test]
+    fn format_butler_tasks_block_truncates_long_descriptions() {
+        let long = "条".repeat(150);
+        let items = vec![("task".into(), long, "2026-05-03T10:00:00+08:00".into())];
+        let out = format_butler_tasks_block(&items, 6, 30);
+        assert!(out.contains("…"));
+        let body_chars = out
+            .lines()
+            .nth(1)
+            .unwrap()
+            .chars()
+            .filter(|c| *c == '条')
+            .count();
+        assert_eq!(body_chars, 30);
     }
 
     #[test]
