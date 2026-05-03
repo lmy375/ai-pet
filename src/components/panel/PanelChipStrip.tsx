@@ -119,35 +119,52 @@ export function PanelChipStrip(props: PanelChipStripProps) {
           </button>
         </span>
       )}
-      {llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error > 0 && (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-          <span
-            style={{
-              fontSize: "12px",
-              color:
-                llmOutcomeStats.silent + llmOutcomeStats.error >
-                llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error
-                  ? "#ea580c"
-                  : "#7c3aed",
-              alignSelf: "center",
-              fontFamily: "'SF Mono', 'Menlo', monospace",
-            }}
-            title={`gate 放行后的 LLM 决策: ${llmOutcomeStats.spoke} 次开口，${llmOutcomeStats.silent} 次沉默，${llmOutcomeStats.error} 次失败。沉默率高说明 prompt 偏克制（如 chatty_day_threshold 太低），可作为调优反馈。`}
-          >
-            LLM沉默 {llmOutcomeStats.silent}/
-            {llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error} (
-            {Math.round(
-              (llmOutcomeStats.silent /
-                (llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error)) *
-                100,
+      {llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error > 0 && (() => {
+        // Iter Cω: fix the silent-rate color condition (the previous form
+        // `silent + error > spoke + silent + error` simplified to `0 > spoke`
+        // which never fired) and surface the API-error count separately so
+        // users see network/quota failures instead of having them silently
+        // collapse into the silence rate.
+        const total =
+          llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error;
+        const silentPct = Math.round((llmOutcomeStats.silent / total) * 100);
+        // > 50% silence means LLM is choosing not to speak more often than not —
+        // a real signal that prompts are too restrictive (chatty_day too low,
+        // pre_quiet too wide, etc.).
+        const restrictive = llmOutcomeStats.silent * 2 > total;
+        const hasErrors = llmOutcomeStats.error > 0;
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <span
+              style={{
+                fontSize: "12px",
+                color: restrictive ? "#ea580c" : "#7c3aed",
+                alignSelf: "center",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+              title={`gate 放行后的 LLM 决策: ${llmOutcomeStats.spoke} 次开口，${llmOutcomeStats.silent} 次沉默，${llmOutcomeStats.error} 次失败。沉默率 > 50% 说明 prompt 偏克制（chatty_day_threshold 太低、pre_quiet 太宽 etc.），可作为调优反馈。`}
+            >
+              LLM沉默 {llmOutcomeStats.silent}/{total} ({silentPct}%)
+            </span>
+            {hasErrors && (
+              <span
+                style={{
+                  fontSize: "12px",
+                  color: "#dc2626",
+                  fontWeight: 600,
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                }}
+                title={`LLM 调用 ${llmOutcomeStats.error} 次失败——可能是 API key 错、网络问题、或者超出 rate limit。看 logs 找具体错误。`}
+              >
+                · 失败 {llmOutcomeStats.error}
+              </span>
             )}
-            %)
+            <button onClick={onResetLlmOutcome} title="重置 LLM 决策结果统计" style={resetBtnStyle}>
+              重置
+            </button>
           </span>
-          <button onClick={onResetLlmOutcome} title="重置 LLM 决策结果统计" style={resetBtnStyle}>
-            重置
-          </button>
-        </span>
-      )}
+        );
+      })()}
       {envToolStats.spoke_total > 0 && (
         <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
           <span
