@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R16 设计要点（已实现）
+- **写→读对称是 memory subsystem 的隐藏 invariant**：R12 / R12b 写 review 是上半场，但**写完不读 = 写了等于没写**。系统设计里"someone writes X, eventually someone reads X" 是 implicit invariant — 一旦发现"写完没人读"，要么是死代码，要么是漏了 read 路径。R16 是对这条 invariant 的还债。每加一种 memory write，都要 ask "what reads this?" — 没答案就先别加 write。
+- **两层 hint 互补 vs 单层合并**：第一直觉是"R14 已经有 cross_day_hint，把 yesterday recap 拼进去就行"。但两者**信息颗粒度不同**：recap 是"全貌摘要"（昨天主动开口 7 次，计划 3/5），尾声是"具体片段"（最后两句的内容）。**合并会让两个不同分辨率的信号挤在一行模糊化**。分开 push 让 LLM 可以独立选择 — 它可以"今天先用 recap 总结打开"或"直接续昨晚最后那句话题"。"高密度 + 低密度" 信号应该独立可见。
+- **first-of-day 三层 callback 收齐**：截至 R16，first-of-day 的 prompt 现在含 (1) 时间问候段（已存在）+ (2) cross_day_hint 尾声 (R14) + (3) yesterday_recap_hint 总览 (R16) — 三层各司其职。这个层叠是有边际效用递减的，再加第四层（如"过去 7 天 trend"）不太可能再 step-up；R16 应该是 first-of-day prompt 的收官。后续早起感知如果还要做，应该是 prompt-side 的对齐 / formatter 优化，而不是再 inject 第四层。
+- **`replacen(.., 1)` 是 future-proofing 模式**：当前 deterministic description 永远只有一个"今天"。但 R12c LLM-summary 可能产生"今天我们一起聊了 X，今天计划完成了 Y" 这种重复"今天"的句子。`replacen(.., 1)` 在两个场景都正确：deterministic 时只有一个所以替不替都行，LLM 时只换开头保留语义。提前选 `replacen(1)` 不是无意义谨慎 — 是为已知未来变更留 schema 容忍度。
+- **走 description 不走 detail 是 prompt budget 经济**：detail .md 是完整全天 speeches bullet list（可能 30+ 行）。description 是单行高密度摘要。Prompt 是有 token 预算的稀缺资源，能用一行说清楚就别用 30 行。这反过来也说明了 R12b 把 plan progress 编码进 description 是对的 — 越浓缩的 description 喂 prompt 越合算。
+- **proactive.rs 里"读 memory 类别"的 helper 已经堆了 4 个**：read_current_mood / read_persona_summary / read_daily_plan_description / read_daily_review_description。每个都是 8 行 boilerplate（`memory_list → categories.get → items.iter().find`）。如果再多 1-2 个就值得抽成 `read_ai_insights_item(title) -> Option<&MemoryItem>` 共享 helper。先记下来 — 当 helper 数到 6 时强制 refactor，避免 pattern 复制蔓延。"先重复，等到第 6 次再抽象" 是 lazy abstraction 的纪律。
+
 ## Iter R12b 设计要点（已实现）
 - **deterministic refinement 比 LLM upgrade 优先**：R12 留下的 R12b 原本计划是"LLM 一句话总结"。但深入看了下，需要的依赖：AiConfig / McpManagerStore / LogStore / ShellStore / ProcessCountersStore / ChatMessage / CollectingSink / run_chat_pipeline。把现有 clock-pure module 改成 app-aware 是非平凡 refactor。而 description 缺信号这个具体痛点（"有计划"太空洞）有更便宜的解 — 复用 daily_plan 已有的 `[N/M]` 标记。**先做便宜的高 ROI 升级，把 LLM 版本拆成独立 R12c**。这是"把一个大 iter 拆成多个小 iter" 的实践 — R12 + R12b 一起上线，LLM 升级独立排队。
 - **`[N/M]` parser 设计要 robust against schema collision**：codebase 里方括号有多种用途：`[N/M]` 进度、`[remind: HH:MM]` reminder、`[every: HH:MM]` butler schedule、`[once: YYYY-MM-DD HH:MM]` once-fire、`[review]` 前缀、`[motion: Tap]` mood、`[error: ...]` failure。如果 parser 直接 split_once('/') 不验证 — `[remind: 09:00]` 会把 "remind: 09" / "00" 当成数字（实际不会因为 "remind:" 含字母）。但 `[19/05/03]` 这样的日期会真的被误算（虽然没人这么写）。strict digit-only check 是 minimal 但有效的 defense。**多 schema 共用同一种 syntax 的代价 = parser 要做 disambiguation**。
