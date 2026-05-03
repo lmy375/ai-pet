@@ -108,7 +108,7 @@ export function PanelDebug() {
   // with « / » buttons; index 0 = newest. Replaces E1/E2/E3's three separate
   // fetches with a single Vec<TurnRecord> source.
   const [recentTurns, setRecentTurns] = useState<
-    { timestamp: string; prompt: string; reply: string; tools_used: string[] }[]
+    { timestamp: string; prompt: string; reply: string; tools_used: string[]; outcome?: string }[]
   >([]);
   const [turnIndex, setTurnIndex] = useState(0);
   const [showLastPrompt, setShowLastPrompt] = useState(false);
@@ -538,6 +538,25 @@ export function PanelDebug() {
                   🔧 {lastTurnMeta.tools_used.join(" · ")}
                 </span>
               )}
+              {currentTurn?.outcome && (
+                <span
+                  style={{
+                    fontSize: "10px",
+                    padding: "1px 8px",
+                    borderRadius: "10px",
+                    background: currentTurn.outcome === "spoke" ? "#16a34a" : "#94a3b8",
+                    color: "#fff",
+                    fontWeight: 600,
+                  }}
+                  title={
+                    currentTurn.outcome === "spoke"
+                      ? "LLM 这一轮选择开口（Iter R25）"
+                      : "LLM 这一轮选择沉默（reply 为空或含 <silent>，Iter R25）"
+                  }
+                >
+                  {currentTurn.outcome === "spoke" ? "开口" : "沉默"}
+                </span>
+              )}
               {copyMsg && (
                 <span style={{ fontSize: "11px", color: "#0d9488" }}>{copyMsg}</span>
               )}
@@ -704,7 +723,7 @@ export function PanelDebug() {
           onClick={async () => {
             try {
               const turns = await invoke<
-                { timestamp: string; prompt: string; reply: string; tools_used: string[] }[]
+                { timestamp: string; prompt: string; reply: string; tools_used: string[]; outcome?: string }[]
               >("get_recent_proactive_turns");
               setRecentTurns(turns);
               setTurnIndex(0);

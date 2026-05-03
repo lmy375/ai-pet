@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R25：TurnRecord 加 outcome 字段 + modal 显 spoke/silent badge
+- 现状缺口：E4 ring buffer 存最近 5 个 turn（prompt/reply/timestamp/tools），modal 用 «/» 翻看。但**outcome 只能从 reply 是否空字符串隐式判断**——sense reading 的负担在 user 身上。翻到第 3 个历史 turn 看到 reply 是空的，要回头确认"这是 LLM 沉默 还是 reply 没存"——cognitive friction。
+- 解法 — 在 TurnRecord 加显式 outcome 字段：
+  - `telemetry.rs` 的 `TurnRecord` struct 加 `outcome: String`（"spoke" / "silent"）。`#[serde(default)]` 让旧 process restart 后未填字段的旧记录解析不 crash（虽然 ring buffer 是 in-memory 不持久 —— 防御性 default）。
+  - `proactive.rs` push 点：在 push_back 之前 inline 判断 `if reply_trimmed.is_empty() || contains(SILENT_MARKER) { "silent" } else { "spoke" }`。**用同一个条件 keyword** —— 跟 4 行后的 silent 兜底分支同源逻辑，让两处不会在未来 prompt format 改动时 drift。
+  - 错误路径 (LLM error) 不到 push 点 —— `?` 运算符短路返回。所以 outcome 在 ring buffer 里只有两种值，frontend 渲染逻辑也只有两个分支。
+  - 前端：`PanelDebug.tsx` `TurnRecord` 类型加 `outcome?: string`（optional 处理旧字段）；modal 头部 metadata 区加 pill：绿"开口"/灰"沉默"，hover 解释判定 condition。
+- 决策 — outcome 是 String 而非 enum：跟 R23 feedback_band 同思路。Rust enum 跨 IPC boundary 增 serde 复杂度，且 frontend 只用 label display。**boundary serialization 用 string 简化两端**。
+- 决策 — pill 颜色复用现有 R-series convention：绿(active/正向) 灰(silent/负向)。跟 R20 mixed/monotone、R21 topic warning、R22 active app focus 同色域 —— panel 视觉语言稳定。
+- 决策 — 不计 "error" 路径：error 不到 push 点。如果未来重构让 error 路径也写 TurnRecord，需要扩 outcome 枚举到 3 值 + 红色 pill。今天不做，YAGNI。
+- 决策 — 在 push 点同 inline 判断 而不是从 ProactiveTurnOutcome 推：reply 是局部变量，inline 直接判最干净。从 outcome 结构推（`outcome.reply.is_some()`）也行但需 borrow + 多一步逻辑。**locality** 原则：判断条件靠近输入数据。
+- 决策 — 不加 panel "上 5 turn 开口/沉默" 计数：modal 已经一个 pill 一个 pill 看过去；加聚合 chip 是 *summary of summary*，信息密度收益低。如果用户真要"过去 N turn 静默率" 可以走 LLM outcome counter / decision_log 那条路（已存在）。
+- 决策 — 不写新单测：outcome 是 `String` 字段，编译 + tsc 已经验类型对齐。条件判断 `is_empty() || contains(SILENT_MARKER)` 跟下方静默兜底点同源 logic，已存测覆盖 silent 兜底。**不要给 trivial wiring 写 unit test** 是 R21 IDEA 写过的纪律。
+- 测试结果：469 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：E4 modal 翻历史 turn 时每条都显式标 "开口"/"沉默"。User 不再需要从 reply 是否空字符串"猜"，cognitive friction 削掉。也是一次 R20 codified 原则的隐式 audit —— TurnRecord 是 user 看的 surface（modal），它的字段就该 self-explanatory。
+
 ## 2026-05-04 — Iter R24：ChatBubble 加 ✕ 角标让 dismiss 行为可发现
 - 现状缺口：R1b 让 ChatBubble click-to-dismiss + 5s 内点 fire feedback signal。但 bubble 视觉上没有任何"可点击" 提示 — 用户根本不知道这个 affordance 存在。R1b panel chip (R1c) 让信号可见，但主入口（bubble 本身）依然 silent。**discoverability 是 UX 的隐藏指标** — 功能再好用户没发现等于没有。
 - 解法 — 半透明 ✕ 角标 + tooltip：

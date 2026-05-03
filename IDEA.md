@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R25 设计要点（已实现）
+- **隐式状态 vs 显式标签**：reply 字段是空字符串 → 用户得记住"哦这意味 silent"。这是 **隐式状态**，依赖每个 reader 自己 decode。显式 outcome 字段是 explicit label —— 字段名+值告诉读者结论。**任何需要 reader decode 才能知道含义的字段都是 cognitive debt**，给它一个 explicit label 释放 reader 大脑。这条原则放到所有数据结构上：能加 label 不要让 reader infer。
+- **同源逻辑写两遍是隐患不是冗余**：原本 SILENT_MARKER 检测在 push 点之外（4 行后的兜底返回）。R25 在 push 点又写一次同条件。看着像重复 —— 但**两处其实判断时刻不同**，push 是为了打 outcome label，下面是控制返回 reply 字段。两个 caller 各自需要这个判断。如果未来 prompt format 改了 silent marker 含义，两处一起改是 *features* 不是 bug —— 同源逻辑抽 helper 反而模糊"两处都依赖这条规则"。**复制粘贴是有时是更诚实的代码**。
+- **优先级判断：locality > DRY**：ProactiveTurnOutcome 在函数末尾才构造，但 push 点在中间。要在 push 点判 outcome，要么 (a) inline 重做条件，要么 (b) 把 outcome 计算 hoist 到函数早期、最后构造时 reuse。(a) 是 5 行重复，(b) 是 30 行的 control flow refactor。**读者看 push 点想知道 outcome label 怎么算时，inline 判断最易读** —— DRY 这里牺牲一点，locality 保住。
+- **frontend 字段 optional 是 forward compat 工具**：`outcome?: string` 让 frontend 能拿到 R25 之前 build 的 backend 数据（即使在 dev 中也可能有 stale process）。其实 ring buffer 是 in-memory 进程重启就清，理论上 R25 backend deploy 后立即一致。但 `?` 是廉价 forward compat 投资 —— 加一个问号就给"接收 stale data" 留余地。**类型系统的 cheap insurance** 应该常用。
+- **R25 是 R20 codified rule 的隐式延伸**：R20 说"prompt 信号要 panel 可见"。R25 不是 prompt 信号，但是 backend 状态 → 用户看的 panel surface。同一个原则的更宽泛版本：**任何 user 看的 surface 应该有 self-explanatory label，而不是让 user decode 隐式状态**。R20 是 prompt → panel surface 的强制律，R25 是 backend state → panel display 的字段命名律。两条放一起作"observability hygiene"。
+- **count chip 不必 every signal 都做**：R25 没加"过去 5 turn 沉默 N 次" 的聚合 chip。诱惑是：modal 一个一个看费时间，给个汇总 chip 更快。但 panel 已经有 outcome counter (decision_log + LLM outcome buckets)、ring buffer 每条独立 surface 都够。**信息密度是有收益曲线**：第一种 surface 收益高、第二种边际、第三种就开始噪声。**克制是 panel 设计的成熟度信号**。
+
 ## Iter R24 设计要点（已实现）
 - **三段闭合 affordance：function / feedback / discoverability**：R1b 让 dismiss 工作（function）。R1c 让 panel 看到信号（feedback）。R24 让 bubble 看起来可点（discoverability）。**任何 user-facing 行为都该过这三关**，否则等于 hidden feature。R1b 上线时只过了 function，R1c 上线时过了 feedback，但 discoverability 留了 7 iter 才补 — 期间用户根本没途径知道这功能存在。教训：**新 user 行为应该 same-iter 完成三段，否则有效用户量为 0**。
 - **affordance 的视觉重量匹配交互重要性**：标准 close button (红色 / 显眼) 在 system dialog 是合适的，因为关闭对话框是高频显式操作。chat bubble 的 dismiss 是"我看到了，不太想理"的软交互，所以 ✕ 应该是软提示而不是硬按钮。半透明灰色 ✕ 0.55 透明度让它**存在但不抢戏**。**UI 元素的视觉强度应该是 user 注意力分配的引导**，不是装饰美学。

@@ -72,6 +72,15 @@ pub struct TurnRecord {
     pub prompt: String,
     pub reply: String,
     pub tools_used: Vec<String>,
+    /// Iter R25: classification of this turn's outcome — `"spoke"` when the
+    /// LLM produced a non-silent reply, `"silent"` when it returned empty
+    /// or contained `SILENT_MARKER`. Lets the panel modal label each turn
+    /// in the ring buffer (E4) so users can see at a glance "in the last
+    /// 5 turns I went silent 3 times" without parsing reply text.
+    /// Errors don't reach this path — they short-circuit before TurnRecord
+    /// is pushed — so the variant set is finite at two values.
+    #[serde(default)]
+    pub outcome: String,
 }
 
 pub static LAST_PROACTIVE_TURNS: std::sync::Mutex<std::collections::VecDeque<TurnRecord>> =
