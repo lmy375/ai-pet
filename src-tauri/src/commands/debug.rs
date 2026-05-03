@@ -340,13 +340,21 @@ pub struct CacheStats {
     pub total_calls: u64,
 }
 
+impl CacheStats {
+    /// Snapshot the cache atomics into a serializable struct. Shared by the public
+    /// Tauri command and the bundled `get_debug_snapshot` aggregator (Iter QG6).
+    pub fn from_counters(c: &ProcessCounters) -> Self {
+        Self {
+            turns: c.cache.turns.load(Ordering::Relaxed),
+            total_hits: c.cache.hits.load(Ordering::Relaxed),
+            total_calls: c.cache.calls.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[tauri::command]
 pub fn get_cache_stats(counters: State<'_, ProcessCountersStore>) -> CacheStats {
-    CacheStats {
-        turns: counters.cache.turns.load(Ordering::Relaxed),
-        total_hits: counters.cache.hits.load(Ordering::Relaxed),
-        total_calls: counters.cache.calls.load(Ordering::Relaxed),
-    }
+    CacheStats::from_counters(counters.inner())
 }
 
 /// Zero out the process-wide cache counters. Mirrors `clear_logs` for the stats panel —
@@ -365,13 +373,19 @@ pub struct MoodTagStats {
     pub no_mood: u64,
 }
 
+impl MoodTagStats {
+    pub fn from_counters(c: &ProcessCounters) -> Self {
+        Self {
+            with_tag: c.mood_tag.with_tag.load(Ordering::Relaxed),
+            without_tag: c.mood_tag.without_tag.load(Ordering::Relaxed),
+            no_mood: c.mood_tag.no_mood.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[tauri::command]
 pub fn get_mood_tag_stats(counters: State<'_, ProcessCountersStore>) -> MoodTagStats {
-    MoodTagStats {
-        with_tag: counters.mood_tag.with_tag.load(Ordering::Relaxed),
-        without_tag: counters.mood_tag.without_tag.load(Ordering::Relaxed),
-        no_mood: counters.mood_tag.no_mood.load(Ordering::Relaxed),
-    }
+    MoodTagStats::from_counters(counters.inner())
 }
 
 /// Zero out the process-wide mood-tag counters. Mirrors `reset_cache_stats` so panel users
@@ -391,13 +405,19 @@ pub struct LlmOutcomeStats {
     pub error: u64,
 }
 
+impl LlmOutcomeStats {
+    pub fn from_counters(c: &ProcessCounters) -> Self {
+        Self {
+            spoke: c.llm_outcome.spoke.load(Ordering::Relaxed),
+            silent: c.llm_outcome.silent.load(Ordering::Relaxed),
+            error: c.llm_outcome.error.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[tauri::command]
 pub fn get_llm_outcome_stats(counters: State<'_, ProcessCountersStore>) -> LlmOutcomeStats {
-    LlmOutcomeStats {
-        spoke: counters.llm_outcome.spoke.load(Ordering::Relaxed),
-        silent: counters.llm_outcome.silent.load(Ordering::Relaxed),
-        error: counters.llm_outcome.error.load(Ordering::Relaxed),
-    }
+    LlmOutcomeStats::from_counters(counters.inner())
 }
 
 /// Zero out the process-wide LLM-outcome counters. Mirrors the cache/mood-tag reset
@@ -420,17 +440,23 @@ pub struct EnvToolStats {
     pub memory_search: u64,
 }
 
+impl EnvToolStats {
+    pub fn from_counters(c: &ProcessCounters) -> Self {
+        let e = &c.env_tool;
+        Self {
+            spoke_total: e.spoke_total.load(Ordering::Relaxed),
+            spoke_with_any: e.spoke_with_any.load(Ordering::Relaxed),
+            active_window: e.active_window.load(Ordering::Relaxed),
+            weather: e.weather.load(Ordering::Relaxed),
+            upcoming_events: e.upcoming_events.load(Ordering::Relaxed),
+            memory_search: e.memory_search.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[tauri::command]
 pub fn get_env_tool_stats(counters: State<'_, ProcessCountersStore>) -> EnvToolStats {
-    let e = &counters.env_tool;
-    EnvToolStats {
-        spoke_total: e.spoke_total.load(Ordering::Relaxed),
-        spoke_with_any: e.spoke_with_any.load(Ordering::Relaxed),
-        active_window: e.active_window.load(Ordering::Relaxed),
-        weather: e.weather.load(Ordering::Relaxed),
-        upcoming_events: e.upcoming_events.load(Ordering::Relaxed),
-        memory_search: e.memory_search.load(Ordering::Relaxed),
-    }
+    EnvToolStats::from_counters(counters.inner())
 }
 
 /// Zero out the env-tool counters. Useful after changing the proactive prompt to see if
@@ -454,15 +480,21 @@ pub struct PromptTiltStats {
     pub neutral: u64,
 }
 
+impl PromptTiltStats {
+    pub fn from_counters(c: &ProcessCounters) -> Self {
+        let p = &c.prompt_tilt;
+        Self {
+            restraint_dominant: p.restraint_dominant.load(Ordering::Relaxed),
+            engagement_dominant: p.engagement_dominant.load(Ordering::Relaxed),
+            balanced: p.balanced.load(Ordering::Relaxed),
+            neutral: p.neutral.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[tauri::command]
 pub fn get_prompt_tilt_stats(counters: State<'_, ProcessCountersStore>) -> PromptTiltStats {
-    let p = &counters.prompt_tilt;
-    PromptTiltStats {
-        restraint_dominant: p.restraint_dominant.load(Ordering::Relaxed),
-        engagement_dominant: p.engagement_dominant.load(Ordering::Relaxed),
-        balanced: p.balanced.load(Ordering::Relaxed),
-        neutral: p.neutral.load(Ordering::Relaxed),
-    }
+    PromptTiltStats::from_counters(counters.inner())
 }
 
 #[tauri::command]
@@ -472,6 +504,80 @@ pub fn reset_prompt_tilt_stats(counters: State<'_, ProcessCountersStore>) {
     p.engagement_dominant.store(0, Ordering::Relaxed);
     p.balanced.store(0, Ordering::Relaxed);
     p.neutral.store(0, Ordering::Relaxed);
+}
+
+/// Iter QG6: bundle the 15 panel-debug data sources into one Tauri call.
+///
+/// PanelDebug previously fired 15 independent invokes per second to populate one
+/// snapshot. With Tauri's IPC overhead per call (serialize → bridge → deserialize)
+/// that's a measurable per-second cost on the panel and proportionally on the main
+/// process. This struct + command consolidates them: one IPC round-trip, one
+/// deserialize on the JS side, one big object replacing 15 setState calls.
+///
+/// Each existing `get_X_stats` Tauri command is preserved for any caller (e.g.
+/// PanelPersona uses `get_companionship_days`) — only PanelDebug's hot path
+/// switches to this aggregator.
+#[derive(serde::Serialize)]
+pub struct DebugSnapshot {
+    pub logs: Vec<String>,
+    pub cache_stats: CacheStats,
+    pub decisions: Vec<crate::decision_log::ProactiveDecision>,
+    pub mood_tag_stats: MoodTagStats,
+    pub recent_speeches: Vec<String>,
+    pub tone: crate::proactive::ToneSnapshot,
+    pub reminders: Vec<crate::proactive::PendingReminder>,
+    pub lifetime_speech_count: u64,
+    pub today_speech_count: u64,
+    pub week_speech_count: u64,
+    pub llm_outcome_stats: LlmOutcomeStats,
+    pub env_tool_stats: EnvToolStats,
+    pub prompt_tilt_stats: PromptTiltStats,
+    pub companionship_days: u64,
+    pub redaction_stats: crate::redaction::RedactionStats,
+}
+
+#[tauri::command]
+pub async fn get_debug_snapshot(
+    log_store: State<'_, LogStore>,
+    counters: State<'_, ProcessCountersStore>,
+    decisions: State<'_, crate::decision_log::DecisionLogStore>,
+    clock: State<'_, crate::proactive::InteractionClockStore>,
+    wake: State<'_, crate::wake_detector::WakeDetectorStore>,
+) -> Result<DebugSnapshot, String> {
+    let counters_inner = counters.inner();
+    let logs = log_store.0.lock().unwrap().clone();
+    let cache_stats = CacheStats::from_counters(counters_inner);
+    let mood_tag_stats = MoodTagStats::from_counters(counters_inner);
+    let llm_outcome_stats = LlmOutcomeStats::from_counters(counters_inner);
+    let env_tool_stats = EnvToolStats::from_counters(counters_inner);
+    let prompt_tilt_stats = PromptTiltStats::from_counters(counters_inner);
+    let decisions_snap = decisions.snapshot();
+    let recent_speeches = crate::speech_history::recent_speeches(10).await;
+    let tone =
+        crate::proactive::build_tone_snapshot(clock.inner(), wake.inner(), counters_inner).await?;
+    let reminders = crate::proactive::get_pending_reminders();
+    let lifetime_speech_count = crate::speech_history::lifetime_speech_count().await;
+    let today_speech_count = crate::speech_history::today_speech_count().await;
+    let week_speech_count = crate::speech_history::week_speech_count().await;
+    let companionship_days = crate::companionship::companionship_days().await;
+    let redaction_stats = crate::redaction::get_redaction_stats();
+    Ok(DebugSnapshot {
+        logs,
+        cache_stats,
+        decisions: decisions_snap,
+        mood_tag_stats,
+        recent_speeches,
+        tone,
+        reminders,
+        lifetime_speech_count,
+        today_speech_count,
+        week_speech_count,
+        llm_outcome_stats,
+        env_tool_stats,
+        prompt_tilt_stats,
+        companionship_days,
+        redaction_stats,
+    })
 }
 
 #[cfg(test)]
@@ -700,5 +806,75 @@ mod tests {
         assert_eq!(logs.len(), 3);
         assert!(logs[0].contains("first"));
         assert!(logs[2].contains("third"));
+    }
+
+    #[test]
+    fn from_counters_round_trips_each_stat_struct() {
+        // Iter QG6: each stat struct gained a `from_counters(&ProcessCounters)`
+        // impl so the bundled `get_debug_snapshot` aggregator and the existing
+        // per-stat Tauri commands share one read path. Bump distinct values into
+        // every counter group at once and confirm every snapshot field reads back
+        // exactly — guards against a future "I added a field but forgot to wire
+        // from_counters" regression.
+        use super::{
+            CacheStats, EnvToolStats, LlmOutcomeStats, MoodTagStats, ProcessCounters,
+            PromptTiltStats,
+        };
+        let c = ProcessCounters::default();
+        c.cache.turns.fetch_add(1, Ordering::Relaxed);
+        c.cache.hits.fetch_add(2, Ordering::Relaxed);
+        c.cache.calls.fetch_add(3, Ordering::Relaxed);
+        c.mood_tag.with_tag.fetch_add(4, Ordering::Relaxed);
+        c.mood_tag.without_tag.fetch_add(5, Ordering::Relaxed);
+        c.mood_tag.no_mood.fetch_add(6, Ordering::Relaxed);
+        c.llm_outcome.spoke.fetch_add(7, Ordering::Relaxed);
+        c.llm_outcome.silent.fetch_add(8, Ordering::Relaxed);
+        c.llm_outcome.error.fetch_add(9, Ordering::Relaxed);
+        c.env_tool.spoke_total.fetch_add(10, Ordering::Relaxed);
+        c.env_tool.spoke_with_any.fetch_add(11, Ordering::Relaxed);
+        c.env_tool.active_window.fetch_add(12, Ordering::Relaxed);
+        c.env_tool.weather.fetch_add(13, Ordering::Relaxed);
+        c.env_tool.upcoming_events.fetch_add(14, Ordering::Relaxed);
+        c.env_tool.memory_search.fetch_add(15, Ordering::Relaxed);
+        c.prompt_tilt
+            .restraint_dominant
+            .fetch_add(16, Ordering::Relaxed);
+        c.prompt_tilt
+            .engagement_dominant
+            .fetch_add(17, Ordering::Relaxed);
+        c.prompt_tilt.balanced.fetch_add(18, Ordering::Relaxed);
+        c.prompt_tilt.neutral.fetch_add(19, Ordering::Relaxed);
+
+        let cache = CacheStats::from_counters(&c);
+        assert_eq!(
+            (cache.turns, cache.total_hits, cache.total_calls),
+            (1, 2, 3)
+        );
+        let mt = MoodTagStats::from_counters(&c);
+        assert_eq!((mt.with_tag, mt.without_tag, mt.no_mood), (4, 5, 6));
+        let llm = LlmOutcomeStats::from_counters(&c);
+        assert_eq!((llm.spoke, llm.silent, llm.error), (7, 8, 9));
+        let env = EnvToolStats::from_counters(&c);
+        assert_eq!(
+            (
+                env.spoke_total,
+                env.spoke_with_any,
+                env.active_window,
+                env.weather,
+                env.upcoming_events,
+                env.memory_search,
+            ),
+            (10, 11, 12, 13, 14, 15),
+        );
+        let tilt = PromptTiltStats::from_counters(&c);
+        assert_eq!(
+            (
+                tilt.restraint_dominant,
+                tilt.engagement_dominant,
+                tilt.balanced,
+                tilt.neutral,
+            ),
+            (16, 17, 18, 19),
+        );
     }
 }

@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG6：PanelDebug IPC 收敛——15 invokes/秒 → 1 invoke/秒
+- 现状缺口：`PanelDebug.tsx` `fetchLogs` 每秒 fire 15 个独立 Tauri invoke (get_logs / get_cache_stats / get_proactive_decisions / get_mood_tag_stats / get_recent_speeches / get_tone_snapshot / get_pending_reminders / get_lifetime/today/week_speech_count / get_llm_outcome_stats / get_env_tool_stats / get_prompt_tilt_stats / get_companionship_days / get_redaction_stats)。每个 invoke 一次完整 IPC 往返（serialize → bridge → deserialize），15× per second 是真实的 CPU 与电池负担——尤其用户 panel 长时间打开的 case。
+- 解法：后端加 `DebugSnapshot` 聚合结构 + `get_debug_snapshot` 单一 Tauri 命令，前端 fetchLogs 收敛成一次 invoke。15 个旧命令保留兼容（PanelPersona 等其他调用方靠它们）。
+- 重构 — 抽 `from_counters` 共享：每个 stat 结构体（CacheStats / MoodTagStats / LlmOutcomeStats / EnvToolStats / PromptTiltStats）加 `pub fn from_counters(&ProcessCounters) -> Self` 共享读路径。Tauri 命令瘦成一行 `Stats::from_counters(counters.inner())`，聚合命令直接调用同一个 from_counters 拿数据。这样 future 加新 counter 字段不会让两个读路径漂移。
+- 重构 — 抽 `build_tone_snapshot`：`get_tone_snapshot` body (~150 行) 提到自由函数 `pub async fn build_tone_snapshot(&InteractionClock, &WakeDetector, &ProcessCounters) -> Result<ToneSnapshot, String>`。Tauri 命令变 1 行 `build_tone_snapshot(clock.inner(), wake.inner(), counters.inner()).await`；聚合命令也调它。`State<'_, Arc<X>>::inner() -> &Arc<X>` 通过 Deref 自动转 `&X`，签名干净。
+- DebugSnapshot 结构 15 字段：logs / cache_stats / decisions / mood_tag_stats / recent_speeches / tone / reminders / lifetime/today/week_speech_count / llm_outcome_stats / env_tool_stats / prompt_tilt_stats / companionship_days / redaction_stats。前端类型 inline 在 invoke<>() 里，不污染 panelTypes.ts（这是 hot-path 单个用法）。
+- 决策 — 不删旧 Tauri 命令：(a) PanelPersona 仍调 `get_companionship_days`；(b) 删除 = 翻动 lib.rs handler list + 风险面扩大；(c) 保留它们是几行死代码而已，binary 大小可忽略。如果未来发现旧命令完全没人调，可以做"清理无用 Tauri 命令" 单独 iter。
+- 决策 — 不让前端 panelTypes 暴露 DebugSnapshot：聚合类型仅在 PanelDebug.tsx hot path 用一次。把它推到 panelTypes 反而引入"专门为聚合 IPC 而存在的类型"，不必要。inline anonymous struct in invoke generic 干净直接。
+- 测试 — 1 新 unit test `from_counters_round_trips_each_stat_struct`：把 5 个 counter 组每个字段 bump 成 1..19 distinct 值，5 个 from_counters 全 snapshot 后断言每个字段 readback 相符。这把 from_counters wiring 风险压到最低——任何"加字段忘了把它接进 from_counters" 的 PR 都会立刻让这测试 fail。
+- 测试结果：320 cargo（+1）；clippy clean；fmt clean；tsc clean。
+- 结果：PanelDebug 的 IPC 频率 14× 降。`from_counters` + `build_tone_snapshot` 把"读 stat" 与"暴露 stat" 分层，未来再加 counter 类不需要复制粘贴 readout 代码。
+
 ## 2026-05-03 — Iter QG4：补齐 prompt 重注入路径的 redaction
 - 现状审计 — 发现 3 个未走 `redact_with_settings` 的重注入点，全部在 proactive prompt 构建路径上：
   1. `mood_hint` (run_proactive_turn 内嵌, 旧 line 1750)：直接 `format!(text.trim())`。chat.rs `inject_mood_note` 早就 redact 了，proactive 一直漏。
