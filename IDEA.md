@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D9 设计要点（已实现）
+- **mirror gate 而不是 reimplement**：cooldown gate 的 `since < cooldown_seconds` 检查在 spawn loop 已经写过；ToneSnapshot 这边写一次同样的逻辑。两处可能漂移——但都是 4 行算术，比抽 helper 还简单。如果某天调整 gate 逻辑（比如 cooldown 在 wake 后 soften），两处都要改，但 grep `cooldown_remaining` 就找到了。
+- **Option<u64> vs (bool, u64)**：传 Option 表达"gate 关时无 N"——比布尔 + 数字双字段更紧。Some/None 的语义在 TS 里 nullable 也对应 1:1。
+- **chip 在 cadence 之后**：cadence 是 "上次开口多久前"（已发生），cooldown 是 "下次开口最快还要多久"（未发生）—— 时间轴上 cadence → cooldown 是连续推进，并列陈列读起来自然。
+- **青色 #0891b2**：和 ☀ wake 一致（也是 informational gate 信号）。区别 ⏰ 红 (urgent due) / 🌙 红 (warning approach) / 😴 灰 (in dormant) / 🎯 紫 (in focus)。整个 strip 现在有一个相对一致的语义/颜色映射。
+- **wake_soft 不影响 cooldown_remaining**：proactive 路径在 wake_soft=true 时跳过 cooldown 检查。但 cooldown_remaining 始终按字面计算 — panel 显示"还有 12m"是事实，gate 是否会 honor 由其它逻辑决定。把这两个解耦避免 panel 显示逻辑被多变量复杂化。如果未来想显示"cooldown 但 wake softens 了" 类二级状态再加。
+
 ## Iter D8 设计要点（已实现）
 - **lightweight `get_user_name()` vs `get_settings()` 全量**：PanelPersona 5 秒轮询。每秒拉全量 settings（API key 等大字段）浪费 IPC 带宽。一个 dedicated 命令 wraps `get_settings().map(|s| s.user_name).unwrap_or_default()`——零成本封装，意图明确。
 - **位置在 "陪伴时长" Section**：name 是关系绑定 ("我和谁陪伴")，比起放 "自我画像" 段（宠物自己写的）更切题。companionship 段就是"我们俩"主题，name 是其中一支柱。

@@ -84,6 +84,8 @@ export interface ToneSnapshot {
   focus_mode: string | null;
   // Iter D4
   in_quiet_hours: boolean;
+  // Iter D9
+  cooldown_remaining_seconds: number | null;
 }
 
 /**
