@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cσ：reactive chat 的 user_profile 捕捉引导
+- 现状缺口：Iter Cα 把 user_profile 作为 ambient hint 注入 proactive prompt——但前提是 user_profile 里**有内容**。注入侧 OK 了，**捕捉侧**没有显式教学。LLM 听到「我每天 8 点起床」时全靠自己判断要不要 memory_edit create——而 reactive chat 大量这类 stable facts 被吸收进对话回复后就没了，下次再问还要问。Cι 教了 butler_tasks 委托，对称的"用户主动告知 stable fact 时该捕捉"完全空白。
+- 解法：在 TOOL_USAGE_PROMPT「任务委托判断」之后加一个新段「用户偏好捕捉（user_profile）」：
+  - 强调 stable fact（不是临时状态/一次性事件）才捕捉
+  - 三个正例（作息 / 工作环境 / 饮食偏好）+ 三个反例（"我累了" / "我今天吃了麻辣烫" / "我老是忘喝水" 该走 todo+remind）
+  - 描述 < 80 字、第三人称、相近条目用 update 而非 create
+  - 捕捉后回复 "好的我记下了" 或自然 acknowledge——不需要 fanfare
+  - 末段说明这些条目会自动出现在后续 proactive 提示里，让 ta 越用越懂用户——把 capture 和 inject 两端的因果讲清楚
+- 1 个新 contract test `tool_usage_prompt_teaches_user_profile_capture` 钉住 (a) 提到 user_profile、(b) 对比 stable vs 临时、(c) dedup 通过 update。和 Cι 的 butler delegation 测试同形态。
+- 测试总数 294 → 295。
+- 闭环效果：Cα 注入 + Cσ 捕捉 = user_profile 类别从 "需要用户/LLM 偶发主动写" 变成 "对话里自然流入"。多用几天后 user_profile 会有 5-10 条核心 fact，proactive prompt 能 ambient 看见，开口贴合度自然提升。和 Iter Cα 设计要点写过的 "稳定 fact 用 ambient block 而不是反复 memory_search" 真正闭环。
+- 不动 SOUL.md：SOUL 是 identity 长期 prompt，TOOL_USAGE_PROMPT 是 operational 操作指南。捕捉行为是后者的范畴，不污染 identity。
+- 不限制类别 enum：user_profile 类别在 memory_tools 描述已经存在；这里只是教学如何使用，不引入新的工具或字段。
+
 ## 2026-05-03 — Iter Cρ：companionship-milestone 数据驱动规则
 - 现状缺口：companionship_days 字段已存在（Iter 101-106），always-on 模板里的 companionship_line 也会渲染"已陪伴 N 天"。但只有 day 0 ("今天初识") 和 N>=1 ("一起走过 N 天") 两档框架——里程碑日（满一周 / 一个月 / 百日 / 半年 / 一年 / 周年）和普通日子读起来一样。"陪伴一年的宠物"和"陪伴 364 天的宠物"在 prompt 里完全没差异。
 - 解法：新增 pure 函数 `companionship_milestone(days)` 返回里程碑文字标签，配合一条新的 data-driven contextual rule `companionship-milestone`：

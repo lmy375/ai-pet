@@ -179,7 +179,17 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 - 「这周末整理一下 ~/Downloads」→ `[once: 2026-XX-XX 10:00] 整理 ~/Downloads`（XX 是即将到来的周末日期）
 - 「能不能时不时帮我看下日程」→ 没有明确时间 → 不带前缀直接写 description
 - 区分 `todo`（用户提醒自己 `[remind:]`）vs `butler_tasks`（用户委托给你做的事）：「提醒我喝水」是 todo，「帮我整理文件夹」是 butler_tasks
-创建后回复用户时简短确认（"好的，记下了，每天 9 点我会..."）——不要长篇复述。已经在 `butler_tasks` 里的任务后面会自动出现在你的 proactive prompt 里，到时候你会看到 `⏰ 到期` 标注，那时再去执行。"#;
+创建后回复用户时简短确认（"好的，记下了，每天 9 点我会..."）——不要长篇复述。已经在 `butler_tasks` 里的任务后面会自动出现在你的 proactive prompt 里，到时候你会看到 `⏰ 到期` 标注，那时再去执行。
+
+## 用户偏好捕捉（user_profile）
+当用户在对话里**主动告诉你关于他自己的稳定事实**——不是临时心情、不是一次性事件——用 `memory_edit create` 写进 `user_profile` 类别，避免下次问 ta 相同的事。
+- 「我通常 8 点起床」→ create 到 user_profile，title="作息"，description="通常 8:00 起床"
+- 「我用 mac 写 Swift」→ create，title="工作环境"，description="mac + Swift 开发"
+- 「我喜欢黑咖啡」→ create，title="饮食偏好"，description="偏好黑咖啡"
+- 「我累了」→ 不写（临时状态）
+- 「我今天吃了麻辣烫」→ 不写（一次性事件）
+- 「我老是忘喝水」→ 不写（用户该用 todo + [remind:] 给自己提醒，不是 user_profile 的事实）
+描述简洁、< 80 字、第三人称写法（"通常..."、"偏好..."、"用..."）；如果 user_profile 里已经有相近条目，用 `update` 修订原条目而不是再 create 一条。捕捉后回复时不需要 fanfare——简短确认「好的我记下了」或自然 acknowledge 即可。这些条目会自动出现在你后续 proactive 的提示里，让你越用越懂 ta。"#;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatMessage {
@@ -750,6 +760,29 @@ mod trim_tests {
             TOOL_USAGE_PROMPT.contains("todo")
                 && TOOL_USAGE_PROMPT.contains("提醒我"),
             "tool prompt must contrast butler_tasks with todo[remind:]"
+        );
+    }
+
+    #[test]
+    fn tool_usage_prompt_teaches_user_profile_capture() {
+        // Iter Cσ: pin the user_profile capture guidance — symmetric to Cι's
+        // butler delegation. Without this the LLM might absorb stable facts
+        // verbally and forget them, defeating Iter Cα's user_profile_hint
+        // injection (the prompt has nothing to inject if nothing was captured).
+        assert!(
+            TOOL_USAGE_PROMPT.contains("user_profile"),
+            "tool prompt must mention user_profile capture"
+        );
+        // Test the contrast examples — stable facts vs ephemeral state.
+        assert!(
+            TOOL_USAGE_PROMPT.contains("不是临时心情") || TOOL_USAGE_PROMPT.contains("临时状态"),
+            "tool prompt must contrast stable facts with ephemeral state"
+        );
+        // Test the dedup guidance — update existing rather than re-create.
+        assert!(
+            TOOL_USAGE_PROMPT.contains("update")
+                && TOOL_USAGE_PROMPT.contains("相近"),
+            "tool prompt must instruct dedup via update for similar entries"
         );
     }
 }
