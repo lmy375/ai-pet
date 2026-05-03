@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cψ 设计要点（已实现）
+- **复用 tone 而不是新 invoke**：since_last_proactive_minutes 已在 ToneSnapshot 里、PanelStatsCard 已接 tone prop（chatty 判断要用）。这次只是从已传进来的 tone 上多读一个字段——零 IPC 增加、零 state 增加。Iter 99 把 PanelStatsCard 从 PanelDebug 抽出来时把 tone 当 props 传，这次正好享受当时的设计 dividend。
+- **"前开口" 反语序而不是 "上次开口前"**：测试小标签拼"前开口"读起来像"距上次开口的时长"——和 "X 天陪伴" 一样的尾置 label 模式。如果写"上次 X 开过口"则 tooltip 的语义重复在主标签上，反而臃肿。
+- **null 显 "—" 而不是 "从未"**：fresh install 第一天，宠物还没开过口很常见。"从未" 隐含批评意味（你没让宠物说过话），"—" 中性。tooltip 解释 None 的含义。
+- **颜色按 60 分钟切**：和 idle_tier 的 60 分钟边界一致——刚说过话 (< 60) 算"还热"，超过 60 算"凉了"。视觉权重对应这个语义切分。
+- **不显示秒级**：since_last_proactive_minutes 已经按分钟取整。秒级精度对"是否说过"没意义、徒增噪声。
+- **不动既有列**：今日/本周/累计 columns 字号和颜色都保持 Cρ 之前样式，新列插入间无破坏。这种"加一列不动其他"的演化模式让 PanelStatsCard 演进顺滑。
+
 ## Iter Cχ 设计要点（已实现）
 - **TS regex 而不是 Rust helper**：Cπ 的 has_butler_error 是双轨 — 后端 substring + 前端 indexOf。这次 strip 也走 TS 端 regex，与 Cπ 的前端 parse 路径一致。后端要不要加 strip helper？暂不——目前唯一需要 strip 的是 panel 这一处用户操作；如果以后 LLM 也想自动 strip，再加 Rust 工具不迟。
 - **不上 butler_history**：这是 Cλ sweep 同样的判断——consolidate / 用户清除都是配置变更而非宠物执行。butler_history 是"宠物对你做了什么"，timeline 上看到 "user cleared" 反而冲淡信号。

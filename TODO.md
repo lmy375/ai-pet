@@ -28,6 +28,8 @@
   trigger，新装用户一键 unlock（2026-05-03 完成）
 - [x] Iter Cχ：butler_tasks 一键"清除失败标记" ✕ 按钮 — 跟 ❌ chip 紧贴，单击 strip
   `[error: ...]` 保留其余 description（2026-05-03 完成）
+- [x] Iter Cψ：PanelStatsCard 加 "上次开口 N 前" 列 — 复用 ToneSnapshot
+  since_last_proactive_minutes，五列横排（今日/本周/累计/上次/陪伴）（2026-05-03 完成）
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）

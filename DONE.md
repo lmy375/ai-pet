@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cψ：PanelStatsCard 加 "上次开口" 列
+- 现状缺口：PanelStatsCard 显示 今日 / 本周 / 累计 / 陪伴 四列（Iter 74 后）。但用户开 panel 想知道"宠物现在还活着吗"——具体说"上次主动开口距现在多久"——只能去 PanelDebug 的 ToneStrip 找。stats 卡是"宠物概况一目了然"区，应该包含这个高频检查项。
+- 解法：在"累计"和"次主动开口"label 之后、"陪伴"之前插入 "上次 N 前开口" 列：
+  - 数据源：复用现有 `ToneSnapshot.since_last_proactive_minutes`（已经在 PanelStatsCard 接 tone prop）
+  - 格式化：< 60 → `8m` / 60-3599 → `1h32` 或整 `5h` / null（never spoken）→ `—`
+  - 颜色：≥ 60min 用灰 (#94a3b8)、< 60min 用稍重 (#475569)——视觉上"刚说过话"略 prominent，"很久没说"淡化
+  - tooltip 给完整数字 + cadence 文字（"距宠物上次主动开口 N 分钟（聊过一会儿了）"）
+  - 视觉权重 13px > 11px label，介于"今日"20px 和"陪伴"16px 之间——是辅助信息而非主轴
+- 不接新 Tauri command——`tone` snapshot 已包含 since_last_proactive_minutes 和 cadence，PanelStatsCard 已经接收 tone prop（用于 chatty/破冰判断），加这一列零额外 IPC。
+- 五列横排可能挤——但 panel 默认宽度足够（~640px），分隔线 borderLeft 让分组清晰。如果未来需要响应式，可以加 flexWrap，但目前在桌面 panel 不会触发换行。
+- `formatSinceLast` 纯函数，前端 tsc 类型 + 现有的 cargo 测试覆盖。301 cargo 不变。
+- 结果：用户开 panel 一眼可知「宠物 8 分钟前刚说过 / 3 小时没说过 / 还没开过」，这个轴和"今日 N"是不同语义——今日是累计，上次是节奏感——两者并存比"开了多少次"更立体。
+
 ## 2026-05-03 — Iter Cχ：butler_tasks 一键"清除失败标记"按钮
 - 现状缺口：Cπ 加了 `[error: 原因]` description 标记 + ❌ 红 chip。但用户想清除标记需要 4 步：点编辑 → 模态打开 → 手动删除 `[error: ...]` 段 → 保存。即使 LLM 后续重试成功会自动 update 移除——但很多失败是用户已经手动修复了根因（文件路径换了 / 权限给了），LLM 下一轮 proactive 才有机会再试，此期间红 chip 一直挂着。
 - 解法：在每个 errored butler_tasks item 的 ❌ 失败 chip 紧跟一个小 ✕ 按钮：
