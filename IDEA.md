@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cθ 设计要点（已实现）
+- **TS 重写而不是 Tauri command**：曾考虑加一个 `compute_due_butler_tasks` Rust 命令一次性返结构化数据。但 (a) 每个 task 只是几行算术，IPC overhead 占比反而高；(b) panel 已经在轮询 butler_history，重渲染时序天然，不需要刻意触发；(c) Rust 端要给 panel 暴露 schedule 详情就得新建一个 wire format（字段 ButlerScheduleDto / ButlerTaskWithDueDto），又是几十行 boilerplate。TS 重写两个 pure 函数 = 50 行，结束。Rust 端是 source of truth（决策路径），TS 端是 view-time mirror（显示路径），两端独立但语义对齐。
+- **风险：Rust/TS 漂移**：如果未来 Rust 改了 due 语义（比如加宽限期），TS 端不会自动跟。缓解：(a) 单元测 in Rust 锁定语义、(b) TS 函数注释明确指向 Rust 函数名。要 hardcore 防漂移就得做 wasm 模块共享，超出迭代范围。
+- **strip prefix 在 display**：把 `[every: 09:00] 写日报` 显示成 `写日报` + 蓝色 chip——视觉密度更低、信息更突出。但编辑模态拿原始 description（没 strip），所以编辑/保存往返不丢前缀。这种"显示态简洁化但数据态保真"的取舍在很多 form UI 里见过，是个好默认。
+- **chip 颜色按 every / once 区分**：every = 蓝（recurring，常态色），once = 琥珀（一次性，提醒色）。和"⏰ 到期"红 chip 形成三色梯度：常态 / 临时 / 紧急。如果以后加更多 schedule 类型（per-week / per-month），按饱和度延伸。
+- **不在 chip 上加进度信息**：本来想在 chip 里加"上次执行: HH:MM" 之类。但 chip 已经从 title 旁占走横向空间；信息密度再加就太挤。"上次执行"可以去看 "最近执行" 时间线（Cε 加的），那边有完整 5 行 history。
+- **不引入 dayjs / date-fns**：浏览器内置 Date 够用——`new Date(iso)`、`getFullYear/Month/Date`、加减毫秒。一个外部库要加 ~30KB 给一个 50 行的函数，不值。chrono 在 Rust 端是 source of truth；TS 这边数学最简单的算就行。
+- **Tooltip 里写人话不写格式**：`title="计划时间已到、自上次到期后还没被宠物 update——下一次 proactive 会优先处理"` 比 `title="due since most_recent_fire and updated_at < fire"` 友好。这是给最终用户看的，不是给 LLM 看的。
+
 ## Iter Cη 设计要点（已实现）
 - **不塞 speech_history**：原 TODO 是"塞进 speech_history 让用户回看"。但 speech_history 同时驱动 chatty_day_threshold / today_speech_count / lifetime 三个计数，加 daily_summary 进去会让"今天宠物开口了几次"虚增——一个 consolidate 自动写的句子被算成"主动开口"，会让 chatty rule 误触发，prompt 输出"今天聊了不少了"——但其实 N 句里大半是 summary。隔离到独立 `butler_daily.log` 是一行代码改动，零认知耦合。
 - **每日只一行 vs 每次 consolidate 一行**：consolidate 默认 24h 触发，但用户可以"立即整理"——这意味着同一天可能跑两次。每次都 append 会让今日有多个"今天我帮你..."摘要，多余且自相矛盾。用 `<date>` 作为 key upsert，最新一次 wins，自然解决。代价是不知道"上午跑过一次的中间态"——但那是开发期 debug 才需要的细节，正式用户不会关心。

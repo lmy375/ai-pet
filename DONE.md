@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cθ：panel butler_tasks 调度 chip + 实时 "⏰ 到期" 标记
+- 现状缺口：Cζ 加了 `[every: HH:MM]` / `[once: ...]` 调度前缀，proactive prompt 能算 due 并 ⏰ 标注。但 panel 上还是把整个前缀当普通字符串显示在 description 里——用户得自己读 `[every: 09:00]` 然后查表 09:00 是不是已经过了，再翻 updated_at 看有没有执行过。"我现在打开面板想看哪些任务到期了"是个高频需求，得让面板自己算。
+- 解法：在 PanelMemory 里加 TS 版本的 schedule parser + due 检查，和 Rust 端 `parse_butler_schedule_prefix` / `is_butler_due` 严格同语义；butler_tasks 渲染时：
+  - parse description 的前缀，把它从 description 文字里 strip 掉
+  - 标题旁加 chip：`🔁 每天 HH:MM`（蓝）或 `📅 YYYY-MM-DD HH:MM`（琥珀）
+  - 如果 due，再加一个红色 `⏰ 到期` chip（带 tooltip 解释含义）
+  - description 文本只显示去掉前缀后的 topic（避免视觉重复）
+- 客户端时钟而不是后端 Tauri command：
+  - 优点：每次渲染都是当前时刻；无 IPC；无需维护额外接口；用户机器的时区/DST 自然正确
+  - 缺点：客户端时钟不准（用户改系统时间）→ due 计算偏差。但 proactive 也用本地时钟，行为一致；这层是显示用而非决策用，可接受。
+- 因为 panel 已经 15s 轮询 butler_history（Cε 的 setInterval），每 15s 会触发 React 重渲染，due 的状态自然每 15s 刷新一次——不需要专门的 due-poll。
+- 只对 butler_tasks 类别 parse；其他类别 (`todo` / `user_profile` / `ai_insights` / `general`) 不付 parse 成本，TS optional chain 直接短路。
+- TS 完全镜像 Rust 端的 every / once 语义：每日 every 任务的 most_recent_fire = `if now >= today HH:MM { today HH:MM } else { 昨天 HH:MM }`；once 任务 due 当且仅当 `now >= dt && lastUpdated < dt`。fail-open on bad updated_at（视为从未更新）。
+- 不写前端单测：项目当前无 React 测试 harness（前文 Iter Cδ 已说明）。tsc 严格类型检查 + 与 Rust 单元测过的语义 1:1 镜像，是当前可达的最高保证。
+- 副作用：description 区显示 topic 而不是 raw 前缀，这意味着用户写 `[every: 09:00] 写日报` 编辑时仍看到完整 `[every: 09:00] 写日报`，但只读视图上简洁化。"编辑"按钮把 raw description 传进模态，所以编辑往返不丢信息。
+- 结果：用户打开 panel 一眼就知道哪些任务挂着调度、哪些此刻该被处理；不再需要精读 description。这是 panel 从"CRUD list"升级到"butler 实时仪表盘"的关键一步。
+
 ## 2026-05-03 — Iter Cη：butler_tasks 每日小结 + panel "每日小结" 区
 - 现状缺口：Cε 的 butler_history.log 给了事件级流水（每次 update/delete 一条），但事件多了用户回看就累——"今天宠物到底为我做了哪些事"需要用户自己拼接 N 行。Cη 把"事件流→人类回看"补齐：consolidate 跑一次就 derive 一段"今天我帮你 推进了「X」「Y」，撤销/移除了「Z」"。
 - `butler_history.rs` 加 3 个能力：
