@@ -36,6 +36,7 @@ export function PanelPersona() {
   const [installDate, setInstallDate] = useState<string>("");
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
   const [personaSummary, setPersonaSummary] = useState<string>("");
+  const [personaUpdatedAt, setPersonaUpdatedAt] = useState<string>("");
   const [moodTrend, setMoodTrend] = useState<string>("");
   const [currentMood, setCurrentMood] = useState<CurrentMood>({
     text: "",
@@ -52,14 +53,15 @@ export function PanelPersona() {
         const [date, days, summary, trend, mood] = await Promise.all([
           invoke<string>("get_install_date"),
           invoke<number>("get_companionship_days"),
-          invoke<string>("get_persona_summary"),
+          invoke<{ text: string; updated_at: string }>("get_persona_summary"),
           invoke<string>("get_mood_trend_hint"),
           invoke<CurrentMood>("get_current_mood"),
         ]);
         if (cancelled) return;
         setInstallDate(date);
         setCompanionshipDays(days);
-        setPersonaSummary(summary);
+        setPersonaSummary(summary.text);
+        setPersonaUpdatedAt(summary.updated_at);
         setMoodTrend(trend);
         setCurrentMood(mood);
       } catch (e) {
@@ -143,17 +145,56 @@ export function PanelPersona() {
         subtitle="consolidate 时由宠物自己反思生成（ai_insights/persona_summary）"
       >
         {personaSummary ? (
-          <p
-            style={{
-              fontSize: "14px",
-              color: "#1e293b",
-              lineHeight: 1.7,
-              margin: 0,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {personaSummary}
-          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <p
+              style={{
+                fontSize: "14px",
+                color: "#1e293b",
+                lineHeight: 1.7,
+                margin: 0,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {personaSummary}
+            </p>
+            {/* Iter D5: show freshness so user knows how stale the self-reflection is.
+                Stale-warning kicks in past 7 days because consolidate default interval
+                is 6 hours — anything older than a week means consolidate hasn't been
+                running (likely disabled in settings). */}
+            {(() => {
+              if (!personaUpdatedAt) return null;
+              const updatedDate = new Date(personaUpdatedAt);
+              if (isNaN(updatedDate.getTime())) return null;
+              const ageMs = Date.now() - updatedDate.getTime();
+              const ageDays = Math.floor(ageMs / (24 * 3600 * 1000));
+              const ageHours = Math.floor(ageMs / (3600 * 1000));
+              const stale = ageDays >= 7;
+              const label =
+                ageDays >= 1
+                  ? `${ageDays} 天前更新`
+                  : ageHours >= 1
+                  ? `${ageHours} 小时前更新`
+                  : "刚刚更新";
+              return (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    color: stale ? "#dc2626" : "#94a3b8",
+                    fontStyle: stale ? "normal" : "italic",
+                    fontWeight: stale ? 600 : 400,
+                  }}
+                  title={
+                    stale
+                      ? `consolidate 已经超过 7 天没运行了——画像可能已经跟不上你和宠物的相处节奏。开 设置 → 启用 consolidate 或在 Memory tab 点立即整理。`
+                      : `从 ai_insights/persona_summary.updated_at 计算：${updatedDate.toLocaleString()}`
+                  }
+                >
+                  {stale ? "⚠ " : ""}
+                  {label}
+                </span>
+              );
+            })()}
+          </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, fontStyle: "italic" }}>

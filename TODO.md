@@ -42,7 +42,9 @@
   gate 路径和 panel 共享 focus_status() data source（2026-05-03 完成）
 - [x] Iter D4：ToneSnapshot 暴露 in_quiet_hours + PanelToneStrip 显 😴 chip — 补 D3 之后
   自检发现的盲区（pre_quiet 只在前 15min，真 quiet 里 panel 之前完全空白）（2026-05-03 完成）
-- D series 四连完成，prompt 与 panel 视野 1:1 对齐。后续 prompt 加 signal 沿用此 pattern。
+- [x] Iter D5：persona_summary 加 "X 天前更新" 新鲜度标签 + 7 天 stale 红 ⚠ 警告
+  （2026-05-03 完成）
+- D series 五连完成，prompt 与 panel 视野 1:1 对齐 + persona 新鲜度可见。
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
