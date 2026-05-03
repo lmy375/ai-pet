@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R54 设计要点（已实现）
+- **fast + flexible 双轨设计 vs 单一 path**：R52 IDEA 写"fast path > flexible path 当 fast path 覆盖大多数用例"。R54 进化为**双轨**：fast path 不换（左键 30min），flexible path 加（右键 menu）。**保留 fast path 的关键** —— 不破坏既有用户的 muscle memory。如果 R54 改成"左键打开菜单"，R52 用户得多一次 click。**进化要 additive，不要 replacing**。Web app 标准：左键 = primary action，右键 = secondary/extended menu。
+- **outside-click close 是 popover 必备**：window.addEventListener("click", close) + stopPropagation 内部 → outside click 关。这种 30 行 popover logic 不需要 floating-ui / portals lib。**小 popover 自己写比 lib 经济** —— 同 R39 "use-3+ 才抽" 思路：单 popover 不抽组件 / 不引入 lib。第 2-3 个 popover 出现时再抽 PetPopoverMenu 共享组件。
+- **新代码也该 audit codified rules**：第一版我用 onMouseEnter/Leave 给 menu items 改 background。**违反 R41 codified "CSS pseudo-class > React state"**。立即重构为 `.pet-mute-menu-item:hover`。**codified rules 不是只 audit 老代码 —— 写新代码时也该自检**。每个新 React 组件 ship 前问自己：是否用 React state 做了 CSS pseudo-class 能做的事？
+- **preset 选择跟使用场景对应**：15/30/60/120 不是随机数。15 = pomodoro 短 block，30 = R52 默认（中等专注），60 = 视频会议长度，120 = 深度工作 block。**preset 数值应该 anchor 在 user 心智模型的"自然时长"** —— 跟 R27 deep-focus 60min 选择同思路（双 pomodoro / 标准 deep work）。
+- **同色语义跨 element family**：解除静音文案 #dc2626 红 = 跟 ToneStrip 红色 "🔇 静音中" chip 同色。视觉关联让 user 直觉知道"红色这件事跟 mute 状态相关"。**color = visual taxonomy**，跨 surface 一致让 user 不需要额外 attention 建立关联。
+- **`position: relative` parent 是 popover 的隐性需求**：menu 用 `position: absolute` 需要找最近的 positioned ancestor 当 reference。如果父没 position，menu 可能 anchor 到 document。R54 把 🔇 button 包一层 div + relative，menu 就 anchor 到该 div。**popover 布局是 React 写惯的人偶尔忘的 CSS 知识**。
+- **"未来抽组件" 候选预留**：R54 popover 是单 caller。如果未来 settings 或其他地方再加 popover menu (e.g. quick mood preset / quick instruction)，第 2 个出现时审视抽 `PetPopoverMenu` 组件可能性。R39 PanelFilterButtonRow 已经走过同样路径 —— **追踪 emerging patterns until use-3+ 出现，再 abstract**。
+
 ## Iter R53 设计要点（已实现）
 - **test debt 应该 ship 后 1 iter 内还**：R52 IDEA 已经写"R-series 抽 helper + 测"模式（R33 / R23 etc），但 R52 自己偷懒没测。R53 还债。**这种"feature ship → test 跟上"是 R-series 健康节奏**：feature iter focus on shipping，test iter focus on solidifying。两者紧挨着，避免长期 untested code 累积。R29→R30 / R46→R47 都是同节奏。**承认 R52 偷懒并立刻还 比假装"feature 包含 tests" 诚实**。
 - **pure helper + non-pure wrapper 是解 global state 耦合的标准**：mute_remaining_seconds() 读 MUTE_UNTIL 静态 + Local::now()，无法测。compute_mute_remaining(until, now) 接两个参数，pure。Wrapper 一行 plumbing，pure helper 承载 logic。**测 logic 不测 plumbing** —— wrapper trivial 不写测，pure helper 5 case 全测。这是 R-series 反复践行的设计纪律 (R33 count_trailing_silent / R23 classify_feedback_band / R20 classify_speech_register / R51 dynamic tooltip computation)。

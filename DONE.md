@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R54：mute 按钮加右键 preset 菜单（fast + flexible 双轨）
+- 现状缺口：R52 mute button 是单 toggle —— 30 min 默认。R52 IDEA 写过"未来加 preset menu"。R52 决策当时是 "fast path > flexible path 当 fast path 覆盖大多数用例"。R54 同时加 flexible path（不是替换 fast）—— 左键保 R52 toggle，右键打开 preset 菜单。**双轨设计：fast 路径满足 90%，flexible 路径覆盖剩 10%**。
+- 解法 — 浮层 menu + outside-click close：
+  - useState `showMenu`, useEffect 监听 window click 关菜单。
+  - `onContextMenu` handler preventDefault + setShowMenu(toggle)。
+  - 浮层位置 `position: absolute; bottom: 44px; right: 0` —— 出现在 🔇 按钮上方对齐右边。
+  - 5 选项：15 / 30 / 60 / 120 min / 解除静音。"解除" 文案标红色提示这是清零操作。
+  - applyMute(minutes) helper 抽出来 — 左键 toggle 路径和菜单选择共用。
+  - menu div `onClick={(e) => e.stopPropagation()}` 防止内部点击触发 outside-close。
+- 决策 — fast path 不变只加 flexible：R52 用户已习惯左键 30 min。如果 R54 改成"左键打开菜单"，R52 用户的 muscle memory 全部失效。**保留 fast path = 不破坏既有用户行为**。Right-click 是 power-user 进阶操作，新加无成本。
+- 决策 — 5 preset 含 15/30/60/120：15 min = 短 focus block / pomodoro。30 = R52 default。60/120 = 长 focus / 视频会议。"until tomorrow" / "until 18:00" 等 dynamic preset 留给未来 R54b。**preset 选择跟用户场景对应**，不是任意拍 5 个数字。
+- 决策 — outside-click close 用 window.addEventListener：而非依赖 menu 组件 lib（如 floating-ui）。**简单 portal-less popover 不上重型 lib** —— 30 行代码够用。lib 引入是 R39 IDEA "use-3+ 才抽" 的反向思考：simple solutions don't need libs at use-1。
+- 决策 — menu hover state 用 CSS `:hover` 而非 onMouseEnter：第一版用 onMouseEnter/Leave handlers 改 background。**违反 R41 codified rule "CSS pseudo-class > React state"**。R-series 里这条规则反复践行 —— R41 codified 时该立刻让所有新代码遵守。重构为 `.pet-mute-menu-item:hover` 让 hover 是 native CSS。**新代码也该 audit codified rules**。
+- 决策 — 解除静音 文案标红（#dc2626）：跟 chip 红色 "🔇 静音中" 同色，让 user 直觉关联"红色 = 跟 mute 状态相关"。其他 preset 文案灰黑色（中性）。**同色语义跨 element family**。
+- 决策 — `position: relative` 在父 div：menu absolute positioning 需要 anchor。把 🔇 button 包一层 `<div style={{ position: "relative" }}>` 给 menu 一个 reference frame。**popover 标准布局技巧**。
+- 决策 — 不写测试：UI interaction，类型 + 渲染 by tsc/build。menu logic trivial (toggle state + click outside)，无 logic 分支值得单测。
+- 测试结果：500 cargo（无变化）；clippy clean；tsc clean。
+- 结果：用户现在可以 1) 左键 = 快速 30 min toggle (R52 fast path 保留)，或 2) 右键 = 打开 preset 选 15/30/60/120/clear (R54 flexible path)。**双轨设计完整支持 fast + power user**。下次 IDEA 候选：通用菜单组件抽取（R39 PanelFilterButtonRow 同思路）—— 等出现第 2/3 个 popover menu 用例时考虑。
+
 ## 2026-05-04 — Iter R53：R52 mute 抽纯函数 + 5 单测（500 tests 里程碑）
 - 现状缺口：R52 ship 时 `mute_remaining_seconds()` 内部直接调 `chrono::Local::now()` 读全局时钟，**无法 unit test**。R52 IDEA 写过"helper 抽 + 测" 的 R-series pattern (R33 count_trailing_silent / R23 classify_feedback_band) —— R52 偷懒没做，R53 还债。
 - 解法 — 经典 pure helper extraction：
