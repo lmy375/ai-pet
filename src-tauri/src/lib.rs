@@ -134,6 +134,7 @@ pub fn run() {
             proactive::get_last_proactive_prompt,
             proactive::get_last_proactive_reply,
             proactive::get_last_proactive_meta,
+            proactive::get_recent_proactive_turns,
             mood::get_current_mood,
             mood_history::get_mood_trend_hint,
             proactive::get_tone_snapshot,

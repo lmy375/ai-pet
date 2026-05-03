@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter E4 设计要点（已实现）
+- **VecDeque 在 const Mutex**：`Mutex::new(VecDeque::new())` 在 Rust const context 也成立——VecDeque::new 是 const fn。这种细节让 static 初始化无需 lazy_static / once_cell，干净。
+- **保留 E1/E2/E3 mutex**：本可以全砍掉、所有 Tauri 命令从 ring buffer 读 last。但 E1/E2/E3 命令对外 API 是 `String` 单值；如果切到从 buffer 读 last 还要 unwrap empty case。多保留两个独立 mutex 的代价是几行复制——换得 backward compatibility 简洁。如果未来确认 panel 是唯一调用方，可以再清理。
+- **5 容量 = 5 个 minute-scale turn**：默认 proactive interval 300s，5 个 turn 大约 25 分钟连续观测。这是研发短 session 改 prompt 的典型 window；超出走 logs。
+- **navigator 索引方向**：« 是"更早" / » 是"更新"。这和"reverse buffer to newest-first" 配合：index 0 = 最新，index N-1 = 最旧。« 增加 index = 往后走时间 = 更早；» 减小 index = 往前走时间 = 更新。和 chat history navigation 习惯一致。
+- **状态收敛**：原来 3 个 useState（lastPrompt/lastReply/lastTurnMeta）→ 1 个 (recentTurns) + index。current 派生为 currentTurn，再派生为各字段。UI 改动最小，但 source of truth 单一化避免"三个 state 不同步"风险。
+- **disabled 按钮视觉**：cursor: default + 浅灰背景，非 disabled 是白底 cursor pointer。让 user 立刻看到边界（已经在第一条 / 最后一条）。
+
 ## Iter E3 设计要点（已实现）
 - **timestamp 在 prompt build 时 set 而不是 reply 后**：prompt 里有 `time` 字段（now_local.format），那是 LLM 看到的时刻——和 panel 显示的时刻保持一致更直观，让"这个时间正是 LLM 看到的时间"。如果在 reply 后 set，会有几秒到几十秒漂移（LLM 调用耗时）。
 - **tools_used dedup with BTreeSet**：原 tools 是 per-call list（一次 turn 可能 call 多个工具，每个 call 一行）。UI 想看的是"调过哪些"，去重 + 排序后展示更紧凑。BTreeSet 同时给排序，`get_active_window · memory_edit` 而不是按调用顺序的 `memory_edit · get_active_window · memory_edit · get_active_window`。

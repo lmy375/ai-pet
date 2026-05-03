@@ -67,6 +67,8 @@
   （2026-05-03 完成）
 - [x] Iter E3：modal 头部加 ⏱ timestamp + 🔧 tools_used 元数据 — 完整 chat round
   meta 一眼可见（2026-05-03 完成）
+- [x] Iter E4：proactive turn ring buffer (cap 5) + panel modal « / » 导航 — 比较
+  prompt 跨 run 变化（2026-05-03 完成）
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）

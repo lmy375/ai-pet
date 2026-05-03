@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter E4：prompt-preview ring buffer of last 5 turns + 导航
+- 现状缺口：E1/E2/E3 只看 last 1 turn。研发改 prompt 后想"看这次 vs 上次差在哪"得在两个 trigger 之间手动记下 — modal 不能比较。
+- 解法：环形缓冲 last 5 turns，panel modal 加 prev/next 按钮：
+  - `LAST_PROACTIVE_TURNS: Mutex<VecDeque<TurnRecord>>`，cap = `PROACTIVE_TURN_HISTORY_CAP (5)`，每次 turn 完成后 push_back + 超出 pop_front
+  - `TurnRecord` struct: timestamp / prompt / reply / tools_used
+  - 新 Tauri command `get_recent_proactive_turns() -> Vec<TurnRecord>`：返 reverse 后 newest-first，方便 panel index 0 = 最新
+  - `tools_dedup` 提到一个变量重用：原 BTreeSet collect 写一份 stash 到 LAST_PROACTIVE_TOOLS（保 E3 兼容），再 clone 一份进新 ring buffer 的 TurnRecord
+  - PanelDebug：modal 头部加 « / » 按钮 + "1/N" 索引，状态从 `lastPrompt/lastReply/lastTurnMeta` 三 useState 收敛为单 `recentTurns: TurnRecord[]` + `turnIndex`，currentTurn 派生 prompt/reply/meta，UI 渲染不变
+  - 按钮 disabled 状态视觉变浅、cursor 显 default；tooltip 解释 ring buffer 容量
+- 5 cap 选择：modal 横向放 navigator + count + 字符统计 + ⏱ + 🔧 + copy msg + ✕，单行已经满；5 turns × 一段 prompt 也避免 process 内存膨胀。如果用户需要更长历史走 logs。
+- 既有命令保留：get_last_proactive_prompt / reply / meta 仍工作（读各自 mutex），向后兼容。E4 给 panel 用新统一 API。
+- 测试：306 cargo 不变（数据透传，无新 logic）；tsc 干净。
+- 用例：研发改 prompt 规则 → 立即开口三次 → 看上次 prompt → « « 翻三个 turn 比较 prompt 文本和 reply 行为是否符合预期。从"trigger → 记下 → 再 trigger → 记下 → 比较" 到"trigger 几次 → 翻历史"。
+
 ## 2026-05-03 — Iter E3：prompt-preview modal 加 timestamp 和 tools_used 元数据
 - 现状缺口：E1+E2 后 modal 显完整 prompt + reply，但缺两个关键 meta：(a) 这一对是哪个时刻的？(b) LLM 这一轮调了什么工具？没 timestamp 的话，user 看到 modal 内容不知道是 30 秒前还是 30 分钟前的；没 tools_used 的话，prompt 里 env-awareness rule 是否真的让 LLM 调 active_window 没有直接答案。
 - 解法（再次复用 E series static Mutex 模板）：

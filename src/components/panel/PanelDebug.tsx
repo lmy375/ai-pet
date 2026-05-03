@@ -62,14 +62,22 @@ export function PanelDebug() {
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
-  const [lastPrompt, setLastPrompt] = useState<string>("");
-  const [lastReply, setLastReply] = useState<string>("");
-  const [lastTurnMeta, setLastTurnMeta] = useState<{ timestamp: string; tools_used: string[] }>({
-    timestamp: "",
-    tools_used: [],
-  });
+  // Iter E4: ring buffer of recent turns, newest first. Panel modal navigates
+  // with « / » buttons; index 0 = newest. Replaces E1/E2/E3's three separate
+  // fetches with a single Vec<TurnRecord> source.
+  const [recentTurns, setRecentTurns] = useState<
+    { timestamp: string; prompt: string; reply: string; tools_used: string[] }[]
+  >([]);
+  const [turnIndex, setTurnIndex] = useState(0);
   const [showLastPrompt, setShowLastPrompt] = useState(false);
   const [copyMsg, setCopyMsg] = useState<string>("");
+  const currentTurn = recentTurns[turnIndex] ?? null;
+  const lastPrompt = currentTurn?.prompt ?? "";
+  const lastReply = currentTurn?.reply ?? "";
+  const lastTurnMeta = {
+    timestamp: currentTurn?.timestamp ?? "",
+    tools_used: currentTurn?.tools_used ?? [],
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -249,10 +257,63 @@ export function PanelDebug() {
               }}
             >
               <span style={{ fontSize: "14px", fontWeight: 600, color: "#0f172a" }}>
-                上次 proactive 的 prompt + reply
+                proactive 的 prompt + reply
               </span>
+              {/* Iter E4: prev/next navigator across the ring buffer */}
+              {recentTurns.length > 0 ? (
+                <span
+                  style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
+                  title="« 上一条（更早）/ » 下一条（更新）。Iter E4 ring buffer 保留最近 5 次"
+                >
+                  <button
+                    onClick={() =>
+                      setTurnIndex((i) => Math.min(i + 1, recentTurns.length - 1))
+                    }
+                    disabled={turnIndex >= recentTurns.length - 1}
+                    style={{
+                      fontSize: "11px",
+                      padding: "1px 6px",
+                      borderRadius: "4px",
+                      border: "1px solid #cbd5e1",
+                      background: turnIndex >= recentTurns.length - 1 ? "#f1f5f9" : "#fff",
+                      color: turnIndex >= recentTurns.length - 1 ? "#cbd5e1" : "#475569",
+                      cursor: turnIndex >= recentTurns.length - 1 ? "default" : "pointer",
+                    }}
+                  >
+                    «
+                  </button>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      color: "#475569",
+                      fontFamily: "'SF Mono', monospace",
+                      minWidth: "32px",
+                      textAlign: "center",
+                    }}
+                  >
+                    {turnIndex + 1}/{recentTurns.length}
+                  </span>
+                  <button
+                    onClick={() => setTurnIndex((i) => Math.max(i - 1, 0))}
+                    disabled={turnIndex === 0}
+                    style={{
+                      fontSize: "11px",
+                      padding: "1px 6px",
+                      borderRadius: "4px",
+                      border: "1px solid #cbd5e1",
+                      background: turnIndex === 0 ? "#f1f5f9" : "#fff",
+                      color: turnIndex === 0 ? "#cbd5e1" : "#475569",
+                      cursor: turnIndex === 0 ? "default" : "pointer",
+                    }}
+                  >
+                    »
+                  </button>
+                </span>
+              ) : (
+                <span style={{ fontSize: "11px", color: "#94a3b8" }}>（还没触发过）</span>
+              )}
               <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                {lastPrompt ? `prompt ${lastPrompt.length} / reply ${lastReply.length} chars` : "（还没触发过）"}
+                {lastPrompt ? `prompt ${lastPrompt.length} / reply ${lastReply.length} chars` : ""}
               </span>
               {lastTurnMeta.timestamp && (
                 <span
@@ -443,17 +504,14 @@ export function PanelDebug() {
         <button
           onClick={async () => {
             try {
-              const [p, r, m] = await Promise.all([
-                invoke<string>("get_last_proactive_prompt"),
-                invoke<string>("get_last_proactive_reply"),
-                invoke<{ timestamp: string; tools_used: string[] }>("get_last_proactive_meta"),
-              ]);
-              setLastPrompt(p);
-              setLastReply(r);
-              setLastTurnMeta(m);
+              const turns = await invoke<
+                { timestamp: string; prompt: string; reply: string; tools_used: string[] }[]
+              >("get_recent_proactive_turns");
+              setRecentTurns(turns);
+              setTurnIndex(0);
               setShowLastPrompt(true);
             } catch (e) {
-              console.error("get_last_proactive_prompt/reply/meta failed:", e);
+              console.error("get_recent_proactive_turns failed:", e);
             }
           }}
           title="查看上次构造的 proactive prompt + LLM reply 全文（process 重启后清空）— 一眼看到 in/out。"

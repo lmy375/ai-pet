@@ -154,6 +154,27 @@ pub static LAST_PROACTIVE_TIMESTAMP: std::sync::Mutex<Option<String>> = std::syn
 /// modal complements the prompt+reply text.
 pub static LAST_PROACTIVE_TOOLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// Iter E4: ring buffer of the last N completed proactive turns. Pushed once
+/// per turn at the end (after the LLM has replied). Panel uses it to navigate
+/// "prev/next" between recent turns and compare prompt deltas across runs —
+/// useful when iterating on prompt rules and wanting to see "did this rule
+/// fire across the last 3 turns or just once?".
+///
+/// Cap intentionally small (5) — UI shows them one at a time, more would
+/// crowd the navigator and inflate process memory for diminishing return.
+pub const PROACTIVE_TURN_HISTORY_CAP: usize = 5;
+
+#[derive(Clone, serde::Serialize)]
+pub struct TurnRecord {
+    pub timestamp: String,
+    pub prompt: String,
+    pub reply: String,
+    pub tools_used: Vec<String>,
+}
+
+pub static LAST_PROACTIVE_TURNS: std::sync::Mutex<std::collections::VecDeque<TurnRecord>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
 /// Tauri command — return the most recently built proactive prompt, or empty
 /// string if none has been built yet (fresh process, never fired).
 #[tauri::command]
@@ -183,6 +204,23 @@ pub fn get_last_proactive_reply() -> String {
 pub struct ProactiveTurnMeta {
     pub timestamp: String,
     pub tools_used: Vec<String>,
+}
+
+/// Iter E4 Tauri command — return the ring buffer of recent turns, newest first.
+/// Empty Vec when nothing has fired since process start. Each entry is a complete
+/// turn record (prompt + reply + timestamp + tools) so the panel can navigate
+/// without a second IPC for sub-fields.
+#[tauri::command]
+pub fn get_recent_proactive_turns() -> Vec<TurnRecord> {
+    LAST_PROACTIVE_TURNS
+        .lock()
+        .map(|g| {
+            // Reverse so index 0 = newest, matching the panel's prev/next intuition.
+            let mut out: Vec<TurnRecord> = g.iter().cloned().collect();
+            out.reverse();
+            out
+        })
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -1839,12 +1877,34 @@ async fn run_proactive_turn(
     // Iter E3: stash the distinct tool names alongside the prompt/reply pair.
     // Deduped via BTreeSet then collected so panel UI doesn't have to handle
     // duplicates from the registry's per-call list.
-    if let Ok(mut g) = LAST_PROACTIVE_TOOLS.lock() {
+    let tools_dedup: Vec<String> = {
         let mut seen = std::collections::BTreeSet::new();
         for t in &tools {
             seen.insert(t.clone());
         }
-        *g = seen.into_iter().collect();
+        seen.into_iter().collect()
+    };
+    if let Ok(mut g) = LAST_PROACTIVE_TOOLS.lock() {
+        *g = tools_dedup.clone();
+    }
+    // Iter E4: also append the full turn record to the ring buffer so the
+    // panel can navigate prev/next across the last N turns. Cap at
+    // PROACTIVE_TURN_HISTORY_CAP via pop_front.
+    if let Ok(mut g) = LAST_PROACTIVE_TURNS.lock() {
+        let ts = LAST_PROACTIVE_TIMESTAMP
+            .lock()
+            .ok()
+            .and_then(|t| t.clone())
+            .unwrap_or_default();
+        g.push_back(TurnRecord {
+            timestamp: ts,
+            prompt: prompt.clone(),
+            reply: reply.clone(),
+            tools_used: tools_dedup,
+        });
+        while g.len() > PROACTIVE_TURN_HISTORY_CAP {
+            g.pop_front();
+        }
     }
 
     // Treat empty / silent marker as "do nothing".
