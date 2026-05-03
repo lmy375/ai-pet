@@ -9,8 +9,11 @@
 //! that touches memory + speech_history lives in proactive.rs so this
 //! module stays clock-and-fs independent.
 //!
-//! Currently *deterministic* — bullet list of today's speeches, no LLM
-//! summary. R12b will follow up with an LLM "today we together..." line.
+//! Iter R12b refines the description with parsed plan progress markers
+//! `[N/M]` so the panel index reads "今天主动开口 7 次，计划 3/5" instead
+//! of the vague "有计划". Still deterministic — LLM-summary upgrade
+//! deferred to a later iter (would require routing AppHandle + chat
+//! pipeline through what's currently a clock-pure module).
 
 use chrono::NaiveDate;
 
@@ -70,11 +73,82 @@ pub fn format_daily_review_detail(
     out
 }
 
+/// Iter R12b: parse `[N/M]` progress markers out of a daily_plan description
+/// and sum them into a (completed, total) tuple. Returns `None` when no
+/// well-formed markers exist (e.g. plan with free-text bullets, no plan).
+/// `M == 0` markers are skipped (degenerate "0 of 0" carries no info and
+/// would crash a "X/Y" formatter that expects total > 0).
+///
+/// Examples:
+/// - `"· 关心工作 [1/2]\n· 提醒喝水 [0/1]"` → `Some((1, 3))`
+/// - `"· 不带 marker"` → `None`
+/// - `""` → `None`
+/// - `"· bad [a/b]"` → `None` (no valid markers)
+pub fn parse_plan_progress(plan_description: &str) -> Option<(u32, u32)> {
+    let mut completed: u32 = 0;
+    let mut total: u32 = 0;
+    let mut found_any = false;
+    let bytes = plan_description.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        let Some(close_offset) = bytes[i + 1..].iter().position(|&b| b == b']') else {
+            break;
+        };
+        let inner = &plan_description[i + 1..i + 1 + close_offset];
+        i += 2 + close_offset;
+        if let Some((c_str, t_str)) = inner.split_once('/') {
+            let c_trim = c_str.trim();
+            let t_trim = t_str.trim();
+            // Reject markers with a non-digit prefix (e.g. "remind:") that
+            // happen to contain a slash — those are reminder/butler schedule
+            // tags, not progress trackers.
+            if !c_trim.chars().all(|ch| ch.is_ascii_digit())
+                || !t_trim.chars().all(|ch| ch.is_ascii_digit())
+                || c_trim.is_empty()
+                || t_trim.is_empty()
+            {
+                continue;
+            }
+            let (Ok(c), Ok(t)) = (c_trim.parse::<u32>(), t_trim.parse::<u32>()) else {
+                continue;
+            };
+            if t == 0 {
+                continue;
+            }
+            completed = completed.saturating_add(c);
+            total = total.saturating_add(t);
+            found_any = true;
+        }
+    }
+    if found_any {
+        Some((completed, total))
+    } else {
+        None
+    }
+}
+
 /// Short one-line index description, surfaces in the panel memory list.
-/// Leading `[review]` lets a future R12b LLM-summary pass identify and
-/// upgrade these entries without overwriting non-review items.
-pub fn format_daily_review_description(speech_count: usize, has_plan: bool) -> String {
-    let plan_part = if has_plan { "，有计划" } else { "" };
+/// Leading `[review]` lets a future LLM-summary pass identify and upgrade
+/// these entries without overwriting non-review items.
+///
+/// Iter R12b: when the plan has parseable `[N/M]` markers, suffix becomes
+/// `，计划 N/M` (concrete). Falls back to `，有计划` only when plan exists
+/// but has no parseable markers (free-text plan), and to no suffix when
+/// there's no plan at all.
+pub fn format_daily_review_description(
+    speech_count: usize,
+    plan_progress: Option<(u32, u32)>,
+    has_plan: bool,
+) -> String {
+    let plan_part = match plan_progress {
+        Some((c, t)) => format!("，计划 {}/{}", c, t),
+        None if has_plan => "，有计划".to_string(),
+        None => String::new(),
+    };
     format!("[review] 今天主动开口 {} 次{}", speech_count, plan_part)
 }
 
@@ -167,16 +241,87 @@ mod tests {
     #[test]
     fn description_records_count_and_plan_flag() {
         assert_eq!(
-            format_daily_review_description(0, false),
+            format_daily_review_description(0, None, false),
             "[review] 今天主动开口 0 次"
         );
         assert_eq!(
-            format_daily_review_description(7, true),
+            format_daily_review_description(7, None, true),
             "[review] 今天主动开口 7 次，有计划"
         );
         assert_eq!(
-            format_daily_review_description(15, false),
+            format_daily_review_description(15, None, false),
             "[review] 今天主动开口 15 次"
         );
+    }
+
+    #[test]
+    fn description_shows_concrete_plan_progress_when_parseable() {
+        // R12b: progress markers take precedence over the vague "有计划" suffix.
+        assert_eq!(
+            format_daily_review_description(7, Some((1, 3)), true),
+            "[review] 今天主动开口 7 次，计划 1/3"
+        );
+        assert_eq!(
+            format_daily_review_description(0, Some((0, 5)), true),
+            "[review] 今天主动开口 0 次，计划 0/5"
+        );
+        // has_plan true but progress None → fall back to "有计划".
+        assert_eq!(
+            format_daily_review_description(3, None, true),
+            "[review] 今天主动开口 3 次，有计划"
+        );
+    }
+
+    #[test]
+    fn parse_progress_sums_multiple_markers() {
+        let plan = "· 关心工作 [1/2]\n· 提醒喝水 [0/1]\n· 早安问候 [1/1]";
+        assert_eq!(parse_plan_progress(plan), Some((2, 4)));
+    }
+
+    #[test]
+    fn parse_progress_handles_single_marker() {
+        assert_eq!(parse_plan_progress("· task [3/5]"), Some((3, 5)));
+    }
+
+    #[test]
+    fn parse_progress_returns_none_for_no_markers() {
+        assert_eq!(parse_plan_progress(""), None);
+        assert_eq!(parse_plan_progress("· 自由形式的计划"), None);
+        assert_eq!(parse_plan_progress("没有方括号的内容"), None);
+    }
+
+    #[test]
+    fn parse_progress_skips_malformed_markers() {
+        // [a/b] non-digit, [10] no slash, [/3] empty left, [3/] empty right
+        // — none should count, expected None.
+        let plan = "· bad [a/b]\n· nope [10]\n· empty [/3]\n· empty2 [3/]";
+        assert_eq!(parse_plan_progress(plan), None);
+    }
+
+    #[test]
+    fn parse_progress_skips_marker_with_zero_total() {
+        // [1/0] is degenerate — would mean "1 of 0" which can't be displayed
+        // sensibly. Skip but don't fail the whole parse.
+        assert_eq!(parse_plan_progress("· bad [1/0]"), None);
+        // Still pick up valid neighbors.
+        assert_eq!(
+            parse_plan_progress("· good [2/3]\n· bad [1/0]"),
+            Some((2, 3))
+        );
+    }
+
+    #[test]
+    fn parse_progress_ignores_non_progress_brackets() {
+        // R12b: reminder / schedule prefix tags use [HH:MM] / [remind: ...] /
+        // [every: ...] — they contain colons, no digit/slash/digit, so they
+        // shouldn't crash parsing or contribute to progress.
+        let plan = "· [remind: 09:00] 喝水 [0/1]\n· [every: 18:00] 运动 [1/1]";
+        assert_eq!(parse_plan_progress(plan), Some((1, 2)));
+    }
+
+    #[test]
+    fn parse_progress_handles_whitespace_inside_marker() {
+        // Be lenient about [ 1 / 2 ] style — humans type with spaces.
+        assert_eq!(parse_plan_progress("· task [ 1 / 2 ]"), Some((1, 2)));
     }
 }

@@ -151,9 +151,12 @@
 - [x] R12：daily review 自动生成（2026-05-03 完成 — Iter R12 deterministic 版。22:00 后第一次
   proactive tick 写 ai_insights/daily_review_YYYY-MM-DD：今日计划 + 今日开口 bullet list。
   双重 idempotency：进程内 LAST_DAILY_REVIEW_DATE + 跨重启 index 存在性检查。11 单测）
-- [ ] R12b：LLM 一句话总结升级 — 从 deterministic 触发后，再用 silent LLM 调用
-  把 detail 转成"今天我们一起..." 自然语言开头。pet 早起开口可读到 yesterday review
-  的描述行，比纯 bullet list 更"伴侣感"
+- [x] R12b：daily review description 加入 plan progress 解析（2026-05-03 完成 — Iter R12b
+  deterministic 版本。`[N/M]` 标记从 daily_plan 拉到 description："今天主动开口 7 次，计划 3/5"
+  替代笼统的"有计划"。LLM 一句话总结另列为 R12c follow-up）
+- [ ] R12c：LLM 一句话总结升级（路由 AppHandle + chat pipeline 进 daily_review，把
+  description 改成"[review] 今天我们一起..."自然语言。需要把 maybe_run_daily_review
+  从 clock-pure 升级到 app-aware）
 - [x] R13：companion mode setting（2026-05-03 完成 — Iter R13。3 模式 balanced/chatty/quiet
   调 cooldown + chatty_threshold；前端 settings UI 留 R13b follow-up）
 - [x] R14：跨日记忆线（2026-05-03 完成 — Iter R14）

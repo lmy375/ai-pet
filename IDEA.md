@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R12b 设计要点（已实现）
+- **deterministic refinement 比 LLM upgrade 优先**：R12 留下的 R12b 原本计划是"LLM 一句话总结"。但深入看了下，需要的依赖：AiConfig / McpManagerStore / LogStore / ShellStore / ProcessCountersStore / ChatMessage / CollectingSink / run_chat_pipeline。把现有 clock-pure module 改成 app-aware 是非平凡 refactor。而 description 缺信号这个具体痛点（"有计划"太空洞）有更便宜的解 — 复用 daily_plan 已有的 `[N/M]` 标记。**先做便宜的高 ROI 升级，把 LLM 版本拆成独立 R12c**。这是"把一个大 iter 拆成多个小 iter" 的实践 — R12 + R12b 一起上线，LLM 升级独立排队。
+- **`[N/M]` parser 设计要 robust against schema collision**：codebase 里方括号有多种用途：`[N/M]` 进度、`[remind: HH:MM]` reminder、`[every: HH:MM]` butler schedule、`[once: YYYY-MM-DD HH:MM]` once-fire、`[review]` 前缀、`[motion: Tap]` mood、`[error: ...]` failure。如果 parser 直接 split_once('/') 不验证 — `[remind: 09:00]` 会把 "remind: 09" / "00" 当成数字（实际不会因为 "remind:" 含字母）。但 `[19/05/03]` 这样的日期会真的被误算（虽然没人这么写）。strict digit-only check 是 minimal 但有效的 defense。**多 schema 共用同一种 syntax 的代价 = parser 要做 disambiguation**。
+- **`[1/0]` skip 是 graceful degradation**：完美的 case 是 plan 永远不出现 zero-total marker。但代码要 robust to user 误输入。用户写"· task [1/0]" 大概是 typo（想写 [1/10]），在这种 case 下：(a) 不要 panic / divide-by-zero (b) 不要让整个 review 失败 (c) skip 这条但保留有效的邻居。"软失败 + 继续"是 user-input parser 的金标准。
+- **u32 saturating_add**：理论上 plan 不会超过 100 条 / 单条不会超过 999/999。saturating_add 与其说是必要不如说是 *cheap insurance* — 多打几个字节但永远不会因为 overflow panic。在 Rust 里整数运算的 default 是 panic on overflow（debug）+ wrap（release），saturating 比其他 mode 都更"贴近用户意图"（"满了就停在最大"）。统一用它是好品味。
+- **三分支 description 排版选择**：1) `Some((c,t))` → "计划 c/t"（具体）；2) `None, has_plan` → "有计划"（兜底）；3) `None, !has_plan` → 无后缀。诱惑是把 (2) 删了 —— "如果没有 progress markers 就也不显示 plan suffix"。但有用户写 "· 自由文本计划" — 没 marker 但确实有计划。如果完全略过会让 description 误导（"今天主动开口 5 次" 听起来像没定计划）。"有计划" 兜底比 "" 兜底更准确。**不要为了简化代码删信号**。
+- **解析器位置 = 跟它服务的 formatter 同 module**：`parse_plan_progress` 放 daily_review.rs 而不是 plan_assembler.rs / time_helpers.rs。原则：纯计算放在 *最接近其唯一 caller* 的 module — 谁用就放谁旁边。如果未来另一个 caller 也需要 `[N/M]` 解析（如 panel UI），再 hoist 到共享位置。**premature abstraction = bad**；late abstraction = better。
+
 ## Iter R12 设计要点（已实现）
 - **deterministic vs LLM 总结分两步**：第一直觉是"R12 必须有 LLM 一句话总结，否则不是 review"。但实测 deterministic bullet list 已经回答了"今天发生了什么"的核心问题。LLM 总结是 polish，不是 fundament。先把 deterministic 路径打通 + 完成 idempotency / 触发逻辑 / memory schema —— 这些 LLM 升级路径后也用得上。R12b 仅替换 description 文案 + 可选追加 detail 顶部的总结段，对底层 schema 零冲击。"先 backend 后 polish" 在多步 feature 里是通用模式。
 - **22:00 trigger gate 的"first tick after"语义**：天真做法是开个 cron-like 后台 task 在 22:00:00 准点 fire。但 (a) 多一个 background loop 是多一个失败点；(b) 用户不在桌前的 22:00 fire 没意义；(c) Tauri 的进程模型不保证后台 task 在 22:00 还活着。复用 proactive loop tick + "first eligible tick wins" — 用户人在的时候才 review，逻辑简单 + 不需新基础设施。这是 R15 active_app "复用 proactive cadence" 模式的延续。
