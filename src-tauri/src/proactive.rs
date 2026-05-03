@@ -338,6 +338,11 @@ pub struct ToneSnapshot {
     /// flag "user has been rejecting recent turns" — prompt-side hint
     /// fires at same threshold (R35's `format_consecutive_negative_hint`).
     pub consecutive_negative_streak: usize,
+    /// Iter R52: transient mute remaining seconds. None = not muted (or
+    /// expired). Some(N) = N seconds left until pet resumes proactive
+    /// turns. Distinct from `proactive_enabled` (persistent toggle);
+    /// this is "be quiet for next session" state.
+    pub mute_remaining_seconds: Option<i64>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -802,6 +807,9 @@ pub async fn build_tone_snapshot(
         consecutive_negative_streak: crate::feedback_history::count_trailing_negative(
             &recent_feedback_for_signals,
         ),
+        // Iter R52: transient mute remaining seconds. Same pure helper
+        // gate uses (mute_remaining_seconds) so chip + gate can't drift.
+        mute_remaining_seconds: mute_remaining_seconds(),
     })
 }
 
@@ -814,6 +822,40 @@ pub async fn get_tone_snapshot(
     counters: tauri::State<'_, crate::commands::debug::ProcessCountersStore>,
 ) -> Result<ToneSnapshot, String> {
     build_tone_snapshot(clock.inner(), wake.inner(), counters.inner()).await
+}
+
+/// Iter R52: set transient mute for `minutes` from now. Used when user
+/// wants pet quiet during a focused session without flipping the
+/// permanent `proactive.enabled` setting. Pass 0 to clear. Returns the
+/// resulting `MUTE_UNTIL` ISO timestamp (or empty when cleared) so the
+/// frontend can show a confirmation chip / countdown.
+#[tauri::command]
+pub fn set_mute_minutes(minutes: i64) -> String {
+    if minutes <= 0 {
+        if let Ok(mut g) = MUTE_UNTIL.lock() {
+            *g = None;
+        }
+        return String::new();
+    }
+    let until = chrono::Local::now() + chrono::Duration::minutes(minutes);
+    if let Ok(mut g) = MUTE_UNTIL.lock() {
+        *g = Some(until);
+    }
+    until.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+}
+
+/// Iter R52: read the current MUTE_UNTIL state. Returns ISO timestamp
+/// when active, empty string when not muted (or expired). Stay
+/// consistent with chip semantics — `mute_remaining_seconds()` returns
+/// None for both "never muted" and "expired", so frontend treats both
+/// as "not muted" without needing to distinguish.
+#[tauri::command]
+pub fn get_mute_until() -> String {
+    let Some(secs) = mute_remaining_seconds() else {
+        return String::new();
+    };
+    let until = chrono::Local::now() + chrono::Duration::seconds(secs);
+    until.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
 // Iter QG5c-prep: pure time/calendar/idle-band helpers (idle_tier /

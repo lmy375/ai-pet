@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R52 设计要点（已实现）
+- **真实功能 iter 比 polish 更影响产品**：R-series 30+ iter 大量是 polish (chip / animation / focus ring / threshold tune)。R52 是真实 user-need feature —— "focus session shut up"。**polish 让产品 feel right，但解决真实痛点的 feature 才让 user reach for it**。比例上 polish: feature 能保 2-3:1 是健康，1:0 就是停滞。R52 之后该看是否还有未解决的真实痛点（如"快速给 pet 一个临时 instruction" / "马上换 mood register" 等）。
+- **user-driven 应该 gate priority 最高**：MUTE_UNTIL 检查在 evaluate_loop_tick 第一行。比 cooldown / quiet hours / awaiting 优先。原则：**用户显式 expression 永远 trump 系统 inference**。Cooldown 是系统判断"该歇"，user mute 是用户判断"我要你歇" —— 后者更强。这条原则适用 settings 类 toggle —— 用户操作产生的 state 永远 win。
+- **transient state 不持久化是设计选择**：MUTE_UNTIL 是 in-memory static，重启清零。诱惑是写进 settings.yaml 让 mute "存档"。但 (a) "30 min mute" 重启后还有意义吗？时间已经流逝；(b) 永久 mute 应该用 `proactive.enabled = false` 设置。**transient 名字就承诺了 ephemeral**。这跟 R37 panel filter state 不持久化同思路。
+- **fast path > flexible path**：button toggle 不下拉菜单，30 min 单 preset 不可选。理由：90% 用户需求是"快速 mute 30 min"，flexible path 让 90% 用户多 click 一次为 10% 自定义需求服务，net negative。**通过观察现实用例选择 default**，未来 user 反馈说"我想 mute 60 min" 再加 preset menu (R52b)。
+- **single source helper 是 R-series 抽象成熟度信号**：mute_remaining_seconds() 同时给 gate (action) 和 ToneSnapshot (display data) 用。R23 (cooldown breakdown) / R33 (count_trailing_silent) / R34 / R35 都同 pattern。**抽 helper 不是为了 DRY，是为了 invariant 不会 drift** —— 两个 caller 用同一函数 = 两者输出永远一致。
+- **R-series first integrated feature iter since R12**：从 R12 (daily review) 后大多 iter 是 small polish / signal addition / panel surface。R52 是端到端 feature stack（backend static + gate + 2 commands + ToneSnapshot field + frontend chip + button + lifecycle）。**这种 vertical-stack iter 难做但收益大** —— user-visible action loop 完整。R-series 应该周期性穿插这种 iter，避免长期 polish 让 codebase 不再 "ship features"。
+- **chip + button 双 surface 互补**：button 让用户主动操作（control），chip 让用户被动看到状态（feedback）。两者必须同 iter 上 —— 单 button 没 chip = 用户点完不知是否生效；单 chip 没 button = 用户看到状态但改不了。**control + feedback 是 user action loop 的两端**，缺一就破。R52 同 iter 上 button + chip 是"封闭 loop" 的最小单元。
+
 ## Iter R51 设计要点（已实现）
 - **long-term + short-term 双视角是 trend 揭示的最少工具**：单一 lifetime avg 看不出最近变化（一年数据稀释）。单一 week avg 看不出长期 character（一周可能是异常）。**两个一起 = 对比 = trend 直接可读**。这是金融 / 健身 / 学习 tracker 的共同 idiom：MA-7 vs MA-30 / 周均 vs 月均。R51 把它带进 pet panel。
 - **smart denominator 而不是 fixed period**：weekSpeechCount / min(7, days + 1) 让首周 user 拿到正确 avg。如果固定 / 7，day 3 用户 average always 被低估 4×。**首日体验是 onboarding 关键** —— 数据正确性应该 day 1 就准，不能让 user 等 7 天才看到 stable signal。**boundary correctness > formula simplicity**。

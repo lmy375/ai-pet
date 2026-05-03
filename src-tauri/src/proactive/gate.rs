@@ -153,12 +153,43 @@ pub fn evaluate_input_idle_gate(
     }
 }
 
+/// Iter R52: transient mute. None when not muted; Some(t) means "skip
+/// proactive turns until t". Set via `set_mute_minutes` Tauri command,
+/// cleared via `clear_mute` or by reaching t. Distinct from
+/// `proactive.enabled` setting (persistent toggle); MUTE_UNTIL is for
+/// "shut up for the next hour while I focus" sessions.
+pub static MUTE_UNTIL: std::sync::Mutex<Option<chrono::DateTime<chrono::Local>>> =
+    std::sync::Mutex::new(None);
+
+/// Iter R52: read MUTE_UNTIL and return remaining seconds when active,
+/// else None. Pure-ish (depends on chrono::Local::now()) but separated
+/// for testability — gate calls this; ToneSnapshot reads same static
+/// so panel chip and gate stay aligned.
+pub fn mute_remaining_seconds() -> Option<i64> {
+    let until = MUTE_UNTIL.lock().ok().and_then(|g| *g)?;
+    let now = chrono::Local::now();
+    let remaining = (until - now).num_seconds();
+    if remaining > 0 {
+        Some(remaining)
+    } else {
+        None
+    }
+}
+
 /// Evaluate every gate in priority order and return the action this tick should take.
 /// Composes the pure pre-input-idle gates with the IO call to query keyboard/mouse idle.
 pub async fn evaluate_loop_tick(
     app: &AppHandle,
     settings: &crate::commands::settings::AppSettings,
 ) -> LoopAction {
+    // Iter R52: mute gate runs first — fastest exit when user has muted
+    // the pet for a session. No IO, no settings read; just a static
+    // mutex check. Returns immediately so muted ticks don't bother with
+    // expensive gates below.
+    if let Some(remaining) = mute_remaining_seconds() {
+        let mins = remaining / 60;
+        return LoopAction::Skip(format!("muted, {} min remaining", mins));
+    }
     let cfg = &settings.proactive;
     let clock = app.state::<InteractionClockStore>().inner().clone();
     let snap = clock.snapshot().await;
