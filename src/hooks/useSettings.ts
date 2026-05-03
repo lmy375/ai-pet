@@ -42,6 +42,10 @@ export interface MemoryConsolidateConfig {
   stale_reminder_hours: number;
   stale_plan_hours: number;
   stale_once_butler_hours: number;
+  /** Iter R17 / R30: how many days a `daily_review_YYYY-MM-DD` entry
+   * lingers in `ai_insights` before consolidate prunes it. 0 disables
+   * pruning (entries kept indefinitely). Default 30. */
+  stale_daily_review_days: number;
 }
 
 export interface ChatConfig {
@@ -93,6 +97,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     stale_reminder_hours: 24,
     stale_plan_hours: 24,
     stale_once_butler_hours: 48,
+    stale_daily_review_days: 30,
   },
   chat: {
     max_context_messages: 50,

@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R30 设计要点（已实现）
+- **codified rule audit 是常态而不是一次性事件**：R20 codified "prompt 信号 = panel surface"，触发 R21 + R22 两次 audit。R29 codified "settings field = same-iter UI"，触发 R30 audit。**每个 codified rule 通常需要 1-2 次 audit-and-backfill 才完全落地** —— rule 之前的所有 violations 都欠债。系列开发的健康姿态：codify rule 后立刻 audit，不要等下次违反时再回头查。
+- **两同性质 debt 一次还**：发现 stale_once_butler_hours + stale_daily_review_days 都欠 UI。诱惑是分两 iter 各自做。但 (a) 两者结构完全相同（都是 number field），(b) 同 PanelNumberField 行 layout 就能放，(c) 两者都属于"memory_consolidate 字段补全" 一类操作。**同性质 debt 一次清干净** 比拖两次更经济 —— 减少 commit 数 + 减少 PR review 负担。
+- **min=0 vs min=1 反映业务语义**：stale_reminder/plan/butler 都是 hours，0 几乎没意义（"立刻清"，user 几乎不会要），所以 UI min=1。stale_daily_review_days 后端 0 是 explicit "关闭剪枝"——保留所有日记永不删。UI 必须允许 0。**前端 UI 约束应该 = 后端业务约束**，否则会出现"后端支持的语义前端禁用"的异常状态。这条原则适用所有数字字段：先看后端 0/负数有没有特殊语义，再决定 UI min。
+- **hint 文案密度跟字段密度匹配**：4 个 stale 字段配一段 4-segment hint，2 个字段是 2-segment。**单段文案承载 N 个字段时**，分别用句号 / 顿号 separator 让眼睛读得舒服，而不拆 N 段独立 hint div。后者会让 settings 页面 fragmentation 严重。Hint 是 inline education 不是文档章节。
+- **dead code 缓刑而不是即删**：R29 IDEA 标了 SettingsPanel.tsx 是 dead code 但 R30 不删。**audit iter 应该聚焦 audit 主题**，混合多种 cleanup 类型让 commit 模糊。下个 cleanup iter 该专门做"删 dead code + 清 unused imports + 整理 warning silenced 的代码"集中操作。**单 iter 单主题** 是 commit history 可读性的护城河。
+- **codified rule 自带 audit 工具流**：R29 rule 让我下一次写新 settings 字段时**自动检查 UI 是否同步**。R20 / R29 这些 rule 是 cognitive checklist —— 写代码时 mental ping 提醒"这条 rule 是否被违反了"。**好的 rule 是 self-enforcing 的**，写出来后未来 PR 自带 reviewer 视角。
+- **多 iter 系列的演化模式**：R-series 现在 30 iter 不是 30 个独立 feature —— 是 5-6 个核心 codified rule 的反复 audit + backfill + new application。R20 / R23 / R27 / R29 都是 rule 创立 iter，其他多数是 application iter。**codified rule 是系列的"骨架"**，application 是"血肉"。这种结构让长系列保持可理解。
+
 ## Iter R29 设计要点（已实现）
 - **新加 settings 字段必须 same-iter 上 UI**：R13 (2026-05-03) 加 companion_mode 后端时 IDEA 显式写"前端 UI 暂缺"。这种"先后端，等以后做前端" 的 split 看着合理但实际让"功能上线" 跟"功能可用" 错位 — 7 iter 过去用户没法用。**应该 codify**：每个新 settings 字段同 iter 必须有 UI 入口，否则 = hidden feature。R20 已 codify "新 prompt 信号 = 同 iter panel surface"，R29 把这条扩展到 "新 settings 字段 = 同 iter UI 入口"。
 - **option label 显数学 multipliers 是 surface-the-math**：诱惑是 dropdown 写简短 "balanced / chatty / quiet" 让用户自己 read docs 理解差异。但 dropdown 是用户做选择的瞬间 —— surface the consequence at decision time 比让 user 走流程查文档好得多。R23 cooldown hover "configured × mode × feedback = effective" 同思路 — **panel UI 应该把数学 surface 出来**让用户可见可算。
