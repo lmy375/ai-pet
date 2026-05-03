@@ -118,6 +118,32 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           🔁 {tone.repeated_topic}
         </span>
       )}
+      {tone.active_app && (() => {
+        const { app, minutes } = tone.active_app;
+        // R22: ≥15m matches MIN_DURATION_MINUTES — at this point R15's
+        // prompt hint fires ("用户已经在 X 待了 N 分钟"). Below threshold:
+        // chip still shown for observability but in a muted gray tone so
+        // the LLM-active "long focus" signal stands out (orange).
+        const isLongFocus = minutes >= 15;
+        const bg = isLongFocus ? "#d97706" : "#94a3b8";
+        const titleText = isLongFocus
+          ? `用户已经在「${app}」里待了 ${minutes} 分钟 — R15 prompt hint 已 fire（≥15m 阈值）。`
+          : `当前前台 app 是「${app}」，停留 ${minutes} 分钟（< 15m，prompt 未 nudge）。`;
+        return (
+          <span
+            title={titleText}
+            style={{
+              color: "#fff",
+              background: bg,
+              padding: "1px 8px",
+              borderRadius: "10px",
+              fontWeight: 600,
+            }}
+          >
+            🪟 {app}（{minutes}m）
+          </span>
+        );
+      })()}
       <span title="period_of_day(now)">⏱ {tone.period}</span>
       {tone.day_of_week && (
         <span title="weekday + 工作日/周末（Iter Cβ — proactive prompt 时间行已包含）">

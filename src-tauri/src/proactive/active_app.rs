@@ -88,6 +88,34 @@ pub fn format_active_app_hint(app: &str, minutes: u64) -> String {
     format!("用户在「{}」里已经待了 {} 分钟。", app, minutes)
 }
 
+/// Iter R22: panel-side read-only inspection of the active-app snapshot.
+/// Does NOT mutate `LAST_ACTIVE_APP` (unlike `update_and_format_active_app_hint`)
+/// — panel poll can hit this every few seconds without resetting the
+/// "since" clock. Returns redacted app name + elapsed minutes when a
+/// snapshot exists, `None` on fresh process / non-macOS / when the
+/// proactive loop hasn't observed any foreground app yet.
+pub fn snapshot_active_app() -> Option<ActiveAppSummary> {
+    let snap = LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone())?;
+    let minutes = Instant::now()
+        .saturating_duration_since(snap.since)
+        .as_secs()
+        / 60;
+    Some(ActiveAppSummary {
+        app: crate::redaction::redact_with_settings(&snap.app),
+        minutes,
+    })
+}
+
+/// Iter R22: panel-side compact summary of the current active app + how
+/// long the user has been on it. Mirrors the prompt-hint form
+/// (`format_active_app_hint`) but stays as structured data so the chip
+/// can color-code by duration band.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ActiveAppSummary {
+    pub app: String,
+    pub minutes: u64,
+}
+
 /// Production wrapper: reads the static snapshot, calls `compute_active_duration`,
 /// writes the new snapshot back, redacts the app name before passing to
 /// `format_active_app_hint`. Returns the formatted hint string (or empty

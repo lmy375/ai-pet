@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R22 设计要点（已实现）
+- **read-only helper 与 mutating helper 分离的反例诱惑**：第一直觉是"复用 update_and_format_active_app_hint"。读它的实现 — 它每次都 `compute_active_duration` 然后写回 `*g = Some(new_snapshot)`。如果 prev_app != current_app，新 snapshot 的 since 是 now()，**就把"用户已经在 X 待 N 分钟" 重置成 0**。Panel poll 每几秒一次，会让 panel 永远看到"刚才进 X" — 错的。**任何"读"路径如果走过 mutating helper 都会污染 state**。教训：每次面对"是不是复用旧 helper" 的问题，先看那个 helper 是否 mutating；如果是，read 路径必须自己抽。
+- **observability-wider-than-prompt 是 panel 设计的核心张力**：R15 prompt hint 设 15min 阈值因为"低于这个不值得 nudge LLM"。但 panel 不该照搬这个阈值 — user 想知道"我现在在哪" 即使停留 5 min。R20 mixed register / R22 < 15m active app 都是这个 pattern：**prompt = 异常时干预，panel = 全部 state**。所以 panel 应该 surface 更多 state，但用色彩区分"对 LLM fired vs 仅 observability"。橙色 = "正在影响 prompt"，灰色 = "panel only"。这种"色彩编码 prompt 是否 fired" 是这次 audit 中浮现的新模式 — R20 / R22 都用，可以推广到未来 chip 设计。
+- **chip cluster 概念化的累积**：💬 feedback / 📏 register / 🔁 topic / 🪟 active_app — 这 4 个 chip 现在形成一个隐含 cluster（"宠物-用户互动状态"）。⏱ period / 📆 day / 👤 idle / ⏳ cooldown 是另一 cluster（"时间状态"）。**chip strip 现在是 self-organizing visual semantic**，新 chip 加入时该思考"我属于哪 cluster"，不是简单 append。R22 决策让 🪟 在两 cluster 之间的过渡位 — pet-user-interaction 后 / time-context 前 — 因为 active_app 既是"用户上下文" 也驱动"宠物开口判断"。
+- **codified 原则的 audit 是有限工作**：R20 codify 后 R21 audit R11，R22 audit R15。第三个候选是 cross_day_hint (R14) / yesterday_recap_hint (R16) — 两者都是 first-of-day transient，panel 显示也只在 morning 第一次有效，剩下时间 chip 永远 null。**有些信号本质就 transient，强行 panel surface 价值低**。R20 原则的 audit 应该结束在 R22 — 剩下信号要么已 surface 要么 surface 没意义。**原则不是教条**，audit 到边界就停。
+- **测试 logic vs 测试 wiring 的纪律**：snapshot_active_app 是 4 行：`lock → option → compute → redact → return`。每行都是 1-3 标准操作，没分支没异常。给它写"测试 mutex lock 成功 / 测试 redact 调用了" 价值近零，反而增加 test 维护成本。**单测应该追逐 logic（compute_active_duration 三分支 / format 阈值边界），不追 wiring（read 静态 + arithmetic）**。CI 的 cargo build + clippy + tsc 已经覆盖类型 wiring 正确性，单测覆盖 *behavior* 正确性。
+- **panel surface 完成 R-series 的对称性**：R 系列从 R1 开始都是"加一个信号 / 调一个 gate / 写一个 reading hint"。R20+R21+R22 把累积的"prompt 写但 panel 不读" 一次性 audit 完。从此 R-series 加新信号会更短 — 因为新增的 prompt hint 会带 panel chip 一起设计，不会留新债。这种"建立原则 + 一次 audit + future 自动遵守" 是技术债管理的健康节奏。
+
 ## Iter R21 设计要点（已实现）
 - **codified 原则的第一次还债**：R20 commit message 写下"所有 prompt 信号都该 panel 可见"作 codebase rule。R21 立即回头看老信号 R11，发现没 panel surface — 立刻还。**新原则不只指导 future iter，也应该 audit past iter** 找 violations。如果只对 future iter 生效，旧债永远等着；audit + back-fill 是原则真正落地的方式。
 - **fetch 共享提取的时机**：build_tone_snapshot 原本 speech_register 字段 inline 自己 `recent_speeches(5).await`。R21 加 repeated_topic 时面对选择：(a) inline 第二次 await 同样数据；(b) 提到外部变量两个字段共享。选 (b) 因为这是单一函数体内的二次同源 fetch，**locality is preserved**（变量在最近的祖先 scope）但 IO 节省。如果是跨 module / 跨函数，外部状态/缓存就过 designed。**fetch 共享的设计成本应该匹配 fetch 共享的范围**。

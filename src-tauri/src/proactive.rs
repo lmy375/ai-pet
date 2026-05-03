@@ -309,6 +309,11 @@ pub struct ToneSnapshot {
     /// hint; R21 redacts here for the panel chip). None when no ngram
     /// recurs across enough distinct lines (the common "healthy" case).
     pub repeated_topic: Option<String>,
+    /// Iter R22: active-app snapshot (R15's data, panel-visible). Read-only
+    /// inspection of the LAST_ACTIVE_APP static — panel polling does NOT
+    /// reset the "since" clock. None on fresh process / non-macOS / when
+    /// no proactive turn has yet observed the foreground app.
+    pub active_app: Option<crate::proactive::active_app::ActiveAppSummary>,
 }
 
 /// Iter R10: simple shape for the tone-strip feedback chip. R1c added
@@ -594,6 +599,10 @@ pub async fn build_tone_snapshot(
         speech_register: crate::speech_history::classify_speech_register(&recent_for_signals),
         repeated_topic: crate::speech_history::detect_repeated_topic(&recent_for_signals, 4, 3)
             .map(|t| crate::redaction::redact_with_settings(&t)),
+        // Iter R22: read-only inspect of LAST_ACTIVE_APP — does NOT update
+        // the static's `since` clock the way run_proactive_turn does, so
+        // panel polling is safe.
+        active_app: snapshot_active_app(),
     })
 }
 
