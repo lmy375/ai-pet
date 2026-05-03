@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cυ 设计要点（已实现）
+- **复用 Cτ 措辞 1:1**：reactive chat 的 persona_layer 和 proactive 的 prompt 现在用完全相同的"你的主人是「X」——开口时..."一句话。让用户在两个路径里听到的 LLM 表现一致。如果两处用不同 wording，LLM 见到不同 framing 会做出微妙差异的称呼策略，对用户来说显得分裂。
+- **行内 if 而不是抽 helper**：本来想抽 `format_user_name_line(name)` helper 让 persona_layer 和 proactive 都调。但每处都是 1 行 trim 检查 + 1 行 format!() = 共 4 行代码——抽 helper 反而让人要跳到另一个文件读细节、阅读断裂。这种"小尺度 duplication"在项目里多次接受过（Iter Cθ 的 TS/Rust 镜像也是双份）。
+- **位置：companionship 之后、persona_hint 之前**：companionship 是"我们认识多久"的事实，user_name 是"我跟谁说话"的事实，persona_hint 是"我对自己怎么看"的反思。从客观事实 → 关系定位 → 主观自描述，叙事链条自然。
+- **`base_inputs` 默认 user_name=""**：和 Cτ 同样思路。新加 PromptInputs 字段时如果默 fallback 触发新行为，所有现有测试都要重做断言；改默值保持中性、专门 case 单独 set。
+- **不接 ToneSnapshot**：用户在 panel 已经能在 SettingsPanel 看到自己输的 user_name，不需要 panel 再回显一遍。ToneSnapshot 是 prompt 决策状态，user_name 是 prompt 输入数据——架构区分应当保持。
+- **proactive 的 build_persona_hint 不动**：那是 ai_insights/persona_summary 的 reader，是宠物自我反思内容，和 user_name（owner identity）不该混。两个独立 system context channel。
+
 ## Iter Cτ 设计要点（已实现）
 - **settings 字段而不是 user_profile 条目**：曾考虑让 LLM 通过 user_profile.title="姓名" 间接管。但 (a) 用户期望"输入名字 → 立刻被称呼"是直接路径，绕一层 LLM 太曲折；(b) settings 字段在 UI 上立刻可见可改，user_profile 是 LLM 的世界；(c) 名字是 first-class 关系绑定，配 settings 字段更符合"宠物 vs 主人"语义。
 - **prepend 而不是 append**：persona_layer 原本是"陪伴时长 → 画像 → 情绪谱 → tail 指引"。把 user_name 放最顶让 LLM "先知道是谁，再读身份背景"——叙事更顺。LLM 实际生成时会把 prompt 当对话准备阶段，最重要的"指代对象"放最早最不容易被忽略。

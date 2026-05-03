@@ -230,6 +230,12 @@ pub struct PromptInputs<'a> {
     /// direction: the pet's "to-do FOR you" list, distinct from `reminders_hint`
     /// (the user's own due nudges).
     pub butler_tasks_hint: &'a str,
+    /// Iter Cυ: owner's display name from settings.user_name. Empty when not set —
+    /// builder skips the line and the LLM keeps using 「你」. Non-empty: a short
+    /// "你的主人是「X」" line is pushed near the top of the prompt so the LLM
+    /// can occasionally call the user by name. Mirrors the persona_layer
+    /// injection added in Iter Cτ but lives in proactive's own prompt path.
+    pub user_name: &'a str,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -527,6 +533,15 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push(String::new());
     s.push(inputs.mood_hint.to_string());
     s.push(format_companionship_line(inputs.companionship_days));
+    // Iter Cυ: optional owner-name line. Reuses the same wording as
+    // format_persona_layer (Iter Cτ) so reactive chat and proactive give
+    // consistent "你的主人是「X」" framing.
+    if !inputs.user_name.trim().is_empty() {
+        s.push(format!(
+            "你的主人是「{}」——开口时可以用这个称呼或「你」自然交替，不必每句都喊名字。",
+            inputs.user_name.trim()
+        ));
+    }
     push_if_nonempty(&mut s, inputs.persona_hint);
     push_if_nonempty(&mut s, inputs.mood_trend_hint);
     push_if_nonempty(&mut s, inputs.user_profile_hint);
@@ -1517,6 +1532,10 @@ async fn run_proactive_turn(
     // (`[every: HH:MM]` / `[once: ...]` prefixes); `now` is passed so due tasks
     // bubble to the top with a "⏰ 到期" marker.
     let butler_tasks_hint = build_butler_tasks_hint(now_local.naive_local());
+    // Iter Cυ: owner-name from settings, empty when unset.
+    let user_name = get_settings()
+        .map(|s| s.user_name)
+        .unwrap_or_default();
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
@@ -1583,6 +1602,7 @@ async fn run_proactive_turn(
         mood_trend_hint: &mood_trend_hint,
         user_profile_hint: &user_profile_hint,
         butler_tasks_hint: &butler_tasks_hint,
+        user_name: &user_name,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -2207,6 +2227,9 @@ mod prompt_tests {
             // Default empty — pre-Iter Cγ state, no owner-assigned butler tasks yet.
             // Tests for the butler_tasks hint set this explicitly.
             butler_tasks_hint: "",
+            // Default empty — pre-Iter Cυ state, no owner name set in settings.
+            // Tests for the user_name line set this explicitly.
+            user_name: "",
         }
     }
 
@@ -2551,6 +2574,43 @@ mod prompt_tests {
         inputs.companionship_days = 5; // not a milestone
         let rules = proactive_rules(&inputs);
         assert!(!rules.iter().any(|r| r.contains("今天是和用户相处的")));
+    }
+
+    #[test]
+    fn prompt_includes_user_name_line_when_set() {
+        // Iter Cυ: when settings.user_name is non-empty, the proactive prompt
+        // gets a "你的主人是「X」" line right after the companionship line so
+        // the LLM can address the owner by name.
+        let mut inputs = base_inputs();
+        inputs.user_name = "moon";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("你的主人是「moon」"));
+        // Ordering: companionship line precedes user_name line precedes the
+        // optional persona/profile blocks (those are empty in base_inputs).
+        let p_companion = p.find("一起走过").unwrap();
+        let p_user = p.find("你的主人是").unwrap();
+        assert!(p_companion < p_user, "companionship before user_name");
+    }
+
+    #[test]
+    fn prompt_omits_user_name_line_when_empty_or_whitespace() {
+        let inputs = base_inputs(); // default user_name = ""
+        let p = build_proactive_prompt(&inputs);
+        assert!(!p.contains("你的主人是"));
+
+        let mut inputs2 = base_inputs();
+        inputs2.user_name = "   \t  ";
+        let p2 = build_proactive_prompt(&inputs2);
+        assert!(!p2.contains("你的主人是"), "whitespace-only must be skipped");
+    }
+
+    #[test]
+    fn prompt_trims_user_name_whitespace() {
+        let mut inputs = base_inputs();
+        inputs.user_name = "  moon  ";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("你的主人是「moon」"));
+        assert!(!p.contains("「  moon"));
     }
 
     #[test]

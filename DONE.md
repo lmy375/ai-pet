@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cυ：proactive prompt 也用 user_name
+- 现状缺口：Cτ 把 user_name 注入 reactive chat / Telegram 的 persona_layer，但 proactive 仍走 build_persona_hint 的独立路径——bubble 主动开口的语气没受 user_name 影响。"我设了名字宠物却只在我跟它聊时叫我"——一个 trust 体验缺口。
+- 解法：在 proactive prompt 里复用 Cτ 的同样话术：
+  - `PromptInputs` 加 `user_name: &'a str` 第 N 个字段
+  - `build_proactive_prompt` 在 `format_companionship_line` 之后插入一行：`你的主人是「X」——开口时可以用这个称呼或「你」自然交替，不必每句都喊名字`（与 persona_layer Cτ 的措辞 1:1 一致）
+  - whitespace-only / empty 跳过
+  - `run_proactive_turn` 拉 `get_settings().user_name` 喂进去
+  - `base_inputs` 默认 `user_name = ""`，保持现有测试中性
+- 3 个新单测：set / empty+whitespace / trim 三个 case；测试总数 298 → 301。
+- 复用 Cτ 措辞而不是新写：reactive 和 proactive 两个路径用相同句子，让 LLM 在同一个用户体验里看到同一个 framing；分开写两份只会增加漂移风险。如果未来要调整称呼措辞，搜索同样的字符串两处一起改也很简单。
+- 不抽 helper 函数：两处用相同 string format 但代码量都是一行 if + format!()，抽出去反而让阅读路径多一跳。Tolerable duplication < forced abstraction。
+- 不接 user_name 进 ToneSnapshot / 面板字段：proactive prompt 是行为面（LLM 看到），ToneSnapshot 是观测面（panel 看到）。user_name 是 prompt 的输入数据、不是 prompt 的运行时状态——和 mood / cadence 这种"决策状态"不同。
+- 闭环效果：Cτ 让 reactive 见名字，Cυ 让 proactive 见名字。设了 user_name 后，反应式聊天和主动开口都会偶尔称呼用户。Cτ 候选项 Cυ 完成 → 项目里"宠物认识主人"的关系绑定从 settings → persona_layer → proactive 全链路打通。
+
 ## 2026-05-03 — Iter Cτ：settings.user_name + persona_layer 称呼注入
 - 现状缺口：宠物没有第一类的"主人名字"概念。SOUL.md 默认「叫主人」、persona_layer 用「你」、proactive prompt 全程「ta / 用户」。即使 user_profile 里手动写了名字，那也是嵌在 description 里要 LLM 自己 search 才能用。"我的宠物认识我、能叫我名字"这种最基本的关系绑定 affordance 缺失。
 - 解法：加一个 settings 里的 `user_name` 字段，注入 persona_layer 顶部。
