@@ -986,6 +986,10 @@ async fn run_proactive_turn(
             )),
             None => String::new(),
         };
+    // Iter R19: length-register variance nudge. Reuses the same recent_speeches
+    // binding as speech_hint + repeated_topic_hint — three layers of insight
+    // (bullet list / topic ngram / length distribution) from one fetch.
+    let length_register_hint = crate::speech_history::format_speech_length_hint(&recent_speeches);
 
     // Surface the user's active Focus mode (if any) so the pet can speak around it. This
     // path normally only runs when the user has unset `respect_focus_mode` — otherwise the
@@ -1151,6 +1155,7 @@ async fn run_proactive_turn(
         cross_day_hint: &cross_day_hint,
         active_app_hint: &active_app_hint,
         yesterday_recap_hint: &yesterday_recap_hint,
+        length_register_hint: &length_register_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -1648,6 +1653,7 @@ mod prompt_tests {
             // exercising the first-of-day continuity layer set this explicitly.
             cross_day_hint: "",
             yesterday_recap_hint: "",
+            length_register_hint: "",
             // Default empty — pre-Iter R15 state, no active-app duration tracker.
             active_app_hint: "",
         }

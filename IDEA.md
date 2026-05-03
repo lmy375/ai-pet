@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R19 设计要点（已实现）
+- **register variance 是"像真人" 的关键 micro-cue**：内容多样性 (R11) + 时间分布 (R7 cooldown) + 长度多样性 (R19) 是三条独立的"机器化 vs 人化" 维度。三条任意一条单 register（同话题 / 同时间 / 同长度）都会让 pet 显得 robotic。R11 检测话题重复后，R19 是同一思路在 length 维度的延伸。**让 LLM 自己看到自己的统计** 是 prompt design 的强招 — 它不会自审 character distribution，但你给它"你最近 5 句平均 30 字" 的硬数字，它会调整。
+- **"全或无" 比"variance metric" 更稳**：诱惑是 std deviation < 5 chars → 单 register。但 5 个样本计 std dev 噪声极大，几个 outlier 就让阈值进进出出 thrash。"全部 ≥ 25 → 警告偏长，全部 ≤ 8 → 警告偏短，混合 → 不警告" 是简单 gate，不会因边界 case 在两次 tick 间反复 fire。**判定函数应该有 hysteresis**，全或无天然有 — 一旦混合就立刻安静，不会摇摆。
+- **`chars().count()` vs `len()` 是低级 bug 高发区**：Rust `String::len()` 返字节数，UTF-8 中文 1 字 = 3 字节。`"今"`.len() = 3，`"今"`.chars().count() = 1。用 len() 写 char threshold 会让中文都被误判超长。R19 显式 chars().count() + 专门 test 钉住中文不 misjudge。**所有"字符数"逻辑应当 chars().count()**，这是 Rust 写 i18n 代码的硬性纪律。
+- **Empty-line filter 在 percentile 之前**：log 文件 corruption 偶有 "<ts> <empty content>" 行（写入失败时 partial）。如果直接算 mean，empty (count=0) 会拉低均值导致"偏短" 误判。**清理脏数据是任何统计的预步**，R19 这点呼应 R11 的 "skip whitespace-bearing window" — 都是用 filter 在 stat 之前去噪。
+- **复用 fetch binding 是 R11 IDEA 写过的经济**：speech_hint + repeated_topic_hint + length_register_hint 三层都来自同一份 recent_speeches(5)。一次 fetch 三层洞察 — 避免 disk read 重复，避免 stale read（如果三层各自 fetch，理论上中间可能写入新一句导致两层看到不同窗口）。**单一 fetch + 多层 transform** 是 prompt building 的 cleanest pattern。
+- **静默兜底 = 不 over-corrective**：mixed register 不报警，让 pet 安静地做对的事。诱惑是"无论什么状态都给 LLM 一句反馈" — 但那会让 prompt 变成"教师反复点评学生"。**只在异常 deviation 时给信号**，正常状态留 LLM 自由发挥。这是 prompt budget 经济。
+- **25/8 char 阈值经验拍**：没有 systematic 数据 — 直觉判断"日常对话 5-30 字"。25 是"已经偏 essay" 的边界，8 是"已经偏 emoji" 的边界。可改 settings 但暂时不做 —— 用户反馈没有"length 不对" 之前先观察 default 行为。**避免 settings 膨胀** 也是产品成熟度的体现：每多一个旋钮就多一份"用户该 / 不该调"的认知负担。
+
 ## Iter R18 设计要点（已实现）
 - **"等到第 N 次再抽象" 比"看到 2 次就抽象" 健康得多**：R16 IDEA 写下"当 helper 数到 6 时强制 refactor"。R17 把数字推到 7。R18 抽。**lazy abstraction** 的好处：(1) 让具体调用点先涌现各种变化（有的要 description、有的要 updated_at、有的要 trim、有的要 default），帮助你设计正确签名；(2) 避免给只用过 1-2 次的"抽象" 浪费命名/位置思考。premature abstraction = 选错位置 / 选错签名 / 选错命名概率高。看到 7 次同样模式时，签名设计已被实战验证过 — 抽出来一气呵成。
 - **返 cloned struct 比返单字段精简**：诱惑是 `fn read_ai_insights_description(title) -> Option<String>` — caller 主路径就是要 description。但 helper 要服 6 种 caller，其中 2 种要 updated_at。如果做"description 专用 helper"，updated_at caller 还得 inline 写老 boilerplate，refactor 不彻底。**helper 的 surface area 应该匹配 callers 的 superset**，不是匹配 majority caller。clone() 在这里是 cheap insurance — 字符串短 / 调用频率低 / 收益大。

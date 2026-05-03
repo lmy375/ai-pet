@@ -235,6 +235,58 @@ pub fn detect_repeated_topic(
     }
 }
 
+/// Iter R19: register-variance nudge — analyze recent speech char counts
+/// and surface a hint when the pet is stuck in one length register. Real
+/// friends mix terse "嘿" with longer reach-outs; if every recent line is
+/// either ≥ `LONG_CHAR_THRESHOLD` chars or ≤ `SHORT_CHAR_THRESHOLD` chars,
+/// the LLM gets a one-line nudge to break the pattern.
+///
+/// Empty string when:
+/// - fewer than `MIN_SAMPLES` lines (not enough signal — early sessions)
+/// - mixed register (some short, some long — already varying)
+///
+/// Char counting uses `chars().count()`, not `len()`, so 1 汉字 = 1 char.
+/// Otherwise 30-char Chinese line would register as 90-byte "very long"
+/// when it's actually conversational length.
+pub const SPEECH_LENGTH_MIN_SAMPLES: usize = 3;
+pub const SPEECH_LENGTH_LONG_THRESHOLD: usize = 25;
+pub const SPEECH_LENGTH_SHORT_THRESHOLD: usize = 8;
+
+pub fn format_speech_length_hint(lines: &[String]) -> String {
+    if lines.len() < SPEECH_LENGTH_MIN_SAMPLES {
+        return String::new();
+    }
+    let counts: Vec<usize> = lines
+        .iter()
+        .map(|raw| strip_timestamp(raw).chars().count())
+        .collect();
+    // Empty stripped lines (parse failures or genuinely empty entries) drag
+    // the mean toward 0 in misleading ways. Filter them; if too few left,
+    // bail out.
+    let nonzero: Vec<usize> = counts.iter().copied().filter(|&n| n > 0).collect();
+    if nonzero.len() < SPEECH_LENGTH_MIN_SAMPLES {
+        return String::new();
+    }
+    let mean = nonzero.iter().sum::<usize>() / nonzero.len();
+    let all_long = nonzero.iter().all(|&n| n >= SPEECH_LENGTH_LONG_THRESHOLD);
+    let all_short = nonzero.iter().all(|&n| n <= SPEECH_LENGTH_SHORT_THRESHOLD);
+    if all_long {
+        format!(
+            "你最近 {} 句开口都偏长（平均 {} 字），这次试更短的关心 — 一句话甚至几个字也行。",
+            nonzero.len(),
+            mean
+        )
+    } else if all_short {
+        format!(
+            "你最近 {} 句开口都偏短（平均 {} 字），这次可以多花两句关心一下细节。",
+            nonzero.len(),
+            mean
+        )
+    } else {
+        String::new()
+    }
+}
+
 /// Tauri command exposing the most recent N speech entries to the panel UI. Each entry
 /// is the raw "<ts> <text>" line — the frontend strips the timestamp itself for display
 /// flexibility (could show as relative time later). Default n=10 if not supplied.
@@ -736,5 +788,103 @@ mod tests {
         let content = ts_line("2026-05-03", "10:00:00", "今天的话");
         // Looking for yesterday — no match.
         assert!(speeches_for_date(&content, nd(2026, 5, 2), 5).is_empty());
+    }
+
+    fn ts(text: &str) -> String {
+        format!("2026-05-04T12:00:00+08:00 {}", text)
+    }
+
+    #[test]
+    fn length_hint_returns_empty_below_min_samples() {
+        // R19: less than 3 samples = empty (not enough signal).
+        assert_eq!(format_speech_length_hint(&[]), "");
+        assert_eq!(
+            format_speech_length_hint(&[ts("早上好啊好朋友今天怎么样")]),
+            ""
+        );
+        assert_eq!(
+            format_speech_length_hint(&[
+                ts("早上好啊好朋友今天怎么样"),
+                ts("中午吃了吗最近忙不忙啊"),
+            ]),
+            ""
+        );
+    }
+
+    #[test]
+    fn length_hint_fires_when_all_long() {
+        // 3 lines all ≥ 25 chars → "偏长" hint.
+        let lines = vec![
+            ts("今天打算把那个超长的项目报告好好处理一下再放松休息吃饭"), // 27
+            ts("最近这几天看起来真忙的样子要不要停下来多喝几口水休息会儿"), // 28
+            ts("昨晚那本小说终于读完了我一直好奇结尾的反转给我讲讲嘛朋友"), // 28
+        ];
+        let hint = format_speech_length_hint(&lines);
+        assert!(hint.contains("偏长"), "got {}", hint);
+        assert!(hint.contains("更短"));
+    }
+
+    #[test]
+    fn length_hint_fires_when_all_short() {
+        // 3 lines all ≤ 8 chars → "偏短" hint.
+        let lines = vec![ts("嘿"), ts("在吗？"), ts("吃了吗？")];
+        let hint = format_speech_length_hint(&lines);
+        assert!(hint.contains("偏短"), "got {}", hint);
+        assert!(hint.contains("多花两句"));
+    }
+
+    #[test]
+    fn length_hint_returns_empty_for_mixed_register() {
+        // Mixed: 1 short + 2 long → already varying, no nudge.
+        let lines = vec![
+            ts("嘿"),
+            ts("今天打算把那个超长的项目报告好好处理一下再放松休息吃饭"),
+            ts("昨晚那本小说终于读完了我一直好奇结尾的反转给我讲讲嘛朋友"),
+        ];
+        assert_eq!(format_speech_length_hint(&lines), "");
+    }
+
+    #[test]
+    fn length_hint_handles_chinese_correctly() {
+        // 30 chars 中文 should register as 30 (chars().count()), not 90 (bytes).
+        let line_30_chars = "一二三四五六七八九十十一十二十三十四十五十六十七十八十九二十二十一二十二二十三二十四二十五";
+        let lines = vec![ts(line_30_chars), ts(line_30_chars), ts(line_30_chars)];
+        let hint = format_speech_length_hint(&lines);
+        assert!(hint.contains("偏长"));
+    }
+
+    #[test]
+    fn length_hint_skips_empty_lines() {
+        // Empty stripped lines shouldn't drag mean to 0 / register as "短".
+        let lines = vec![
+            ts(""),
+            ts("今天打算把那个超长的项目报告好好处理一下再放松休息吃饭"),
+            ts("昨晚那本小说终于读完了我一直好奇结尾的反转给我讲讲嘛朋友"),
+            ts("最近这几天看起来真忙的样子要不要停下来多喝几口水休息会儿"),
+        ];
+        // 1 empty + 3 long → 3 nonzero ≥ min_samples, all long → 偏长
+        let hint = format_speech_length_hint(&lines);
+        assert!(hint.contains("偏长"), "got {}", hint);
+    }
+
+    #[test]
+    fn length_hint_returns_empty_when_too_few_nonzero() {
+        // 4 lines but 2 are empty → only 2 nonzero, below threshold.
+        let lines = vec![
+            ts(""),
+            ts(""),
+            ts("今天打算把那个超长的项目报告好好处理一下再放松休息吃饭"),
+            ts("最近这几天看起来真忙的样子要不要停下来多喝几口水休息会儿"),
+        ];
+        assert_eq!(format_speech_length_hint(&lines), "");
+    }
+
+    #[test]
+    fn length_hint_includes_sample_count_and_mean() {
+        let lines = vec![ts("嘿"), ts("好的"), ts("好啊")];
+        let hint = format_speech_length_hint(&lines);
+        // mean = (1 + 2 + 2) / 3 = 1
+        assert!(hint.contains("3 句"));
+        assert!(hint.contains("平均"));
     }
 }
