@@ -149,6 +149,8 @@ pub fn run() {
             mood::get_current_mood,
             mood_history::get_mood_trend_hint,
             proactive::get_tone_snapshot,
+            proactive::set_mute_minutes,
+            proactive::get_mute_until,
             proactive::get_pending_reminders,
             consolidate::trigger_consolidate,
             proactive::trigger_proactive_turn,

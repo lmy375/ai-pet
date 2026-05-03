@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   onSend: (message: string) => void;
@@ -49,6 +50,28 @@ const PANEL_STYLES = `
 export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Iter R52: 🔇 mute button cycles through quick presets. Polls
+  // get_mute_until on click so display reflects backend truth (not stale
+  // local state). Cycle: not muted → 30 min → 60 min → cleared. Each
+  // click invokes set_mute_minutes; backend returns ISO timestamp or
+  // empty string for "cleared".
+  const [muted, setMuted] = useState(false);
+  useEffect(() => {
+    // Initial probe so the button starts in correct state on mount.
+    invoke<string>("get_mute_until")
+      .then((iso) => setMuted(iso !== ""))
+      .catch(() => setMuted(false));
+  }, []);
+  const handleMuteClick = async () => {
+    try {
+      // Toggle: if currently muted → clear; else set 30 min.
+      const minutes = muted ? 0 : 30;
+      const result = await invoke<string>("set_mute_minutes", { minutes });
+      setMuted(result !== "");
+    } catch (e) {
+      console.error("set_mute_minutes failed:", e);
+    }
+  };
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -110,6 +133,33 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
             transition: "border-color 150ms ease-out, box-shadow 150ms ease-out",
           }}
         />
+        {/* Iter R52: 🔇 mute toggle button between textarea and ⚙. Click
+            to mute pet for 30 min (skips proactive gate); click again to
+            unmute. Visible state via emoji + opacity (muted = 1.0 + red
+            tint; unmuted = 0.7 + neutral). */}
+        <div
+          className="pet-settings-btn"
+          onClick={handleMuteClick}
+          style={{
+            width: "36px",
+            height: "36px",
+            borderRadius: "50%",
+            background: muted ? "rgba(220,38,38,0.9)" : "rgba(255,255,255,0.9)",
+            backdropFilter: "blur(8px)",
+            border: muted ? "1px solid rgba(220,38,38,0.5)" : "1px solid rgba(200,200,200,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            fontSize: "15px",
+            flexShrink: 0,
+            boxSizing: "border-box",
+            color: muted ? "#fff" : "inherit",
+          }}
+          title={muted ? "宠物已静音 30 分钟 — 点击解除" : "静音宠物 30 分钟（仅跳过 proactive，reactive chat 不影响）"}
+        >
+          🔇
+        </div>
         {/* Iter R48: AI-thinking pulsing dots when isLoading. Sits between
             textarea and ⚙ button so it doesn't fight either's space. */}
         {isLoading && (

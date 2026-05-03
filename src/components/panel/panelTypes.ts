@@ -142,6 +142,10 @@ export interface ToneSnapshot {
   // Dismissed in a row). 0 = last feedback was Replied (or empty log).
   // Chip fires at ≥3 matching prompt-side threshold.
   consecutive_negative_streak: number;
+  // Iter R52: transient mute remaining seconds. null when not muted.
+  // Chip fires whenever > 0 (no threshold — every active mute is worth
+  // surfacing).
+  mute_remaining_seconds: number | null;
 }
 
 /**

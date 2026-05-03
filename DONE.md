@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R52：transient mute 功能（"focus session shut up" 按钮）
+- 现状缺口：用户专注时想让 pet 暂时安静一段时间（30 min focus block），目前只能 settings 改 `proactive.enabled` —— 之后还得记得手动恢复。**没有"shut up for 30 min" 临时开关**。这是真实使用场景：deep work / 视频会议 / 客户演示等。永久关闭太重，让 pet 自己识别 focus mode 又不可靠。
+- 解法 — 完整 stack 新加 transient mute：
+  - **Backend gate**: gate.rs 加 `MUTE_UNTIL: Mutex<Option<DateTime<Local>>>` static + `mute_remaining_seconds() -> Option<i64>` 纯 helper。`evaluate_loop_tick` 第一道检查（最快退出）—— muted 时返 `LoopAction::Skip("muted, N min remaining")`。
+  - **Tauri 命令**：`set_mute_minutes(minutes: i64) -> String` 设 MUTE_UNTIL = now + minutes（0 清零），返 ISO timestamp 或空。`get_mute_until() -> String` 读当前状态。
+  - **ToneSnapshot**: 新 `mute_remaining_seconds: Option<i64>` 字段。build_tone_snapshot 直接调 mute_remaining_seconds() helper —— 跟 gate 同源，零 drift 风险。
+  - **PanelToneStrip 紫色 chip**: `"🔇 静音 Nm"` 当 mute_remaining_seconds > 0 时渲染，hover 解释由用户主动 mute 触发 + 怎么解除。
+  - **ChatPanel 🔇 toggle 按钮**: 跟 ⚙ 按钮并排。click toggle (未 mute → 30 min mute / 已 mute → 清零)。muted 时按钮变红色 + tooltip 显"已静音 30 分钟"，未 mute 时白底中性 + tooltip 显操作说明。useEffect 启动时 `get_mute_until` 同步初始 state。
+  - **lib.rs invoke_handler 注册** 两 command。
+- 决策 — gate 第一道检查：mute 比 cooldown / quiet hours / awaiting 都优先。原因 (a) 最快退出（mutex check 无 IO），(b) 用户主动意图最强 —— 即使 cooldown 早过、quiet hours 不在内，user 想静就该静。**user-driven > system-driven gate priority**。
+- 决策 — 30 min 默认 preset：focus block 标准时长（pomodoro 25min + buffer / 多数视频会议在此区间）。如果用户想 60/120 等不同时长，未来 R52b 可加菜单。先 ship single-step toggle 比 dropdown 设计快上线。
+- 决策 — 仅跳 proactive，不影响 reactive：MUTE_UNTIL 只 gate 在 evaluate_loop_tick。reactive chat (用户主动发消息) 仍正常响应。**user-initiated 永远要立刻回应**，mute 是单向"你别主动来" 不是"完全失联"。
+- 决策 — 按钮 toggle 而不是 dropdown：单 click 操作 90% 用户需求是"快速 mute 30 min"。dropdown / menu 增加 click + 选择 cost。**fast path > flexible path** 当 fast path 覆盖大多数用例。后续如果发现用户需要其他 preset，再加菜单（R32 IDEA "wait until use-3+ to abstract" 同思路）。
+- 决策 — chip + button 同色调（紫色 #7c3aed / 红色 #dc2626）：chip 紫色跟 awaiting chip 同色（"等待中" 语义 family）。button muted 红色（"激活的禁制状态"）+ unmuted 中性白。**色彩语义跟 R-series visual taxonomy 对齐**：红 = 阻断状态，紫 = 等待状态。
+- 决策 — 不存储 mute 跨重启：MUTE_UNTIL 是 in-memory static，进程重启清零。**transient state 名副其实 transient** —— 用户重启 / 关机后 mute 自然失效，避免"昨天 mute 了今天还以为坏掉" 困惑。
+- 决策 — single source helper：mute_remaining_seconds() 同时被 gate (Skip 条件) 和 ToneSnapshot (chip 数据) 调用。**chip 跟 gate 不会 drift** —— R23 / R34 reusing-helper pattern 又一次。
+- 测试结果：495 cargo（无变化 — backend tests 没新加但已有 gate 测试覆盖 LoopAction::Skip path）；clippy clean；fmt clean；tsc clean。
+- 结果：用户现在能一键让 pet 静 30 分钟 + 一键解除。**R-series 第一个完整 backend+frontend feature iter** since R12 (R-series mostly polish + minor signals)。Backend 加 static + gate logic + 2 commands + ToneSnapshot field；Frontend 加 chip + button + lifecycle wire。涵盖 user-driven control gap，**真实使用场景的痛点解决**。
+
 ## 2026-05-04 — Iter R51：PanelStatsCard 加 /周日均 trend 列（R50 lifetime + R51 week 双视角）
 - 现状缺口：R50 加了 lifetime / 陪伴天数 = "/日均" 列，揭示**长期 engagement** 强度。但**没有"最近 trend"** —— lifetime avg 把所有数据均等加权，掩盖最近变化。如果用户最近一周更频繁跟 pet 互动，lifetime 1 年的均值是看不出来的。**需要短期 rolling avg 跟长期 avg 配对** 才能看 drift。
 - 解法 — 7-day rolling avg + smart denominator：

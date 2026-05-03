@@ -168,6 +168,31 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           🤐 沉默 ×{tone.consecutive_silent_streak}
         </span>
       )}
+      {tone.mute_remaining_seconds !== null && tone.mute_remaining_seconds > 0 && (() => {
+        // Iter R52: transient mute chip. User explicitly muted pet for a
+        // session via the 🔇 button in ChatPanel; chip surfaces "still
+        // muted, M minutes left" so user doesn't forget.
+        const secs = tone.mute_remaining_seconds;
+        const mins = Math.floor(secs / 60);
+        const remainder = secs % 60;
+        const display = mins > 0
+          ? (remainder > 30 ? `${mins + 1}m` : `${mins}m`)
+          : `${secs}s`;
+        return (
+          <span
+            title={`用户主动 mute 了 pet（剩 ${secs} 秒）— 期间所有 proactive turn 都被 R52 gate 跳过。点 chat 区域的 🔇 按钮可解除。`}
+            style={{
+              color: "#fff",
+              background: "#7c3aed",
+              padding: "1px 8px",
+              borderRadius: "10px",
+              fontWeight: 600,
+            }}
+          >
+            🔇 静音 {display}
+          </span>
+        );
+      })()}
       {tone.consecutive_negative_streak >= 3 && (
         <span
           title={`用户连续 ${tone.consecutive_negative_streak} 次没回应或主动点掉 pet 的开口（trailing-negative streak ≥ 3）— R35 prompt nudge 已 fire 提醒换角度或沉默。下次 Replied 自动清零。`}
