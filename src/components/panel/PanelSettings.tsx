@@ -33,7 +33,7 @@ export function PanelSettings() {
     api_key: "",
     model: "",
     mcp_servers: {},
-    telegram: { bot_token: "", allowed_username: "", enabled: false },
+    telegram: { bot_token: "", allowed_username: "", enabled: false, persona_layer_enabled: true },
     proactive: {
       enabled: false,
       interval_seconds: 300,
@@ -455,6 +455,26 @@ export function PanelSettings() {
           style={{ ...inputStyle, fontFamily: "monospace", fontSize: "12px" }}
           placeholder="@username (留空则允许所有人)"
         />
+
+        <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: "6px", marginTop: "8px" }}>
+          <input
+            type="checkbox"
+            checked={form.telegram?.persona_layer_enabled ?? true}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                telegram: {
+                  ...form.telegram,
+                  enabled: form.telegram?.enabled ?? false,
+                  bot_token: form.telegram?.bot_token ?? "",
+                  allowed_username: form.telegram?.allowed_username ?? "",
+                  persona_layer_enabled: e.target.checked,
+                },
+              })
+            }
+          />
+          注入长期人格层（陪伴天数 + 自我画像 + 心情谱）
+        </label>
       </div>
 
       {/* Proactive */}

@@ -15,6 +15,7 @@ export interface TelegramConfig {
   bot_token: string;
   allowed_username: string;
   enabled: boolean;
+  persona_layer_enabled: boolean;
 }
 
 export interface ProactiveConfig {
@@ -59,7 +60,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_key: "",
   model: "gpt-4o-mini",
   mcp_servers: {},
-  telegram: { bot_token: "", allowed_username: "", enabled: false },
+  telegram: { bot_token: "", allowed_username: "", enabled: false, persona_layer_enabled: true },
   proactive: {
     enabled: false,
     interval_seconds: 300,
