@@ -10,8 +10,6 @@
 在一起；其余路线作为辅助优先级。
 
 ### 路线 A：长期人格演化（首要）
-- [ ] Iter 101：把"陪伴天数"作为 prompt input——首次启动写 ~/.config/pet/install_date.txt，
-  每次 proactive prompt 加一句"你和用户一起走过 N 天"。最小步骤但是路线 A 的入口。
 - [ ] Iter 102：speech_history 中的 50 行截取改为 LLM 自己生成"性格摘要"：每日 consolidate
   时让 LLM 读最近 50 句自己的话 + user_profile，写一段 ~100 字的"我观察到自己的语气
   / 与用户互动的特点"到 ai_insights/persona_summary.md。下次 proactive 把它注进 prompt。
