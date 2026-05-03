@@ -149,6 +149,9 @@ export interface ToneSnapshot {
   // Iter R55: transient instruction note text. null when no active note.
   // Different from mute — note adds context, doesn't block.
   transient_note: string | null;
+  // Iter R56: remaining seconds for transient note — symmetric with
+  // mute_remaining_seconds. Used for chip / button countdown display.
+  transient_note_remaining_seconds: number | null;
 }
 
 /**
