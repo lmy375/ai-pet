@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cπ 设计要点（已实现）
+- **`[error]` description 约定，不引入新文件**：曾考虑加 `butler_errors.log`（类似 butler_history 但只记错误）。但那要：(a) 决定哪一层捕获错误（chat pipeline 太晚 / tool 层太杂 / proactive turn 后扫描 history 不准）、(b) 持久化模型一致问题、(c) 又一种文件用户搞不清。description 字段约定路径最低成本——LLM 自己负责写、prompt 教会、parse 一处、UI 一处，all done in 一 iter。
+- **不动 butler_history.log**：error 不是事件流，是状态。如果一个任务失败 5 次成功 1 次，butler_history 看到的还是最近一次 update（成功），description 里 error 被 LLM 移除。这种"状态而非事件"的建模更接近 user 心智："这个任务现在卡着吗？"答 yes/no，不需要看历史滚动。
+- **substring `[error` 而不是 `[error:`**：LLM 写法不稳——可能写 `[error: x]` / `[error :x]` / `[error]`。锁死 `[error:` 会漏匹配。子串 `[error` 不会和正常文本误碰（"error" 单词出现是常态，但前面跟 `[` 几乎只可能是 marker）。
+- **marker 顺序：错误前 / 到期后**：`❌ 错误 · ⏰ 到期 · title` vs 反向。两者都急但错误更要求人为判断（要不要重试 / 要不要改任务），到期更程序化（自动会下一次 proactive 选中）。读 chip 顺序时人脑先关注最需要决策的——错误。
+- **header 走 4 路 match**：原来 due_count > 0 / == 0 二路，现在 (0,0) / (d,0) / (0,e) / (d,e) 四路。如果以后再加状态（比如"这次跳过"或"暂停"），可能要重构成 builder——先保持 explicit match，模式不复杂。
+- **后端 footer + 前端 chip 双轨**：footer 教 LLM 怎么打标，chip 给用户视觉反馈。两者协议一致（都看 `[error`），但靠不同代码实现——后端 has_butler_error / 前端 parseButlerError——是 Cθ 同样的 view-time mirror 模式。
+- **chip 颜色比 ⏰ 软**：`#fef2f2` 背景 + `#991b1b` 文字。⏰ 到期是 `#fee2e2` + `#b91c1c`。两个红区分明显但不刺眼——错误是"该看一眼"不是"立刻动作"，到期是"程序自动会动手"。视觉权重对称。
+- **不向 TOOL_USAGE_PROMPT 增 error 段**：reactive chat 路径里 LLM 几乎不执行 butler 任务（它们大多在 proactive 时被触发）；让 reactive 也学这个 marker 反而会污染普通对话。proactive prompt 里 footer 已经教得很清楚，单点教学。
+
 ## Iter Cο 设计要点（已实现）
 - **新 Tauri 命令而不是复用 tone_snapshot**：tone_snapshot 已经返回 `mood_text` 和 `mood_motion`。Panel Persona 是不是直接 invoke 这个就行？反对：(a) tone_snapshot 是 debug 用大杂烩（10+ 字段），加载慢；(b) Persona 只需要 mood，多拉数据浪费；(c) tone_snapshot 是面向 prompt builder 的视角（per-tick fresh），Persona 可以 5 秒拉，是不同节奏。新命令小、目标明确、独立缓存友好。
 - **`raw` 字段也返回**：本来 text + motion 就够。但加上 raw 可以让前端在"motion 解析失败但 raw 有内容"时仍能展示原始字符串——LLM 偶尔写不规范，raw 是 fallback。这种"暴露原始 + 派生"的 API 模式让前端能 graceful degrade。

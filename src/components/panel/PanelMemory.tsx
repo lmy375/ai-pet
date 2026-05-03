@@ -175,6 +175,24 @@ export function PanelMemory() {
     return Math.floor((now.getTime() - fire.getTime()) / 60_000);
   };
 
+  // Iter Cπ: TS mirror of Rust's `has_butler_error`. Marker is "[error" anywhere
+  // in description — LLM prepends `[error: brief reason]` after a tool failure
+  // during execution. Substring check matches case-sensitively to keep parity
+  // with Rust side. Returns `(hasError, reason)` where reason is the body of
+  // `[error: <body>]`, or empty string when format is just `[error]`.
+  const parseButlerError = (desc: string): { hasError: boolean; reason: string } => {
+    const idx = desc.indexOf("[error");
+    if (idx < 0) return { hasError: false, reason: "" };
+    // Look for the closing bracket of the [error...] block; if missing, still
+    // treat as errored (we trust the LLM wrote a marker even if malformed).
+    const end = desc.indexOf("]", idx);
+    if (end < 0) return { hasError: true, reason: "" };
+    const inner = desc.slice(idx + "[error".length, end);
+    // Strip leading colon + whitespace to get the human reason.
+    const reason = inner.replace(/^[:\s]+/, "").trim();
+    return { hasError: true, reason };
+  };
+
   const formatOverdue = (mins: number): string => {
     if (mins < 60) return `等了 ${mins}m`;
     const h = Math.floor(mins / 60);
@@ -629,6 +647,10 @@ export function PanelMemory() {
                   parsed && item.updated_at
                     ? isButlerDue(parsed.schedule, item.updated_at, new Date())
                     : false;
+                const errInfo =
+                  catKey === "butler_tasks"
+                    ? parseButlerError(item.description)
+                    : { hasError: false, reason: "" };
                 const scheduleLabel = parsed
                   ? parsed.schedule.kind === "every"
                     ? `每天 ${String(parsed.schedule.hour).padStart(2, "0")}:${String(
@@ -641,10 +663,15 @@ export function PanelMemory() {
                         parsed.schedule.hour,
                       ).padStart(2, "0")}:${String(parsed.schedule.minute).padStart(2, "0")}`
                   : null;
-                // Strip the schedule prefix from the displayed description so the
-                // chip carries that information without the user having to read
-                // the raw bracket notation in two places.
-                const displayDesc = parsed ? parsed.topic : item.description;
+                // Strip schedule prefix + [error: ...] block from displayed
+                // description — chips already surface both, no need to repeat
+                // the raw bracket notation in the body.
+                const stripErrorBlock = (s: string): string =>
+                  s.replace(/\[error[^\]]*\]\s*/i, "");
+                const displayDesc = (() => {
+                  const base = parsed ? parsed.topic : item.description;
+                  return errInfo.hasError ? stripErrorBlock(base).trim() : base;
+                })();
                 return (
                   <div key={i} style={s.item}>
                     <div
@@ -673,6 +700,26 @@ export function PanelMemory() {
                             }
                           >
                             {parsed!.schedule.kind === "every" ? "🔁" : "📅"} {scheduleLabel}
+                          </span>
+                        )}
+                        {errInfo.hasError && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              background: "#fef2f2",
+                              color: "#991b1b",
+                              fontWeight: 600,
+                              border: "1px solid #fecaca",
+                            }}
+                            title={
+                              errInfo.reason
+                                ? `上次执行失败：${errInfo.reason}`
+                                : "上次执行失败（LLM 没填具体原因）。检查 description 决定要不要重试。"
+                            }
+                          >
+                            ❌ 失败{errInfo.reason ? `：${errInfo.reason.slice(0, 30)}` : ""}
                           </span>
                         )}
                         {due && (

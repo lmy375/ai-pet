@@ -30,9 +30,9 @@
 - [x] Iter Cκ：butler_tasks "等了 Nh" 过期指示 + 一键"立即处理"逃生口（2026-05-03 完成）
 - [x] Iter Cλ：completed `[once]` butler_tasks 自动清理（48h grace）+ settings 配置项
   （2026-05-03 完成）
-- 路线 F 收官——基础闭环已成（委托 reactive/panel → 调度 → 执行 → 留痕 → 日总结 →
-  实时仪表盘 → 过期透明度 + 手动绕 gate）。后续 Iter 看实际使用数据再决定加什么
-  （执行失败回退 / 任务依赖 / 监督模式 etc）。
+- [x] Iter Cπ：butler_tasks 执行失败回退 — `[error: 原因]` description 标记 + 红 chip
+  （2026-05-03 完成）
+- 路线 F 真闭环。后续看使用数据再加（任务依赖 / 监督模式 / batch 操作 etc）。
 
 ### 路线 A：长期人格演化（Iter 101-107 全部完成，路线 A 真正收官）
 
