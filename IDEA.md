@@ -30,6 +30,17 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter Cx 设计要点（已实现）— 路线 C 起步：本地 redaction
+- **substring 而非 regex**：用户场景是"我不想让宠物把 Slack DM 对方名字传给 LLM"——典型输入是公司名 / 客户名 / 项目代号这类硬字符串。regex 会带来 ReDoS 风险 + 用户得学语法 + 编辑器里写正则容易出错。明确选 substring：用户列出固定词，命中即替换。
+- **case-insensitive 默认**：用户输入"slack"应该也匹配"Slack"——大部分情况这是预期。如果有人想严格 case，未来可以加一个"严格大小写" toggle。当前 case-folding 通过 `to_lowercase` 镜像扫描实现，O(n*m) 但 m 很小（10-20 个 patterns × 短字符串），可忽略。
+- **`(私人)` 中文标记而非 `[REDACTED]`**：界面默认中文，用户读 panel 日志看到 `(私人)` 比 `REDACTED` 友好。LLM 也能理解"this is a redacted personal item, the user chose not to share details"。
+- **空 / 空格 patterns 跳过**：用户在 textarea 里多按一下回车留空行不该让所有内容被替换为空（"".replace 会无限循环或匹配全字符）。一行 trim 后空就 skip——textarea 输入容错关键。
+- **UTF-8 boundary 推进**：传统 `text.replace` 也工作但没法做 case-insensitive UTF-8。手写扫描时小心 `is_char_boundary` 才不切坏中文字符。emoji safety 测试是关键防线。
+- **每次调用读 settings**：`crate::commands::settings::get_settings()` 在每次 tool 调用时读一次。简单且即时生效——用户改 patterns 立刻下次工具调用就用新设置。但 IO 开销小（settings.toml 几 KB），不优化。
+- **path 选 active_window + calendar 不选 weather**：weather city 名是用户故意公开的（在 settings 里配置），不是泄漏；title / window_title / event_title 才是隐私敏感的环境读数。范围明确而非"全部 redact"。
+- **替换发生在工具结果，不是 prompt 末尾**：在工具产出 JSON 前过滤——LLM 既看不到原文也无法推断，且工具 cache（Iter 28）也存的是 redacted 版本，避免一次缓存命中 leak 全部历史。语义干净。
+- **路线 C 起步而非全做**：仅 substring 模式，未来可加 regex / glob / 正则模式 / "all caps automatic redaction" 等。本 iter 选最简单的 substring，覆盖 80% 场景。
+
 ## Iter 105 设计要点（已实现）— Persona panel tab
 - **三个 section 一对一映射 prompt 三层**：陪伴时长（companionship_days）/ 自我画像（persona_summary）/ 心情谱（mood_trend）—— UI 结构镜像 prompt 注入的三层结构。用户看到的"宠物当前画像"和 LLM 看到的"长期身份背景"是同一份数据的两种 surface，只是给人 vs 给模型。
 - **复用 prompt 用的 mood_trend_hint 格式 vs 单独画图**：本可以让 panel 把 mood 计数变成柱状图。但选 plain text trend hint 让 panel 显示的就是"LLM 实际读到的那段话"——零 surprise，用户看 panel = 看 prompt 真相。chart 反而是另一种 view，需要解释。

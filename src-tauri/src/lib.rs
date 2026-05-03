@@ -10,6 +10,7 @@ mod log_rotation;
 mod mcp;
 mod mood;
 mod mood_history;
+mod redaction;
 mod proactive;
 mod speech_history;
 mod telegram;

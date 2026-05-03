@@ -55,6 +55,9 @@ export function PanelSettings() {
     chat: {
       max_context_messages: 50,
     },
+    privacy: {
+      redaction_patterns: [],
+    },
   });
   const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -653,6 +656,35 @@ export function PanelSettings() {
         </div>
         <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
           桌面 chat 和 Telegram 都按此上限裁剪。前端仍展示全部消息，仅发给 LLM 时裁。
+        </div>
+      </div>
+
+      {/* Privacy redaction */}
+      <div style={sectionStyle}>
+        <h4 style={sectionTitle}>隐私过滤</h4>
+        <label style={labelStyle}>
+          要从环境工具结果里隐去的关键词（一行一个，大小写不敏感；匹配位置替换为 `(私人)`）
+        </label>
+        <textarea
+          value={(form.privacy?.redaction_patterns ?? []).join("\n")}
+          onChange={(e) =>
+            setForm({
+              ...form,
+              privacy: {
+                redaction_patterns: e.target.value
+                  .split("\n")
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0),
+              },
+            })
+          }
+          rows={4}
+          style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px" }}
+          placeholder={"Slack\n某客户公司名\n项目代号"}
+        />
+        <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
+          应用于 `get_active_window`（app + 标题）和 `get_upcoming_events`（标题 + 地点）。
+          每次工具调用时实时套用，留空则不过滤。修改即时生效（下一次工具调用读最新设置）。
         </div>
       </div>
 

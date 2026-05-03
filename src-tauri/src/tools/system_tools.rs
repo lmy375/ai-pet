@@ -76,6 +76,15 @@ end tell
         None => (raw.clone(), String::new()),
     };
 
+    // Iter Cx: apply user-configured privacy redaction before either logging or
+    // returning to the LLM. Both `app` and `window_title` can contain personal
+    // names / project codenames; user lists patterns in settings.privacy.
+    let patterns = crate::commands::settings::get_settings()
+        .map(|s| s.privacy.redaction_patterns.clone())
+        .unwrap_or_default();
+    let app_name = crate::redaction::redact_text(&app_name, &patterns);
+    let window_title = crate::redaction::redact_text(&window_title, &patterns);
+
     ctx.log(&format!(
         "get_active_window: app={:?} window={:?}",
         app_name, window_title

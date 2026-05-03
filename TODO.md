@@ -18,8 +18,12 @@
 ### 路线 C：隐私 filter
 - [ ] Iter 12b：实机跑一次 proactive 看 LLM 是否守 `[motion: X]` 格式，配合 Iter 40 的
   Tag 统计观察实际命中率，决定是否要再加强 prompt。
-- [ ] Iter Cx：在 prompt 构造层加可配置的 redaction（如 active_window 标题里某些 app
-  名 / calendar event 关键词被替换为 "(私人)"）。settings 暴露 redaction patterns。
+- [ ] Iter Cy：把 redaction 也接入 speech_history（宠物自己说过的话也可能含私人信息），
+  以及 `inject_mood_note` 的 mood 文本——避免 self-loop 把私人信息写进 prompt 的其他
+  通道。当前只覆盖 active_window + calendar 两个工具入口。
+- [ ] Iter Cz：redaction patterns 加 regex 模式（settings.privacy.regex_patterns），让用户
+  能匹配如 `\b\d{4}-\d{4}-\d{4}-\d{4}\b`（信用卡）/ 邮件地址等结构化敏感信息。当前
+  substring 模式只能 match 固定词。需注意 ReDoS 防御。
 
 ### 路线 D：记忆 surface
 - [ ] Iter Dx：panel 加 Memory tab（已有 PanelMemory.tsx，需要从 yaml 索引展开成可读 UI），
