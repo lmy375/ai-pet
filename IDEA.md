@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R28 设计要点（已实现）
+- **hover details → at-a-glance surface 是 incremental upgrade pattern**：第一次 surface 一个新信号通常用 hover/tooltip 包住所有细节（容易写、不抢视觉）。第二次升级把"哪部分信息有价值前推到 chip 颜色 / 字重 / 文案"。R23 是第一次（hover breakdown），R28 是第二次（chip color band）。**这种 incremental discovery 让"什么细节值得前推" 来自实际用户经验，而不是预先想象**。新 chip 上线先 hover-only 是合理的。
+- **变化的色彩才有信号意义**：cyan 保 default 是有意识的。如果三 band 都变色（cyan / green / amber → red / blue / yellow），baseline 状态消失，每个状态都被 visually elevated 等于没人被 elevate。**保留一种"安静默认"色让 user 知道"现在没事"**。这是 neutral-as-baseline 设计。
+- **multi-cue 强化重要状态**：non-neutral band 不只换色还加 fontWeight。颜色 + 字重双重 anchor "adapter 在干预" 这个状态。**多重感官信号叠加** 比单一信号更难被忽视，但要克制 — 太多 cue 让 chip 像 emergency。R28 选 2 种（color + weight）刚好。
+- **R27 codified rule（band derive at view edge）继续 paying off**：R28 完全没碰 backend，前端读 cooldown_breakdown.feedback_band 直接 mapping 颜色。如果 R23 时把 band 计算放在 backend 还塞 chip_color 字段，R28 就成了 backend 改色 + frontend 读色 —— 不必要的耦合。**view-layer derive primitive value into visual encoding** 让前后端各司其职。
+- **不让 user 配置 chip 颜色是 settings 经济**：理论上 user 可以喜欢"我希望 high_negative 是红色"。但 (a) 大多数用户不在乎 (b) 默认对绝大多数用户合适 (c) 多一个 setting 是认知负担。**让 settings page 简洁** > **让每处颜色可调**。
+- **R-series 的 surface 升级是 long compounding**：R10 first chip → R23 hover breakdown → R28 chip color。同一 signal 三轮 surface upgrade，每轮信息密度递增、user 视觉成本递减。**长系列的真正价值在累积**，不在单次创新。
+- **小 iter 也要有教益**：纯样式改动易被视为"装饰"，但 R28 IDEA 提到的"variable color = signal" / "neutral baseline" / "multi-cue concert" 都是可复用 panel design 原则。**抽 IDEA 即使从小 iter 也能提炼通用洞察** —— 让小事情变 codified rule 是 R-series 一直延续的 mode。
+
 ## Iter R27 设计要点（已实现）
 - **descriptive vs directive 的 prompt 升级路径**：R15 写 "用户在 X 已经 N 分钟"，是事实陈述。LLM 自己得 infer "所以我该闭嘴吗？"。R27 升级为 "...这次开口应当极简或选择沉默" 直接告诉 LLM 怎么做。**信号强度 dial**：低强度信号给事实，让 LLM 自己 judge；高强度信号给 directive，减 LLM 误判风险。Pet design 学问 — 哪些 case 值得 directive 升级，哪些保 descriptive 让 LLM 自由发挥。R27 的判断是 ≥60min = 高 stakes 不容犹豫，需要 directive。15-59min 还可酌情 → 留 descriptive。
 - **threshold 用人类时间单位锚**：60min = 2 pomodoro / 一个 deep-work block。这是用户**已经熟悉的时间单位**。任意拍数字（45 / 90）听上去差不多但 lacks anchor。**用 widely-shared mental unit 比经验拍数字更稳** — 用户 / 同伴模型 / 设计者三方对 60min 同样理解 "深度专注"。
