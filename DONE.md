@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R48：ChatPanel isLoading 思考 dots（ChatPanel cluster 第三 iter）
+- 现状缺口：用户在 ChatPanel 输入消息按 Enter，isLoading 翻 true，但**界面无任何变化**。textarea 看着一样、send 没视觉反馈、AI 思考中无任何提示。用户疑惑"我刚刚发出去了吗？" 直到 AI 回复 bubble 出现。这是 chat UI 标准 missing — industry 都有"AI thinking" 指示。
+- 解法 — staggered three-dot pulse animation：
+  - 新 `@keyframes pet-loading-dot-pulse`：opacity 0.25 ↔ 1 + translateY 0 ↔ -2px。1.2s ease-in-out infinite。dot 在波峰时浮起 2px + 全亮，波谷时降回 + 半透明。
+  - 三 dots 各自 `animation-delay`: 0 / 0.18s / 0.36s — 错峰让波纹从左到右流动，不是同时鼓胀。
+  - 每 dot：5×5px 圆，#38bdf8 (R-series 一贯 brand 蓝)。
+  - 容器 `display:flex / gap:4px / padding:0 6px` 让 dots 紧凑成一组，位置在 textarea 和 ⚙ 之间。
+  - 仅当 `isLoading` true 时渲染（条件渲染让"非思考状态"零视觉负担）。
+- 决策 — 错峰 0.18s 间隔：dots 波动节奏快慢的关键参数。0.1s 太快显焦虑，0.3s 太慢看不出"流动" 三点像 disco light。0.18s ≈ 1.2s 的 1/6.7 —— 三 dots 错相 ≈ 半周期，形成"波纹从左到右"的明显流动感。**stagger 比例决定 perception** 而不只是任意拍。
+- 决策 — translateY(-2px) 加 opacity 双维：dots 只 opacity 变化看着像 fading，加 translateY 让 dots 像"心跳" 起伏。两维结合让 motion 更"alive"。**ambient 动画 multi-dimensional > single-dimensional** — bob + opacity 比单 fade 更不"机械"。
+- 决策 — 1.2s 比 R44 tab 1.6s 快：tab 是 long-running idle ambient（pet 等了很久）；ChatPanel dots 是 active waiting ambient（user 正在等 AI 回复，需要节奏紧迫感）。**ambient timing 跟 wait-state 紧迫度匹配** —— 长等慢节奏，短等快节奏。
+- 决策 — 颜色 #38bdf8 复用：跟 focus ring (R46) / tab gradient / 各处 accent 一致。**brand color 反复用** —— R47 IDEA "重复 = identity" 又一次践行。
+- 决策 — 不替代 textarea 状态：诱惑是同时 opacity 暗淡 textarea + cursor "wait"。但用户可能想在等 AI 回复时打下一句草稿，textarea 应保持可用。**仅 surface "AI 思考中"，不限制 user 行为**。
+- 决策 — title tooltip "宠物正在回复中..."：万一 user 不懂三 dots 意思（也许少见），hover 解释。但其实 universal 都懂 — title 是 backup education。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：ChatPanel cluster 完整三 iter (R46 ⚙hover+focus / R47 audit 推广 / R48 isLoading dots)。Cluster 主题 = "input UX 完整化"。Pet 现在送消息有"思考中" feedback；input 有 focus ring；按钮 hover 用 native CSS。**ChatPanel 完成第二个 polish cluster 闭合**。
+
 ## 2026-05-04 — Iter R47：focus ring audit 推广到 PanelSettings + PanelChat
 - 现状缺口：R46 IDEA 提了"R-series 类似 outline: none 的潜在 issues 该 audit 一遍"。R47 立刻执行 —— `grep 'outline: none'` 全 codebase 找到另外两处：
   1. `PanelSettings.tsx` 的 `inputStyle` const，被 4+ 个 `<input>` / `<textarea>` 用。

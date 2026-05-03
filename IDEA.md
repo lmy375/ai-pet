@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R48 设计要点（已实现）
+- **stagger 比例决定 perception 不是任意拍**：3 dots 错峰 0.18s，跟 1.2s period 的 1/6.7。这让"波纹从左到右流动" 视觉清晰。如果用 0.4s 错峰，3 dots 接近同时（差距 < 1/3 周期），视觉退化成"3 dots 同时跳"。如果用 0.05s，差距太小，看不出错峰。**stagger 应该 ≈ 1/N period** (N = dot 数) 形成流动感，N 多了用 1/(2N) 让流动更密。这是 ambient cascade 设计的经验数字。
+- **multi-dimensional motion > single-dimensional**：dots 用 opacity + translateY 双维。opacity 单维像 "fade in/out 闪光"；translateY 加上让它像"心跳起伏"。**两维让 motion 更有机** —— 单维容易显 "machine"，多维显 "alive"。但 dimension 加多了反而 chaos —— 3 维 (opacity + scale + rotate) 会显躁。Two is the sweet spot for "alive but not chaotic"。
+- **ambient timing 跟 wait-state 紧迫度对应**：R44 tab idle ambient 用 1.6s（pet 等了很久，节奏慢悠悠"我在这，不催你"）。R48 chat input loading 用 1.2s（user 主动等 AI 回复，节奏稍紧"我在帮你想"）。R-series ambient 已经有两种节奏 —— **timing 是 mood signal**（R44 IDEA 已 codify），R48 在 active vs idle 维度践行。
+- **brand color 反复用 = identity**：#38bdf8 又一次（focus ring R46/R47 / tab gradient R43 / 各处 accent / 现在 loading dots）。**单一色调跨多 surface = visual identity 累积** —— 每个新元素用同色 reinforce 整体感。如果给 dots 用 #ec4899 粉色看着醒目但破坏 R-series 蓝调一致。R47 IDEA codified, R48 应用。
+- **R-series 第二个 cluster 完成**：R40-R42 bubble cluster (3 iter)，R43-R45 tab cluster (3 iter)，R46-R48 ChatPanel cluster (3 iter)。**polish phase 的 stable cadence**：每 cluster 3 iter，每 cluster 一个 component。下一 cluster 候选：Live2D character (动画 / hover gaze / 空闲呼吸)？Settings panels deeper polish？还是 ChatPanel 的 chat 历史 view？Live2D 难度高但价值最大。
+- **isLoading visual 不挤占 textarea space**：dots 在 textarea 跟 ⚙ 之间，padding 0 6px。textarea flex:1 自动占余下空间。**isLoading 出现时 textarea 微缩 ~17px** (3 dots × 5px + gap + padding) —— 不破坏 user 当前在打字状态。alternative 是 dots 浮在 textarea 上面或 absolute positioning，但 absolute 会跟 cursor 重叠。inline flex 是稳妥选择。
+- **conditional render = zero non-loading cost**：dots 只在 isLoading=true 时 mount。`!isLoading` 时 component 完全不存在 DOM 中，CSS animation 也不跑。**避免 always-render + display:none** 隐藏 — 后者 animation 仍会跑（即使不可见 GPU 也工作）。conditional render 是 React 的省电默认。
+
 ## Iter R47 设计要点（已实现）
 - **descendant selector 是 CSS scope 的强项**：给整个 panel 加 className，CSS rule `.root input:focus { ... }` 自动 cover 所有 child inputs。**跟 className-per-input 比省 N 倍 edits** —— 10 个 inputs 变 1 个 className edit。也未来友好：新加 input 自动被 cover。这是 CSS scoping 比 utility-class (Tailwind) 强的场景之一 —— 后者要给每个新 element 重复加 class。
 - **outline: none + :focus replacement 是正解，不是删 outline:none**：诱惑是"删 outline: none 让 browser default 回来"。但 default outline 跨浏览器不一致（Chrome 蓝色 / Safari 黑色 / Firefox dotted），跟 R-series 极简风格冲突。**保留 outline:none + 加 :focus replacement** = 控权 + visual identity 一致。这是 "explicit 优于 implicit" 在 CSS focus state 的应用。

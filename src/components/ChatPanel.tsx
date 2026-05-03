@@ -11,6 +11,10 @@ interface Props {
 // and the textarea gets a real focus ring (its `outline: none`
 // previously stripped the browser default with no replacement —
 // accessibility hole).
+//
+// Iter R48: adds "AI is thinking" pulsing dots indicator that
+// appears when isLoading. Three dots staggered via animation-delay
+// so the pulse cascades — industry-standard "thinking" visual.
 const PANEL_STYLES = `
 .pet-settings-btn {
   opacity: 0.7;
@@ -22,6 +26,23 @@ const PANEL_STYLES = `
 .pet-chat-input:focus {
   border-color: #38bdf8;
   box-shadow: 0 0 0 2px rgba(56,189,248,0.18);
+}
+@keyframes pet-loading-dot-pulse {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  50%      { opacity: 1; transform: translateY(-2px); }
+}
+.pet-loading-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #38bdf8;
+  animation: pet-loading-dot-pulse 1.2s ease-in-out infinite;
+}
+.pet-loading-dot:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.pet-loading-dot:nth-child(3) {
+  animation-delay: 0.36s;
 }
 `;
 
@@ -89,6 +110,23 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
             transition: "border-color 150ms ease-out, box-shadow 150ms ease-out",
           }}
         />
+        {/* Iter R48: AI-thinking pulsing dots when isLoading. Sits between
+            textarea and ⚙ button so it doesn't fight either's space. */}
+        {isLoading && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              padding: "0 6px",
+            }}
+            title="宠物正在回复中..."
+          >
+            <div className="pet-loading-dot" />
+            <div className="pet-loading-dot" />
+            <div className="pet-loading-dot" />
+          </div>
+        )}
         {onOpenPanel && (
           <div
             className="pet-settings-btn"
