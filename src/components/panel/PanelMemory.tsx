@@ -240,6 +240,28 @@ export function PanelMemory() {
     }
   };
 
+  // Iter Cχ: strip the [error: ...] block from a butler_tasks description.
+  // Single-click clearance for the "ack failure, drop the marker" path —
+  // alternative to navigating 编辑 → manually delete bracket → 保存.
+  // Goes through commands::memory directly (panel path) so butler_history
+  // is not touched — error clears by the user are config changes, not
+  // executions that should appear in the timeline.
+  const handleClearError = async (title: string, fullDesc: string) => {
+    const stripped = fullDesc.replace(/\[error[^\]]*\]\s*/i, "").trim();
+    try {
+      await invoke("memory_edit", {
+        action: "update",
+        category: "butler_tasks",
+        title,
+        description: stripped,
+      });
+      setMessage(`已清除「${title}」的失败标记`);
+      await loadIndex();
+    } catch (e: any) {
+      setMessage(`清除失败: ${e}`);
+    }
+  };
+
   const handleFireProactive = async () => {
     setFiringProactive(true);
     setMessage("正在让宠物处理…");
@@ -703,23 +725,41 @@ export function PanelMemory() {
                           </span>
                         )}
                         {errInfo.hasError && (
-                          <span
-                            style={{
-                              fontSize: 10,
-                              padding: "1px 6px",
-                              borderRadius: 4,
-                              background: "#fef2f2",
-                              color: "#991b1b",
-                              fontWeight: 600,
-                              border: "1px solid #fecaca",
-                            }}
-                            title={
-                              errInfo.reason
-                                ? `上次执行失败：${errInfo.reason}`
-                                : "上次执行失败（LLM 没填具体原因）。检查 description 决定要不要重试。"
-                            }
-                          >
-                            ❌ 失败{errInfo.reason ? `：${errInfo.reason.slice(0, 30)}` : ""}
+                          <span style={{ display: "inline-flex", gap: 2, alignItems: "center" }}>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                background: "#fef2f2",
+                                color: "#991b1b",
+                                fontWeight: 600,
+                                border: "1px solid #fecaca",
+                              }}
+                              title={
+                                errInfo.reason
+                                  ? `上次执行失败：${errInfo.reason}`
+                                  : "上次执行失败（LLM 没填具体原因）。检查 description 决定要不要重试。"
+                              }
+                            >
+                              ❌ 失败{errInfo.reason ? `：${errInfo.reason.slice(0, 30)}` : ""}
+                            </span>
+                            <button
+                              onClick={() => handleClearError(item.title, item.description)}
+                              style={{
+                                fontSize: 10,
+                                lineHeight: 1,
+                                padding: "1px 5px",
+                                borderRadius: 3,
+                                border: "1px solid #fecaca",
+                                background: "#fff",
+                                color: "#991b1b",
+                                cursor: "pointer",
+                              }}
+                              title="清除失败标记（保留任务的 schedule 和正文，只去掉 [error: ...] 前缀）。如果你已经手动修复了原因或决定让宠物下次重试，点这个清掉红色 chip。"
+                            >
+                              ✕
+                            </button>
                           </span>
                         )}
                         {due && (

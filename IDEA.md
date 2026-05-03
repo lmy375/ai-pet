@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cχ 设计要点（已实现）
+- **TS regex 而不是 Rust helper**：Cπ 的 has_butler_error 是双轨 — 后端 substring + 前端 indexOf。这次 strip 也走 TS 端 regex，与 Cπ 的前端 parse 路径一致。后端要不要加 strip helper？暂不——目前唯一需要 strip 的是 panel 这一处用户操作；如果以后 LLM 也想自动 strip，再加 Rust 工具不迟。
+- **不上 butler_history**：这是 Cλ sweep 同样的判断——consolidate / 用户清除都是配置变更而非宠物执行。butler_history 是"宠物对你做了什么"，timeline 上看到 "user cleared" 反而冲淡信号。
+- **chip 内嵌 ✕ 而不是行尾按钮**：把清除入口贴在被清除的 chip 上，UI 心理学上更直观——"我要消除这个东西，按它身边的 X"。如果放行尾要用户从 chip 视觉点跳到行尾决策点，多了一段眼动距离。
+- **不加确认对话框**：清除失败标记是低风险动作（保留任务 + schedule，只去 marker），加确认会让用户怀疑这是高危动作。和 ⏰ 标记自动消失（任务被 update）的机制对应——失败标记同样应该轻量可消。
+- **regex `\[error[^\]]*\]\s*` 与 Rust has_butler_error 的 `[error` substring 对称**：has_butler_error 检测，TS strip 移除。两个方向一对——和 Cπ Cθ 同样的"view-time mirror"模式。
+- **保留 schedule prefix**：strip 只针对 [error: ...]，不动 [every:] / [once:]。schedule 是用户的"什么时候做"配置，不该被"清错"动作误删。
+
 ## Iter Cφ 设计要点（已实现）
 - **复用 trigger_consolidate 而不是新 command**：consolidate 已经是 robust 命令——调用 LLM 反思 + 更新 persona_summary。不需要专门写"only-persona"variant，反正同一次 LLM 调用顺便也整理其它记忆，浪费几乎为零。
 - **空态内嵌按钮 vs 顶层按钮**：曾考虑在 Persona tab 顶部加一个全局 "立即整理" 按钮（像 Memory tab 那个）。但 Persona tab 大多数时候 personaSummary 已经存在，按钮会一直挂在那当摆设。空态条件渲染既能解决"找不到入口"问题、又不在常态污染 UI。
