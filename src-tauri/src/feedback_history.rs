@@ -158,6 +158,64 @@ pub async fn get_recent_feedback() -> Vec<FeedbackEntry> {
     entries
 }
 
+/// Iter R7: compute the share of `Ignored` outcomes in `entries`. Returns
+/// `Some((ratio, total))` where ratio is in 0.0..=1.0 and total is the
+/// sample count. Returns `None` for empty input so callers can gate on
+/// "have enough data" without an extra check.
+pub fn ignore_ratio(entries: &[FeedbackEntry]) -> Option<(f64, usize)> {
+    if entries.is_empty() {
+        return None;
+    }
+    let ignored = entries
+        .iter()
+        .filter(|e| matches!(e.kind, FeedbackKind::Ignored))
+        .count();
+    Some((ignored as f64 / entries.len() as f64, entries.len()))
+}
+
+/// Iter R7: minimum samples before the adapter has any effect. Below this
+/// the base cooldown is returned unchanged — adapting on 1-2 entries would
+/// thrash on noise.
+pub const FEEDBACK_ADAPT_MIN_SAMPLES: usize = 5;
+/// High-ignore band: above this ratio the pet has clearly been overstaying
+/// its welcome — multiplier `ADAPT_HIGH_IGNORE_MULTIPLIER` lengthens the
+/// cooldown. 0.6 = "more than 60% of recent proactives went unanswered".
+pub const ADAPT_HIGH_IGNORE_THRESHOLD: f64 = 0.6;
+pub const ADAPT_HIGH_IGNORE_MULTIPLIER: f64 = 2.0;
+/// Low-ignore band: below this ratio the user is engaging well — the pet
+/// can speak more freely. 0.2 = "fewer than 20% of recent proactives went
+/// unanswered". Multiplier shrinks cooldown gently (0.7×, not aggressive).
+pub const ADAPT_LOW_IGNORE_THRESHOLD: f64 = 0.2;
+pub const ADAPT_LOW_IGNORE_MULTIPLIER: f64 = 0.7;
+
+/// Iter R7: pure adapter. Given the configured cooldown, the recent ignore
+/// ratio, and the sample size that produced it, return the cooldown the
+/// gate should actually enforce. Three-band step function:
+/// - sample_count < `FEEDBACK_ADAPT_MIN_SAMPLES` → base unchanged
+/// - ratio > `ADAPT_HIGH_IGNORE_THRESHOLD` → base × `ADAPT_HIGH_IGNORE_MULTIPLIER`
+/// - ratio < `ADAPT_LOW_IGNORE_THRESHOLD` → base × `ADAPT_LOW_IGNORE_MULTIPLIER`
+/// - else (mid band) → base unchanged
+///
+/// Steps not a smooth curve because we want the adaptation to be auditable —
+/// a panel reader should be able to compute the result by hand from the
+/// ratio chip without evaluating a polynomial.
+pub fn adapted_cooldown_seconds(
+    base_cooldown_secs: u64,
+    ignore_ratio: f64,
+    sample_count: usize,
+) -> u64 {
+    if sample_count < FEEDBACK_ADAPT_MIN_SAMPLES {
+        return base_cooldown_secs;
+    }
+    if ignore_ratio > ADAPT_HIGH_IGNORE_THRESHOLD {
+        return ((base_cooldown_secs as f64) * ADAPT_HIGH_IGNORE_MULTIPLIER) as u64;
+    }
+    if ignore_ratio < ADAPT_LOW_IGNORE_THRESHOLD {
+        return ((base_cooldown_secs as f64) * ADAPT_LOW_IGNORE_MULTIPLIER) as u64;
+    }
+    base_cooldown_secs
+}
+
 /// Format a feedback hint for the proactive prompt from the most recent
 /// entry. Empty list → empty string. Single entry → one-line nudge that the
 /// LLM can absorb. Pure / testable.
@@ -282,6 +340,86 @@ mod tests {
         );
         assert_eq!(json["kind"].as_str(), Some("replied"));
         assert_eq!(json["excerpt"].as_str(), Some("hello world"));
+    }
+
+    #[test]
+    fn ignore_ratio_returns_none_for_empty_input() {
+        assert_eq!(ignore_ratio(&[]), None);
+    }
+
+    #[test]
+    fn ignore_ratio_counts_correctly() {
+        // 3 ignored / 5 total = 0.6.
+        let entries = vec![
+            entry(FeedbackKind::Ignored, "a"),
+            entry(FeedbackKind::Ignored, "b"),
+            entry(FeedbackKind::Replied, "c"),
+            entry(FeedbackKind::Replied, "d"),
+            entry(FeedbackKind::Ignored, "e"),
+        ];
+        let (ratio, n) = ignore_ratio(&entries).expect("non-empty must yield Some");
+        assert_eq!(n, 5);
+        assert!((ratio - 0.6).abs() < 1e-9, "expected 0.6, got {}", ratio);
+    }
+
+    #[test]
+    fn ignore_ratio_handles_all_replied() {
+        let entries = vec![
+            entry(FeedbackKind::Replied, "a"),
+            entry(FeedbackKind::Replied, "b"),
+        ];
+        let (ratio, n) = ignore_ratio(&entries).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(ratio, 0.0);
+    }
+
+    #[test]
+    fn ignore_ratio_handles_all_ignored() {
+        let entries = vec![entry(FeedbackKind::Ignored, "a"); 3];
+        let (ratio, n) = ignore_ratio(&entries).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(ratio, 1.0);
+    }
+
+    #[test]
+    fn adapted_cooldown_returns_base_below_min_samples() {
+        // Below FEEDBACK_ADAPT_MIN_SAMPLES (5), the ratio is too noisy to act on
+        // — return base regardless of value.
+        assert_eq!(adapted_cooldown_seconds(1800, 0.9, 0), 1800);
+        assert_eq!(adapted_cooldown_seconds(1800, 0.9, 4), 1800);
+        assert_eq!(adapted_cooldown_seconds(1800, 0.0, 4), 1800);
+    }
+
+    #[test]
+    fn adapted_cooldown_doubles_on_high_ignore_ratio() {
+        // > 0.6 and at-or-above sample threshold → 2× base.
+        assert_eq!(adapted_cooldown_seconds(1800, 0.7, 5), 3600);
+        assert_eq!(adapted_cooldown_seconds(1800, 0.99, 20), 3600);
+    }
+
+    #[test]
+    fn adapted_cooldown_shrinks_on_low_ignore_ratio() {
+        // < 0.2 → 0.7× base.
+        assert_eq!(adapted_cooldown_seconds(1800, 0.1, 5), 1260);
+        assert_eq!(adapted_cooldown_seconds(1800, 0.0, 10), 1260);
+    }
+
+    #[test]
+    fn adapted_cooldown_keeps_base_in_mid_band() {
+        // Between thresholds [0.2, 0.6] → unchanged.
+        assert_eq!(adapted_cooldown_seconds(1800, 0.3, 5), 1800);
+        assert_eq!(adapted_cooldown_seconds(1800, 0.5, 10), 1800);
+        assert_eq!(adapted_cooldown_seconds(1800, 0.6, 10), 1800);
+        assert_eq!(adapted_cooldown_seconds(1800, 0.2, 10), 1800);
+    }
+
+    #[test]
+    fn adapted_cooldown_handles_zero_base() {
+        // base=0 means cooldown disabled — adapter must not bring it back.
+        // Otherwise a high-ignore session would re-enable cooldown the user
+        // intentionally turned off in settings.
+        assert_eq!(adapted_cooldown_seconds(0, 0.9, 10), 0);
+        assert_eq!(adapted_cooldown_seconds(0, 0.1, 10), 0);
     }
 
     #[test]
