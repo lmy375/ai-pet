@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R49：Live2D loading status 友好文案 + fade-in（Live2D cluster 起点）
+- 现状缺口：Live2DCharacter 启动过程中 setStatus 通过 6 个 dev-y 阶段：`"initializing..."` → `"importing pixi.js..."` → `"checking cubism core..."` → `"importing live2d..."` → `"creating pixi app..."` → `"loading model: ..."`。**这些消息直接显给 end user**。普通用户看到 "importing pixi.js" 莫名其妙 —— "什么是 pixi.js？" 暴露了 implementation detail。这是 R-series 第一个被识别的"dev message leaking to user" 反模式。
+- 解法 — derived display status + fadeIn keyframe：
+  - 内部 `status` state 不变，dev 通过 React DevTools / 原 setStatus calls 仍可看到具体 stage（debugging 价值保留）。
+  - 新 derived `displayStatus`：`isError ? raw status : (status ? "正在唤醒…" : "")`。所有非 Error 状态 collapse 成单一友好"正在唤醒…"。
+  - Error 状态仍保留原 detail（`Error: ${err.message}`）—— 用户出错时需要 actionable info。
+  - 状态 div 加 240ms fadeIn 动画：opacity 0→1 + translate Y 4px→0，跟 R40 ChatBubble 同 visual recipe。
+- 决策 — 内部 status / 显示 displayStatus 二元：诱惑是直接 setStatus("正在唤醒…") 5 处替换。但那样 React DevTools / 调试时也只看到"正在唤醒…" — 失去 stage 可见性。**保留 internal stage + 在 view 层 transform** 是 dev-friendly + user-friendly 双赢。这跟 R23 cooldown breakdown "internal precise / display friendly" 同思路。
+- 决策 — Error 不替换：Error 文案对 user 也有意义（"哦 Live2D 模型加载失败了"），保留 raw detail 让用户知道是何种错误。如果是 user-fault（e.g. 模型 path 错），他们能改。**Error 应面向"actionable" — friendly 文案反而失去信息**。
+- 决策 — fadeIn 240ms 微长于 ChatBubble 220ms：Live2D 加载是 system event（不是 user-triggered），稍慢 timing 像"系统在 spin up"，比 user-action 反应稍延迟反而符合直觉。R44 IDEA "timing 是 mood signal" 应用：system event vs user event 各自 timing。
+- 决策 — 不删除 setStatus 中间 stage：诱惑是把 6 个 setStatus 缩成 1 个。但 dev 需要看到 "stuck on importing pixi.js" 这种诊断。**view 层简化 ≠ data 层简化** —— 两者各自服务不同 audience。
+- 决策 — Live2D cluster 起点选择：Live2D 主体涉及 cubism4 库 / model API / canvas 绘制，risk 高。R49 选 cluster 起点是**界面包装层** (loading status div)，零侵入 Live2D 库本身。**polish cluster 应该从低风险面开始** —— Live2D 内部 motion 调整留给后续 iter（如果有）或交回 mature 期后慢慢改。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：用户首次启动看到的不再是 "importing pixi.js…" 之类技术黑话，而是"正在唤醒…" + 240ms 软进入。设计上也 codified 第一个"dev message leakage" 反模式 —— 之后 audit 其他 components 看是否有类似问题（status text 直接暴露 implementation 细节）。
+
 ## 2026-05-04 — Iter R48：ChatPanel isLoading 思考 dots（ChatPanel cluster 第三 iter）
 - 现状缺口：用户在 ChatPanel 输入消息按 Enter，isLoading 翻 true，但**界面无任何变化**。textarea 看着一样、send 没视觉反馈、AI 思考中无任何提示。用户疑惑"我刚刚发出去了吗？" 直到 AI 回复 bubble 出现。这是 chat UI 标准 missing — industry 都有"AI thinking" 指示。
 - 解法 — staggered three-dot pulse animation：

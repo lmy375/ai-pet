@@ -85,8 +85,22 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
     };
   }, [modelPath]);
 
+  // Iter R49: end user shouldn't see dev-y stages like "importing pixi.js…"
+  // (they don't know what that means). Map all non-error init messages to
+  // a friendly "正在唤醒…" while keeping `status` itself populated so a dev
+  // can still inspect via React DevTools / console. Errors keep the raw
+  // detail so debugging info isn't lost.
+  const isError = status.startsWith("Error");
+  const displayStatus = isError ? status : status ? "正在唤醒…" : "";
+
   return (
     <div style={{ position: "relative", width: "100%", height: "350px" }}>
+      <style>{`
+        @keyframes pet-live2d-status-fade-in {
+          from { opacity: 0; transform: translate(-50%, calc(-50% + 4px)); }
+          to   { opacity: 1; transform: translate(-50%, -50%); }
+        }
+      `}</style>
       <canvas
         ref={canvasRef}
         style={{
@@ -96,14 +110,14 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
           pointerEvents: "auto",
         }}
       />
-      {status && (
+      {displayStatus && (
         <div
           style={{
             position: "absolute",
             top: "50%",
             left: "50%",
             transform: "translate(-50%, -50%)",
-            color: status.startsWith("Error") ? "#e53935" : "#888",
+            color: isError ? "#e53935" : "#888",
             fontSize: "12px",
             textAlign: "center",
             padding: "12px",
@@ -111,9 +125,10 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
             borderRadius: "8px",
             maxWidth: "90%",
             wordBreak: "break-all",
+            animation: "pet-live2d-status-fade-in 240ms ease-out",
           }}
         >
-          {status}
+          {displayStatus}
         </div>
       )}
     </div>
