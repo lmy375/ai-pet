@@ -56,6 +56,14 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
             : `${Math.floor(tone.cooldown_remaining_seconds / 60)}m${tone.cooldown_remaining_seconds % 60 > 0 ? `${tone.cooldown_remaining_seconds % 60}s` : ""}`}
         </span>
       )}
+      {tone.awaiting_user_reply && (
+        <span
+          title="awaiting gate (Iter 5) — 宠物上次主动说了话但你还没回，gate 让宠物先等等。给 ta 一句回应（任何聊天或交互）就会清除这个状态。"
+          style={{ color: "#a855f7" }}
+        >
+          💭 等回应
+        </span>
+      )}
       {tone.wake_seconds_ago !== null && tone.wake_seconds_ago <= 600 && (
         <span title="刚检测到 wake-from-sleep" style={{ color: "#0891b2" }}>
           ☀ wake {tone.wake_seconds_ago}s

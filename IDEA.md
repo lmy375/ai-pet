@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D10 设计要点（已实现）
+- **D10 是 D series 必然延伸**：D9 surfaced cooldown 那一刻我已经知道 awaiting 是同样问题——不同 gate 同样 invisible。本来想在 D9 一起做，但分两 iter 让 commit 历史更清晰、scope 更小、也方便单独 revert。
+- **状态 vs 时间双 gate**：awaiting 是 state（boolean，事件驱动 reset），cooldown 是 time（duration，时钟驱动 reset）。两个 chip 并列出现时给用户的认知不冗余——明白宠物因为两个独立原因都在等。
+- **紫色 #a855f7**：和 ★ motion 一致——proactive engine 的"内部状态"色系。和 ⏳ cyan（功能性 / 已知 schedule）形成对照。
+- **不显示 awaiting 持续时长**：snapshot 里没有"awaiting 自何时开始"的 timestamp。只显 boolean 即可——用户给宠物回一句话就清掉 (mark_user_message)，时长不重要。如果未来想加，需要在 ClockInner 加个字段。
+- **gate 全集小结**：7 个 gate 现在 5 个有 chip / 2 个隐含。没强迫每 gate 都做 chip——disabled 是配置态、idle / input-idle 已经在 ⏱ 行隐含数值。整体观察：D series 是把"为什么宠物现在没说话"从黑盒打开成 5 个 chip 维度。
+
 ## Iter D9 设计要点（已实现）
 - **mirror gate 而不是 reimplement**：cooldown gate 的 `since < cooldown_seconds` 检查在 spawn loop 已经写过；ToneSnapshot 这边写一次同样的逻辑。两处可能漂移——但都是 4 行算术，比抽 helper 还简单。如果某天调整 gate 逻辑（比如 cooldown 在 wake 后 soften），两处都要改，但 grep `cooldown_remaining` 就找到了。
 - **Option<u64> vs (bool, u64)**：传 Option 表达"gate 关时无 N"——比布尔 + 数字双字段更紧。Some/None 的语义在 TS 里 nullable 也对应 1:1。
