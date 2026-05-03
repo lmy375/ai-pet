@@ -1891,10 +1891,14 @@ mod prompt_tests {
         assert_eq!(labels, vec!["engagement-window", "long-idle-no-restraint"]);
     }
 
-    /// Read PanelDebug.tsx and return the kebab/snake keys defined in
+    /// Read panelTypes.ts and return the kebab/snake keys defined in
     /// PROMPT_RULE_DESCRIPTIONS. Used by both alignment tests so the parsing logic
     /// only lives in one place. Plain string scanning — no regex dep — and tolerant
     /// of both quoted (`"wake-back": {`) and bare-identifier (`plan: {`) keys.
+    ///
+    /// Iter 98: relocated from PanelDebug.tsx to panelTypes.ts so PanelDebug owns only
+    /// state + layout. If the dict moves again, update this path and the panic
+    /// messages below in lockstep.
     fn parse_prompt_rule_dict_keys() -> Vec<String> {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
             .expect("CARGO_MANIFEST_DIR is set during cargo test runs");
@@ -1903,9 +1907,9 @@ mod prompt_tests {
             .join("src")
             .join("components")
             .join("panel")
-            .join("PanelDebug.tsx");
+            .join("panelTypes.ts");
         let panel_src = std::fs::read_to_string(&panel_path)
-            .unwrap_or_else(|e| panic!("read PanelDebug.tsx: {}", e));
+            .unwrap_or_else(|e| panic!("read panelTypes.ts: {}", e));
         let mut keys: Vec<String> = Vec::new();
         let mut in_dict = false;
         for line in panel_src.lines() {
@@ -2080,7 +2084,7 @@ mod prompt_tests {
         let frontend_keys = parse_prompt_rule_dict_keys();
         assert!(
             !frontend_keys.is_empty(),
-            "PROMPT_RULE_DESCRIPTIONS dictionary not found or empty in PanelDebug.tsx \
+            "PROMPT_RULE_DESCRIPTIONS dictionary not found or empty in panelTypes.ts \
              — the frontend may have moved or renamed it. Update parse_prompt_rule_dict_keys."
         );
         let frontend_set: std::collections::HashSet<&str> =
@@ -2098,8 +2102,8 @@ mod prompt_tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "PanelDebug.tsx PROMPT_RULE_DESCRIPTIONS missing entries for backend \
-             labels: {:?}. Add a {{title, summary}} row for each.",
+            "panelTypes.ts PROMPT_RULE_DESCRIPTIONS missing entries for backend \
+             labels: {:?}. Add a {{title, summary, nature}} row for each.",
             missing
         );
     }

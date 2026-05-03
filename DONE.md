@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 98：抽 panelTypes.ts，PanelDebug 只剩 state + layout
+- 新文件 `src/components/panel/panelTypes.ts`：搬入 8 个 interface（CacheStats / ProactiveDecision / MoodTagStats / LlmOutcomeStats / EnvToolStats / PromptTiltStats / PendingReminder / ToneSnapshot）+ `PromptRuleNature` type + `PROMPT_RULE_DESCRIPTIONS` + `NATURE_META` 字典。共 ~150 行的 type/data 定义集中一处。
+- PanelDebug.tsx 顶部把 8 个 interface 块替换成单个 `import { ... } from "./panelTypes"`，去掉 ~62 行类型定义和 ~80 行字典定义。文件从 ~770 行降到 ~590 行，纯粹只剩 useState + fetchLogs + JSX layout。
+- PanelChipStrip.tsx 的 import 从 `./PanelDebug` 改到 `./panelTypes`——不再循环依赖父子组件。
+- cargo `parse_prompt_rule_dict_keys` parser 路径从 `PanelDebug.tsx` 改为 `panelTypes.ts`，三处 panic message 同步更新。Iter 89/90/91 三个对齐测试零行为变化通过。
+- ChipStrip 现在是 panelTypes.ts 的纯消费者，PanelDebug 也是消费者；如果将来加 PanelStatsCard / PanelActionRow 之类的兄弟组件，全都通过 panelTypes 单一来源协作。
+- 184 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 97：抽出 PanelChipStrip，chips 升到 toolbar 上方独立成行
 - 新文件 `src/components/panel/PanelChipStrip.tsx`：纯展示组件，封装 6 个 chip + log count（cache / tag / llm 沉默 / 环境感知 / 倾向 / prompt hints button），通过 props 接收所有 stat / tone / handlers。共用 `resetBtnStyle` const 把原本散落的 5 处重复样式收敛成一处。
 - PanelDebug.tsx：把所有 chip JSX（240+ 行）替换成单个 `<PanelChipStrip {...} />` 调用；位置从 toolbar 内部右侧移到 toolbar **上方**独立成行。布局：`#f8fafc` 浅背景 + 水平 flex-wrap + `padding: 8px 16px` 让多 chip 时自动换行而不挤压。

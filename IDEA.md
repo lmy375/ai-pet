@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 98 设计要点（已实现）
+- **打破组件循环依赖**：Iter 97 把 ChipStrip 抽成 PanelDebug 子组件，但类型定义还在 PanelDebug 里——ChipStrip import PanelDebug 类型，PanelDebug import ChipStrip 组件。这是循环依赖（虽然 TS 不报错因为 ChipStrip 只 import type）。Iter 98 把类型搬到独立 panelTypes.ts，两个组件都从中性第三方 import，依赖图变成 Y 字而非环形。
+- **`.ts` 而非 `.tsx`**：纯类型 + 数据无 JSX。`.ts` 后缀让导入者一眼知道这是 data-only 模块。如果将来加面板专用 hooks 或非组件的辅助函数，也可以放这里或并列建 `panelHooks.ts`。
+- **PROMPT_RULE_DESCRIPTIONS 包括 nature 字段**：dict 现在三字段（title/summary/nature）。从 panel UI concern 而言，nature 是展示分类——同位置维护。如果将来要按 nature 做 backend prompt 行为决策，再考虑往 backend 倒。
+- **cargo 测试更新只改路径不改逻辑**：parser 仍按 `<key>: {` 模式扫，对目标文件位置无关。一行 path 改动 + 三处文案修正即可，Iter 89/90/91 测试逻辑保持不动。这就是抽 helper 的好处——单一锚点改完所有依赖跟随。
+- **PanelDebug 体积降低 ~30%**：770 → 590 行。剩下的全是 component logic（state、effect、handler、JSX），更容易跟踪 panel UI 行为。每个对应职责清晰：panelTypes.ts = 数据契约，PanelChipStrip.tsx = 数据展示，PanelDebug.tsx = 状态编排 + 主布局。
+- **不抽其他面板（PanelChat / PanelMemory / PanelSettings）的类型**：那些组件目前是相对独立的（chat 用自己的 ChatMessage 类型，memory 用自己的 MemoryItem）。只有 panel debug + chips 共享 type，所以 panelTypes 取名并不强制覆盖整个 panel/ 目录。如果将来出现跨面板共享需要，再考虑提取到 sharedTypes.ts。
+
 ## Iter 97 设计要点（已实现）
 - **纯展示组件 + state 留在 parent**：PanelChipStrip 不持有任何 useState，全部 state 还在 PanelDebug。组件接收 props（stats / handlers）输出 JSX——单一职责清晰。如果将来想做 Storybook 测试或单独渲染 chip，组件签名就是契约。
 - **导出 types + 字典而非新建 shared file**：本可以建 `src/components/panel/types.ts` 把 6 个 interface + PROMPT_RULE_DESCRIPTIONS 都搬过去。但现有 cargo 对齐测试（Iter 89/90/91）扫的是 PanelDebug.tsx；改动结构需要同步更新测试路径。直接 `export` 既有 const 是最小变更——TS import 可工作，cargo 测试只需要识别 `export const` 前缀（一行代码改动）。
