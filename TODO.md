@@ -10,10 +10,6 @@
 在一起；其余路线作为辅助优先级。
 
 ### 路线 A：长期人格演化（首要）
-- [ ] Iter 102：speech_history 中的 50 行截取改为 LLM 自己生成"性格摘要"：每日 consolidate
-  时让 LLM 读最近 50 句自己的话 + user_profile，写一段 ~100 字的"我观察到自己的语气
-  / 与用户互动的特点"到 ai_insights/persona_summary.md。下次 proactive 把它注进 prompt。
-  让人格不是静态 SOUL.md，而是"自我反思形成的画像"。
 - [ ] Iter 103：mood 加趋势——记 mood_history.log（与 speech_history 类似），让 prompt 看
   到"我最近一周心情主要是 X，今天偏 Y"，引导 LLM 在不同长期态势下选择不同语气。
 
