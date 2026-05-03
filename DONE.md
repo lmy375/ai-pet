@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R58：mute 按钮 refresh-on-click（R57 codified rule audit）
+- 现状缺口：R57 IDEA 写"any transient backend state needs refresh fetch at each user-interaction entry point"。R57 修了 note popover。**但 R52 mute button 同样 latent bug 没修** —— mute 自动到期后 frontend `muted=true` 仍 stale，button 仍显红色"已静音 30 分钟"。R58 audit-and-backfill。
+- 解法 — 镜像 R57 patten：
+  - 新 `refreshMuteState(): Promise<boolean>` async helper：fetch get_mute_until + setMuted + 返 fresh boolean。Errors 退回 current React state。
+  - `handleMuteClick` 改 async：先 await refreshMuteState 拿 fresh truth，然后基于 truth 决定 toggle 30 / 0 minutes。**不依赖可能 stale 的 React state**。
+  - `handleMuteContextMenu` 改 async：在 open menu 前 refreshMuteState（确保 menu 视觉反映当前 backend）。close menu 时不 refresh（state 不会因关闭而变）。
+- 决策 — return fresh boolean 而非依赖 setMuted callback：setMuted 的 React state update 是 async (next render)，handleMuteClick 内立即用 stale `muted` 不可靠。**直接 return helper 计算结果** = 同 promise chain 内拿到 truth，避免 closure-over-stale-state 经典 React 坑。
+- 决策 — close menu 不 refetch：close 是 user 主动关，state 没变化。**fetch 仅在 user-interaction 可能产生 stale 的入口**（mount + open + click action）触发。
+- 决策 — error fallback 用 React state：refreshMuteState catch 时返 `muted` (current React state)。诱惑是 throw 让 caller 处理。但 caller 想要 best-effort 行为 —— 网络错误时 mute toggle 仍能基于 last-known state 工作 = 比硬错好。**graceful degradation** > **strict error propagation** 在 UI interaction 路径。
+- 决策 — R58 应用同样 pattern 而不是抽 generic "useTransientStateRefresh" hook：mute 跟 note 的 lifecycle 类似但不一致（note 有 text + active boolean，mute 只 active boolean），抽 generic hook 复杂度 > value。**copy + tweak 在 use-2 仍合理**（R39 IDEA "use-3+ 才抽"）。第三个 transient state 出现时再考虑抽 hook。
+- 决策 — 不写测试：纯 React lifecycle，类型安全 + cargo build clean。
+- 测试结果：509 cargo（无变化）；clippy clean；tsc clean。
+- 结果：mute button 现在每次 click 都基于 backend truth 决策。R52 的 latent stale-state bug 修复。**R57 codified rule 第一次 audit-pass 完成** —— 把同 pattern 的 R52 修了。R57→R58 跟 R20→R21 / R29→R30 / R46→R47 同样 audit-and-backfill 节奏。
+
 ## 2026-05-04 — Iter R57：note popover 打开时 refresh state（修 R55 stale-state bug）
 - 现状缺口：R55 popover 用户体验有 latent bug —— popover 打开时不 fetch 当前 note 状态，只 mount 时 fetch 一次。流程：用户 set 60min note → 60min 后 backend 自动 expire → user 打开 popover → 看到 stale "noteActive=true" + 老 text。**state 跟 backend 失同步**，user 可能困惑"为什么显示有 note 但 chip 没有？"
 - 解法 — handleNoteToggle async + selective refresh：
