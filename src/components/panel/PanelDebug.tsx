@@ -63,7 +63,9 @@ export function PanelDebug() {
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
   const [lastPrompt, setLastPrompt] = useState<string>("");
+  const [lastReply, setLastReply] = useState<string>("");
   const [showLastPrompt, setShowLastPrompt] = useState(false);
+  const [copyMsg, setCopyMsg] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -243,11 +245,14 @@ export function PanelDebug() {
               }}
             >
               <span style={{ fontSize: "14px", fontWeight: 600, color: "#0f172a" }}>
-                上次 proactive prompt
+                上次 proactive 的 prompt + reply
               </span>
               <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                {lastPrompt ? `${lastPrompt.length} chars` : "（process 重启后清空 / 还没触发过）"}
+                {lastPrompt ? `prompt ${lastPrompt.length} / reply ${lastReply.length} chars` : "（还没触发过）"}
               </span>
+              {copyMsg && (
+                <span style={{ fontSize: "11px", color: "#0d9488" }}>{copyMsg}</span>
+              )}
               <button
                 onClick={() => setShowLastPrompt(false)}
                 style={{
@@ -262,21 +267,109 @@ export function PanelDebug() {
                 ✕
               </button>
             </div>
-            <pre
-              style={{
-                flex: 1,
-                overflow: "auto",
-                padding: "16px",
-                fontSize: "12px",
-                fontFamily: "'SF Mono', 'Menlo', monospace",
-                color: "#1e293b",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                margin: 0,
-              }}
-            >
-              {lastPrompt || "（还没有 proactive 触发过——按上面 立即开口 试一次）"}
-            </pre>
+            <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
+              <div
+                style={{
+                  padding: "8px 16px",
+                  background: "#f8fafc",
+                  borderBottom: "1px solid #e2e8f0",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <span style={{ fontSize: "11px", fontWeight: 600, color: "#475569" }}>
+                  ⇢ PROMPT (LLM input)
+                </span>
+                <button
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(lastPrompt);
+                      setCopyMsg("prompt 已复制");
+                      setTimeout(() => setCopyMsg(""), 2500);
+                    } catch (e) {
+                      setCopyMsg(`复制失败: ${e}`);
+                    }
+                  }}
+                  disabled={!lastPrompt}
+                  style={{
+                    fontSize: "10px",
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    color: "#475569",
+                    cursor: lastPrompt ? "pointer" : "default",
+                  }}
+                >
+                  复制
+                </button>
+              </div>
+              <pre
+                style={{
+                  padding: "12px 16px",
+                  fontSize: "12px",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                  color: "#1e293b",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  margin: 0,
+                  borderBottom: "1px solid #e2e8f0",
+                }}
+              >
+                {lastPrompt || "（还没有 proactive 触发过——按上面 立即开口 试一次）"}
+              </pre>
+              <div
+                style={{
+                  padding: "8px 16px",
+                  background: "#f0fdf4",
+                  borderBottom: "1px solid #e2e8f0",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <span style={{ fontSize: "11px", fontWeight: 600, color: "#166534" }}>
+                  ⇠ REPLY (LLM output)
+                </span>
+                <button
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(lastReply);
+                      setCopyMsg("reply 已复制");
+                      setTimeout(() => setCopyMsg(""), 2500);
+                    } catch (e) {
+                      setCopyMsg(`复制失败: ${e}`);
+                    }
+                  }}
+                  disabled={!lastReply}
+                  style={{
+                    fontSize: "10px",
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    color: "#475569",
+                    cursor: lastReply ? "pointer" : "default",
+                  }}
+                >
+                  复制
+                </button>
+              </div>
+              <pre
+                style={{
+                  padding: "12px 16px",
+                  fontSize: "12px",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                  color: "#1e293b",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  margin: 0,
+                }}
+              >
+                {lastReply || "（还没有 reply — 上次没触发或者 LLM 调用失败）"}
+              </pre>
+            </div>
           </div>
         </div>
       )}
@@ -322,14 +415,18 @@ export function PanelDebug() {
         <button
           onClick={async () => {
             try {
-              const p = await invoke<string>("get_last_proactive_prompt");
+              const [p, r] = await Promise.all([
+                invoke<string>("get_last_proactive_prompt"),
+                invoke<string>("get_last_proactive_reply"),
+              ]);
               setLastPrompt(p);
+              setLastReply(r);
               setShowLastPrompt(true);
             } catch (e) {
-              console.error("get_last_proactive_prompt failed:", e);
+              console.error("get_last_proactive_prompt/reply failed:", e);
             }
           }}
-          title="查看上次构造的 proactive prompt（process 重启后清空）— 直接看 LLM 实际看到的内容，不必扫 logs。"
+          title="查看上次构造的 proactive prompt + LLM reply 全文（process 重启后清空）— 一眼看到 in/out。"
           style={{ ...toolBtnStyle, background: "#6366f1", color: "#fff" }}
         >
           看上次 prompt

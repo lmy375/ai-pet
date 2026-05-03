@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter E2：modal 同时显示 LLM reply + 复制按钮 — 全 in/out 可见
+- 现状缺口：E1 的 modal 只显 prompt（input）。但调试 / 调优经常要的是 "看 prompt + 看 LLM 输出"——一个 chat round 完整双向。E1 后用户得开 logs 找 reply。
+- 解法：同 E1 模板镜像加 reply：
+  - `LAST_PROACTIVE_REPLY: std::sync::Mutex<Option<String>>` static
+  - `run_proactive_turn` 在 `let reply = run_chat_pipeline(...)` 之后 stash clone
+  - Tauri command `get_last_proactive_reply()` 同形态返 String
+  - PanelDebug `看上次 prompt` 按钮的 onClick 改为 `Promise.all` 并发拉 prompt + reply
+  - modal body 重写为两段：⇢ PROMPT (灰底) + ⇠ REPLY (浅绿底，#f0fdf4)，每段头部显 "复制" 按钮
+  - 复制按钮调 `navigator.clipboard.writeText` + 2.5s 自动消失的 "已复制" 状态消息（在 modal 顶部）
+  - 两段都用 pre + whitespace pre-wrap 保留段落
+- modal 标题从 "上次 proactive prompt" 改为 "上次 proactive 的 prompt + reply"，character 计数 改为 "prompt N / reply M chars"
+- 复制后状态消息青色 (`#0d9488`)，错误红色，跟项目其他 toast 配色一致。
+- 不持久化 reply（process 重启清空，和 E1 同思路）。
+- 测试：306 cargo 不变；tsc 干净。
+- 用例链路：研发想验证某个 prompt 改动 → 立即开口 → 看上次 prompt → 看到 prompt 和 reply 全文 → 复制 prompt 到外部 LLM 工具 dry-run → 复制 reply 验证 prompt 改动效果。从"翻 logs 拼信息"到"一键看完整 in/out"。
+
 ## 2026-05-03 — Iter E1：proactive prompt 全文 panel 可看（开启 E series 工具向）
 - 现状缺口：D series 12 个 chip 把"现在 LLM 看到什么 ambient 信号"分维度可视化了，但**完整拼装好的 system prompt 全文**仍然不可见。要确认"今天 chatty rule 真的进 prompt 了吗"得去 panel logs 或 LLM 端 trace——多步、低效。研发自己 prompt 调优时尤其卡。
 - 解法：捕获最后一次构造的 proactive prompt，panel 上一键预览。
