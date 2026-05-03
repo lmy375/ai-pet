@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R43：Tab indicator slide-in 入场 + hover 扩展（新 cluster 起点）
+- 现状缺口：bubble UX cluster (R40-R42) 完成。R42 IDEA 提了下一 polish cluster 候选：Live2DCharacter / ChatPanel / Tab indicator。Tab indicator 是最小但视觉 critical 的 — 当 pet auto-hide 后，tab 是用户唯一能"找回 pet" 的入口。但目前 tab 出现时是**瞬间 pop**（`{hidden && (<div ...>)}`），且 hover 无任何反应。
+- 解法 — 复用 R40-R42 的 inline `<style>` + className pattern：
+  - inline `<style>` 加 `@keyframes pet-tab-slide-in`：from `{left: -16px; opacity: 0;}` to `{left: 0; opacity: 1;}` —— 从画布左外滑入。
+  - `.pet-tab:hover { width: 22px; }` —— hover 时 tab 从 16px 扩到 22px（37.5% 宽度增）。
+  - tab div 加 className "pet-tab"，inline style 加 `animation: pet-tab-slide-in 280ms ease-out` 和 `transition: width 120ms ease-out`。
+  - JSX 包到 `<>...</>` fragment 里（之前是单 div）。
+- 决策 — 滑入用 left 而非 transform：tab 已经用 transform: translateY(-50%) 做垂直居中。再加 transform: translateX(-100%) 会冲突。**用 left 属性来做滑入** 让 transform 干净保留居中职责。
+- 决策 — 280ms 比 bubble 的 220ms 慢一点：tab 是 "system 元素" 出现，比 bubble 的 "宠物开口" 更"机械"。略慢的 timing 让它感觉更"摆在那里"，bubble 的 220ms 感觉更"活"。**timing 微差表达 visual 角色差异**。
+- 决策 — hover 加宽 width 而非 height / 颜色：tab 是垂直长条，加宽更"伸出来"召唤点击；加高会变成大牛奶盒奇怪；变颜色不如形状变化吸引视觉。**形状变化是最直接的 invite**。
+- 决策 — 22px 不 30px：从 16 到 22 是 +6px (37.5%)。22→30 会变成显眼条，反而让 tab 不再"discreet 边缘 affordance"。**hover 应"加重"不"换形态"** —— 保持 tab 自身视觉 identity。
+- 决策 — 复用 ChatBubble 的 inline `<style>` 风格：跨组件复用 codified pattern。R40-R42 在 ChatBubble，R43 同样模式在 Tab indicator (虽然 Tab 是 App.tsx 内的子元素而非独立组件)。**pattern 跨 component 复用 = R39 抽组件之外的另一种复用**。
+- 决策 — 不抽 Tab 到独立组件：诱惑是把 tab 拆 `<TabIndicator />` 组件让 App.tsx 干净。但目前 tab 只 in-place 30 行 JSX + 0 state；抽组件意义不大且引入 prop drilling。**inline JSX 在 < 50 行 + 不复用时优于组件**。
+- 决策 — 不写测试：CSS animation / pseudo-class 浏览器 native。tsc + cargo build 验证。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：当 pet auto-hide 后，tab 现在从画布左侧滑入 280ms（user 知道 "pet 缩起来了，点这里召回"），hover 时扩宽召唤点击。**第二个 polish cluster 起点** —— R44+R45 可继续在 tab 上叠（pulse 提醒？click feedback？）或转 ChatPanel/Live2D。
+
 ## 2026-05-04 — Iter R42：ChatBubble hover lift（interaction 三态完成 cluster）
 - 现状缺口：R40 加 mount fadeIn，R41 加 active press，但**hover 状态空白** —— 鼠标悬停在 bubble 上没任何视觉变化。Desktop UX 惯例 hover = "你在这里，我看到了" 信号；缺失会让 bubble 显得"死板" 即便能 click。R41 IDEA 写过"depth > breadth" - 选定 component 投 2-3 iter 直到完整。R42 是 bubble polish cluster 的第三也是最后一 iter。
 - 解法 — `:hover` pseudo-class + 同时升级 transition：
