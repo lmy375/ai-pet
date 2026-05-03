@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cξ 设计要点（已实现）
+- **environmental 而不是 data-driven 或 composite**：first-of-day 看的是 today_speech_count（确实属 data-driven 范畴），但语义是 "环境状态：今天是不是新一天的开端"——和 wake-back / first-mood / pre-quiet 这种"现在是什么状态"同质。data-driven 是统计纠偏（chatty / icebreaker / env-awareness），composite 是组合触发（engagement-window / long-idle-no-restraint / long-absence-reunion）。把 first-of-day 放 environmental 比放 data-driven 更贴切——它是"日界 = 一种环境"，用 today_count 只是实现手段。
+- **基于 today_speech_count == 0 而不是某个开关**：曾考虑加 `had_first_today: bool` 持久化字段，跨 session 标记"今天第一次"。但 today_speech_count 已经是 source of truth，再加一层 derived state 是冗余。每次 base_inputs 都要 set 是小代价，换得"日切换永远准确"。
+- **base_inputs 默认 today=1 而不是 today=0**：要避免现有所有测试不假思索地触发 first-of-day 重新断言。1 是最小非零值，仍然 < chatty 阈值，对 chatty 测试无影响。注释里写清楚原因，未来加规则时同样套路。
+- **不限制时段**：曾犹豫"first-of-day 在 深夜（22-04）也触发是不是怪"。但 (a) 深夜时段往往 pre_quiet 也活跃，rule body 已经给了"深夜→简短关心或不打扰"指引；(b) 限制时段会让"凌晨第一次开宠物"的 edge case 漏掉问候。让 rule body 自己处理时段差异，比让 fire 条件查时段更简洁。
+- **firing order 排在 first-mood 之后 pre-quiet 之前**：宠物 internal state（mood bootstrap）优先于人类节奏（日界打招呼）优先于结束节奏（pre-quiet 收尾）。如果以后排不下，可以排 dependency 树，但目前线性顺序读起来就符合直觉。
+- **整合 first-of-day rule body 中提到 wake-back / long-absence-reunion**：让 LLM 看到所有三个"回来"类规则同时存在时知道自己什么差异。互相 cross-reference 是"prompt 里把规则之间的关系也写明"的实践，比单独写每条让 LLM 自己拼好得多。
+- **不和 icebreaker 显式互斥**：icebreaker 看 lifetime（< 3）、first-of-day 看 today（== 0）。新装+一天没说过话的场景两条都 fire——这样宠物开口同时是"破冰"和"早安"，很自然，没必要强制选一个。
+
 ## Iter Cν 设计要点（已实现）
 - **rule 而不是延 idle_register**：本来犹豫——既然 Cμ 已经 ambient 加了 `user_absence_tier`，是不是没必要再加 rule？但 rule 的价值是 **structured guidance** + 进 active_prompt_rules 标签系统：(a) 进 panel "prompt: N hints" badge，让用户看得到这次开口被这个 register 塑造；(b) 触发 PROMPT_TILT 累计统计——长久看 engagement 倾向。ambient 字段是 hint，rule 是政策；两者都需要。
 - **240 分钟（4 小时）**：阈值取偏保守值。曾考虑 120（午休回来），但很多人午休 90 分钟内，不算"长别"——不如保持午餐回来时不触发，留给"上下班"或"出门半天"那种真离开。如果实际使用觉得太迟再调。和 LONG_IDLE_MINUTES (60) 拉开倍数关系（4×），不会和它互相干扰。

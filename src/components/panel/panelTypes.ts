@@ -101,6 +101,11 @@ export const PROMPT_RULE_DESCRIPTIONS: Record<
     summary: "还没有 mood 记忆条目；开口后用 memory_edit create 初始化。",
     nature: "instructional",
   },
+  "first-of-day": {
+    title: "今日首开",
+    summary: "今天还没主动开过口；用当下时段问候打底（早安/下午好/晚上好），再决定话题。",
+    nature: "engagement",
+  },
   "pre-quiet": {
     title: "近安静时段",
     summary: "再过几分钟到夜里安静时段；语气往收尾靠，简短晚安/睡前关心。",
