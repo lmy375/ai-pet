@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D1：ToneSnapshot 加 day_of_week / idle_register / idle_minutes
+- 现状缺口：Iter Cβ（weekday/weekend 标签）和 Iter Cμ（user_absence_tier）都改了 proactive prompt 的时间行——但 `ToneSnapshot` 一直没扩展，PanelToneStrip 显示的"宠物现在看到的语境"少了这两个维度。结果：用户开 panel 看到 ⏱ 下午 / 💬 cadence / ☀ wake / 🤝 已开口 N 次，但看不到 prompt 里也有的 "周二 · 工作日" / "用户已经离开了大半天" 这两个真实进入 LLM 的 register cue。observability 和 prompt 不同步。
+- 解法：
+  - Rust 端 `ToneSnapshot` 加三个新字段：`day_of_week: String`（如 "周日 · 周末"）、`idle_register: String`（如 "用户走开有一两小时了"）、`idle_minutes: u64`（精确分钟）
+  - `get_tone_snapshot` 复用已有的 `format_day_of_week_hint(now.weekday())` 和 `user_absence_tier(idle_min_for_rules)` helpers——零新逻辑、与 prompt 用同一个真值
+  - TS 端 `ToneSnapshot` interface 加三个对应字段
+  - PanelToneStrip 渲染两个新 chip：
+    - 📆 周X · 工作日/周末（紧跟 ⏱ period 之后，时间维度聚集）
+    - 👤 用户离开了一小会儿（紧跟 📆 之后，关于"对方"的认知）
+    - tooltip 给精确数字 + 注明对应 Iter
+- 不接 idle_minutes 单独 chip：register 字段已经把数字翻译成"用户走开有一两小时了"这种好读形式；裸数字 30、180、420 反而让 user 自己心算。tooltip 里再补精确数字够用。
+- 301 cargo 不变（功能仅是数据通路扩展，没改决策逻辑）；tsc 干净。
+- 结果：PanelToneStrip 现在和 proactive prompt 的时间维度 1:1 对齐——⏱ period / 📆 day_of_week / 👤 idle_register / 💬 cadence / ☀ wake / 🌙 pre_quiet / 🤝 lifetime / ★ motion / ☁ mood。observability 真正反映 LLM 看到的全部 register signals。
+
 ## 2026-05-03 — Iter Cω：修复 LLM沉默 chip 颜色 bug + 加"失败 K" 子标签
 - 现状缺口（其实是个潜伏 bug）：PanelChipStrip 的 LLM沉默 chip 原本想在沉默率高时变橙色 (#ea580c) 提示"prompt 太克制"——但条件写成 `silent + error > spoke + silent + error`，左右两边消去 `silent + error` 后变成 `0 > spoke`，对任何非负 spoke 都为 false。所以这条颜色变化从未被触发，chip 永远紫色，无论沉默率如何。同时 LLM 真的报错（API key 错、network、超 rate limit）时 error count 只在 tooltip 里能看到，user 在 chip 上看不出"宠物的 LLM 在出错"。
 - 解法：
