@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cλ：completed [once] butler_tasks 自动清理 + grace 设置
+- 现状缺口：单次任务 `[once: 2026-05-10 14:00] X` 即使 LLM 已经执行完（updated_at >= target），它会一直留在 butler_tasks 列表里成为静默 clutter——既占 prompt 体积（最多 6 条 ambient block），又让 Memory tab 越来越长。reminder 类已经通过 `sweep_stale_reminders` 自动清理，daily_plan 通过 `sweep_stale_plan` 清理；butler 这边没有对称机制。
+- 解法：完全沿用 reminder/plan 的 sweep 模式：
+  - `proactive::is_completed_once(desc, last_updated, now, grace_hours)` 纯 decider：判 schedule prefix 是 once、updated_at >= target、且 now >= target + grace。`every` 任务永不返回 true（recurring，不该删）；不带前缀任务也不返回 true（无 target 概念）。
+  - `consolidate::sweep_completed_once_butler_tasks(now, grace_hours)` async 收割：拿 to-delete 快照 → 走 `memory::memory_edit("delete", ...)` → 同步调 `butler_history::record_event("delete", ...)`。注意必须手动 record——consolidate 走 commands::memory 直接 API 而非 tools::memory_tools::memory_edit_impl，所以 Cε 的 butler_history hook 不会自动 fire；手动补一行让 panel 时间线 / 每日小结仍然反映清理。
+  - `MemoryConsolidateConfig` 新增 `stale_once_butler_hours: u64`，默认 48。和现有 `stale_reminder_hours` / `stale_plan_hours` 字段同形态。
+  - `run_consolidation` 在 reminder/plan sweep 之后、LLM 阶段之前新增一段 sweep。和它们一个语义层级。
+  - SettingsPanel + useSettings + PanelSettings 三处把新字段加进 TS 接口和默认值，前端可视化配置。
+- 5 个新单测覆盖 is_completed_once：基本流程（done in grace vs past grace）、未执行 → 不算完成、every 任务 → 永不算完成、无前缀 → 永不算完成、updated_at 不可解析 → 视为未完成保守保留。测试总数 272 → 277。
+- 设计选择 grace = 48 小时：足够长让用户在 panel 上看到完成状态、daily summary 把它写进当天 recap；又不至于让 butler_tasks 列表无限膨胀。比 reminder 的 24 小时长一倍，因为 butler 任务的 "记忆价值" 比单纯的提醒强一点（用户可能想隔天看一眼 "宠物为我做了 X"）。
+- 不做"删除前向用户确认"——这是 deterministic 后台清理，不是用户主动操作。如果用户想保留某个任务超过 grace，可以延长配置项；或者 update description 时不要标 done（不要让 updated_at 推到 target 之后），任务就不会触发清理。这种"用户行为决定生命周期"的隐式机制和 reminder sweep 一致。
+- 结果：butler_tasks 列表自我清理，daily summary + 时间线把删除事件保留下来作为历史。"宠物管家"完成的工作不丢，同时 active list 不会被旧任务拖垮。
+
 ## 2026-05-03 — Iter Cκ：butler_tasks 过期指示 + 一键"立即处理"逃生口
 - 现状缺口：Cθ 的 panel 已经能显示 ⏰ 到期，但用户没有反馈"宠物为什么没动"——任务可能因为 cooldown / quiet hours / focus mode / LLM 自主沉默而被搁置。即使开 panel 看到 ⏰，也不知道"等了多久"，更没有"现在就去做"的逃生口。这是 dashboard 缺的最后一环。
 - 解法分两块：

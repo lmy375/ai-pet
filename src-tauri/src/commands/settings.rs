@@ -159,6 +159,12 @@ pub struct MemoryConsolidateConfig {
     /// after they were relevant. 24 = "today's plan ages out tomorrow".
     #[serde(default = "default_stale_plan_hours")]
     pub stale_plan_hours: u64,
+    /// Iter Cλ: how many hours past the target time a completed `[once: ...]` butler
+    /// task lingers before consolidate auto-deletes it. The grace period gives the
+    /// daily summary + panel timeline a chance to catch the user's eye while the
+    /// task is still around. 48 = "two days then it's gone".
+    #[serde(default = "default_stale_once_butler_hours")]
+    pub stale_once_butler_hours: u64,
 }
 
 fn default_consolidate_interval() -> u64 {
@@ -177,6 +183,10 @@ fn default_stale_plan_hours() -> u64 {
     24
 }
 
+fn default_stale_once_butler_hours() -> u64 {
+    48
+}
+
 impl Default for MemoryConsolidateConfig {
     fn default() -> Self {
         Self {
@@ -185,6 +195,7 @@ impl Default for MemoryConsolidateConfig {
             min_total_items: default_consolidate_min_items(),
             stale_reminder_hours: default_stale_reminder_hours(),
             stale_plan_hours: default_stale_plan_hours(),
+            stale_once_butler_hours: default_stale_once_butler_hours(),
         }
     }
 }

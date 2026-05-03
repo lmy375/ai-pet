@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cλ 设计要点（已实现）
+- **复用 sweep 模式比创新好**：reminder / plan 都是 deterministic 时间窗口 + memory_edit delete + 写日志。butler once 完全是同型问题——同样的 cutoff 字段、同样的 sweep 函数形态、同样的 settings 字段。沿用模式 → 三周后看代码也能立刻识别"这是 sweep family"。如果发明了新接口（比如 lifecycle policy），多一种结构对维护无益。
+- **手动 butler_history.record_event**：Cε 设的钩子在 tools/memory_tools::memory_edit_impl 那一层。consolidate 直接调 commands::memory::memory_edit（绕过 tools 层），就不会触发 hook。这其实是个一直存在但未被注意的不对称——本 iter 把它显式 patch 上：sweep 函数自己 record。如果以后给 memory_edit 增加更多副作用（比如 dispatch 事件），同样的 pattern 还是适用：低层 API 调用方负责镜像副作用，或者升迁到一个共享的 wrapper。我倾向于后者，但暂且只做眼前最小修补。
+- **grace = 48h**：两个考量。一是给用户一天时间在 panel 上看到完成的任务（"昨天我帮你做了 X"），二是给 daily_summary 一个 cycle 把它写进 recap（consolidate 默认 6h 间隔，48h 内会跑 8 次，几乎确保至少一次抓到这个任务）。比 reminder 的 24h 长，因为完成的 butler 任务的"记忆价值"比单纯过期 reminder 大。
+- **不做 UI 动作**：用户在 SettingsPanel 改的 grace 数字会立即生效（后续 consolidate 会用），但当下 panel 不会显示"X 个任务即将被清理"——那种 affordance 多半是杞人忧天，因为 grace 默认 48h，被删时用户已经记不清了。如果后续观察到用户抱怨"任务不见了"，再加可视化。
+- **保守的 unparseable updated_at**：和 Cζ 的 is_butler_due 相反——这里 unparseable → 不删（保留），那里 unparseable → 视为未执行（标记 due）。两边的方向都符合"不确定时偏向显示给用户"原则。delete 是 destructive，更应该保守。
+
 ## Iter Cκ 设计要点（已实现）
 - **客户端时钟而不是 Rust 命令**：和 Cθ 一致——overdue 计算也是 view-time。每秒重渲染未必需要，但 panel 既然 15s 已经在 poll butler_history，那个 setInterval 触发的 setState 会让 React 重渲染，overdue 计算会随之刷新。
 - **复用 trigger_proactive_turn**：曾考虑写一个 butler-scoped 的 manual trigger（只把 due 任务带进 prompt、跳过 mood/persona/etc）。优点是 LLM 不会被无关 context 分心。但坏处明显：(a) 又一条独立路径，要维护；(b) 失去"管家任务和聊天伙伴是同一个宠物"的一致性，user 会感觉 ⏰ 触发的回复语气和正常 proactive 不一样；(c) 现有 prompt 已经把 butler 任务标 ⏰，LLM 看到自然会选。共享 pipeline 的简洁性赢。
