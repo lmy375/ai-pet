@@ -4,6 +4,7 @@ import type {
   LlmOutcomeStats,
   MoodTagStats,
   PromptTiltStats,
+  RedactionStats,
   ToneSnapshot,
 } from "./panelTypes";
 import { PROMPT_RULE_DESCRIPTIONS } from "./panelTypes";
@@ -21,6 +22,7 @@ interface PanelChipStripProps {
   llmOutcomeStats: LlmOutcomeStats;
   envToolStats: EnvToolStats;
   promptTiltStats: PromptTiltStats;
+  redactionStats: RedactionStats;
   tone: ToneSnapshot | null;
   showPromptHints: boolean;
   setShowPromptHints: (next: boolean | ((prev: boolean) => boolean)) => void;
@@ -29,6 +31,7 @@ interface PanelChipStripProps {
   onResetLlmOutcome: () => void;
   onResetEnvTool: () => void;
   onResetPromptTilt: () => void;
+  onResetRedaction: () => void;
   logsCount: number;
 }
 
@@ -49,6 +52,7 @@ export function PanelChipStrip(props: PanelChipStripProps) {
     llmOutcomeStats,
     envToolStats,
     promptTiltStats,
+    redactionStats,
     tone,
     showPromptHints,
     setShowPromptHints,
@@ -57,6 +61,7 @@ export function PanelChipStrip(props: PanelChipStripProps) {
     onResetLlmOutcome,
     onResetEnvTool,
     onResetPromptTilt,
+    onResetRedaction,
     logsCount,
   } = props;
 
@@ -201,6 +206,29 @@ export function PanelChipStrip(props: PanelChipStripProps) {
           </span>
         );
       })()}
+      {redactionStats.calls > 0 && (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+          <span
+            style={{
+              fontSize: "12px",
+              // Active redaction → green (privacy filter is doing work). Zero hits
+              // (calls > 0 but hits = 0) means filter is configured but didn't fire
+              // — also fine, but render in muted gray to distinguish.
+              color: redactionStats.hits > 0 ? "#0d9488" : "#94a3b8",
+              alignSelf: "center",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+            title={`隐私过滤累计调用 ${redactionStats.calls} 次，命中 ${redactionStats.hits} 次（命中=至少一个 pattern 在输入中匹配并被替换）。命中数 0 但调用 > 0 说明过滤器在跑只是没东西匹配；hits 突然飙升或为 0 都值得检查 patterns。`}
+          >
+            Redact {redactionStats.hits}/{redactionStats.calls} (
+            {Math.round((redactionStats.hits / redactionStats.calls) * 100)}
+            %)
+          </span>
+          <button onClick={onResetRedaction} title="重置 redaction 计数" style={resetBtnStyle}>
+            重置
+          </button>
+        </span>
+      )}
       {tone &&
         tone.active_prompt_rules.length > 0 &&
         (() => {

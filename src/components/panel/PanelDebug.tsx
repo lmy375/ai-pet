@@ -15,6 +15,7 @@ import {
   ProactiveDecision,
   PromptRuleNature,
   PromptTiltStats,
+  RedactionStats,
   ToneSnapshot,
 } from "./panelTypes";
 
@@ -54,6 +55,7 @@ export function PanelDebug() {
   const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
   const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
+  const [redactionStats, setRedactionStats] = useState<RedactionStats>({ calls: 0, hits: 0 });
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
@@ -64,7 +66,7 @@ export function PanelDebug() {
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut, envT, tilt, days] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut, envT, tilt, days, redact] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
@@ -78,6 +80,7 @@ export function PanelDebug() {
         invoke<EnvToolStats>("get_env_tool_stats"),
         invoke<PromptTiltStats>("get_prompt_tilt_stats"),
         invoke<number>("get_companionship_days"),
+        invoke<RedactionStats>("get_redaction_stats"),
       ]);
       setLogs(result);
       setCacheStats(stats);
@@ -92,6 +95,7 @@ export function PanelDebug() {
       setEnvToolStats(envT);
       setPromptTiltStats(tilt);
       setCompanionshipDays(days);
+      setRedactionStats(redact);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -142,6 +146,11 @@ export function PanelDebug() {
       upcoming_events: 0,
       memory_search: 0,
     });
+  };
+
+  const handleResetRedactionStats = async () => {
+    await invoke("reset_redaction_stats");
+    setRedactionStats({ calls: 0, hits: 0 });
   };
 
   const handleResetPromptTiltStats = async () => {
@@ -200,6 +209,7 @@ export function PanelDebug() {
         llmOutcomeStats={llmOutcomeStats}
         envToolStats={envToolStats}
         promptTiltStats={promptTiltStats}
+        redactionStats={redactionStats}
         tone={tone}
         showPromptHints={showPromptHints}
         setShowPromptHints={setShowPromptHints}
@@ -208,6 +218,7 @@ export function PanelDebug() {
         onResetLlmOutcome={handleResetLlmOutcomeStats}
         onResetEnvTool={handleResetEnvToolStats}
         onResetPromptTilt={handleResetPromptTiltStats}
+        onResetRedaction={handleResetRedactionStats}
         logsCount={logs.length}
       />
 
