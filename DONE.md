@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cω：修复 LLM沉默 chip 颜色 bug + 加"失败 K" 子标签
+- 现状缺口（其实是个潜伏 bug）：PanelChipStrip 的 LLM沉默 chip 原本想在沉默率高时变橙色 (#ea580c) 提示"prompt 太克制"——但条件写成 `silent + error > spoke + silent + error`，左右两边消去 `silent + error` 后变成 `0 > spoke`，对任何非负 spoke 都为 false。所以这条颜色变化从未被触发，chip 永远紫色，无论沉默率如何。同时 LLM 真的报错（API key 错、network、超 rate limit）时 error count 只在 tooltip 里能看到，user 在 chip 上看不出"宠物的 LLM 在出错"。
+- 解法：
+  - 重写颜色条件：`llmOutcomeStats.silent * 2 > total` —— 整数算术，避免 float 精度；语义"沉默率超过 50%"清晰对应注释里"prompt 偏克制"
+  - 失败计数升级为可见子标签：当 `error > 0`，在 chip 后追加红色 (#dc2626) "· 失败 K" 块，配独立 tooltip 解释 "可能是 API key 错、网络问题、超出 rate limit"
+  - chip 渲染从 inline JSX 改为 IIFE，便于本地命名变量 (total, silentPct, restrictive, hasErrors)，可读性提升
+- 不动 Tauri 后端 / counter 模型——只是渲染层修正。301 cargo 不变；tsc 通过。
+- 数学上的 8 字符简化让 bug 至今没人发现——这就是为什么"prompt-tilt 改色"在过去几周看起来一直工作得很安静（事实上从来没起作用过）。修复后行为符合 Iter 95-96 的初衷。
+- 失败子标签设计：与"沉默"同 chip 但语义独立；不合并因为沉默是软信号（prompt 调优反馈），失败是硬信号（API 配置出错）。两者并列让 user 一眼分辨。
+- 没有写新单测——前端 chip 渲染没有测试 harness。但是后端 LlmOutcomeCounters 已被 cargo 测过；本次修复完全是前端逻辑，由 tsc 严格类型 + 数学化简自证。
+- 结果：(a) 沉默率超过 50% 的 chip 现在会真的变橙了；(b) LLM 出错时 user 一眼看到红色 "· 失败 K"，能更快定位 API 问题。两个观察性改进合在一个 iter 因为它们都是 LLM沉默 chip 的修复维度。
+
 ## 2026-05-03 — Iter Cψ：PanelStatsCard 加 "上次开口" 列
 - 现状缺口：PanelStatsCard 显示 今日 / 本周 / 累计 / 陪伴 四列（Iter 74 后）。但用户开 panel 想知道"宠物现在还活着吗"——具体说"上次主动开口距现在多久"——只能去 PanelDebug 的 ToneStrip 找。stats 卡是"宠物概况一目了然"区，应该包含这个高频检查项。
 - 解法：在"累计"和"次主动开口"label 之后、"陪伴"之前插入 "上次 N 前开口" 列：

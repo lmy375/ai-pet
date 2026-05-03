@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cω 设计要点（已实现）
+- **发现 bug 的过程**：本来打算"加一个 API health 指示器"。审查现有 chip 时直接看代码`silent + error > spoke + silent + error`——脑子里立刻消去左右公共项：`0 > spoke`。永远 false。这种"代数化简找 bug"的微习惯救过我多次；以后还得保持。
+- **整数算术 vs float**：本来写 `(silent + error) / total > 0.5`。但 `silent * 2 > total` 等价、避免 float、和后端 redaction.rs / data_driven helper 用过的整数比较模式一致。
+- **error 单独子标签**：曾考虑融进主标签（"LLM沉默+失败 X/Y"）。但失败和沉默是不同语义——沉默是 LLM 自主选择，失败是基础设施问题。合并会让"沉默率高" tone 调优反馈和"API 出错" 配置反馈混淆。子标签红色独立呈现，user 视觉直接分辨。
+- **IIFE 重构**：原来全部 inline JSX，多次重复 `llmOutcomeStats.spoke + llmOutcomeStats.silent + llmOutcomeStats.error`。提到 `total`/`silentPct`/`restrictive`/`hasErrors` 局部变量后，行短了、可读性提了。这种"render block 局部命名"在 React 里可能被认为重，但当 expression 重复 4-5 次时 worth 抽。
+- **不写测试**：前端无 React 测试体系，本次修复完全是 chip 渲染的局部化。但 bug 本身就是教训：Rust 端的 cargo 测试应当能覆盖这种纯 view-time bug，但前端这层一直裸奔。如果未来加 vitest + RTL，这种 chip 渲染应该是早期目标。
+
 ## Iter Cψ 设计要点（已实现）
 - **复用 tone 而不是新 invoke**：since_last_proactive_minutes 已在 ToneSnapshot 里、PanelStatsCard 已接 tone prop（chatty 判断要用）。这次只是从已传进来的 tone 上多读一个字段——零 IPC 增加、零 state 增加。Iter 99 把 PanelStatsCard 从 PanelDebug 抽出来时把 tone 当 props 传，这次正好享受当时的设计 dividend。
 - **"前开口" 反语序而不是 "上次开口前"**：测试小标签拼"前开口"读起来像"距上次开口的时长"——和 "X 天陪伴" 一样的尾置 label 模式。如果写"上次 X 开过口"则 tooltip 的语义重复在主标签上，反而臃肿。
