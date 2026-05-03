@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cν：long-absence-reunion 复合规则
+- 现状缺口：Cμ 给 prompt 加了 `user_absence_tier` 的语气线索，但仅作为 ambient 信息塞进时间行——LLM 看到"用户至少一天没和你互动"是知道，但没有结构化规则告诉它"这意味着开口要带重逢感"。`wake-back` 规则覆盖系统休眠 → 唤醒的瞬间，但用户离开 4 小时不一定伴随系统休眠（合上盖子但持续运行 / 上下班 / 开会），那种长别久离没规则覆盖。
+- 解法：新增一条复合规则 `long-absence-reunion`，与 `engagement-window` / `long-idle-no-restraint` 并列：
+  - 触发条件：`idle_minutes >= LONG_ABSENCE_MINUTES (240)` + `under_chatty` + `!pre_quiet`
+  - 与 `wake-back`（系统休眠唤醒、瞬时事件）正交：long-absence 是用户那一侧的延展（laptop 一直亮着，用户不在）
+  - rule body 引导 LLM：开口带"重逢感"（先简短关心 + 问一句轻松归来话题），不要立刻抛日程/工作类信息密集内容；比 wake-back 近一档，但别热络过头
+  - nature: engagement
+- 改动：
+  - `active_composite_rule_labels` 加 `idle_minutes: u64` 第 7 个参数 + 新 label。三个 production callsite + 13+ 个测试 callsite 全部更新。
+  - `LONG_ABSENCE_MINUTES = 240` 常量（4 小时阈值）。
+  - `proactive_rules` 加新 match arm，使用 `inputs.idle_minutes` 作为参数。
+  - 三处 production callsite 拉 `idle_minutes`：`run_proactive_turn` 直接走参数；`get_tone_snapshot` 从 `clock.snapshot().idle_seconds / 60`；spawn loop 从 snapshot 同源（顺手把原来分两次拿 snapshot 的代码合并成一次以避免 race）。
+  - panelTypes.ts `PROMPT_RULE_DESCRIPTIONS` 加 `long-absence-reunion: { title: "重逢", summary: ..., nature: "engagement" }`。
+  - 三向对齐 alignment 测试通过——fingerprint 表加一行 `("long-absence-reunion", "用户离开了不短的时间")`，scenario 2 升级 idle_minutes 到 LONG_ABSENCE_MINUTES + 60 触发新 label。
+- 2 个新 unit test 锁住边界：阈值上下 / chatty 否决 / pre_quiet 否决；以及一个三规则共存测试（engagement-window + long-idle-no-restraint + long-absence-reunion 同时 fire 时 label 顺序固定）。
+- 测试总数 283 → 285。
+- ASCII 双引号 trap：本来在 rule body 里写 `"刚回来呀" / "下午顺利吗"`，Rust 字面量中 ASCII `"` 立即终止字符串。改成 「刚回来呀」「下午顺利吗」 即可——和 Iter 102 同一个坑。
+- 结果：用户离开 4 小时以上回来，proactive prompt 就会在规则区有一条专门的"重逢"指引，加上时间行的 `(用户已经离开了大半天)` 语气线索，LLM 双重信号往同一个 register 收敛。companion 体验在长 absence 上不再是平铺直叙问候。
+
 ## 2026-05-03 — Iter 74：panel stats 卡加"本周"列
 - 来自历史保留候选的小迭代。speech_daily.json（Iter 71-73 创建）已经按日 bucketed 了 90 天数据，但 PanelStatsCard 只用了"今日"。"本周"维度 = 今天 + 过去 6 天 sum，能立刻给出"最近一周宠物开口频率"印象——比单看"今日"波动小，比"累计"对当下使用强度更敏感。
 - 后端：

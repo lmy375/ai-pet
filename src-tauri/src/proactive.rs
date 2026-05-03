@@ -249,6 +249,13 @@ pub const ENV_AWARENESS_LOW_RATE_PCT: u64 = 30;
 /// fresh sessions where 0 prior speech is the same problem as silent for an hour.
 pub const LONG_IDLE_MINUTES: u64 = 60;
 
+/// Iter Cν: idle_minutes (since *user* last interacted) threshold for the
+/// `long-absence-reunion` composite rule. 240 = 4 hours — distinct from the
+/// system-sleep-driven `wake-back` (which fires on a discrete sleep wake event).
+/// Long absence covers cases where the laptop stayed on but the user was gone:
+/// out for lunch / in a meeting / asleep on a desktop / etc.
+pub const LONG_ABSENCE_MINUTES: u64 = 240;
+
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
 /// adding a rule is just `rules.push(...)` instead of squeezing a line into the middle
 /// of a giant template. Rules are now context-aware: certain rules are added only when
@@ -308,6 +315,7 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         inputs.today_speech_count,
         inputs.chatty_day_threshold,
         inputs.pre_quiet_minutes.is_some(),
+        inputs.idle_minutes,
     );
     for label in env_labels
         .iter()
@@ -350,6 +358,10 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
             "long-idle-no-restraint" => format!(
                 "- **沉默已久但没在克制状态**：距上次你主动开口已经 ≥ {} 分钟（或一直没说过），今天聊得也不多，又不在安静时段——是开口找个新话题的安全窗口。建议先 `get_active_window` 看看用户在做什么，再据此抛一个和 ta 当下场景相关的轻话题（不是问候、不是问感受，是真的「看到 ta 在做 X 想到 Y」）。",
                 LONG_IDLE_MINUTES
+            ),
+            "long-absence-reunion" => format!(
+                "- **用户离开了不短的时间**：约 {} 分钟没和你互动了（≥ {} 分钟阈值）。和 `wake-back`（系统刚唤醒）不同，这是用户那一侧的久别——开口要带「重逢感」：先简短关心一句、问一句轻松的归来话题（如「刚回来呀」「下午顺利吗」），不要立刻抛日程/工作类信息密集内容；语气比 wake-back 近一档但别热络过头。",
+                inputs.idle_minutes, LONG_ABSENCE_MINUTES
             ),
             // Unknown label means a helper added something proactive_rules doesn't know
             // about — log defensively rather than panic, so the prompt still ships.
@@ -450,8 +462,9 @@ pub fn active_composite_rule_labels(
     today_speech_count: u64,
     chatty_day_threshold: u64,
     pre_quiet: bool,
+    idle_minutes: u64,
 ) -> Vec<&'static str> {
-    let mut labels: Vec<&'static str> = Vec::with_capacity(2);
+    let mut labels: Vec<&'static str> = Vec::with_capacity(3);
     if wake_back && has_plan {
         labels.push("engagement-window");
     }
@@ -463,6 +476,13 @@ pub fn active_composite_rule_labels(
     let under_chatty = chatty_day_threshold == 0 || today_speech_count < chatty_day_threshold;
     if long_idle && under_chatty && !pre_quiet {
         labels.push("long-idle-no-restraint");
+    }
+    // Iter Cν: long-absence-reunion fires when the user themselves has been away
+    // ≥ LONG_ABSENCE_MINUTES, regardless of pet-side cadence. Gates on
+    // under_chatty (don't pile on if today's already chatty) and !pre_quiet
+    // (don't add an opener register right before quiet hours kick in).
+    if idle_minutes >= LONG_ABSENCE_MINUTES && under_chatty && !pre_quiet {
+        labels.push("long-absence-reunion");
     }
     labels
 }
@@ -640,6 +660,10 @@ pub async fn get_tone_snapshot(
     let snap = clock.snapshot().await;
     let cadence_min = snap.since_last_proactive_seconds.map(|s| s / 60);
     let cadence = cadence_min.map(|m| idle_tier(m).to_string());
+    // Iter Cν: idle_minutes (since user last interacted) drives the
+    // long-absence-reunion composite rule. Distinct from cadence_min above
+    // (which tracks the pet's own last utterance).
+    let idle_min_for_rules: u64 = snap.idle_seconds / 60;
     let wake_ago = wake.last_wake_seconds_ago().await;
     let (mood_text, mood_motion) = match crate::mood::read_current_mood_parsed() {
         Some((t, m)) => (Some(t), m),
@@ -697,6 +721,7 @@ pub async fn get_tone_snapshot(
         today_count_for_rules,
         chatty_day_threshold,
         pre_quiet,
+        idle_min_for_rules,
     );
     let active_prompt_rules: Vec<String> = env_labels
         .iter()
@@ -1156,15 +1181,17 @@ pub fn spawn(app: AppHandle) {
                 env_total,
                 env_with_any,
             );
-            // Pull cadence (minutes since last proactive) for the long-idle composite.
-            // Same source as run_proactive_turn's cadence_hint construction.
-            let since_last_for_rules = app
+            // Pull cadence (minutes since last proactive) for the long-idle composite,
+            // and idle-minutes (user-side absence) for the long-absence-reunion rule.
+            // Same source as run_proactive_turn's cadence_hint / idle_register.
+            let snap_for_rules = app
                 .state::<InteractionClockStore>()
                 .inner()
                 .snapshot()
-                .await
-                .since_last_proactive_seconds
-                .map(|s| s / 60);
+                .await;
+            let since_last_for_rules =
+                snap_for_rules.since_last_proactive_seconds.map(|s| s / 60);
+            let idle_min_for_rules: u64 = snap_for_rules.idle_seconds / 60;
             let composite_label_set = active_composite_rule_labels(
                 wake_back_for_rules,
                 has_plan_for_rules,
@@ -1172,6 +1199,7 @@ pub fn spawn(app: AppHandle) {
                 chatty_today,
                 chatty_threshold,
                 pre_quiet_for_rules,
+                idle_min_for_rules,
             );
             let active_labels: Vec<&'static str> = env_label_set
                 .iter()
@@ -2956,12 +2984,13 @@ mod prompt_tests {
         // engagement-window: wake_back AND has_plan.
         // long-idle-no-restraint: long_idle (None == long-idle) AND under_chatty AND !pre_quiet.
         // Default for long-idle inputs: Some(8) (short idle), today=0, threshold=5, pre_quiet=false.
+        // idle_min = 0 → long-absence-reunion silent throughout this test.
         let short_idle = Some(8u64);
-        assert!(active_composite_rule_labels(false, false, short_idle, 0, 5, false).is_empty());
-        assert!(active_composite_rule_labels(true, false, short_idle, 0, 5, false).is_empty());
-        assert!(active_composite_rule_labels(false, true, short_idle, 0, 5, false).is_empty());
+        assert!(active_composite_rule_labels(false, false, short_idle, 0, 5, false, 0).is_empty());
+        assert!(active_composite_rule_labels(true, false, short_idle, 0, 5, false, 0).is_empty());
+        assert!(active_composite_rule_labels(false, true, short_idle, 0, 5, false, 0).is_empty());
         assert_eq!(
-            active_composite_rule_labels(true, true, short_idle, 0, 5, false),
+            active_composite_rule_labels(true, true, short_idle, 0, 5, false, 0),
             vec!["engagement-window"],
         );
     }
@@ -2970,23 +2999,23 @@ mod prompt_tests {
     fn active_composite_rule_labels_long_idle_requires_three_signals() {
         // long_idle yes, under_chatty yes, !pre_quiet yes → fires.
         assert_eq!(
-            active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES), 0, 5, false),
+            active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES), 0, 5, false, 0),
             vec!["long-idle-no-restraint"],
         );
         // None (never spoken) is treated as long-idle.
         assert_eq!(
-            active_composite_rule_labels(false, false, None, 0, 5, false),
+            active_composite_rule_labels(false, false, None, 0, 5, false, 0),
             vec!["long-idle-no-restraint"],
         );
         // Short idle (< threshold) → no fire.
-        assert!(active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES - 1), 0, 5, false).is_empty());
+        assert!(active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES - 1), 0, 5, false, 0).is_empty());
         // chatty (today >= threshold) → no fire.
-        assert!(active_composite_rule_labels(false, false, Some(120), 5, 5, false).is_empty());
+        assert!(active_composite_rule_labels(false, false, Some(120), 5, 5, false, 0).is_empty());
         // pre_quiet active → no fire.
-        assert!(active_composite_rule_labels(false, false, Some(120), 0, 5, true).is_empty());
+        assert!(active_composite_rule_labels(false, false, Some(120), 0, 5, true, 0).is_empty());
         // Threshold == 0 disables chatty gate, so under_chatty is always true.
         assert_eq!(
-            active_composite_rule_labels(false, false, Some(120), 9999, 0, false),
+            active_composite_rule_labels(false, false, Some(120), 9999, 0, false, 0),
             vec!["long-idle-no-restraint"],
         );
     }
@@ -2994,8 +3023,78 @@ mod prompt_tests {
     #[test]
     fn active_composite_rule_labels_both_can_fire_together() {
         // wake_back + has_plan + long_idle + under_chatty + !pre_quiet → both labels.
-        let labels = active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false);
+        let labels = active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false, 0);
         assert_eq!(labels, vec!["engagement-window", "long-idle-no-restraint"]);
+    }
+
+    #[test]
+    fn active_composite_rule_labels_long_absence_reunion_gates() {
+        // Threshold boundary — at threshold + under_chatty + !pre_quiet → fires.
+        assert_eq!(
+            active_composite_rule_labels(
+                false,
+                false,
+                Some(8),
+                0,
+                5,
+                false,
+                LONG_ABSENCE_MINUTES,
+            ),
+            vec!["long-absence-reunion"],
+        );
+        // Just below threshold → silent.
+        assert!(active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            0,
+            5,
+            false,
+            LONG_ABSENCE_MINUTES - 1,
+        )
+        .is_empty());
+        // chatty active → silent (don't pile reunion onto a chatty day).
+        assert!(active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            5,
+            5,
+            false,
+            LONG_ABSENCE_MINUTES + 60,
+        )
+        .is_empty());
+        // pre_quiet active → silent (don't open new register before quiet hours).
+        assert!(active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            0,
+            5,
+            true,
+            LONG_ABSENCE_MINUTES + 60,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn active_composite_rule_labels_three_can_coexist() {
+        // wake_back + has_plan + long_idle + under_chatty + !pre_quiet + long_absence
+        // → all three labels emit in order: engagement-window, long-idle-no-restraint,
+        //   long-absence-reunion.
+        let labels = active_composite_rule_labels(
+            true,
+            true,
+            Some(LONG_IDLE_MINUTES),
+            0,
+            5,
+            false,
+            LONG_ABSENCE_MINUTES + 60,
+        );
+        assert_eq!(
+            labels,
+            vec!["engagement-window", "long-idle-no-restraint", "long-absence-reunion"],
+        );
     }
 
     /// Read panelTypes.ts and return the kebab/snake keys defined in
@@ -3074,6 +3173,7 @@ mod prompt_tests {
             ("env-awareness", "最近你开口前几乎都没看环境"),
             ("engagement-window", "此刻是开新话题的好时机"),
             ("long-idle-no-restraint", "沉默已久但没在克制状态"),
+            ("long-absence-reunion", "用户离开了不短的时间"),
         ];
 
         // Sanity: the fingerprint table must cover every label the helpers emit. Use
@@ -3082,7 +3182,7 @@ mod prompt_tests {
             active_environmental_rule_labels(true, true, true, true, true)
                 .into_iter()
                 .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0))
-                .chain(active_composite_rule_labels(true, true, Some(120), 0, 5, false))
+                .chain(active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60))
                 .collect();
         let fingerprint_labels: std::collections::HashSet<&str> =
             fingerprints.iter().map(|(l, _)| *l).collect();
@@ -3113,12 +3213,15 @@ mod prompt_tests {
         // since_last_proactive_minutes stays at base_inputs default (Some(8)) — short.
         let rules1 = proactive_rules(&s1);
 
-        // Scenario 2: long-idle + under-chatty + !pre-quiet.
-        // Covers: long-idle-no-restraint plus everything except chatty / pre-quiet.
+        // Scenario 2: long-idle + under-chatty + !pre-quiet + long-absence.
+        // Covers: long-idle-no-restraint, long-absence-reunion, plus everything
+        // except chatty / pre-quiet.
         let mut s2 = s1;
         s2.pre_quiet_minutes = None;
         s2.today_speech_count = 0;
         s2.since_last_proactive_minutes = Some(LONG_IDLE_MINUTES);
+        s2.idle_minutes = LONG_ABSENCE_MINUTES + 60;
+        s2.idle_register = "用户已经离开了大半天";
         let rules2 = proactive_rules(&s2);
 
         let combined: Vec<&String> = rules1.iter().chain(rules2.iter()).collect();
@@ -3158,7 +3261,7 @@ mod prompt_tests {
         // ever produce. Same input recipe as Iter 89's test for consistency.
         let env = active_environmental_rule_labels(true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
-        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false);
+        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
         let backend: std::collections::HashSet<&'static str> = env
             .iter()
             .chain(data.iter())
@@ -3199,7 +3302,7 @@ mod prompt_tests {
         // All-true inputs surface every possible label all helpers can ever return.
         let env = active_environmental_rule_labels(true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
-        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false);
+        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
         let missing: Vec<&'static str> = env
             .iter()
             .chain(data.iter())
