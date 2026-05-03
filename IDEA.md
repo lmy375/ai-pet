@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R47 设计要点（已实现）
+- **descendant selector 是 CSS scope 的强项**：给整个 panel 加 className，CSS rule `.root input:focus { ... }` 自动 cover 所有 child inputs。**跟 className-per-input 比省 N 倍 edits** —— 10 个 inputs 变 1 个 className edit。也未来友好：新加 input 自动被 cover。这是 CSS scoping 比 utility-class (Tailwind) 强的场景之一 —— 后者要给每个新 element 重复加 class。
+- **outline: none + :focus replacement 是正解，不是删 outline:none**：诱惑是"删 outline: none 让 browser default 回来"。但 default outline 跨浏览器不一致（Chrome 蓝色 / Safari 黑色 / Firefox dotted），跟 R-series 极简风格冲突。**保留 outline:none + 加 :focus replacement** = 控权 + visual identity 一致。这是 "explicit 优于 implicit" 在 CSS focus state 的应用。
+- **R20 / R29 / R46 codified rule 都需要 audit pass**：每个新 codified rule 上线后通常需要 1-2 iter 的 audit-and-backfill。R20 → R21+R22；R29 → R30；R46 → R47。**这是 R-series 的稳定 cadence**：codify rule → 立刻应用一次 → 下个 iter audit 全 codebase 找其他违反 → backfill。**rule 不只是规范未来，也回头清理过去**。
+- **focus ring color #38bdf8 + alpha 0.18 跨 component 一致**：visual identity 通过"反复使用同一颜色规格" 建立。R-series 蓝色调 (#7dd3fc / #38bdf8 / #0ea5e9) 在多处出现 — tab gradient / active app chip / negative band / focus ring 等。**重复 = identity** —— 用户在不同 surface 都看到同色调，潜意识感觉到"这是同一个 app"。
+- **修 accessibility hole 跟 polish iter 一起做**：R46 + R47 都是 polish iter 但本质是修 accessibility issue (focus ring missing)。**polish 不该排除 accessibility audit** —— 反而是好 occasion 顺手修。Polish iter 的 expanded definition: "visual + functional + accessibility tweaks，所有 user-facing surface 改进"。
+- **`input:focus` 的 box-shadow 比 outline 在 border-radius 上更可靠**：outline 在某些浏览器跟 border-radius 不 follow（变成方框）。box-shadow 0 0 0 2px 自动 follow border-radius —— 圆角 input 的 focus ring 也是圆角。**box-shadow focus ring** 是现代 web app 标准；outline 留给 system context menu / forced colors mode fallback。这条 R46 IDEA 已 codify，R47 跨 3 component 应用更稳固。
+- **transition 跨 component 一致 (150ms ease-out)**：R46 + R47 三处 focus transition 都用 `border-color 150ms, box-shadow 150ms ease-out`。**transition timing 一致 = focus 进入感统一** —— 用户在 ChatPanel 切到 PanelSettings 切到 PanelChat focus 都是同一种"软进入" 节奏。如果各处 timing 不同（150 / 200 / 300）跨 panel 会感到 inconsistent。
+
 ## Iter R46 设计要点（已实现）
 - **新 cluster 起点 = audit 旧债 + 加新 polish 一起**：R46 是 ChatPanel cluster 第一 iter。借机把"⚙ JS hover 没改 CSS" + "textarea outline:none 无 replacement" 两个旧债一起还，外加 R-series codified visual recipe 的应用。**cluster 起点 iter 比中间 iter 更适合 audit-and-fix combination** —— 因为开始触碰这 component 时 mental model 最 fresh，旧 issue 能被一并发现。中间 iter 倾向于 single-focus polish。
 - **`outline: none` 是危险默认**：诱惑是设 `outline: none` 让 textarea "干净 default 视觉"。但 **stripping browser default 必须 replacement** —— 否则失去 keyboard accessibility (Tab 键无法看到 focus 在哪)。`outline: none` + 无 replacement 是常见 frontend 反模式。**累积下来的 R-series 类似的潜在 issues 该 audit 一遍**：还有哪些组件用了 `outline: none`？是否都有 replacement？

@@ -283,7 +283,19 @@ export function PanelChat() {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div className="pet-panelchat-root" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Iter R47: focus ring audit — input had `outline: none` with no
+          replacement (same accessibility issue R46 fixed in ChatPanel
+          and R47 fixed in PanelSettings). Scoped descendant selector
+          covers all input/textarea inside this panel. */}
+      <style>{`
+        .pet-panelchat-root input:focus,
+        .pet-panelchat-root textarea:focus {
+          border-color: #38bdf8;
+          box-shadow: 0 0 0 2px rgba(56,189,248,0.18);
+          transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+        }
+      `}</style>
       {/* Session header bar */}
       <div style={sessionBarStyle}>
         <div
