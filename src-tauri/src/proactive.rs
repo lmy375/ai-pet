@@ -243,7 +243,15 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         inputs.env_spoke_total,
         inputs.env_spoke_with_any,
     );
-    for label in env_labels.iter().chain(data_labels.iter()) {
+    let composite_labels = active_composite_rule_labels(
+        !inputs.wake_hint.trim().is_empty(),
+        !inputs.plan_hint.trim().is_empty(),
+    );
+    for label in env_labels
+        .iter()
+        .chain(data_labels.iter())
+        .chain(composite_labels.iter())
+    {
         let rule = match *label {
             "wake-back" => {
                 "- **用户刚从离开桌子回来**：问候要简短克制，先轻打招呼或简短关心一句，不要立刻提日程/工作类信息密集的话题。".to_string()
@@ -274,6 +282,9 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
                 "- **最近你开口前几乎都没看环境**：过去 {} 次主动开口里只有 {} 次调用了 `get_active_window` / `get_weather` / `get_upcoming_events` / `memory_search` 之一（< {}%）。如果决定开口，**这次先调一次 `get_active_window` 看看用户在用什么 app**，再据此说一句贴合当下的话；别凭空起话题。",
                 inputs.env_spoke_total, inputs.env_spoke_with_any, ENV_AWARENESS_LOW_RATE_PCT
             ),
+            "engagement-window" => {
+                "- **此刻是开新话题的好时机**：用户刚从离开桌子回来 + 你今天有 plan 在执行——是把「先简短关心 ta 一下，再点一下 plan 进度」自然串起来的复合时机。一句话里带一句关心 + 一句和 plan 相关的，避免硬切话题，也别只问候不带行动。".to_string()
+            }
             // Unknown label means a helper added something proactive_rules doesn't know
             // about — log defensively rather than panic, so the prompt still ships.
             other => format!("- **[{}]**: (规则文本待补)", other),
@@ -352,6 +363,21 @@ pub fn active_environmental_rule_labels(
     }
     if has_plan {
         labels.push("plan");
+    }
+    labels
+}
+
+/// Returns labels for *composite* rules — those that fire only when multiple individual
+/// signals coincide. Most existing rules are restraints ("be quiet because X"); the
+/// composite group makes room for *positive* prompts ("right now is a good moment to
+/// open up because X+Y") that the singletons can't express. Currently just one label:
+///
+/// - `engagement-window`: user just came back to the desk AND the pet has an in-flight
+///   daily plan — a natural moment to weave concern + plan progress into one line.
+pub fn active_composite_rule_labels(wake_back: bool, has_plan: bool) -> Vec<&'static str> {
+    let mut labels: Vec<&'static str> = Vec::with_capacity(1);
+    if wake_back && has_plan {
+        labels.push("engagement-window");
     }
     labels
 }
@@ -554,9 +580,11 @@ pub async fn get_tone_snapshot(
         env_total,
         env_with_any,
     );
+    let composite_labels = active_composite_rule_labels(wake_back, has_plan);
     let active_prompt_rules: Vec<String> = env_labels
         .iter()
         .chain(data_labels.iter())
+        .chain(composite_labels.iter())
         .map(|s| String::from(*s))
         .collect();
     Ok(ToneSnapshot {
@@ -940,15 +968,17 @@ pub fn spawn(app: AppHandle) {
                 15,
             )
             .is_some();
+            let wake_back_for_rules = matches!(wake_ago_for_rules, Some(secs) if secs <= 600);
+            let has_plan_for_rules = !build_plan_hint().is_empty();
             let env_label_set = active_environmental_rule_labels(
-                matches!(wake_ago_for_rules, Some(secs) if secs <= 600),
+                wake_back_for_rules,
                 mood_for_rules
                     .as_ref()
                     .map(|(t, _)| t.trim().is_empty())
                     .unwrap_or(true),
                 pre_quiet_for_rules,
                 !build_reminders_hint(now_for_rules.naive_local()).is_empty(),
-                !build_plan_hint().is_empty(),
+                has_plan_for_rules,
             );
             let data_label_set = active_data_driven_rule_labels(
                 lifetime_count as usize,
@@ -957,9 +987,12 @@ pub fn spawn(app: AppHandle) {
                 env_total,
                 env_with_any,
             );
+            let composite_label_set =
+                active_composite_rule_labels(wake_back_for_rules, has_plan_for_rules);
             let active_labels: Vec<&'static str> = env_label_set
                 .iter()
                 .chain(data_label_set.iter())
+                .chain(composite_label_set.iter())
                 .copied()
                 .collect();
             let rules_tag = if active_labels.is_empty() {
@@ -1736,6 +1769,18 @@ mod prompt_tests {
         );
     }
 
+    #[test]
+    fn active_composite_rule_labels_requires_both_signals() {
+        // engagement-window only fires when wake_back AND has_plan are both true.
+        assert!(active_composite_rule_labels(false, false).is_empty());
+        assert!(active_composite_rule_labels(true, false).is_empty());
+        assert!(active_composite_rule_labels(false, true).is_empty());
+        assert_eq!(
+            active_composite_rule_labels(true, true),
+            vec!["engagement-window"],
+        );
+    }
+
     /// Read PanelDebug.tsx and return the kebab/snake keys defined in
     /// PROMPT_RULE_DESCRIPTIONS. Used by both alignment tests so the parsing logic
     /// only lives in one place. Plain string scanning — no regex dep — and tolerant
@@ -1826,6 +1871,7 @@ mod prompt_tests {
             ("icebreaker", "你和用户还不熟"),
             ("chatty", "今天已经聊了不少"),
             ("env-awareness", "最近你开口前几乎都没看环境"),
+            ("engagement-window", "此刻是开新话题的好时机"),
         ];
         // Sanity: the fingerprint table must cover every label the helpers emit, so a
         // new backend label without a fingerprint entry here forces the test author
@@ -1834,6 +1880,7 @@ mod prompt_tests {
             active_environmental_rule_labels(true, true, true, true, true)
                 .into_iter()
                 .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0))
+                .chain(active_composite_rule_labels(true, true))
                 .collect();
         let fingerprint_labels: std::collections::HashSet<&str> =
             fingerprints.iter().map(|(l, _)| *l).collect();
@@ -1870,12 +1917,17 @@ mod prompt_tests {
             "PROMPT_RULE_DESCRIPTIONS dictionary appears empty — parser may be broken \
              or the dict was emptied. Iter 89's test should also be failing."
         );
-        // All-true / max-trigger inputs surface every label both backend helpers can
+        // All-true / max-trigger inputs surface every label all backend helpers can
         // ever produce. Same input recipe as Iter 89's test for consistency.
         let env = active_environmental_rule_labels(true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
-        let backend: std::collections::HashSet<&'static str> =
-            env.iter().chain(data.iter()).copied().collect();
+        let composite = active_composite_rule_labels(true, true);
+        let backend: std::collections::HashSet<&'static str> = env
+            .iter()
+            .chain(data.iter())
+            .chain(composite.iter())
+            .copied()
+            .collect();
         let ghosts: Vec<&str> = frontend_keys
             .iter()
             .filter(|k| !backend.contains(k.as_str()))
@@ -1907,12 +1959,14 @@ mod prompt_tests {
         );
         let frontend_set: std::collections::HashSet<&str> =
             frontend_keys.iter().map(|s| s.as_str()).collect();
-        // All-true inputs surface every possible label both helpers can ever return.
+        // All-true inputs surface every possible label all helpers can ever return.
         let env = active_environmental_rule_labels(true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
+        let composite = active_composite_rule_labels(true, true);
         let missing: Vec<&'static str> = env
             .iter()
             .chain(data.iter())
+            .chain(composite.iter())
             .filter(|l| !frontend_set.contains(*l))
             .copied()
             .collect();
@@ -1942,8 +1996,9 @@ mod prompt_tests {
         inputs.env_spoke_total = 12;
         inputs.env_spoke_with_any = 1;
         let rules = proactive_rules(&inputs);
-        // 6 always-pushed base rules + 5 env labels + 3 data labels = 14.
-        assert_eq!(rules.len(), 6 + 5 + 3, "rules: {:#?}", rules);
+        // 6 always-pushed base + 5 env + 3 data + 1 composite (engagement-window
+        // fires because wake_hint and plan_hint are both set) = 15.
+        assert_eq!(rules.len(), 6 + 5 + 3 + 1, "rules: {:#?}", rules);
         // No "TODO" fallback for any active label.
         assert!(!rules.iter().any(|r| r.contains("规则文本待补")));
     }

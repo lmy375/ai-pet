@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 92：第一条积极复合规则 engagement-window
+- 新 `active_composite_rule_labels(wake_back, has_plan) -> Vec<&'static str>`：仅当两个信号同时为真才返回 `["engagement-window"]`。引入"复合规则"分类，与 environmental / data-driven 并列三类。
+- proactive_rules 现在 chain 三个 label 集（env + data + composite），新 match arm "engagement-window" 推一条积极规则文本："此刻是开新话题的好时机：用户刚从离开桌子回来 + 你今天有 plan 在执行——是把「先简短关心 ta 一下，再点一下 plan 进度」自然串起来的复合时机。一句话里带一句关心 + 一句和 plan 相关的，避免硬切话题，也别只问候不带行动。"
+- 这是首条**鼓励开口**的规则——之前 8 条都是 restraint（icebreaker/chatty/pre-quiet）或 corrective（env-awareness）或 instructional（wake-back/first-mood/reminders/plan）。engagement-window 把"刚回桌子 + 有今日计划"两个独立信号合成一个"使用此刻"的方向性提示，让 LLM 不只是被各种条件压制，也能主动识别值得开口的窗口。
+- ToneSnapshot.active_prompt_rules 和 dispatch loop 的 `rules=` tag 都加 composite labels 到链尾。前端 PROMPT_RULE_DESCRIPTIONS 加 "engagement-window" → "积极开口" / "刚回桌 + 有今日 plan：是「先关心、再带 plan」串起来的复合时机。"
+- 三层守护测试自动跟随：
+  - Iter 89 backend→frontend：composite labels 加入 backend 全集枚举 → 强制前端添加翻译（已通过）
+  - Iter 90 frontend→backend：composite labels 加入比对集 → 阻止前端添加 ghost（已通过）
+  - Iter 91 match arm 完整性：fingerprint 表加 ("engagement-window", "此刻是开新话题的好时机") + sanity check 包含 composite helper 全集（已通过）
+- 新单测 `active_composite_rule_labels_requires_both_signals` + 更新 `proactive_rules_contextual_count_matches_label_count`（15 = 6 base + 5 env + 3 data + 1 composite）。
+- 179 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 91：proactive_rules match arm 完整性测试
 - 新单测 `proactive_rules_has_match_arm_for_every_backend_label`：构造全 8 条 contextual 规则同时触发的 inputs，跑 `proactive_rules`，做两层断言：
   1. 输出中**没有** "规则文本待补" 字符串（fallback path 不应被走到）
