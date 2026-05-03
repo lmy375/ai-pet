@@ -327,6 +327,12 @@ pub struct ToneSnapshot {
     /// `chars().count()` so multibyte CJK doesn't inflate the number
     /// 3× the way `len()` would.
     pub last_prompt_chars: Option<usize>,
+    /// Iter R34: trailing silent streak — count of consecutive most-recent
+    /// turns where outcome="silent". Surfaces R33's prompt-only signal as
+    /// a panel chip so user can see "pet has been quiet 3 turns in a row"
+    /// at a glance. Stable between turns (no flicker); resets on next
+    /// spoke turn. 0 = no streak / pet just spoke.
+    pub consecutive_silent_streak: usize,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -773,6 +779,18 @@ pub async fn build_tone_snapshot(
             .lock()
             .ok()
             .and_then(|g| g.as_ref().map(|s| s.chars().count())),
+        // Iter R34: read-only count of trailing-silent ring buffer. Same
+        // pure helper R33 uses for prompt nudge — single source of truth
+        // (chip threshold and prompt threshold can't drift since both
+        // call count_trailing_silent on the same buffer).
+        consecutive_silent_streak: LAST_PROACTIVE_TURNS
+            .lock()
+            .ok()
+            .map(|g| {
+                let snap: Vec<TurnRecord> = g.iter().cloned().collect();
+                count_trailing_silent(&snap)
+            })
+            .unwrap_or(0),
     })
 }
 

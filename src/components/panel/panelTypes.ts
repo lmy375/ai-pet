@@ -134,6 +134,10 @@ export interface ToneSnapshot {
   // Iter R31: char count of the last proactive prompt (chars().count(),
   // not bytes — CJK-friendly). Null when no turn has fired yet.
   last_prompt_chars: number | null;
+  // Iter R34: trailing silent streak — number of most-recent turns where
+  // LLM chose silence in a row. 0 = pet just spoke (or fresh process).
+  // Panel chip fires only at ≥3 (matches R33's prompt-side threshold).
+  consecutive_silent_streak: number;
 }
 
 /**
