@@ -2,6 +2,31 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cδ：panel 添加"委托任务"快捷入口 + 分类 placeholder
+- 现状缺口：Iter Cγ 已经做了 butler_tasks 类别，但用户从 panel 入手要先点 Memory tab，再
+  滚到 butler_tasks 区域，再点 "+ 新建"——三步才能加任务。而且打开模态后描述框是空的，
+  用户不知道该写什么格式。新方向是宠物管家，加任务的路径应该是一等公民。
+- 解法：
+  - 在 Memory tab 顶部的搜索行加一个显眼的 **"+ 委托任务"**蓝色按钮（与现有"立即整理"
+    紫色按钮并列）。点击直接打开新建模态、分类预设为 butler_tasks。从"找到分区→新建"
+    三步压缩到一步。
+  - 新建/编辑模态的描述 textarea 加 `placeholder`，根据当前所选分类显示对应示例：
+    - `butler_tasks`: "比如：每天 9 点把今日日历汇总写到 ~/today.md / 周末整理 ~/Downloads…"
+      （加一句解释"宠物会在 proactive 主动开口时尝试执行"）
+    - `todo`: "用户提醒自己的事项。建议加前缀：[remind: 17:00] 喝水…"
+    - `user_profile`: "关于用户习惯/偏好的稳定事实。比如：起床时间…"
+    - `ai_insights`: "通常由 LLM 自己写。current_mood / persona_summary 受保护。"
+    - `general`: "其他不属于以上类别的记忆。"
+  - 选 butler_tasks 时把 textarea minHeight 从 60px 升到 100px——任务描述天然比单点
+    reminder 长，给更舒服的输入空间。
+- 5 行 dict + 1 个新按钮 + 2 行模态 props 改动。无后端改动。
+- 既不破坏现有"per-category + 新建"按钮（用户在某个分区下面点"+新建"还是只能加那一类
+  的记忆），也加了"top-level fast lane"给 butler_tasks。
+- tsc 干净；前端无单测体系所以本次只做视觉与交互层改动，不增 cargo 数。
+- 结果：panel 头部直接看到一个蓝色"+ 委托任务"，新增 butler_tasks 是单击操作；用户
+  打开模态就能从 placeholder 里学到格式约定。Cε（执行留痕）现在可以接续——一旦用户愿
+  意通过这个入口加任务，下一个 iter 就要让 LLM 真的能 close the loop。
+
 ## 2026-05-03 — Iter Cγ：butler_tasks 类别 + 宠物管家方向首切
 - 用户给出新方向：放弃跨设备同步（已从 TODO/STATUS 删除），转向 "宠物管家" — 让宠物执行用户委托的实际工作。这是 Iter Cγ 的起点。
 - 新增 `butler_tasks` 记忆类别，与 `ai_insights / user_profile / todo / general` 并列：

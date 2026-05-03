@@ -10,9 +10,7 @@
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
-- [ ] Iter Cδ：panel 给 butler_tasks 单独的 add/edit affordance——让用户在 panel 直接
-  「+新建任务」时默认分类是 butler_tasks，描述框给个 placeholder 示例
-  「每天 9 点把今日日历汇总写到 ~/today.md」。
+- [x] Iter Cδ：panel 顶部 "+ 委托任务" 快捷入口 + 模态分类 placeholder（2026-05-03 完成）
 - [ ] Iter Cε：butler_task 执行留痕——LLM 完成一项时自动 append 到 speech_history
   并发 panel 事件，让用户能看到"宠物刚为我做了什么"。
 - [ ] Iter Cζ：scheduled butler_tasks——支持 description 前缀 `[every: 09:00]` /
