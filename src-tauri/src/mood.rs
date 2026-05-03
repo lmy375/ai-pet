@@ -19,6 +19,35 @@ use crate::tools::ToolContext;
 pub const MOOD_CATEGORY: &str = "ai_insights";
 pub const MOOD_TITLE: &str = "current_mood";
 
+/// Iter Cο: serializable shape exposed to the panel via `get_current_mood`. Carries
+/// both the parsed (text + motion) and the raw description for inspection. Empty
+/// `text` and `None` motion together mean "no mood recorded yet" — frontend should
+/// render an empty state rather than dashes.
+#[derive(serde::Serialize)]
+pub struct CurrentMood {
+    pub text: String,
+    pub motion: Option<String>,
+    pub raw: String,
+}
+
+/// Tauri command — current mood for the panel persona view. Returns an all-empty
+/// shape (raw="") when the entry hasn't been written yet so the frontend can
+/// distinguish "no mood" from "mood with empty text".
+#[tauri::command]
+pub fn get_current_mood() -> CurrentMood {
+    match read_current_mood() {
+        Some(raw) => {
+            let (text, motion) = parse_mood_string(&raw);
+            CurrentMood { text, motion, raw }
+        }
+        None => CurrentMood {
+            text: String::new(),
+            motion: None,
+            raw: String::new(),
+        },
+    }
+}
+
 /// Read the pet's current mood/state from memory (`ai_insights/current_mood`). Returns the
 /// item's description if present, otherwise `None`. The LLM bootstraps this on first
 /// proactive turn via `memory_edit` — we never write it from Rust to keep the source of

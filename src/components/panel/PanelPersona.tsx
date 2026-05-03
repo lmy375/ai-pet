@@ -14,27 +14,52 @@ import { invoke } from "@tauri-apps/api/core";
  *
  * Polling is light (every 5s) — this view is for occasional审视, not a live dashboard.
  */
+// Iter Cο: shape returned by `get_current_mood`. text/motion are the parsed
+// `[motion: X] free text` form; raw is the unparsed description for inspection.
+interface CurrentMood {
+  text: string;
+  motion: string | null;
+  raw: string;
+}
+
+// Maps the four LLM-written motion groups to compact glyph + Chinese label.
+// Mirrors the front-end keyword fallback used by the bubble's Live2D motion
+// picker (Iter 8) — kept tight so future motion additions update both places.
+const MOTION_META: Record<string, { glyph: string; label: string; color: string }> = {
+  Tap: { glyph: "💗", label: "开心 / 活泼", color: "#ec4899" },
+  Flick: { glyph: "✨", label: "想分享 / 有兴致", color: "#f59e0b" },
+  Flick3: { glyph: "💢", label: "焦虑 / 烦躁", color: "#ea580c" },
+  Idle: { glyph: "💤", label: "平静 / 沉静", color: "#64748b" },
+};
+
 export function PanelPersona() {
   const [installDate, setInstallDate] = useState<string>("");
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
   const [personaSummary, setPersonaSummary] = useState<string>("");
   const [moodTrend, setMoodTrend] = useState<string>("");
+  const [currentMood, setCurrentMood] = useState<CurrentMood>({
+    text: "",
+    motion: null,
+    raw: "",
+  });
 
   useEffect(() => {
     let cancelled = false;
     const fetchAll = async () => {
       try {
-        const [date, days, summary, trend] = await Promise.all([
+        const [date, days, summary, trend, mood] = await Promise.all([
           invoke<string>("get_install_date"),
           invoke<number>("get_companionship_days"),
           invoke<string>("get_persona_summary"),
           invoke<string>("get_mood_trend_hint"),
+          invoke<CurrentMood>("get_current_mood"),
         ]);
         if (cancelled) return;
         setInstallDate(date);
         setCompanionshipDays(days);
         setPersonaSummary(summary);
         setMoodTrend(trend);
+        setCurrentMood(mood);
       } catch (e) {
         console.error("PanelPersona fetch failed:", e);
       }
@@ -111,6 +136,82 @@ export function PanelPersona() {
         ) : (
           <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, fontStyle: "italic" }}>
             还没生成。开口几次后等下一次 consolidate 跑（默认 6 小时间隔，或在调试 → 立即整理）即会基于近期发言写一段自我观察。
+          </p>
+        )}
+      </Section>
+
+      {/* Iter Cο: current mood — live snapshot of ai_insights/current_mood. Sits
+          between persona summary (mid-term) and mood trend (long-term) so the
+          three sections form a temporal stack: who I am long-term ↘ how I feel
+          right now ↘ how I've trended lately. */}
+      <Section
+        title="当下心情"
+        subtitle="ai_insights/current_mood — 宠物每次主动开口时由 LLM 自己更新"
+      >
+        {currentMood.text || currentMood.motion ? (
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+            {currentMood.motion && MOTION_META[currentMood.motion] ? (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: "4px",
+                  minWidth: "64px",
+                }}
+                title={`motion: ${currentMood.motion}`}
+              >
+                <span style={{ fontSize: "32px", lineHeight: 1 }}>
+                  {MOTION_META[currentMood.motion].glyph}
+                </span>
+                <span
+                  style={{
+                    fontSize: "11px",
+                    color: MOTION_META[currentMood.motion].color,
+                    fontWeight: 500,
+                  }}
+                >
+                  {MOTION_META[currentMood.motion].label}
+                </span>
+              </div>
+            ) : (
+              currentMood.motion && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "4px",
+                    minWidth: "64px",
+                  }}
+                >
+                  <span style={{ fontSize: "20px" }}>?</span>
+                  <span style={{ fontSize: "10px", color: "#94a3b8" }}>
+                    {currentMood.motion}
+                  </span>
+                </div>
+              )
+            )}
+            <p
+              style={{
+                fontSize: "14px",
+                color: "#1e293b",
+                lineHeight: 1.7,
+                margin: 0,
+                flex: 1,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {currentMood.text || (
+                <span style={{ color: "#94a3b8", fontStyle: "italic" }}>
+                  （只有 motion 标签没文字）
+                </span>
+              )}
+            </p>
+          </div>
+        ) : (
+          <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, fontStyle: "italic" }}>
+            还没有心情记录。第一次主动开口后，LLM 会用 memory_edit create 写入 ai_insights/current_mood。
           </p>
         )}
       </Section>

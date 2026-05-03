@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cο：PanelPersona 加"当下心情"区
+- 现状缺口：PanelPersona 之前有三块：陪伴时长 / 自我画像 / 心情谱（长期 motion 分布）。"当下心情" 这种 live state 只在 PanelDebug 的 ToneStrip 里以一条小字显示——但 ToneStrip 是 debug 视角；用户从「我的宠物现在什么感觉」语义出发会看 Persona 而不是 Debug。结果导致 user 看不到当下心情这个本应该是 persona 重点的信息。
+- 解法：
+  - 后端新加 `mood::CurrentMood { text, motion, raw }` + `#[tauri::command] get_current_mood()`，返回 parsed mood（text + motion + 原始 description）。空 `raw == ""` 表示尚未记录。
+  - 前端 PanelPersona 新增"当下心情"section，插在 自我画像 与 心情谱 之间——形成时间维度自然顺序：长期身份 → 当下感受 → 长期情绪走向。
+  - motion → emoji + 中文标签 + 颜色 mapping（`MOTION_META`）：
+    - Tap 💗 开心/活泼 (粉)
+    - Flick ✨ 想分享/有兴致 (琥珀)
+    - Flick3 💢 焦虑/烦躁 (橙)
+    - Idle 💤 平静/沉静 (灰)
+  - 渲染左侧 motion 视觉（32px emoji + 11px 标签）+ 右侧 mood text；空状态显示「还没记录」提示用户首次主动开口会自动写入。
+  - 已知 motion 但 unknown name 时 fallback 显 `?` + 字面 name，避免哑掉；也避免在 LLM 写新 motion 时 panel 崩。
+- 5 秒轮询同 PanelPersona 现有节奏——live 但不暴力。
+- 测试总数仍 286（前端 panel 没单测体系，但加了 backend 命令；mood.rs 已有的 8 个 unit 覆盖 parse；新命令本身只是 wrap，IO-bound 跑不了 unit）。
+- 结果：用户打开 Persona tab 现在能看到"我的宠物：陪了 N 天 / 自己写的画像 / 当下心情 motion+text / 长期情绪走向"四层完整画面——不必跳到 Debug 找 mood 行。和 ToneStrip 的轻量条目并存（debug 仍有），但语义视图与维护视图分离开。
+
 ## 2026-05-03 — Iter Cξ：first-of-day 环境规则
 - 现状缺口：用户每天打开 panel 第一次看到宠物开口时，希望感觉像"早安"那种打底问候——但 prompt 没有告诉 LLM "这是今天第一次开口"。结果第一次开口的语气和第十次没分别，"日界"这个对人类很重要的节奏感对宠物完全不存在。
 - 解法：新增环境规则 `first-of-day`，与 wake-back / first-mood / pre-quiet / reminders / plan 同列：
