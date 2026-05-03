@@ -97,6 +97,55 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
   }, [showMenu]);
+  // Iter R55: transient instruction note. Lets user leave a context note
+  // ("I'm in a meeting" / "I'm not feeling well") that pet's next
+  // proactive prompt sees as "[临时指示]" directive. Different from mute
+  // (R52) which fully blocks — note keeps pet active but with awareness.
+  const [showNotePopover, setShowNotePopover] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const [noteMinutes, setNoteMinutes] = useState(60);
+  const [noteActive, setNoteActive] = useState(false);
+  useEffect(() => {
+    invoke<[string, string]>("get_transient_note")
+      .then(([text]) => {
+        setNoteActive(text !== "");
+        if (text) setNoteText(text);
+      })
+      .catch(() => setNoteActive(false));
+  }, []);
+  const handleNoteSubmit = async () => {
+    try {
+      const result = await invoke<string>("set_transient_note", {
+        text: noteText,
+        minutes: noteMinutes,
+      });
+      setNoteActive(result !== "");
+      setShowNotePopover(false);
+    } catch (e) {
+      console.error("set_transient_note failed:", e);
+    }
+  };
+  const handleNoteClear = async () => {
+    try {
+      await invoke<string>("set_transient_note", { text: "", minutes: 0 });
+      setNoteActive(false);
+      setNoteText("");
+      setShowNotePopover(false);
+    } catch (e) {
+      console.error("set_transient_note clear failed:", e);
+    }
+  };
+  useEffect(() => {
+    if (!showNotePopover) return;
+    const close = (e: MouseEvent) => {
+      // Only close on outside clicks. Inside-popover clicks have stopPropagation.
+      if (!(e.target as HTMLElement)?.closest?.(".pet-note-popover")) {
+        setShowNotePopover(false);
+      }
+    };
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [showNotePopover]);
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -228,6 +277,142 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
                   {opt.label}
                 </button>
               ))}
+            </div>
+          )}
+        </div>
+        {/* Iter R55: 📝 note button — leave a transient context for pet. */}
+        <div style={{ position: "relative" }}>
+          <div
+            className="pet-settings-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowNotePopover((v) => !v);
+            }}
+            style={{
+              width: "36px",
+              height: "36px",
+              borderRadius: "50%",
+              background: noteActive ? "rgba(8,145,178,0.9)" : "rgba(255,255,255,0.9)",
+              backdropFilter: "blur(8px)",
+              border: noteActive ? "1px solid rgba(8,145,178,0.5)" : "1px solid rgba(200,200,200,0.5)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              fontSize: "15px",
+              flexShrink: 0,
+              boxSizing: "border-box",
+              color: noteActive ? "#fff" : "inherit",
+            }}
+            title={noteActive ? "已留临时指示 — 点击编辑或解除" : "给 pet 留临时指示（如「在开会」「身体不太舒服」）"}
+          >
+            📝
+          </div>
+          {showNotePopover && (
+            <div
+              className="pet-note-popover"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                bottom: "44px",
+                right: 0,
+                background: "rgba(255,255,255,0.98)",
+                backdropFilter: "blur(8px)",
+                border: "1px solid rgba(200,200,200,0.5)",
+                borderRadius: "10px",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                padding: "10px",
+                width: "260px",
+                zIndex: 100,
+                display: "flex",
+                flexDirection: "column",
+                gap: "8px",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b" }}>
+                给 pet 留临时指示（自动到期清除）
+              </div>
+              <textarea
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                placeholder="例如：我在开会到 14:00 / 身体不太舒服请轻一点"
+                rows={3}
+                className="pet-chat-input"
+                style={{
+                  width: "100%",
+                  padding: "6px 8px",
+                  borderRadius: "6px",
+                  border: "1px solid #e2e8f0",
+                  fontSize: "12px",
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                  outline: "none",
+                  boxSizing: "border-box",
+                  transition: "border-color 150ms ease-out, box-shadow 150ms ease-out",
+                }}
+              />
+              <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                {[30, 60, 120, 240].map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setNoteMinutes(m)}
+                    style={{
+                      padding: "3px 8px",
+                      fontSize: "11px",
+                      borderRadius: "6px",
+                      border: `1px solid ${noteMinutes === m ? "#0891b2" : "#cbd5e1"}`,
+                      background: noteMinutes === m ? "#0891b2" : "#fff",
+                      color: noteMinutes === m ? "#fff" : "#475569",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {m} min
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: "6px" }}>
+                <button
+                  type="button"
+                  onClick={handleNoteSubmit}
+                  disabled={!noteText.trim()}
+                  style={{
+                    flex: 1,
+                    padding: "6px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: noteText.trim() ? "#0891b2" : "#cbd5e1",
+                    color: "#fff",
+                    cursor: noteText.trim() ? "pointer" : "not-allowed",
+                    fontFamily: "inherit",
+                    fontWeight: 600,
+                    fontSize: "12px",
+                  }}
+                >
+                  保存 · {noteMinutes} min
+                </button>
+                {noteActive && (
+                  <button
+                    type="button"
+                    onClick={handleNoteClear}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "6px",
+                      border: "1px solid #dc2626",
+                      background: "#fff",
+                      color: "#dc2626",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                    }}
+                  >
+                    解除
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>

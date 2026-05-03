@@ -151,6 +151,8 @@ pub fn run() {
             proactive::get_tone_snapshot,
             proactive::set_mute_minutes,
             proactive::get_mute_until,
+            proactive::set_transient_note,
+            proactive::get_transient_note,
             proactive::get_pending_reminders,
             consolidate::trigger_consolidate,
             proactive::trigger_proactive_turn,

@@ -156,6 +156,10 @@ pub struct PromptInputs<'a> {
     /// Differs from R26 aggregate hint: R26 = 20-window ratio (smoothed),
     /// R35 = uninterrupted recent run (urgency).
     pub consecutive_negative_hint: &'a str,
+    /// Iter R55: transient instruction note from user. Pre-formatted with
+    /// "[临时指示]" prefix when active; empty when no note set or expired.
+    /// Built by `gate::transient_note_active()` + caller-side wrapping.
+    pub transient_note_hint: &'a str,
     /// Iter R3: current local hour (0-23). Used by composite rules that need
     /// time-of-day specificity beyond the coarse `period` label — currently
     /// the late-night-wellness rule (0:00-3:59 + active idle).
@@ -374,6 +378,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.feedback_aggregate_hint);
     push_if_nonempty(&mut s, inputs.consecutive_silent_hint);
     push_if_nonempty(&mut s, inputs.consecutive_negative_hint);
+    push_if_nonempty(&mut s, inputs.transient_note_hint);
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
     push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);

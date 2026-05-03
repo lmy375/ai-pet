@@ -343,6 +343,10 @@ pub struct ToneSnapshot {
     /// turns. Distinct from `proactive_enabled` (persistent toggle);
     /// this is "be quiet for next session" state.
     pub mute_remaining_seconds: Option<i64>,
+    /// Iter R55: transient instruction note text. None = no note (or
+    /// expired). Some(text) = active note text. Distinct from mute —
+    /// note adds context, doesn't block.
+    pub transient_note: Option<String>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -810,6 +814,9 @@ pub async fn build_tone_snapshot(
         // Iter R52: transient mute remaining seconds. Same pure helper
         // gate uses (mute_remaining_seconds) so chip + gate can't drift.
         mute_remaining_seconds: mute_remaining_seconds(),
+        // Iter R55: transient note. Same pure helper as prompt assembler,
+        // chip + prompt + gate-bypass all read same source.
+        transient_note: transient_note_active(),
     })
 }
 
@@ -856,6 +863,47 @@ pub fn get_mute_until() -> String {
     };
     let until = chrono::Local::now() + chrono::Duration::seconds(secs);
     until.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+}
+
+/// Iter R55: set transient instruction note for `minutes` from now. Empty
+/// text or 0 minutes clears. Distinct from mute (R52) — note doesn't
+/// block proactive turns, just adds context. Returns ISO timestamp
+/// when active, empty when cleared.
+#[tauri::command]
+pub fn set_transient_note(text: String, minutes: i64) -> String {
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() || minutes <= 0 {
+        if let Ok(mut g) = TRANSIENT_NOTE.lock() {
+            *g = None;
+        }
+        return String::new();
+    }
+    let until = chrono::Local::now() + chrono::Duration::minutes(minutes);
+    if let Ok(mut g) = TRANSIENT_NOTE.lock() {
+        *g = Some(TransientNote {
+            text: trimmed,
+            until,
+        });
+    }
+    until.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+}
+
+/// Iter R55: read current TRANSIENT_NOTE state. Returns `(text, until_iso)`
+/// when active, both empty when none. Frontend uses both: text for chip
+/// preview, until for countdown.
+#[tauri::command]
+pub fn get_transient_note() -> (String, String) {
+    let Some(note) = TRANSIENT_NOTE.lock().ok().and_then(|g| g.clone()) else {
+        return (String::new(), String::new());
+    };
+    let now = chrono::Local::now();
+    if note.until <= now {
+        return (String::new(), String::new());
+    }
+    (
+        note.text,
+        note.until.format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+    )
 }
 
 // Iter QG5c-prep: pure time/calendar/idle-band helpers (idle_tier /
@@ -1232,6 +1280,16 @@ async fn run_proactive_turn(
         let streak = crate::feedback_history::count_trailing_negative(&recent_feedback);
         crate::feedback_history::format_consecutive_negative_hint(streak, NEGATIVE_STREAK_THRESHOLD)
     };
+    // Iter R55: transient instruction note. Wraps the user-provided text
+    // with a clear "[临时指示]" header so LLM treats it as authoritative
+    // current-state directive (vs general history hint).
+    let transient_note_hint = match transient_note_active() {
+        Some(text) => format!(
+            "[临时指示] 用户当前留下的状态/指令：「{}」。这是用户主动告知 pet 的当前状态，开口时请直接尊重 / 配合，不要怀疑或追问。",
+            crate::redaction::redact_with_settings(&text)
+        ),
+        None => String::new(),
+    };
 
     // If the proactive loop noticed a sleep gap recently (≤ 10 minutes ago), surface it
     // so the LLM can choose a "welcome back" register. Strong signal that the user was
@@ -1458,6 +1516,7 @@ async fn run_proactive_turn(
         feedback_aggregate_hint: &feedback_aggregate_hint,
         consecutive_silent_hint: &consecutive_silent_hint,
         consecutive_negative_hint: &consecutive_negative_hint,
+        transient_note_hint: &transient_note_hint,
         hour: now_local.hour() as u8,
         recently_fired_wellness: late_night_wellness_in_cooldown(),
         repeated_topic_hint: &repeated_topic_hint,
@@ -1960,6 +2019,7 @@ mod prompt_tests {
             feedback_aggregate_hint: "",
             consecutive_silent_hint: "",
             consecutive_negative_hint: "",
+            transient_note_hint: "",
             // Default 14 (afternoon) — well outside the late-night-wellness window
             // (hours 0..LATE_NIGHT_END_HOUR=4) so existing tests stay neutral.
             // Tests for the late-night rule set this to 0/1/2/3 explicitly.
