@@ -118,6 +118,19 @@ export interface ToneSnapshot {
   // first observed this app. Null on fresh process / non-macOS / when
   // proactive loop hasn't run yet.
   active_app: { app: string; minutes: number } | null;
+  // Iter R23: cooldown derivation breakdown — lets the cooldown chip
+  // hover show "configured × mode_factor (mode) × feedback_factor
+  // (feedback_band) = effective" math. Null when proactive disabled or
+  // configured cooldown is 0 (gate effectively off).
+  cooldown_breakdown: {
+    configured_seconds: number;
+    mode: string;
+    mode_factor: number;
+    after_mode_seconds: number;
+    feedback_band: string;
+    feedback_factor: number;
+    effective_seconds: number;
+  } | null;
 }
 
 /**

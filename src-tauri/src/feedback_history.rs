@@ -241,6 +241,29 @@ pub fn adapted_cooldown_seconds(
     base_cooldown_secs
 }
 
+/// Iter R23: classify the current feedback band as a stable label string
+/// for panel display. Mirrors `adapted_cooldown_seconds` branching exactly
+/// so chip hover and gate behavior stay aligned. Returns `(band, factor)`:
+/// - `"high_negative"`, 2.0 — ratio > 0.6 with enough samples
+/// - `"low_negative"`, 0.7 — ratio < 0.2 with enough samples
+/// - `"mid"`, 1.0 — between thresholds
+/// - `"insufficient_samples"`, 1.0 — below `FEEDBACK_ADAPT_MIN_SAMPLES`
+///   or no entries at all (R7 leaves base unchanged)
+pub fn classify_feedback_band(entries: &[FeedbackEntry]) -> (&'static str, f64) {
+    match negative_signal_ratio(entries) {
+        Some((ratio, n)) if n >= FEEDBACK_ADAPT_MIN_SAMPLES => {
+            if ratio > ADAPT_HIGH_IGNORE_THRESHOLD {
+                ("high_negative", ADAPT_HIGH_IGNORE_MULTIPLIER)
+            } else if ratio < ADAPT_LOW_IGNORE_THRESHOLD {
+                ("low_negative", ADAPT_LOW_IGNORE_MULTIPLIER)
+            } else {
+                ("mid", 1.0)
+            }
+        }
+        _ => ("insufficient_samples", 1.0),
+    }
+}
+
 /// Format a feedback hint for the proactive prompt from the most recent
 /// entry. Empty list → empty string. Single entry → one-line nudge that the
 /// LLM can absorb. Pure / testable.

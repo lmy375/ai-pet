@@ -2,6 +2,31 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R23：cooldown chip 显 derivation breakdown（含修一个 D9 bug）
+- 现状缺口 + 顺手发现的 bug：⏳ 冷却 chip 显示"还剩 30m" 但用户看不到 WHY 30m。R7 cooldown adapter 应用 companion_mode + negative_signal_ratio 两层乘数，但 chip 不展示这层数学。**深入看代码发现一个 D9 bug**：cooldown_remaining_seconds 用 raw `cooldown_seconds` 计算，但 gate.rs 用 effective cooldown 决策 — chip 数字跟 gate 实际行为不一致！companion_mode chatty 把 base 减半时，chip 仍显 base 值，用户看到 chip "还剩 30m" 但 gate 实际 15m 后就放过。R23 修 bug + 加 surface。
+- 解法 — 新 struct + 纯 helper + chip hover 升级：
+  - feedback_history.rs 加纯 `pub fn classify_feedback_band(entries) -> (&'static str, f64)`：返 ("high_negative" 2.0)/"low_negative" 0.7)/"mid" 1.0)/"insufficient_samples" 1.0) — mirror adapted_cooldown_seconds branching。这是 R23 唯一新 logic，单元测试 5 case 全覆盖。
+  - proactive.rs 新 `pub struct CooldownBreakdown { configured_seconds, mode, mode_factor, after_mode_seconds, feedback_band, feedback_factor, effective_seconds }` 7 字段。serde-serializable。
+  - 新 `pub fn build_cooldown_breakdown(recent_fb) -> Option<CooldownBreakdown>`：拉 settings → 算 mode_factor (after_mode / configured，让未来加 mode 不需 hardcode 表) → classify band → effective = after_mode × factor。
+  - ToneSnapshot 加 cooldown_breakdown 字段。build_tone_snapshot 共享 `recent_feedback_for_signals` fetch，feedback_summary + cooldown_breakdown 都消费它（R20/R21 fetch 共享 pattern）。
+  - **修 D9 bug**：cooldown_remaining_seconds 改用 `cooldown_breakdown.effective_seconds` 算 remaining，跟 gate 一致。
+  - panelTypes.ts 加 cooldown_breakdown 类型。
+  - PanelToneStrip ⏳ chip 文案不变，hover 升级到 "configured 1800s × 1.0 (balanced) × 2.0 (high_negative) = effective 3600s, 还剩 1234s。"
+- 决策 — 抽 `classify_feedback_band` 到 feedback_history.rs：原本想直接 inline 在 build_cooldown_breakdown 里。但分类 logic 跟 negative_signal_ratio + ADAPT_* 常量同 module 更自然 — 它就是"R7 adapter 的 read-only 状态查询"。抽出去 + 5 单测让"band 名字稳定 / 因子精确" 这两件事钉死，**修 R7 阈值时 chip + gate 同步改**。是 R20-style "single classifier 两个 consumer" 的延续。
+- 决策 — mode_factor 用 division 算 vs 硬编码：诱惑是 `match mode { "chatty" => 0.5, "quiet" => 2.0, _ => 1.0 }`。但这意味未来加 "ultra-quiet" mode 改 settings.rs apply_companion_mode 就要同步改 build_cooldown_breakdown。改成 `after_mode as f64 / configured as f64` 自然继承所有 mode — **数据驱动 > hardcoded 表**。
+- 决策 — `effective_seconds` 字段冗余但便利：理论上 frontend 可以 `configured * mode_factor * feedback_factor` 算出来，但 (a) Rust 已经算了，让 frontend 再算一遍引入 floating point 精度差异风险；(b) panel 显示需要这个数字 — 让它直接可用避免 frontend 重复 logic。**带宽冗余换可靠性** 是 IPC 设计的合理选择。
+- 决策 — `Option<CooldownBreakdown>` 在 proactive 关闭时 None：proactive disabled 或 configured = 0 时 chip 也 hidden，breakdown 自然没意义。Frontend `tone.cooldown_breakdown ? hoverWith(bd) : legacyHover` 兜底但实际不会触发。
+- 决策 — 修 D9 bug 跟 R23 surface 合并：诱惑是先 commit 修 bug 再 commit 新 surface。但 (a) 修 bug 没新测试钉死（修后行为只通过观察 chip 才能验证）；(b) R23 加 breakdown surface 顺便就修了 bug — 一 commit 解决两件事。**bug fix 跟 surface upgrade 同源就一起上**。
+- 决策 — 不加 panel UI test for chip hover：UI 是数据驱动渲染，hover 文案 template 是 frontend code，没新逻辑分支。tsc + cargo build clean 保 wiring 对。
+- 测试（5 新单测，全 classify_feedback_band 路径）：
+  - band_insufficient_below_min_samples（n < 5 → "insufficient_samples", 1.0）
+  - band_high_negative_doubles（4/5 ignored → "high_negative", 2.0）
+  - band_low_negative_shrinks（1/10 ignored → "low_negative", 0.7）
+  - band_mid_keeps_base（2/5 ignored = 0.4 → "mid", 1.0）
+  - band_dismissed_counted_alongside_ignored（R1c × R23 双重保险，3 dismiss + 2 reply = 0.6 →边界 strict gt → "mid"；4 dismiss + 1 reply = 0.8 → "high_negative"）
+- 测试结果：469 cargo（+5）；clippy --all-targets clean；fmt clean（fmt 自动重排 import 块）；tsc clean。
+- 结果：⏳ chip hover 现在揭开 cooldown 黑盒 — 用户看到 "1800s × 1.0 (balanced) × 2.0 (high_negative) = 3600s 还剩 1234s"，知道为什么这个数字、是哪层乘数贡献的。同时修了一个潜伏 bug — chip 跟 gate 行为完全一致了。**panel 不只 surface 信号 also surface derivation** — 为什么 X 比 X 是什么 经常更有信息量。
+
 ## 2026-05-04 — Iter R22：active app 在 PanelToneStrip 加 🪟 chip（R15 → 用户可见）
 - 现状缺口：R20 原则 codify 后 R21 第一次 audit (R11 → panel)。R22 第二次 audit — R15 active_app duration 同样写 prompt 但没 panel surface。用户在 panel 看不到"现在 pet 觉得我在哪个 app / 几分钟了"，跟 R15 prompt 信号 disconnect。
 - 解法 — read-only inspect helper 避开 mutation hazard：
