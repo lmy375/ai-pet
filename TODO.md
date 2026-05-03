@@ -16,8 +16,11 @@
 - [x] Iter Cη：每日 butler 小结写入 butler_daily.log + panel "每日小结" 区（2026-05-03 完成。
   注：用独立文件而非 speech_history，避免污染 chatty 计数）
 - [x] Iter Cθ：panel butler_tasks 调度 chip + 实时 ⏰ 到期标记（2026-05-03 完成）
-- 路线 F 收官——基础闭环已成（委托 → 调度 → 执行 → 留痕 → 日总结 → 实时仪表盘）。后续
-  Iter 看实际使用数据再决定加什么（执行失败回退 / 任务依赖 / 监督模式 etc）。
+- [x] Iter Cι：reactive chat 的 butler 委托引导 — 扩展 TOOL_USAGE_PROMPT 让用户从聊天
+  自然委托任务（2026-05-03 完成）
+- 路线 F 收官——基础闭环已成（委托 reactive/panel → 调度 → 执行 → 留痕 → 日总结 →
+  实时仪表盘）。后续 Iter 看实际使用数据再决定加什么（执行失败回退 / 任务依赖 / 监督
+  模式 etc）。
 
 ### 路线 A：长期人格演化（Iter 101-107 全部完成，路线 A 真正收官）
 

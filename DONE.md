@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cι：reactive chat 的 butler 委托引导
+- 现状缺口：Cγ–Cθ 把 butler 系统建起来了，但只有 proactive 路径 prompt 强制 LLM 看到 butler_tasks 列表。reactive 聊天里用户说「你每天 9 点帮我写日报」时，LLM 没有被特别提示把这件事写进 butler_tasks——很可能口头答应一句"好"就过去了，下次再问就忘了。这相当于"管家功能开着，但用户的自然请求路径没接进去"。
+- 解法：扩展 `TOOL_USAGE_PROMPT`（chat pipeline 每轮注入，reactive + proactive 共享）一段「任务委托判断」章节：
+  - 强调"你不只是聊天伙伴，也是用户的小管家"
+  - 给三个具体例子覆盖每日 / 单次 / 不带前缀三种 schedule
+  - 明确区分 `butler_tasks`（用户委托给你做的）vs `todo[remind:]`（用户提醒自己的）——这是用户最容易和 LLM 混淆的边界
+  - 引导写完 description 后简短确认"好的，记下了，每天 9 点我会..."而不是长篇复述
+  - 提示 LLM 已经在 butler_tasks 里的任务后续会自动出现在 proactive prompt 的 ⏰ 到期段，在那时再去执行——形成 reactive 委托 ↔ proactive 执行的明确分工。
+- 1 个新单测 `tool_usage_prompt_teaches_butler_delegation` 钉住三件事：(a) 提到 butler_tasks 字面、(b) 教 [every:] / [once:] 两种前缀、(c) 对比 todo + 提醒我句式。这种"内容契约"测试避免后续重构时不小心把整段删掉而没人发现。
+- 测试总数 271 → 272。
+- 没改 reactive chat 的代码路径——只是更新了已经被注入的 prompt 字符串。零行为风险，最大可观察改动是 LLM 在 reactive 聊天里听到"帮我每天/这周末/时不时..."时会调 memory_edit。
+- 结果：用户从 panel 委托是一条路径（点 + 委托任务 → 模态 → 保存），从聊天委托现在是平行的另一条路径（说出来 → LLM 自动 create）。两条路径会汇到同一份 butler_tasks 列表，proactive 看的是同一份 ambient hint。这是把"宠物管家"从一个面板上的功能区，升级成"无论你怎么和 ta 说，ta 都明白这是要做的事"的连续体验。
+
 ## 2026-05-03 — Iter Cθ：panel butler_tasks 调度 chip + 实时 "⏰ 到期" 标记
 - 现状缺口：Cζ 加了 `[every: HH:MM]` / `[once: ...]` 调度前缀，proactive prompt 能算 due 并 ⏰ 标注。但 panel 上还是把整个前缀当普通字符串显示在 description 里——用户得自己读 `[every: 09:00]` 然后查表 09:00 是不是已经过了，再翻 updated_at 看有没有执行过。"我现在打开面板想看哪些任务到期了"是个高频需求，得让面板自己算。
 - 解法：在 PanelMemory 里加 TS 版本的 schedule parser + due 检查，和 Rust 端 `parse_butler_schedule_prefix` / `is_butler_due` 严格同语义；butler_tasks 渲染时：
