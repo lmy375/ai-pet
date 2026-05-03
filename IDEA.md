@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG5c-prep 设计要点（已实现）
+- **prep iter 的价值**：直接做 QG5c (prompt rules) 会需要同时搬 prompt rules 本身 + 它依赖的 8 个纯 helper + 三个独立 test mod + 嵌入 prompt_tests 的 4-5 个 helper test。一次性 diff 容易出错难 review。先抽 pure deps（依赖 graph 上的叶子）让 QG5c 的 diff 严格只 about prompt rules——staged refactor。
+- **依赖 graph 的叶子先抽**：这个原则在 QG5 全程都适用：reminders / butler / time_helpers 都是叶子（不依赖其他 proactive 子系统）。下一片 prompt rules 是中间层（依赖 time_helpers），再下一片 gate (evaluate_pre_input_idle 用 in_quiet_hours) 也变得简单。
+- **跨 mod test 整理是 free 的清理**：原 pre_quiet_tests / cadence_tests / period_tests 三个 mod 现在都合到 time_helpers::tests 一个 mod 里。prompt_tests 也少了 7 个嵌入 helper test。模块边界更干净了。
+- **glob `pub use` 累加而不是重新组织**：proactive.rs 头部现在 `pub use self::butler_schedule::*; pub use self::reminders::*; pub use self::time_helpers::*;` 三行。每次新加片只是 append 一行——不需要每次 reorganize。
+- **`#[allow(dead_code)]` 不出现在抽离的代码**：所有抽过去的代码都被外部用，glob re-export 不触发 unused_import lint。这是 QG5a 学到的 — 用 explicit `pub use {a, b, c}` 会触发 "unused import"，glob 不会。
+- **proactive.rs 4443 行 = 19% 累计减小**：起点 5500 行，三 iter 累减约 1060 行。剩余 prompt rules（最大）+ gate + telemetry 估计还能减 1500-2000 行。最终 proactive.rs 应稳定在 1500-2500 行的 orchestration-only 体量。
+
 ## Iter QG5b 设计要点（已实现）
 - **同模式重复使用降低 risk**：QG5a 跑通的"创建 sub.rs + glob pub use + 删 src + 删 tests + run cargo test"流水线在 QG5b 直接复用。第一次抽离 ~30 分钟试错（debug glob re-export, dead_code warning 等）；第二次 ~15 分钟。模板化后效率翻倍。
 - **跨子系统私有 helper 处理**：`parse_updated_at_local` 同时被 `is_butler_due` 和 `is_completed_once` 用，是子系统私有 implementation detail。决策跟着移走（不外露）。如果将来 reminders 要解析 `updated_at`，要么把这个 helper 提到 proactive.rs（而非两个子模块各自复制一份），要么提取一个 `proactive/time_helpers.rs`。但现在过早抽象。

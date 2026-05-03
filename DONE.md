@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG5c-prep：纯时间/日历/idle 帮助器抽离
+- 现状：QG5c (prompt rules) 是最大块，直接做风险高。先抽出 prompt rules **依赖** 的纯帮助器到独立模块 — 让接下来的 QG5c slice 拿到更干净的边界。
+- 改动：
+  - 新文件 `src-tauri/src/proactive/time_helpers.rs` 317 行（148 src + 169 tests）
+  - 移过去 8 个纯函数：`idle_tier` / `user_absence_tier` / `period_of_day` / `weekday_zh` / `weekday_kind_zh` / `format_day_of_week_hint` / `minutes_until_quiet_start` / `in_quiet_hours`
+  - 18 个相关单测（合并自 3 个原 mod test：`pre_quiet_tests` / `cadence_tests` / `period_tests` + prompt_tests 里的 weekday_zh / weekday_kind_zh / format_day_of_week_hint / user_absence_tier_maps_each_band / quiet_hours_disabled / quiet_hours_same_day / quiet_hours_wraps_midnight 4 个嵌入测试）
+  - proactive.rs：`mod time_helpers;` + glob `pub use` 第三行加入 head；删除原 8 个 fn 定义 + 3 个 mod test + 7 个 prompt_tests 嵌入测试
+  - proactive.rs 净减 ~308 行（4751 → 4443）
+- 决策 — "prep" iter：把 prompt rules 拆分前先 isolate 纯依赖。这让 QG5c 的 diff 严格只 about prompt rules，不再夹杂 "顺便也搬了几个 helper"。这种 staged refactor 更易 review、风险低。
+- 决策 — companionship_milestone / format_companionship_line / chatty_mode_tag 留 proactive.rs：与 prompt rules 紧耦合（companionship_milestone 用作 active_data_driven_rule_labels 的依据 + 在 format_persona_layer 引用），跟 QG5c 一起搬更自然。chatty_mode_tag 同时被 gate 和 telemetry 用，应该留 parent。
+- 决策 — LONG_IDLE_MINUTES / LONG_ABSENCE_MINUTES / LATE_NIGHT_* 留 proactive.rs：这些 const 服务 active_composite_rule_labels 的 prompt rule 决策。和 prompt rules 一起搬。
+- 测试结果：383 cargo（无变化—测试只换了运行位置）；clippy --all-targets clean；fmt clean；tsc clean。
+- 进度：QG5a (–110) + QG5b (–642) + QG5c-prep (–308) 共减 ~1060 行（5500→4443，~19%）。
+
 ## 2026-05-03 — Iter QG5b：butler_tasks schedule 子系统拆分
 - 现状：QG5a 把 reminders 抽走 ~110 行后，proactive.rs 还是 5393 行。butler 子系统是下一个 cohesive 自然块（Iter Cζ-Cπ 累积建立的 schedule + due + completion + format 整套）。
 - 改动：

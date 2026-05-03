@@ -23,9 +23,12 @@
   - [x] QG5b：butler_tasks schedule 子系统（2026-05-03 完成 — `ButlerSchedule` / `parse_butler_schedule_prefix` /
     `is_butler_due` / `has_butler_error` / `is_completed_once` / `format_butler_tasks_block` +
     private `parse_updated_at_local` + `BUTLER_TASKS_HINT_*` 常量 + 24 测试）
+  - [x] QG5c-prep：time helpers 子系统（`idle_tier` / `user_absence_tier` /
+    `period_of_day` / `weekday_zh` / `weekday_kind_zh` / `format_day_of_week_hint` /
+    `minutes_until_quiet_start` / `in_quiet_hours` + 18 测试）2026-05-03 完成
   - [ ] QG5c：prompt rules 子系统（`active_environmental_rule_labels` / `active_data_driven_*` /
     `active_composite_*` / `proactive_rules` / `build_proactive_prompt` / `PromptInputs` +
-    所有 prompt_tests）—— 最大块
+    所有 prompt_tests）—— 最大块。time helpers 已抽离，依赖更纯。
   - [ ] QG5d：gate 子系统（`evaluate_pre_input_idle` / `evaluate_input_idle_gate` /
     `evaluate_loop_tick` / `LoopAction` / `wake_recent` / `in_quiet_hours` / gate_tests）
   - [ ] QG5e：telemetry 子系统（`record_proactive_outcome` / `append_outcome_tag` /
