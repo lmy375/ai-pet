@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cδ 设计要点（已实现）
+- **placeholder 而不是 helper text**：曾考虑在 textarea 上方加一段灰字说明"butler_task 格式建议..."。但 helper text 永远占布局空间；placeholder 只在空状态出现，输入后消失，对已经会用的用户零干扰。代价是 placeholder 不能太长（每行截断），所以我把示例切成几个短行用 `\n` 隔开——这在 textarea 里 native 支持换行 placeholder。
+- **快捷入口仅给 butler_tasks**：曾考虑给所有类别都加 "+ 新建 X" 顶级按钮（todo / butler_tasks 都是用户写的），但这会让顶部按钮区从 3 个按钮（搜索/清除/整理）变 5 个，视觉密度太高。butler_tasks 是"宠物管家"方向的主轴，单独给它快捷入口符合"actionable 类别上调"的方向；加 reminder 仍走分区下的 "+ 新建"——reminder 流程已经熟，且 todo 现在大多是 LLM 写的。
+- **不做 panel 段落级 subtitle**：原本想在 "管家任务" sectionTitle 下加一行小字"（你委托给我做的事）"。但分类的 label 已经是中文了，再加副标题是冗余；加上每条任务的 description 本身就是说明，区域级解释属于 over-explanation。模态的 placeholder 已经承担了"教用户怎么写"的职责。
+- **minHeight 按分类切换**：butler_tasks 用 100px，其他用 60px——任务描述要包含"做什么 + 多久 + 写到哪"三要素，60px 显得逼仄；ai_insights/user_profile 多是单句 fact，60px 够。这是个非常小的细节但能让"用户开始写任务"的体验顺滑很多。
+- **不写前端单测**：项目当前没有 React 组件测试体系（vitest / RTL 都没装），强行起一套会破坏 Iter 大小约束。改动是纯视觉 + 交互、TS 类型保 contract，可接受。
+
 ## Iter Cγ 设计要点（已实现）
 - **方向变了，前移管家方向**：用户明确把目标从"实时陪伴 = 主动观察 + 攀谈"扩展为"实时陪伴 + 实用管家"。这意味着以后选迭代时优先级要重排：能让宠物**真正帮用户做事**的能力 > 单纯让宠物**说更贴的话**的微调。Iter Cγ 是这个方向的第一刀。
 - **新建类别而不是复用 todo**：开头犹豫过——是不是把"用户委托给宠物的事"都塞进 `todo` 用前缀区分（比如 `[butler] xxx`）？ 反例：`todo` 里的 reminder 已经是用前缀 `[remind: HH:MM]` 标记的，再加一种前缀就会让 prefix 解析复杂；而且 `todo` 在面板上是"用户的待办"语义，前端 / consolidate / reminder sweep 都基于这层语义。**类别才是 namespace**，前缀是 namespace 内的 sub-format。把 butler_tasks 单独成类后，所有"我做的事"和"我提醒用户的事"自然分离，将来给 butler 做触发器 / 报告 / panel UI 时不会撞上现有 reminder 流程。

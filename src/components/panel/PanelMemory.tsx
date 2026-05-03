@@ -21,6 +21,20 @@ interface MemoryIndex {
 
 const CATEGORY_ORDER = ["butler_tasks", "todo", "ai_insights", "user_profile", "general"];
 
+// Per-category description placeholder shown in the new/edit modal so the user knows
+// what shape of entry each category expects. butler_tasks gets the most concrete
+// example because it's the newest user-author category and the convention isn't yet
+// learned. ai_insights warns the user it's pet-author territory — manual edits are
+// allowed but unusual.
+const CATEGORY_PLACEHOLDERS: Record<string, string> = {
+  butler_tasks:
+    "比如：每天 9 点把今日日历汇总写到 ~/today.md\n或：周末整理 ~/Downloads，把超过 30 天的旧文件挪到 ~/Archive\n（描述里说清楚要做什么、多久做一次、写到哪里——宠物会在 proactive 主动开口时尝试执行。）",
+  todo: "用户提醒自己的事项。建议加前缀：\n[remind: 17:00] 喝水\n[remind: 2026-05-10 09:00] 看医生",
+  user_profile: "关于用户习惯 / 偏好的稳定事实。\n比如：起床时间 通常 8:30 起床\n或：偏好 dark theme 编辑器",
+  ai_insights: "宠物自己的反思 / 心情 / 长期画像，通常由 LLM 自己写。手动编辑可以，但注意 current_mood / persona_summary 是受保护的。",
+  general: "其他不属于以上类别的记忆。",
+};
+
 export function PanelMemory() {
   const [index, setIndex] = useState<MemoryIndex | null>(null);
   const [loading, setLoading] = useState(true);
@@ -176,6 +190,20 @@ export function PanelMemory() {
         <button
           style={{
             ...s.btn,
+            background: "#0ea5e9",
+            color: "#fff",
+            fontWeight: 600,
+          }}
+          onClick={() =>
+            setEditingItem({ category: "butler_tasks", title: "", description: "", isNew: true })
+          }
+          title="委托一项管家任务给宠物——在 proactive 时段宠物会主动尝试执行（如读文件 / 写日报 / 整理目录）。"
+        >
+          + 委托任务
+        </button>
+        <button
+          style={{
+            ...s.btn,
             background: consolidating ? "#94a3b8" : "#8b5cf6",
             color: "#fff",
           }}
@@ -257,8 +285,9 @@ export function PanelMemory() {
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 12, color: "#64748b" }}>描述</label>
               <textarea
-                style={s.textarea}
+                style={{ ...s.textarea, minHeight: editingItem.category === "butler_tasks" ? 100 : 60 }}
                 maxLength={300}
+                placeholder={CATEGORY_PLACEHOLDERS[editingItem.category] || ""}
                 value={editingItem.description}
                 onChange={(e) => setEditingItem({ ...editingItem, description: e.target.value })}
               />
