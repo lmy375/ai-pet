@@ -1030,6 +1030,31 @@ async fn run_proactive_turn(
         .ok()
         .map(|s| s.proactive.effective_chatty_threshold())
         .unwrap_or(5);
+    // Iter R14: at the first proactive turn of a new day, surface yesterday's
+    // last 2 utterances so the pet can pick up a thread instead of starting
+    // cold every morning. Empty when (a) not first-of-day or (b) yesterday
+    // has no recorded speeches. Each line is timestamp-stripped + redacted.
+    let cross_day_hint = if today_speech_count == 0 {
+        let yesterday = now_local.date_naive() - chrono::Duration::days(1);
+        let lines = crate::speech_history::speeches_for_date_async(yesterday, 2).await;
+        if lines.is_empty() {
+            String::new()
+        } else {
+            let bullets: Vec<String> = lines
+                .iter()
+                .map(|line| {
+                    let stripped = crate::speech_history::strip_timestamp(line);
+                    format!("· {}", crate::redaction::redact_with_settings(stripped))
+                })
+                .collect();
+            format!(
+                "[昨日尾声] 昨天最后说过：\n{}\n如果话题自然能续上就续，不必生硬呼应。",
+                bullets.join("\n")
+            )
+        }
+    } else {
+        String::new()
+    };
     // Env-awareness ratio over the recent window (process-wide atomic, reset by panel).
     // Drives a self-correction rule: when the model's been ignoring env tools, nudge it
     // to call get_active_window this turn.
@@ -1088,6 +1113,7 @@ async fn run_proactive_turn(
         hour: now_local.hour() as u8,
         recently_fired_wellness: late_night_wellness_in_cooldown(),
         repeated_topic_hint: &repeated_topic_hint,
+        cross_day_hint: &cross_day_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -1532,6 +1558,9 @@ mod prompt_tests {
             // Default empty — pre-Iter R11 state, no detected redundancy.
             // Tests for the topic-repeat rule set this explicitly.
             repeated_topic_hint: "",
+            // Default empty — pre-Iter R14 state, no cross-day hint. Tests
+            // exercising the first-of-day continuity layer set this explicitly.
+            cross_day_hint: "",
         }
     }
 

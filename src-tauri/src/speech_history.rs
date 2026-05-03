@@ -123,6 +123,57 @@ pub fn strip_timestamp(line: &str) -> &str {
     line.split_once(' ').map(|(_, rest)| rest).unwrap_or(line)
 }
 
+/// Iter R14: filter speech_history lines to those whose timestamp's local
+/// date matches `target_date`. Returns up to `max` most recent matching
+/// lines (oldest of the kept window first, mirroring `parse_recent`).
+/// Pure — caller passes the file content + the target NaiveDate so tests
+/// don't depend on system clock.
+///
+/// Used by the proactive prompt's cross-day-thread hint: at the first
+/// proactive turn of a new day, surface yesterday's last 2 utterances so
+/// the pet can pick up where it left off ("昨天我们最后聊到 X，今天怎么样？")
+/// instead of starting cold every morning.
+///
+/// Lines with malformed / non-ISO timestamps are silently skipped — the
+/// log format is "<ISO ts> <text>"; anything that doesn't start that way
+/// can't be filtered by date and is treated as not-matching.
+pub fn speeches_for_date(content: &str, target_date: chrono::NaiveDate, max: usize) -> Vec<String> {
+    if max == 0 {
+        return vec![];
+    }
+    let mut matches: Vec<String> = content
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter(|line| {
+            let Some((ts, _rest)) = line.split_once(' ') else {
+                return false;
+            };
+            let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else {
+                return false;
+            };
+            dt.with_timezone(&chrono::Local).date_naive() == target_date
+        })
+        .map(String::from)
+        .collect();
+    let start = matches.len().saturating_sub(max);
+    if start > 0 {
+        matches.drain(0..start);
+    }
+    matches
+}
+
+/// Iter R14: async wrapper — read the speech history file and return up to
+/// `max` lines matching `target_date`. Empty Vec on missing file or no
+/// matches. Caller-side production path uses `chrono::Local::now() - 1
+/// day` to fetch yesterday's tail.
+pub async fn speeches_for_date_async(target_date: chrono::NaiveDate, max: usize) -> Vec<String> {
+    let Some(path) = history_path() else {
+        return vec![];
+    };
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    speeches_for_date(&content, target_date, max)
+}
+
 /// Iter R11: coarse Chinese-friendly topic-redundancy detector. Slides a
 /// `ngram_size`-character window across each line (after `strip_timestamp`)
 /// and counts how many *distinct lines* each ngram appears in. Returns the
@@ -609,5 +660,81 @@ mod tests {
         // Lines shorter than ngram_size are silently skipped — no panic.
         let lines = vec![line("嗨"), line("好"), line("不错")];
         assert!(detect_repeated_topic(&lines, 4, 1).is_none());
+    }
+
+    // -- Iter R14: speeches_for_date -----------------------------------------
+
+    fn ts_line(date: &str, time: &str, text: &str) -> String {
+        // Format matches what record_speech writes: "YYYY-MM-DDTHH:MM:SS+TZ text".
+        // Use a fixed offset (+08:00) so tests don't depend on the runner's tz.
+        format!("{}T{}+08:00 {}", date, time, text)
+    }
+
+    fn nd(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn speeches_for_date_empty_content_returns_empty() {
+        assert!(speeches_for_date("", nd(2026, 5, 3), 5).is_empty());
+    }
+
+    #[test]
+    fn speeches_for_date_zero_max_returns_empty() {
+        let content = ts_line("2026-05-03", "10:00:00", "早上好");
+        assert!(speeches_for_date(&content, nd(2026, 5, 3), 0).is_empty());
+    }
+
+    #[test]
+    fn speeches_for_date_filters_by_date() {
+        let content = [
+            ts_line("2026-05-02", "23:00:00", "晚安"),
+            ts_line("2026-05-03", "08:00:00", "早安"),
+            ts_line("2026-05-03", "12:00:00", "中午好"),
+            ts_line("2026-05-04", "08:00:00", "新一天"),
+        ]
+        .join("\n");
+        let out = speeches_for_date(&content, nd(2026, 5, 3), 5);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].contains("早安"));
+        assert!(out[1].contains("中午好"));
+    }
+
+    #[test]
+    fn speeches_for_date_returns_last_max_when_more_match() {
+        let content = [
+            ts_line("2026-05-03", "08:00:00", "a"),
+            ts_line("2026-05-03", "10:00:00", "b"),
+            ts_line("2026-05-03", "12:00:00", "c"),
+            ts_line("2026-05-03", "14:00:00", "d"),
+        ]
+        .join("\n");
+        let out = speeches_for_date(&content, nd(2026, 5, 3), 2);
+        // Last 2 in chronological order: c, d.
+        assert_eq!(out.len(), 2);
+        assert!(out[0].ends_with(" c"));
+        assert!(out[1].ends_with(" d"));
+    }
+
+    #[test]
+    fn speeches_for_date_skips_malformed_lines() {
+        // Garbage line + line without timestamp + valid line — only the
+        // valid one passes the filter.
+        let content = [
+            "garbage no space".to_string(),
+            "not-a-timestamp line".to_string(),
+            ts_line("2026-05-03", "10:00:00", "早上好"),
+        ]
+        .join("\n");
+        let out = speeches_for_date(&content, nd(2026, 5, 3), 5);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains("早上好"));
+    }
+
+    #[test]
+    fn speeches_for_date_target_date_with_no_matches_returns_empty() {
+        let content = ts_line("2026-05-03", "10:00:00", "今天的话");
+        // Looking for yesterday — no match.
+        assert!(speeches_for_date(&content, nd(2026, 5, 2), 5).is_empty());
     }
 }

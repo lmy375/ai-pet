@@ -152,7 +152,7 @@
   ai_insights/daily_review，把"今天我们一起..."一句话总结写回 memory）
 - [x] R13：companion mode setting（2026-05-03 完成 — Iter R13。3 模式 balanced/chatty/quiet
   调 cooldown + chatty_threshold；前端 settings UI 留 R13b follow-up）
-- [ ] R14：跨日记忆线（proactive 第一次开口当天，注入 yesterday's last 2 speech excerpts）
+- [x] R14：跨日记忆线（2026-05-03 完成 — Iter R14）
 - [ ] R15：active app 时长追踪（proactive loop 顺手记 current window，1 分钟粒度，
   proactive prompt 注入"用户在 X app 已经 N 分钟"）
 
