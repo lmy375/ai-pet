@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R30：memory_consolidate 字段两个 yaml-only debt 还清（R29 rule audit）
+- 现状缺口：R29 codified "新加 settings 字段 = 同 iter UI 入口"。R29 立刻还了 R13b（companion_mode）的债。R30 audit 同样的债务来源 —— 发现 memory_consolidate 还有 **两个** yaml-only 字段：
+  - `stale_once_butler_hours`（Iter Cλ，2026-05-03）—— 后端 + 行为 + 测试都齐了，但 PanelSettings 只 default 了值，从未 surface 字段。
+  - `stale_daily_review_days`（Iter R17，2026-05-04）—— 同样模式，UI 漏写。
+  R29 IDEA "settings field 必须 same-iter UI" 这条 rule 需要 audit & backfill 才落地。
+- 解法 — 一行 twoColRow 两个 PanelNumberField：
+  - useSettings.ts：MemoryConsolidateConfig 加 `stale_daily_review_days: number`；DEFAULT_SETTINGS memory_consolidate 块加 `stale_daily_review_days: 30`。
+  - PanelSettings.tsx form state default 同步加 `stale_daily_review_days: 30`。
+  - 在现有 stale_reminder/stale_plan 那行 twoColRow 之后插入第二行：左 stale_once_butler_hours（min 1），右 stale_daily_review_days（min 0，因为 0 = 关闭）。
+  - 紧跟原 hint `<div>` 改写：扩展原文案到四种 stale 都解释（reminder / plan / butler [once] / daily_review）。
+- 决策 — 两字段同行 twoColRow 而非各自一行：UI 经济。两个数字字段对齐，并排放节省垂直空间。这种"new-field-pair go in same row" 是延续现有 stale_reminder + stale_plan 排版风格。**视觉风格一致** > **每字段独占一行**。
+- 决策 — stale_daily_review_days min=0 而非 min=1：R17 后端 `stale_daily_review_days == 0` 是 explicit "关闭剪枝" 语义。UI 必须允许 0；不能强制 min=1（会让 user 失去关闭功能）。**前端 UI 约束应该匹配后端业务约束**，不应该独立拍脑袋。
+- 决策 — hint 文案扩展但不分段：原 hint 一句话讲两个 stale。R30 加进 4 个，仍保持单 div / 单文案块（不拆 4 段），用句号分隔。**UI 文档密度跟字段密度匹配**——4 个简单字段配一段长文，2 个字段配半段，让 hint 不变成专门 docs。
+- 决策 — 不在 hint 单独标注 "Iter 引用"：之前其他 hint 也没标 iter ID（user 看 hint 不需要知道哪 iter 加的）。代码注释保留 "Iter R30" 让 dev 追溯。
+- 决策 — 不删 dead code SettingsPanel.tsx：R29 IDEA 提到该文件 dead code 但暂留。R30 也不在范围内删（独立 cleanup iter 该做这事）。**避免把 audit 收口跟 cleanup 混合**。
+- 测试结果：478 cargo（无变化）；clippy clean；tsc clean。
+- 结果：用户在 PanelSettings 现在能调 4 个 stale_* 数字。R-series codified "settings field = same-iter UI" rule audit & backfill 完成 —— 4 个 stale_* + companion_mode + 其他 proactive/chat/privacy 字段全部 panel-visible。**"audit and backfill" 是 codified rule 真正落地的姿势**：定 rule 不只指导未来，也回头收拾过去。
+
 ## 2026-05-04 — Iter R29：companion_mode 下拉菜单进 PanelSettings（R13b 7-iter 还债）
 - 现状缺口：R13 (2026-05-03) 加了 companion_mode 后端字段 + 三档行为，但 IDEA 写"前端 UI 暂缺，得手改 yaml 才能换 mode" 留 R13b follow-up。**7 iter 过去 ta 还在 yaml-only**，没真正落地到普通用户。R20 codified rule "新加 prompt hint 同 iter 加 panel surface" 也适用 settings：**新加 settings 字段同 iter 加 UI** 否则等于隐藏功能。
 - 解法 — TS 类型 + dropdown UI：
