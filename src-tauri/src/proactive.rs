@@ -88,6 +88,15 @@ impl InteractionClock {
         g.awaiting_user_reply = true;
     }
 
+    /// Iter R1: return the un-expired `awaiting_user_reply` flag without applying
+    /// the D11 4-hour auto-clear. Used by feedback classification — for that
+    /// purpose "user actually replied" is binary regardless of how long they
+    /// took, while the *gate* check uses `effective_awaiting` so the pet doesn't
+    /// stay muted across multi-day absences.
+    pub async fn raw_awaiting(&self) -> bool {
+        self.inner.lock().await.awaiting_user_reply
+    }
+
     pub async fn snapshot(&self) -> ClockSnapshot {
         let g = self.inner.lock().await;
         let since_proactive = g.last_proactive.map(|t| t.elapsed().as_secs());
@@ -146,6 +155,13 @@ pub static LAST_PROACTIVE_REPLY: std::sync::Mutex<Option<String>> = std::sync::M
 /// the prompt above was constructed. Lets the panel show "this run was 12
 /// minutes ago" so users can tell whether the cached pair is fresh or stale.
 pub static LAST_PROACTIVE_TIMESTAMP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Iter R1: dedup guard so the previous proactive turn is classified into
+/// `feedback_history.log` exactly once. Holds the LAST_PROACTIVE_TIMESTAMP
+/// value of the last turn we already classified — when the next turn fires,
+/// if this matches, we skip; otherwise classify + update.
+pub static LAST_FEEDBACK_RECORDED_FOR: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
 
 /// Iter E3: distinct tool names the LLM called during the most recent turn
 /// (e.g. ["get_active_window", "memory_edit"]). Empty Vec when the turn ran but
@@ -378,6 +394,12 @@ pub struct PromptInputs<'a> {
     /// can occasionally call the user by name. Mirrors the persona_layer
     /// injection added in Iter Cτ but lives in proactive's own prompt path.
     pub user_name: &'a str,
+    /// Iter R1: feedback from the previous proactive turn. Empty when there's
+    /// no prior turn or the prior is still ambiguous; non-empty carries a
+    /// one-line nudge ("上次你说『...』，用户没回应 — ...") so the LLM
+    /// learns from outcomes round to round. Built by
+    /// `feedback_history::format_feedback_hint`.
+    pub feedback_hint: &'a str,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -690,6 +712,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.focus_hint);
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
+    push_if_nonempty(&mut s, inputs.feedback_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);
@@ -1791,6 +1814,37 @@ async fn run_proactive_turn(
         (hint, mins)
     };
 
+    // Iter R1: classify the previous proactive turn now that we're firing a new
+    // one. raw_awaiting tells us whether the user actually replied between the
+    // two: false → replied (mark_user_message cleared the flag), true → ignored.
+    // Dedup via LAST_FEEDBACK_RECORDED_FOR keyed on the prior turn's timestamp.
+    {
+        let prev_ts = LAST_PROACTIVE_TIMESTAMP.lock().ok().and_then(|g| g.clone());
+        let prev_reply = LAST_PROACTIVE_REPLY.lock().ok().and_then(|g| g.clone());
+        let already_for = LAST_FEEDBACK_RECORDED_FOR
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+        if let (Some(ts), Some(text)) = (prev_ts.clone(), prev_reply) {
+            if Some(&ts) != already_for.as_ref() {
+                let raw = clock.raw_awaiting().await;
+                let kind = if raw {
+                    crate::feedback_history::FeedbackKind::Ignored
+                } else {
+                    crate::feedback_history::FeedbackKind::Replied
+                };
+                crate::feedback_history::record_event(kind, text.trim()).await;
+                if let Ok(mut g) = LAST_FEEDBACK_RECORDED_FOR.lock() {
+                    *g = Some(ts);
+                }
+            }
+        }
+    }
+    // Build the hint from the most recent entry (after we may have just written
+    // one above). Empty when there's no history yet.
+    let recent_feedback = crate::feedback_history::recent_feedback(1).await;
+    let feedback_hint = crate::feedback_history::format_feedback_hint(&recent_feedback);
+
     // If the proactive loop noticed a sleep gap recently (≤ 10 minutes ago), surface it
     // so the LLM can choose a "welcome back" register. Strong signal that the user was
     // physically away rather than just idle at the desk.
@@ -1949,6 +2003,7 @@ async fn run_proactive_turn(
         user_profile_hint: &user_profile_hint,
         butler_tasks_hint: &butler_tasks_hint,
         user_name: &user_name,
+        feedback_hint: &feedback_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -2701,6 +2756,9 @@ mod prompt_tests {
             // Default empty — pre-Iter Cυ state, no owner name set in settings.
             // Tests for the user_name line set this explicitly.
             user_name: "",
+            // Default empty — pre-Iter R1 state, no feedback log yet. Tests for
+            // the feedback hint set this explicitly.
+            feedback_hint: "",
         }
     }
 

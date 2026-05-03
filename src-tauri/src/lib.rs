@@ -4,6 +4,7 @@ mod companionship;
 mod config;
 mod consolidate;
 mod decision_log;
+mod feedback_history;
 mod focus_mode;
 mod focus_tracker;
 mod input_idle;

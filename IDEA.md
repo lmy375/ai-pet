@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R1 设计要点（已实现）
+- **state machine 的隐藏复利**：本来打算搞一套 ChatBubble 点击事件 + 倒计时 + Tauri 命令记 dismiss/timeout/reply 三档。后来注意到 InteractionClock.awaiting_user_reply 已经是被动观察"用户回没回"的真值——读它就能分类，**前端零改动**。早期投资在"对的状态机"会在后续 N 个 iter 里反复变现。
+- **raw vs effective 分两套语义很关键**：D11 给 awaiting 加了 4h 自动过期，是为了 GATE 不让宠物永久哑巴。但 FEEDBACK 分类需要的是"用户事实上有没有回"——和时间无关。所以加了 `raw_awaiting` 单独暴露不带 expire 的真值。同一字段两种读法，对应两种业务语义。
+- **dedup key = prev timestamp**：每次 proactive turn 可能因为 panel 手动 fire / 后台 loop 等多入口触发，但 LAST_PROACTIVE_TIMESTAMP 在 `mark_proactive_spoken` 后是单调推进的。用它做 LAST_FEEDBACK_RECORDED_FOR 的 key 既稳定又不需要额外计数器。
+- **40 字符 excerpt 是 prompt 经济性平衡**：太短（< 20）认不出是哪句话；太长（> 80）prompt 体积重复内容多浪费 token。40 是常见短句长度，长一点的也能保留信息密度。
+- **不做用户主动 dismiss 信号**：dismiss<5s 在 spec 里看着是有用的"立即拒绝"信号，但 ChatBubble 当前没点击事件，加了之后还要做 (a) 防止 user 误碰；(b) 60s timer race；(c) 与回复路径区分。一个 iter 做不完干净，留 R1b。
+- **prompt hint 写"放短/沉默" 是 nudge 而非命令**：proactive_rules 里有刚性约束（chatty / wake-back），但 feedback hint 是 soft 引导。LLM 看到"用户没回应——这次放短或沉默" 会自己判断这次 context 适合哪个，不会一刀切。这种"软引导 + 硬规则" 组合是 prompt design 健康姿态。
+- **后续：feedback ratio 驱动 chatty_threshold 自适应**：现在 chatty_threshold 是 settings 里手动设的；feedback_history 攒多了就能算"过去 24h replied/ignored 比"，自动收紧阈值。R3 wellness nudge 也可以从这数据出条件。
+
 ## Iter R2 设计要点（已实现）+ 后续路线规划
 - **timeline 统一比 tab 分立更有信息量**：原本可以加 "Tool Review" 专门 panel tab，但 review 是低频事件（高 risk 工具调用一般 < 几次/天）。混在 decision timeline 里反而能让用户瞬间看到"今天 12 决策 + 2 review"，对 review 异常突增时更敏感。density first, separation second.
 - **Optional 字段叠加是 ToolContext 演化的稳定模式**：tools_used (Iter E4) → tool_review (TR3) → decision_log (R2)。每个都是 `Option` + `with_X` builder。autonomous 路径（telegram / consolidate）始终用 None，desktop / proactive 路径 attach。Rust 这种"零成本 opt-in" pattern 是 backward compat 的优秀解法。
