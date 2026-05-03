@@ -754,6 +754,10 @@ const PROMPT_RULE_DESCRIPTIONS: Record<string, { title: string; summary: string 
     title: "环境感知低",
     summary: "近几次开口很少看环境；本次先调 get_active_window 看用户在做啥。",
   },
+  "engagement-window": {
+    title: "积极开口",
+    summary: "刚回桌 + 有今日 plan：是「先关心、再带 plan」串起来的复合时机。",
+  },
 };
 
 function kindColor(kind: string): string {

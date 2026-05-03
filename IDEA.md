@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 92 设计要点（已实现）
+- **从单向限制到双向引导**：前 8 条规则全是"在 X 条件下宠物应该克制 / 校正 / 按某种方式说话"。Iter 92 第一次出现"在 X+Y 复合条件下宠物**应该开口**"，反向用 prompt 系统鼓励主动行为而不是只压制。"复合规则"是合理的第三类——单一信号可能不够强，复合信号可以解锁不同语调。
+- **三类规则架构**：environmental（瞬时状态触发）/ data-driven（统计驱动）/ composite（多信号合成）。每类有自己的 helper，三者 chain 为 active_prompt_rules。这个分类不是为了好看——是把"什么样的输入触发什么类型的引导"拆成可独立扩展的轴。
+- **wake-back 和 engagement-window 表面上冲突**：wake-back 说"问候要简短克制"，engagement-window 说"积极用这个时机带 plan"。设计上是互补的——LLM 看到两条会综合："先简短关心 + 简短点一下 plan"。规则间需要的不是强 disjoint，而是 LLM 能合成的指导面。
+- **不让 engagement 同时排除 chatty**：本可以让 engagement-window = wake_back && has_plan && !chatty_active。但那增加耦合度，且实际上"今天聊得不少 + 用户刚回桌 + 有 plan"也可能是合理时机（plan 进展是新话题，不算重复闲聊）。让两条同时活跃，LLM 自己平衡更灵活。
+- **复合规则只放需要"两个信号才行"的**：单一信号（has_plan、wake_back）已有自己的规则——只有合成才解锁的指导才放 composite。如果未来要加"3 个信号合成"的规则，仍走 composite helper 同样的模式。
+- **fingerprint 用动作短语而非状态短语**：选 "此刻是开新话题的好时机" 作 fingerprint，不选 "复合时机" 之类抽象词。动作短语更难被其他 arm 复制（"好时机"几乎只在 engagement 出现），抽象词容易在通用规则文本里碰到。
+- **frontend title "积极开口" 4 字**：和 chatty=今日克制 / pre-quiet=近安静时段 / icebreaker=破冰阶段 等同长度，dict 渲染整齐。"积极"对仗"克制 / 安静 / 破冰"——情绪谱系上明显是另一极，让用户在 panel 一眼看到 prompt 当前是被压制还是被激发。
+
 ## Iter 91 设计要点（已实现）
 - **fingerprint 而非 length 检查**：本可以只断言 `rules.len() == base + len(labels)`——但那会被"两个 arm 互换"的 bug 蒙混过关（数量不变但文本错位）。fingerprint 表锁定每个 label 的文本特征，要求 arm 内容真实匹配 label 含义，捕获更细致的退化。
 - **fingerprint 表的元-元覆盖检查**：测试自己也守门——如果 backend 加 label 但 fingerprint 表没补，`backend_labels.iter().filter(!fingerprint_labels.contains)` 会列出缺失。让测试不能因"作者漏改"而假阳性通过。这是"测试代码本身的可维护性"防线。
