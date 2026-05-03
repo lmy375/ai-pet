@@ -12,9 +12,7 @@
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
 - [x] Iter Cδ：panel 顶部 "+ 委托任务" 快捷入口 + 模态分类 placeholder（2026-05-03 完成）
 - [x] Iter Cε：butler_history.log + panel "最近执行" 时间线（2026-05-03 完成）
-- [ ] Iter Cζ：scheduled butler_tasks——支持 description 前缀 `[every: 09:00]` /
-  `[once: 2026-05-10 14:00]`，proactive 循环按时机选择性触发（参考 reminder parser
-  做法，复用 ReminderTarget 但语义不同：reminder 是给用户的，schedule 是给宠物的）。
+- [x] Iter Cζ：butler_tasks 调度前缀 `[every:]` / `[once:]` + 到期标注（2026-05-03 完成）
 - [ ] Iter Cη：butler_task 执行结果摘要——consolidate 把今日完成的任务汇成一句
   "今天我帮你做了 X / Y / Z"塞进 speech_history 让用户回看。
 
