@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R7 设计要点（已实现）
+- **capture → surface → drive 三段范式 ship 完整**：R1 采集，R6 显示，R7 让数据真正影响行为。这种顺序很关键——如果先 R7 后 R6，行为变了但用户不知道为什么；先 R6 后 R7，用户先看到了"原来宠物在记账"，再放心让账本驱动行为。这是产品安全感的递进。
+- **step function vs smooth curve**：smooth 看起来"科学"（adapted = base × (1 + α·(ratio−0.5))）但实际不可审计——panel 用户看 ratio chip 没法预测 cooldown。step 是 "ratio 跳到 0.6 以上 cooldown 直接翻倍"，肉眼可证。这是对"behavior-shaping logic 必须 auditable" 的让步。
+- **base=0 special case 是 settings 契约的边界**：用户设 cooldown=0 是 explicit opt-out（"我希望宠物频繁说话"）。adapter 不该违背 user intent 自行强制 cooldown。`base=0 → multiplier=任何 → 结果=0` 自然成立但加测试钉死。这是"adapter 是 nudge 不是 override" 的设计原则。
+- **min_samples=5 是新手保护**：第一天装机用户的 1-2 个 ignore 不该立即 2x cooldown。等 5 条数据才动手，匹配"两个月才会有偏好" 的 R 系列 baseline。如果未来想做"周内 vs 周末" 不同 baseline，min_samples 仍然是健康前提。
+- **evaluate_pre_input_idle 签名改动是不可避的**：原本想在 gate 外面加一层 wrapper "if adapted < base, additional skip"，但那只能更严格（收紧 cooldown），不能放松（low-ignore 0.7×）。一旦想要双向调节就必须把"effective cooldown" 推进 gate 自己。19 个 test call sites 一次性 update 是合理代价。
+- **panel ratio chip 与 gate 对齐**：R6 显示 6/20 ignored，R7 用同样 20-条窗口算 ratio。如果 R6 显示 30%（6/20）panel reader 能预测"还在 mid band, cooldown 不变"。如果未来 R6 拓宽到 50 条但 R7 仍 20 条，会出现"panel 数和 gate 数不一致" 的混乱——所以两个使用同 const 是契约。
+
 ## Iter R6 设计要点（已实现）
 - **R 系列 capture → surface → drive 三段式**：R1 采集（capture），R6 暴露（surface），R7 才会回填到 cooldown 决策（drive）。先 surface 再 drive 是 product 级安全：让用户先在 panel 看到"反馈数据是真实的、合理的"，再放心让它影响行为。如果直接 R1→R7，用户没办法 audit 这层数据，黑盒了一段非平凡逻辑。
 - **title 里嵌核心 metric**：3/8 回复 这种数字嵌在 collapsible header 里，等于"标题就是一个迷你 dashboard"。这比另起一行显示节省空间，且让 collapsed 状态也有信息密度。这是从 D series chip strip 学来的"多信息一行" 思维延伸到 collapsible UI。

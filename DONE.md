@@ -2,6 +2,31 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R7：feedback ratio 驱动 cooldown（capture→surface→drive 闭环）
+- 现状缺口：R1 采集 + R6 surface 后，"被忽略" 信号还是被动数据——LLM prompt 里有提示但 cooldown gate 不动。如果用户 7/10 都忽略，pet 还是按基线 cooldown 继续重复试探，违背"宠物会读空气" 的设计意图。
+- 解法 — 三段 pure helpers + 一处 gate 改动：
+  - `ignore_ratio(entries) -> Option<(f64, usize)>`：纯函数，empty → None；非空 → (ignored/total, total)
+  - `adapted_cooldown_seconds(base, ratio, sample_count) -> u64`：3-band step function：
+    - sample < `FEEDBACK_ADAPT_MIN_SAMPLES` (5) → 返 base 原值（噪声防护）
+    - ratio > `ADAPT_HIGH_IGNORE_THRESHOLD` (0.6) → base × `ADAPT_HIGH_IGNORE_MULTIPLIER` (2.0)
+    - ratio < `ADAPT_LOW_IGNORE_THRESHOLD` (0.2) → base × `ADAPT_LOW_IGNORE_MULTIPLIER` (0.7)
+    - 中间带 → base unchanged
+  - `evaluate_pre_input_idle` 加第 6 个参数 `effective_cooldown_seconds: u64`，gate 用这个值（不再用 cfg.cooldown_seconds 直接）
+- 集成 — `evaluate_loop_tick` 在调 gate 前 await `recent_feedback(20)` 并 compute ratio + adapted。20 条窗口和 R6 panel timeline 同源，让 panel 显示的"6/20 ignored" 直接对应到 gate 行为。
+- 决策 — step function 而非 smooth curve：3 band 让 panel reader 能心算结果（"哦今天 ratio 0.7 > 0.6，所以 cooldown 翻倍"）。smooth curve（linear / sigmoid）更"漂亮" 但不可审计。auditability > elegance for behavior-shaping logic。
+- 决策 — base=0 不被 adapter 启用：用户故意把 cooldown_seconds 设成 0（"我 ok 宠物频繁说话"）后，high-ignore 不应"为 ta 好" 强制开启 cooldown。adapter 在 base=0 时返 0 是 desired no-op。`(0 as f64) * 2.0 = 0.0` as u64 = 0，math 自然帮忙。但加 explicit test 钉住。
+- 决策 — min samples 5：少于 5 ratio 噪声大；首日装机用户随便忽略一两次会立刻被 cooldown 翻倍 = 糟糕新手体验。5 条样本之上 adapter 才动手。
+- 决策 — 改 evaluate_pre_input_idle 签名而不是在外部加 wrapper：原本想在 gate 之前加一层 "if adapted_cooldown < base: skip extra" 但那不能放宽（low-ignore 0.7×）只能收紧。直接改 signature 让 gate 用一个值才能双向调节。代价是要更新 19 个 test call sites + 1 production call site，但这是一次性 cost 后续都对。
+- 测试 — 9 新单测：
+  - `ignore_ratio_returns_none_for_empty_input` / `_counts_correctly` (3/5=0.6) / `_handles_all_replied` (0.0) / `_handles_all_ignored` (1.0) — 4 ratio 边界
+  - `adapted_cooldown_returns_base_below_min_samples` (n<5 不动)
+  - `_doubles_on_high_ignore_ratio` (>0.6 → 2x)
+  - `_shrinks_on_low_ignore_ratio` (<0.2 → 0.7x)
+  - `_keeps_base_in_mid_band` (0.2-0.6 → 不动)
+  - `_handles_zero_base` (base=0 不被 adapter 启用——重要 settings 兼容性)
+- 测试结果：383 cargo（+9）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：R 系列 capture (R1) → surface (R6) → drive (R7) 三段链路完成。"用户连续忽略 → 宠物自然安静下来" 是真实 feedback loop。设置 cooldown=30min 的用户，今天 70% ignore 后 effective cooldown 跳到 60min；engaging 好的日子降到 21min（30 × 0.7）。
+
 ## 2026-05-03 — Iter R6：panel feedback timeline（surface R1 capture data）
 - 现状缺口：R1 把每次 proactive 后用户的 replied/ignored 写到 feedback_history.log，但 panel 没显示。"宠物在学习吗？" 这个问题没有可观察答案。
 - 解法 — R4 同模式：

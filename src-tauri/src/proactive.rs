@@ -1516,6 +1516,7 @@ fn evaluate_pre_input_idle(
     hour: u8,
     focus_active: Option<bool>,
     wake_seconds_ago: Option<u64>,
+    effective_cooldown_seconds: u64,
 ) -> Result<(), LoopAction> {
     if !cfg.enabled {
         return Err(LoopAction::Silent { reason: "disabled" });
@@ -1529,12 +1530,16 @@ fn evaluate_pre_input_idle(
     // Gate 2: cooldown since the last proactive utterance, regardless of user idle.
     // Wake softens this — when the user has been away, the cooldown's "don't double up"
     // intent doesn't apply (the prior utterance was probably hours ago anyway).
+    // Iter R7: `effective_cooldown_seconds` is computed by the caller from
+    // `cfg.cooldown_seconds` + `feedback_history::adapted_cooldown_seconds`,
+    // so the gate honors a high-ignore-ratio "back off 2x" / low-ignore-ratio
+    // "speak more freely 0.7x" adjustment without the gate fn doing async IO.
     let wake_soft = wake_recent(wake_seconds_ago);
     if let Some(since) = snap.since_last_proactive_seconds {
-        if !wake_soft && cfg.cooldown_seconds > 0 && since < cfg.cooldown_seconds {
+        if !wake_soft && effective_cooldown_seconds > 0 && since < effective_cooldown_seconds {
             return Err(LoopAction::Skip(format!(
                 "Proactive: skip — cooldown ({}s < {}s)",
-                since, cfg.cooldown_seconds
+                since, effective_cooldown_seconds
             )));
         }
     }
@@ -1618,7 +1623,25 @@ async fn evaluate_loop_tick(
         .last_wake_seconds_ago()
         .await;
 
-    if let Err(action) = evaluate_pre_input_idle(cfg, &snap, hour, focus_active, wake_seconds_ago) {
+    // Iter R7: derive effective cooldown from base + recent feedback ratio.
+    // 20-entry window matches the panel timeline (R6) so panel and gate see
+    // the same denominator. None ratio (no feedback yet) leaves base intact.
+    let recent_fb = crate::feedback_history::recent_feedback(20).await;
+    let effective_cooldown = match crate::feedback_history::ignore_ratio(&recent_fb) {
+        Some((ratio, n)) => {
+            crate::feedback_history::adapted_cooldown_seconds(cfg.cooldown_seconds, ratio, n)
+        }
+        None => cfg.cooldown_seconds,
+    };
+
+    if let Err(action) = evaluate_pre_input_idle(
+        cfg,
+        &snap,
+        hour,
+        focus_active,
+        wake_seconds_ago,
+        effective_cooldown,
+    ) {
         return action;
     }
     let input_idle = user_input_idle_seconds().await;
@@ -5184,7 +5207,14 @@ mod gate_tests {
     fn disabled_returns_silent() {
         let mut c = cfg();
         c.enabled = false;
-        let action = evaluate_pre_input_idle(&c, &snap(9999, false, None), NOON, None, None);
+        let action = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, None),
+            NOON,
+            None,
+            None,
+            c.cooldown_seconds,
+        );
         assert_eq!(
             action.unwrap_err(),
             LoopAction::Silent { reason: "disabled" }
@@ -5193,8 +5223,15 @@ mod gate_tests {
 
     #[test]
     fn awaiting_user_reply_skips_with_log() {
-        let action =
-            evaluate_pre_input_idle(&cfg(), &snap(9999, true, None), NOON, None, None).unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &cfg(),
+            &snap(9999, true, None),
+            NOON,
+            None,
+            None,
+            cfg().cooldown_seconds,
+        )
+        .unwrap_err();
         match action {
             LoopAction::Skip(msg) => assert!(msg.contains("awaiting user reply")),
             other => panic!("expected Skip, got {:?}", other),
@@ -5205,8 +5242,15 @@ mod gate_tests {
     fn cooldown_active_skips() {
         let mut c = cfg();
         c.cooldown_seconds = 1800;
-        let action = evaluate_pre_input_idle(&c, &snap(9999, false, Some(60)), NOON, None, None)
-            .unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, Some(60)),
+            NOON,
+            None,
+            None,
+            c.cooldown_seconds,
+        )
+        .unwrap_err();
         match action {
             LoopAction::Skip(msg) => {
                 assert!(msg.contains("cooldown"));
@@ -5222,7 +5266,14 @@ mod gate_tests {
         let mut c = cfg();
         c.cooldown_seconds = 0;
         // idle is high enough to pass the next gate, so we should reach Ok.
-        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(0)), NOON, None, None);
+        let result = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, Some(0)),
+            NOON,
+            None,
+            None,
+            c.cooldown_seconds,
+        );
         assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
     }
 
@@ -5230,15 +5281,29 @@ mod gate_tests {
     fn cooldown_elapsed_passes() {
         let mut c = cfg();
         c.cooldown_seconds = 1800;
-        let result = evaluate_pre_input_idle(&c, &snap(9999, false, Some(2000)), NOON, None, None);
+        let result = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, Some(2000)),
+            NOON,
+            None,
+            None,
+            c.cooldown_seconds,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn idle_below_threshold_silent() {
         let c = cfg(); // threshold=60
-        let action =
-            evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, None).unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &c,
+            &snap(30, false, None),
+            NOON,
+            None,
+            None,
+            c.cooldown_seconds,
+        )
+        .unwrap_err();
         assert_eq!(
             action,
             LoopAction::Silent {
@@ -5251,8 +5316,15 @@ mod gate_tests {
     fn idle_threshold_clamped_to_60_minimum() {
         let mut c = cfg();
         c.idle_threshold_seconds = 10; // user-set absurdly low, should clamp up to 60
-        let action =
-            evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, None).unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &c,
+            &snap(30, false, None),
+            NOON,
+            None,
+            None,
+            c.cooldown_seconds,
+        )
+        .unwrap_err();
         assert_eq!(
             action,
             LoopAction::Silent {
@@ -5264,7 +5336,14 @@ mod gate_tests {
 
     #[test]
     fn all_sync_gates_pass_returns_ok() {
-        let result = evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, None, None);
+        let result = evaluate_pre_input_idle(
+            &cfg(),
+            &snap(9999, false, None),
+            NOON,
+            None,
+            None,
+            cfg().cooldown_seconds,
+        );
         assert!(result.is_ok());
     }
 
@@ -5305,8 +5384,15 @@ mod gate_tests {
         c.quiet_hours_start = 23;
         c.quiet_hours_end = 7;
         // 03:00 — squarely inside the night window.
-        let action =
-            evaluate_pre_input_idle(&c, &snap(9999, false, None), 3, None, None).unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, None),
+            3,
+            None,
+            None,
+            c.cooldown_seconds,
+        )
+        .unwrap_err();
         assert_eq!(
             action,
             LoopAction::Silent {
@@ -5320,14 +5406,28 @@ mod gate_tests {
         let mut c = cfg();
         c.quiet_hours_start = 23;
         c.quiet_hours_end = 7;
-        let result = evaluate_pre_input_idle(&c, &snap(9999, false, None), 14, None, None);
+        let result = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, None),
+            14,
+            None,
+            None,
+            c.cooldown_seconds,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn quiet_hours_disabled_does_not_block() {
         let c = cfg(); // both = 0 → disabled
-        let result = evaluate_pre_input_idle(&c, &snap(9999, false, None), 3, None, None);
+        let result = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, None),
+            3,
+            None,
+            None,
+            c.cooldown_seconds,
+        );
         assert!(result.is_ok(), "disabled quiet hours shouldn't gate");
     }
 
@@ -5335,9 +5435,15 @@ mod gate_tests {
 
     #[test]
     fn focus_mode_active_skips_when_respected() {
-        let action =
-            evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, Some(true), None)
-                .unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &cfg(),
+            &snap(9999, false, None),
+            NOON,
+            Some(true),
+            None,
+            cfg().cooldown_seconds,
+        )
+        .unwrap_err();
         match action {
             LoopAction::Skip(msg) => assert!(msg.contains("Focus")),
             other => panic!("expected Skip, got {:?}", other),
@@ -5348,21 +5454,41 @@ mod gate_tests {
     fn focus_mode_active_passes_when_disabled_in_settings() {
         let mut c = cfg();
         c.respect_focus_mode = false;
-        let result = evaluate_pre_input_idle(&c, &snap(9999, false, None), NOON, Some(true), None);
+        let result = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, None),
+            NOON,
+            Some(true),
+            None,
+            c.cooldown_seconds,
+        );
         assert!(result.is_ok(), "user opted out of focus respect");
     }
 
     #[test]
     fn focus_mode_inactive_passes() {
-        let result =
-            evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, Some(false), None);
+        let result = evaluate_pre_input_idle(
+            &cfg(),
+            &snap(9999, false, None),
+            NOON,
+            Some(false),
+            None,
+            cfg().cooldown_seconds,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn focus_mode_unknown_passes() {
         // Non-macOS or unreadable file → None → don't block (fail open).
-        let result = evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, None, None);
+        let result = evaluate_pre_input_idle(
+            &cfg(),
+            &snap(9999, false, None),
+            NOON,
+            None,
+            None,
+            cfg().cooldown_seconds,
+        );
         assert!(result.is_ok());
     }
 
@@ -5380,6 +5506,7 @@ mod gate_tests {
             NOON,
             None,
             Some(120), // wake 120s ago — within grace window
+            c.cooldown_seconds,
         );
         assert!(result.is_ok(), "wake should soften cooldown");
     }
@@ -5394,6 +5521,7 @@ mod gate_tests {
             NOON,
             None,
             Some(700), // > 600 grace window
+            c.cooldown_seconds,
         )
         .unwrap_err();
         match action {
@@ -5408,7 +5536,14 @@ mod gate_tests {
         // halving effect: threshold = 200 → halved 100 → idle 120 should pass.
         let mut c = cfg();
         c.idle_threshold_seconds = 200;
-        let result = evaluate_pre_input_idle(&c, &snap(120, false, None), NOON, None, Some(60));
+        let result = evaluate_pre_input_idle(
+            &c,
+            &snap(120, false, None),
+            NOON,
+            None,
+            Some(60),
+            c.cooldown_seconds,
+        );
         assert!(
             result.is_ok(),
             "wake should halve threshold so idle 120 passes 200/2 = 100"
@@ -5420,8 +5555,15 @@ mod gate_tests {
         // Even with wake softening, threshold floors at 60s. idle 30 still fails.
         let mut c = cfg();
         c.idle_threshold_seconds = 100;
-        let action =
-            evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, Some(60)).unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &c,
+            &snap(30, false, None),
+            NOON,
+            None,
+            Some(60),
+            c.cooldown_seconds,
+        )
+        .unwrap_err();
         assert_eq!(
             action,
             LoopAction::Silent {
@@ -5434,8 +5576,15 @@ mod gate_tests {
     fn wake_does_not_bypass_awaiting() {
         // Even after a wake, if there's an unanswered proactive message we still wait.
         // Awaiting is about respect, not time.
-        let action = evaluate_pre_input_idle(&cfg(), &snap(9999, true, None), NOON, None, Some(60))
-            .unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &cfg(),
+            &snap(9999, true, None),
+            NOON,
+            None,
+            Some(60),
+            cfg().cooldown_seconds,
+        )
+        .unwrap_err();
         match action {
             LoopAction::Skip(msg) => assert!(msg.contains("awaiting user reply")),
             other => panic!("expected awaiting Skip, got {:?}", other),
@@ -5449,8 +5598,15 @@ mod gate_tests {
         let mut c = cfg();
         c.quiet_hours_start = 23;
         c.quiet_hours_end = 7;
-        let action =
-            evaluate_pre_input_idle(&c, &snap(9999, false, None), 3, None, Some(60)).unwrap_err();
+        let action = evaluate_pre_input_idle(
+            &c,
+            &snap(9999, false, None),
+            3,
+            None,
+            Some(60),
+            c.cooldown_seconds,
+        )
+        .unwrap_err();
         assert_eq!(
             action,
             LoopAction::Silent {
