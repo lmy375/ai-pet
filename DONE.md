@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 96：长跑 prompt 倾斜计数 + panel "倾向 X%" chip
+- 新 `PromptTiltCounters { restraint_dominant, engagement_dominant, balanced, neutral: AtomicU64 }` 加到 `ProcessCounters`，4 个 bucket 互斥求和 = Run 总数。
+- 方法 `record_dispatch(&[label])`：按 active labels 中 restraint vs engagement 数量分类——> 大者归 dominant，相等且都 > 0 归 balanced，相等且都 = 0 归 neutral。语义和 panel badge 颜色（Iter 95）一致，让长跑统计聚合的就是用户看到的同一种倾向。
+- 调度循环 Run 派发处一行 `record_dispatch(&active_labels)`，紧挨着 LLM 调用。Skip/Silent/Silent-by-gate 不计——只计真正 dispatch 出去的 prompt。
+- 新 Tauri commands `get_prompt_tilt_stats` / `reset_prompt_tilt_stats`，注册到 invoke handler。
+- panel 工具栏 env-awareness chip 之后插入"倾向 X% (Y/Z)" chip：选 4 bucket 中 count 最大的展示 dominant + 百分比 + 分子分母。颜色跟 dominant：克制红 / 引导绿 / 平衡紫 / 中性灰。tooltip 给完整分布（"克制 12 · 引导 4 · 平衡 2 · 中性 1"）+ 重置按钮。
+- 3 个新单测：classify_correctly（4 个分支各击中一次）/ unknown_labels_ignored（未知 label 被忽略不影响分类）/ can_be_reset（atomic 清零正确）。
+- 现在用户能看到："今天 prompt 60% 时间在克制宠物" 这种长期画像——比展开当前 hints 多一个时间维度的诊断。
+- 184 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 95：badge 颜色根据 nature 倾向自适应
 - "prompt: N 条 hint" badge 不再固定紫色——按 active_prompt_rules 的 restraint vs engagement 数量决定主色：
   - restraint > engagement → 红色 #dc2626（深 #991b1b）
