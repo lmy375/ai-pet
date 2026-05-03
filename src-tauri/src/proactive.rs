@@ -303,6 +303,12 @@ pub struct ToneSnapshot {
     /// to the tone strip as a "📏 长 / 短 / 混" chip so the user can see
     /// which register the pet is currently stuck in (or not).
     pub speech_register: Option<crate::speech_history::SpeechRegisterSummary>,
+    /// Iter R21: repeated-topic ngram if the pet has been circling the same
+    /// theme — same detector R11 feeds to the proactive prompt, surfaced
+    /// for panel visibility. Already redacted (R11 redacts in the prompt
+    /// hint; R21 redacts here for the panel chip). None when no ngram
+    /// recurs across enough distinct lines (the common "healthy" case).
+    pub repeated_topic: Option<String>,
 }
 
 /// Iter R10: simple shape for the tone-strip feedback chip. R1c added
@@ -493,6 +499,9 @@ pub async fn build_tone_snapshot(
         .chain(composite_labels.iter())
         .map(|s| String::from(*s))
         .collect();
+    // Iter R20 / R21: shared 5-line fetch feeds both speech_register and
+    // repeated_topic so the struct literal below has clean inline expressions.
+    let recent_for_signals = crate::speech_history::recent_speeches(5).await;
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -577,14 +586,14 @@ pub async fn build_tone_snapshot(
                 })
             }
         },
-        // Iter R20: speech-length register classification (R19's same input
-        // window). None when insufficient samples; classification is cheap
-        // (5-line scan), so refetching here is fine — panel snapshots are
-        // poll-driven, not in the hot path.
-        speech_register: {
-            let recent = crate::speech_history::recent_speeches(5).await;
-            crate::speech_history::classify_speech_register(&recent)
-        },
+        // Iter R20 / R21: speech-length register classification + R11's
+        // repeated-topic ngram detector — both consume the same 5-line
+        // window. Single fetch shared between two derived signals; mirrors
+        // run_proactive_turn's speech_hint / repeated_topic_hint /
+        // length_register_hint triple-from-one-fetch pattern.
+        speech_register: crate::speech_history::classify_speech_register(&recent_for_signals),
+        repeated_topic: crate::speech_history::detect_repeated_topic(&recent_for_signals, 4, 3)
+            .map(|t| crate::redaction::redact_with_settings(&t)),
     })
 }
 

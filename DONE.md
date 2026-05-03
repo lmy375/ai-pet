@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R21：repeated topic 在 PanelToneStrip 加 🔁 chip（R11 → 用户可见）
+- 现状缺口：R20 codify 了"所有 prompt 信号都该 panel 可见"原则。R11 detect_repeated_topic 是 R20 之前实现的信号，没还债 —— LLM 看到"你最近多次提到 X" prompt nudge，但用户在 panel 完全看不到 pet 在循环什么话题。R21 是该原则的第二次践行。
+- 解法 — fetch 共享 + chip 添加：
+  - ToneSnapshot 加 `repeated_topic: Option<String>` 字段。redact 在 backend 做（R11 prompt 路径已 redact，panel 路径独立 redact 防遗漏 — defense in depth）。
+  - build_tone_snapshot 把原来 speech_register 块的 `recent = recent_speeches(5).await` 提到外面成 `recent_for_signals` 共享变量，speech_register + repeated_topic 两个字段都从它派生。**single fetch + 两个 derived signal** = 跟 run_proactive_turn speech_hint / repeated_topic_hint / length_register_hint 三层从一次 fetch 出 同一原则。
+  - panelTypes.ts: 加 `repeated_topic: string | null`。
+  - PanelToneStrip: 新 chip 在 speech_register chip 后、period chip 前。橙色（跟 R20 monotone 同色 — 都是"信号告知 anomaly"），文案 "🔁 {topic}"，hover 解释 R11 4-char ngram + 3 句阈值。
+- 决策 — 单 fetch 提到外面 vs 重复 fetch：诱惑是两个字段各自 inline `recent_speeches(5).await`。但一次 build_tone_snapshot 调用是 panel poll triggered（每隔几秒）— 每次走两条 disk read 是浪费。提到 `let recent_for_signals = ...` 一次，两 field 共享。**共享 fetch 是 R11 IDEA 已写过的经济原则** — 复读 IDEA 让我下次抽手快。
+- 决策 — 不抽 `analyze_speech_signals(lines) -> { register, topic }` aggregate fn：诱惑是把两个 signal 打包成一个新 fn。但 R20 / R21 在概念上独立 — register 关心长度，topic 关心内容。**不要为节省 LOC 强行打包独立概念**。共享只在 fetch 层，不在 analysis 层。
+- 决策 — chip 颜色复用 R20 monotone 橙色：repeated_topic 出现 = "pet 在循环"（异常信号），跟 R20 long/short "卡 register" 同样性质。橙色 = "anomaly worth noting"。绿色 = "healthy"。两 chip 颜色一致让 panel 视觉语义稳定 — user 看到橙就知道"哪里卡了"，不用读文字。
+- 决策 — chip 文案直接显 topic 不带前缀："🔁 工作进展" 而非 "🔁 重复:工作进展"。emoji 已经表示语义，重复内容会冗余。topic 字符串本身就是 4-char ngram（如"昨天工作"或"喝水提醒"），用户一眼能识。
+- 决策 — chip 不显示 ngram 长度 / 跨几句：那些细节属于 hover。chip 只承担"是什么"，hover 承担"为什么 / 怎么算的"。
+- 决策 — 不加新单测：R11 detect_repeated_topic 已有 7 单测。R20 classify_speech_register 已有 4 单测。R21 是 surface 改动，没新逻辑 — 类型对齐 + frontend chip。tsc + cargo test 全过证明 wiring 正确。
+- 测试结果：464 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：panel tone strip 现在多了 🔁 chip（仅在 pet 真的卡 topic 时出现）。R10 (feedback) + R20 (register) + R21 (topic) 三 chip 色彩语义统一，组成 "宠物开口形态" 视觉 cluster。**R20 codified 的"prompt 信号 = 同 iter 加 panel surface" 原则被快速回头还了一笔旧债** — R11 信号从 prompt-only 升级到 prompt + panel 双 surface，跟 R1c (dismiss) / R20 (register) 形成 panel observability 完整 trio。
+
 ## 2026-05-04 — Iter R20：speech register 在 PanelToneStrip 加 📏 chip（R19 → 用户可见）
 - 现状缺口：R19 让 LLM 看到"你最近偏长 / 偏短"提示，但用户在 panel 看不到。如果用户 panel 一眼想知道"我的 pet 现在卡在某种 register 吗？" 没办法答 — 信号只在后台流转。R1c 已经给 dismiss 信号开了 panel 可见性的先例，R20 给 R19 也做。
 - 解法 — 抽 classifier + ToneSnapshot 字段：
