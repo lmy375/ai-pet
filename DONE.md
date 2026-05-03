@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R53：R52 mute 抽纯函数 + 5 单测（500 tests 里程碑）
+- 现状缺口：R52 ship 时 `mute_remaining_seconds()` 内部直接调 `chrono::Local::now()` 读全局时钟，**无法 unit test**。R52 IDEA 写过"helper 抽 + 测" 的 R-series pattern (R33 count_trailing_silent / R23 classify_feedback_band) —— R52 偷懒没做，R53 还债。
+- 解法 — 经典 pure helper extraction：
+  - 新 `compute_mute_remaining(until: Option<DateTime<Local>>, now: DateTime<Local>) -> Option<i64>` —— 纯函数，输入两个时间，输出 remaining seconds (None 当 until=None 或 now ≥ until)。
+  - 原 `mute_remaining_seconds()` 简化为 wrapper：读 MUTE_UNTIL 静态 + `chrono::Local::now()` + 调 pure helper。
+  - 5 新单测（gate.rs tests 模块）：
+    - returns_none_when_until_is_none
+    - returns_none_when_until_is_past（5 min 前 mute → already expired）
+    - returns_none_when_until_equals_now（boundary：>0 严格不等，equality 返 None）
+    - returns_seconds_when_until_is_future（30 min mute → 1800 秒）
+    - handles_one_second_before_expiry（边界：1 秒仍 Some(1)）
+  - 测试用 `chrono::Local.from_local_datetime(&naive)` 构造 deterministic Local 时间（不依赖系统真实时钟）。
+- 决策 — 严格 `> 0` 不 `>= 0`：until = now 那一刻 mute 视为"刚到期"，应该立刻 release。`>= 0` 会让 mute 多撑 1 秒。**boundary semantics: 到期即解除**，跟用户直觉对应。
+- 决策 — Option<DateTime> 而非 None placeholder DateTime::default：拒绝特殊值占位。Option 是 Rust 表达 "no mute set" 的正确类型 —— 比 DateTime::min_value() / Unix epoch 等魔法值清晰。**Option 永远胜过 sentinel value**。
+- 决策 — `use chrono::TimeZone` 在测试 fn 内：避免污染整 module namespace。tests fn 是单一用途，把 TimeZone trait import 限制在测试 helper 内更 contained。
+- 决策 — 不 mock MUTE_UNTIL static：诱惑是 `set MUTE_UNTIL.lock() in test → call mute_remaining_seconds()`. 但 (a) 全局状态 + 并行测试 race，(b) 测试主要 logic 是日期算术 — 不在 mutex。**抽 pure helper + 单测 = 解 mutex/全局耦合**。Wrapper logic (lock + 调 helper) 不需测，trivial wiring。
+- 测试结果：**500 cargo（+5）—— 半千测试 milestone**；clippy clean；fmt clean。
+- 结果：R52 mute logic 现在完全可测。R-series test count 里程碑 500 ——平均每 iter 加 ~10 测。**test debt 在 ship 后 1 iter 内还** 是健康节奏 —— R52→R53 跟 R29→R30 / R46→R47 同节奏。
+
 ## 2026-05-04 — Iter R52：transient mute 功能（"focus session shut up" 按钮）
 - 现状缺口：用户专注时想让 pet 暂时安静一段时间（30 min focus block），目前只能 settings 改 `proactive.enabled` —— 之后还得记得手动恢复。**没有"shut up for 30 min" 临时开关**。这是真实使用场景：deep work / 视频会议 / 客户演示等。永久关闭太重，让 pet 自己识别 focus mode 又不可靠。
 - 解法 — 完整 stack 新加 transient mute：

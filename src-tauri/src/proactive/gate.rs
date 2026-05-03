@@ -161,19 +161,32 @@ pub fn evaluate_input_idle_gate(
 pub static MUTE_UNTIL: std::sync::Mutex<Option<chrono::DateTime<chrono::Local>>> =
     std::sync::Mutex::new(None);
 
-/// Iter R52: read MUTE_UNTIL and return remaining seconds when active,
-/// else None. Pure-ish (depends on chrono::Local::now()) but separated
-/// for testability — gate calls this; ToneSnapshot reads same static
-/// so panel chip and gate stay aligned.
-pub fn mute_remaining_seconds() -> Option<i64> {
-    let until = MUTE_UNTIL.lock().ok().and_then(|g| *g)?;
-    let now = chrono::Local::now();
+/// Iter R52 / R53: pure helper computing remaining mute seconds. Returns
+/// `None` when `until` is None (never set / cleared) or already past.
+/// Returns `Some(positive)` when mute is still active. Pure / testable —
+/// caller passes both `until` (from MUTE_UNTIL static or anywhere) and
+/// `now` (for deterministic tests). The non-pure wrapper
+/// `mute_remaining_seconds()` reads the global state + uses
+/// `chrono::Local::now()`.
+pub fn compute_mute_remaining(
+    until: Option<chrono::DateTime<chrono::Local>>,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<i64> {
+    let until = until?;
     let remaining = (until - now).num_seconds();
     if remaining > 0 {
         Some(remaining)
     } else {
         None
     }
+}
+
+/// Iter R52: production wrapper around `compute_mute_remaining`. Reads
+/// MUTE_UNTIL static + chrono::Local::now() and delegates. Gate calls
+/// this; ToneSnapshot reads same — panel chip and gate stay aligned.
+pub fn mute_remaining_seconds() -> Option<i64> {
+    let until = MUTE_UNTIL.lock().ok().and_then(|g| *g);
+    compute_mute_remaining(until, chrono::Local::now())
 }
 
 /// Evaluate every gate in priority order and return the action this tick should take.
@@ -685,5 +698,55 @@ mod tests {
             }
             other => panic!("expected Run, got {:?}", other),
         }
+    }
+
+    // -- Iter R53: compute_mute_remaining tests -------------------------------
+
+    fn now_at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone;
+        let naive = chrono::NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap();
+        chrono::Local.from_local_datetime(&naive).unwrap()
+    }
+
+    #[test]
+    fn mute_remaining_returns_none_when_until_is_none() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert_eq!(compute_mute_remaining(None, now), None);
+    }
+
+    #[test]
+    fn mute_remaining_returns_none_when_until_is_past() {
+        // Mute set 5 min ago — already expired.
+        let now = now_at(2026, 5, 4, 10, 0);
+        let until = now - chrono::Duration::minutes(5);
+        assert_eq!(compute_mute_remaining(Some(until), now), None);
+    }
+
+    #[test]
+    fn mute_remaining_returns_none_when_until_equals_now() {
+        // Boundary: gate should release at exactly now (remaining = 0 → None,
+        // since the > 0 check excludes equality).
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert_eq!(compute_mute_remaining(Some(now), now), None);
+    }
+
+    #[test]
+    fn mute_remaining_returns_seconds_when_until_is_future() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let until = now + chrono::Duration::minutes(30);
+        let remaining = compute_mute_remaining(Some(until), now)
+            .expect("future mute should return Some");
+        assert_eq!(remaining, 30 * 60);
+    }
+
+    #[test]
+    fn mute_remaining_handles_one_second_before_expiry() {
+        // Edge case: 1 second left should still be Some(1), not None.
+        let now = now_at(2026, 5, 4, 10, 0);
+        let until = now + chrono::Duration::seconds(1);
+        assert_eq!(compute_mute_remaining(Some(until), now), Some(1));
     }
 }

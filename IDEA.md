@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R53 设计要点（已实现）
+- **test debt 应该 ship 后 1 iter 内还**：R52 IDEA 已经写"R-series 抽 helper + 测"模式（R33 / R23 etc），但 R52 自己偷懒没测。R53 还债。**这种"feature ship → test 跟上"是 R-series 健康节奏**：feature iter focus on shipping，test iter focus on solidifying。两者紧挨着，避免长期 untested code 累积。R29→R30 / R46→R47 都是同节奏。**承认 R52 偷懒并立刻还 比假装"feature 包含 tests" 诚实**。
+- **pure helper + non-pure wrapper 是解 global state 耦合的标准**：mute_remaining_seconds() 读 MUTE_UNTIL 静态 + Local::now()，无法测。compute_mute_remaining(until, now) 接两个参数，pure。Wrapper 一行 plumbing，pure helper 承载 logic。**测 logic 不测 plumbing** —— wrapper trivial 不写测，pure helper 5 case 全测。这是 R-series 反复践行的设计纪律 (R33 count_trailing_silent / R23 classify_feedback_band / R20 classify_speech_register / R51 dynamic tooltip computation)。
+- **boundary semantics: 到期即解除**：`> 0` 严格不等，`until == now` 时 returns None（不是 Some(0)）。**到期那一刻 mute 应该立刻失效**，不该多撑 1 秒。这条思路一致：R12 daily_review hour ≥ 22 (boundary fires at exact threshold), R7 ratio thresholds (>= 不 >). 每个 boundary case 都该明确写 test 钉死语义。
+- **Option<X> 比 sentinel value 总是胜出**：mute "未设置" 用 Option<DateTime> 而非 `DateTime::min_value()` / Unix epoch。Option 是 Rust 表达 "可能没有" 的 idiomatic 方式。**任何 nullable / optional state 都该用 Option，不要发明 magic value**。理由：(a) 类型清晰，(b) 编译器强制 caller 处理 None case，(c) 不会出现 "epoch year 1970 是真的还是 placeholder?" 模糊。
+- **500 tests 里程碑反映 R-series 健康度**：平均每 iter +9.4 测。这个比例不是 fluke —— **每个 logic-bearing iter 都该带 tests**，long-running project 的 test count 应该跟 iter count 大致同步。如果 50 iter 后只有 200 测 = test debt 严重；500 = 健康。
+- **`use chrono::TimeZone` 在 fn 内 vs module 顶**：测试 helper now_at 用 TimeZone trait，import 限在 fn body 内 (`use chrono::TimeZone;`)。**避免污染整 module namespace** —— 测试用 trait 不该被 production code path 看到。这是 Rust namespace 的 micro-discipline，让 import 范围跟使用范围匹配。
+- **Local timezone 测试构造**：`chrono::Local.from_local_datetime(&naive).unwrap()` 是 deterministic 构造法。不依赖系统时钟。**测试时间逻辑必须用 deterministic 构造**，不能 `Local::now()` —— 否则 CI 不同时区机器结果不稳定。这条原则 R12 / R14 / R17 等 daily 系列已经反复践行。
+
 ## Iter R52 设计要点（已实现）
 - **真实功能 iter 比 polish 更影响产品**：R-series 30+ iter 大量是 polish (chip / animation / focus ring / threshold tune)。R52 是真实 user-need feature —— "focus session shut up"。**polish 让产品 feel right，但解决真实痛点的 feature 才让 user reach for it**。比例上 polish: feature 能保 2-3:1 是健康，1:0 就是停滞。R52 之后该看是否还有未解决的真实痛点（如"快速给 pet 一个临时 instruction" / "马上换 mood register" 等）。
 - **user-driven 应该 gate priority 最高**：MUTE_UNTIL 检查在 evaluate_loop_tick 第一行。比 cooldown / quiet hours / awaiting 优先。原则：**用户显式 expression 永远 trump 系统 inference**。Cooldown 是系统判断"该歇"，user mute 是用户判断"我要你歇" —— 后者更强。这条原则适用 settings 类 toggle —— 用户操作产生的 state 永远 win。
