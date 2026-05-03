@@ -102,12 +102,7 @@ pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 /// content. Closes with a guidance tail asking the LLM to absorb these into tone
 /// rather than echo them back to the user verbatim. Iter Cτ: optional `user_name`
 /// is prepended when set so the LLM can address the owner by name.
-pub fn format_persona_layer(
-    days: u64,
-    persona: &str,
-    mood_trend: &str,
-    user_name: &str,
-) -> String {
+pub fn format_persona_layer(days: u64, persona: &str, mood_trend: &str, user_name: &str) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(4);
     if !user_name.trim().is_empty() {
         parts.push(format!(
@@ -241,19 +236,29 @@ pub trait ChatEventSink: Send + Sync {
 /// Implementation for Tauri's Channel (used by the frontend streaming path).
 impl ChatEventSink for Channel<StreamEvent> {
     fn send_chunk(&self, text: &str) {
-        let _ = self.send(StreamEvent::Chunk { text: text.to_string() });
+        let _ = self.send(StreamEvent::Chunk {
+            text: text.to_string(),
+        });
     }
     fn send_tool_start(&self, name: &str, arguments: &str) {
-        let _ = self.send(StreamEvent::ToolStart { name: name.to_string(), arguments: arguments.to_string() });
+        let _ = self.send(StreamEvent::ToolStart {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        });
     }
     fn send_tool_result(&self, name: &str, result: &str) {
-        let _ = self.send(StreamEvent::ToolResult { name: name.to_string(), result: result.to_string() });
+        let _ = self.send(StreamEvent::ToolResult {
+            name: name.to_string(),
+            result: result.to_string(),
+        });
     }
     fn send_done(&self) {
         let _ = self.send(StreamEvent::Done {});
     }
     fn send_error(&self, message: &str) {
-        let _ = self.send(StreamEvent::Error { message: message.to_string() });
+        let _ = self.send(StreamEvent::Error {
+            message: message.to_string(),
+        });
     }
 }
 
@@ -264,7 +269,9 @@ pub struct CollectingSink {
 
 impl CollectingSink {
     pub fn new() -> Self {
-        Self { text: Mutex::new(String::new()) }
+        Self {
+            text: Mutex::new(String::new()),
+        }
     }
 }
 
@@ -349,7 +356,11 @@ async fn stream_llm_request(
                     // Record first token time on the first meaningful data chunk
                     if first_token_instant.is_none() {
                         first_token_instant = Some(std::time::Instant::now());
-                        first_token_time_str = Some(chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string());
+                        first_token_time_str = Some(
+                            chrono::Local::now()
+                                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                                .to_string(),
+                        );
                     }
 
                     let delta = &parsed["choices"][0]["delta"];
@@ -384,10 +395,12 @@ async fn stream_llm_request(
     }
 
     let done_instant = std::time::Instant::now();
-    let done_time_str = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    let done_time_str = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f")
+        .to_string();
 
-    let first_token_latency_ms = first_token_instant
-        .map(|ft| (ft - request_instant).as_millis() as i64);
+    let first_token_latency_ms =
+        first_token_instant.map(|ft| (ft - request_instant).as_millis() as i64);
     let total_latency_ms = (done_instant - request_instant).as_millis() as i64;
 
     let mut tool_calls: Vec<(i64, serde_json::Value)> = tool_calls_map
@@ -432,7 +445,10 @@ pub async fn run_chat_pipeline(
         .find(|m| m.role == "user")
         .and_then(|m| m.content.as_str())
         .unwrap_or_default();
-    ctx.log(&format!("Chat request: model={}, user=\"{}\"", config.model, user_msg));
+    ctx.log(&format!(
+        "Chat request: model={}, user=\"{}\"",
+        config.model, user_msg
+    ));
 
     // Get MCP tool definitions
     let mcp_defs = {
@@ -468,19 +484,22 @@ pub async fn run_chat_pipeline(
         "content": TOOL_USAGE_PROMPT,
     });
     // Insert after position 0 (after SOUL.md system message) if messages exist, else at 0
-    let insert_pos = if !conv_messages.is_empty()
-        && conv_messages[0]["role"].as_str() == Some("system")
-    {
-        1
-    } else {
-        0
-    };
+    let insert_pos =
+        if !conv_messages.is_empty() && conv_messages[0]["role"].as_str() == Some("system") {
+            1
+        } else {
+            0
+        };
     conv_messages.insert(insert_pos, tool_prompt_msg);
 
     // Tool calling loop (unlimited rounds)
     let mut round = 0usize;
     loop {
-        ctx.log(&format!("LLM round {} ({} messages)", round, conv_messages.len()));
+        ctx.log(&format!(
+            "LLM round {} ({} messages)",
+            round,
+            conv_messages.len()
+        ));
 
         let body = serde_json::json!({
             "model": config.model,
@@ -490,8 +509,7 @@ pub async fn run_chat_pipeline(
         });
 
         ctx.log(&format!("POST {}", url));
-        let result =
-            stream_llm_request(&client, &url, &config.api_key, &body, sink, ctx).await?;
+        let result = stream_llm_request(&client, &url, &config.api_key, &body, sink, ctx).await?;
 
         // Write LLM request/response to llm.log with timing
         write_llm_log(
@@ -507,7 +525,8 @@ pub async fn run_chat_pipeline(
         );
 
         if result.tool_calls.is_empty() {
-            ctx.log(&format!("Final response ({} chars, TTFT={}ms, total={}ms)",
+            ctx.log(&format!(
+                "Final response ({} chars, TTFT={}ms, total={}ms)",
                 result.text.len(),
                 result.first_token_latency_ms.unwrap_or(-1),
                 result.total_latency_ms,
@@ -562,7 +581,11 @@ pub async fn run_chat_pipeline(
                 registry.execute(tc_name, tc_args, ctx).await
             };
 
-            ctx.log(&format!("Tool result [{}]: {} chars", tc_name, result.len()));
+            ctx.log(&format!(
+                "Tool result [{}]: {} chars",
+                tc_name,
+                result.len()
+            ));
 
             sink.send_tool_result(tc_name, &result);
 
@@ -578,6 +601,7 @@ pub async fn run_chat_pipeline(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri DI requires each State as its own param
 pub async fn chat(
     app: AppHandle,
     messages: Vec<ChatMessage>,
@@ -652,7 +676,11 @@ mod trim_tests {
 
     #[test]
     fn trim_below_cap_is_no_op() {
-        let msgs = vec![msg("system", "soul"), msg("user", "hi"), msg("assistant", "hi")];
+        let msgs = vec![
+            msg("system", "soul"),
+            msg("user", "hi"),
+            msg("assistant", "hi"),
+        ];
         let out = trim_to_context(msgs.clone(), 10);
         assert_eq!(out.len(), msgs.len());
     }
@@ -670,7 +698,10 @@ mod trim_tests {
         assert_eq!(out.len(), 5, "system + 4 history");
         assert_eq!(out[0].role, "system");
         // Last 4 should be u4, a4, u5, a5.
-        assert_eq!(roles(&out[1..]), vec!["user", "assistant", "user", "assistant"]);
+        assert_eq!(
+            roles(&out[1..]),
+            vec!["user", "assistant", "user", "assistant"]
+        );
     }
 
     #[test]
@@ -720,12 +751,8 @@ mod trim_tests {
 
     #[test]
     fn format_persona_layer_includes_trend_when_set() {
-        let body = format_persona_layer(
-            45,
-            "",
-            "你最近 30 次心情记录里：Tap × 12、Idle × 10。",
-            "",
-        );
+        let body =
+            format_persona_layer(45, "", "你最近 30 次心情记录里：Tap × 12、Idle × 10。", "");
         assert!(body.contains("45 天"));
         assert!(body.contains("Tap × 12"));
     }
@@ -799,8 +826,7 @@ mod trim_tests {
             "tool prompt must teach the schedule prefixes by example"
         );
         assert!(
-            TOOL_USAGE_PROMPT.contains("todo")
-                && TOOL_USAGE_PROMPT.contains("提醒我"),
+            TOOL_USAGE_PROMPT.contains("todo") && TOOL_USAGE_PROMPT.contains("提醒我"),
             "tool prompt must contrast butler_tasks with todo[remind:]"
         );
     }
@@ -822,8 +848,7 @@ mod trim_tests {
         );
         // Test the dedup guidance — update existing rather than re-create.
         assert!(
-            TOOL_USAGE_PROMPT.contains("update")
-                && TOOL_USAGE_PROMPT.contains("相近"),
+            TOOL_USAGE_PROMPT.contains("update") && TOOL_USAGE_PROMPT.contains("相近"),
             "tool prompt must instruct dedup via update for similar entries"
         );
     }

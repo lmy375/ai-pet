@@ -45,9 +45,8 @@ async fn memory_list_impl(arguments: &str, ctx: &ToolContext) -> String {
     match memory::memory_list(category) {
         Ok(index) => {
             ctx.log("memory_list: returned index");
-            serde_json::to_string(&index).unwrap_or_else(|e| {
-                format!(r#"{{"error": "serialize failed: {}"}}"#, e)
-            })
+            serde_json::to_string(&index)
+                .unwrap_or_else(|e| format!(r#"{{"error": "serialize failed: {}"}}"#, e))
         }
         Err(e) => format!(r#"{{"error": "{}"}}"#, e),
     }
@@ -101,7 +100,11 @@ async fn memory_search_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     match memory::memory_search(keyword.clone()) {
         Ok(results) => {
-            ctx.log(&format!("memory_search: '{}' -> {} results", keyword, results.len()));
+            ctx.log(&format!(
+                "memory_search: '{}' -> {} results",
+                keyword,
+                results.len()
+            ));
             // Convert to a nicer JSON array
             let items: Vec<serde_json::Value> = results
                 .into_iter()
@@ -195,12 +198,22 @@ async fn memory_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
     // a one-line event so the user has a "what did the pet do for me" surface
     // distinct from speech_history. Creates aren't logged — those are *assignments*,
     // not executions; logging them would dilute the signal.
-    let butler_action_logged = category == "butler_tasks" && (action == "update" || action == "delete");
+    let butler_action_logged =
+        category == "butler_tasks" && (action == "update" || action == "delete");
     let desc_for_log = description.clone().unwrap_or_default();
 
-    match memory::memory_edit(action.clone(), category.clone(), title.clone(), description, detail_content) {
+    match memory::memory_edit(
+        action.clone(),
+        category.clone(),
+        title.clone(),
+        description,
+        detail_content,
+    ) {
         Ok(msg) => {
-            ctx.log(&format!("memory_edit: {} '{}' in {}", action, title, category));
+            ctx.log(&format!(
+                "memory_edit: {} '{}' in {}",
+                action, title, category
+            ));
             if butler_action_logged {
                 crate::butler_history::record_event(&action, &title, &desc_for_log).await;
             }

@@ -121,7 +121,10 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
     if swept > 0 {
         write_log(
             &log_store.0,
-            &format!("Consolidate: swept {} stale reminder(s) before LLM run", swept),
+            &format!(
+                "Consolidate: swept {} stale reminder(s) before LLM run",
+                swept
+            ),
         );
     }
 
@@ -170,8 +173,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
     }
 
     let index = memory::memory_list(None).map_err(|e| format!("memory_list failed: {e}"))?;
-    let index_json = serde_json::to_string_pretty(&index)
-        .map_err(|e| format!("serialize index: {e}"))?;
+    let index_json =
+        serde_json::to_string_pretty(&index).map_err(|e| format!("serialize index: {e}"))?;
 
     // Only nudge the LLM toward the focus_history.log file when it actually exists — no
     // point asking it to read a path that's empty on a fresh install or non-macOS host.
@@ -192,7 +195,10 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         format!(
             "你最近 {} 句主动开口（按时间正序，最新在底部）：\n{}",
             body.len(),
-            body.iter().map(|t| format!("- {}", t)).collect::<Vec<_>>().join("\n"),
+            body.iter()
+                .map(|t| format!("- {}", t))
+                .collect::<Vec<_>>()
+                .join("\n"),
         )
     };
 
@@ -221,11 +227,13 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         serde_json::from_value(serde_json::json!({
             "role": "system",
             "content": "你是一个记忆整理助理。可以并应当使用 memory_edit 工具直接修改记忆。",
-        })).unwrap(),
+        }))
+        .unwrap(),
         serde_json::from_value(serde_json::json!({
             "role": "user",
             "content": prompt,
-        })).unwrap(),
+        }))
+        .unwrap(),
     ];
 
     let mood_before = read_current_mood();
@@ -320,14 +328,7 @@ pub fn sweep_stale_reminders(now: chrono::NaiveDateTime, cutoff_hours: u64) -> u
     }
     let mut count = 0;
     for title in to_delete {
-        if memory::memory_edit(
-            "delete".to_string(),
-            "todo".to_string(),
-            title,
-            None,
-            None,
-        )
-        .is_ok()
+        if memory::memory_edit("delete".to_string(), "todo".to_string(), title, None, None).is_ok()
         {
             count += 1;
         }

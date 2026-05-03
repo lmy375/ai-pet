@@ -82,8 +82,7 @@ impl ToolRegistry {
 
     /// Get all tool definitions for the LLM API request (built-in + MCP)
     pub fn definitions(&self) -> serde_json::Value {
-        let mut defs: Vec<serde_json::Value> =
-            self.tools.iter().map(|t| t.definition()).collect();
+        let mut defs: Vec<serde_json::Value> = self.tools.iter().map(|t| t.definition()).collect();
         defs.extend(self.mcp_definitions.iter().cloned());
         serde_json::Value::Array(defs)
     }
@@ -161,9 +160,18 @@ impl ToolRegistry {
             "Tool cache summary: {}/{} hits ({}%)",
             hits, total, pct
         ));
-        ctx.process_counters.cache.turns.fetch_add(1, Ordering::Relaxed);
-        ctx.process_counters.cache.hits.fetch_add(hits, Ordering::Relaxed);
-        ctx.process_counters.cache.calls.fetch_add(total, Ordering::Relaxed);
+        ctx.process_counters
+            .cache
+            .turns
+            .fetch_add(1, Ordering::Relaxed);
+        ctx.process_counters
+            .cache
+            .hits
+            .fetch_add(hits, Ordering::Relaxed);
+        ctx.process_counters
+            .cache
+            .calls
+            .fetch_add(total, Ordering::Relaxed);
     }
 }
 
@@ -222,7 +230,11 @@ mod tests {
         let r1 = reg.execute("get_weather", "{}", &ctx).await;
         let r2 = reg.execute("get_weather", "{}", &ctx).await;
         assert_eq!(r1, r2, "second call should serve cached result verbatim");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "underlying tool fired once");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "underlying tool fired once"
+        );
     }
 
     #[tokio::test]
@@ -235,9 +247,15 @@ mod tests {
         let reg = ToolRegistry::with_tools(vec![tool], vec![]);
         let ctx = fresh_ctx();
 
-        reg.execute("get_weather", r#"{"city":"Beijing"}"#, &ctx).await;
-        reg.execute("get_weather", r#"{"city":"Tokyo"}"#, &ctx).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "different args = different cache keys");
+        reg.execute("get_weather", r#"{"city":"Beijing"}"#, &ctx)
+            .await;
+        reg.execute("get_weather", r#"{"city":"Tokyo"}"#, &ctx)
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "different args = different cache keys"
+        );
     }
 
     #[tokio::test]
@@ -254,7 +272,11 @@ mod tests {
         reg.execute("memory_edit", "{}", &ctx).await;
         reg.execute("memory_edit", "{}", &ctx).await;
         reg.execute("memory_edit", "{}", &ctx).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 3, "mutating tool must not be cached");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "mutating tool must not be cached"
+        );
     }
 
     #[tokio::test]
@@ -299,7 +321,10 @@ mod tests {
         reg.execute("get_weather", "{}", &ctx).await;
         reg.execute("memory_search", r#"{"q":"b"}"#, &ctx).await;
         let names = reg.called_tool_names().await;
-        assert_eq!(names, vec!["get_weather".to_string(), "memory_search".to_string()]);
+        assert_eq!(
+            names,
+            vec!["get_weather".to_string(), "memory_search".to_string()]
+        );
     }
 
     #[tokio::test]

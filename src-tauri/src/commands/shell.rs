@@ -30,7 +30,12 @@ pub(crate) struct ShellTask {
 }
 
 impl ShellTask {
-    pub fn new(pid: u32, stdout_path: PathBuf, stderr_path: PathBuf, started_at: DateTime<Local>) -> Self {
+    pub fn new(
+        pid: u32,
+        stdout_path: PathBuf,
+        stderr_path: PathBuf,
+        started_at: DateTime<Local>,
+    ) -> Self {
         Self {
             pid,
             status: TaskStatus::Running,
@@ -153,8 +158,7 @@ pub fn cleanup_old_tasks(map: &mut HashMap<String, ShellTask>) {
     let to_remove: Vec<String> = map
         .iter()
         .filter(|(_, t)| {
-            t.status == TaskStatus::Finished
-                && t.finished_at.map_or(false, |f| f < cutoff)
+            t.status == TaskStatus::Finished && t.finished_at.is_some_and(|f| f < cutoff)
         })
         .map(|(id, _)| id.clone())
         .collect();

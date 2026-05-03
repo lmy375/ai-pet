@@ -3,6 +3,36 @@
 每完成一项就把它从 TODO 移到 DONE.md（带日期），并在 IDEA.md 中记录设计变化。
 每次迭代尽量小、可见、可测。
 
+## 下一阶段：质量收口优先级（2026-05-03 代码质量评估后新增）
+
+这些任务优先于继续堆新功能。目标是把当前 alpha 质量推进到可长期维护的状态。
+
+- [x] Quality Gate 1：清理 Rust 格式和 lint（2026-05-03 完成 — Iter QG1）
+
+- [ ] Quality Gate 2：给 LLM tool-call loop 增加最大轮数和明确失败路径。
+  - AI prompt：在 `run_chat_pipeline` 的工具调用循环中加入可配置或常量化的最大 round 数。超过上限时停止继续调用工具，向用户返回可解释错误，并写入 app log / llm log。补单测或可执行 smoke case，覆盖“模型连续要求工具导致上限触发”的情况。
+
+- [ ] Quality Gate 3：统一手动 proactive trigger 与后台 loop 的 telemetry。
+  - AI prompt：让 `trigger_proactive_turn` 和后台 proactive loop 共享 outcome counters、decision log、prompt tilt、tools_used 等统计路径。手动触发可以标记 source=manual，但不能绕开核心观测数据。补测试或手动验证记录。
+
+- [ ] Quality Gate 4：补齐 prompt reinjection redaction。
+  - AI prompt：审计 proactive / reactive / consolidate 中所有把 memory、mood、daily_plan、reminder、speech history、persona summary、butler task 重新注入 prompt 的路径。把未过滤内容统一接入 `redact_with_settings`，并补针对 mood/reminder/plan 的回归测试。
+
+- [ ] Quality Gate 5：拆分 `src-tauri/src/proactive.rs`。
+  - AI prompt：在不改变行为的前提下，把 proactive 的纯逻辑按 gate、prompt rules、reminders、butler schedule、telemetry 拆到子模块。先移动代码和测试，保持 public API 稳定；每一步都运行 `cargo test`，避免大爆炸式重构。
+
+- [ ] Quality Gate 6：减少 panel 高频 IPC。
+  - AI prompt：把 `PanelDebug` 每秒发起的多个独立 invoke 收敛为一个后端 snapshot command，保留现有 UI 行为和类型安全。补一个后端聚合结构，并在前端用单次调用更新状态。
+
+- [ ] Tool Review 1：工具调用目的字段与展示。
+  - AI prompt：扩展工具调用协议，让每次 LLM 请求工具时都必须提供 `purpose`（一句话说明为什么现在需要这个工具、期望用结果做什么）。后端在执行前解析并记录该字段；前端 ToolCallBlock / debug panel 展示 purpose。缺失 purpose 时不要静默执行，返回可恢复错误，引导模型补齐目的说明。
+
+- [ ] Tool Review 2：AI 工具调用风险审核。
+  - AI prompt：在工具执行前增加风险评估层，输入包括工具名、参数、purpose、当前上下文摘要和调用来源。输出结构化结论：`risk_level`、`reasons`、`requires_human_review`、`safe_alternative`。低风险只记录审核结果后继续执行；高风险进入人工审核流程；审核结果写入 decision log 和 app log。
+
+- [ ] Tool Review 3：高风险工具调用的人类审核与 1 分钟超时。
+  - AI prompt：实现高风险工具调用的人工审核 gate。前端展示待审核工具名、purpose、参数摘要、风险理由、允许/拒绝按钮；后端等待审核结果最多 60 秒。超时后按安全默认策略处理：拒绝 mutating / shell 类调用，允许只读低影响调用继续或要求模型改用安全替代方案。无论允许、拒绝还是超时，都要把结果返回给 LLM，使自动化流程能继续收束而不是永久挂起。
+
 ## 下一迭代候选（优先级从高到低）
 ## 下一阶段（Iter 100 盘点后重排，2026-05-03 用户加入"宠物管家"方向）
 

@@ -97,10 +97,7 @@ pub fn parse_mood_string(raw: &str) -> (String, Option<String>) {
 /// `MoodTagCounters` so the panel can display a cumulative format-adherence ratio.
 /// `source` is the human-readable label that prefixes the log line so the user can tell
 /// which pipeline produced the warning.
-pub fn read_mood_for_event(
-    ctx: &ToolContext,
-    source: &str,
-) -> (Option<String>, Option<String>) {
+pub fn read_mood_for_event(ctx: &ToolContext, source: &str) -> (Option<String>, Option<String>) {
     let parsed = read_current_mood_parsed();
     let counters = &ctx.process_counters.mood_tag;
     match &parsed {

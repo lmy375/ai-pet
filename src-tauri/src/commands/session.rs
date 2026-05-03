@@ -74,7 +74,9 @@ fn write_index(index: &SessionIndex) -> Result<(), String> {
 }
 
 fn now_iso() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+    chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f")
+        .to_string()
 }
 
 #[tauri::command]

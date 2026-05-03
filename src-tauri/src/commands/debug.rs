@@ -241,7 +241,9 @@ pub fn append_to_file(path: &std::path::Path, line: &str) {
 
 /// Write one formatted log line to both the in-memory store and app.log.
 pub fn write_log(store: &Arc<Mutex<Vec<String>>>, message: &str) {
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+    let ts = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
     let line = format!("[{}] {}", ts, message);
 
     // In-memory
@@ -259,6 +261,7 @@ pub fn write_log(store: &Arc<Mutex<Vec<String>>>, message: &str) {
 }
 
 /// Append a JSON-Lines entry to llm.log with timing info.
+#[allow(clippy::too_many_arguments)] // each timing field is independently captured at the call site
 pub fn write_llm_log(
     round: usize,
     request: &serde_json::Value,
@@ -674,10 +677,17 @@ mod tests {
         assert_eq!(logs.len(), MAX_LOG_LINES, "buffer must stay at cap");
         // The 50 oldest were dropped; the most recent should be "line 5049".
         let last = logs.last().expect("at least one entry");
-        assert!(last.contains(&format!("line {}", total - 1)), "newest preserved");
+        assert!(
+            last.contains(&format!("line {}", total - 1)),
+            "newest preserved"
+        );
         let first = logs.first().expect("at least one entry");
-        assert!(first.contains(&format!("line {}", total - MAX_LOG_LINES)),
-            "oldest in window is line {}, got: {}", total - MAX_LOG_LINES, first);
+        assert!(
+            first.contains(&format!("line {}", total - MAX_LOG_LINES)),
+            "oldest in window is line {}, got: {}",
+            total - MAX_LOG_LINES,
+            first
+        );
     }
 
     #[test]

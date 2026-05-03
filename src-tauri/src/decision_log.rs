@@ -44,9 +44,7 @@ impl DecisionLog {
     /// Append a decision; oldest is dropped once we exceed `CAPACITY`.
     pub fn push(&self, kind: &str, reason: String) {
         let entry = ProactiveDecision {
-            timestamp: chrono::Local::now()
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string(),
+            timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             kind: kind.to_string(),
             reason,
         };

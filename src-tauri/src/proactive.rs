@@ -939,7 +939,10 @@ pub async fn get_tone_snapshot(
     // category — same as a panel `get_pending_reminders` call, which the panel was
     // already polling at 1 Hz, so this doesn't add new IO pressure.
     let wake_back = matches!(wake_ago, Some(secs) if secs <= 600);
-    let first_mood = mood_text.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true);
+    let first_mood = mood_text
+        .as_ref()
+        .map(|t| t.trim().is_empty())
+        .unwrap_or(true);
     let pre_quiet = pre_quiet_minutes.is_some();
     let reminders_due = !build_reminders_hint(now.naive_local()).is_empty();
     let has_plan = !build_plan_hint().is_empty();
@@ -1006,7 +1009,11 @@ pub async fn get_tone_snapshot(
         in_quiet_hours: get_settings()
             .ok()
             .map(|s| {
-                in_quiet_hours(hour, s.proactive.quiet_hours_start, s.proactive.quiet_hours_end)
+                in_quiet_hours(
+                    hour,
+                    s.proactive.quiet_hours_start,
+                    s.proactive.quiet_hours_end,
+                )
             })
             .unwrap_or(false),
         // Iter D9: cooldown remaining. Mirrors the gate logic exactly:
@@ -1131,6 +1138,7 @@ pub enum ReminderTarget {
 /// Parse a "user-set reminder" prefix from a memory item's description. Convention:
 ///   - `[remind: HH:MM] topic`              — today (or wraps a few minutes past midnight)
 ///   - `[remind: YYYY-MM-DD HH:MM] topic`   — specific moment (24-hour clock)
+///
 /// Returns `(target, topic)` when the prefix parses cleanly, `None` otherwise.
 pub fn parse_reminder_prefix(desc: &str) -> Option<(ReminderTarget, String)> {
     let trimmed = desc.trim_start();
@@ -1173,10 +1181,7 @@ pub fn is_reminder_due(
             delta >= zero && delta <= window
         }
         ReminderTarget::TodayHour(h, m) => {
-            let Some(today_t) = now
-                .date()
-                .and_hms_opt(*h as u32, *m as u32, 0)
-            else {
+            let Some(today_t) = now.date().and_hms_opt(*h as u32, *m as u32, 0) else {
                 return false;
             };
             let delta = now - today_t;
@@ -1294,7 +1299,9 @@ fn evaluate_pre_input_idle(
     // Gate 3: quiet hours. A real friend lets you sleep. Silent skip rather than logged
     // skip — this can happen on every tick during night, no value in spamming logs.
     if in_quiet_hours(hour, cfg.quiet_hours_start, cfg.quiet_hours_end) {
-        return Err(LoopAction::Silent { reason: "quiet_hours" });
+        return Err(LoopAction::Silent {
+            reason: "quiet_hours",
+        });
     }
     // Gate 4: macOS Focus / DND. The user explicitly opted into "don't disturb me", so
     // skip with a logged reason (less frequent than nightly quiet hours, worth surfacing).
@@ -1314,7 +1321,9 @@ fn evaluate_pre_input_idle(
         raw_threshold
     };
     if snap.idle_seconds < threshold {
-        return Err(LoopAction::Silent { reason: "idle_below_threshold" });
+        return Err(LoopAction::Silent {
+            reason: "idle_below_threshold",
+        });
     }
     Ok(())
 }
@@ -1367,9 +1376,7 @@ async fn evaluate_loop_tick(
         .last_wake_seconds_ago()
         .await;
 
-    if let Err(action) =
-        evaluate_pre_input_idle(cfg, &snap, hour, focus_active, wake_seconds_ago)
-    {
+    if let Err(action) = evaluate_pre_input_idle(cfg, &snap, hour, focus_active, wake_seconds_ago) {
         return action;
     }
     let input_idle = user_input_idle_seconds().await;
@@ -1405,7 +1412,10 @@ pub fn spawn(app: AppHandle) {
                 let log_store = app.state::<LogStore>().inner().clone();
                 write_log(
                     &log_store.0,
-                    &format!("Proactive: wake-from-sleep detected (gap {}s)", gap.as_secs()),
+                    &format!(
+                        "Proactive: wake-from-sleep detected (gap {}s)",
+                        gap.as_secs()
+                    ),
                 );
             }
 
@@ -1468,8 +1478,7 @@ pub fn spawn(app: AppHandle) {
                 has_plan_for_rules,
                 chatty_today == 0,
             );
-            let companionship_days_for_rules =
-                crate::companionship::companionship_days().await;
+            let companionship_days_for_rules = crate::companionship::companionship_days().await;
             let data_label_set = active_data_driven_rule_labels(
                 lifetime_count as usize,
                 chatty_today,
@@ -1486,8 +1495,7 @@ pub fn spawn(app: AppHandle) {
                 .inner()
                 .snapshot()
                 .await;
-            let since_last_for_rules =
-                snap_for_rules.since_last_proactive_seconds.map(|s| s / 60);
+            let since_last_for_rules = snap_for_rules.since_last_proactive_seconds.map(|s| s / 60);
             let idle_min_for_rules: u64 = snap_for_rules.idle_seconds / 60;
             let composite_label_set = active_composite_rule_labels(
                 wake_back_for_rules,
@@ -1526,7 +1534,10 @@ pub fn spawn(app: AppHandle) {
                 LoopAction::Skip(reason) => {
                     decisions.push("Skip", reason.clone());
                 }
-                LoopAction::Run { idle_seconds, input_idle_seconds } => {
+                LoopAction::Run {
+                    idle_seconds,
+                    input_idle_seconds,
+                } => {
                     let mut reason = format!(
                         "idle={}s, input_idle={}",
                         idle_seconds,
@@ -1552,7 +1563,10 @@ pub fn spawn(app: AppHandle) {
                     let log_store = app.state::<LogStore>().inner().clone();
                     write_log(&log_store.0, &reason);
                 }
-                LoopAction::Run { idle_seconds, input_idle_seconds } => {
+                LoopAction::Run {
+                    idle_seconds,
+                    input_idle_seconds,
+                } => {
                     // Record long-running prompt tilt (Iter 96): bump exactly one of four
                     // buckets based on the active label set we computed for this Run. Done
                     // here rather than after the LLM call so the count tracks "Run with
@@ -1573,7 +1587,9 @@ pub fn spawn(app: AppHandle) {
                         .env_tool;
                     match &outcome {
                         Ok(o) if o.reply.is_some() => {
-                            outcome_counters.spoke.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            outcome_counters
+                                .spoke
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             env_tool_counters.record_spoke(&o.tools);
                             let mut reason = chatty_part.clone();
                             if let Some(t) = &rules_tag {
@@ -1589,7 +1605,9 @@ pub fn spawn(app: AppHandle) {
                             decisions.push("Spoke", reason);
                         }
                         Ok(_) => {
-                            outcome_counters.silent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            outcome_counters
+                                .silent
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let mut reason = chatty_part.clone();
                             if let Some(t) = &rules_tag {
                                 append_tag(&mut reason, t);
@@ -1597,7 +1615,9 @@ pub fn spawn(app: AppHandle) {
                             decisions.push("LlmSilent", reason);
                         }
                         Err(e) => {
-                            outcome_counters.error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            outcome_counters
+                                .error
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let mut tail = chatty_part.clone();
                             if let Some(t) = &rules_tag {
                                 append_tag(&mut tail, t);
@@ -1646,8 +1666,8 @@ async fn run_proactive_turn(
 
     let tools_used: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let ctx =
-        ToolContext::new(log_store, shell_store, process_counters).with_tools_used_collector(tools_used.clone());
+    let ctx = ToolContext::new(log_store, shell_store, process_counters)
+        .with_tools_used_collector(tools_used.clone());
 
     // Try to load the latest session so the proactive turn has the recent context. If none
     // exists yet, fall back to a system-only conversation.
@@ -1733,7 +1753,10 @@ async fn run_proactive_turn(
     // gate would have skipped before we got here.
     let focus_hint = match crate::focus_mode::focus_status().await {
         Some(s) if s.active => match &s.name {
-            Some(n) => format!("用户当前开着 macOS Focus 模式：「{}」（说明 ta 想专注，开口要克制）。", n),
+            Some(n) => format!(
+                "用户当前开着 macOS Focus 模式：「{}」（说明 ta 想专注，开口要克制）。",
+                n
+            ),
             None => "用户当前开着某个 macOS Focus 模式（说明 ta 想专注，开口要克制）。".to_string(),
         },
         _ => String::new(),
@@ -1770,9 +1793,7 @@ async fn run_proactive_turn(
     // bubble to the top with a "⏰ 到期" marker.
     let butler_tasks_hint = build_butler_tasks_hint(now_local.naive_local());
     // Iter Cυ: owner-name from settings, empty when unset.
-    let user_name = get_settings()
-        .map(|s| s.user_name)
-        .unwrap_or_default();
+    let user_name = get_settings().map(|s| s.user_name).unwrap_or_default();
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
@@ -1913,7 +1934,11 @@ async fn run_proactive_turn(
         return Ok(ProactiveTurnOutcome { reply: None, tools });
     }
 
-    ctx.log(&format!("Proactive: speaking ({} chars, idle={}s)", reply_trimmed.len(), idle_seconds));
+    ctx.log(&format!(
+        "Proactive: speaking ({} chars, idle={}s)",
+        reply_trimmed.len(),
+        idle_seconds
+    ));
 
     // Persist into the active session: the proactive prompt is hidden from the user, but the
     // assistant's reply is shown so the conversation context stays coherent.
@@ -2099,6 +2124,7 @@ pub enum ButlerSchedule {
 /// Parse a schedule prefix from a butler_tasks description. Conventions:
 ///   - `[every: HH:MM] topic`              — daily recurring
 ///   - `[once: YYYY-MM-DD HH:MM] topic`    — one-shot
+///
 /// Returns `(schedule, topic)` on clean parse, `None` otherwise. Tasks without a prefix
 /// are unscheduled — the LLM picks them up on its own judgment, not by clock.
 pub fn parse_butler_schedule_prefix(desc: &str) -> Option<(ButlerSchedule, String)> {
@@ -2230,13 +2256,7 @@ pub fn build_butler_tasks_hint(now: chrono::NaiveDateTime) -> String {
     let tuples: Vec<(String, String, String)> = cat
         .items
         .iter()
-        .map(|i| {
-            (
-                i.title.clone(),
-                i.description.clone(),
-                i.updated_at.clone(),
-            )
-        })
+        .map(|i| (i.title.clone(), i.description.clone(), i.updated_at.clone()))
         .collect();
     let block = format_butler_tasks_block(
         &tuples,
@@ -2388,13 +2408,7 @@ pub fn build_user_profile_hint() -> String {
     let tuples: Vec<(String, String, String)> = cat
         .items
         .iter()
-        .map(|i| {
-            (
-                i.title.clone(),
-                i.description.clone(),
-                i.updated_at.clone(),
-            )
-        })
+        .map(|i| (i.title.clone(), i.description.clone(), i.updated_at.clone()))
         .collect();
     let block = format_user_profile_block(
         &tuples,
@@ -2474,7 +2488,9 @@ fn persist_assistant_message(session_id: &str, text: &str) -> Result<(), String>
         .push(serde_json::json!({ "role": "assistant", "content": text }));
     sess.items
         .push(serde_json::json!({ "type": "assistant", "content": text }));
-    sess.updated_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    sess.updated_at = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f")
+        .to_string();
     session::save_session(sess)
 }
 
@@ -2588,7 +2604,8 @@ mod prompt_tests {
     #[test]
     fn speech_hint_with_bullets_passes_through_verbatim() {
         let mut inputs = base_inputs();
-        let bullets = "你最近主动说过的几句话（旧→新），开口前看一眼避免重复：\n· 早上好啊\n· 加油码代码";
+        let bullets =
+            "你最近主动说过的几句话（旧→新），开口前看一眼避免重复：\n· 早上好啊\n· 加油码代码";
         inputs.speech_hint = bullets;
         let p = build_proactive_prompt(&inputs);
         assert!(p.contains("早上好啊"));
@@ -2668,13 +2685,18 @@ mod prompt_tests {
     #[test]
     fn no_context_rules_with_default_inputs() {
         let rules = proactive_rules(&base_inputs());
-        assert_eq!(rules.len(), 6, "no context-driven rules without their flags");
+        assert_eq!(
+            rules.len(),
+            6,
+            "no context-driven rules without their flags"
+        );
     }
 
     #[test]
     fn reminders_rule_appears_when_hint_present() {
         let mut inputs = base_inputs();
-        let bullet_text = "你有以下到期的用户提醒（请挑最相关的一条带进开口）：\n· 23:00 吃药（条目标题: meds）";
+        let bullet_text =
+            "你有以下到期的用户提醒（请挑最相关的一条带进开口）：\n· 23:00 吃药（条目标题: meds）";
         inputs.reminders_hint = bullet_text;
         let rules = proactive_rules(&inputs);
         assert_eq!(rules.len(), 7, "base 6 + 1 reminders rule");
@@ -2763,7 +2785,9 @@ mod prompt_tests {
         inputs.env_spoke_total = 12;
         inputs.env_spoke_with_any = 2; // ~16%
         let rules = proactive_rules(&inputs);
-        assert!(rules.iter().any(|r| r.contains("最近你开口前几乎都没看环境")));
+        assert!(rules
+            .iter()
+            .any(|r| r.contains("最近你开口前几乎都没看环境")));
         // Includes the actual numbers + threshold so the LLM has concrete signal.
         assert!(rules.iter().any(|r| r.contains("12 次")));
         assert!(rules.iter().any(|r| r.contains("get_active_window")));
@@ -2810,7 +2834,9 @@ mod prompt_tests {
 
     #[test]
     fn active_environmental_rule_labels_empty_when_all_false() {
-        assert!(active_environmental_rule_labels(false, false, false, false, false, false).is_empty());
+        assert!(
+            active_environmental_rule_labels(false, false, false, false, false, false).is_empty()
+        );
     }
 
     #[test]
@@ -2899,14 +2925,20 @@ mod prompt_tests {
         // Raw flag true and pet spoke recently → gate fires.
         assert!(effective_awaiting(true, Some(0)));
         assert!(effective_awaiting(true, Some(60)));
-        assert!(effective_awaiting(true, Some(AWAITING_AUTO_CLEAR_SECONDS - 1)));
+        assert!(effective_awaiting(
+            true,
+            Some(AWAITING_AUTO_CLEAR_SECONDS - 1)
+        ));
     }
 
     #[test]
     fn effective_awaiting_expires_after_threshold() {
         // Raw flag true but pet spoke long ago → gate falls off.
         assert!(!effective_awaiting(true, Some(AWAITING_AUTO_CLEAR_SECONDS)));
-        assert!(!effective_awaiting(true, Some(AWAITING_AUTO_CLEAR_SECONDS + 1)));
+        assert!(!effective_awaiting(
+            true,
+            Some(AWAITING_AUTO_CLEAR_SECONDS + 1)
+        ));
         assert!(!effective_awaiting(true, Some(99999)));
     }
 
@@ -2943,7 +2975,10 @@ mod prompt_tests {
         let mut inputs2 = base_inputs();
         inputs2.user_name = "   \t  ";
         let p2 = build_proactive_prompt(&inputs2);
-        assert!(!p2.contains("你的主人是"), "whitespace-only must be skipped");
+        assert!(
+            !p2.contains("你的主人是"),
+            "whitespace-only must be skipped"
+        );
     }
 
     #[test]
@@ -2979,7 +3014,14 @@ mod prompt_tests {
         // wind-down.
         assert_eq!(
             labels,
-            vec!["wake-back", "first-mood", "first-of-day", "pre-quiet", "reminders", "plan"],
+            vec![
+                "wake-back",
+                "first-mood",
+                "first-of-day",
+                "pre-quiet",
+                "reminders",
+                "plan"
+            ],
         );
     }
 
@@ -3077,16 +3119,32 @@ mod prompt_tests {
 
     #[test]
     fn format_user_profile_block_zero_max_returns_empty() {
-        let items = vec![("habit".into(), "desc".into(), "2026-05-03T10:00:00+08:00".into())];
+        let items = vec![(
+            "habit".into(),
+            "desc".into(),
+            "2026-05-03T10:00:00+08:00".into(),
+        )];
         assert_eq!(format_user_profile_block(&items, 0, 80), String::new());
     }
 
     #[test]
     fn format_user_profile_block_sorts_by_updated_at_desc() {
         let items = vec![
-            ("旧习惯".into(), "desc-a".into(), "2026-04-01T10:00:00+08:00".into()),
-            ("新习惯".into(), "desc-b".into(), "2026-05-03T10:00:00+08:00".into()),
-            ("中习惯".into(), "desc-c".into(), "2026-04-20T10:00:00+08:00".into()),
+            (
+                "旧习惯".into(),
+                "desc-a".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "新习惯".into(),
+                "desc-b".into(),
+                "2026-05-03T10:00:00+08:00".into(),
+            ),
+            (
+                "中习惯".into(),
+                "desc-c".into(),
+                "2026-04-20T10:00:00+08:00".into(),
+            ),
         ];
         let out = format_user_profile_block(&items, 6, 80);
         let new_idx = out.find("新习惯").unwrap();
@@ -3119,7 +3177,11 @@ mod prompt_tests {
     #[test]
     fn format_user_profile_block_truncates_long_descriptions() {
         let long_desc: String = "字".repeat(120);
-        let items = vec![("habit".into(), long_desc, "2026-05-03T10:00:00+08:00".into())];
+        let items = vec![(
+            "habit".into(),
+            long_desc,
+            "2026-05-03T10:00:00+08:00".into(),
+        )];
         let out = format_user_profile_block(&items, 6, 20);
         assert!(out.contains("…"), "should append ellipsis when truncated");
         // Body line should be 1 title + ：+ 20 chars + … = well under the 120.
@@ -3130,7 +3192,10 @@ mod prompt_tests {
             .chars()
             .filter(|c| *c == '字')
             .count();
-        assert_eq!(body_chars, 20, "should keep exactly 20 chars before ellipsis");
+        assert_eq!(
+            body_chars, 20,
+            "should keep exactly 20 chars before ellipsis"
+        );
     }
 
     #[test]
@@ -3160,27 +3225,48 @@ mod prompt_tests {
 
     #[test]
     fn format_butler_tasks_block_empty_returns_empty() {
-        assert_eq!(format_butler_tasks_block(&[], 6, 100, fixed_now()), String::new());
+        assert_eq!(
+            format_butler_tasks_block(&[], 6, 100, fixed_now()),
+            String::new()
+        );
     }
 
     #[test]
     fn format_butler_tasks_block_zero_max_returns_empty() {
         let items = vec![("t".into(), "d".into(), "2026-05-03T10:00:00+08:00".into())];
-        assert_eq!(format_butler_tasks_block(&items, 0, 100, fixed_now()), String::new());
+        assert_eq!(
+            format_butler_tasks_block(&items, 0, 100, fixed_now()),
+            String::new()
+        );
     }
 
     #[test]
     fn format_butler_tasks_block_sorts_oldest_first() {
         let items = vec![
-            ("新任务".into(), "d-new".into(), "2026-05-03T10:00:00+08:00".into()),
-            ("老任务".into(), "d-old".into(), "2026-04-01T10:00:00+08:00".into()),
-            ("中任务".into(), "d-mid".into(), "2026-04-20T10:00:00+08:00".into()),
+            (
+                "新任务".into(),
+                "d-new".into(),
+                "2026-05-03T10:00:00+08:00".into(),
+            ),
+            (
+                "老任务".into(),
+                "d-old".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "中任务".into(),
+                "d-mid".into(),
+                "2026-04-20T10:00:00+08:00".into(),
+            ),
         ];
         let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
         let old_idx = out.find("老任务").unwrap();
         let mid_idx = out.find("中任务").unwrap();
         let new_idx = out.find("新任务").unwrap();
-        assert!(old_idx < mid_idx, "oldest should be first (don't let tasks rot)");
+        assert!(
+            old_idx < mid_idx,
+            "oldest should be first (don't let tasks rot)"
+        );
         assert!(mid_idx < new_idx);
     }
 
@@ -3197,8 +3283,7 @@ mod prompt_tests {
         )];
         let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
         assert!(
-            out.contains("记得在你这一轮的开口里简短提一下")
-                || out.contains("简短提一下"),
+            out.contains("记得在你这一轮的开口里简短提一下") || out.contains("简短提一下"),
             "footer should instruct LLM to mention butler execution in its speech"
         );
         assert!(
@@ -3234,7 +3319,9 @@ mod prompt_tests {
     #[test]
     fn has_butler_error_detects_marker() {
         assert!(has_butler_error("[error: file not found] write report"));
-        assert!(has_butler_error("[every: 09:00] [error: permission denied] morning"));
+        assert!(has_butler_error(
+            "[every: 09:00] [error: permission denied] morning"
+        ));
         assert!(has_butler_error("some text [error] more text"));
         assert!(has_butler_error("[error :spaced] x"));
     }
@@ -3319,7 +3406,10 @@ mod prompt_tests {
             ),
         ];
         let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
-        assert!(out.contains("⏰ 到期"), "due task should carry ⏰ 到期 marker");
+        assert!(
+            out.contains("⏰ 到期"),
+            "due task should carry ⏰ 到期 marker"
+        );
         assert!(out.contains("其中 1 条到期"));
         let due_idx = out.find("morning-report").unwrap();
         let plain_idx = out.find("plain-old").unwrap();
@@ -3344,7 +3434,11 @@ mod prompt_tests {
             "2026-05-03T09:15:00+08:00".into(),
         )];
         let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
-        assert_eq!(count_task_lines_with_marker(&out), 0, "no task line should carry the marker");
+        assert_eq!(
+            count_task_lines_with_marker(&out),
+            0,
+            "no task line should carry the marker"
+        );
         // Header should use the simple form (no "其中 N 条到期" segment).
         let header = out.lines().next().unwrap();
         assert!(!header.contains("条到期"), "header: {}", header);
@@ -3353,8 +3447,7 @@ mod prompt_tests {
 
     #[test]
     fn parse_butler_schedule_prefix_parses_every() {
-        let (sched, topic) =
-            parse_butler_schedule_prefix("[every: 09:00] write today.md").unwrap();
+        let (sched, topic) = parse_butler_schedule_prefix("[every: 09:00] write today.md").unwrap();
         assert_eq!(sched, ButlerSchedule::Every(9, 0));
         assert_eq!(topic, "write today.md");
     }
@@ -3377,14 +3470,17 @@ mod prompt_tests {
         assert!(parse_butler_schedule_prefix("[every: 25:00] x").is_none());
         assert!(parse_butler_schedule_prefix("[every: 09:60] x").is_none());
         assert!(parse_butler_schedule_prefix("[once: not-a-date] x").is_none());
-        assert!(parse_butler_schedule_prefix("[every: 09:00]").is_none(), "empty topic");
+        assert!(
+            parse_butler_schedule_prefix("[every: 09:00]").is_none(),
+            "empty topic"
+        );
         assert!(parse_butler_schedule_prefix("[remind: 09:00] reminder").is_none());
     }
 
     #[test]
     fn is_butler_due_every_basic_window() {
         let now = fixed_now(); // 2026-05-03 14:30
-        // Updated yesterday before 09:00 → today's 09:00 fire hasn't been served → due.
+                               // Updated yesterday before 09:00 → today's 09:00 fire hasn't been served → due.
         assert!(is_butler_due(
             &ButlerSchedule::Every(9, 0),
             now,
@@ -3458,7 +3554,7 @@ mod prompt_tests {
         // Target was 2026-05-03 10:00. Grace 48h means safe-to-delete at 2026-05-05 10:00.
         let desc = "[once: 2026-05-03 10:00] do something";
         let target_done = "2026-05-03T10:30:00+08:00"; // executed at 10:30, after target
-        // 1 hour after target → done but inside grace → keep.
+                                                       // 1 hour after target → done but inside grace → keep.
         let now1 = chrono::NaiveDate::from_ymd_opt(2026, 5, 3)
             .unwrap()
             .and_hms_opt(11, 30, 0)
@@ -3477,8 +3573,10 @@ mod prompt_tests {
         // Past target but updated_at is before target → not done → keep (still due).
         let desc = "[once: 2026-05-03 10:00] do something";
         let last = "2026-05-02T08:00:00+08:00";
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 6).unwrap()
-            .and_hms_opt(0, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 6)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
         assert!(!is_completed_once(desc, last, now, 48));
     }
 
@@ -3487,8 +3585,10 @@ mod prompt_tests {
         // every is recurring — sweep must never delete it.
         let desc = "[every: 09:00] daily report";
         let last = "2026-05-03T09:30:00+08:00";
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap()
-            .and_hms_opt(15, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
         assert!(!is_completed_once(desc, last, now, 48));
     }
 
@@ -3496,8 +3596,10 @@ mod prompt_tests {
     fn is_completed_once_skips_unprefixed_tasks() {
         let desc = "no schedule prefix here";
         let last = "2026-05-03T09:30:00+08:00";
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap()
-            .and_hms_opt(0, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
         assert!(!is_completed_once(desc, last, now, 48));
     }
 
@@ -3505,8 +3607,10 @@ mod prompt_tests {
     fn is_completed_once_unparseable_updated_at_keeps_task() {
         // Bad updated_at → treat as not-yet-executed → keep so user notices.
         let desc = "[once: 2026-05-03 10:00] x";
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()
-            .and_hms_opt(0, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
         assert!(!is_completed_once(desc, "garbage", now, 48));
         assert!(!is_completed_once(desc, "", now, 48));
     }
@@ -3631,7 +3735,16 @@ mod prompt_tests {
             vec!["long-idle-no-restraint"],
         );
         // Short idle (< threshold) → no fire.
-        assert!(active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES - 1), 0, 5, false, 0).is_empty());
+        assert!(active_composite_rule_labels(
+            false,
+            false,
+            Some(LONG_IDLE_MINUTES - 1),
+            0,
+            5,
+            false,
+            0
+        )
+        .is_empty());
         // chatty (today >= threshold) → no fire.
         assert!(active_composite_rule_labels(false, false, Some(120), 5, 5, false, 0).is_empty());
         // pre_quiet active → no fire.
@@ -3646,7 +3759,8 @@ mod prompt_tests {
     #[test]
     fn active_composite_rule_labels_both_can_fire_together() {
         // wake_back + has_plan + long_idle + under_chatty + !pre_quiet → both labels.
-        let labels = active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false, 0);
+        let labels =
+            active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false, 0);
         assert_eq!(labels, vec!["engagement-window", "long-idle-no-restraint"]);
     }
 
@@ -3654,15 +3768,7 @@ mod prompt_tests {
     fn active_composite_rule_labels_long_absence_reunion_gates() {
         // Threshold boundary — at threshold + under_chatty + !pre_quiet → fires.
         assert_eq!(
-            active_composite_rule_labels(
-                false,
-                false,
-                Some(8),
-                0,
-                5,
-                false,
-                LONG_ABSENCE_MINUTES,
-            ),
+            active_composite_rule_labels(false, false, Some(8), 0, 5, false, LONG_ABSENCE_MINUTES,),
             vec!["long-absence-reunion"],
         );
         // Just below threshold → silent.
@@ -3716,7 +3822,11 @@ mod prompt_tests {
         );
         assert_eq!(
             labels,
-            vec!["engagement-window", "long-idle-no-restraint", "long-absence-reunion"],
+            vec![
+                "engagement-window",
+                "long-idle-no-restraint",
+                "long-absence-reunion"
+            ],
         );
     }
 
@@ -3807,7 +3917,15 @@ mod prompt_tests {
             active_environmental_rule_labels(true, true, true, true, true, true)
                 .into_iter()
                 .chain(active_data_driven_rule_labels(0, 999, 1, 999, 0, 100))
-                .chain(active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60))
+                .chain(active_composite_rule_labels(
+                    true,
+                    true,
+                    Some(120),
+                    0,
+                    5,
+                    false,
+                    LONG_ABSENCE_MINUTES + 60,
+                ))
                 .collect();
         let fingerprint_labels: std::collections::HashSet<&str> =
             fingerprints.iter().map(|(l, _)| *l).collect();
@@ -3836,7 +3954,7 @@ mod prompt_tests {
         s1.env_spoke_total = 12;
         s1.env_spoke_with_any = 1;
         s1.companionship_days = 100; // milestone — fires companionship-milestone
-        // since_last_proactive_minutes stays at base_inputs default (Some(8)) — short.
+                                     // since_last_proactive_minutes stays at base_inputs default (Some(8)) — short.
         let rules1 = proactive_rules(&s1);
 
         // Scenario 2: long-idle + under-chatty + !pre-quiet + long-absence.
@@ -3887,7 +4005,15 @@ mod prompt_tests {
         // ever produce. Same input recipe as Iter 89's test for consistency.
         let env = active_environmental_rule_labels(true, true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0, 100);
-        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
+        let composite = active_composite_rule_labels(
+            true,
+            true,
+            Some(120),
+            0,
+            5,
+            false,
+            LONG_ABSENCE_MINUTES + 60,
+        );
         let backend: std::collections::HashSet<&'static str> = env
             .iter()
             .chain(data.iter())
@@ -3928,7 +4054,15 @@ mod prompt_tests {
         // All-true inputs surface every possible label all helpers can ever return.
         let env = active_environmental_rule_labels(true, true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0, 100);
-        let composite = active_composite_rule_labels(true, true, Some(120), 0, 5, false, LONG_ABSENCE_MINUTES + 60);
+        let composite = active_composite_rule_labels(
+            true,
+            true,
+            Some(120),
+            0,
+            5,
+            false,
+            LONG_ABSENCE_MINUTES + 60,
+        );
         let missing: Vec<&'static str> = env
             .iter()
             .chain(data.iter())
@@ -3983,7 +4117,11 @@ mod prompt_tests {
         let rules = proactive_rules(&base_inputs());
         // Strip the 6 always-on rules: silent / speak / single-line / tools / cache / motion.
         // Wait — there are actually 6 always-on (counted directly from the code). Use that.
-        assert_eq!(rules.len(), 6, "expected exactly 6 always-on rules in neutral state");
+        assert_eq!(
+            rules.len(),
+            6,
+            "expected exactly 6 always-on rules in neutral state"
+        );
     }
 
     #[test]
@@ -3992,7 +4130,9 @@ mod prompt_tests {
         inputs.env_spoke_total = 12;
         inputs.env_spoke_with_any = 8; // ~67%
         let rules = proactive_rules(&inputs);
-        assert!(!rules.iter().any(|r| r.contains("最近你开口前几乎都没看环境")));
+        assert!(!rules
+            .iter()
+            .any(|r| r.contains("最近你开口前几乎都没看环境")));
     }
 
     #[test]
@@ -4019,9 +4159,13 @@ mod prompt_tests {
         let mut inputs = base_inputs();
         inputs.chatty_day_threshold = 10;
         inputs.today_speech_count = 9;
-        assert!(!proactive_rules(&inputs).iter().any(|r| r.contains("今天已经聊了不少")));
+        assert!(!proactive_rules(&inputs)
+            .iter()
+            .any(|r| r.contains("今天已经聊了不少")));
         inputs.today_speech_count = 10;
-        assert!(proactive_rules(&inputs).iter().any(|r| r.contains("今天已经聊了不少")));
+        assert!(proactive_rules(&inputs)
+            .iter()
+            .any(|r| r.contains("今天已经聊了不少")));
     }
 
     #[test]
@@ -4038,7 +4182,9 @@ mod prompt_tests {
         inputs.pre_quiet_minutes = Some(10);
         let rules = proactive_rules(&inputs);
         assert_eq!(rules.len(), 7);
-        assert!(rules.iter().any(|r| r.contains("快进入安静时段") && r.contains("10 分钟")));
+        assert!(rules
+            .iter()
+            .any(|r| r.contains("快进入安静时段") && r.contains("10 分钟")));
     }
 }
 
@@ -4048,7 +4194,10 @@ mod reminder_tests {
     use chrono::{NaiveDate, NaiveDateTime};
 
     fn ndt(y: i32, m: u32, d: u32, hh: u32, mm: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(hh, mm, 0).unwrap()
+        NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(hh, mm, 0)
+            .unwrap()
     }
 
     #[test]
@@ -4060,16 +4209,14 @@ mod reminder_tests {
 
     #[test]
     fn parse_absolute_form() {
-        let (target, topic) =
-            parse_reminder_prefix("[remind: 2026-05-04 09:00] 项目早会").unwrap();
+        let (target, topic) = parse_reminder_prefix("[remind: 2026-05-04 09:00] 项目早会").unwrap();
         assert_eq!(target, ReminderTarget::Absolute(ndt(2026, 5, 4, 9, 0)));
         assert_eq!(topic, "项目早会");
     }
 
     #[test]
     fn parse_tolerates_extra_whitespace() {
-        let (target, topic) =
-            parse_reminder_prefix("  [remind:  9:30  ]   去开会  ").unwrap();
+        let (target, topic) = parse_reminder_prefix("  [remind:  9:30  ]   去开会  ").unwrap();
         assert_eq!(target, ReminderTarget::TodayHour(9, 30));
         assert_eq!(topic, "去开会");
     }
@@ -4162,27 +4309,43 @@ mod reminder_tests {
     fn absolute_stale_after_cutoff() {
         // Target was May 1 09:00; now is May 2 10:00 = 25h past, cutoff 24h → stale.
         let target = ReminderTarget::Absolute(ndt(2026, 5, 1, 9, 0));
-        assert!(super::is_stale_reminder(&target, ndt(2026, 5, 2, 10, 0), 24));
+        assert!(super::is_stale_reminder(
+            &target,
+            ndt(2026, 5, 2, 10, 0),
+            24
+        ));
     }
 
     #[test]
     fn absolute_within_cutoff_not_stale() {
         // Target May 1 09:00; now May 2 08:00 = 23h past → not stale at 24h cutoff.
         let target = ReminderTarget::Absolute(ndt(2026, 5, 1, 9, 0));
-        assert!(!super::is_stale_reminder(&target, ndt(2026, 5, 2, 8, 0), 24));
+        assert!(!super::is_stale_reminder(
+            &target,
+            ndt(2026, 5, 2, 8, 0),
+            24
+        ));
     }
 
     #[test]
     fn absolute_in_future_not_stale() {
         let target = ReminderTarget::Absolute(ndt(2026, 5, 4, 9, 0));
-        assert!(!super::is_stale_reminder(&target, ndt(2026, 5, 3, 12, 0), 24));
+        assert!(!super::is_stale_reminder(
+            &target,
+            ndt(2026, 5, 3, 12, 0),
+            24
+        ));
     }
 
     #[test]
     fn today_hour_never_stale() {
         // TodayHour is intentionally recurring-friendly — never auto-purged.
         let target = ReminderTarget::TodayHour(9, 0);
-        assert!(!super::is_stale_reminder(&target, ndt(2026, 5, 3, 12, 0), 24));
+        assert!(!super::is_stale_reminder(
+            &target,
+            ndt(2026, 5, 3, 12, 0),
+            24
+        ));
     }
 }
 
@@ -4333,7 +4496,10 @@ mod gate_tests {
         let mut c = cfg();
         c.enabled = false;
         let action = evaluate_pre_input_idle(&c, &snap(9999, false, None), NOON, None, None);
-        assert_eq!(action.unwrap_err(), LoopAction::Silent { reason: "disabled" });
+        assert_eq!(
+            action.unwrap_err(),
+            LoopAction::Silent { reason: "disabled" }
+        );
     }
 
     #[test]
@@ -4350,8 +4516,8 @@ mod gate_tests {
     fn cooldown_active_skips() {
         let mut c = cfg();
         c.cooldown_seconds = 1800;
-        let action =
-            evaluate_pre_input_idle(&c, &snap(9999, false, Some(60)), NOON, None, None).unwrap_err();
+        let action = evaluate_pre_input_idle(&c, &snap(9999, false, Some(60)), NOON, None, None)
+            .unwrap_err();
         match action {
             LoopAction::Skip(msg) => {
                 assert!(msg.contains("cooldown"));
@@ -4382,17 +4548,29 @@ mod gate_tests {
     #[test]
     fn idle_below_threshold_silent() {
         let c = cfg(); // threshold=60
-        let action = evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, None).unwrap_err();
-        assert_eq!(action, LoopAction::Silent { reason: "idle_below_threshold" });
+        let action =
+            evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, None).unwrap_err();
+        assert_eq!(
+            action,
+            LoopAction::Silent {
+                reason: "idle_below_threshold"
+            }
+        );
     }
 
     #[test]
     fn idle_threshold_clamped_to_60_minimum() {
         let mut c = cfg();
         c.idle_threshold_seconds = 10; // user-set absurdly low, should clamp up to 60
-        let action = evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, None).unwrap_err();
-        assert_eq!(action, LoopAction::Silent { reason: "idle_below_threshold" },
-            "30s should still be below the clamped 60s");
+        let action =
+            evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, None).unwrap_err();
+        assert_eq!(
+            action,
+            LoopAction::Silent {
+                reason: "idle_below_threshold"
+            },
+            "30s should still be below the clamped 60s"
+        );
     }
 
     #[test]
@@ -4438,8 +4616,14 @@ mod gate_tests {
         c.quiet_hours_start = 23;
         c.quiet_hours_end = 7;
         // 03:00 — squarely inside the night window.
-        let action = evaluate_pre_input_idle(&c, &snap(9999, false, None), 3, None, None).unwrap_err();
-        assert_eq!(action, LoopAction::Silent { reason: "quiet_hours" });
+        let action =
+            evaluate_pre_input_idle(&c, &snap(9999, false, None), 3, None, None).unwrap_err();
+        assert_eq!(
+            action,
+            LoopAction::Silent {
+                reason: "quiet_hours"
+            }
+        );
     }
 
     #[test]
@@ -4462,8 +4646,9 @@ mod gate_tests {
 
     #[test]
     fn focus_mode_active_skips_when_respected() {
-        let action = evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, Some(true), None)
-            .unwrap_err();
+        let action =
+            evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, Some(true), None)
+                .unwrap_err();
         match action {
             LoopAction::Skip(msg) => assert!(msg.contains("Focus")),
             other => panic!("expected Skip, got {:?}", other),
@@ -4480,7 +4665,8 @@ mod gate_tests {
 
     #[test]
     fn focus_mode_inactive_passes() {
-        let result = evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, Some(false), None);
+        let result =
+            evaluate_pre_input_idle(&cfg(), &snap(9999, false, None), NOON, Some(false), None);
         assert!(result.is_ok());
     }
 
@@ -4533,14 +4719,11 @@ mod gate_tests {
         // halving effect: threshold = 200 → halved 100 → idle 120 should pass.
         let mut c = cfg();
         c.idle_threshold_seconds = 200;
-        let result = evaluate_pre_input_idle(
-            &c,
-            &snap(120, false, None),
-            NOON,
-            None,
-            Some(60),
+        let result = evaluate_pre_input_idle(&c, &snap(120, false, None), NOON, None, Some(60));
+        assert!(
+            result.is_ok(),
+            "wake should halve threshold so idle 120 passes 200/2 = 100"
         );
-        assert!(result.is_ok(), "wake should halve threshold so idle 120 passes 200/2 = 100");
     }
 
     #[test]
@@ -4548,29 +4731,22 @@ mod gate_tests {
         // Even with wake softening, threshold floors at 60s. idle 30 still fails.
         let mut c = cfg();
         c.idle_threshold_seconds = 100;
-        let action = evaluate_pre_input_idle(
-            &c,
-            &snap(30, false, None),
-            NOON,
-            None,
-            Some(60),
-        )
-        .unwrap_err();
-        assert_eq!(action, LoopAction::Silent { reason: "idle_below_threshold" });
+        let action =
+            evaluate_pre_input_idle(&c, &snap(30, false, None), NOON, None, Some(60)).unwrap_err();
+        assert_eq!(
+            action,
+            LoopAction::Silent {
+                reason: "idle_below_threshold"
+            }
+        );
     }
 
     #[test]
     fn wake_does_not_bypass_awaiting() {
         // Even after a wake, if there's an unanswered proactive message we still wait.
         // Awaiting is about respect, not time.
-        let action = evaluate_pre_input_idle(
-            &cfg(),
-            &snap(9999, true, None),
-            NOON,
-            None,
-            Some(60),
-        )
-        .unwrap_err();
+        let action = evaluate_pre_input_idle(&cfg(), &snap(9999, true, None), NOON, None, Some(60))
+            .unwrap_err();
         match action {
             LoopAction::Skip(msg) => assert!(msg.contains("awaiting user reply")),
             other => panic!("expected awaiting Skip, got {:?}", other),
@@ -4584,15 +4760,14 @@ mod gate_tests {
         let mut c = cfg();
         c.quiet_hours_start = 23;
         c.quiet_hours_end = 7;
-        let action = evaluate_pre_input_idle(
-            &c,
-            &snap(9999, false, None),
-            3,
-            None,
-            Some(60),
-        )
-        .unwrap_err();
-        assert_eq!(action, LoopAction::Silent { reason: "quiet_hours" });
+        let action =
+            evaluate_pre_input_idle(&c, &snap(9999, false, None), 3, None, Some(60)).unwrap_err();
+        assert_eq!(
+            action,
+            LoopAction::Silent {
+                reason: "quiet_hours"
+            }
+        );
     }
 
     // ---- input-idle gate ----
@@ -4610,7 +4785,9 @@ mod gate_tests {
         // Non-macOS: user_input_idle_seconds returns None, gate should not block.
         let action = evaluate_input_idle_gate(&cfg(), &snap(9999, false, None), None);
         match action {
-            LoopAction::Run { input_idle_seconds, .. } => {
+            LoopAction::Run {
+                input_idle_seconds, ..
+            } => {
                 assert_eq!(input_idle_seconds, None);
             }
             other => panic!("expected Run, got {:?}", other),
@@ -4634,7 +4811,10 @@ mod gate_tests {
     fn input_idle_above_min_runs() {
         let action = evaluate_input_idle_gate(&cfg(), &snap(9999, false, None), Some(120));
         match action {
-            LoopAction::Run { idle_seconds, input_idle_seconds } => {
+            LoopAction::Run {
+                idle_seconds,
+                input_idle_seconds,
+            } => {
                 assert_eq!(idle_seconds, 9999);
                 assert_eq!(input_idle_seconds, Some(120));
             }

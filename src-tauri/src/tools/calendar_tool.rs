@@ -133,7 +133,8 @@ end run
             .map(|s| s.privacy.redaction_patterns.clone())
             .unwrap_or_default();
         let title = crate::redaction::redact_text(parts[0], &patterns);
-        let location = crate::redaction::redact_text(parts.get(4).copied().unwrap_or(""), &patterns);
+        let location =
+            crate::redaction::redact_text(parts.get(4).copied().unwrap_or(""), &patterns);
         events.push(serde_json::json!({
             "title": title,
             "start": parts[1],

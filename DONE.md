@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG1：清理 Rust 格式与 lint（开启 Quality Gate 系列）
+- 现状缺口：项目快速堆功能阶段，`cargo fmt --check` 输出 ~2100 行 diff、`cargo clippy --all-targets -- -D warnings` 报 13 个 error。alpha 阶段累计的格式 / 习语债务，CI 接入和未来 PR review 都需要清零。
+- 解法分两步走，纯机械整理 + 局部惯用法升级，零业务行为变化：
+  - `cargo fmt` 全量重排（多处长签名换行、长 `send(...)` 调用拆字段、Rust struct literal 缩进）
+  - 13 个 clippy error 逐项修：
+    - `collapsible_str_replace` ×4：butler_history.rs / mood_history.rs / speech_history.rs 的 `.replace('\n', " ").replace('\r', " ")` 收敛为 `.replace(['\n', '\r'], " ")`
+    - `unnecessary_map_or` ×2：commands/shell.rs `.map_or(false, |f| f < cutoff)` → `.is_some_and(|f| f < cutoff)`；tools/file_tools.rs 同理
+    - `manual_pattern_char_comparison`：input_idle.rs `|c: char| c == ' ' || c == '='` → `[' ', '=']`
+    - `filter_next` (rfind)：mood_history.rs `.filter(|l| !l.is_empty()).next_back()` → `.rfind(|l| !l.is_empty())`
+    - `doc_lazy_continuation` ×3：proactive.rs 两处 doc-list 后的总结句缺空行，加分隔空行
+    - `too_many_arguments` ×2：commands/chat.rs `chat()` 是 Tauri command（`State<'_, ...>` DI 必须每个独立 param）；commands/debug.rs `write_llm_log()` 是日志 helper，每个 timing 字段独立采集；两处都加 `#[allow(clippy::too_many_arguments)]` 并附说明 comment，不强行结构化打包，避免噪音重构
+- 决策：选 allow 而不重构 too_many_arguments：(a) Tauri DI 不能合并；(b) write_llm_log 调用点只有一处但参数从 5 个不同上游来源取值，打包成 struct 反而把 plumbing 推到上游；(c) 这是"标记可接受"而非"逃避"，clippy 也鼓励这种局部 allow。
+- 未做：QG2-QG6 + Tool Review 1-3 留待后续迭代。本次只动质量基线最低层（fmt + lint），保证后续 PR diff 干净。
+- 测试：`cargo clippy --all-targets -- -D warnings` clean；`cargo fmt --check` clean；306 cargo 测试全过；`tsc --noEmit` 干净。
+- 结果：质量基线 from 13 错误 + 2100 行未格式化 → zero。后续可以把 fmt + clippy 加进 CI/pre-commit gate。
+
 ## 2026-05-03 — Iter F1：桌面 bubble 60s 自动消失（开启 F series 用户体验向）
 - 现状缺口：宠物的桌面气泡只要存在 lastAssistantMsg 就一直显示。早上 proactive 说"早安"——这条 bubble 挂屏幕直到下次说话（可能下午 5 点）。screen clutter + 看着 stuck。
 - 解法：App.tsx 加 `bubbleDismissed: bool` state + useEffect timer：

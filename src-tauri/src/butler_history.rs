@@ -41,11 +41,7 @@ pub async fn record_event(action: &str, title: &str, description: &str) {
     let _ = record_event_inner(action, title, description).await;
 }
 
-async fn record_event_inner(
-    action: &str,
-    title: &str,
-    description: &str,
-) -> std::io::Result<()> {
+async fn record_event_inner(action: &str, title: &str, description: &str) -> std::io::Result<()> {
     let Some(path) = history_path() else {
         return Ok(());
     };
@@ -78,7 +74,7 @@ async fn record_event_inner(
 /// Format: `<action> <title> :: <desc-snippet>`. Description gets newlines flattened
 /// and is truncated to `BUTLER_HISTORY_DESC_CHARS` characters with `…`.
 pub fn format_event_body(action: &str, title: &str, description: &str) -> String {
-    let flat = description.replace('\n', " ").replace('\r', " ");
+    let flat = description.replace(['\n', '\r'], " ");
     let trimmed = flat.trim();
     let snippet: String = if trimmed.chars().count() <= BUTLER_HISTORY_DESC_CHARS {
         trimmed.to_string()
@@ -184,10 +180,7 @@ pub async fn record_daily_summary(date: chrono::NaiveDate, summary: &str) {
     let _ = record_daily_summary_inner(date, summary).await;
 }
 
-async fn record_daily_summary_inner(
-    date: chrono::NaiveDate,
-    summary: &str,
-) -> std::io::Result<()> {
+async fn record_daily_summary_inner(date: chrono::NaiveDate, summary: &str) -> std::io::Result<()> {
     let Some(path) = daily_path() else {
         return Ok(());
     };
@@ -196,7 +189,7 @@ async fn record_daily_summary_inner(
     }
     let date_str = date.format("%Y-%m-%d").to_string();
     let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-    let flat = summary.replace('\n', " ").replace('\r', " ");
+    let flat = summary.replace(['\n', '\r'], " ");
     let new_line = format!("{} {}", date_str, flat);
     let kept: Vec<String> = existing
         .lines()
@@ -316,9 +309,7 @@ mod tests {
 
     #[test]
     fn summarize_events_for_date_one_update() {
-        let events = vec![
-            "2026-05-03T09:15:00+08:00 update 早报 :: 已生成 ~/today.md".to_string(),
-        ];
+        let events = vec!["2026-05-03T09:15:00+08:00 update 早报 :: 已生成 ~/today.md".to_string()];
         assert_eq!(
             summarize_events_for_date(&events, date(2026, 5, 3)),
             Some("今天我帮你 推进了「早报」".to_string())
