@@ -117,6 +117,41 @@ pub fn get_last_proactive_reply() -> String {
         .unwrap_or_default()
 }
 
+/// Iter R33: count of trailing "silent" outcomes in the ring buffer. Pure /
+/// testable. Runs on `&[TurnRecord]` so unit tests can hand-craft sequences;
+/// production caller passes the buffer locked snapshot.
+///
+/// "Trailing" = newest-first from `turns.last()` backwards while outcome
+/// equals "silent". A spoke-then-silent-silent-silent sequence trailing-counts
+/// to 3; spoke-silent-spoke-silent-silent counts to 2. The streak must be
+/// uninterrupted at the recent end — older silences interleaved with spokes
+/// don't count.
+///
+/// Used by `format_consecutive_silent_hint` to inject a prompt nudge when
+/// LLM has been stuck in silence pattern, breaking perpetual-silence loops
+/// where the model keeps choosing silent because nothing feels worth saying.
+pub fn count_trailing_silent(turns: &[TurnRecord]) -> usize {
+    turns
+        .iter()
+        .rev()
+        .take_while(|t| t.outcome == "silent")
+        .count()
+}
+
+/// Iter R33: prompt-side hint that fires when trailing silence streak meets
+/// or exceeds `threshold`. Empty below threshold (no nudge). Above, a soft
+/// nudge to break the pattern — preserves LLM judgment ("如果有任何想说的"
+/// not "你必须开口").
+pub fn format_consecutive_silent_hint(streak: usize, threshold: usize) -> String {
+    if streak < threshold {
+        return String::new();
+    }
+    format!(
+        "你已经连续 {} 次选择沉默了。如果这次哪怕一点点想说的（关心 / 顺口一句 / 续个旧话题），可以试着开口让用户感觉你在；否则继续沉默也无妨。",
+        streak
+    )
+}
+
 /// Iter E4 Tauri command — return the ring buffer of recent turns, newest first.
 /// Empty Vec when nothing has fired since process start. Each entry is a complete
 /// turn record (prompt + reply + timestamp + tools) so the panel can navigate
@@ -244,5 +279,89 @@ pub fn record_proactive_outcome(
             }
             decisions.push("LlmError", format!("{} ({})", e, tail));
         }
+    }
+}
+
+#[cfg(test)]
+mod r33_tests {
+    use super::*;
+
+    fn turn(outcome: &str) -> TurnRecord {
+        TurnRecord {
+            timestamp: "2026-05-04T12:00:00+08:00".to_string(),
+            prompt: String::new(),
+            reply: String::new(),
+            tools_used: vec![],
+            outcome: outcome.to_string(),
+        }
+    }
+
+    #[test]
+    fn trailing_silent_counts_zero_for_empty_buffer() {
+        assert_eq!(count_trailing_silent(&[]), 0);
+    }
+
+    #[test]
+    fn trailing_silent_counts_zero_when_last_is_spoke() {
+        let buf = vec![turn("silent"), turn("silent"), turn("spoke")];
+        assert_eq!(count_trailing_silent(&buf), 0);
+    }
+
+    #[test]
+    fn trailing_silent_counts_full_silence() {
+        let buf = vec![turn("silent"), turn("silent"), turn("silent")];
+        assert_eq!(count_trailing_silent(&buf), 3);
+    }
+
+    #[test]
+    fn trailing_silent_only_counts_uninterrupted_tail() {
+        // spoke-silent-spoke-silent-silent → trailing = 2
+        let buf = vec![
+            turn("spoke"),
+            turn("silent"),
+            turn("spoke"),
+            turn("silent"),
+            turn("silent"),
+        ];
+        assert_eq!(count_trailing_silent(&buf), 2);
+    }
+
+    #[test]
+    fn trailing_silent_handles_mixed_with_recent_spoke() {
+        // last is spoke → 0 even with many silences earlier
+        let buf = vec![
+            turn("silent"),
+            turn("silent"),
+            turn("silent"),
+            turn("silent"),
+            turn("spoke"),
+        ];
+        assert_eq!(count_trailing_silent(&buf), 0);
+    }
+
+    #[test]
+    fn consecutive_silent_hint_returns_empty_below_threshold() {
+        assert_eq!(format_consecutive_silent_hint(0, 3), "");
+        assert_eq!(format_consecutive_silent_hint(2, 3), "");
+    }
+
+    #[test]
+    fn consecutive_silent_hint_fires_at_threshold() {
+        let h = format_consecutive_silent_hint(3, 3);
+        assert!(h.contains("3 次"));
+        assert!(h.contains("沉默"));
+    }
+
+    #[test]
+    fn consecutive_silent_hint_fires_above_threshold() {
+        let h = format_consecutive_silent_hint(5, 3);
+        assert!(h.contains("5 次"));
+    }
+
+    #[test]
+    fn consecutive_silent_hint_preserves_judgment_phrasing() {
+        // R33 nudge keeps "否则继续沉默也无妨" so LLM doesn't feel commanded.
+        let h = format_consecutive_silent_hint(4, 3);
+        assert!(h.contains("无妨") || h.contains("否则"));
     }
 }

@@ -143,6 +143,12 @@ pub struct PromptInputs<'a> {
     /// entries (signal too thin to bias prompt). Built by
     /// `feedback_history::format_feedback_aggregate_hint`.
     pub feedback_aggregate_hint: &'a str,
+    /// Iter R33: trailing-silent streak nudge — "你已经连续 N 次选择沉默
+    /// 了。..." Empty when streak < `SILENT_STREAK_THRESHOLD`. Built by
+    /// `telemetry::format_consecutive_silent_hint(count_trailing_silent(...))`.
+    /// Breaks perpetual-silence loops where LLM keeps choosing silent
+    /// because nothing feels noteworthy enough.
+    pub consecutive_silent_hint: &'a str,
     /// Iter R3: current local hour (0-23). Used by composite rules that need
     /// time-of-day specificity beyond the coarse `period` label — currently
     /// the late-night-wellness rule (0:00-3:59 + active idle).
@@ -359,6 +365,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.feedback_hint);
     push_if_nonempty(&mut s, inputs.feedback_aggregate_hint);
+    push_if_nonempty(&mut s, inputs.consecutive_silent_hint);
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
     push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);

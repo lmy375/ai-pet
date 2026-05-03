@@ -2,6 +2,32 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R33：trailing-silent streak 检测 + prompt nudge 破沉默循环
+- 现状缺口：R25 加 outcome 字段后，TurnRecord 知道每轮 spoke / silent。但**没机制识别"宠物连续沉默 N 次"** 这个模式。LLM 可能陷入"perpetual silence"：每次都判断"信号不够想说"，但其实**累计连续 silent 本身就是一个该被打破的状态信号**。R7 cooldown adapter 调 cooldown 但不直接阻止 LLM 选择 silent。
+- 解法 — 纯函数 + soft nudge：
+  - telemetry.rs 加纯 `pub fn count_trailing_silent(turns: &[TurnRecord]) -> usize`：从最新一条往前数连续 outcome=="silent"。中间被 spoke 打断就停。
+  - 配套纯 `pub fn format_consecutive_silent_hint(streak, threshold) -> String`：< threshold 返空；≥ 触发 "你已经连续 N 次选择沉默了。如果这次哪怕一点点想说的，可以试着开口让用户感觉你在；否则继续沉默也无妨。"
+  - PromptInputs 加 `consecutive_silent_hint: &'a str`，push_if_nonempty 紧接 feedback_aggregate_hint。
+  - run_proactive_turn 内 const SILENT_STREAK_THRESHOLD = 3，从 LAST_PROACTIVE_TURNS lock 读 ring buffer，传给两个纯函数。
+- 决策 — "trailing only" 不"any in last N"：诱惑是 "5 次中 4 次 silent → fire"。但 trailing-only 更精确：spoke-silent-spoke-silent-silent 这种交替不算 streak（pet 还在 active），spoke-silent-silent-silent 才是真停滞。**uninterrupted tail** 比 "majority in window" 是更严格的"困住" 信号。
+- 决策 — threshold = 3 不 2 / 5：3 是 R-series 一直沿用的小样本最低数（match speech_history detect_repeated_topic 的 min_distinct_lines = 3）。2 太敏感（隔天用户回来第一次跟昨晚最后是 silent → 误触）；5 太保守（要观察一整天才触发）。3 是 sweet spot。
+- 决策 — soft nudge 不强制开口：文案保留 "否则继续沉默也无妨"。**preserves LLM judgment** 是 R27 deep-focus directive 同思路 —— 给系统 escape hatch，避免硬指令把合理沉默也打破。如果 LLM 真觉得没什么说就让它继续 silent，但**至少给它一次"被提醒" 的机会**。
+- 决策 — push_if_nonempty 紧接 feedback hint 簇：consecutive_silent 是 meta-signal "关于 pet 自身行为模式"，跟 feedback "用户怎么反应" 形成 mirror 对。视觉 cluster：feedback (latest + aggregate) + consecutive_silent (self-pattern)。
+- 决策 — 不加 panel chip surface：跟 feedback / register / topic 不同，consecutive_silent 是 **transient 状态**（一次开口就清零）。Panel chip 显"你连续 3 次沉默" 然后下一秒 spoke 又消失，flicker 视觉噪音。**transient state 留在 prompt 即可**，panel surface 适合更稳定的 stat / config。这条原则跟 R20 IDEA 写过的 "prompt vs panel" 双 audience 思路一致 —— **panel 适合 stable status，prompt 适合 ephemeral signal**。
+- 决策 — pure function 接 `&[TurnRecord]` 不接 Mutex 锁：testable 关键。run_proactive_turn 自己 lock + clone，传 slice 给纯函数。**lock 操作和业务 logic 分离** 让单测不需要 Mutex fixture。
+- 测试（9 新单测）：
+  - trailing_silent: empty → 0
+  - trailing_silent: last spoke → 0
+  - trailing_silent: 全 silent → full count
+  - trailing_silent: middle spoke 打断 → 仅尾部
+  - trailing_silent: 早 silent + 末 spoke → 0
+  - hint: < threshold 返空（0 / 2）
+  - hint: at threshold (3) fires + 含 "3 次"
+  - hint: 5 fires + 含 "5 次"
+  - hint: 含 "无妨" 或 "否则" 保 judgment phrasing
+- 测试结果：487 cargo（+9）；clippy --all-targets clean；fmt clean。
+- 结果：proactive prompt 现在含 "self-pattern awareness"：连续沉默 3 次后会被提醒"考虑开口"。**meta-cognitive 信号补全 R-series 反馈循环** —— pet 不再只看用户反馈，也看到自己的行为模式。R26 给 LLM "用户怎么反应" trend，R33 给 LLM "我自己怎么表现" trend，两者 mirror 完整。
+
 ## 2026-05-04 — Iter R32：删除两个 dead-code 组件（SettingsPanel + DebugBar）
 - 现状缺口：R29 IDEA 发现 SettingsPanel.tsx 是 dead code（无 import 调用，PanelSettings 是真用），并标"暂留，下个 cleanup iter 该处理"。本 iter 还该债。Audit 时又发现 **DebugBar.tsx** 是另一个 dead 组件 —— 文件顶部 comment 写"add to App.tsx when debugging, remove when done"，明显是 ad-hoc 调试工具忘了删，从未被任何文件 import。
 - 解法 — 删两个文件：

@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R33 设计要点（已实现）
+- **meta-cognitive signals 是 prompt design 的高阶层**：R-series 之前给 LLM 的信号大多是关于 *外部世界* —— 用户反馈、active app、time of day、recent speeches。R33 是第一个 *关于 LLM 自己行为模式* 的信号 —— "你自己最近一直沉默"。这种 self-aware feedback loop 是真实智能体的特征，把 pet 从"接收 + 响应外部" 升级到"observe self + act"。**外部信号 → 内部信号** 是 R-series 后期的方向。
+- **trailing-only > majority-in-window**：诱惑是用 "last 5 中 4 次 silent" 触发。但 trailing-only 严格得多 —— 它意味着"现在正在 silent loop"，而 majority 可能只是"过去碰巧多次 silent 但已经 broken 了"。**streak 才有 actionable urgency**，scattered count 没有。这条原则适用所有"streak detection"场景：邮件提醒 / 健身打卡 / 学习连续天数 —— uninterrupted tail 才是真信号。
+- **transient state 留 prompt 不上 panel**：panel chip 适合 stable status（feedback summary、active app duration、register classification）。R33 streak 是 transient — pet 一开口就清零，每次 silent 又涨 1。Panel chip 显"streak=3" 然后下一秒变 "streak=0" 是 flicker 噪音。**stable signal → panel chip; transient signal → prompt only**。这条原则补充 R20 codified rule —— 不是所有 prompt 信号都该 panel surface，需先看 lifecycle。
+- **pure fn 接 slice 不接 Mutex**：测试关键决策。production 调用方 lock + clone + 传 slice 给 pure fn。**业务 logic 函数应该接 plain Rust types**，IO/锁操作留在 caller。这条纪律让单测 trivial（直接 hand-craft Vec），让 logic 跟 infrastructure 解耦。R20 / R23 / R26 都践行同样设计 — pure on slice, async wrapper outside.
+- **soft nudge phrasing 是 prompt design grammar**：R27 deep-focus 写"极简或选择沉默"（保留判断空间），R33 写"否则继续沉默也无妨"（escape hatch）。这种 "preserve LLM judgment" 是 prompt design 的稳定 grammar —— 硬指令"必须开口" 会破坏 LLM 在合理 silence 场景的判断。**every directive prompt should have escape hatch**。
+- **threshold 跨子系统统一**：3 是 R-series 反复出现的 minimum sample 数 — speech_history.detect_repeated_topic min_distinct_lines, 现在 R33 silent streak threshold。**阈值跨子系统的一致性是隐性 mental model 锚** —— "为什么这里是 3？因为 3 是这项目的 minimum-confidence 数"。一致性比每处独立 tune 更易理解。
+- **R26 + R33 mirror 是 closure 完成**：R26 inject "user 怎么反应你"（trend），R33 inject "你自己怎么表现"（streak）。两者完整覆盖 pet 的 *bidirectional self-awareness* —— 既看 outbound 反馈又看 inbound 行为。**mirror feedback loops** 是 cognitive architecture 的标准 pattern。后续如果加更多 meta-signal（如"你最近回复 latency 在变长"）也走同样形态。
+
 ## Iter R32 设计要点（已实现）
 - **dead code rot 是真问题不是 paranoia**：dead 文件从未被 import，但每次 TypeScript / Tauri / React 升级它都是潜在 break 点。Codebase grow 时新 contributor 看到 dead 文件会困惑"这是干啥的"，浪费认知带宽。**未维护代码 = 慢慢变 broken 但表面看不出**，紧急时反而帮倒忙。删 > 留。
 - **git is the backup, codebase is not**：诱惑是"也许以后用得上 留着吧"。但 git log 完整保留 deletion，需要时 `git log --diff-filter=D` 直接捞回。**留 dead code 等于把 git 当 archive 用**——双倍空间管理同一信息源，违反 single source of truth。删除 = 让 git 真正承担 history 角色。
