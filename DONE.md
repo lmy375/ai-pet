@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R40：ChatBubble fade-in 动画（pop in → 轻轻沉下来）
+- 现状缺口：ChatBubble 通过 React `if (!visible) return null` 条件渲染。每次新 utterance 出现都是 0→1 visibility 突变，**视觉上像系统通知 pop up**，不像活着的宠物自然开口。R-series 一直在投资"信号闭环"和"observability"，但**最直接 user-facing 的 UX 一直没动**。R40 是 UX-first polish。
+- 解法 — CSS keyframes 220ms fadeIn：
+  - 在 ChatBubble 顶部加 inline `<style>` 嵌 `@keyframes pet-bubble-fade-in`：opacity 0→1 + translateY(4px)→0。
+  - bubble div 加 `animation: pet-bubble-fade-in 220ms ease-out`。
+  - 动画只在 mount 时跑一次（CSS animation 的天性）—— 每次 visible 变 true 重 mount → 动画重放，跟 utterance 节奏同步。
+- 决策 — translateY(4px) 而非更大 offset：4px 是非常 subtle 的"沉下来"感觉。8px+ 会明显"飞入" 像 toast notification。**4px 让 fadeIn 感觉到"凝结"而非"飞入"** —— 配宠物轻盈的视觉调性。
+- 决策 — 220ms duration：300ms 太慢（用户感觉延迟），150ms 太快（来不及察觉动画就完了）。220ms 是 polish 视觉的 sweet spot —— 足够 perceptible 但不阻塞读 message。
+- 决策 — `ease-out` 而非 `ease-in-out` / `linear`：ease-out 让动画"开始快，结束缓" —— 模拟物理运动的"减速到位"。bubble 像被轻轻放下而不是匀速 slide。**timing function 选择反映物理直觉** —— ease-out for arrivals, ease-in for departures。
+- 决策 — inline `<style>` 而非全局 CSS：keyframes 作用域留组件内。**避免 CSS 全局污染** —— 别的组件也可能想用同名 keyframe，scope 在 component 内安全。React 18+ inline `<style>` 不会重复插入 DOM 多次（同 children 会 dedupe）。
+- 决策 — 不做 dismiss 时的 fadeOut：unmount 动画需要 framer-motion / animation library 介入。dismiss 是用户主动行为，abrupt 反而 feels responsive ("我点了，立刻消失")。**mount-only 动画是 React 原生 sweet spot**；unmount 动画收益小但成本高。
+- 决策 — 保留所有 R24 ✕ 角标 + 现有逻辑：动画只动 outer div 的 entrance；inner ✕ + click handler 不变。R-series codified "iter 范围控制不 creep" 又一次践行。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：宠物开口现在不再 pop up 像系统 toast，而是"轻轻沉下来"——配 Live2D 角色的活着感觉。R-series 30+ iter 投资 invisible signals 后，R40 是回归 "visible UX" 的回头投资。**长 iter 系列应该周期性回头投 user-facing polish** —— 否则 codebase 越来越聪明但用户看不到差别。
+
 ## 2026-05-04 — Iter R39：抽 PanelFilterButtonRow 共享组件（R38 codified rule 还债）
 - 现状缺口：R37 (feedback timeline) + R38 (decision_log timeline) 两个独立 filter button row 实现 95% 同结构（4 buttons + count-in-label + active-color = accent + inactive-white + 空兜底）。R38 IDEA 写"第 3 个 filter 出现时正式抽 PanelFilterButtonRow component"。R39 找到第三个用例 — tool_call_history 按 risk_level 过滤 — 立刻还债。
 - 解法 — 抽 generic component + 三处 caller 同步重构：

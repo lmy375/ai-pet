@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R40 设计要点（已实现）
+- **invisible signals 期投资到 visible UX 期的转换**：R20-R39 主要在打磨 *invisible* 系统 — prompt hints, panel chips, codified rules, signal mirroring。这些都是 dev-facing observability 或 LLM-facing context。**真正的 end-user 看到的 UX 几乎没动**。R40 是 conscious 转向 — 220ms fadeIn 是用户能直接感觉到的差别，不是 panel chip / prompt hint。**长 iter 系列应该周期性回头投 user-visible polish**，否则 codebase 越来越聪明但用户看不出。
+- **物理直觉驱动动画 timing**：220ms 不是 magic number — 100-150ms = perceptible but feel "snappy"，200-300ms = perceptible "settle" 节奏，>400ms = 拖沓。ease-out (开始快，结束缓) 模拟"物体被放下"的减速。**timing function 选择应该匹配 metaphor**：bubble 是被"放下"，所以 ease-out。如果是被"扔上去"用 ease-in。
+- **subtle > dramatic in pet UX**：translateY(4px) 是 minimal 偏移。诱惑是 8-16px 让动画明显。但宠物的视觉调性是"轻盈陪伴" — dramatic motion 像 system notification toast，破坏角色感。**polish iter 的克制是品味标志** —— 大幅动画看着用心但实际让 UI 显 cheesy。
+- **mount animation cheap，unmount animation expensive**：CSS animation 在 React mount 时自然跑一次。Unmount 需要 framer-motion / react-spring 等库介入（必须延迟 unmount 等动画完）。R40 选 mount-only 是性价比 sweet spot。**dismiss 是 user-initiated abrupt action — 立刻消失反而 feels responsive**。这条原则适用所有"出现/消失" 动画：appearance 配 fadeIn，disappearance 看场景（user-driven 该立即，system-driven 可 fade）。
+- **inline `<style>` 是 component-scoped CSS sweet spot**：不需要 CSS-in-JS 库（emotion / styled-components），不需要全局 .css 文件。React 18+ 多 instance 的 `<style>` 自动 dedupe（同样 children 不重复插）。**适合简单 keyframes / minor styles**。复杂 case 才上 CSS-in-JS。
+- **R-series 进入 mature 期的 hallmark = 投资分布多元化**：early R-series 几乎全 prompt + observability。R32 (cleanup) / R36 (threshold retune) / R37-R39 (interactive panel) / R40 (UX) 是不同 investment direction。**长 iter 系列应该 visible 看到投资方向 diversify** —— polish 期 iter 类型多样比 innovation 期单调更健康，因为不同 dimension 都该被覆盖到。
+- **animation as system signal**：bubble fadeIn 不只是装饰 —— 它告诉用户"pet 这一刻活了" 的 visceral signal。R-series 一直在 signal 上做文章但都是 *information signal*。R40 的 fadeIn 是 *embodied signal* — 通过视觉运动传达 "存在感"，比文字描述"宠物活着" 直接 10 倍。后续 polish iter 可以考虑：bubble dismiss 时 Live2D motion ?  user 输入时 pet 转头 ? 等 embodied signal upgrades。
+
 ## Iter R39 设计要点（已实现）
 - **lazy abstraction (use-3+) 第一次真正落地**：R32 IDEA 写"等到第 3 次重复再抽组件"，R38 IDEA 写"3rd timeline filter triggers extraction"，R39 当真做了。**纸上规则到实战践行的滞后**：从 R32 (cleanup iter 写 nudge) 到 R39 (实际 follow rule) 隔了 7 iter。R-series codified rule 的有效性 = "我以后真按这做吗"。R39 通过这关。
 - **generic on V<extends string>**：TypeScript generic 让 component 通用但 caller 保 narrow union ("all" | "Spoke" | ...)。如果用 plain string，caller 会失去 exhaustive matching 的安全。**generic 是 reuse + type-safety 双赢**——不要因为复用就退到 lowest common denominator (string)。
