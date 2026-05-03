@@ -534,15 +534,20 @@ pub struct DebugSnapshot {
     pub prompt_tilt_stats: PromptTiltStats,
     pub companionship_days: u64,
     pub redaction_stats: crate::redaction::RedactionStats,
+    /// Iter TR3: pending high-risk tool calls awaiting human approve / deny.
+    /// Frontend renders a modal when this is non-empty.
+    pub pending_tool_reviews: Vec<crate::tool_review::PendingToolReview>,
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // each State is independently injected by Tauri
 pub async fn get_debug_snapshot(
     log_store: State<'_, LogStore>,
     counters: State<'_, ProcessCountersStore>,
     decisions: State<'_, crate::decision_log::DecisionLogStore>,
     clock: State<'_, crate::proactive::InteractionClockStore>,
     wake: State<'_, crate::wake_detector::WakeDetectorStore>,
+    tool_review: State<'_, crate::tool_review::ToolReviewRegistryStore>,
 ) -> Result<DebugSnapshot, String> {
     let counters_inner = counters.inner();
     let logs = log_store.0.lock().unwrap().clone();
@@ -561,6 +566,7 @@ pub async fn get_debug_snapshot(
     let week_speech_count = crate::speech_history::week_speech_count().await;
     let companionship_days = crate::companionship::companionship_days().await;
     let redaction_stats = crate::redaction::get_redaction_stats();
+    let pending_tool_reviews = tool_review.snapshot();
     Ok(DebugSnapshot {
         logs,
         cache_stats,
@@ -577,6 +583,7 @@ pub async fn get_debug_snapshot(
         prompt_tilt_stats,
         companionship_days,
         redaction_stats,
+        pending_tool_reviews,
     })
 }
 

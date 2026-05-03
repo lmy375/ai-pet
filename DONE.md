@@ -2,6 +2,45 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter TR3：高风险工具调用的人工审核 gate（60s 超时默认拒绝）
+- 现状缺口：TR1 + TR2 把 purpose 和 risk classification 都做了，但 high-risk 工具（bash / write_file / memory delete）仍按 observe-only 直接执行。TR3 把这道墙立起来：高风险时弹 panel 模态请求 approve / deny；用户 60 秒不响应按 safe default（拒绝）处理；无论结果都把结构化 JSON 返给 LLM 让它能选 safe_alternative 重试。
+- 后端 — 新模块 `src/tool_review.rs`：
+  - `enum ToolReviewDecision { Approve, Deny }` + `struct PendingToolReview { review_id, tool_name, args_json, purpose, reasons, safe_alternative, timestamp }`
+  - `struct ToolReviewRegistry`：`Mutex<HashMap<String, PendingEntry>>` + 单调 id 计数器（"tr-1"、"tr-2"...）。`PendingEntry { sender: oneshot::Sender, snapshot: PendingToolReview }`
+  - API：`register(...) -> (id, rx)` / `submit(id, decision) -> Result<(), String>` / `cancel(id)` / `snapshot() -> Vec<PendingToolReview>`（按 timestamp 升序）
+  - Tauri commands：`submit_tool_review(review_id, decision)` + `list_pending_tool_reviews()`
+  - Helper：`denied_result_json(reason, safe_alt)` / `timeout_result_json(safe_alt)` 都用 `serde_json::json!()` 构造，自动转义引号
+- 集成：
+  - `ToolContext` 加 `tool_review: Option<ToolReviewRegistryStore>` + `with_tool_review(...)` builder。`from_states` 默认 None；desktop chat / proactive 入口 attach。telegram / consolidate 留 None（自动化路径无 UX surface，跳过 review 直接执行）
+  - desktop chat (`commands::chat::chat`) 加 `tool_review: State<...>` 参数，wire 到 ctx
+  - proactive `run_proactive_turn` 同样从 app state 拿 registry attach 到 ctx
+  - `run_chat_pipeline` 工具循环：在 TR2 assess 之后，如果 `requires_human_review && ctx.tool_review.is_some()`：`reg.register(...)` → `tokio::time::timeout(60s, rx)` → 4 个分支
+    - Approve → 继续走原 MCP / registry 执行路径
+    - Deny → `denied_result_json` 写入 conv_messages.tool 字段
+    - Channel 异常 dropped → `denied_result_json("审核通道异常关闭")` + cancel
+    - Timeout → `cancel(id)` + `timeout_result_json` (默认 deny)
+  - app.log 写四种状态：parked / approved / denied / timeout — telemetry 完整可追溯
+- 前端 — PanelDebug 加模态：
+  - `pendingReviews: PendingToolReview[]` 来自 DebugSnapshot.pending_tool_reviews（QG6 已铺好）
+  - 1 Hz polling 自动检测新 review，非空 → 模态卡片渲染：tool 名 + 时间戳 + purpose + 风险列表 + safe_alternative + 折叠的 args（避免长 JSON 撑爆模态）+ 允许/拒绝按钮
+  - 按钮调 `submit_tool_review` Tauri 命令，乐观地从本地 list 移除（race 时调 `fetchLogs` 复同步）
+  - 模态背景 z=2000 高于其他 modal，footer 提醒"60s 超时按默认拒绝"
+- 决策 — polling vs Tauri event push：panel 已有 1Hz `get_debug_snapshot` (QG6)。把 pending_tool_reviews 加到 snapshot 是零开销；新加 Tauri event channel = 订阅生命周期管理 + 离开 panel 错过 event 等问题。polling 简单可靠。
+- 决策 — `ToolContext.tool_review: Option`：telegram bot 不应该弹 review，因为没有 panel 可点。给 None 让自动化路径直接执行 high-risk。如果未来安全要求收紧（"任何 high-risk 都不许 telegram 调"），加一个 settings flag 即可。
+- 决策 — `oneshot` 不是 watch / mpsc：每次 review 一次性接通即可，不需要广播也不需要多消息。oneshot 是 Rust 这种场景的直接表达。
+- 决策 — 模态阻塞而非 toast 通知：high-risk 不该被错过；阻塞模态强制用户做决定。如果用户离开 panel 60s 自动 deny，宠物侧不会卡死。
+- 测试（9 新单测）：
+  - `register_returns_unique_ids_and_snapshot_contains_request`：register 多次 + snapshot reads back
+  - `submit_resolves_the_awaited_receiver`：tokio::test，spawn submit Approve，主任务 await rx 拿到决策
+  - `submit_unknown_id_returns_error`：兜底
+  - `cancel_removes_pending_entry`
+  - `snapshot_is_sorted_oldest_first`：sleep 1.1s 改 timestamp 验证排序
+  - `denied_result_json_carries_reason_and_alt` + `denied_result_json_handles_quotes_safely`：JSON parseable + 含 "quotes" 安全
+  - `timeout_result_json_mentions_window_and_default_alt`
+  - `timeout_constant_is_one_minute`
+- 测试结果：349 cargo（+9）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：TR1（purpose）→ TR2（risk）→ TR3（review gate）三件套闭环。任何高风险工具调用现在必经"用户在 60 秒内点允许"才能执行；过时即按默认拒绝并让 LLM 看到 safe_alternative 自动 fallback。autonomous 路径（telegram / proactive 早期）通过 None registry 保持 backward compatible。
+
 ## 2026-05-03 — Iter TR2：工具调用风险评估（observe-only 模式）
 - 现状缺口：TR1 把 purpose 字段铺好了，但所有工具调用仍按"统一允许"处理。bash 任意 shell、write_file 创建/覆盖任意文件、memory_edit delete 不可恢复——都和 read_file / get_weather 一个待遇。审计 + 未来人工审核需要分级。
 - 解法 — 新模块 `src/tool_risk.rs`：

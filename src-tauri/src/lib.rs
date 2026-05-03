@@ -15,6 +15,7 @@ mod proactive;
 mod redaction;
 mod speech_history;
 mod telegram;
+mod tool_review;
 mod tool_risk;
 mod tools;
 mod wake_detector;
@@ -36,6 +37,7 @@ pub fn run() {
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(new_process_counters())
         .manage(decision_log::new_decision_log())
+        .manage(tool_review::new_tool_review_registry())
         .manage(wake_detector::new_wake_detector())
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
@@ -121,6 +123,8 @@ pub fn run() {
             commands::debug::get_prompt_tilt_stats,
             commands::debug::reset_prompt_tilt_stats,
             commands::debug::get_debug_snapshot,
+            tool_review::submit_tool_review,
+            tool_review::list_pending_tool_reviews,
             redaction::get_redaction_stats,
             redaction::reset_redaction_stats,
             decision_log::get_proactive_decisions,

@@ -59,6 +59,21 @@ export function PanelDebug() {
   const [redactionStats, setRedactionStats] = useState<RedactionStats>({ calls: 0, hits: 0 });
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
+  // Iter TR3: pending high-risk tool reviews. Surfaces a modal asking
+  // approve / deny when non-empty. Backend default-denies after 60s,
+  // so reviews evaporate from the queue if the user is away.
+  const [pendingReviews, setPendingReviews] = useState<
+    {
+      review_id: string;
+      tool_name: string;
+      args_json: string;
+      purpose: string;
+      reasons: string[];
+      safe_alternative: string | null;
+      timestamp: string;
+    }[]
+  >([]);
+  const [reviewError, setReviewError] = useState<string>("");
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
@@ -102,6 +117,15 @@ export function PanelDebug() {
         prompt_tilt_stats: PromptTiltStats;
         companionship_days: number;
         redaction_stats: RedactionStats;
+        pending_tool_reviews: {
+          review_id: string;
+          tool_name: string;
+          args_json: string;
+          purpose: string;
+          reasons: string[];
+          safe_alternative: string | null;
+          timestamp: string;
+        }[];
       }>("get_debug_snapshot");
       setLogs(snap.logs);
       setCacheStats(snap.cache_stats);
@@ -118,8 +142,24 @@ export function PanelDebug() {
       setPromptTiltStats(snap.prompt_tilt_stats);
       setCompanionshipDays(snap.companionship_days);
       setRedactionStats(snap.redaction_stats);
+      setPendingReviews(snap.pending_tool_reviews ?? []);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
+    }
+  };
+
+  const handleToolReviewDecision = async (
+    reviewId: string,
+    decision: "approve" | "deny",
+  ) => {
+    setReviewError("");
+    try {
+      await invoke("submit_tool_review", { reviewId, decision });
+      setPendingReviews((prev) => prev.filter((r) => r.review_id !== reviewId));
+    } catch (e) {
+      // Race: backend may have already timed out. Refresh shortly to clear.
+      setReviewError(String(e));
+      fetchLogs();
     }
   };
 
@@ -221,6 +261,131 @@ export function PanelDebug() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Iter TR3: high-risk tool-call review modal. Top-of-stack: blocks the
+          panel until user picks approve/deny so accidental click-through is hard.
+          Backend default-denies after 60s. */}
+      {pendingReviews.length > 0 && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 2000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "32px",
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "10px",
+              maxWidth: "640px",
+              width: "100%",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              padding: "20px 22px",
+              boxShadow: "0 10px 40px rgba(0,0,0,0.25)",
+            }}
+          >
+            <div style={{ fontSize: "13px", color: "#dc2626", fontWeight: 700, marginBottom: "10px" }}>
+              ⚠ 高风险工具调用待审核（{pendingReviews.length}）
+            </div>
+            {pendingReviews.map((r) => (
+              <div
+                key={r.review_id}
+                style={{
+                  border: "1px solid #f3d7d7",
+                  borderRadius: "8px",
+                  padding: "12px 14px",
+                  marginBottom: "10px",
+                  background: "#fffafa",
+                }}
+              >
+                <div style={{ fontSize: "12px", color: "#475569", marginBottom: "6px" }}>
+                  <span style={{ fontFamily: "monospace", color: "#0f172a" }}>{r.review_id}</span>
+                  {" · "}
+                  <span style={{ fontWeight: 600 }}>{r.tool_name}</span>
+                  {" · "}
+                  <span>{r.timestamp}</span>
+                </div>
+                <div style={{ fontSize: "12px", color: "#1e293b", marginBottom: "6px" }}>
+                  <strong>用途：</strong>{r.purpose || "(未提供)"}
+                </div>
+                <div style={{ fontSize: "11px", color: "#7c2d12", marginBottom: "6px" }}>
+                  <strong>风险：</strong>{r.reasons.join(" / ") || "-"}
+                </div>
+                {r.safe_alternative && (
+                  <div style={{ fontSize: "11px", color: "#1e3a8a", marginBottom: "6px" }}>
+                    <strong>建议替代：</strong>{r.safe_alternative}
+                  </div>
+                )}
+                <details style={{ fontSize: "11px", color: "#475569", marginBottom: "8px" }}>
+                  <summary style={{ cursor: "pointer" }}>参数（{r.args_json.length} chars）</summary>
+                  <pre
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-all",
+                      background: "#f8fafc",
+                      padding: "6px 8px",
+                      borderRadius: "4px",
+                      marginTop: "4px",
+                      fontFamily: "monospace",
+                      fontSize: "10.5px",
+                    }}
+                  >
+                    {r.args_json}
+                  </pre>
+                </details>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={() => handleToolReviewDecision(r.review_id, "approve")}
+                    style={{
+                      flex: 1,
+                      padding: "6px 10px",
+                      background: "#16a34a",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: "5px",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    允许
+                  </button>
+                  <button
+                    onClick={() => handleToolReviewDecision(r.review_id, "deny")}
+                    style={{
+                      flex: 1,
+                      padding: "6px 10px",
+                      background: "#dc2626",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: "5px",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    拒绝
+                  </button>
+                </div>
+              </div>
+            ))}
+            {reviewError && (
+              <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "6px" }}>
+                {reviewError}
+              </div>
+            )}
+            <div style={{ fontSize: "10px", color: "#94a3b8", marginTop: "4px" }}>
+              超过 60 秒未响应将按默认安全策略拒绝。
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Iter E1: modal showing the last-built proactive prompt verbatim. Triggered
           by the "看上次 prompt" toolbar button; click backdrop to close. */}
       {showLastPrompt && (
