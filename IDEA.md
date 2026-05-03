@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R23 设计要点（已实现）
+- **Surface bug discovery 比 surface design 更值钱**：R23 起步是"加 hover breakdown" 这个 UX 改善。中途读代码发现 chip 用 base cooldown 而 gate 用 effective，**修了 6+ iter 没人注意的 bug**。这是 surface 工作的隐藏价值 — 强迫你重读已有代码、对照不同 caller 的逻辑，bug 自然浮出来。**每个"surface old signal" iter 都该顺手 audit signal 的所有 consumer 是否一致**。
+- **derivation 比 value 信息密度高**：chip 显 "30m" 是 value，hover 显 "1800s × 0.5 × 2.0 = 1800s" 是 derivation。后者让用户从"看到结果"升级到"理解机制"。当用户问"为什么 30m" 时，derivation 直接答了；当 user 问"为什么是 30m" 时，value 啥也没说。**panel 应该越来越 explanation-rich**，每个数字都该在 hover 解释来源。
+- **classify_feedback_band 抽出来 = 跨 caller 单一真相**：chip + gate 两个 caller，原本各自 inline R7 三档判断 logic。两份 copy 的风险是"修 R7 阈值忘改其中一处" → chip 显 "high_negative" 但 gate 实际还按 "mid" 走。抽 classify 出来 + 5 单测，**任何 R7 阈值改动只改这个 fn 的 ADAPT_* 常量，所有 caller 自动同步**。这是 R18 read_ai_insights_item 同思路 — single source of truth 在 logic 层面而不只数据层面。
+- **mode_factor 用 division 而非 hardcode 表**：`after_mode / configured` 取代 `match mode { "chatty" => 0.5, ... }`。这种"用现有 helper 的输出反推 factor" 是优雅的，因为 future mode addition 不需要碰 chip 代码。**绕过 hardcode 表是 future-proofing 的小技巧** — 当一个数字可以 derived 时优先 derive 而不是重新声明。
+- **修 bug 不分 commit**：诱惑是"R23 应该只做 surface"，bug fix 单开一个 commit。但 bug fix 没单独的 test fixture（只能靠观察 chip 数字验证），surface upgrade 的 hover breakdown 顺便就修了 bug — 同 source diff 的两件事。**逻辑 / 数据流 一致的多件事可以一起上**，分散到多 commit 反而失去 "为什么这两件事关联" 的 context。
+- **structured payload vs strings**：feedback_band 是 `String` 不是 `enum`。理论上 enum + serde derive 更类型安全。但前端也只是 display label，String 让 backend / frontend / panel hover 三方共用同一文案。**rust enum 是 backend 内部表达**，IPC boundary 用 String 减 serde 复杂度。Rust 习惯是 enum-on-by-default，但跨 boundary 的 enum 反而是负担 —— 理解清楚什么时候 enum、什么时候 String 是在 Rust 写 fullstack 的成熟度信号。
+- **`Vec<_> = (0..n).map(|_| entry()).collect()` 替代 `[entry; n]`**：FeedbackEntry 是 Clone 不是 Copy（含 String 字段）。`[item; n]` array literal 要 Copy；`vec![item; n]` 要 Clone（这才是 R23 测试可以用的）。第一版我用了 array literal 编译失败 — 学到 Rust array vs Vec 的细微区别。`(0..n).map(|_| ...).collect()` 是显式 fallback，绕开 Copy 约束。**测试代码也要 idiomatic**，反面是用 work-around 而忘记 Vec 的标准 init。
+
 ## Iter R22 设计要点（已实现）
 - **read-only helper 与 mutating helper 分离的反例诱惑**：第一直觉是"复用 update_and_format_active_app_hint"。读它的实现 — 它每次都 `compute_active_duration` 然后写回 `*g = Some(new_snapshot)`。如果 prev_app != current_app，新 snapshot 的 since 是 now()，**就把"用户已经在 X 待 N 分钟" 重置成 0**。Panel poll 每几秒一次，会让 panel 永远看到"刚才进 X" — 错的。**任何"读"路径如果走过 mutating helper 都会污染 state**。教训：每次面对"是不是复用旧 helper" 的问题，先看那个 helper 是否 mutating；如果是，read 路径必须自己抽。
 - **observability-wider-than-prompt 是 panel 设计的核心张力**：R15 prompt hint 设 15min 阈值因为"低于这个不值得 nudge LLM"。但 panel 不该照搬这个阈值 — user 想知道"我现在在哪" 即使停留 5 min。R20 mixed register / R22 < 15m active app 都是这个 pattern：**prompt = 异常时干预，panel = 全部 state**。所以 panel 应该 surface 更多 state，但用色彩区分"对 LLM fired vs 仅 observability"。橙色 = "正在影响 prompt"，灰色 = "panel only"。这种"色彩编码 prompt 是否 fired" 是这次 audit 中浮现的新模式 — R20 / R22 都用，可以推广到未来 chip 设计。

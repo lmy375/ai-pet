@@ -314,6 +314,42 @@ pub struct ToneSnapshot {
     /// reset the "since" clock. None on fresh process / non-macOS / when
     /// no proactive turn has yet observed the foreground app.
     pub active_app: Option<crate::proactive::active_app::ActiveAppSummary>,
+    /// Iter R23: cooldown breakdown showing how the effective cooldown is
+    /// derived: configured × companion_mode × R7-feedback-band. Lets the
+    /// panel hover render "1800s × 1.0 (balanced) × 2.0 (high_negative)
+    /// = 3600s effective, 还剩 1234s" so the user understands why the
+    /// gate is enforcing this number specifically. None when proactive
+    /// is disabled or configured cooldown is 0 (gate effectively off).
+    pub cooldown_breakdown: Option<CooldownBreakdown>,
+}
+
+/// Iter R23: structured breakdown of effective cooldown derivation.
+/// Frontend renders the math in the chip hover so the user sees how
+/// `cooldown_remaining_seconds` ends up at its current value. Both
+/// factors are exact (mode is 0.5/1.0/2.0; feedback is 0.7/1.0/2.0)
+/// so f64 is safe — no precision drift over the small space.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct CooldownBreakdown {
+    /// Raw `settings.proactive.cooldown_seconds` (before any multipliers).
+    pub configured_seconds: u64,
+    /// "balanced" / "chatty" / "quiet" — current `companion_mode`.
+    pub mode: String,
+    /// 0.5× (chatty) / 1.0× (balanced) / 2.0× (quiet). Same multiplier
+    /// `apply_companion_mode` uses internally.
+    pub mode_factor: f64,
+    /// `configured_seconds * mode_factor`, rounded down (matches what
+    /// `effective_cooldown_base` returns).
+    pub after_mode_seconds: u64,
+    /// "high_negative" (ratio > 0.6) / "low_negative" (< 0.2) / "mid"
+    /// (between thresholds) / "insufficient_samples" (< 5 entries — R7
+    /// returns base unchanged in this case).
+    pub feedback_band: String,
+    /// 2.0× / 0.7× / 1.0× depending on band. `insufficient_samples` is 1.0×.
+    pub feedback_factor: f64,
+    /// `after_mode_seconds * feedback_factor`, rounded down. This is what
+    /// the gate actually enforces — `cooldown_remaining_seconds` is
+    /// computed against this, not against `configured_seconds`.
+    pub effective_seconds: u64,
 }
 
 /// Iter R10: simple shape for the tone-strip feedback chip. R1c added
@@ -413,6 +449,122 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
     })
 }
 
+/// Iter R23: derive the cooldown breakdown for the panel chip hover.
+/// Mirrors `gate.rs`'s effective-cooldown computation exactly so the
+/// chip's "configured × mode × feedback = effective" math matches the
+/// number the gate is actually enforcing. Returns `None` when proactive
+/// is disabled or configured cooldown is 0 (gate effectively off in
+/// either case — no breakdown to show).
+pub fn build_cooldown_breakdown(
+    recent_fb: &[crate::feedback_history::FeedbackEntry],
+) -> Option<CooldownBreakdown> {
+    let settings = get_settings().ok()?;
+    if !settings.proactive.enabled {
+        return None;
+    }
+    let configured = settings.proactive.cooldown_seconds;
+    if configured == 0 {
+        return None;
+    }
+    let mode = settings.proactive.companion_mode.clone();
+    let after_mode = settings.proactive.effective_cooldown_base();
+    // mode_factor: derive from the ratio so a future mode addition
+    // (e.g. "ultra-quiet") shows up correctly without needing a hardcoded
+    // table here.
+    let mode_factor = if configured == 0 {
+        1.0
+    } else {
+        after_mode as f64 / configured as f64
+    };
+    // Match feedback_history::adapted_cooldown_seconds branching exactly.
+    // Pure helper in feedback_history isolates the band classification so
+    // it can be unit-tested without get_settings() / Tauri state.
+    let (feedback_band, feedback_factor) =
+        crate::feedback_history::classify_feedback_band(recent_fb);
+    let effective = ((after_mode as f64) * feedback_factor) as u64;
+    Some(CooldownBreakdown {
+        configured_seconds: configured,
+        mode,
+        mode_factor,
+        after_mode_seconds: after_mode,
+        feedback_band: feedback_band.to_string(),
+        feedback_factor,
+        effective_seconds: effective,
+    })
+}
+
+#[cfg(test)]
+mod cooldown_breakdown_tests {
+    use crate::feedback_history::{classify_feedback_band, FeedbackEntry, FeedbackKind};
+
+    fn entry(kind: FeedbackKind) -> FeedbackEntry {
+        FeedbackEntry {
+            timestamp: "2026-05-04T12:00:00+08:00".to_string(),
+            kind,
+            excerpt: "x".to_string(),
+        }
+    }
+
+    #[test]
+    fn band_insufficient_below_min_samples() {
+        // R23: < 5 samples → "insufficient_samples", 1.0× (R7 returns base unchanged).
+        let (band, factor) = classify_feedback_band(&[]);
+        assert_eq!(band, "insufficient_samples");
+        assert_eq!(factor, 1.0);
+        let entries: Vec<_> = (0..4).map(|_| entry(FeedbackKind::Ignored)).collect();
+        let (band, factor) = classify_feedback_band(&entries);
+        assert_eq!(band, "insufficient_samples");
+        assert_eq!(factor, 1.0);
+    }
+
+    #[test]
+    fn band_high_negative_doubles() {
+        // > 0.6 ratio: 4/5 ignored = 0.8 → high_negative, 2.0×.
+        let mut entries = vec![entry(FeedbackKind::Ignored); 4];
+        entries.push(entry(FeedbackKind::Replied));
+        let (band, factor) = classify_feedback_band(&entries);
+        assert_eq!(band, "high_negative");
+        assert_eq!(factor, 2.0);
+    }
+
+    #[test]
+    fn band_low_negative_shrinks() {
+        // < 0.2 ratio: 1/10 ignored = 0.1 → low_negative, 0.7×.
+        let mut entries = vec![entry(FeedbackKind::Ignored)];
+        entries.extend(vec![entry(FeedbackKind::Replied); 9]);
+        let (band, factor) = classify_feedback_band(&entries);
+        assert_eq!(band, "low_negative");
+        assert_eq!(factor, 0.7);
+    }
+
+    #[test]
+    fn band_mid_keeps_base() {
+        // 0.2 ≤ ratio ≤ 0.6 → "mid", 1.0× (cooldown unchanged).
+        let mut entries = vec![entry(FeedbackKind::Ignored); 2]; // 2/5 = 0.4
+        entries.extend(vec![entry(FeedbackKind::Replied); 3]);
+        let (band, factor) = classify_feedback_band(&entries);
+        assert_eq!(band, "mid");
+        assert_eq!(factor, 1.0);
+    }
+
+    #[test]
+    fn band_dismissed_counted_alongside_ignored() {
+        // R1c: dismissed counts as negative. 3 dismissed + 2 replied = 0.6 ratio,
+        // 0.6 is NOT > 0.6 (strict inequality) → mid band.
+        let mut entries = vec![entry(FeedbackKind::Dismissed); 3];
+        entries.extend(vec![entry(FeedbackKind::Replied); 2]);
+        let (band, factor) = classify_feedback_band(&entries);
+        assert_eq!(band, "mid");
+        assert_eq!(factor, 1.0);
+        // 4 dismissed + 1 replied = 0.8 → high_negative.
+        let mut entries = vec![entry(FeedbackKind::Dismissed); 4];
+        entries.push(entry(FeedbackKind::Replied));
+        let (band, factor) = classify_feedback_band(&entries);
+        assert_eq!(band, "high_negative");
+        assert_eq!(factor, 2.0);
+    }
+}
+
 /// Compute the tone snapshot from inner deps. Iter QG6 extracted this from
 /// `get_tone_snapshot` so the bundled `get_debug_snapshot` aggregator can reuse
 /// the body without re-walking the Tauri State plumbing.
@@ -507,6 +659,11 @@ pub async fn build_tone_snapshot(
     // Iter R20 / R21: shared 5-line fetch feeds both speech_register and
     // repeated_topic so the struct literal below has clean inline expressions.
     let recent_for_signals = crate::speech_history::recent_speeches(5).await;
+    // Iter R10 / R23: shared feedback fetch — feedback_summary and
+    // cooldown_breakdown both consume it. Single fetch + multiple derived
+    // signals = same pattern as recent_for_signals above.
+    let recent_feedback_for_signals = crate::feedback_history::recent_feedback(20).await;
+    let cooldown_breakdown = build_cooldown_breakdown(&recent_feedback_for_signals);
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -545,17 +702,18 @@ pub async fn build_tone_snapshot(
                 )
             })
             .unwrap_or(false),
-        // Iter D9: cooldown remaining. Mirrors the gate logic exactly:
-        // remaining = cooldown_seconds - since_last_proactive_seconds when
-        // since_last < cooldown; None when gate is open (cooldown expired,
-        // pet has never spoken, or cooldown disabled by setting it to 0).
+        // Iter D9 / R23: cooldown remaining, computed against the EFFECTIVE
+        // cooldown (configured × companion_mode × R7-feedback-band) so the
+        // chip matches what the gate actually enforces — not the raw
+        // settings value. R23 fixed an old D9 bug where chip was based on
+        // `cooldown_seconds` while gate used `effective_cooldown`.
         cooldown_remaining_seconds: {
-            let cooldown = get_settings()
-                .ok()
-                .map(|s| s.proactive.cooldown_seconds)
+            let effective = cooldown_breakdown
+                .as_ref()
+                .map(|b| b.effective_seconds)
                 .unwrap_or(0);
             match snap.since_last_proactive_seconds {
-                Some(since) if cooldown > 0 && since < cooldown => Some(cooldown - since),
+                Some(since) if effective > 0 && since < effective => Some(effective - since),
                 _ => None,
             }
         },
@@ -572,22 +730,21 @@ pub async fn build_tone_snapshot(
         // chip. Same window the panel timeline (R6) and adapted-cooldown
         // gate (R7) read, so chip / timeline / gate share one denominator.
         feedback_summary: {
-            let recent = crate::feedback_history::recent_feedback(20).await;
-            if recent.is_empty() {
+            if recent_feedback_for_signals.is_empty() {
                 None
             } else {
-                let replied = recent
+                let replied = recent_feedback_for_signals
                     .iter()
                     .filter(|e| matches!(e.kind, crate::feedback_history::FeedbackKind::Replied))
                     .count() as u64;
-                let dismissed = recent
+                let dismissed = recent_feedback_for_signals
                     .iter()
                     .filter(|e| matches!(e.kind, crate::feedback_history::FeedbackKind::Dismissed))
                     .count() as u64;
                 Some(FeedbackSummary {
                     replied,
                     dismissed,
-                    total: recent.len() as u64,
+                    total: recent_feedback_for_signals.len() as u64,
                 })
             }
         },
@@ -603,6 +760,7 @@ pub async fn build_tone_snapshot(
         // the static's `since` clock the way run_proactive_turn does, so
         // panel polling is safe.
         active_app: snapshot_active_app(),
+        cooldown_breakdown,
     })
 }
 

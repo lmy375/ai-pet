@@ -162,16 +162,29 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           💬 {tone.cadence}（{tone.since_last_proactive_minutes}m）
         </span>
       )}
-      {tone.cooldown_remaining_seconds !== null && (
-        <span
-          title={`cooldown gate 还有 ${tone.cooldown_remaining_seconds}s 才会放过这一轮 proactive 评估（settings.proactive.cooldown_seconds 控制窗口）`}
-          style={{ color: "#0891b2" }}
-        >
-          ⏳ 冷却 {tone.cooldown_remaining_seconds < 60
-            ? `${tone.cooldown_remaining_seconds}s`
-            : `${Math.floor(tone.cooldown_remaining_seconds / 60)}m${tone.cooldown_remaining_seconds % 60 > 0 ? `${tone.cooldown_remaining_seconds % 60}s` : ""}`}
-        </span>
-      )}
+      {tone.cooldown_remaining_seconds !== null && (() => {
+        // R23: hover shows the derivation when breakdown is available
+        // ("configured × mode × feedback = effective"); falls back to the
+        // legacy short hover when breakdown is null (e.g. proactive
+        // disabled — but then remaining is also null so this branch
+        // shouldn't really hit).
+        const remaining = tone.cooldown_remaining_seconds;
+        const bd = tone.cooldown_breakdown;
+        const titleText = bd
+          ? `cooldown gate 还有 ${remaining}s。\n` +
+            `derivation: configured ${bd.configured_seconds}s × ` +
+            `${bd.mode_factor.toFixed(1)} (${bd.mode}) × ` +
+            `${bd.feedback_factor.toFixed(1)} (${bd.feedback_band}) = ` +
+            `effective ${bd.effective_seconds}s。`
+          : `cooldown gate 还有 ${remaining}s 才会放过这一轮 proactive 评估。`;
+        return (
+          <span title={titleText} style={{ color: "#0891b2" }}>
+            ⏳ 冷却 {remaining < 60
+              ? `${remaining}s`
+              : `${Math.floor(remaining / 60)}m${remaining % 60 > 0 ? `${remaining % 60}s` : ""}`}
+          </span>
+        );
+      })()}
       {tone.awaiting_user_reply && (
         <span
           title="awaiting gate (Iter 5) — 宠物上次主动说了话但你还没回，gate 让宠物先等等。给 ta 一句回应（任何聊天或交互）就会清除这个状态。"
