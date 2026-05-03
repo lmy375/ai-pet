@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cο 设计要点（已实现）
+- **新 Tauri 命令而不是复用 tone_snapshot**：tone_snapshot 已经返回 `mood_text` 和 `mood_motion`。Panel Persona 是不是直接 invoke 这个就行？反对：(a) tone_snapshot 是 debug 用大杂烩（10+ 字段），加载慢；(b) Persona 只需要 mood，多拉数据浪费；(c) tone_snapshot 是面向 prompt builder 的视角（per-tick fresh），Persona 可以 5 秒拉，是不同节奏。新命令小、目标明确、独立缓存友好。
+- **`raw` 字段也返回**：本来 text + motion 就够。但加上 raw 可以让前端在"motion 解析失败但 raw 有内容"时仍能展示原始字符串——LLM 偶尔写不规范，raw 是 fallback。这种"暴露原始 + 派生"的 API 模式让前端能 graceful degrade。
+- **空 vs 未写入区分**：以前的 `read_current_mood` 返 `Option<String>`，None 表示未写入。前端拿不到 None 直接当空处理一下就完了——但加这一区分能让"还没记录"和"写过但被 LLM 用空字符串覆盖"两种情况显示不同提示。我用 `raw == ""` + `motion is None` 的组合来推断，不另开 enum/option，简化前端模型。
+- **MOTION_META 在前端写一份**：之前 mood→motion 映射在 LLM prompt 里（"这四组分别对应啥情绪"）+ 前端 keyword fallback 里。这次再加一份用于 Persona 显示。三处一致是约定不是代码——人来维护。如果 motion 集合扩到 6 组，三处都要改，工程上不优雅但实际成本极低（4 元素扩成 6）。
+- **Section 顺序：自我画像 → 当下心情 → 心情谱**：persona_summary 是中长期身份（consolidate 时更新，~天级粒度），current_mood 是当下（更新可能是分钟级），mood_trend 是更长期（50 条 history，覆盖 ~周级）。三块按时间从中段 → 现在 → 长期排，不一定严格对应"过去现在未来"，但读起来「写了我的画像 → 此刻是这种状态 → 最近一直怎样」的叙事流畅。
+- **motion 视觉用 emoji 而不是 icon font**：emoji 在所有平台开箱即用，不引入额外资源；32px 大小够看清；颜色 + 文字标签提供冗余 cue。如果后续做 Live2D expression 切换（路线 B），UI 这边可以单独再加一层。
+
 ## Iter Cξ 设计要点（已实现）
 - **environmental 而不是 data-driven 或 composite**：first-of-day 看的是 today_speech_count（确实属 data-driven 范畴），但语义是 "环境状态：今天是不是新一天的开端"——和 wake-back / first-mood / pre-quiet 这种"现在是什么状态"同质。data-driven 是统计纠偏（chatty / icebreaker / env-awareness），composite 是组合触发（engagement-window / long-idle-no-restraint / long-absence-reunion）。把 first-of-day 放 environmental 比放 data-driven 更贴切——它是"日界 = 一种环境"，用 today_count 只是实现手段。
 - **基于 today_speech_count == 0 而不是某个开关**：曾考虑加 `had_first_today: bool` 持久化字段，跨 session 标记"今天第一次"。但 today_speech_count 已经是 source of truth，再加一层 derived state 是冗余。每次 base_inputs 都要 set 是小代价，换得"日切换永远准确"。

@@ -130,6 +130,7 @@ pub fn run() {
             companionship::get_companionship_days,
             companionship::get_install_date,
             proactive::get_persona_summary,
+            mood::get_current_mood,
             mood_history::get_mood_trend_hint,
             proactive::get_tone_snapshot,
             proactive::get_pending_reminders,
