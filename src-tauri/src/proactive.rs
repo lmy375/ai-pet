@@ -297,6 +297,12 @@ pub struct ToneSnapshot {
     /// "💬 N/M" chip at-a-glance instead of users digging into the
     /// feedback timeline collapsible.
     pub feedback_summary: Option<FeedbackSummary>,
+    /// Iter R20: speech length register classification over the same 5-line
+    /// window the proactive prompt's R19 length-hint reads. None when too
+    /// few samples; otherwise kind ∈ "long" / "short" / "mixed". Surfaced
+    /// to the tone strip as a "📏 长 / 短 / 混" chip so the user can see
+    /// which register the pet is currently stuck in (or not).
+    pub speech_register: Option<crate::speech_history::SpeechRegisterSummary>,
 }
 
 /// Iter R10: simple shape for the tone-strip feedback chip. R1c added
@@ -570,6 +576,14 @@ pub async fn build_tone_snapshot(
                     total: recent.len() as u64,
                 })
             }
+        },
+        // Iter R20: speech-length register classification (R19's same input
+        // window). None when insufficient samples; classification is cheap
+        // (5-line scan), so refetching here is fine — panel snapshots are
+        // poll-driven, not in the hot path.
+        speech_register: {
+            let recent = crate::speech_history::recent_speeches(5).await;
+            crate::speech_history::classify_speech_register(&recent)
         },
     })
 }

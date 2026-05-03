@@ -2,6 +2,28 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R20：speech register 在 PanelToneStrip 加 📏 chip（R19 → 用户可见）
+- 现状缺口：R19 让 LLM 看到"你最近偏长 / 偏短"提示，但用户在 panel 看不到。如果用户 panel 一眼想知道"我的 pet 现在卡在某种 register 吗？" 没办法答 — 信号只在后台流转。R1c 已经给 dismiss 信号开了 panel 可见性的先例，R20 给 R19 也做。
+- 解法 — 抽 classifier + ToneSnapshot 字段：
+  - speech_history.rs：`format_speech_length_hint` 内部计算抽到 `pub fn classify_speech_register(lines) -> Option<SpeechRegisterSummary>` 纯函数。Summary 含 `kind: &'static str` ("long"/"short"/"mixed") + `mean_chars: usize` + `samples: usize`。`mixed` 现在是 explicit return value（之前 R19 只把 long/short 对外暴露，mixed 视作 "no signal" 静默）— panel 渲染 mixed 是有意义的（"你的 pet 在自然变化"）。
+  - format_speech_length_hint 重构为 thin wrapper：classify → match kind → "long"/"short" 各自 formatted hint，"mixed" 仍返空字符串（LLM nudge 角度只在 monotone 时干预）。
+  - proactive.rs: ToneSnapshot 加 `speech_register: Option<SpeechRegisterSummary>`。build_tone_snapshot 调 recent_speeches(5) + classify。
+  - panelTypes.ts: 加对应 type union "long" | "short" | "mixed"。
+  - PanelToneStrip: 新 chip 在 feedback chip 后、period chip 前。文案 "📏 长（avg 27）" / "📏 短（avg 5）" / "📏 混合（avg 18）"。颜色：长/短橙色 #d97706（"卡 register"），混合绿色 #16a34a（"自然变化"）。hover 解释 R19 关系。
+- 决策 — mixed 是 explicit value 而非 None：R19 时 mixed → "" 是因为 LLM nudge 只在异常时干预。但 panel 不是 nudge channel，是 *observability* channel — "我的 pet 没卡 register" 也是有用信息。**同 classifier 不同消费者要求不同 surface 形式**：prompt 要 nudge（异常 only），panel 要 status（all states）。先抽 classifier 让两个消费者用同源数据，各自决定要不要 surface mixed。
+- 决策 — 抽 classifier 抽到 speech_history.rs 而非 proactive 子模块：函数本质是"分析 speech_history 数据"，跟 detect_repeated_topic / speeches_for_date / parse_recent 同 module。**模块归属看数据流向**，不是看下游消费者多少（panel + prompt 都消费）。
+- 决策 — 颜色编码 = monotone vs varying：模仿 feedback chip 的 R7-band 色彩规则（>0.6 红 / <0.2 绿 / 中灰）。R20 的二元色（橙 = 偏 / 绿 = 混合）是简化版 — 只有"卡 / 不卡" 两态。色彩跟"信号方向" 一致让 panel 整体视觉语言连贯。
+- 决策 — chip 文案"长（27）" 不是"长（avg 27 字）"：panel 单 chip 字数预算极少（约 8 字内）。括号里只放数字，hover 全文档。**panel chip 是 dashboard 不是教科书**。
+- 决策 — `Option<SpeechRegisterSummary>` 而不是 panic / unwrap_or：少于 3 sample 的 fresh install 期间没数据，None 是 honest 表达；frontend 条件渲染 `tone.speech_register && (...)` 跟 feedback_summary 同模式。
+- 决策 — 不在 chip 里区分 mixed 时的 mean："混（avg 18）" 信息密度有点冗余 —— mean 18 这数字本身没特别意义，只在长/短时（"对比 25 / 8 阈值"）有信号。但保持三档统一让 chip 阅读成本低，每次都 expect 同样的"标 + 数" 格式。
+- 测试（4 新单测）：
+  - classify_register_returns_none_below_min_samples
+  - classify_register_returns_long_when_all_long（含 long kind + samples + mean ≥ 25 assertion）
+  - classify_register_returns_short_when_all_short
+  - classify_register_returns_mixed_for_varied_register（R20 新行为：mixed 也是 Some(...)）
+- 测试结果：464 cargo（+4）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：panel tone strip 现在多一个 📏 chip — 用户一眼看到"宠物现在卡 长/短 register 吗"。R19 信号从 prompt-only 升级到 prompt + panel 双 surface。**所有 R 系列 LLM 信号都应该 panel 可见** — 这条原则现在被 R1c (dismiss) + R20 (register) 两次践行；后续新加 prompt hint 应该同一 commit 里加 panel surface。
+
 ## 2026-05-04 — Iter R19：speech length register 多样性 nudge（"偏长 / 偏短" 提示）
 - 现状缺口：pet 主动开口的字数分布几乎是单 register —— LLM 默认产出一致长度。但**真朋友会混着说短"嘿"和长"今天有什么打算"**。同一长度 5 句话连发会让 pet 显得"机器化"。speech_history 已有数据但从未被用作"register variance" 的反馈源。R11 detect_repeated_topic 检测内容重复，R19 检测**长度重复**。
 - 解法 — 纯统计 + 静默兜底：

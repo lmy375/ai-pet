@@ -252,38 +252,65 @@ pub const SPEECH_LENGTH_MIN_SAMPLES: usize = 3;
 pub const SPEECH_LENGTH_LONG_THRESHOLD: usize = 25;
 pub const SPEECH_LENGTH_SHORT_THRESHOLD: usize = 8;
 
-pub fn format_speech_length_hint(lines: &[String]) -> String {
+/// Iter R20: classification of recent-speeches register. Surfaces both to
+/// the prompt builder (R19) and to the panel tone strip (R20) — same
+/// classifier, two consumers. None when fewer than `MIN_SAMPLES` nonzero
+/// lines (not enough data to classify).
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct SpeechRegisterSummary {
+    /// `"long"` (all samples ≥ LONG_THRESHOLD) / `"short"` (all ≤ SHORT_THRESHOLD)
+    /// / `"mixed"` (varying — neither extreme). Frontend renders different
+    /// chip tone per kind.
+    pub kind: &'static str,
+    pub mean_chars: usize,
+    pub samples: usize,
+}
+
+/// Pure classifier — strips timestamps, filters empty lines, returns kind +
+/// mean + sample count. The R19 prompt-hint formatter calls this; the R20
+/// panel snapshot also calls this; both branches share one rule.
+pub fn classify_speech_register(lines: &[String]) -> Option<SpeechRegisterSummary> {
     if lines.len() < SPEECH_LENGTH_MIN_SAMPLES {
-        return String::new();
+        return None;
     }
     let counts: Vec<usize> = lines
         .iter()
         .map(|raw| strip_timestamp(raw).chars().count())
+        .filter(|&n| n > 0)
         .collect();
-    // Empty stripped lines (parse failures or genuinely empty entries) drag
-    // the mean toward 0 in misleading ways. Filter them; if too few left,
-    // bail out.
-    let nonzero: Vec<usize> = counts.iter().copied().filter(|&n| n > 0).collect();
-    if nonzero.len() < SPEECH_LENGTH_MIN_SAMPLES {
-        return String::new();
+    if counts.len() < SPEECH_LENGTH_MIN_SAMPLES {
+        return None;
     }
-    let mean = nonzero.iter().sum::<usize>() / nonzero.len();
-    let all_long = nonzero.iter().all(|&n| n >= SPEECH_LENGTH_LONG_THRESHOLD);
-    let all_short = nonzero.iter().all(|&n| n <= SPEECH_LENGTH_SHORT_THRESHOLD);
-    if all_long {
-        format!(
-            "你最近 {} 句开口都偏长（平均 {} 字），这次试更短的关心 — 一句话甚至几个字也行。",
-            nonzero.len(),
-            mean
-        )
-    } else if all_short {
-        format!(
-            "你最近 {} 句开口都偏短（平均 {} 字），这次可以多花两句关心一下细节。",
-            nonzero.len(),
-            mean
-        )
+    let mean_chars = counts.iter().sum::<usize>() / counts.len();
+    let kind = if counts.iter().all(|&n| n >= SPEECH_LENGTH_LONG_THRESHOLD) {
+        "long"
+    } else if counts.iter().all(|&n| n <= SPEECH_LENGTH_SHORT_THRESHOLD) {
+        "short"
     } else {
-        String::new()
+        "mixed"
+    };
+    Some(SpeechRegisterSummary {
+        kind,
+        mean_chars,
+        samples: counts.len(),
+    })
+}
+
+pub fn format_speech_length_hint(lines: &[String]) -> String {
+    let Some(summary) = classify_speech_register(lines) else {
+        return String::new();
+    };
+    match summary.kind {
+        "long" => format!(
+            "你最近 {} 句开口都偏长（平均 {} 字），这次试更短的关心 — 一句话甚至几个字也行。",
+            summary.samples, summary.mean_chars
+        ),
+        "short" => format!(
+            "你最近 {} 句开口都偏短（平均 {} 字），这次可以多花两句关心一下细节。",
+            summary.samples, summary.mean_chars
+        ),
+        // mixed — already varying, no nudge.
+        _ => String::new(),
     }
 }
 
@@ -886,5 +913,45 @@ mod tests {
         // mean = (1 + 2 + 2) / 3 = 1
         assert!(hint.contains("3 句"));
         assert!(hint.contains("平均"));
+    }
+
+    #[test]
+    fn classify_register_returns_none_below_min_samples() {
+        assert!(classify_speech_register(&[]).is_none());
+        assert!(classify_speech_register(&[ts("一"), ts("二")]).is_none());
+    }
+
+    #[test]
+    fn classify_register_returns_long_when_all_long() {
+        let lines = vec![
+            ts("今天打算把那个超长的项目报告好好处理一下再放松休息吃饭"),
+            ts("最近这几天看起来真忙的样子要不要停下来多喝几口水休息会儿"),
+            ts("昨晚那本小说终于读完了我一直好奇结尾的反转给我讲讲嘛朋友"),
+        ];
+        let summary = classify_speech_register(&lines).unwrap();
+        assert_eq!(summary.kind, "long");
+        assert_eq!(summary.samples, 3);
+        assert!(summary.mean_chars >= 25);
+    }
+
+    #[test]
+    fn classify_register_returns_short_when_all_short() {
+        let lines = vec![ts("嘿"), ts("好的"), ts("吃了吗？")];
+        let summary = classify_speech_register(&lines).unwrap();
+        assert_eq!(summary.kind, "short");
+        assert!(summary.mean_chars <= 8);
+    }
+
+    #[test]
+    fn classify_register_returns_mixed_for_varied_register() {
+        // R20: "mixed" is now an explicit return value (not collapsed to None).
+        // Panel needs to render "📏 混合" chip even when LLM gets no nudge.
+        let lines = vec![
+            ts("嘿"),
+            ts("今天打算把那个超长的项目报告好好处理一下再放松休息吃饭"),
+            ts("昨晚那本小说终于读完了我一直好奇结尾的反转给我讲讲嘛朋友"),
+        ];
+        let summary = classify_speech_register(&lines).unwrap();
+        assert_eq!(summary.kind, "mixed");
     }
 }

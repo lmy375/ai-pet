@@ -100,6 +100,14 @@ export interface ToneSnapshot {
     dismissed: number;
     total: number;
   } | null;
+  // Iter R20: speech length register classification over the last 5
+  // proactive utterances. `kind` ∈ "long" | "short" | "mixed". Null when
+  // fewer than 3 nonempty samples (fresh install / quiet day).
+  speech_register: {
+    kind: "long" | "short" | "mixed";
+    mean_chars: number;
+    samples: number;
+  } | null;
 }
 
 /**
