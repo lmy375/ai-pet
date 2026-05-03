@@ -650,6 +650,15 @@ pub struct ToneSnapshot {
     /// Iter D1: minutes since last user interaction. Pairs with `idle_register` —
     /// register is the human cue, this is the precise number for tooltip / debug.
     pub idle_minutes: u64,
+    /// Iter D2: companionship milestone label when today is one (Cρ — 7 / 30 /
+    /// 100 / 180 / 365 / yearly). None otherwise. Surfaced so the panel can show
+    /// a celebration cue on the same days the proactive prompt's milestone rule
+    /// fires.
+    pub companionship_milestone: Option<String>,
+    /// Iter D2: companionship days (lifetime count). Already in PanelStatsCard
+    /// via a separate Tauri command, but bundling it here lets the strip render
+    /// the milestone cue without a second IPC.
+    pub companionship_days: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -809,6 +818,12 @@ pub async fn get_tone_snapshot(
         day_of_week: format_day_of_week_hint(now.weekday()),
         idle_register: user_absence_tier(idle_min_for_rules).to_string(),
         idle_minutes: idle_min_for_rules,
+        // Iter D2: surface the same milestone label that drives the
+        // companionship-milestone prompt rule (Cρ) so the panel can flag the
+        // day visually.
+        companionship_milestone: companionship_milestone(companionship_days_for_rules)
+            .map(|s| s.to_string()),
+        companionship_days: companionship_days_for_rules,
     })
 }
 

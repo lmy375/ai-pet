@@ -36,6 +36,8 @@
 ### 路线 D（series 2）：dashboard surface 与 prompt 对齐
 - [x] Iter D1：ToneSnapshot 暴露 day_of_week / idle_register / idle_minutes，PanelToneStrip
   渲染 📆 / 👤 chip，让 strip 与 prompt 时间维度 1:1 对齐（2026-05-03 完成）
+- [x] Iter D2：ToneSnapshot 暴露 companionship_milestone + PanelStatsCard 显 ✨ 节日 chip
+  （和 Cρ rule 同源，里程碑日 user 可见）（2026-05-03 完成）
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）

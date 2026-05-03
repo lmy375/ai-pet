@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D2 设计要点（已实现）
+- **复用 Cρ helper**：companionship_milestone 已经是 pure 函数，Tauri 端直接调用 + map to String。和 D1 一样都体现"single source of truth": prompt rule 和 panel chip 都从同一个函数读，不会因为某天扩展阈值（比如加 14 天里程碑）而漂移。
+- **chip 在 stats card 而不是 tone strip**：D1 把 day_of_week / idle_register 加进 strip 是因为它们是高频变化的信号（time line 每分钟变）；milestone 一年才几次，放高频区域突兀。stats card 的"陪伴 N 天" column 是 milestone 信号自然的承载位置。
+- **渐变色 chip 而不是单色**：⏰ 红 / ❌ 红 / ⚠️ 橙等已经被其它"该立刻处理"的事件占用。milestone 是"庆祝一下"语义，需要积极但不刺眼的表现。橙→粉 linear-gradient 给"温暖、特殊、轻微闪耀"感受，不抢眼。
+- **附带 companionship_days 字段**：strip 不一定立刻用，但放在 ToneSnapshot 让未来"宠物心情 + 陪伴时长"等组合视图无需额外 IPC 即可读。这是给将来留的小后路。
+- **不写新 cargo 测试**：companionship_milestone 在 Cρ 已锁 4 个 test。本 iter 是 wire-up 不是新逻辑。如果有动到判断逻辑（比如改阈值）才需要新测。
+
 ## Iter D1 设计要点（已实现）
 - **route 命名转 D 系列**：Greek 字母用到 ω 后再延续会进入 unicode 怪区（𝝰 等），且没人想打那种符号。从 D1 开始作为 "diagnostics / dashboard surface" 的新轨——和 Iter Dx（Memory tab）共享 D 前缀但用数字区分。
 - **复用 helpers 而不是从零计算**：format_day_of_week_hint 和 user_absence_tier 是 Cβ/Cμ 的 pure 函数；get_tone_snapshot 直接复用——保证 prompt 和 panel 永远不会漂移。这是"single source of truth"原则的一次硬规整。
