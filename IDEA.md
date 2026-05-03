@@ -1,5 +1,18 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R32 设计要点（已实现）
+- **dead code rot 是真问题不是 paranoia**：dead 文件从未被 import，但每次 TypeScript / Tauri / React 升级它都是潜在 break 点。Codebase grow 时新 contributor 看到 dead 文件会困惑"这是干啥的"，浪费认知带宽。**未维护代码 = 慢慢变 broken 但表面看不出**，紧急时反而帮倒忙。删 > 留。
+- **git is the backup, codebase is not**：诱惑是"也许以后用得上 留着吧"。但 git log 完整保留 deletion，需要时 `git log --diff-filter=D` 直接捞回。**留 dead code 等于把 git 当 archive 用**——双倍空间管理同一信息源，违反 single source of truth。删除 = 让 git 真正承担 history 角色。
+- **deletion iter 应当单主题**：R30 IDEA 写"audit 跟 cleanup 不混"。R32 实践这条：纯 deletion，没顺手"重构这两文件残留的某个工具函数到 utils/" 之类。**单 iter 单意图**让 commit history 可读 —— 看到 R32 commit 知道是删除，看到 R29 知道是 UI surface。混合操作让 future review / git bisect 难。
+- **negative test from compiler**：dead code deletion 的"测试" 不是写新单测，是看 build/tsc/cargo test 是否还 pass。如果有 stale import / stale call，编译器会立刻喊。**leveraging the type system as test infrastructure** 是 strongly-typed language 项目的福利 —— 不必写"deletion didn't break X" 测试，编译器自带。
+- **R-series 三种 iter 类型轮替**：
+  1. **创新 / 新功能**（R12 / R20 / R23 / R26 等）—— 加新 surface 或 logic
+  2. **还债 / audit-and-backfill**（R18 / R21 / R22 / R29 / R30）—— 把 codified rule 应用到老违反
+  3. **cleanup / refactor**（R32）—— 删 dead code、抽 helper、解耦
+  健康长 iter sequence 三类应该轮替，不该全做创新（积累债务）也不该全做 cleanup（停滞）。**iter type diversity 是项目可持续的指标**。
+- **dead code audit 的两步**：(1) `grep -rn "ComponentName"` 找所有引用；(2) 排除自身文件，剩下应该是 0。如果 > 0 就不能删。R32 用一段 shell `find ... | while ... grep ... wc` 一次扫整个 components/ 目录 — **scriptable audit** 比手动逐文件检查可靠。下次 cleanup 直接复用这种 pattern。
+- **comment 自述 "remove when done" 是反模式**：DebugBar.tsx 顶部 comment 自承"用完即删"，但实际从未删除。**code-comment 自我承诺是不可靠的承诺** —— 没人定期 grep "remove when done" 来收口。如果 author 真打算用完即删，应该 (a) 在临时 branch 写不 merge 到 main，(b) merge 时立刻 schedule TODO ticket。**靠 comment 提醒未来自己 = 注定遗忘**。
+
 ## Iter R31 设计要点（已实现）
 - **dev-facing observability 也是 codebase health surface**：R31 chip 给"我"（持续维护者）看的多过给最终用户。但持续维护是 long-running system 的 lifeblood —— **panel 应该有 dev-mode chips 不只 user-mode chips**。如果系统设计只考虑 end-user surface，maintainer 调优时就要盲操作。R31 把"R-series 累积 prompt 是否过胖" 的反馈循环 panel 化，类似一种"实时 lint warning"。
 - **CJK chars().count() 是 i18n 代码的 baseline 纪律**：R19 第一次踩坑，R23 / R31 反复践行。任何"长度感知" 业务（threshold band / display digit / pagination）必须用 chars 不 byte。**Rust String::len() 是 byte 长度** 这个事实在多语言项目里反复给开发者上课 — codify 这条 rule 让未来不再踩。

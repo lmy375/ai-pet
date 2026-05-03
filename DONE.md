@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R32：删除两个 dead-code 组件（SettingsPanel + DebugBar）
+- 现状缺口：R29 IDEA 发现 SettingsPanel.tsx 是 dead code（无 import 调用，PanelSettings 是真用），并标"暂留，下个 cleanup iter 该处理"。本 iter 还该债。Audit 时又发现 **DebugBar.tsx** 是另一个 dead 组件 —— 文件顶部 comment 写"add to App.tsx when debugging, remove when done"，明显是 ad-hoc 调试工具忘了删，从未被任何文件 import。
+- 解法 — 删两个文件：
+  - SettingsPanel.tsx（377 行）：早期版本的设置 UI，被 panel/PanelSettings.tsx 替代后未被 import 调用。git log 显示最后一次改动在 Iter Cτ（2026-05-03）保 user_name 同步。
+  - DebugBar.tsx（94 行）：window position 调试工具栏，自述"用完即删" 但 never removed。
+  - 总计 -471 行 dead code 删除，frontend tsx/ts 文件数 26 → 24。
+- 决策 — 删除而非"暂留 just in case"：dead code rot 是真问题 —— TypeScript / Tauri API 持续演化，未维护代码迟早编译失败 → 紧急 fix 时反而帮倒忙。**git history 是 backup**，需要时 `git log --diff-filter=D --summary | grep DebugBar` 找回完全可行。Lazy 留着只增加 maintenance surface。
+- 决策 — 不在同 iter 做更多 audit：诱惑是把 src-tauri/ 也走一遍。但 (a) Rust clippy 发现 0 dead，(b) cargo --all-targets 已经是 dev-time check，(c) 单 iter 单主题（R30 IDEA 写过的纪律）。**deletion iter 单纯做 deletion**，未来如果发现新 dead code 再 audit。
+- 决策 — 不写 deletion 测试（trivially impossible）：验证 cleanup 正确的方式 = build + tsc + tests 都 pass。文件被 delete 后任何 stale import 会导致 tsc 报错；任何 stale binding 会让 cargo 报错。**negative tests come from compiler**。
+- 决策 — 不重写 git log message 强调"仅删除"：commit message 描述是什么 + 为什么删。**简洁的 git history 优于详尽 archaeology**。
+- 测试结果：478 cargo（无变化）；clippy --all-targets clean；fmt clean；tsc clean；build clean。
+- 结果：codebase frontend 减重 471 行 / 2 文件。dead code 不再 confuse 新 maintainer "这个文件用在哪？"。R-series long iter sequence 的健康节奏 = 创新（R20-R28）+ 还债（R18 / R29-R30）+ cleanup（R32）三种 iter 类型轮替。
+
 ## 2026-05-04 — Iter R31：proactive prompt size 📝 chip（budget 自检）
 - 现状缺口：R-series 一路加 prompt hint —— speech / repeated_topic / cross_day / yesterday_recap / active_app / length_register / feedback / feedback_aggregate / persona / mood / wake / focus / reminders / butler_tasks / plan ... 累积下来 prompt 单次构造可能 3000+ chars。**没有任何 surface 显示当前 prompt 多大**，无法判断"是否该裁哪条 hint"。E1 modal 让用户能 inspect 全文，但要数字数得手动数。budget 自检 chip 缺位。
 - 解法 — 复用 LAST_PROACTIVE_PROMPT static + chip：
