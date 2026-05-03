@@ -432,6 +432,33 @@ async fn stream_llm_request(
 
 /// Run the full LLM chat pipeline with tool calling. Returns final assistant text.
 /// This is the core logic shared by the Tauri command and Telegram bot.
+/// Hard ceiling on LLM tool-call rounds per chat turn. Typical successful turns finish in
+/// 1-3 rounds; values up to ~5 happen for genuinely tool-heavy tasks. Hitting 8 means the
+/// model is almost certainly stuck in a loop (e.g. rereading the same memory category) —
+/// abort and surface a clear error rather than burn tokens forever.
+pub const MAX_TOOL_CALL_ROUNDS: usize = 8;
+
+// Compile-time sanity bound — guards against accidental "bump to 1000" PRs.
+const _: () = assert!(MAX_TOOL_CALL_ROUNDS >= 4 && MAX_TOOL_CALL_ROUNDS <= 32);
+
+/// Build the user-facing error message when the tool-call loop hits the round ceiling.
+/// Pure helper kept separate for unit testing — wording is part of the contract.
+pub fn tool_call_limit_message(rounds_completed: usize, max: usize) -> String {
+    format!(
+        "工具调用循环达到上限（已完成 {rounds_completed} 轮，max={max}）。模型仍在请求工具但未给出最终回答，已中止以避免无限循环。"
+    )
+}
+
+/// Returns `Some(error_message)` if the loop has reached the round ceiling and must abort,
+/// `None` otherwise. Pure so the limit gate has a tested boundary independent of HTTP plumbing.
+pub fn enforce_tool_round_limit(round: usize, max: usize) -> Option<String> {
+    if round >= max {
+        Some(tool_call_limit_message(round, max))
+    } else {
+        None
+    }
+}
+
 pub async fn run_chat_pipeline(
     messages: Vec<ChatMessage>,
     sink: &dyn ChatEventSink,
@@ -492,9 +519,15 @@ pub async fn run_chat_pipeline(
         };
     conv_messages.insert(insert_pos, tool_prompt_msg);
 
-    // Tool calling loop (unlimited rounds)
+    // Tool calling loop bounded by MAX_TOOL_CALL_ROUNDS — protects against runaway loops
+    // where the model keeps requesting tools without ever converging to a final reply.
     let mut round = 0usize;
     loop {
+        if let Some(err) = enforce_tool_round_limit(round, MAX_TOOL_CALL_ROUNDS) {
+            ctx.log(&format!("ERROR tool-call loop aborted: {}", err));
+            sink.send_error(&err);
+            return Err(err);
+        }
         ctx.log(&format!(
             "LLM round {} ({} messages)",
             round,
@@ -851,5 +884,34 @@ mod trim_tests {
             TOOL_USAGE_PROMPT.contains("update") && TOOL_USAGE_PROMPT.contains("相近"),
             "tool prompt must instruct dedup via update for similar entries"
         );
+    }
+
+    #[test]
+    fn enforce_tool_round_limit_passes_under_max() {
+        assert_eq!(enforce_tool_round_limit(0, 8), None);
+        assert_eq!(enforce_tool_round_limit(7, 8), None);
+    }
+
+    #[test]
+    fn enforce_tool_round_limit_aborts_at_or_over_max() {
+        let at = enforce_tool_round_limit(8, 8).expect("must abort at limit");
+        assert!(at.contains("8"));
+        assert!(at.contains("max=8"));
+
+        let over = enforce_tool_round_limit(99, 8).expect("must abort over limit");
+        assert!(over.contains("99"));
+    }
+
+    #[test]
+    fn tool_call_limit_message_is_user_meaningful() {
+        // The error surfaces both to app.log and to the frontend stream — must explain
+        // *why* the turn stopped, not just "error". Check the key signal words.
+        let msg = tool_call_limit_message(8, 8);
+        assert!(msg.contains("工具调用循环"), "must name the failure mode");
+        assert!(
+            msg.contains("已中止") || msg.contains("无限循环"),
+            "must signal abort"
+        );
+        assert!(msg.contains("8"), "must include round count for debug");
     }
 }

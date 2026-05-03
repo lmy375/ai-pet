@@ -9,8 +9,7 @@
 
 - [x] Quality Gate 1：清理 Rust 格式和 lint（2026-05-03 完成 — Iter QG1）
 
-- [ ] Quality Gate 2：给 LLM tool-call loop 增加最大轮数和明确失败路径。
-  - AI prompt：在 `run_chat_pipeline` 的工具调用循环中加入可配置或常量化的最大 round 数。超过上限时停止继续调用工具，向用户返回可解释错误，并写入 app log / llm log。补单测或可执行 smoke case，覆盖“模型连续要求工具导致上限触发”的情况。
+- [x] Quality Gate 2：给 LLM tool-call loop 增加最大轮数和明确失败路径（2026-05-03 完成 — Iter QG2）
 
 - [ ] Quality Gate 3：统一手动 proactive trigger 与后台 loop 的 telemetry。
   - AI prompt：让 `trigger_proactive_turn` 和后台 proactive loop 共享 outcome counters、decision log、prompt tilt、tools_used 等统计路径。手动触发可以标记 source=manual，但不能绕开核心观测数据。补测试或手动验证记录。
