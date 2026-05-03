@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 103：mood_history.log + 长期情绪谱注入 prompt（路线 A 第三步）
+- 新模块 `src-tauri/src/mood_history.rs`：append-only 日志，cap 200 行 / 200KB rotation。每行格式 `<ISO ts> <motion> | <text>` 用 ` | ` 分隔保证 motion / text 解析无歧义即使 text 含管道符。
+- 写入时去重：read 文件最后一行，若 motion+text 与新条目完全一致则 skip——让 history 反映"心情转变"而非每次 proactive 都记一条同样的 Idle/平静。
+- 4 个 pure helper：parse_motion_text（含 `|` corner case）、summarize_recent_motions（按次数降序 + 字母 tiebreak）、format_trend_hint（min_entries 防早期噪声 + 过滤 "-" 无标签 entry，全空则返 None）、build_trend_hint async wrapper。
+- 9 个新单测覆盖：parse 4 种形式 / summarize 计数+排序+窗口 / format 阈值/排序/过滤 dash/全 dash 返 None。
+- proactive run_proactive_turn：read_mood_for_event 之后 `mood_history::record_mood(text, motion)` 异步追加；fetch `build_trend_hint(50, 5)` 透传到 PromptInputs。
+- `PromptInputs` 加 `mood_trend_hint: &'a str`（默认空），`build_proactive_prompt` 在 `persona_hint` 之后 push_if_nonempty——位置：自我状态 / 关系时长 / 自我反思 / 长期情绪谱 / 上下文，递进合理。
+- 4 个新 prompt 测试：set 时含"长期的情绪谱"和具体 motion 计数 / 空时不出。
+- 路线 A 三步全部完成：companionship_days（"我和你认识 N 天"）+ persona_summary（"我看到自己是这样的人格"）+ mood_trend（"我最近的情绪谱是这样"）= 长期人格演化基础设施。新装的宠物 prompt 简短清爽，长期使用的宠物 prompt 自带历史厚度。
+- 208 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 102：persona_summary 自反思 + 注入 proactive prompt
 - consolidate 流程在主 prompt 里新增第 5 项任务：让 LLM 基于"最近 30 句主动开口" + user_profile 条目，写一段 ~100 字的第一人称自我画像（"我倾向 ..."），通过 `memory_edit create / update` 写到 `ai_insights/persona_summary`。最近开口 < 5 句时跳过（信号不足）。
 - consolidate prompt 现在前置 `recent_speech_block`：把 speech_history 最近 30 行 strip timestamp 后 bullet-list 进 prompt。空时显示"跳过 persona_summary 维护"提示，让 LLM 不要硬编。

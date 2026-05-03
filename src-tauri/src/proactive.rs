@@ -202,6 +202,11 @@ pub struct PromptInputs<'a> {
     /// interact with this user" header so each proactive turn can lean on the
     /// reflection rather than starting from a static SOUL.md alone.
     pub persona_hint: &'a str,
+    /// Long-term mood-trend hint from `mood_history.log` (Iter 103). Format like
+    /// "你最近 N 次心情记录里：Tap × 12、Idle × 8、Flick × 3"; empty when there's
+    /// not enough recorded mood history to summarize. Sits next to `persona_hint`
+    /// so the LLM gets both "how I see myself" + "how I've been feeling lately".
+    pub mood_trend_hint: &'a str,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -446,6 +451,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push(inputs.mood_hint.to_string());
     s.push(format_companionship_line(inputs.companionship_days));
     push_if_nonempty(&mut s, inputs.persona_hint);
+    push_if_nonempty(&mut s, inputs.mood_trend_hint);
     push_if_nonempty(&mut s, inputs.focus_hint);
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
@@ -1320,6 +1326,10 @@ async fn run_proactive_turn(
     // Pull the pet's own short-term plan from ai_insights/daily_plan, if it has written one.
     let plan_hint = build_plan_hint();
     let persona_hint = build_persona_hint();
+    // Iter 103: read mood-trend summary from mood_history.log (window=50, min=5).
+    // Window is generous because mood is deduped against the last entry, so 50 lines
+    // typically span 1-2 weeks of distinct mood changes. min=5 avoids early-day noise.
+    let mood_trend_hint = crate::mood_history::build_trend_hint(50, 5).await;
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
@@ -1381,6 +1391,7 @@ async fn run_proactive_turn(
         since_last_proactive_minutes,
         companionship_days,
         persona_hint: &persona_hint,
+        mood_trend_hint: &mood_trend_hint,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1422,6 +1433,12 @@ async fn run_proactive_turn(
     // Re-read mood after the turn — if the LLM updated it via memory_edit, the file has been
     // rewritten and we should ship the latest snapshot to the frontend.
     let (mood_after, motion_after) = read_mood_for_event(&ctx, "Proactive");
+    // Iter 103: append the post-turn mood to mood_history.log (best-effort, deduped
+    // against last entry inside record_mood). Captures the trajectory of the pet's
+    // emotional register over time so future proactive turns can reflect on it.
+    if let Some(text) = &mood_after {
+        crate::mood_history::record_mood(text, &motion_after).await;
+    }
 
     let payload = ProactiveMessage {
         text: reply_trimmed.to_string(),
@@ -1601,6 +1618,9 @@ mod prompt_tests {
             // persona summary has been written yet. Tests for the persona hint set this
             // to a non-empty string to assert injection.
             persona_hint: "",
+            // Default empty — pre-Iter 103 state, no mood trend yet. Tests for the
+            // trend hint set this explicitly.
+            mood_trend_hint: "",
         }
     }
 
@@ -1953,6 +1973,23 @@ mod prompt_tests {
         let inputs = base_inputs(); // default persona_hint = ""
         let p = build_proactive_prompt(&inputs);
         assert!(!p.contains("自我反思的画像"));
+    }
+
+    #[test]
+    fn prompt_includes_mood_trend_hint_when_set() {
+        let mut inputs = base_inputs();
+        inputs.mood_trend_hint =
+            "你最近 30 次心情记录里：Tap × 12、Idle × 10、Flick × 5（按出现次数排序）。这是你长期的情绪谱——可以让 ta 渗进当下语气，但不必生硬带出。";
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("长期的情绪谱"));
+        assert!(p.contains("Tap × 12"));
+    }
+
+    #[test]
+    fn prompt_omits_mood_trend_hint_when_empty() {
+        let inputs = base_inputs(); // default mood_trend_hint = ""
+        let p = build_proactive_prompt(&inputs);
+        assert!(!p.contains("长期的情绪谱"));
     }
 
     #[test]
