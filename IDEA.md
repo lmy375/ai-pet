@@ -30,6 +30,16 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 101 设计要点（已实现）— 路线 A 入口
+- **首次启动 zero-config 写入**：用户不需要在任何 settings 配置 install_date——首次 proactive turn 跑 `ensure_install_date` 自动写入今天。这是 setup-friction = 0 的关键，符合"宠物自己开始累积时间"的隐喻。
+- **数字而非文字传给 prompt**：本可以让 backend 直接拼好 "已经 N 天" 字符串塞进 cadence_hint。但传纯数字让 prompt 构造层（format_companionship_line）拿到完整决策权——day 0 用初识措辞、day N 用相处时长措辞，未来想加 "100 天纪念"、"半年" 之类阶段化文案也不需要改 backend。
+- **day 0 显式分支**：本可以让 day 0 = "已经 0 天" 文字，让 LLM 自己理解。但 0 天对 LLM 来说语义模糊（是"刚认识"还是"已经过了不到一天"？），明确措辞"第一天 / 初识的客气感"更可控。N >= 1 信任 LLM 用"N 天"做语调判断。
+- **clamp 负数到 0 防御**：用户改系统时钟、跨时区飞行、手动编辑 install_date.txt 写未来日期——三种 corner case 都可能让 today - install < 0。clamp 到 0 让宠物不会出现"我和你认识了 -3 天"的 nonsense。clock skew 是真实存在的现实，工程上必须处理。
+- **install_date.txt 而非 ProcessCounters atomic**：天数必须跨重启活下来——这是 lifetime stat。文件方案和 speech_count.txt / speech_daily.json 一致，9 类持久化文件中又添一类，模式统一。serialize 简单到不需要 JSON：单行 YYYY-MM-DD，肉眼可读，用户想"作弊"调整自己的陪伴日数也能一键编辑。
+- **base_inputs 默认 30 而非 0**：默认必须让既有 18+ 个 prompt 测试零修改通过。0 会让 day 0 的"第一天"措辞出现在所有既有测试的 prompt 里——破坏不少 contains 断言。30 是中间值，特殊情况测试再 override 到 0 或 365。
+- **位置插入在 mood_hint 之后**：build_proactive_prompt 的叙事顺序是"现在时间 idle → cadence → 心情状态 → **我和用户的相处时长** → 上下文 hints → 用户问题 → 约束"。从 self-state 到 relational-state 到 environment-state 是合理的递进。
+- **route A 之路**：Iter 101 是"宠物知道时长"的最小步骤；Iter 102 计划让宠物"反思形成自我画像"；Iter 103 让"心情趋势"也进 prompt。三步走形成"动态人格"——SOUL.md 静态文本之上叠加可演化层。
+
 ## Iter 100 设计要点（已实现）— 里程碑盘点
 - **第 100 次迭代不写代码而是写盘点**：90 多次微观迭代之后容易陷入"机械再拆一个组件 / 再加一个 chip"的本地优化。100 是个值得停下来对照原始目标看走到哪的标记点。盘点结果应该让后续迭代重新对齐高价值方向，而不是继续琐碎累积。
 - **STATUS.md 而非把内容塞进 IDEA.md**：IDEA.md 已经是"每个 iter 的设计思考"日记，按 iter 倒序累积——结构上不适合放"项目当下整体状态"。新文件 STATUS.md 单独承载 high-level 盘点，未来用户/协作者打开仓库一眼能看到当前进展。

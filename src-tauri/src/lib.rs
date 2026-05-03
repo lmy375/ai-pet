@@ -1,4 +1,5 @@
 mod commands;
+mod companionship;
 mod config;
 mod consolidate;
 mod decision_log;

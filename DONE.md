@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 101：陪伴天数注入 prompt（路线 A 入口）
+- 新模块 `src-tauri/src/companionship.rs`：
+  - `install_date_path()` → `~/.config/pet/install_date.txt`
+  - `parse_install_date(content)` 纯函数解 YYYY-MM-DD 首行（容忍后续 comment）
+  - `days_between(install, today)` 纯函数算天数差，负数 clamp 到 0
+  - `ensure_install_date()` async：读文件 → 解析；缺失/损坏即写今天并返今天
+  - `companionship_days()` async：days_between(ensure, today)
+- 5 个新单测覆盖 parser valid / 带 comment / malformed / 同日 0 / 正向计数 / 时钟回退 clamp。
+- `PromptInputs` 加 `companionship_days: u64` 字段，base_inputs 默认 30（既不是 0 也不是漫长，让既有 prompt 测试不受新文本影响）。
+- 新纯函数 `format_companionship_line(days) -> String`：
+  - day 0 → "你和用户今天才正式认识，是你陪伴 ta 的第一天——语气可以保留一点点初识的客气感。"
+  - day N → "你和用户已经一起走过 N 天——可以让这份相处时长自然渗进语气，比如对 ta 偏好的预判、共同回忆的暗指（不必硬塞，时机对就用）。"
+- `build_proactive_prompt` 在 `mood_hint` 之后插入 companionship 行——位置在情绪状态之后、上下文 hint 之前，符合"我是谁 → 我和用户什么关系 → 当下情况"的叙事顺序。
+- `run_proactive_turn` 调 `crate::companionship::companionship_days().await` 透传——首次 proactive turn 即触发 install_date.txt 写入（zero-config）。
+- 4 个新 prompt 测试：day 0 用第一天措辞 / day N 状数 / day 7 出现在 prompt / day 0 prompt 含"第一天"。
+- 路线 A 入口完成：宠物现在知道"它和用户认识了多久"，是"使用一年的宠物" vs "刚装上的宠物"语气分化的最低基础设施。Iter 102 在此基础上让 LLM 自我反思生成性格摘要。
+- 194 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 100：里程碑盘点 STATUS.md
 - 新建 `STATUS.md`：以"实时陪伴 AI 桌面宠物"原始目标为锚，对照 IDEA.md 起点列
   的 5 条差距逐项核对，标记现状闭合度（① 主动发言 ✓ / ② 环境感知 大部分 ✓ /

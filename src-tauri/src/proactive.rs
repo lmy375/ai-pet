@@ -192,6 +192,10 @@ pub struct PromptInputs<'a> {
     /// `cadence_hint`) so composite rules can compare against thresholds without
     /// re-parsing the hint string.
     pub since_last_proactive_minutes: Option<u64>,
+    /// Days since the pet was first installed (Iter 101). 0 on install day. Lets the
+    /// LLM modulate language: a freshly-met pet on day 0 should sound less familiar
+    /// than one that's been around for a year. Persisted in `install_date.txt`.
+    pub companionship_days: u64,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -434,6 +438,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push(inputs.cadence_hint.to_string());
     s.push(String::new());
     s.push(inputs.mood_hint.to_string());
+    s.push(format_companionship_line(inputs.companionship_days));
     push_if_nonempty(&mut s, inputs.focus_hint);
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
@@ -452,6 +457,21 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
 fn push_if_nonempty(sections: &mut Vec<String>, s: &str) {
     if !s.trim().is_empty() {
         sections.push(s.to_string());
+    }
+}
+
+/// Render the "companionship duration" section of the proactive prompt. Day 0 gets a
+/// "this is the first day" framing — encouraging the LLM to use a getting-acquainted
+/// register — while N >= 1 just states the count, letting the LLM choose whether and
+/// how to draw on the accumulated familiarity. Pure / testable.
+pub fn format_companionship_line(days: u64) -> String {
+    if days == 0 {
+        "你和用户今天才正式认识，是你陪伴 ta 的第一天——语气可以保留一点点初识的客气感。".to_string()
+    } else {
+        format!(
+            "你和用户已经一起走过 {} 天——可以让这份相处时长自然渗进语气，比如对 ta 偏好的预判、共同回忆的暗指（不必硬塞，时机对就用）。",
+            days
+        )
     }
 }
 
@@ -1295,6 +1315,9 @@ async fn run_proactive_turn(
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
+    // Days since the pet was first installed — drives the long-term persona register
+    // (Iter 101). On first ever proactive turn this also writes install_date.txt.
+    let companionship_days = crate::companionship::companionship_days().await;
     // Today's proactive count from the per-day sidecar — drives the "tone it down today"
     // rule when at or above the user-configurable threshold.
     let today_speech_count = crate::speech_history::today_speech_count().await;
@@ -1348,6 +1371,7 @@ async fn run_proactive_turn(
         env_spoke_total,
         env_spoke_with_any,
         since_last_proactive_minutes,
+        companionship_days,
     });
 
     // Ensure system message anchors the conversation; build a temporary message list.
@@ -1538,6 +1562,9 @@ mod prompt_tests {
             // string ("约 8 分钟（刚说过话，话题还热）"). Tests for long-idle bump this
             // above 60 explicitly.
             since_last_proactive_minutes: Some(8),
+            // Default 30 — neither install-day (0) nor a long history; tests that care
+            // about either extreme set this explicitly.
+            companionship_days: 30,
         }
     }
 
@@ -1842,6 +1869,37 @@ mod prompt_tests {
             labels,
             vec!["wake-back", "first-mood", "pre-quiet", "reminders", "plan"],
         );
+    }
+
+    #[test]
+    fn format_companionship_line_day_zero_uses_first_day_framing() {
+        let line = format_companionship_line(0);
+        assert!(line.contains("第一天"));
+        assert!(line.contains("初识"));
+    }
+
+    #[test]
+    fn format_companionship_line_after_day_zero_states_count() {
+        let line = format_companionship_line(42);
+        assert!(line.contains("42 天"));
+        // Mentions familiarity / shared time so the LLM is invited to use it.
+        assert!(line.contains("相处时长"));
+    }
+
+    #[test]
+    fn prompt_includes_companionship_line() {
+        let mut inputs = base_inputs();
+        inputs.companionship_days = 7;
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("7 天"));
+    }
+
+    #[test]
+    fn prompt_includes_first_day_framing_at_day_zero() {
+        let mut inputs = base_inputs();
+        inputs.companionship_days = 0;
+        let p = build_proactive_prompt(&inputs);
+        assert!(p.contains("第一天"));
     }
 
     #[test]
