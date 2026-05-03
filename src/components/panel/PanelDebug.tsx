@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelChipStrip } from "./PanelChipStrip";
 import { PanelStatsCard } from "./PanelStatsCard";
+import { PanelFilterButtonRow } from "../common/PanelFilterButtonRow";
 import { PanelToneStrip } from "./PanelToneStrip";
 import {
   CacheStats,
@@ -112,6 +113,12 @@ export function PanelDebug() {
   // pre-LLM / LlmError / Run wrapper / ToolReview*) appear under "all".
   const [decisionFilter, setDecisionFilter] = useState<
     "all" | "Spoke" | "LlmSilent" | "Skip"
+  >("all");
+  // Iter R39: third application of the filter pattern — tool_call history
+  // risk_level filter. Triggers PanelFilterButtonRow extraction (R32 IDEA's
+  // "wait until use-3+ before extraction" threshold).
+  const [toolRiskFilter, setToolRiskFilter] = useState<
+    "all" | "low" | "medium" | "high"
   >("all");
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
@@ -885,67 +892,18 @@ export function PanelDebug() {
           <div style={{ color: "#64748b", marginBottom: "4px", fontFamily: "inherit", fontSize: "12px" }}>
             最近 {decisions.length} 次主动开口判断（最新在底部）
           </div>
-          {/* Iter R38: filter buttons mirroring R37 feedback-timeline pattern */}
-          {(() => {
-            const spokeCt = decisions.filter((d) => d.kind === "Spoke").length;
-            const silentCt = decisions.filter((d) => d.kind === "LlmSilent").length;
-            const skipCt = decisions.filter((d) => d.kind === "Skip").length;
-            const btnStyle = (active: boolean, accent: string) => ({
-              padding: "2px 8px",
-              fontSize: "10px",
-              borderRadius: "10px",
-              border: `1px solid ${active ? accent : "#cbd5e1"}`,
-              background: active ? accent : "#fff",
-              color: active ? "#fff" : "#475569",
-              cursor: "pointer",
-              fontWeight: 600 as const,
-              fontFamily: "inherit",
-            });
-            return (
-              <div
-                style={{
-                  display: "flex",
-                  gap: "6px",
-                  marginBottom: "6px",
-                  flexWrap: "wrap",
-                  fontFamily: "inherit",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setDecisionFilter("all")}
-                  style={btnStyle(decisionFilter === "all", "#475569")}
-                  title="显示全部决策（含 Run / Silent / LlmError / ToolReview*）"
-                >
-                  全部 {decisions.length}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDecisionFilter("Spoke")}
-                  style={btnStyle(decisionFilter === "Spoke", "#16a34a")}
-                  title="只看 LLM 选择开口的轮次"
-                >
-                  开口 {spokeCt}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDecisionFilter("LlmSilent")}
-                  style={btnStyle(decisionFilter === "LlmSilent", "#a855f7")}
-                  title="只看 LLM 选择沉默的轮次"
-                >
-                  沉默 {silentCt}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDecisionFilter("Skip")}
-                  style={btnStyle(decisionFilter === "Skip", "#f59e0b")}
-                  title="只看 gate 阻止 LLM 跑的轮次"
-                >
-                  跳过 {skipCt}
-                </button>
-              </div>
-            );
-          })()}
+          {/* Iter R38/R39: filter buttons via shared PanelFilterButtonRow */}
+          <PanelFilterButtonRow<typeof decisionFilter>
+            active={decisionFilter}
+            onChange={setDecisionFilter}
+            rowStyle={{ marginBottom: "6px" }}
+            options={[
+              { value: "all", label: "全部", count: decisions.length, accent: "#475569", title: "显示全部决策（含 Run / Silent / LlmError / ToolReview*）" },
+              { value: "Spoke", label: "开口", count: decisions.filter((d) => d.kind === "Spoke").length, accent: "#16a34a", title: "只看 LLM 选择开口的轮次" },
+              { value: "LlmSilent", label: "沉默", count: decisions.filter((d) => d.kind === "LlmSilent").length, accent: "#a855f7", title: "只看 LLM 选择沉默的轮次" },
+              { value: "Skip", label: "跳过", count: decisions.filter((d) => d.kind === "Skip").length, accent: "#f59e0b", title: "只看 gate 阻止 LLM 跑的轮次" },
+            ]}
+          />
           {(() => {
             const filtered =
               decisionFilter === "all"
@@ -1043,9 +1001,37 @@ export function PanelDebug() {
             暂无工具调用记录。reactive chat 期间发起的工具调用会出现在这里。
           </div>
         )}
-        {showToolHistory && toolCallHistory.length > 0 && (
-          <div style={{ paddingTop: "6px", maxHeight: "260px", overflowY: "auto" }}>
-            {toolCallHistory.map((c, i) => (
+        {showToolHistory && toolCallHistory.length > 0 && (() => {
+          // Iter R39: risk-level filter for tool_call timeline. Third use
+          // of the PanelFilterButtonRow pattern; together with R37/R38 it
+          // triggered the component extraction.
+          const lowCt = toolCallHistory.filter((c) => c.risk_level === "low").length;
+          const medCt = toolCallHistory.filter((c) => c.risk_level === "medium").length;
+          const highCt = toolCallHistory.filter((c) => c.risk_level === "high").length;
+          const filtered =
+            toolRiskFilter === "all"
+              ? toolCallHistory
+              : toolCallHistory.filter((c) => c.risk_level === toolRiskFilter);
+          return (
+            <>
+              <PanelFilterButtonRow<typeof toolRiskFilter>
+                active={toolRiskFilter}
+                onChange={setToolRiskFilter}
+                rowStyle={{ paddingTop: "6px" }}
+                options={[
+                  { value: "all", label: "全部", count: toolCallHistory.length, accent: "#475569", title: "显示全部工具调用" },
+                  { value: "low", label: "低险", count: lowCt, accent: "#16a34a", title: "只看 low risk_level 调用（read-only / 无副作用）" },
+                  { value: "medium", label: "中险", count: medCt, accent: "#d97706", title: "只看 medium risk_level 调用（写本地 / 启动外部）" },
+                  { value: "high", label: "高险", count: highCt, accent: "#dc2626", title: "只看 high risk_level 调用（删数据 / 网络外发 / 走 TR3 review）" },
+                ]}
+              />
+              <div style={{ paddingTop: "6px", maxHeight: "260px", overflowY: "auto" }}>
+                {filtered.length === 0 && (
+                  <div style={{ color: "#94a3b8", fontStyle: "italic", padding: "4px 0" }}>
+                    当前过滤下没有匹配条目。
+                  </div>
+                )}
+                {filtered.map((c, i) => (
               <div
                 key={i}
                 style={{
@@ -1111,9 +1097,11 @@ export function PanelDebug() {
                   <pre style={preStyle}>{c.result_excerpt}</pre>
                 </details>
               </div>
-            ))}
-          </div>
-        )}
+                ))}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* Iter R6: feedback timeline. Surfaces R1's capture data so the user
@@ -1157,8 +1145,7 @@ export function PanelDebug() {
           </div>
         )}
         {showFeedbackHistory && feedbackHistory.length > 0 && (() => {
-          // R37: filter row + filtered list. Buttons toggle; "all" disables
-          // filter. Each kind button shows its count for quick scan.
+          // R37/R39: filter row uses shared PanelFilterButtonRow component.
           const repliedCt = feedbackHistory.filter((f) => f.kind === "replied").length;
           const ignoredCt = feedbackHistory.filter((f) => f.kind === "ignored").length;
           const dismissedCt = feedbackHistory.filter((f) => f.kind === "dismissed").length;
@@ -1166,52 +1153,19 @@ export function PanelDebug() {
             feedbackFilter === "all"
               ? feedbackHistory
               : feedbackHistory.filter((f) => f.kind === feedbackFilter);
-          const btnStyle = (active: boolean, accent: string) => ({
-            padding: "2px 8px",
-            fontSize: "10px",
-            borderRadius: "10px",
-            border: `1px solid ${active ? accent : "#d1fae5"}`,
-            background: active ? accent : "#fff",
-            color: active ? "#fff" : "#475569",
-            cursor: "pointer",
-            fontWeight: 600 as const,
-          });
           return (
             <>
-              <div style={{ display: "flex", gap: "6px", paddingTop: "6px", flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  onClick={() => setFeedbackFilter("all")}
-                  style={btnStyle(feedbackFilter === "all", "#475569")}
-                  title="显示全部反馈"
-                >
-                  全部 {feedbackHistory.length}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFeedbackFilter("replied")}
-                  style={btnStyle(feedbackFilter === "replied", "#16a34a")}
-                  title="只看用户回复的开口"
-                >
-                  回复 {repliedCt}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFeedbackFilter("ignored")}
-                  style={btnStyle(feedbackFilter === "ignored", "#94a3b8")}
-                  title="只看被动忽略的开口"
-                >
-                  忽略 {ignoredCt}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFeedbackFilter("dismissed")}
-                  style={btnStyle(feedbackFilter === "dismissed", "#dc2626")}
-                  title="只看 5 秒内主动点掉的开口"
-                >
-                  点掉 {dismissedCt}
-                </button>
-              </div>
+              <PanelFilterButtonRow<typeof feedbackFilter>
+                active={feedbackFilter}
+                onChange={setFeedbackFilter}
+                rowStyle={{ paddingTop: "6px" }}
+                options={[
+                  { value: "all", label: "全部", count: feedbackHistory.length, accent: "#475569", title: "显示全部反馈" },
+                  { value: "replied", label: "回复", count: repliedCt, accent: "#16a34a", title: "只看用户回复的开口" },
+                  { value: "ignored", label: "忽略", count: ignoredCt, accent: "#94a3b8", title: "只看被动忽略的开口" },
+                  { value: "dismissed", label: "点掉", count: dismissedCt, accent: "#dc2626", title: "只看 5 秒内主动点掉的开口" },
+                ]}
+              />
               <div style={{ paddingTop: "6px", maxHeight: "240px", overflowY: "auto" }}>
             {filtered.map((f, i) => (
               <div
