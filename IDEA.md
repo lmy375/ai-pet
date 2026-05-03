@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D8 设计要点（已实现）
+- **lightweight `get_user_name()` vs `get_settings()` 全量**：PanelPersona 5 秒轮询。每秒拉全量 settings（API key 等大字段）浪费 IPC 带宽。一个 dedicated 命令 wraps `get_settings().map(|s| s.user_name).unwrap_or_default()`——零成本封装，意图明确。
+- **位置在 "陪伴时长" Section**：name 是关系绑定 ("我和谁陪伴")，比起放 "自我画像" 段（宠物自己写的）更切题。companionship 段就是"我们俩"主题，name 是其中一支柱。
+- **空态斜体提示路径**：`🐾 还没设名字（Settings → 你的名字）` 让用户立刻知道去哪里设。比单纯空白或 "未设" 更 actionable。
+- **emoji 🐾 而不是别的**：🐾 宠物 / 关系语义；不和其他 emoji（⏱ 时间 / 📆 日历 / 👤 用户 / 🎯 focus 等）冲突。
+- **不动 SettingsPanel**：那里已经有 user_name 输入字段（Cτ 添加）；本 iter 是单向反向显示，不重复 affordance。
+
 ## Iter D7 设计要点（已实现）
 - **propagate up vs persist**：曾考虑加 `last_consolidate_summary` 全局 atomic，让 panel 任意时间能拉。但 banner 是"点完按钮立刻看"的临时 feedback——没必要持久化，让 trigger_consolidate 直接返回更直接。如果以后做 "consolidate 历史" 时再加。
 - **160 vs 200 chars**：logged 截到 200，banner 截到 160。banner 在 panel 横幅里高度敏感，160 加 prefix 字符串大约填一行半；200 容易换行多次。

@@ -101,6 +101,7 @@ pub fn run() {
             commands::settings::get_config_raw,
             commands::settings::save_config_raw,
             commands::settings::get_soul,
+            commands::settings::get_user_name,
             commands::settings::save_soul,
             commands::window::open_panel,
             commands::window::open_debug,
