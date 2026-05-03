@@ -174,6 +174,12 @@ pub struct PromptInputs<'a> {
     /// at first-of-day (alongside `cross_day_hint`); empty when no
     /// review exists or the description isn't `[review]`-prefixed.
     pub yesterday_recap_hint: &'a str,
+    /// Iter R19: length-register variance nudge — "你最近 N 句开口都偏长
+    /// （平均 X 字）..." or "...偏短..." when recent speeches are stuck
+    /// in one register. Empty when fewer than 3 samples or the recent
+    /// register is mixed (already varying). Built from
+    /// `speech_history::format_speech_length_hint`.
+    pub length_register_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -350,6 +356,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);
     push_if_nonempty(&mut s, inputs.active_app_hint);
+    push_if_nonempty(&mut s, inputs.length_register_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);

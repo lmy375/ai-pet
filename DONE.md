@@ -2,6 +2,31 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R19：speech length register 多样性 nudge（"偏长 / 偏短" 提示）
+- 现状缺口：pet 主动开口的字数分布几乎是单 register —— LLM 默认产出一致长度。但**真朋友会混着说短"嘿"和长"今天有什么打算"**。同一长度 5 句话连发会让 pet 显得"机器化"。speech_history 已有数据但从未被用作"register variance" 的反馈源。R11 detect_repeated_topic 检测内容重复，R19 检测**长度重复**。
+- 解法 — 纯统计 + 静默兜底：
+  - speech_history.rs 加 3 个常量 `SPEECH_LENGTH_MIN_SAMPLES = 3` / `SPEECH_LENGTH_LONG_THRESHOLD = 25` / `SPEECH_LENGTH_SHORT_THRESHOLD = 8` + 纯函数 `format_speech_length_hint(lines: &[String]) -> String`。
+  - 步骤：strip_timestamp 取 char 数 → filter 0-char（empty） → 检查 nonzero ≥ 3 → 全部 ≥25 → "偏长 + 试更短"，全部 ≤8 → "偏短 + 多花两句"，混合 → 空字符串。
+  - PromptInputs 加 `length_register_hint: &'a str`；prompt assembler push_if_nonempty 在 active_app_hint 后。
+  - run_proactive_turn 复用现有 recent_speeches(5) 绑定 — speech_hint + repeated_topic_hint + length_register_hint 三层从一次 fetch 出。
+- 决策 — 三阈值"全或无"语义而非平均带宽：诱惑是用 mean ± std deviation 判断 variance。但 5 个样本 std dev 噪音大；"全部都长 / 全部都短" 是更稳的二元信号 — 哪怕 5/5 都偏长才提示。**simple gate > complex statistic** 是 R7 step function 也用过的纪律。
+- 决策 — `chars().count()` 不 `len()`：中文 1 字 = 3 字节 UTF-8。25 char 中文 = 75 byte，bytewise 看会判成"非常长"。专门 test 钉住 chinese 30-char 触发"偏长" 不 panic on multibyte boundary。
+- 决策 — empty stripped lines filter 后再判 sample 数：log 文件可能含损坏行（"<ts> <empty>"）。如果不 filter，empty 拉低 mean → 被误判"偏短"。filter 后如果 nonzero < 3 → return ""，**不带破损数据做强信号**。
+- 决策 — mixed 静默不报：如果用户已经看到 "嘿 / 在吗 / 早上好今天计划是什么" 混合 register，pet 已经在做对的事，不需要 prompt nudge。**只在异常时干预**，正常时静默。
+- 决策 — 25 char 阈值：经验值。日常 Chinese conversational 话语 5-30 字。25 是高端"偏长"边界。8 是低端"偏短"边界。可调，必要时改成 settings 字段（先不做，等用户反馈）。
+- 决策 — `[N/M]` reuse pattern：不写 PromptInputs.recent_speeches 重复 fetch；run_proactive_turn 一次 fetch 给 3 个 hint 复用。R11 IDEA 已写过这个经济原则。
+- 测试（8 新单测）：
+  - returns_empty_below_min_samples（< 3）
+  - fires_when_all_long（3 行 ≥ 25 char Chinese）
+  - fires_when_all_short（3 行 "嘿 / 在吗？/ 吃了吗？"）
+  - returns_empty_for_mixed_register（短+长+长）
+  - handles_chinese_correctly（30-char 中文不被 bytewise 误判）
+  - skips_empty_lines（1 empty + 3 long 仍触发）
+  - returns_empty_when_too_few_nonzero（2 empty + 2 long → only 2 nonzero）
+  - includes_sample_count_and_mean（"3 句" / "平均" 文案钉死）
+- 测试结果：460 cargo（+8）；clippy --all-targets clean；fmt clean。第一轮 fixture 没数对字数，3 句 23 char 被判 mixed；改 fixture 加到 27/28/28 通过。
+- 结果：proactive prompt 现在多一层"风格变化"信号。如果连续 5 次开口都是长 question / 长关心，第 6 次会带一句"试更短的关心"；反之亦然。让 pet 的语气更**会换register**，更像真实朋友交替说"在忙吗" 和"今天感觉怎么样我注意到你已经写代码两个小时了"。
+
 ## 2026-05-04 — Iter R18：抽取 read_ai_insights_item 共享 helper（refactor / 还 R16 IDEA 标记的债）
 - 现状缺口：proactive.rs 有 5 个 helper（get_persona_summary / build_persona_hint / read_daily_plan_description / read_daily_review_description / daily_review_exists / build_plan_hint），consolidate.rs 有 1 个（sweep_stale_plan）— **6 处都做同一件事**：memory_list("ai_insights") → categories.get("ai_insights") → items.iter().find(|i| i.title == ?)。R16 IDEA.md 已记下这债："当 helper 数到 6 时强制 refactor"。R17 又新增了一个调用面，正好踩到阈值。
 - 解法 — 单点 thin helper：
