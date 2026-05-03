@@ -1410,8 +1410,10 @@ async fn run_proactive_turn(
     let user_profile_hint = build_user_profile_hint();
     // Iter Cγ: surface owner-assigned butler tasks each proactive turn so the
     // pet's task queue stays visible — the pet shouldn't forget the user asked
-    // it to "每天早上发日历" between turns. Empty when no butler_tasks entries.
-    let butler_tasks_hint = build_butler_tasks_hint();
+    // it to "每天早上发日历" between turns. Iter Cζ adds schedule-awareness
+    // (`[every: HH:MM]` / `[once: ...]` prefixes); `now` is passed so due tasks
+    // bubble to the top with a "⏰ 到期" marker.
+    let butler_tasks_hint = build_butler_tasks_hint(now_local.naive_local());
 
     // Lifetime proactive utterance count — drives the icebreaker rule.
     let proactive_history_count = crate::speech_history::count_speeches().await;
@@ -1575,31 +1577,52 @@ pub const BUTLER_TASKS_HINT_MAX_ITEMS: usize = 6;
 pub const BUTLER_TASKS_HINT_DESC_CHARS: usize = 100;
 
 /// Pure formatter for the butler-tasks block. Items are `(title, description, updated_at)`.
-/// Sorted by `updated_at` ascending — oldest pending tasks bubble to the top so the LLM
-/// sees what's been waiting longest. Empty list / zero cap → empty string so
-/// `push_if_nonempty` skips the section.
+/// Items with a `[every: HH:MM]` / `[once: ...]` prefix that are *due now* (per
+/// `is_butler_due`) bubble to the top with a "⏰ 到期" marker; the rest follow sorted by
+/// `updated_at` ascending so the oldest pending tasks aren't lost at the bottom.
+/// Empty list / zero cap → empty string.
 ///
-/// Iter Cγ: distinct from reminders_hint (which is *user's* time-bound nudges) — this
-/// is the pet's own assignment queue, surfaced every proactive turn so it doesn't
-/// vanish into memory_list.
+/// Iter Cγ introduced the block; Iter Cζ added schedule-awareness via `now`. Distinct
+/// from reminders_hint (user's nudges) — this is the pet's own assignment queue.
 pub fn format_butler_tasks_block(
     items: &[(String, String, String)],
     max_items: usize,
     max_desc_chars: usize,
+    now: chrono::NaiveDateTime,
 ) -> String {
     if items.is_empty() || max_items == 0 {
         return String::new();
     }
-    let mut sorted: Vec<&(String, String, String)> = items.iter().collect();
-    // Ascending = oldest first. Pending tasks should not silently rot at the bottom.
-    sorted.sort_by(|a, b| a.2.cmp(&b.2));
-    let n = sorted.len().min(max_items);
+    // Compute due-ness once per item (parse + clock check) and stable-sort.
+    let mut annotated: Vec<(&(String, String, String), bool)> = items
+        .iter()
+        .map(|i| {
+            let due = parse_butler_schedule_prefix(&i.1)
+                .map(|(sched, _)| is_butler_due(&sched, now, &i.2))
+                .unwrap_or(false);
+            (i, due)
+        })
+        .collect();
+    // Due → not-due primary, updated_at ascending secondary. Stable-friendly via slice
+    // sort_by on a tuple of comparators.
+    annotated.sort_by(|(a, a_due), (b, b_due)| match (a_due, b_due) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.2.cmp(&b.2),
+    });
+    let n = annotated.len().min(max_items);
+    let due_count = annotated.iter().take(n).filter(|(_, d)| *d).count();
     let mut lines: Vec<String> = Vec::with_capacity(n + 2);
-    lines.push(format!(
-        "用户委托给你的管家任务（共 {} 条，按最早委托排在前）：",
-        n
-    ));
-    for (title, desc, _) in sorted.iter().take(n) {
+    let header = if due_count > 0 {
+        format!(
+            "用户委托给你的管家任务（共 {} 条，其中 {} 条到期，按到期 → 最早委托排在前）：",
+            n, due_count
+        )
+    } else {
+        format!("用户委托给你的管家任务（共 {} 条，按最早委托排在前）：", n)
+    };
+    lines.push(header);
+    for ((title, desc, _), due) in annotated.iter().take(n) {
         let trimmed = desc.trim();
         let truncated: String = if trimmed.chars().count() <= max_desc_chars {
             trimmed.to_string()
@@ -1607,21 +1630,126 @@ pub fn format_butler_tasks_block(
             let head: String = trimmed.chars().take(max_desc_chars).collect();
             format!("{}…", head)
         };
-        lines.push(format!("- {}：{}", title.trim(), truncated));
+        let marker = if *due { "⏰ 到期 · " } else { "" };
+        lines.push(format!("- {}{}：{}", marker, title.trim(), truncated));
     }
     lines.push(
         "执行完一项后用 `memory_edit update` 更新进度（标题前加 [done] / 写最后执行时间），\
-完全不需要的用 `memory_edit delete` 移除。"
+完全不需要的用 `memory_edit delete` 移除。带 `[every: HH:MM]` 或 `[once: ...]` 前缀的任务标记了到期窗口——\
+看到「⏰ 到期」就该这一轮优先处理它。"
             .to_string(),
     );
     lines.join("\n")
 }
 
-/// Read butler_tasks memory entries and format the prompt-side digest. Returns "" when
-/// the category is empty so the prompt builder skips it. Output is redacted via
-/// `redact_with_settings` for the same reason as `build_user_profile_hint` — the
-/// description may include private terms that shouldn't re-leak.
-pub fn build_butler_tasks_hint() -> String {
+/// Schedule for a butler task (Iter Cζ). Distinct from `ReminderTarget` semantically:
+/// reminders are nudges *for the user*, schedules tell *the pet* when to act on a task.
+/// Both share the time-arithmetic shape, but the firing logic and "already done" check
+/// differ — schedules need to know whether the most recent fire already triggered work.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ButlerSchedule {
+    /// Daily recurring at HH:MM local. Implicit window — see `is_butler_due` for how it
+    /// resolves "already executed today".
+    Every(u8, u8),
+    /// Single-fire at the absolute moment.
+    Once(chrono::NaiveDateTime),
+}
+
+/// Parse a schedule prefix from a butler_tasks description. Conventions:
+///   - `[every: HH:MM] topic`              — daily recurring
+///   - `[once: YYYY-MM-DD HH:MM] topic`    — one-shot
+/// Returns `(schedule, topic)` on clean parse, `None` otherwise. Tasks without a prefix
+/// are unscheduled — the LLM picks them up on its own judgment, not by clock.
+pub fn parse_butler_schedule_prefix(desc: &str) -> Option<(ButlerSchedule, String)> {
+    let trimmed = desc.trim_start();
+    if let Some(after_open) = trimmed.strip_prefix("[every:") {
+        let close_idx = after_open.find(']')?;
+        let inside = after_open[..close_idx].trim();
+        let topic = after_open[close_idx + 1..].trim().to_string();
+        if topic.is_empty() {
+            return None;
+        }
+        let (hh, mm) = inside.split_once(':')?;
+        let hour: u8 = hh.trim().parse().ok()?;
+        let minute: u8 = mm.trim().parse().ok()?;
+        if hour > 23 || minute > 59 {
+            return None;
+        }
+        return Some((ButlerSchedule::Every(hour, minute), topic));
+    }
+    if let Some(after_open) = trimmed.strip_prefix("[once:") {
+        let close_idx = after_open.find(']')?;
+        let inside = after_open[..close_idx].trim();
+        let topic = after_open[close_idx + 1..].trim().to_string();
+        if topic.is_empty() {
+            return None;
+        }
+        let (date_str, time_str) = inside.split_once(' ')?;
+        let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d").ok()?;
+        let time = chrono::NaiveTime::parse_from_str(time_str.trim(), "%H:%M").ok()?;
+        return Some((ButlerSchedule::Once(date.and_time(time)), topic));
+    }
+    None
+}
+
+/// Parse a stored `updated_at` string ("YYYY-MM-DDTHH:MM:SS+HH:MM") to a local
+/// `NaiveDateTime`. Returns `None` on malformed input — caller decides what that
+/// means (typically "treat as never updated").
+fn parse_updated_at_local(s: &str) -> Option<chrono::NaiveDateTime> {
+    chrono::DateTime::parse_from_rfc3339(s.trim())
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Local).naive_local())
+}
+
+/// Decide whether a scheduled butler task is *due now* — past its most recent fire AND
+/// not yet executed since that fire. `last_updated` is the task's `updated_at`; an
+/// unparseable / empty value is treated as "never executed" (always due if past target).
+///
+/// Semantics:
+/// - `Every(h, m)`: most-recent-fire = today h:m if `now >= today h:m` else yesterday h:m.
+///   Due iff `last_updated < most-recent-fire`. So a task touched after today's fire is
+///   suppressed until tomorrow's; a task touched before today's fire is due now.
+/// - `Once(dt)`: due iff `now >= dt && last_updated < dt`. Past + unexecuted.
+pub fn is_butler_due(
+    schedule: &ButlerSchedule,
+    now: chrono::NaiveDateTime,
+    last_updated: &str,
+) -> bool {
+    let last = parse_updated_at_local(last_updated);
+    match schedule {
+        ButlerSchedule::Once(dt) => {
+            if now < *dt {
+                return false;
+            }
+            match last {
+                Some(u) => u < *dt,
+                None => true, // unparseable → never executed → due
+            }
+        }
+        ButlerSchedule::Every(h, m) => {
+            let today = now.date();
+            let target_today = match today.and_hms_opt(*h as u32, *m as u32, 0) {
+                Some(t) => t,
+                None => return false, // shouldn't happen — parser bounds-checks
+            };
+            let most_recent_fire = if now >= target_today {
+                target_today
+            } else {
+                target_today - chrono::Duration::days(1)
+            };
+            match last {
+                Some(u) => u < most_recent_fire,
+                None => true, // never updated → due (will need first execution)
+            }
+        }
+    }
+}
+
+/// Read butler_tasks memory entries and format the prompt-side digest. `now` is
+/// injected so the call site (run_proactive_turn) shares one clock anchor with the
+/// rest of the prompt build. Returns "" when the category is empty. Output is redacted
+/// via `redact_with_settings` for the same reason as `build_user_profile_hint`.
+pub fn build_butler_tasks_hint(now: chrono::NaiveDateTime) -> String {
     let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
         return String::new();
     };
@@ -1643,6 +1771,7 @@ pub fn build_butler_tasks_hint() -> String {
         &tuples,
         BUTLER_TASKS_HINT_MAX_ITEMS,
         BUTLER_TASKS_HINT_DESC_CHARS,
+        now,
     );
     if block.is_empty() {
         return String::new();
@@ -2383,15 +2512,22 @@ mod prompt_tests {
         assert!(!p.contains("管家任务"));
     }
 
+    fn fixed_now() -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 5, 3)
+            .unwrap()
+            .and_hms_opt(14, 30, 0)
+            .unwrap()
+    }
+
     #[test]
     fn format_butler_tasks_block_empty_returns_empty() {
-        assert_eq!(format_butler_tasks_block(&[], 6, 100), String::new());
+        assert_eq!(format_butler_tasks_block(&[], 6, 100, fixed_now()), String::new());
     }
 
     #[test]
     fn format_butler_tasks_block_zero_max_returns_empty() {
         let items = vec![("t".into(), "d".into(), "2026-05-03T10:00:00+08:00".into())];
-        assert_eq!(format_butler_tasks_block(&items, 0, 100), String::new());
+        assert_eq!(format_butler_tasks_block(&items, 0, 100, fixed_now()), String::new());
     }
 
     #[test]
@@ -2401,7 +2537,7 @@ mod prompt_tests {
             ("老任务".into(), "d-old".into(), "2026-04-01T10:00:00+08:00".into()),
             ("中任务".into(), "d-mid".into(), "2026-04-20T10:00:00+08:00".into()),
         ];
-        let out = format_butler_tasks_block(&items, 6, 100);
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
         let old_idx = out.find("老任务").unwrap();
         let mid_idx = out.find("中任务").unwrap();
         let new_idx = out.find("新任务").unwrap();
@@ -2420,7 +2556,7 @@ mod prompt_tests {
                 )
             })
             .collect();
-        let out = format_butler_tasks_block(&items, 3, 100);
+        let out = format_butler_tasks_block(&items, 3, 100, fixed_now());
         assert!(out.contains("共 3 条"));
         // Top-3 oldest = days 01, 02, 03 = task-0, task-1, task-2.
         assert!(out.contains("task-0"));
@@ -2437,7 +2573,7 @@ mod prompt_tests {
     fn format_butler_tasks_block_truncates_long_descriptions() {
         let long = "条".repeat(150);
         let items = vec![("task".into(), long, "2026-05-03T10:00:00+08:00".into())];
-        let out = format_butler_tasks_block(&items, 6, 30);
+        let out = format_butler_tasks_block(&items, 6, 30, fixed_now());
         assert!(out.contains("…"));
         let body_chars = out
             .lines()
@@ -2447,6 +2583,172 @@ mod prompt_tests {
             .filter(|c| *c == '条')
             .count();
         assert_eq!(body_chars, 30);
+    }
+
+    #[test]
+    fn format_butler_tasks_block_due_task_bubbles_to_top_with_marker() {
+        // Mid-day fixed_now is 14:30. An [every: 09:00] task whose updated_at is
+        // before today 09:00 should be flagged due. A plain (non-scheduled) task
+        // older than that should rank below despite its older updated_at.
+        let items = vec![
+            (
+                "plain-old".into(),
+                "do something whenever".into(),
+                // This is older but unscheduled — should drop below the due task.
+                "2026-04-01T08:00:00+08:00".into(),
+            ),
+            (
+                "morning-report".into(),
+                "[every: 09:00] write today.md".into(),
+                // Updated yesterday, so today's 09:00 fire hasn't been served.
+                "2026-05-02T09:30:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("⏰ 到期"), "due task should carry ⏰ 到期 marker");
+        assert!(out.contains("其中 1 条到期"));
+        let due_idx = out.find("morning-report").unwrap();
+        let plain_idx = out.find("plain-old").unwrap();
+        assert!(due_idx < plain_idx, "due task ranks above plain older one");
+    }
+
+    fn count_task_lines_with_marker(out: &str) -> usize {
+        // Marker only ever appears as the leading "⏰ 到期 · " on a "- " task line.
+        // The footer text mentions "⏰ 到期" verbatim as instruction, so we filter
+        // strictly to bullet lines.
+        out.lines()
+            .filter(|l| l.starts_with("- ") && l.contains("⏰ 到期 · "))
+            .count()
+    }
+
+    #[test]
+    fn format_butler_tasks_block_already_done_today_not_due() {
+        // Same task as above but updated_at is today after 09:00 → considered served.
+        let items = vec![(
+            "morning-report".into(),
+            "[every: 09:00] write today.md".into(),
+            "2026-05-03T09:15:00+08:00".into(),
+        )];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert_eq!(count_task_lines_with_marker(&out), 0, "no task line should carry the marker");
+        // Header should use the simple form (no "其中 N 条到期" segment).
+        let header = out.lines().next().unwrap();
+        assert!(!header.contains("条到期"), "header: {}", header);
+        assert!(out.contains("morning-report"));
+    }
+
+    #[test]
+    fn parse_butler_schedule_prefix_parses_every() {
+        let (sched, topic) =
+            parse_butler_schedule_prefix("[every: 09:00] write today.md").unwrap();
+        assert_eq!(sched, ButlerSchedule::Every(9, 0));
+        assert_eq!(topic, "write today.md");
+    }
+
+    #[test]
+    fn parse_butler_schedule_prefix_parses_once() {
+        let (sched, topic) =
+            parse_butler_schedule_prefix("[once: 2026-05-10 14:00] one-shot").unwrap();
+        let expected = chrono::NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(14, 0, 0)
+            .unwrap();
+        assert_eq!(sched, ButlerSchedule::Once(expected));
+        assert_eq!(topic, "one-shot");
+    }
+
+    #[test]
+    fn parse_butler_schedule_prefix_rejects_malformed() {
+        assert!(parse_butler_schedule_prefix("no prefix").is_none());
+        assert!(parse_butler_schedule_prefix("[every: 25:00] x").is_none());
+        assert!(parse_butler_schedule_prefix("[every: 09:60] x").is_none());
+        assert!(parse_butler_schedule_prefix("[once: not-a-date] x").is_none());
+        assert!(parse_butler_schedule_prefix("[every: 09:00]").is_none(), "empty topic");
+        assert!(parse_butler_schedule_prefix("[remind: 09:00] reminder").is_none());
+    }
+
+    #[test]
+    fn is_butler_due_every_basic_window() {
+        let now = fixed_now(); // 2026-05-03 14:30
+        // Updated yesterday before 09:00 → today's 09:00 fire hasn't been served → due.
+        assert!(is_butler_due(
+            &ButlerSchedule::Every(9, 0),
+            now,
+            "2026-05-02T08:00:00+08:00"
+        ));
+        // Updated yesterday at 10:00 → already served yesterday's 09:00 fire, but
+        // today's 09:00 fire is the most recent (since now=14:30), and updated_at
+        // is < today 09:00 → due.
+        assert!(is_butler_due(
+            &ButlerSchedule::Every(9, 0),
+            now,
+            "2026-05-02T10:00:00+08:00"
+        ));
+        // Updated today at 09:30 → already served today's fire → NOT due.
+        assert!(!is_butler_due(
+            &ButlerSchedule::Every(9, 0),
+            now,
+            "2026-05-03T09:30:00+08:00"
+        ));
+    }
+
+    #[test]
+    fn is_butler_due_every_before_today_target() {
+        // now = 2026-05-03 08:00, target every 09:00 — today's fire hasn't happened yet,
+        // so most_recent_fire = yesterday 09:00.
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 3)
+            .unwrap()
+            .and_hms_opt(8, 0, 0)
+            .unwrap();
+        // Updated yesterday at 09:30 → already served yesterday's fire → not due.
+        assert!(!is_butler_due(
+            &ButlerSchedule::Every(9, 0),
+            now,
+            "2026-05-02T09:30:00+08:00"
+        ));
+        // Updated 2 days ago → before yesterday's fire → due (catching up).
+        assert!(is_butler_due(
+            &ButlerSchedule::Every(9, 0),
+            now,
+            "2026-05-01T08:00:00+08:00"
+        ));
+    }
+
+    #[test]
+    fn is_butler_due_once_semantics() {
+        let now = fixed_now(); // 2026-05-03 14:30
+        let target = ButlerSchedule::Once(
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 3)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+        );
+        // Past target, never updated → due.
+        assert!(is_butler_due(&target, now, ""));
+        // Past target, updated before target → due.
+        assert!(is_butler_due(&target, now, "2026-05-03T09:00:00+08:00"));
+        // Past target, updated after target → already done.
+        assert!(!is_butler_due(&target, now, "2026-05-03T11:00:00+08:00"));
+        // Future target → not yet due regardless of update.
+        let future = ButlerSchedule::Once(
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 10)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+        );
+        assert!(!is_butler_due(&future, now, ""));
+    }
+
+    #[test]
+    fn is_butler_due_unparseable_updated_at_treated_as_never() {
+        let now = fixed_now();
+        // Garbage updated_at → treat as never-updated → past target = due.
+        assert!(is_butler_due(
+            &ButlerSchedule::Every(9, 0),
+            now,
+            "not-a-timestamp"
+        ));
+        assert!(is_butler_due(&ButlerSchedule::Every(9, 0), now, ""));
     }
 
     #[test]

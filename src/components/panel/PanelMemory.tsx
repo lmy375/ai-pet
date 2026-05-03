@@ -28,7 +28,7 @@ const CATEGORY_ORDER = ["butler_tasks", "todo", "ai_insights", "user_profile", "
 // allowed but unusual.
 const CATEGORY_PLACEHOLDERS: Record<string, string> = {
   butler_tasks:
-    "比如：每天 9 点把今日日历汇总写到 ~/today.md\n或：周末整理 ~/Downloads，把超过 30 天的旧文件挪到 ~/Archive\n（描述里说清楚要做什么、多久做一次、写到哪里——宠物会在 proactive 主动开口时尝试执行。）",
+    "比如：[every: 09:00] 把今日日历汇总写到 ~/today.md\n或：[once: 2026-05-10 14:00] 周末整理 ~/Downloads\n或：直接写「整理 ~/Downloads，把 30 天旧文件挪到 ~/Archive」（不带前缀就由宠物自己判断时机）。\n（描述里说清楚做什么、多久做一次、写到哪里。）",
   todo: "用户提醒自己的事项。建议加前缀：\n[remind: 17:00] 喝水\n[remind: 2026-05-10 09:00] 看医生",
   user_profile: "关于用户习惯 / 偏好的稳定事实。\n比如：起床时间 通常 8:30 起床\n或：偏好 dark theme 编辑器",
   ai_insights: "宠物自己的反思 / 心情 / 长期画像，通常由 LLM 自己写。手动编辑可以，但注意 current_mood / persona_summary 是受保护的。",

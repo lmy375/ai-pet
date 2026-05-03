@@ -2,6 +2,32 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cζ：butler_tasks 调度前缀（[every]/[once]）+ 到期标注
+- 现状缺口：Cγ–Cε 闭合了"委托 → 看到任务 → 执行后留痕"的 loop，但任务什么时候 *该* 被执行还完全靠 LLM 主观判断。"每天 9 点写日报"被 LLM 看到时已经 14:30 了——LLM 既不知道这件事现在就该做、也不知道这个早上有没有人做过。这是 Cζ 要解的。
+- `proactive.rs` 新增 schedule layer：
+  - `BulterSchedule` 枚举：`Every(h, m)` / `Once(NaiveDateTime)`
+  - `parse_butler_schedule_prefix(desc)` 解析两种前缀：
+    - `[every: HH:MM] topic` → daily recurring
+    - `[once: YYYY-MM-DD HH:MM] topic` → single-fire
+    - 拒绝非法时间（25:00 / 09:60）、空 topic、错误前缀（如 `[remind:`，是 reminder 用的）
+  - `is_butler_due(schedule, now, last_updated)` 决定到期：
+    - `Every`：先算 most_recent_fire = `if now >= today HH:MM { today HH:MM } else { today HH:MM - 1 day }`，再判 `last_updated < most_recent_fire`。这层逻辑保证：(a) 用户更新过任务（执行了）→ 自动暂停到下一个 fire；(b) 还没到今天的 fire 时间，看的是昨天的 fire，避免"半夜补一遍昨天的"。
+    - `Once`：`now >= dt && last_updated < dt`。已过 + 未执行才到期；将来的不到期。
+  - `parse_updated_at_local()` 把 `MemoryItem.updated_at`（RFC3339 带 offset）转 NaiveDateTime（local）。无法解析→视为"从未执行"，永远到期（fail-open，让 LLM 至少看到提醒）。
+- `format_butler_tasks_block` 加 `now: NaiveDateTime` 参数：
+  - 每条 item 用 schedule 前缀算 due
+  - 到期 → 头 + "到期 → 最早委托" 排序，到期任务前缀 "⏰ 到期 · "；不到期 → 走原 oldest-first
+  - header 在到期数 > 0 时改为 `共 N 条，其中 K 条到期，按到期 → 最早委托排在前`，否则保留原文
+  - footer 加一句解释 `[every: HH:MM]` / `[once: ...]` 前缀和 ⏰ 标记的含义，让 LLM 知道这一轮看到 ⏰ 该优先做
+- `build_butler_tasks_hint` 接 now，run_proactive_turn 传 `now_local.naive_local()`。
+- 9 个新单测：parse 接受/拒绝（两种合法 + 五种非法）、is_butler_due Every 三种位置（昨天前/昨天后但今天前/今天后）、is_butler_due Once 四种（过/未/已执行/未来）、unparseable updated_at fail-open、format 把到期任务带 marker 顶上来、已执行今日 fire 的 every 任务 marker 消失。
+- 测试总数 256 → 265。
+- 配套提示更新：
+  - `tools/memory_tools.rs` 的 memory_edit 描述加完整 schedule 前缀说明 + 例子，让 LLM 知道把"每天 9 点"翻成 `[every: 09:00]`。
+  - `PanelMemory.tsx` 的 butler_tasks placeholder 改成包含三种示例：[every:] / [once:] / 不带前缀的"自由判断时机"。
+- 关键设计：**不引入独立的 cron / 调度线程**。proactive 已经在跑（每 N 秒一 tick），到期检测就是 prompt 构造时的纯函数。零新基础设施、零并发风险，但代价是检测精度受 proactive interval 限制——默认 ~5 分钟，对"每天 9 点"足够（用户感觉不到 5 分钟漂移），对"每分钟"任务不行（也不打算支持那种）。
+- 结果：用户现在可以委托真正按时间触发的任务。比如写下 `[every: 09:00] 把昨晚 git log 写一份摘要到 ~/yesterday.md`，明早 9 点过后第一次 proactive turn LLM 就会看到 `⏰ 到期`，按 prompt 指引调 `bash` / `write_file` 执行，update 后再下次 proactive 就不显示到期了。这是把宠物从"觉得合适就帮忙"推进到"真有时钟感的小管家"。
+
 ## 2026-05-03 — Iter Cε：butler_task 执行留痕 + panel "最近执行" 时间线
 - 现状缺口：Cγ + Cδ 已经让用户可以委托任务、LLM 可以在 proactive turn 看到任务并尝试执行——但用户看不到任何"宠物刚做了什么"的反馈。即使 LLM 真的 update 了一个 butler_tasks 条目，那只是 description 字段变了，用户得手动找进去对比。Closing the loop 需要一个"事件流"。
 - 解法：新建 `butler_history.log`，每次 LLM 通过 memory_edit_impl 接触 butler_tasks（update / delete）就记一行。create 不记——那是 *委托*，不是 *执行*；记进来会冲淡信号。

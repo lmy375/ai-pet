@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cζ 设计要点（已实现）
+- **不开新调度线程**：原来想加一个独立的 tokio task 按分钟级 tick 检查每个 butler_tasks 的 schedule，到期就 emit。但那意味着：(a) 又一条独立循环，要小心和 proactive、consolidate 协调（比如 quiet hours 是不是也应用到 schedule 触发？）；(b) 通讯路径：调度线程触发 → 怎么走 LLM？如果直接 invoke proactive turn，等于强插一次跳过 gate 的开口。整套链路复杂度超出单 iter。
+  - 选 pure-function 路线：proactive 已经按 N 秒 tick 跑了，每 tick 构造 prompt 时顺手用 `is_butler_due` 检查每个任务，到期的标 ⏰、推到顶。唯一代价是检测精度 = proactive interval；对"每天 9 点"足够，对"上午 9:00 整"也足够。"我每分钟都要做点什么"那种 cron 用例不打算支持。
+- **`Every` 不需要内部状态**：任何"昨天/今天最近一次 fire 是什么时候"都从 (now, HH:MM) 推出，对照 `updated_at` 就能知道是不是已经做过——零状态。这是为什么 LLM 执行后必须 update 任务条目（footer 已经写明）：update 是给"是否已做"的唯一信号。如果 LLM 忘记 update，下一轮 proactive 还会显示到期——是个自我修复的循环。
+- **`Once` 没设过期**：曾考虑加个"过期太久就不再显示"——比如 once 任务过了 24 小时还没执行，是不是该自动 retire？但那会让"我半夜睡了一觉醒来发现昨晚有个 once 任务"的场景失败：用户期望宠物醒来后还提醒。所以 once 任务一旦到点就一直 due 直到被 update/delete。consolidate 后续可以扫"过 N 天还没动的 once 任务"建议清理，但不在本 iter。
+- **fail-open on parse failure**：`parse_updated_at_local("garbage")` 返 None → 视为"从未执行" → due。这是有意为之：宁愿多提醒一次，也不要因为时间戳格式漂移导致任务永远不显示到期。代价是如果 memory 索引坏了（updated_at 全部坏掉），所有 every 任务都会显示到期；但那是个独立的"索引坏了"问题，应该在那里修，不是在调度逻辑里 hack。
+- **footer 把 `⏰ 到期` 的语义写出来**：之前的 footer 只讲"完成后 update / 不要了 delete"。现在加上"看到 ⏰ 该这一轮优先处理"——LLM 看到只是表情符号不一定知道含义；写出来从"表情"变"指令"。这种"prompt 里把每个特殊符号都解释一遍"原则在 [motion: X] / `<silent>` 等也用过。
+- **不动 prompt rule 系统**：本可以加一条 contextual rule "有任务到期 → 强烈建议这一轮就做"，但：(a) hint block 已经包含到期信息 + footer 指令，rule 是冗余；(b) 加 rule 要改 active_environmental_rule_labels 签名 + 三处 alignment test + frontend dict——一个 iter 的 budget 撑不过去。先看 LLM 看到 ⏰ 后的实际响应率，如果观察到大量"到期但没执行"再加 rule 升压。
+- **`ButlerSchedule` 命名**：第一版手抖写成 `BulterSchedule`，后来用 `replace_all` 一次性改正——18 处替换，一致性更好；如果留着 typo 后面每次看到都会本能地纠正一下，徒增心智成本。
+
 ## Iter Cε 设计要点（已实现）
 - **新文件而不是塞进 speech_history**：曾考虑把 butler 事件也写到 `speech_history.log`，加一个 type 字段区分。这能省一个文件、让"今天的事件流"在一处看。但耦合后："今天宠物开口几次" / "今天 butler 完成几项" 两个统计要扫同一文件再过滤——读放大；而且 butler 事件没有 mood、不该计入 chatty_day_threshold。两个独立的 log 各自只关心一件事，反而干净。命名也清晰。
 - **只记 update/delete，不记 create**：create = 委托发生（用户或 LLM 写下了任务），update/delete = 执行 / 撤回。前者对"宠物为我做了什么"无信号，后者才是。如果哪天加了"用户 vs LLM author"区分，create 会更有意义；目前 author 不区分，记 create 只会噪声。
