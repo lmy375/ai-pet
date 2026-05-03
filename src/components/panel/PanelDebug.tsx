@@ -101,6 +101,12 @@ export function PanelDebug() {
   };
   const [feedbackHistory, setFeedbackHistory] = useState<FeedbackEntry[]>([]);
   const [showFeedbackHistory, setShowFeedbackHistory] = useState(false);
+  // Iter R37: filter buttons for feedback timeline. "all" by default;
+  // toggling to one kind isolates retrospection (e.g., "show only the
+  // dismissals to see what got rejected").
+  const [feedbackFilter, setFeedbackFilter] = useState<
+    "all" | "replied" | "ignored" | "dismissed"
+  >("all");
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
@@ -1068,9 +1074,64 @@ export function PanelDebug() {
             暂无反馈记录。proactive 开口被回复 / 忽略后会出现在这里。
           </div>
         )}
-        {showFeedbackHistory && feedbackHistory.length > 0 && (
-          <div style={{ paddingTop: "6px", maxHeight: "240px", overflowY: "auto" }}>
-            {feedbackHistory.map((f, i) => (
+        {showFeedbackHistory && feedbackHistory.length > 0 && (() => {
+          // R37: filter row + filtered list. Buttons toggle; "all" disables
+          // filter. Each kind button shows its count for quick scan.
+          const repliedCt = feedbackHistory.filter((f) => f.kind === "replied").length;
+          const ignoredCt = feedbackHistory.filter((f) => f.kind === "ignored").length;
+          const dismissedCt = feedbackHistory.filter((f) => f.kind === "dismissed").length;
+          const filtered =
+            feedbackFilter === "all"
+              ? feedbackHistory
+              : feedbackHistory.filter((f) => f.kind === feedbackFilter);
+          const btnStyle = (active: boolean, accent: string) => ({
+            padding: "2px 8px",
+            fontSize: "10px",
+            borderRadius: "10px",
+            border: `1px solid ${active ? accent : "#d1fae5"}`,
+            background: active ? accent : "#fff",
+            color: active ? "#fff" : "#475569",
+            cursor: "pointer",
+            fontWeight: 600 as const,
+          });
+          return (
+            <>
+              <div style={{ display: "flex", gap: "6px", paddingTop: "6px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => setFeedbackFilter("all")}
+                  style={btnStyle(feedbackFilter === "all", "#475569")}
+                  title="显示全部反馈"
+                >
+                  全部 {feedbackHistory.length}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedbackFilter("replied")}
+                  style={btnStyle(feedbackFilter === "replied", "#16a34a")}
+                  title="只看用户回复的开口"
+                >
+                  回复 {repliedCt}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedbackFilter("ignored")}
+                  style={btnStyle(feedbackFilter === "ignored", "#94a3b8")}
+                  title="只看被动忽略的开口"
+                >
+                  忽略 {ignoredCt}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedbackFilter("dismissed")}
+                  style={btnStyle(feedbackFilter === "dismissed", "#dc2626")}
+                  title="只看 5 秒内主动点掉的开口"
+                >
+                  点掉 {dismissedCt}
+                </button>
+              </div>
+              <div style={{ paddingTop: "6px", maxHeight: "240px", overflowY: "auto" }}>
+            {filtered.map((f, i) => (
               <div
                 key={i}
                 style={{
@@ -1124,8 +1185,15 @@ export function PanelDebug() {
                 </span>
               </div>
             ))}
-          </div>
-        )}
+            {filtered.length === 0 && (
+              <div style={{ color: "#94a3b8", fontStyle: "italic", padding: "4px 0" }}>
+                当前过滤下没有匹配条目。
+              </div>
+            )}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* Pending user-set reminders — sourced from todo memory category */}

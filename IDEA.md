@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R37 设计要点（已实现）
+- **panel 从只读 dashboard → 渐进交互**：R-series 之前 panel 几乎全是只读：chips, hover tooltips, modal viewers, timeline lists。R37 是首次加交互按钮（filter row）。**dashboard 的渐进演化** —— 早期阶段重信息密度，成熟期加 retrospection 工具。filter 是最低成本的交互（1 click toggle, 0 typing）。后续可以考虑给其他 timeline（decision_log / butler_history）同 pattern 加 filter，形成 dashboard 操作 vocabulary。
+- **active button color = matching pill color**：filter 按钮 active 时颜色跟它 filter 出的 pill 颜色一致。**color reuse 让 cross-component mental model 稳定** —— user 看到红色 active 按钮 "点掉" + 红色 pill "点掉" 知道这俩讲的同一件事。这种 visual coupling 比"按钮和内容用不同色 + 文字解释" 高效。
+- **count + label 合并按钮文案**：每按钮显"回复 5 / 忽略 12 / 点掉 3"，count 嵌入 label。合并比 button + 旁边 count chip 紧凑 1.5 倍。**information density 在 dashboard 是首要美德**。但合并的 cost 是文字重排（用户切换 button group 时数字位置变）—— 这次接受，因为 dashboard 用户理解 "数字 = 该 kind 计数"。
+- **empty filter 显 "暂无" 而非 hide section**：UX 关键是**preserve UI scaffolding** when filter is active but no matches。如果直接 hide list area，用户会困惑 "我点了过滤怎么 panel 区域消失了"。"暂无匹配条目" 灰 italic 文案让 user 知道 (a) 过滤是 active 的，(b) 这个 kind 现在 0 个。**show empty state，don't hide section**。
+- **transient UI state 不该 persist**：filter selection 重新打开 panel 时 reset 到 "all"。诱惑是 localStorage 持久化。但 (a) retrospection 工具每次从 fullview 开始更友好；(b) 持久化引入"filter persist 但 entries 不再含 dismissed"等 edge case。**dashboard interaction state 应该 ephemeral** —— UI 状态跟 panel session lifecycle 同步。
+- **dropdown vs button row 选择由"选项数 + 切换频率"决定**：4 选项 + 频繁切换 → row of buttons 比 dropdown 快 1 click。如果 8+ 选项或不常用 → dropdown。**UI 控件选择算法**：N=2 用 toggle，3-5 用 segmented buttons，6+ 用 dropdown，10+ 用 search。R37 N=4 stride 中段 → 按钮 row。
+- **R-series 后期 polish iter 的形态**：R36 是 threshold retune（数字调），R37 是 panel 首次交互（功能加），R32 是 cleanup（删）。**polish 期 iter 类型多样**——不只是 cosmetics，还包括"老 surface 加新维度操作"（如 R37）和"经验数字调整"（R36）。innovation iter 数量减但单 iter 性质丰富。
+
 ## Iter R36 设计要点（已实现）
 - **absolute thresholds drift, percentile thresholds don't**：R31 阈值 (1500/3000) 是 absolute 数字。R-series 加 hint 后 baseline 上移，阈值过时。如果当时用 percentile（"prompt 比过去 80% 短" / "比过去 20% 长"），threshold 会跟着 baseline 一起移动 —— 不需手动 retune。**absolute thresholds = brittle，percentile/relative thresholds = self-adapting**。但 percentile 实现复杂（要历史数据、算分布）；R-series 项目里 absolute + 偶尔 retune 是更经济。每 5-10 iter audit 一次阈值是健康节奏。
 - **panel UI self-documents own evolution**：R36 hover 文案明示"R36 retuned: ..." 解释为什么这数。**threshold 不是 magic number，是设计决策**。把决策原因 inline 写进 panel hover 让未来的 maintainer / 自己 不需查 git log 就懂。这种 "self-documenting threshold" 是 long-running project 设计纪律 —— 数字旁边永远配 *为什么是这数字* 的解释。

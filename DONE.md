@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R37：feedback timeline filter buttons（panel 首次交互控件）
+- 现状缺口：PanelDebug R6 反馈 timeline 列出全部 replied / ignored / dismissed 混合的 entries。R1c+R24 让用户能精确点掉气泡 + 看到 chip 反馈，但**回看历史 dismissals 要在所有 entries 里手动找**。如果用户想问"我最近点掉了哪些 turn？"得 scroll 整个 timeline。**retrospection 缺 filtering 工具**。
+- 解法 — 4 按钮 filter row + isolate logic：
+  - useState `feedbackFilter: "all" | "replied" | "ignored" | "dismissed"`，默认"all"。
+  - 4 按钮排在 timeline 上方：每按钮文案 "全部 N / 回复 R / 忽略 I / 点掉 D"，count 来自 filter 前 entries.length 计算。
+  - active 状态颜色匹配 kind pill 色（全部 = 灰 / 回复 = 绿 / 忽略 = 灰浅 / 点掉 = 红），inactive = 白底灰字。
+  - filter 应用：filter button 按下 → entries.filter(kind === selected) → 渲染 filtered list。
+  - 空 filter 兜底："当前过滤下没有匹配条目" 灰字 italic。
+- 决策 — 4 按钮（不下拉菜单）：4 个选项 + 频繁切换需求 → row of buttons 比 dropdown 快 1 click。dropdown 适合 5+ option / 不常切换。**UI 控件选择跟选项数 + 切换频率匹配**。
+- 决策 — 按钮 active color = 对应 pill color：用户看到红色 active "点掉 N" 知道"现在只看 dismissed"，跟 timeline 红 pill 视觉一致。**color reuse across components 让 mental model 稳定**。
+- 决策 — count 数字嵌按钮文案不另起 chip：诱惑是"按钮 + 旁边 chip 显数字"。但合并节省横向空间 + button 自身就是按钮+计数双角色。**information density 在交互控件里更重要** 因为 panel 本身就是 dashboard。
+- 决策 — empty filter "暂无匹配" 而非 hide entire section：filter 显示 "暂无" 让用户知道 filter 在 active 但当前 kind 0 个。**preserve UI scaffolding when filter is active** > silently disappear — 否则用户会困惑 "我点了过滤怎么内容没了"。
+- 决策 — filter 状态不持久化（重 panel 后 reset）：诱惑是 localStorage 存 filter。但 (a) 这是 retrospect 工具，每次开 panel 心智从全部开始更友好；(b) 持久化增加边角 case（filter 持久但 entries 变了）。**transient UI state 不该 persist** 是 dashboard 设计纪律。
+- 决策 — 不写 R-series 之前的 panel 测试覆盖：tsc + 类型对齐 + 渲染分支看着 trivial。整个 PanelDebug 文件目前没单元测试基础设施 (它是 React component)。**测 logic 不测 React 渲染** — 沿用既定纪律。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：用户在 PanelDebug 现在能 1 click 隔离 dismissals 看"我最近反对了哪些 turn"。R-series 首次真正交互式 panel 控件 —— 之前都是 chip 静态展示 + hover tooltip。下次 panel iter 可以考虑同 pattern 给其他 timeline（decision_log / butler_history / tool_call_history）也加 filter 按钮。
+
 ## 2026-05-04 — Iter R36：retune R31 prompt size 📝 chip 阈值（baseline drift 修正）
 - 现状缺口：R31 (Iter 31) 加 chip 时阈值 < 1500 绿 / 1500-2999 灰 / ≥3000 橙。当时 R-series prompt baseline 估 ~2000-3500。但 R32→R35 又加了 4 个 hint（silent_hint, consecutive_silent_hint, consecutive_negative_hint, feedback_aggregate_hint），baseline 上移。**原阈值让"正常 turn" 常显橙色 warning，warning 信号失去意义**。这是经典"absolute threshold drift" 问题 —— 阈值是过去的快照，环境变化后没同步更新。
 - 解法 — 拉高所有阈值约 +1000 chars：
