@@ -42,6 +42,8 @@ export function PanelPersona() {
     motion: null,
     raw: "",
   });
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidateMsg, setConsolidateMsg] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +73,25 @@ export function PanelPersona() {
       clearInterval(id);
     };
   }, []);
+
+  // Iter Cφ: handler exposed inside the empty-state of "自我画像". Triggers
+  // an immediate consolidate run; on completion the 5s poll will see the
+  // updated persona_summary naturally. Auto-clears the status after success
+  // so the message doesn't linger past relevance.
+  const handleTriggerConsolidate = async () => {
+    setConsolidating(true);
+    setConsolidateMsg("整理中…宠物在回顾最近发言并写画像。");
+    try {
+      const status = await invoke<string>("trigger_consolidate");
+      setConsolidateMsg(status);
+      // Schedule auto-clear so success message doesn't stick.
+      setTimeout(() => setConsolidateMsg(""), 12000);
+    } catch (e: any) {
+      setConsolidateMsg(`整理失败：${e}`);
+    } finally {
+      setConsolidating(false);
+    }
+  };
 
   return (
     <div
@@ -134,9 +155,40 @@ export function PanelPersona() {
             {personaSummary}
           </p>
         ) : (
-          <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, fontStyle: "italic" }}>
-            还没生成。开口几次后等下一次 consolidate 跑（默认 6 小时间隔，或在调试 → 立即整理）即会基于近期发言写一段自我观察。
-          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, fontStyle: "italic" }}>
+              还没生成。等 consolidate 跑（默认 6 小时间隔）会基于近期发言写一段自我观察——也可以现在手动触发。
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                onClick={handleTriggerConsolidate}
+                disabled={consolidating}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: consolidating ? "#94a3b8" : "#8b5cf6",
+                  color: "#fff",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: consolidating ? "default" : "pointer",
+                }}
+                title="立即让 LLM 回顾最近开口、写一段自我画像到 ai_insights/persona_summary。约耗时几秒到十几秒。"
+              >
+                {consolidating ? "整理中…" : "立即生成画像"}
+              </button>
+              {consolidateMsg && (
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: consolidateMsg.startsWith("整理失败") ? "#dc2626" : "#0d9488",
+                  }}
+                >
+                  {consolidateMsg}
+                </span>
+              )}
+            </div>
+          </div>
         )}
       </Section>
 

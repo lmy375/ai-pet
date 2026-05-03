@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter Cφ 设计要点（已实现）
+- **复用 trigger_consolidate 而不是新 command**：consolidate 已经是 robust 命令——调用 LLM 反思 + 更新 persona_summary。不需要专门写"only-persona"variant，反正同一次 LLM 调用顺便也整理其它记忆，浪费几乎为零。
+- **空态内嵌按钮 vs 顶层按钮**：曾考虑在 Persona tab 顶部加一个全局 "立即整理" 按钮（像 Memory tab 那个）。但 Persona tab 大多数时候 personaSummary 已经存在，按钮会一直挂在那当摆设。空态条件渲染既能解决"找不到入口"问题、又不在常态污染 UI。
+- **12 秒后清除消息**：consolidate 的状态消息（"Consolidation finished in N ms"）成功后没必要常驻——5 秒轮询会刷出新的 personaSummary，那才是真正想看到的反馈。msg 持续到 12 秒兜底告知"刚刚跑过"，之后让位给画像本身。
+- **不引入 Tauri event listener**：trigger_consolidate 已 await 直接返结果。没必要监听 emit 事件。简单 await + setTimeout = 已经覆盖全部 UI 状态机。
+- **分两态写消息颜色**：失败红 / 成功青。和 PanelMemory 的失败/成功 toast 同色系一致。
+- **不动 Memory tab 的"立即整理"**：那个是宠物记忆维护工具，整体语义；Persona 这个是"我想立刻看到画像"——两者目的不一样，UI 也理应不一样的位置。
+
 ## Iter Cυ 设计要点（已实现）
 - **复用 Cτ 措辞 1:1**：reactive chat 的 persona_layer 和 proactive 的 prompt 现在用完全相同的"你的主人是「X」——开口时..."一句话。让用户在两个路径里听到的 LLM 表现一致。如果两处用不同 wording，LLM 见到不同 framing 会做出微妙差异的称呼策略，对用户来说显得分裂。
 - **行内 if 而不是抽 helper**：本来想抽 `format_user_name_line(name)` helper 让 persona_layer 和 proactive 都调。但每处都是 1 行 trim 检查 + 1 行 format!() = 共 4 行代码——抽 helper 反而让人要跳到另一个文件读细节、阅读断裂。这种"小尺度 duplication"在项目里多次接受过（Iter Cθ 的 TS/Rust 镜像也是双份）。

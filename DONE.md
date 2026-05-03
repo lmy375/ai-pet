@@ -2,6 +2,19 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cφ：PanelPersona "自我画像" 空态加"立即生成"动作
+- 现状缺口：consolidate 默认关（settings.memory_consolidate.enabled=false），且即使开了也是 6 小时间隔——意味着新装用户开 PanelPersona 看到的"自我画像"很可能始终为空。原来空态文案只说"开口几次后等下一次 consolidate 跑（默认 6 小时间隔，或在调试 → 立即整理）"——指引用户跨 tab 跳转去 Memory 才能找到按钮。摩擦大，体验断裂。
+- 解法：把 trigger_consolidate 按钮直接做进 Persona tab 的"自我画像"空态：
+  - 新 state：`consolidating: boolean` + `consolidateMsg: string`
+  - `handleTriggerConsolidate` 调用现有 trigger_consolidate Tauri command，状态显示"整理中…宠物在回顾最近发言并写画像"，成功后展示 LLM 返回的状态文本（"Consolidation finished in N ms"）；12 秒后自动清除避免残留
+  - 空态从一段灰字 → 一段灰字 + 紫色"立即生成画像"按钮 + 状态消息
+  - 按钮 disabled 时变灰；成功消息青色，失败消息红色
+- 不动既有"立即整理"路径——Memory tab 那个按钮仍然存在，做整体记忆整理；这个 Persona tab 的按钮调用同一个 command，但放在用户最可能想"现在看到画像"的位置。
+- 5 秒轮询会自然刷出新的 personaSummary——不需要额外手动 reload。
+- 不写前端单测（项目无 React 测试 harness），但 tsc 严格类型 + 后端 Tauri command 已被 cargo 测试覆盖（trigger_consolidate 在 Iter 6 时单测过）。
+- 测试总数 301（前端无新单测，cargo 不变）。
+- 结果：新装用户 → 设置 OPEN_AI_KEY → 开 panel → Persona tab → 看到空态 → 点"立即生成画像" → 几秒后看到 LLM 写的自己观察。从「不知道怎么 unlock 这个功能」变成「点一下就完了」。
+
 ## 2026-05-03 — Iter Cυ：proactive prompt 也用 user_name
 - 现状缺口：Cτ 把 user_name 注入 reactive chat / Telegram 的 persona_layer，但 proactive 仍走 build_persona_hint 的独立路径——bubble 主动开口的语气没受 user_name 影响。"我设了名字宠物却只在我跟它聊时叫我"——一个 trust 体验缺口。
 - 解法：在 proactive prompt 里复用 Cτ 的同样话术：
