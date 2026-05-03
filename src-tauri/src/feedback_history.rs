@@ -22,6 +22,8 @@
 
 use std::path::PathBuf;
 
+use serde::Serialize;
+
 /// Cap on lines retained in the log. About 30 days at the typical proactive
 /// cadence; older entries roll off so the file stays bounded without a
 /// background pruner.
@@ -32,7 +34,8 @@ pub const FEEDBACK_HISTORY_CAP: usize = 200;
 /// `recent_feedback` cheap.
 pub const FEEDBACK_EXCERPT_CHARS: usize = 40;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FeedbackKind {
     Replied,
     Ignored,
@@ -47,12 +50,10 @@ impl FeedbackKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FeedbackEntry {
-    /// ISO-formatted local timestamp. Captured for the future panel feedback
-    /// timeline (Iter R4 follow-up); the prompt-hint formatter doesn't read it
-    /// today, so silence the dead-code lint without dropping the field.
-    #[allow(dead_code)]
+    /// ISO-formatted local timestamp. Iter R6 surfaces this in the panel
+    /// feedback timeline (each entry shows "HH:MM kind | excerpt").
     pub timestamp: String,
     pub kind: FeedbackKind,
     pub excerpt: String,
@@ -143,6 +144,17 @@ pub async fn recent_feedback(n: usize) -> Vec<FeedbackEntry> {
         let drop = entries.len() - n;
         entries.drain(0..drop);
     }
+    entries
+}
+
+/// Iter R6: Tauri command for the panel. Returns recent feedback entries
+/// newest-first so the panel can render a fresh-on-top timeline. 20 is the
+/// fixed window — long enough to spot a "三连忽略" pattern, short enough
+/// to render compactly in a collapsible card.
+#[tauri::command]
+pub async fn get_recent_feedback() -> Vec<FeedbackEntry> {
+    let mut entries = recent_feedback(20).await;
+    entries.reverse(); // recent_feedback returns oldest-first; panel wants newest-first.
     entries
 }
 
@@ -241,6 +253,35 @@ mod tests {
             h.contains("放短") || h.contains("沉默") || h.contains("钩子"),
             "must hint at adjustment direction"
         );
+    }
+
+    #[test]
+    fn feedback_kind_serializes_as_lowercase_for_frontend() {
+        // Iter R6: PanelDebug's feedback timeline matches on the literal
+        // strings "replied" / "ignored" to render the pill color. If someone
+        // changes the variant names or removes the rename_all, this test
+        // fails before the panel renders blank pills.
+        assert_eq!(
+            serde_json::to_string(&FeedbackKind::Replied).unwrap(),
+            "\"replied\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FeedbackKind::Ignored).unwrap(),
+            "\"ignored\""
+        );
+    }
+
+    #[test]
+    fn feedback_entry_serializes_with_all_three_fields() {
+        // Sanity that timestamp + kind + excerpt all reach the panel.
+        let e = entry(FeedbackKind::Replied, "hello world");
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            json["timestamp"].as_str(),
+            Some("2026-05-03T12:00:00+08:00")
+        );
+        assert_eq!(json["kind"].as_str(), Some("replied"));
+        assert_eq!(json["excerpt"].as_str(), Some("hello world"));
     }
 
     #[test]

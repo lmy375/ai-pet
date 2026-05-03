@@ -128,6 +128,7 @@ pub fn run() {
             tool_review::submit_tool_review,
             tool_review::list_pending_tool_reviews,
             tool_call_history::get_recent_tool_calls,
+            feedback_history::get_recent_feedback,
             redaction::get_redaction_stats,
             redaction::reset_redaction_stats,
             decision_log::get_proactive_decisions,

@@ -542,6 +542,11 @@ pub struct DebugSnapshot {
     /// collapsible "工具调用历史" card so prompt tuning doesn't need
     /// raw-app.log grep.
     pub recent_tool_calls: Vec<crate::tool_call_history::ToolCallRecord>,
+    /// Iter R6: recent feedback entries (replied / ignored) from
+    /// `feedback_history.log`, newest first. Frontend renders a collapsible
+    /// "宠物反馈记录" card to expose the R1 capture data and let the user
+    /// see whether the pet is "learning" from outcomes.
+    pub recent_feedback: Vec<crate::feedback_history::FeedbackEntry>,
 }
 
 #[tauri::command]
@@ -573,6 +578,9 @@ pub async fn get_debug_snapshot(
     let redaction_stats = crate::redaction::get_redaction_stats();
     let pending_tool_reviews = tool_review.snapshot();
     let recent_tool_calls = crate::tool_call_history::recent_tool_calls();
+    // Iter R6: feedback history (oldest-first internally → reverse for panel).
+    let mut recent_feedback = crate::feedback_history::recent_feedback(20).await;
+    recent_feedback.reverse();
     Ok(DebugSnapshot {
         logs,
         cache_stats,
@@ -591,6 +599,7 @@ pub async fn get_debug_snapshot(
         redaction_stats,
         pending_tool_reviews,
         recent_tool_calls,
+        recent_feedback,
     })
 }
 
