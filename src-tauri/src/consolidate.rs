@@ -124,6 +124,21 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
         );
     }
 
+    // Iter Cη: derive today's butler-task summary from butler_history.log and
+    // upsert into butler_daily.log so the user has a per-day "今天我帮你 ..."
+    // trail surfaced in the panel. Pre-LLM and deterministic — survives even if
+    // the LLM phase fails. Quiet days (no butler events) leave the file alone.
+    let today = chrono::Local::now().date_naive();
+    let events =
+        crate::butler_history::recent_events(crate::butler_history::BUTLER_HISTORY_CAP).await;
+    if let Some(summary) = crate::butler_history::summarize_events_for_date(&events, today) {
+        crate::butler_history::record_daily_summary(today, &summary).await;
+        write_log(
+            &log_store.0,
+            &format!("Consolidate: butler_daily updated — {}", summary),
+        );
+    }
+
     let index = memory::memory_list(None).map_err(|e| format!("memory_list failed: {e}"))?;
     let index_json = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("serialize index: {e}"))?;

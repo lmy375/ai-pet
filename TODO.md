@@ -13,8 +13,10 @@
 - [x] Iter Cδ：panel 顶部 "+ 委托任务" 快捷入口 + 模态分类 placeholder（2026-05-03 完成）
 - [x] Iter Cε：butler_history.log + panel "最近执行" 时间线（2026-05-03 完成）
 - [x] Iter Cζ：butler_tasks 调度前缀 `[every:]` / `[once:]` + 到期标注（2026-05-03 完成）
-- [ ] Iter Cη：butler_task 执行结果摘要——consolidate 把今日完成的任务汇成一句
-  "今天我帮你做了 X / Y / Z"塞进 speech_history 让用户回看。
+- [x] Iter Cη：每日 butler 小结写入 butler_daily.log + panel "每日小结" 区（2026-05-03 完成。
+  注：用独立文件而非 speech_history，避免污染 chatty 计数）
+- 路线 F 收官——基础闭环已成（委托 → 调度 → 执行 → 留痕 → 日总结）。后续 Iter 看实际使用
+  数据再决定加什么（执行失败回退 / 多设备触发器 / 任务依赖 / 监督模式 etc）。
 
 ### 路线 A：长期人格演化（Iter 101-107 全部完成，路线 A 真正收官）
 
