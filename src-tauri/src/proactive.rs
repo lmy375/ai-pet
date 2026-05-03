@@ -1834,6 +1834,8 @@ pub fn format_butler_tasks_block(
         "执行完一项后用 `memory_edit update` 更新进度（标题前加 [done] / 写最后执行时间），\
 完全不需要的用 `memory_edit delete` 移除。带 `[every: HH:MM]` 或 `[once: ...]` 前缀的任务标记了到期窗口——\
 看到「⏰ 到期」就该这一轮优先处理它。\n\
+**记得在你这一轮的开口里简短提一下**：「我帮你写好 today.md 了」「Downloads 整理完了」之类——\
+不必描述细节、一句话即可。让用户从 bubble 里直接看到管家工作的反馈，而不是必须打开 panel 才发现你做了事。\n\
 **执行失败处理**：如果你这一轮调用 read_file / write_file / edit_file / bash 时失败（文件不存在、权限不够、命令报错等），\
 用 `memory_edit update` 在 description 里加一段 `[error: 简短原因]`（保留原有 `[every:]` / `[once:]` 前缀，error 段贴在它后面）。\
 下次重试成功时记得移除这段 error 标记。看到「❌ 错误」标记的任务说明上次失败了，请检查描述里的失败原因再决定要不要重试。"
@@ -2918,6 +2920,29 @@ mod prompt_tests {
         let new_idx = out.find("新任务").unwrap();
         assert!(old_idx < mid_idx, "oldest should be first (don't let tasks rot)");
         assert!(mid_idx < new_idx);
+    }
+
+    #[test]
+    fn format_butler_tasks_block_footer_teaches_speech_mention() {
+        // Iter D6: pin the "记得在开口里简短提一下" guidance so a future refactor
+        // can't silently drop it. Without this clause the LLM may execute butler
+        // tasks invisibly — user sees butler_history change but bubble stays
+        // generic, breaking the trust loop.
+        let items = vec![(
+            "morning-report".into(),
+            "[every: 09:00] write today.md".into(),
+            "2026-05-03T09:30:00+08:00".into(),
+        )];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(
+            out.contains("记得在你这一轮的开口里简短提一下")
+                || out.contains("简短提一下"),
+            "footer should instruct LLM to mention butler execution in its speech"
+        );
+        assert!(
+            out.contains("我帮你") || out.contains("整理完了"),
+            "footer should give concrete example phrasings"
+        );
     }
 
     #[test]

@@ -44,7 +44,9 @@
   自检发现的盲区（pre_quiet 只在前 15min，真 quiet 里 panel 之前完全空白）（2026-05-03 完成）
 - [x] Iter D5：persona_summary 加 "X 天前更新" 新鲜度标签 + 7 天 stale 红 ⚠ 警告
   （2026-05-03 完成）
-- D series 五连完成，prompt 与 panel 视野 1:1 对齐 + persona 新鲜度可见。
+- [x] Iter D6：butler 执行后 prompt 教 LLM 在 bubble 里简短提一下「我帮你做了 X」
+  + contract test 钉住 phrase（2026-05-03 完成）
+- D series 六连完成，panel + prompt + bubble 三方反馈闭环。
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
