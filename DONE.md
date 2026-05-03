@@ -2,6 +2,29 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R17：consolidate 自动清理 30 天前的 daily_review 条目（防 unbounded growth）
+- 现状缺口：R12 / R12b 让 pet 每天 22:00 后写一条 daily_review_YYYY-MM-DD 到 ai_insights memory。一年 = 365 个 .md 文件 + 365 行 YAML index 条目。从未实现 retention，会无限增长 — 不仅磁盘空间，更糟的是 panel memory list 渲染会被几百行历史污染。
+- 解法 — 复用 consolidate sweep 模式：
+  - **settings.rs**：新字段 `stale_daily_review_days: u32`（默认 30，0 = 关闭剪枝）。default_stale_daily_review_days() helper + Default impl 增项。
+  - **daily_review.rs**：纯解析器 `parse_daily_review_date(title) -> Option<NaiveDate>`：strip "daily_review_" 前缀 + chrono::NaiveDate::parse_from_str("%Y-%m-%d")。纯 staleness 函数 `is_stale_daily_review(title, today, retention_days)`：retention=0 短路返 false（pruning disabled），title 非 review 返 false（保护 mood/plan/persona），signed_duration_since 处理未来日期（clock skew → 负 delta → 不删）。
+  - **consolidate.rs**：新 `sweep_stale_daily_reviews(today, retention_days) -> usize`：copy reminder/plan/butler sweep 模式（memory_list ai_insights → filter → memory_edit delete）。在 run_consolidation 加进 sweep 链，仅 swept > 0 时写 log（避免每次 consolidate 都"pruned 0"刷屏）。
+- 决策 — title prefix 严格 match：scrub 只看 `daily_review_YYYY-MM-DD` 这个 schema。任何其他 ai_insights item（current_mood / persona_summary / daily_plan / 用户手写笔记）parse_daily_review_date 返 None → is_stale 返 false → 永不删。**defense in depth** 保护 protected items — sweep 不需要硬编码 protected list，schema-based filtering 自然排除。
+- 决策 — `delta > retention_days`（严格大于）而非 `>=`：30 天前的 review 还**正好**在窗口边缘。delta == 30 是"今天的对面 30 天" — 还在 retention 内。这种"边界条件用 strict gt" 是给用户多 1 天 buffer 的友好默认。
+- 决策 — retention=0 = 永不剪枝，不是 = 立刻全删：诱惑是 retention=0 表示"立刻清"。但用户配置 0 一般意味着"我不想这功能" — fail safe 默认应该是 *保留* 数据。R12 / R14 / R16 review 是 pet "成长" 的载体，删了不可恢复。"0 = disabled" 比"0 = aggressive" 安全得多。
+- 决策 — 默认 30 天：对应"过去一个月的日记可以翻看"。90/365 也合理但 30 是 sweet spot — 平衡"够查最近上下文" 和"不让 panel 过载"。可改 yaml 调，前端 UI 暂缺（少用，先 yaml 编辑足够）。
+- 决策 — `signed_duration_since` 不 panic on future date：手动改 yaml 把 review_2030-01-01 提前写入会让 today.signed_duration_since(future) 是负数 → num_days() 是负 → not stale → keep。系统不会因为脏数据 crash。这是 R12b "[1/0] graceful skip" 同源思路。
+- 决策 — sweep 同步而非 async：consolidate 已有 sweep_stale_reminders（同步）+ sweep_stale_plan（同步）+ sweep_completed_once_butler_tasks（async，需写 butler_history）。daily_review 删除不需要 history 写入 — 同步即可，跟 reminders/plan 同样 boilerplate。
+- 测试（9 新单测）：
+  - parse_review_date_extracts_valid_dates / rejects_non_review_titles / rejects_malformed_suffix
+  - stale_review_returns_false_when_retention_zero（disabled gate）
+  - stale_review_returns_false_for_non_review_titles（protected items 安全）
+  - stale_review_returns_false_for_today（边界 day=0）
+  - stale_review_returns_false_within_retention_window（含边界 day == retention 不删）
+  - stale_review_returns_true_past_retention（day > retention 删）
+  - stale_review_handles_future_dates_gracefully（clock skew）
+- 测试结果：452 cargo（+9）；clippy --all-targets clean；fmt clean。
+- 结果：daily_review 不再 unbounded 增长。一个月后 panel ai_insights 列表稳定在 ≤30 个 review 条目 + 几个 protected items（mood / plan / persona_summary / butler 长期任务），可读性 + 性能都不会随时间退化。memory subsystem 的 retention 闭环也跟 reminder/plan/butler-once 三个 sweep 对齐 — 现在所有 time-bound memory 都自动 garbage collect。
+
 ## 2026-05-04 — Iter R1c：panel UI 区分 Dismissed vs Ignored（R1b 信号 surface 闭合）
 - 现状缺口：R1b 加了 Dismissed kind 进 backend，但 panel UI（PanelToneStrip "💬 N/M" chip + PanelDebug 反馈 timeline）依然只显示"回复 / 忽略"二元 — Dismissed 被静默归到"忽略" 灰色 pill 里。用户没法 inspect 自己的 dismiss 行为是否真被记录、R7 cooldown 是否真的因此响应。**写了的信号 panel 看不见 = 半闭环**。
 - 解法 — 三段 surface 升级：

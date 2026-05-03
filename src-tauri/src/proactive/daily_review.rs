@@ -131,6 +131,36 @@ pub fn parse_plan_progress(plan_description: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// Iter R17: parse a `daily_review_YYYY-MM-DD` title into the naive date.
+/// Returns `None` for any other title (e.g. `daily_plan`, `current_mood`,
+/// or a malformed `daily_review_2026-13-99` typo). Used by the consolidate
+/// sweep to identify which `ai_insights` entries are review entries and
+/// which are protected items (mood / persona_summary / daily_plan).
+pub fn parse_daily_review_date(title: &str) -> Option<NaiveDate> {
+    let suffix = title.strip_prefix("daily_review_")?;
+    NaiveDate::parse_from_str(suffix, "%Y-%m-%d").ok()
+}
+
+/// Iter R17: pure staleness gate for the consolidate sweep. Returns true
+/// iff `title` parses as a daily_review AND its date is older than
+/// `retention_days` from `today`. `retention_days == 0` is treated as
+/// "pruning disabled" — never returns true. Today's review is never
+/// stale (delta = 0).
+///
+/// Uses `signed_duration_since` so dates *after* today (clock skew, user
+/// time-travel) collapse to negative deltas → `false`. Belt-and-suspenders;
+/// shouldn't happen in practice but cheaper than debugging it later.
+pub fn is_stale_daily_review(title: &str, today: NaiveDate, retention_days: u32) -> bool {
+    if retention_days == 0 {
+        return false;
+    }
+    let Some(date) = parse_daily_review_date(title) else {
+        return false;
+    };
+    let delta = today.signed_duration_since(date).num_days();
+    delta > retention_days as i64
+}
+
 /// Iter R16: reframe a yesterday-review description into a first-of-day
 /// prompt hint. Closes the write→read loop on R12 review entries — the
 /// pet now reads its own retrospective the next morning, not just dumps
@@ -400,5 +430,88 @@ mod tests {
     fn yesterday_recap_handles_review_with_leading_whitespace() {
         let out = format_yesterday_recap_hint(Some("  [review] 今天主动开口 1 次"));
         assert_eq!(out, "[昨日总览] 我们昨天主动开口 1 次。");
+    }
+
+    #[test]
+    fn parse_review_date_extracts_valid_dates() {
+        assert_eq!(
+            parse_daily_review_date("daily_review_2026-05-04"),
+            Some(d(2026, 5, 4))
+        );
+        assert_eq!(
+            parse_daily_review_date("daily_review_2025-12-31"),
+            Some(d(2025, 12, 31))
+        );
+    }
+
+    #[test]
+    fn parse_review_date_rejects_non_review_titles() {
+        assert_eq!(parse_daily_review_date("daily_plan"), None);
+        assert_eq!(parse_daily_review_date("current_mood"), None);
+        assert_eq!(parse_daily_review_date("persona_summary"), None);
+        assert_eq!(parse_daily_review_date(""), None);
+    }
+
+    #[test]
+    fn parse_review_date_rejects_malformed_suffix() {
+        // Non-date suffix
+        assert_eq!(parse_daily_review_date("daily_review_garbage"), None);
+        // Out-of-range date
+        assert_eq!(parse_daily_review_date("daily_review_2026-13-99"), None);
+        // Wrong separator
+        assert_eq!(parse_daily_review_date("daily_review_2026/05/04"), None);
+    }
+
+    #[test]
+    fn stale_review_returns_false_when_retention_zero() {
+        // R17: retention_days == 0 disables pruning entirely.
+        assert!(!is_stale_daily_review(
+            "daily_review_2020-01-01",
+            d(2026, 5, 4),
+            0
+        ));
+    }
+
+    #[test]
+    fn stale_review_returns_false_for_non_review_titles() {
+        // Sweep must NOT touch protected items (mood / plan / persona_summary).
+        let today = d(2026, 5, 4);
+        assert!(!is_stale_daily_review("daily_plan", today, 30));
+        assert!(!is_stale_daily_review("current_mood", today, 30));
+        assert!(!is_stale_daily_review("persona_summary", today, 30));
+    }
+
+    #[test]
+    fn stale_review_returns_false_for_today() {
+        let today = d(2026, 5, 4);
+        assert!(!is_stale_daily_review("daily_review_2026-05-04", today, 30));
+    }
+
+    #[test]
+    fn stale_review_returns_false_within_retention_window() {
+        let today = d(2026, 5, 4);
+        // 30 days ago = exactly at boundary, should still be kept (delta == 30,
+        // gate is delta > retention_days).
+        assert!(!is_stale_daily_review("daily_review_2026-04-04", today, 30));
+        // 1 day ago — clearly recent.
+        assert!(!is_stale_daily_review("daily_review_2026-05-03", today, 30));
+    }
+
+    #[test]
+    fn stale_review_returns_true_past_retention() {
+        let today = d(2026, 5, 4);
+        // 31 days ago — just past 30-day window.
+        assert!(is_stale_daily_review("daily_review_2026-04-03", today, 30));
+        // Months ago.
+        assert!(is_stale_daily_review("daily_review_2025-12-01", today, 30));
+    }
+
+    #[test]
+    fn stale_review_handles_future_dates_gracefully() {
+        // Clock skew or manual file edit could create a future-dated review.
+        // Negative delta → not stale → keep it. (Don't crash, don't delete.)
+        let today = d(2026, 5, 4);
+        assert!(!is_stale_daily_review("daily_review_2026-05-05", today, 30));
+        assert!(!is_stale_daily_review("daily_review_2027-01-01", today, 30));
     }
 }

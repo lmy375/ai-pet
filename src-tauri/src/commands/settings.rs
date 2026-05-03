@@ -223,6 +223,13 @@ pub struct MemoryConsolidateConfig {
     /// task is still around. 48 = "two days then it's gone".
     #[serde(default = "default_stale_once_butler_hours")]
     pub stale_once_butler_hours: u64,
+    /// Iter R17: how many days a `daily_review_YYYY-MM-DD` entry lingers before
+    /// consolidate prunes it. R12 writes one per day; without pruning the
+    /// ai_insights category grows unboundedly (1 entry / day → 365 / year).
+    /// 30 = "last month of daily journals are kept; older ones trimmed". Set
+    /// higher (90, 365) if you want to scroll back further; 0 disables pruning.
+    #[serde(default = "default_stale_daily_review_days")]
+    pub stale_daily_review_days: u32,
 }
 
 fn default_consolidate_interval() -> u64 {
@@ -245,6 +252,10 @@ fn default_stale_once_butler_hours() -> u64 {
     48
 }
 
+fn default_stale_daily_review_days() -> u32 {
+    30
+}
+
 impl Default for MemoryConsolidateConfig {
     fn default() -> Self {
         Self {
@@ -254,6 +265,7 @@ impl Default for MemoryConsolidateConfig {
             stale_reminder_hours: default_stale_reminder_hours(),
             stale_plan_hours: default_stale_plan_hours(),
             stale_once_butler_hours: default_stale_once_butler_hours(),
+            stale_daily_review_days: default_stale_daily_review_days(),
         }
     }
 }
