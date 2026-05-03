@@ -138,6 +138,10 @@ export interface ToneSnapshot {
   // LLM chose silence in a row. 0 = pet just spoke (or fresh process).
   // Panel chip fires only at ≥3 (matches R33's prompt-side threshold).
   consecutive_silent_streak: number;
+  // Iter R35: mirror — trailing-negative feedback streak (Ignored or
+  // Dismissed in a row). 0 = last feedback was Replied (or empty log).
+  // Chip fires at ≥3 matching prompt-side threshold.
+  consecutive_negative_streak: number;
 }
 
 /**

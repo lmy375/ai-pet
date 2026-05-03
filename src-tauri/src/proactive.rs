@@ -333,6 +333,11 @@ pub struct ToneSnapshot {
     /// at a glance. Stable between turns (no flicker); resets on next
     /// spoke turn. 0 = no streak / pet just spoke.
     pub consecutive_silent_streak: usize,
+    /// Iter R35: mirror on the feedback side — trailing-negative streak
+    /// (Ignored | Dismissed in a row). Used by panel chip when ≥3 to
+    /// flag "user has been rejecting recent turns" — prompt-side hint
+    /// fires at same threshold (R35's `format_consecutive_negative_hint`).
+    pub consecutive_negative_streak: usize,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -791,6 +796,12 @@ pub async fn build_tone_snapshot(
                 count_trailing_silent(&snap)
             })
             .unwrap_or(0),
+        // Iter R35: mirror — trailing-negative streak from the same
+        // recent_feedback_for_signals fetch. Same pure helper R35 uses
+        // for the prompt hint (single source of truth).
+        consecutive_negative_streak: crate::feedback_history::count_trailing_negative(
+            &recent_feedback_for_signals,
+        ),
     })
 }
 
@@ -1170,6 +1181,15 @@ async fn run_proactive_turn(
             .unwrap_or(0);
         format_consecutive_silent_hint(streak, SILENT_STREAK_THRESHOLD)
     };
+    // Iter R35: mirror on the feedback side — trailing-negative streak
+    // (Ignored | Dismissed in a row). 3+ is "I'm not landing" — try a
+    // different angle. Reuses the recent_feedback fetch (R26 widened
+    // it to (20)).
+    let consecutive_negative_hint = {
+        const NEGATIVE_STREAK_THRESHOLD: usize = 3;
+        let streak = crate::feedback_history::count_trailing_negative(&recent_feedback);
+        crate::feedback_history::format_consecutive_negative_hint(streak, NEGATIVE_STREAK_THRESHOLD)
+    };
 
     // If the proactive loop noticed a sleep gap recently (≤ 10 minutes ago), surface it
     // so the LLM can choose a "welcome back" register. Strong signal that the user was
@@ -1395,6 +1415,7 @@ async fn run_proactive_turn(
         feedback_hint: &feedback_hint,
         feedback_aggregate_hint: &feedback_aggregate_hint,
         consecutive_silent_hint: &consecutive_silent_hint,
+        consecutive_negative_hint: &consecutive_negative_hint,
         hour: now_local.hour() as u8,
         recently_fired_wellness: late_night_wellness_in_cooldown(),
         repeated_topic_hint: &repeated_topic_hint,
@@ -1896,6 +1917,7 @@ mod prompt_tests {
             feedback_hint: "",
             feedback_aggregate_hint: "",
             consecutive_silent_hint: "",
+            consecutive_negative_hint: "",
             // Default 14 (afternoon) — well outside the late-night-wellness window
             // (hours 0..LATE_NIGHT_END_HOUR=4) so existing tests stay neutral.
             // Tests for the late-night rule set this to 0/1/2/3 explicitly.

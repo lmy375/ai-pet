@@ -149,6 +149,13 @@ pub struct PromptInputs<'a> {
     /// Breaks perpetual-silence loops where LLM keeps choosing silent
     /// because nothing feels noteworthy enough.
     pub consecutive_silent_hint: &'a str,
+    /// Iter R35: mirror on user-feedback side — trailing-negative streak
+    /// ("你最近连续 N 次开口都被忽略或点掉"). Empty when streak <
+    /// `NEGATIVE_STREAK_THRESHOLD`. Built by
+    /// `feedback_history::format_consecutive_negative_hint(count_trailing_negative(...))`.
+    /// Differs from R26 aggregate hint: R26 = 20-window ratio (smoothed),
+    /// R35 = uninterrupted recent run (urgency).
+    pub consecutive_negative_hint: &'a str,
     /// Iter R3: current local hour (0-23). Used by composite rules that need
     /// time-of-day specificity beyond the coarse `period` label — currently
     /// the late-night-wellness rule (0:00-3:59 + active idle).
@@ -366,6 +373,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.feedback_hint);
     push_if_nonempty(&mut s, inputs.feedback_aggregate_hint);
     push_if_nonempty(&mut s, inputs.consecutive_silent_hint);
+    push_if_nonempty(&mut s, inputs.consecutive_negative_hint);
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
     push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);

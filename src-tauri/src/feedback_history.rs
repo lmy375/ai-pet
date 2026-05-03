@@ -241,6 +241,37 @@ pub fn adapted_cooldown_seconds(
     base_cooldown_secs
 }
 
+/// Iter R35: trailing negative-feedback streak — count of most-recent
+/// consecutive entries where kind ∈ Ignored | Dismissed. Mirrors R33's
+/// `count_trailing_silent` on the feedback side. Pure / testable.
+///
+/// Same "trailing only" semantics as R33: replied-ignored-replied-ignored-ignored
+/// counts to 2 (last 2 are negative; the replied 2 entries back breaks the
+/// older streak). Used to inject a directive nudge when user has been
+/// rejecting recent turns — orthogonal to R26's 20-window ratio (aggregate
+/// vs streak detect different signals).
+pub fn count_trailing_negative(entries: &[FeedbackEntry]) -> usize {
+    entries
+        .iter()
+        .rev()
+        .take_while(|e| matches!(e.kind, FeedbackKind::Ignored | FeedbackKind::Dismissed))
+        .count()
+}
+
+/// Iter R35: prompt-side hint for trailing-negative streak. Empty below
+/// threshold; above, soft nudge to reconsider register / try silence /
+/// shift topic. Preserves LLM judgment with "或者干脆这次沉默也行" escape
+/// hatch (R33-style soft-directive grammar).
+pub fn format_consecutive_negative_hint(streak: usize, threshold: usize) -> String {
+    if streak < threshold {
+        return String::new();
+    }
+    format!(
+        "你最近连续 {} 次开口都被用户忽略或主动点掉了。这是个明显的「我说的不对」信号 — 这次试试完全不同的角度（换话题 / 极简关心 / 或者干脆这次沉默也行）。",
+        streak
+    )
+}
+
 /// Iter R23: classify the current feedback band as a stable label string
 /// for panel display. Mirrors `adapted_cooldown_seconds` branching exactly
 /// so chip hover and gate behavior stay aligned. Returns `(band, factor)`:
@@ -625,6 +656,75 @@ mod tests {
         let hint = format_feedback_aggregate_hint(&entries);
         assert!(!hint.is_empty());
         assert!(hint.contains("5 次"));
+    }
+
+    #[test]
+    fn trailing_negative_counts_zero_for_empty() {
+        assert_eq!(count_trailing_negative(&[]), 0);
+    }
+
+    #[test]
+    fn trailing_negative_counts_zero_when_last_replied() {
+        let e = vec![
+            entry(FeedbackKind::Ignored, "a"),
+            entry(FeedbackKind::Ignored, "b"),
+            entry(FeedbackKind::Replied, "c"),
+        ];
+        assert_eq!(count_trailing_negative(&e), 0);
+    }
+
+    #[test]
+    fn trailing_negative_counts_full_negative_run() {
+        let e = vec![
+            entry(FeedbackKind::Ignored, "a"),
+            entry(FeedbackKind::Dismissed, "b"),
+            entry(FeedbackKind::Ignored, "c"),
+        ];
+        assert_eq!(count_trailing_negative(&e), 3);
+    }
+
+    #[test]
+    fn trailing_negative_only_counts_uninterrupted_tail() {
+        // replied-ignored-replied-ignored-ignored → trailing = 2
+        let e = vec![
+            entry(FeedbackKind::Replied, "a"),
+            entry(FeedbackKind::Ignored, "b"),
+            entry(FeedbackKind::Replied, "c"),
+            entry(FeedbackKind::Ignored, "d"),
+            entry(FeedbackKind::Ignored, "e"),
+        ];
+        assert_eq!(count_trailing_negative(&e), 2);
+    }
+
+    #[test]
+    fn trailing_negative_treats_dismissed_alongside_ignored() {
+        // R1c: Dismissed counts as negative same as Ignored.
+        let e = vec![
+            entry(FeedbackKind::Dismissed, "a"),
+            entry(FeedbackKind::Ignored, "b"),
+            entry(FeedbackKind::Dismissed, "c"),
+        ];
+        assert_eq!(count_trailing_negative(&e), 3);
+    }
+
+    #[test]
+    fn negative_hint_returns_empty_below_threshold() {
+        assert_eq!(format_consecutive_negative_hint(0, 3), "");
+        assert_eq!(format_consecutive_negative_hint(2, 3), "");
+    }
+
+    #[test]
+    fn negative_hint_fires_at_threshold() {
+        let h = format_consecutive_negative_hint(3, 3);
+        assert!(h.contains("3 次"));
+        assert!(h.contains("忽略") || h.contains("点掉"));
+    }
+
+    #[test]
+    fn negative_hint_preserves_judgment_phrasing() {
+        // Soft nudge has escape hatch ("沉默也行").
+        let h = format_consecutive_negative_hint(5, 3);
+        assert!(h.contains("沉默") || h.contains("换话题"));
     }
 
     #[test]

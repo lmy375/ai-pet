@@ -168,6 +168,20 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           🤐 沉默 ×{tone.consecutive_silent_streak}
         </span>
       )}
+      {tone.consecutive_negative_streak >= 3 && (
+        <span
+          title={`用户连续 ${tone.consecutive_negative_streak} 次没回应或主动点掉 pet 的开口（trailing-negative streak ≥ 3）— R35 prompt nudge 已 fire 提醒换角度或沉默。下次 Replied 自动清零。`}
+          style={{
+            color: "#fff",
+            background: "#dc2626",
+            padding: "1px 8px",
+            borderRadius: "10px",
+            fontWeight: 600,
+          }}
+        >
+          🙉 拒绝 ×{tone.consecutive_negative_streak}
+        </span>
+      )}
       {tone.last_prompt_chars !== null && (() => {
         // R31: prompt size budget chip. Color bands match prompt budget
         // perception — CJK conversational prompts hover in the 1500-3000
