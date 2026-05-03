@@ -400,6 +400,10 @@ pub struct PromptInputs<'a> {
     /// learns from outcomes round to round. Built by
     /// `feedback_history::format_feedback_hint`.
     pub feedback_hint: &'a str,
+    /// Iter R3: current local hour (0-23). Used by composite rules that need
+    /// time-of-day specificity beyond the coarse `period` label — currently
+    /// the late-night-wellness rule (0:00-3:59 + active idle).
+    pub hour: u8,
 }
 
 /// Minimum sample size before the env-awareness self-correction rule starts firing. Below
@@ -488,6 +492,7 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         inputs.chatty_day_threshold,
         inputs.pre_quiet_minutes.is_some(),
         inputs.idle_minutes,
+        inputs.hour,
     );
     for label in env_labels
         .iter()
@@ -544,6 +549,10 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
             "long-absence-reunion" => format!(
                 "- **用户离开了不短的时间**：约 {} 分钟没和你互动了（≥ {} 分钟阈值）。和 `wake-back`（系统刚唤醒）不同，这是用户那一侧的久别——开口要带「重逢感」：先简短关心一句、问一句轻松的归来话题（如「刚回来呀」「下午顺利吗」），不要立刻抛日程/工作类信息密集内容；语气比 wake-back 近一档但别热络过头。",
                 inputs.idle_minutes, LONG_ABSENCE_MINUTES
+            ),
+            "late-night-wellness" => format!(
+                "- **深夜还在用电脑**：现在已经 {} 点了，用户键鼠还活跃（{} 分钟内有动作）。这是 wellness 优先的时刻——这次开口请直接关心 ta 该休息了（「哎，{} 点了还在忙啊？该睡了」「夜深了，再不睡明天会累」之类）。语气暖但坚定，**不要**起新话题、不要追问工作进展、不要长篇——一句关心 + 一句「该睡了」就好。如果 ta 已经在做明显是收尾的事（关掉 IDE、回邮件等），可以更轻盈地说一声晚安。",
+                inputs.hour, inputs.idle_minutes, inputs.hour
             ),
             // Unknown label means a helper added something proactive_rules doesn't know
             // about — log defensively rather than panic, so the prompt still ships.
@@ -635,6 +644,16 @@ pub fn active_environmental_rule_labels(
     labels
 }
 
+/// Iter R3: the wee-night window in which the wellness nudge fires. Hours
+/// 0..LATE_NIGHT_END_HOUR — i.e. midnight through 3:59 — covers the band
+/// where staying on the computer is a wellness concern; 4am rolls into
+/// "early-bird normal" so we stop nudging.
+pub const LATE_NIGHT_END_HOUR: u8 = 4;
+/// Idle threshold under which the user is treated as actively at the keyboard
+/// for the late-night-wellness rule. < 5 minutes since last interaction means
+/// they are clearly working / browsing / etc., not just left the laptop on.
+pub const LATE_NIGHT_ACTIVE_MAX_IDLE_MIN: u64 = 5;
+
 /// Returns labels for *composite* rules — those that fire only when multiple individual
 /// signals coincide. Most existing rules are restraints ("be quiet because X"); the
 /// composite group makes room for *positive* prompts ("right now is a good moment to
@@ -645,6 +664,11 @@ pub fn active_environmental_rule_labels(
 /// - `long-idle-no-restraint`: it's been ≥ `LONG_IDLE_MINUTES` since the last proactive
 ///   AND the pet hasn't been chatty today AND we're not approaching quiet hours — a
 ///   safe window to surface a fresh topic instead of letting the silence drag on.
+/// - `late-night-wellness` (Iter R3): hour < `LATE_NIGHT_END_HOUR` AND idle <
+///   `LATE_NIGHT_ACTIVE_MAX_IDLE_MIN` — user is still at the keyboard past
+///   midnight. Pet should nudge them to wrap up regardless of what the LLM
+///   would otherwise think to say. Hard wellness rule, not soft chatty bias.
+#[allow(clippy::too_many_arguments)] // each signal is independently sourced; bundling adds plumbing
 pub fn active_composite_rule_labels(
     wake_back: bool,
     has_plan: bool,
@@ -653,8 +677,9 @@ pub fn active_composite_rule_labels(
     chatty_day_threshold: u64,
     pre_quiet: bool,
     idle_minutes: u64,
+    hour: u8,
 ) -> Vec<&'static str> {
-    let mut labels: Vec<&'static str> = Vec::with_capacity(3);
+    let mut labels: Vec<&'static str> = Vec::with_capacity(4);
     if wake_back && has_plan {
         labels.push("engagement-window");
     }
@@ -673,6 +698,12 @@ pub fn active_composite_rule_labels(
     // (don't add an opener register right before quiet hours kick in).
     if idle_minutes >= LONG_ABSENCE_MINUTES && under_chatty && !pre_quiet {
         labels.push("long-absence-reunion");
+    }
+    // Iter R3: late-night wellness — fires regardless of chatty / pre_quiet so
+    // the pet always speaks up if user is still at the keyboard past midnight.
+    // The whole point is overriding normal cadence to prioritize health.
+    if hour < LATE_NIGHT_END_HOUR && idle_minutes < LATE_NIGHT_ACTIVE_MAX_IDLE_MIN {
+        labels.push("late-night-wellness");
     }
     labels
 }
@@ -1104,6 +1135,7 @@ pub async fn build_tone_snapshot(
         chatty_day_threshold,
         pre_quiet,
         idle_min_for_rules,
+        hour,
     );
     let active_prompt_rules: Vec<String> = env_labels
         .iter()
@@ -1649,6 +1681,7 @@ pub fn spawn(app: AppHandle) {
                 chatty_threshold,
                 pre_quiet_for_rules,
                 idle_min_for_rules,
+                now_for_rules.hour() as u8,
             );
             let active_labels: Vec<&'static str> = env_label_set
                 .iter()
@@ -2004,6 +2037,7 @@ async fn run_proactive_turn(
         butler_tasks_hint: &butler_tasks_hint,
         user_name: &user_name,
         feedback_hint: &feedback_hint,
+        hour: now_local.hour() as u8,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -2759,6 +2793,10 @@ mod prompt_tests {
             // Default empty — pre-Iter R1 state, no feedback log yet. Tests for
             // the feedback hint set this explicitly.
             feedback_hint: "",
+            // Default 14 (afternoon) — well outside the late-night-wellness window
+            // (hours 0..LATE_NIGHT_END_HOUR=4) so existing tests stay neutral.
+            // Tests for the late-night rule set this to 0/1/2/3 explicitly.
+            hour: 14,
         }
     }
 
@@ -3915,26 +3953,34 @@ mod prompt_tests {
         // long-idle-no-restraint: long_idle (None == long-idle) AND under_chatty AND !pre_quiet.
         // Default for long-idle inputs: Some(8) (short idle), today=0, threshold=5, pre_quiet=false.
         // idle_min = 0 → long-absence-reunion silent throughout this test.
+        // hour = 14 (afternoon) → late-night-wellness silent throughout.
         let short_idle = Some(8u64);
-        assert!(active_composite_rule_labels(false, false, short_idle, 0, 5, false, 0).is_empty());
-        assert!(active_composite_rule_labels(true, false, short_idle, 0, 5, false, 0).is_empty());
-        assert!(active_composite_rule_labels(false, true, short_idle, 0, 5, false, 0).is_empty());
+        assert!(
+            active_composite_rule_labels(false, false, short_idle, 0, 5, false, 0, 14).is_empty()
+        );
+        assert!(
+            active_composite_rule_labels(true, false, short_idle, 0, 5, false, 0, 14).is_empty()
+        );
+        assert!(
+            active_composite_rule_labels(false, true, short_idle, 0, 5, false, 0, 14).is_empty()
+        );
         assert_eq!(
-            active_composite_rule_labels(true, true, short_idle, 0, 5, false, 0),
+            active_composite_rule_labels(true, true, short_idle, 0, 5, false, 0, 14),
             vec!["engagement-window"],
         );
     }
 
     #[test]
     fn active_composite_rule_labels_long_idle_requires_three_signals() {
+        // hour = 14 (afternoon) keeps late-night-wellness silent throughout.
         // long_idle yes, under_chatty yes, !pre_quiet yes → fires.
         assert_eq!(
-            active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES), 0, 5, false, 0),
+            active_composite_rule_labels(false, false, Some(LONG_IDLE_MINUTES), 0, 5, false, 0, 14),
             vec!["long-idle-no-restraint"],
         );
         // None (never spoken) is treated as long-idle.
         assert_eq!(
-            active_composite_rule_labels(false, false, None, 0, 5, false, 0),
+            active_composite_rule_labels(false, false, None, 0, 5, false, 0, 14),
             vec!["long-idle-no-restraint"],
         );
         // Short idle (< threshold) → no fire.
@@ -3945,16 +3991,21 @@ mod prompt_tests {
             0,
             5,
             false,
-            0
+            0,
+            14,
         )
         .is_empty());
         // chatty (today >= threshold) → no fire.
-        assert!(active_composite_rule_labels(false, false, Some(120), 5, 5, false, 0).is_empty());
+        assert!(
+            active_composite_rule_labels(false, false, Some(120), 5, 5, false, 0, 14).is_empty()
+        );
         // pre_quiet active → no fire.
-        assert!(active_composite_rule_labels(false, false, Some(120), 0, 5, true, 0).is_empty());
+        assert!(
+            active_composite_rule_labels(false, false, Some(120), 0, 5, true, 0, 14).is_empty()
+        );
         // Threshold == 0 disables chatty gate, so under_chatty is always true.
         assert_eq!(
-            active_composite_rule_labels(false, false, Some(120), 9999, 0, false, 0),
+            active_composite_rule_labels(false, false, Some(120), 9999, 0, false, 0, 14),
             vec!["long-idle-no-restraint"],
         );
     }
@@ -3962,16 +4013,28 @@ mod prompt_tests {
     #[test]
     fn active_composite_rule_labels_both_can_fire_together() {
         // wake_back + has_plan + long_idle + under_chatty + !pre_quiet → both labels.
+        // hour = 14 keeps late-night-wellness silent.
         let labels =
-            active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false, 0);
+            active_composite_rule_labels(true, true, Some(LONG_IDLE_MINUTES), 0, 5, false, 0, 14);
         assert_eq!(labels, vec!["engagement-window", "long-idle-no-restraint"]);
     }
 
     #[test]
     fn active_composite_rule_labels_long_absence_reunion_gates() {
+        // hour = 14 (afternoon) → late-night-wellness silent throughout. idle is
+        // already large enough that the late-night idle<5 gate would never fire.
         // Threshold boundary — at threshold + under_chatty + !pre_quiet → fires.
         assert_eq!(
-            active_composite_rule_labels(false, false, Some(8), 0, 5, false, LONG_ABSENCE_MINUTES,),
+            active_composite_rule_labels(
+                false,
+                false,
+                Some(8),
+                0,
+                5,
+                false,
+                LONG_ABSENCE_MINUTES,
+                14,
+            ),
             vec!["long-absence-reunion"],
         );
         // Just below threshold → silent.
@@ -3983,6 +4046,7 @@ mod prompt_tests {
             5,
             false,
             LONG_ABSENCE_MINUTES - 1,
+            14,
         )
         .is_empty());
         // chatty active → silent (don't pile reunion onto a chatty day).
@@ -3994,6 +4058,7 @@ mod prompt_tests {
             5,
             false,
             LONG_ABSENCE_MINUTES + 60,
+            14,
         )
         .is_empty());
         // pre_quiet active → silent (don't open new register before quiet hours).
@@ -4005,8 +4070,53 @@ mod prompt_tests {
             5,
             true,
             LONG_ABSENCE_MINUTES + 60,
+            14,
         )
         .is_empty());
+    }
+
+    #[test]
+    fn active_composite_rule_labels_late_night_wellness_gating() {
+        // Iter R3: late-night-wellness fires iff hour < LATE_NIGHT_END_HOUR (4)
+        // AND idle_minutes < LATE_NIGHT_ACTIVE_MAX_IDLE_MIN (5).
+        // Pure name → no other signal interferes; pass neutral defaults.
+        // Hours 0,1,2,3 with idle=0 should fire.
+        for h in 0u8..LATE_NIGHT_END_HOUR {
+            let labels = active_composite_rule_labels(false, false, Some(8), 0, 5, false, 0, h);
+            assert!(
+                labels.contains(&"late-night-wellness"),
+                "hour={} idle=0 should trigger late-night-wellness",
+                h,
+            );
+        }
+        // Hour 4 (boundary off) → silent.
+        let labels = active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            0,
+            5,
+            false,
+            0,
+            LATE_NIGHT_END_HOUR,
+        );
+        assert!(!labels.contains(&"late-night-wellness"));
+        // hour=2 but idle=5 (boundary off) → silent.
+        let labels = active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            0,
+            5,
+            false,
+            LATE_NIGHT_ACTIVE_MAX_IDLE_MIN,
+            2,
+        );
+        assert!(!labels.contains(&"late-night-wellness"));
+        // hour=2 + idle=4 (in band) → fires regardless of chatty / pre_quiet.
+        // This rule deliberately bypasses both gates because user health > cadence.
+        let labels = active_composite_rule_labels(false, false, Some(8), 999, 5, true, 4, 2);
+        assert!(labels.contains(&"late-night-wellness"));
     }
 
     #[test]
@@ -4022,6 +4132,7 @@ mod prompt_tests {
             5,
             false,
             LONG_ABSENCE_MINUTES + 60,
+            14,
         );
         assert_eq!(
             labels,
@@ -4112,10 +4223,14 @@ mod prompt_tests {
             ("engagement-window", "此刻是开新话题的好时机"),
             ("long-idle-no-restraint", "沉默已久但没在克制状态"),
             ("long-absence-reunion", "用户离开了不短的时间"),
+            ("late-night-wellness", "深夜还在用电脑"),
         ];
 
         // Sanity: the fingerprint table must cover every label the helpers emit. Use
         // each helper's max-trigger inputs to enumerate the universe.
+        // Two composite calls: one with high idle (long-absence-reunion fires),
+        // one with low idle + hour=2 (late-night-wellness fires) — labels conflict
+        // on idle_minutes / hour so we union the two outputs to get the universe.
         let backend_labels: std::collections::HashSet<&'static str> =
             active_environmental_rule_labels(true, true, true, true, true, true)
                 .into_iter()
@@ -4128,6 +4243,10 @@ mod prompt_tests {
                     5,
                     false,
                     LONG_ABSENCE_MINUTES + 60,
+                    14,
+                ))
+                .chain(active_composite_rule_labels(
+                    false, false, None, 0, 5, false, 0, 2,
                 ))
                 .collect();
         let fingerprint_labels: std::collections::HashSet<&str> =
@@ -4171,13 +4290,28 @@ mod prompt_tests {
         s2.idle_register = "用户已经离开了大半天";
         let rules2 = proactive_rules(&s2);
 
-        let combined: Vec<&String> = rules1.iter().chain(rules2.iter()).collect();
+        // Scenario 3: late-night-wellness — needs hour<4 AND idle_minutes<5.
+        // Distinct from s1/s2 (both at hour=14, large idle) because the rule is
+        // specifically designed to fire when the user is actively at the
+        // keyboard past midnight.
+        let mut s3 = base_inputs();
+        s3.hour = 2;
+        s3.idle_minutes = 1;
+        s3.idle_register = "用户刚刚还在";
+        let rules3 = proactive_rules(&s3);
+
+        let combined: Vec<&String> = rules1
+            .iter()
+            .chain(rules2.iter())
+            .chain(rules3.iter())
+            .collect();
         assert!(
             !combined.iter().any(|r| r.contains("规则文本待补")),
             "proactive_rules emitted the unknown-label fallback. A helper added a \
-             label without a matching arm in proactive_rules.\nRules1: {:#?}\nRules2: {:#?}",
+             label without a matching arm in proactive_rules.\nRules1: {:#?}\nRules2: {:#?}\nRules3: {:#?}",
             rules1,
             rules2,
+            rules3,
         );
         for (label, fp) in fingerprints {
             assert!(
@@ -4206,9 +4340,11 @@ mod prompt_tests {
         );
         // All-true / max-trigger inputs surface every label all backend helpers can
         // ever produce. Same input recipe as Iter 89's test for consistency.
+        // Two composite calls union: late-night needs hour<4 + idle<5 which
+        // conflicts with long-absence (idle ≥ 240) so we collect both.
         let env = active_environmental_rule_labels(true, true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0, 100);
-        let composite = active_composite_rule_labels(
+        let composite_a = active_composite_rule_labels(
             true,
             true,
             Some(120),
@@ -4216,11 +4352,14 @@ mod prompt_tests {
             5,
             false,
             LONG_ABSENCE_MINUTES + 60,
+            14,
         );
+        let composite_b = active_composite_rule_labels(false, false, None, 0, 5, false, 0, 2);
         let backend: std::collections::HashSet<&'static str> = env
             .iter()
             .chain(data.iter())
-            .chain(composite.iter())
+            .chain(composite_a.iter())
+            .chain(composite_b.iter())
             .copied()
             .collect();
         let ghosts: Vec<&str> = frontend_keys
@@ -4255,9 +4394,11 @@ mod prompt_tests {
         let frontend_set: std::collections::HashSet<&str> =
             frontend_keys.iter().map(|s| s.as_str()).collect();
         // All-true inputs surface every possible label all helpers can ever return.
+        // late-night-wellness needs hour<4 + idle<5 — conflicts with long-absence,
+        // so emit it via a second composite call and chain.
         let env = active_environmental_rule_labels(true, true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0, 100);
-        let composite = active_composite_rule_labels(
+        let composite_a = active_composite_rule_labels(
             true,
             true,
             Some(120),
@@ -4265,11 +4406,14 @@ mod prompt_tests {
             5,
             false,
             LONG_ABSENCE_MINUTES + 60,
+            14,
         );
+        let composite_b = active_composite_rule_labels(false, false, None, 0, 5, false, 0, 2);
         let missing: Vec<&'static str> = env
             .iter()
             .chain(data.iter())
-            .chain(composite.iter())
+            .chain(composite_a.iter())
+            .chain(composite_b.iter())
             .filter(|l| !frontend_set.contains(*l))
             .copied()
             .collect();
