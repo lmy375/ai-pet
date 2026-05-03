@@ -161,6 +161,12 @@ pub struct PromptInputs<'a> {
     /// has no recorded speeches. Built by run_proactive_turn from
     /// `speech_history::speeches_for_date_async`.
     pub cross_day_hint: &'a str,
+    /// Iter R15: active-app duration hint — "用户在「Cursor」里已经待了 N 分钟"
+    /// when the user has been on the same foreground app for ≥
+    /// `MIN_DURATION_MINUTES`. Empty when below threshold, app unchanged
+    /// less than that, or active-window read failed. Built from
+    /// `active_app::update_and_format_active_app_hint`.
+    pub active_app_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -335,6 +341,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.feedback_hint);
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);
+    push_if_nonempty(&mut s, inputs.active_app_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);

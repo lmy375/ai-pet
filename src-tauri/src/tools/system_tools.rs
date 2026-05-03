@@ -37,7 +37,13 @@ impl Tool for GetActiveWindowTool {
 }
 
 #[cfg(target_os = "macos")]
-async fn get_active_window_impl(ctx: &ToolContext) -> String {
+/// Iter R15: thin Rust-only osascript wrapper exposing the current foreground
+/// window for non-tool callers (proactive loop's active-app tracker). Returns
+/// `(app_name, window_title)` raw — no redaction, no logging — so the caller
+/// chooses whether to surface to LLM (redact first) or keep internal
+/// (compare for transition tracking). None on osascript failure / non-macOS.
+#[cfg(target_os = "macos")]
+pub async fn current_active_window() -> Option<(String, String)> {
     const SCRIPT: &str = r#"
 tell application "System Events"
     set frontApp to first application process whose frontmost is true
@@ -49,59 +55,66 @@ tell application "System Events"
     return appName & "|" & winName
 end tell
 "#;
-
-    let output = match tokio::process::Command::new("osascript")
+    let output = tokio::process::Command::new("osascript")
         .arg("-e")
         .arg(SCRIPT)
         .output()
         .await
-    {
-        Ok(o) => o,
-        Err(e) => return format!(r#"{{"error": "failed to run osascript: {}"}}"#, e),
-    };
-
+        .ok()?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return serde_json::json!({
-            "error": "osascript failed",
-            "stderr": stderr,
-            "hint": "If this mentions accessibility, grant the pet app Accessibility permission in System Settings → Privacy & Security."
-        })
-        .to_string();
+        return None;
     }
-
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let (app_name, window_title) = match raw.split_once('|') {
+    let (app, window) = match raw.split_once('|') {
         Some((a, w)) => (a.trim().to_string(), w.trim().to_string()),
-        None => (raw.clone(), String::new()),
+        None => (raw, String::new()),
     };
-
-    // Iter Cx: apply user-configured privacy redaction before either logging or
-    // returning to the LLM. Both `app` and `window_title` can contain personal
-    // names / project codenames; user lists patterns in settings.privacy.
-    let patterns = crate::commands::settings::get_settings()
-        .map(|s| s.privacy.redaction_patterns.clone())
-        .unwrap_or_default();
-    let app_name = crate::redaction::redact_text(&app_name, &patterns);
-    let window_title = crate::redaction::redact_text(&window_title, &patterns);
-
-    ctx.log(&format!(
-        "get_active_window: app={:?} window={:?}",
-        app_name, window_title
-    ));
-
-    serde_json::json!({
-        "app": app_name,
-        "window_title": window_title,
-        "platform": "macos",
-    })
-    .to_string()
+    Some((app, window))
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn get_active_window_impl(_ctx: &ToolContext) -> String {
-    serde_json::json!({
-        "error": "get_active_window is only implemented on macOS",
-    })
-    .to_string()
+pub async fn current_active_window() -> Option<(String, String)> {
+    None
+}
+
+async fn get_active_window_impl(ctx: &ToolContext) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let Some((app_name, window_title)) = current_active_window().await else {
+            return serde_json::json!({
+                "error": "osascript failed",
+                "hint": "If this mentions accessibility, grant the pet app Accessibility permission in System Settings → Privacy & Security."
+            })
+            .to_string();
+        };
+
+        // Iter Cx: apply user-configured privacy redaction before either logging or
+        // returning to the LLM. Both `app` and `window_title` can contain personal
+        // names / project codenames; user lists patterns in settings.privacy.
+        let patterns = crate::commands::settings::get_settings()
+            .map(|s| s.privacy.redaction_patterns.clone())
+            .unwrap_or_default();
+        let app_name = crate::redaction::redact_text(&app_name, &patterns);
+        let window_title = crate::redaction::redact_text(&window_title, &patterns);
+
+        ctx.log(&format!(
+            "get_active_window: app={:?} window={:?}",
+            app_name, window_title
+        ));
+
+        serde_json::json!({
+            "app": app_name,
+            "window_title": window_title,
+            "platform": "macos",
+        })
+        .to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = ctx;
+        serde_json::json!({
+            "error": "get_active_window is only implemented on macOS",
+        })
+        .to_string()
+    }
 }

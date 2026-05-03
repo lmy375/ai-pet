@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R15 设计要点（已实现）
+- **后台 baseline vs LLM-call tool**：get_active_window 是 LLM 自助 tool — 它要主动调才有数据。Iter R4 已经看到 env tool spoke_with_any 比例不高，意味着 LLM 经常"开口前没看一眼"。R15 不依赖 LLM 主动 — 后台每 tick 拉，注入 prompt 当 baseline。"LLM 自由 tool" + "loop 强制 baseline" 双轨提供同源数据：LLM 想精确就调 tool，想顺手就读 hint。
+- **15 分钟阈值 = 信号-噪声 trade-off**：1 分钟太敏感（"用户在 Slack 里 1 分钟" 没意义）；30 分钟太钝（错过"专注 20 分钟该歇一下"窗口）。15 分钟 ≈ 一次 deep-work 段 / 一次会议 / 一次专注阅读。低于这个值 hint 完全不出现，避免噪声污染 prompt。是"sparseness as a feature" 的应用。
+- **redact 在 format 时不在 snapshot 时**：snapshot 留原文是为了**transition 比较稳定**。如果 user 中途增加 redaction pattern "Cursor"，已经在用 Cursor 的他下次 tick 拿到 redacted "[redacted]"，跟 prev snapshot "Cursor" 比较会假 trigger 一个 app change → since 重置 → 就此永远算不出"已经待了多久"。raw 留 snapshot + 仅 format 时 redact 解决该 race。
+- **Instant 而非 SystemTime**：monotonic clock 不受用户调时区 / 系统休眠 / NTP 校正污染。"用户离开 8 小时回来，前台还是 Cursor" 用 SystemTime 算可能给出 480 分钟（实际只在使用中），用 Instant 应该也给 480 分钟（这里 Instant 不暂停） — 边缘 case 跨长 sleep 暴露 noise。但 saturating_duration_since 让 monotonic 的"时间倒流"不会 panic（时区调整下 SystemTime 反而会）。这次选 Instant 是 "less worst" 决策。
+- **osascript 复用 = 单一事实源**：把 system_tools 的 osascript 抽成 `current_active_window()` 纯 fn，让 tool path 和 loop path 同源。如果之后改 osascript（比如加 PID），改一处所有 caller 同步。"DRY 但不过度" 的应用 — 不抽象 logging / redaction（两 path 需求不同），但抽象核心数据 fetch（两 path 完全一致）。
+- **粒度=interval_seconds（不另起 background loop）**：诱惑是"开个 1 分钟 tick 的轻量 loop 专门追踪 active app，更高分辨率"。但 (a) 高分辨率被 15min 阈值过滤掉了 (b) 短期跳变本来就不该 surface (c) 多一个 loop 是多一个失败点 + 多一个 osascript 调用源。复用 proactive loop 的 5min cadence = 0 额外开销 + 行为正确。"做最少的事" 在系统设计中常胜。
+- **R15 把"在做什么"加进 R14 的"做了什么"上**：R14 是"昨晚说过 X" — 历史轴。R15 是"现在在 Y" — 实时轴。两轴正交补全：pet 现在既看得到时间深度（昨晚→今天）也看得到当下宽度（在 Cursor 写代码 / 在 Slack 沟通 / 在 Safari 浏览）。是 companion grade 体感的两个支柱。
+
 ## Iter R14 设计要点（已实现）
 - **跨日叙事是 companion 体感的关键 step-up**：之前 pet 每天都是"重启"，最多 R9 让 reactive 看到 bubble 当天历史。但"昨天我们一起经历了 X"是真实朋友的心智 — pet 必须在"叙事时间轴" 上活下去。R14 把 first-of-day 当成"今天的开场白" moment 注入昨晚尾声，是叙事连续性的最低成本实现。
 - **first-of-day 复用是经济**：today_speech_count == 0 信号已经存在（drives first-of-day rule label）。R14 piggy-back 这个信号触发额外 hint —— 不需要新计数器、新 state。"在已有信号的边缘加新行为" 比"加新信号" 好得多。
