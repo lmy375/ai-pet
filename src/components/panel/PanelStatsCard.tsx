@@ -2,14 +2,16 @@ import type { ToneSnapshot } from "./panelTypes";
 
 /**
  * Prominent lifetime stats card (Iter 99 — extracted from PanelDebug; Iter 106 —
- * companionship-days indicator added; Iter 74 — weekly column added).
+ * companionship-days indicator added; Iter 74 — weekly column added; Iter Cψ —
+ * "上次开口" since-last-proactive indicator added).
  *
- * Renders four stats horizontally: today's count (20px sky blue / orange when
+ * Renders five stats horizontally: today's count (20px sky blue / orange when
  * restraining), trailing 7-day count (16px muted indigo), lifetime count (28px
- * purple, the dominant number), and companionship days (16px muted teal — quieter
- * so it sits as identity context rather than primary data). A single trailing
- * badge shows either "克制模式" (when chatty threshold crossed) or "破冰阶段"
- * (when lifetime < 3); both states are mutually exclusive.
+ * purple, the dominant number), since-last-proactive (12px muted gray — quiet
+ * "is the pet alive lately" cue), and companionship days (16px muted teal —
+ * quieter so it sits as identity context rather than primary data). A single
+ * trailing badge shows either "克制模式" (when chatty threshold crossed) or
+ * "破冰阶段" (when lifetime < 3); both states are mutually exclusive.
  *
  * Pure presentation — all state lives in PanelDebug.
  */
@@ -21,8 +23,19 @@ interface PanelStatsCardProps {
   tone: ToneSnapshot | null;
 }
 
+// Iter Cψ: format minutes-since-last-proactive into a compact glance value.
+// Tracks the same band-by-band logic as cadence text but renders short ("8m" /
+// "1h32" / "5h") so it fits the stats card row without crowding.
+function formatSinceLast(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h}h` : `${h}h${m}`;
+}
+
 export function PanelStatsCard(props: PanelStatsCardProps) {
   const { todaySpeechCount, weekSpeechCount, lifetimeSpeechCount, companionshipDays, tone } = props;
+  const sinceLast = tone?.since_last_proactive_minutes ?? null;
   const threshold = tone?.chatty_day_threshold ?? 0;
   const restraining = threshold > 0 && todaySpeechCount >= threshold;
   const todayColor = restraining ? "#ea580c" : "#0ea5e9";
@@ -90,6 +103,34 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
         <span style={{ fontSize: "11px", color: "#64748b" }}>累计</span>
       </div>
       <span style={{ fontSize: "12px", color: "#64748b" }}>次主动开口</span>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "baseline",
+          gap: "4px",
+          marginLeft: "8px",
+          paddingLeft: "12px",
+          borderLeft: "1px solid #e2e8f0",
+        }}
+        title={
+          sinceLast !== null
+            ? `距宠物上次主动开口 ${sinceLast} 分钟${tone?.cadence ? `（${tone.cadence}）` : ""}。来自 InteractionClock 的 since_last_proactive_seconds。`
+            : "宠物今天还没主动开过口（since_last_proactive_seconds = None）。"
+        }
+      >
+        <span
+          style={{
+            fontSize: "13px",
+            fontWeight: 500,
+            color: sinceLast !== null && sinceLast >= 60 ? "#94a3b8" : "#475569",
+            lineHeight: 1,
+            fontFamily: "'SF Mono', 'Menlo', monospace",
+          }}
+        >
+          {sinceLast !== null ? formatSinceLast(sinceLast) : "—"}
+        </span>
+        <span style={{ fontSize: "11px", color: "#94a3b8" }}>前开口</span>
+      </span>
       <span
         title={`你和宠物已经一起走过 ${companionshipDays} 天（自首次启动起算）。来自 ~/.config/pet/install_date.txt。`}
         style={{
