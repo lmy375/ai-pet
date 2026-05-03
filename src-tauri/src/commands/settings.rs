@@ -361,6 +361,14 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// Iter D8: lightweight name accessor for the panel — full get_settings is
+/// overkill when only `user_name` is wanted. Returns "" when no name configured
+/// or when settings can't be read (degrade silently rather than alarm the user).
+#[tauri::command]
+pub fn get_user_name() -> String {
+    get_settings().map(|s| s.user_name).unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn get_soul() -> Result<String, String> {
     let path = soul_path()?;

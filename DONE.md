@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D8：PanelPersona 显示 settings.user_name 当前值
+- 现状缺口：Cτ + Cυ 把 user_name 注入到 reactive chat / Telegram persona_layer 和 proactive prompt。但 user 设了 name 之后没有"我看到 ta 真的会用这个名字"的明显反馈——下次 proactive 触发也许能看到，但很多用户可能担心自己设错了。需要 panel 上 explicit 显示当前生效的 name。
+- 解法：
+  - 后端加 `get_user_name() -> String` Tauri command，比起 `get_settings()` 全量返回更轻；返回 settings.user_name（空字符串 fallback）
+  - PanelPersona 在 "陪伴时长" Section 末尾追加一行：
+    - 已设：`🐾 宠物称呼你为「moon」` 灰色 (#475569) 正常字体
+    - 未设：`🐾 还没设名字（Settings → 你的名字）` 灰斜体 (#94a3b8) 提示路径
+  - tooltip 说明数据流：Cτ 注入 persona_layer / Cυ 注入 proactive prompt
+- 不在 stats card 加：stats card 是聚合数字 + 长期 identity（companionship days），name 不属于"统计数字"语义；放 Persona tab 与 "陪伴时长" 同框最合适——身份关系绑定
+- 测试：302 cargo 不变；tsc 干净。
+- 结果：用户设完 user_name 立刻打开 Persona tab 就看到 `🐾 宠物称呼你为「X」` 确认；不必等下一次 proactive bubble 验证。从"我设了对吗"到"我看到了"的 confidence loop。
+
 ## 2026-05-03 — Iter D7：consolidate 返回 LLM summary，让 panel banner 反映真实成果
 - 现状缺口：用户点 "立即整理" / "立即生成画像" 按钮后，banner 显示 "Consolidation finished in 1234 ms (12 items at start)"——只有时长和 before-count，没有"实际改了什么"。LLM 的 summary（"合并了 2 条 / 删了 1 条 todo / persona_summary 已 update / 没改动" 之类）被记到 LogStore 然后丢弃。要看必须打开 PanelDebug logs 翻找。Cφ 的"立即生成画像" UX 只成了一半——告诉用户"跑了"，但没告诉"做了什么"。
 - 解法：propagate up:

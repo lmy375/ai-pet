@@ -35,6 +35,7 @@ const MOTION_META: Record<string, { glyph: string; label: string; color: string 
 export function PanelPersona() {
   const [installDate, setInstallDate] = useState<string>("");
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
+  const [userName, setUserName] = useState<string>("");
   const [personaSummary, setPersonaSummary] = useState<string>("");
   const [personaUpdatedAt, setPersonaUpdatedAt] = useState<string>("");
   const [moodTrend, setMoodTrend] = useState<string>("");
@@ -50,12 +51,13 @@ export function PanelPersona() {
     let cancelled = false;
     const fetchAll = async () => {
       try {
-        const [date, days, summary, trend, mood] = await Promise.all([
+        const [date, days, summary, trend, mood, name] = await Promise.all([
           invoke<string>("get_install_date"),
           invoke<number>("get_companionship_days"),
           invoke<{ text: string; updated_at: string }>("get_persona_summary"),
           invoke<string>("get_mood_trend_hint"),
           invoke<CurrentMood>("get_current_mood"),
+          invoke<string>("get_user_name"),
         ]);
         if (cancelled) return;
         setInstallDate(date);
@@ -64,6 +66,7 @@ export function PanelPersona() {
         setPersonaUpdatedAt(summary.updated_at);
         setMoodTrend(trend);
         setCurrentMood(mood);
+        setUserName(name);
       } catch (e) {
         console.error("PanelPersona fetch failed:", e);
       }
@@ -136,6 +139,25 @@ export function PanelPersona() {
               起始 {installDate}
             </span>
           )}
+        </div>
+        {/* Iter D8: surface settings.user_name so the user can verify the pet
+            actually has a name configured (the persona_layer prompt and proactive
+            prompt both use it via Cτ/Cυ). Empty state nudges user to set one in
+            Settings → 你的名字 if they want named addressing. */}
+        <div
+          style={{
+            marginTop: "10px",
+            fontSize: "12px",
+            color: userName.trim() ? "#475569" : "#94a3b8",
+            fontStyle: userName.trim() ? "normal" : "italic",
+          }}
+          title={
+            userName.trim()
+              ? `宠物会用这个名字称呼你 — settings.user_name 注入 persona_layer (Cτ) 和 proactive prompt (Cυ)。`
+              : "你还没设名字 — 设置 → 你的名字 (宠物会用它称呼你) 留空时宠物用默认「你」。"
+          }
+        >
+          {userName.trim() ? `🐾 宠物称呼你为「${userName.trim()}」` : "🐾 还没设名字（Settings → 你的名字）"}
         </div>
       </Section>
 
