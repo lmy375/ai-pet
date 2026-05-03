@@ -55,9 +55,12 @@ pub fn trim_to_context(mut messages: Vec<ChatMessage>, max: usize) -> Vec<ChatMe
 /// not affected.
 pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let mood_section = match read_current_mood_parsed() {
+        // Iter Cy: redact mood text before injecting. Mood entries can carry private
+        // names / context the LLM happened to write earlier; without this they'd
+        // re-leak on every chat turn that injects the mood note.
         Some((text, _)) if !text.trim().is_empty() => format!(
             "[宠物当前心情/状态] {}\n\n如果这次对话让你心情有变化，可以用 `memory_edit` 更新 `ai_insights/current_mood`，description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头（Tap=开心活泼，Flick=想分享有兴致，Flick3=焦虑烦躁，Idle=平静低落沉静）。心情没变就不用更新。",
-            text.trim()
+            crate::redaction::redact_with_settings(text.trim())
         ),
         _ => "[宠物当前心情/状态] 还没记录过。如果对话让你产生了某种心情，可以用 `memory_edit create` 新建 `ai_insights/current_mood`，description 以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头。没特别感受就先不写。".to_string(),
     };

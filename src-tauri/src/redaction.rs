@@ -20,6 +20,17 @@
 /// to blow up sentences.
 pub const REDACTION_MARKER: &str = "(私人)";
 
+/// Apply redaction using the user's currently configured privacy patterns. Sync
+/// wrapper that reads settings on every call so user edits take effect immediately
+/// (same model as the env-tool sites in Iter Cx). Failure to read settings yields
+/// an empty pattern list — text passes through unchanged rather than blocking.
+pub fn redact_with_settings(text: &str) -> String {
+    let patterns = crate::commands::settings::get_settings()
+        .map(|s| s.privacy.redaction_patterns.clone())
+        .unwrap_or_default();
+    redact_text(text, &patterns)
+}
+
 /// Apply substring redaction. Patterns matching case-insensitively in `text` are
 /// replaced with `REDACTION_MARKER`. Returns owned String even when nothing
 /// matched — caller doesn't need a borrow vs. owned branch.

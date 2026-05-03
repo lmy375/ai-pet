@@ -2,6 +2,14 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter Cy：redaction 扩展到 mood note 和 speech_history 注入
+- 新公共 helper `redaction::redact_with_settings(text) -> String`：sync wrapper，每次调用读 settings.privacy.redaction_patterns（fallback 空 list），套 redact_text。Iter Cx 的工具入口本来手动展开 settings 读取，现在抽成一行 helper——两处调用都简化。
+- `commands::chat::inject_mood_note`：mood text 在格式化进 system message 前用 redact_with_settings 过一遍。这关键——mood 是 LLM 自己之前写的，可能含 active_window 漏过来的人名 / 项目名；不 redact 的话每次对话都 re-leak。
+- `proactive::run_proactive_turn` 的 speech_hint 构造：每条 strip_timestamp 后 redact 再 join。speech_history 文件本身保持原文（不破坏"宠物实际说过什么"的纪录），但每次重新注入 prompt 时新设的 patterns 会自动应用——用户改 patterns 后过往的 leak 都能在下次 prompt 里被覆盖。
+- 路线 C 的覆盖范围现在是: env 工具入口（active_window / calendar - Iter Cx）+ self-loop 入口（mood note / speech_history - Iter Cy）= 4 个 prompt 注入路径。 LLM 看不到也学不会用户标记的私人词。
+- 设计哲学："文件原文保留 + 读时 redact" 而非"写时 redact"——保持持久化数据完整可恢复，redaction 只是"对外发送时"的过滤层。用户调整 patterns 立刻全局生效。
+- 221 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter Cx：隐私过滤——env 工具结果可配置 redaction（路线 C 第一刀）
 - 新模块 `src-tauri/src/redaction.rs`：纯函数 `redact_text(text, patterns) -> String`，对 patterns 中的每条做大小写不敏感子串匹配，命中处替换为 `(私人)`。空 / whitespace-only patterns 被跳过避免空串无限循环陷阱。UTF-8 安全（中文 / emoji）通过 char_boundary 推进实现。
 - `replace_case_insensitive` 用 lowercase 镜像扫描而非 regex——零依赖，无 ReDoS 风险，对子串场景足够。
