@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG5c2：prompt assembler 抽离到 `proactive/prompt_assembler.rs`
+- 现状：QG5c1 抽完 rule-label 生成器后，prompt 系统的"决策" 和"渲染" 分离了。这次抽走渲染层 — PromptInputs 数据结构 + proactive_rules 规则-文字映射 + build_proactive_prompt 装配 + 两个 hint formatters + SILENT_MARKER。
+- 改动：
+  - 新文件 `src-tauri/src/proactive/prompt_assembler.rs` 375 行
+  - 移过去：SILENT_MARKER（私 const → pub const）、PromptInputs struct（30+ fields）、proactive_rules（含 14 个 rule arms）、build_proactive_prompt、push_if_nonempty、format_proactive_mood_hint、format_plan_hint
+  - proactive.rs：`mod prompt_assembler;` + glob `pub use` 加进 head；删除原定义；删除 `MOOD_CATEGORY`、`MOOD_TITLE` 顶部 import（不再用）
+  - prompt_tests 加 `use crate::mood::{MOOD_CATEGORY, MOOD_TITLE};`（assembler 拿走 import 后测试还需要）
+  - proactive.rs 净减 ~342 行（4214 → 3872）
+- 决策 — `use super::*` 引入 prompt_rules + 同级 fns：prompt_assembler 引用 active_*_rule_labels（在 prompt_rules.rs）+ companionship_milestone（同 prompt_rules.rs）+ format_companionship_line（在 proactive.rs main）。统一通过 `use super::{...}` import — super 是 proactive.rs，所有这些都通过 glob re-export 暴露。比 `use crate::proactive::*` 更明确依赖。
+- 决策 — SILENT_MARKER 升级 pub：原本 const private 因为只有 proactive_rules 用。run_proactive_turn (in proactive.rs) 也用，本来通过同 mod 直接访问；现在 assembler 移走后必须 pub + glob 才能让 run_proactive_turn 经 re-export 访问到。
+- 决策 — tests 继续留 proactive.rs：原 prompt_tests 1620 行 + base_inputs() 共用 helper 用了大量 super::* 解析的 items（active_*_rule_labels / format_companionship_line / format_proactive_mood_hint / 各种 mood / period / 等等）。如果挪到 sub-module，super 就变成 prompt_assembler，丢失对其他 sibling 子模块的可见性。让 tests 留在 proactive.rs（super 是 proactive.rs 顶层）通过 glob re-export 拿到所有 moved items 是最低 friction 路径。
+- 决策 — `(不必每次推进...)` 中文括号一致性：复制粘贴时不小心把全角括号变成 ASCII 括号。grep 与原文对比发现差异立即修。任何字符变化都可能让 prompt 测试失败 — 抽离时极仔细对照。
+- 测试结果：383 cargo（无变化—测试只是通过 re-export 解析迁移后的 fn）；clippy clean；fmt clean；tsc clean。
+- 进度：QG5a (–110) + QG5b (–642) + QG5c-prep (–308) + QG5c1 (–229) + QG5c2 (–342) 共减 ~1630 行（5500→3872，~30%）。剩 QG5d（gate 子系统）+ QG5e（telemetry / static stashes）。
+
 ## 2026-05-03 — Iter QG5c1：rule-label 生成器抽离到 `proactive/prompt_rules.rs`
 - 现状：QG5c-prep 抽完 time helpers 后，prompt rules 的依赖图变干净。下一步抽 rule-label 生成器（决定哪些 label 当前激活），把 prompt_rules 的"决策" 部分独立出来。
 - 改动：

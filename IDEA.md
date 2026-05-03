@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG5c2 设计要点（已实现）
+- **决策 / 渲染分两层是干净的 prompt 体系**：QG5c1 抽走了 rule-label 决策器（哪个 rule 该 fire），QG5c2 抽走渲染器（rule-label → 文本，PromptInputs 数据 → prompt 字符串）。两层分立后，未来想换 prompt 模板（紧凑版 vs 详尽版 vs 多语言）只动 assembler；想加新 rule 类别只动 rules。
+- **超大 prompt_tests 测试 mod 不挪是被 super::* 习惯绑住**：1620 行的测试 mod 用 super::* 解析十几个跨多个新 sub-module 的 fn。如果挪到任何一个 sub-module，super 变窄丢失可见性。若挪到 proactive 自己的 ./tests/ 目录又意味着把它从 cfg(test) inline 模块变成 integration test (different test binary, no access to private items)。最低 friction = 留在 proactive.rs。这是"测试 vs 代码 colocation 完美" 的小妥协；可接受。
+- **复制中文 prompt 时字符一致性是 quality bar**：原 prompt 使用全角括号「（不必每次推进，看时机自然）」。复制粘贴 IDE 自动转换 / 我手抖换成 ASCII `(...)`。grep 立即捕到差异。这种"字符级别的精度" 是 prompt-as-code 的额外维护负担——通过细致 diff 对比避开。
+- **多 use super::{...} explicit 比 use super::*; 好**：assembler 用 explicit `use super::{active_composite_rule_labels, ..., LONG_IDLE_MINUTES, ...};` 而不是 super::*。原因：(a) 让人一眼看到这模块依赖了哪些 sibling/parent 项；(b) 加新 sibling 不影响这文件 import；(c) 对 IDE / 编辑器 navigation 更友好。glob 仅用于 parent 的 re-export 端，不在子模块的引入端。
+- **SILENT_MARKER pub 升级是符合"封装到模块" 的逻辑**：当函数 in same mod，private const OK。一旦把 ower 函数移走，run_proactive_turn 还需要这个常量来识别 LLM 沉默标记 → pub 即可。Rust visibility 规则强制这种"contract 浮出 mod 边界" 思考：你想让外部用什么，pub 它；想藏起来，留 private。
+- **30% 累计缩小 = 一半的 QG5 工作完成**：起 5500 → 3872。剩约 2200 行的 gate / telemetry / run_proactive_turn / Tauri commands。预计 QG5d + QG5e 后稳定 1500-2000 行 orchestration-only。
+- **5 sub-modules 总 1869 行 + 主 file 3872 行 = 5741 行**：相比起点 5500 行多 ~240 行（test docstrings + 5 个 module headers）。代码本身没变多，但视觉上拆成 6 个文件后阅读性显著好了：你想看 reminders 就读 reminders.rs (283 行)，不用滚 5500 行长文件。
+
 ## Iter QG5c1 设计要点（已实现）
 - **拆 source ≠ 拆 tests**：之前几片 QG5 都是源 + 测一起搬。这次故意留 tests 在 prompt_tests，因为 active_*_rule_labels tests 和 proactive_rules / build_proactive_prompt tests 在同一 mod 深度交错，先拆一半会让 prompt_tests 残骸难看。等 QG5c2 把整个 prompt 系统一起搬，整 mod 一起迁移。"`use super::*` + glob re-export" 的组合让这种"分阶段 source/test 迁移"零代价。
 - **rate-limit machinery 跟 rule 走**：LAST_LATE_NIGHT_WELLNESS_AT static 是 R8 给 late-night-wellness rule 加的 rate limit。它是 rule 实现细节，不该外露给其他子系统。跟 rule 一起迁移让"如果未来加新的 rate-limited rule，模式继续在这一个文件" 成立。
