@@ -664,6 +664,13 @@ pub struct ToneSnapshot {
     /// whether to gate. Surfaced so the panel can show 🎯 「work」 chip and
     /// the user can immediately see why the pet may be especially quiet.
     pub focus_mode: Option<String>,
+    /// Iter D4: true when the current hour is inside the configured quiet
+    /// window (settings.proactive.quiet_hours_start/end). Distinct from
+    /// `pre_quiet_minutes`: pre_quiet fires within 15 min *before* the window
+    /// starts (a winding-down register cue); this fires *during* the window
+    /// when the gate is fully suppressing proactive turns. The panel uses both
+    /// to render "approaching → in" transition for the user.
+    pub in_quiet_hours: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -835,6 +842,14 @@ pub async fn get_tone_snapshot(
             Some(s) if s.active => s.name.or_else(|| Some("active".to_string())),
             _ => None,
         },
+        // Iter D4: same in_quiet_hours predicate the gate uses, so the panel
+        // can flag "the pet is currently dormant".
+        in_quiet_hours: get_settings()
+            .ok()
+            .map(|s| {
+                in_quiet_hours(hour, s.proactive.quiet_hours_start, s.proactive.quiet_hours_end)
+            })
+            .unwrap_or(false),
     })
 }
 
@@ -1032,8 +1047,9 @@ pub fn minutes_until_quiet_start(
 
 /// Returns true if `hour` (0–23) falls inside the quiet window `[start, end)`. Handles the
 /// midnight wrap-around case (start > end, e.g. 23:00–07:00). When start == end, the gate
-/// is treated as disabled (no quiet hours configured).
-fn in_quiet_hours(hour: u8, start: u8, end: u8) -> bool {
+/// is treated as disabled (no quiet hours configured). Iter D4: now `pub` so
+/// `get_tone_snapshot` can surface "is the pet currently dormant" to the panel.
+pub fn in_quiet_hours(hour: u8, start: u8, end: u8) -> bool {
     if start == end {
         return false;
     }

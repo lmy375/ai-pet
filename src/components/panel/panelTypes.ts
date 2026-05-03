@@ -82,6 +82,8 @@ export interface ToneSnapshot {
   companionship_days: number;
   // Iter D3
   focus_mode: string | null;
+  // Iter D4
+  in_quiet_hours: boolean;
 }
 
 /**
