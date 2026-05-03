@@ -677,6 +677,12 @@ pub struct ToneSnapshot {
     /// Surfaced so the panel can show "下次开口最多还要 Ns" instead of the
     /// silent gate making the pet feel unresponsive.
     pub cooldown_remaining_seconds: Option<u64>,
+    /// Iter D10: true when the awaiting-user-reply gate (Iter 5) is set —
+    /// pet spoke proactively last and user hasn't sent anything since. The
+    /// gate keeps the pet from doubling up. Distinct from cooldown: cooldown
+    /// is time-based, awaiting is state-based ("polite to wait until acked").
+    /// Both gates can fire simultaneously; both visible separately.
+    pub awaiting_user_reply: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -870,6 +876,8 @@ pub async fn get_tone_snapshot(
                 _ => None,
             }
         },
+        // Iter D10: pass through the awaiting-user-reply state from clock snapshot.
+        awaiting_user_reply: snap.awaiting_user_reply,
     })
 }
 

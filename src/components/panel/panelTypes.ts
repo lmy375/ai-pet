@@ -86,6 +86,8 @@ export interface ToneSnapshot {
   in_quiet_hours: boolean;
   // Iter D9
   cooldown_remaining_seconds: number | null;
+  // Iter D10
+  awaiting_user_reply: boolean;
 }
 
 /**

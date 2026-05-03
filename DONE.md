@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D10：ToneSnapshot 暴露 awaiting_user_reply + 💭 chip
+- 现状缺口：D9 surfaced cooldown gate；但 awaiting gate（Iter 5 的另一个）一直没暴露。"宠物刚开过口但你还没回 → gate 让宠物先等等" 这种 polite-wait 状态对用户完全不可见——他们只感觉"宠物冷淡了"，不知道是因为他们自己上次没回应。
+- 解法：D series 标准模板：
+  - `ClockSnapshot.awaiting_user_reply: bool` 已经有（Iter 5）
+  - `ToneSnapshot.awaiting_user_reply: bool` 直接 pass-through（无任何新算术）
+  - `PanelToneStrip` 渲染 💭 等回应 chip，紫色 (#a855f7)，tooltip 解释 "给 ta 一句回应就清除"
+- chip 位置在 ⏳ 冷却 之后——两个 "为什么静默" 类信号并列。awaiting 是状态性 (state-based) gate，cooldown 是时间性 (time-based) gate；两者可同时 fire（pet 刚说完话且 user 没回 → cooldown + awaiting），都 visible 时用户立刻明白完整 picture。
+- 测试：302 cargo 不变；tsc 干净。
+- 关于 7 个 gate 的 panel 覆盖：
+  - 1. disabled — settings field，用户自己设的不需要 panel 提示
+  - 2. quiet-hours — 😴 / 🌙 (D4 + 已有)
+  - 3. focus — 🎯 (D3)
+  - 4. cooldown — ⏳ (D9)
+  - 5. awaiting — 💭 (D10) ← 本 iter
+  - 6. idle threshold — 数字在 ⏱ time line 已隐含
+  - 7. input-idle — 数字在 ⏱ time line 已隐含
+  
+  全部 7 gate panel 可见（除非通过 settings 主动禁用）。
+- 结果：用户开 panel 看到 ⏳ 冷却 12m + 💭 等回应 双 chip 时立刻明白：宠物刚说过话、你还没回、还得等 12 分钟才会自己说。从"我以为它有 bug"到"我知道它在等我"。
+
 ## 2026-05-03 — Iter D9：ToneSnapshot 暴露 cooldown_remaining_seconds + ⏳ chip
 - 现状缺口：proactive cooldown gate（Iter 5）默认 1800s（30 min）。宠物开过一次口后那 30 分钟内任何 proactive 评估都会 skip——但 panel 没有任何"现在还有 N 秒才会再说"的指示。结果用户感觉 "宠物刚说过然后突然安静好久"，不知道这是 cooldown gate 还是 LLM 选择沉默。
 - 解法（D series 模板复用第 N 次）：
