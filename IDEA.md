@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D5 设计要点（已实现）
+- **改返回类型 vs 加新命令**：曾考虑加 `get_persona_summary_meta`，把现 String 命令保留以便其它调用方不改。但这是单一调用方（PanelPersona）的命令，没有外部 API 兼容性顾虑，直接升级返回类型是干净路径。
+- **7 天阈值**：consolidate 默认 6h interval × 7 天 = 28 次机会。若超过 7 天还没更新，要么 consolidate 关了、要么 LLM 27 次评估都觉得"信号不足跳过"——两种都该提醒用户。
+- **stale 用红 + ⚠**：和 ❌ 错误 / 🌙 距安静时段 等"该处理"信号同色系；非 stale 用浅灰斜体 = "信息性、不打扰"。
+- **本地时间在 tooltip**：精确时间（locale string）放 tooltip，主显示用相对时间—— "3 天前" 比 "2026-04-30T08:15:00+08:00" 直观，但调试场景需要精确。两层信息密度。
+- **不动 ai_insights/persona_summary 的 updated_at 写入路径**：memory_edit 已经在每次 update 时刷 updated_at，零额外工作。这是项目里 update_at 字段的"sleeper feature"被本 iter 唤醒——已经在 schema 里好几个 iter 没被 leverage。
+- **不写新单测**：纯 wire-up + 渲染，依赖既有 memory schema 测试。如果未来 PersonaSummary 字段增多到承载 logic（不只是 dumb pass-through），再加单测。
+
 ## Iter D4 设计要点（已实现）
 - **D3 之后再审视发现盲区**：上一个 iter 我说"D 三连 closes parity"——但仔细看 PanelToneStrip 的实际行为，pre_quiet 是 transient 的（仅 15min 窗口），跨过窗口后那段几小时的 quiet 期间 panel 信号全空白。这是"D series 自检"的价值——封口后再走一遍能发现自己当时遗漏的细节。
 - **fn 改 pub 即可**：in_quiet_hours 已经 private，已被 4 个单测覆盖完整 boundary cases。改 pub 是最小改动；test 都不用动。

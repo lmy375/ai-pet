@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D5：persona_summary 加"X 天前更新"新鲜度标签
+- 现状缺口：PanelPersona 的"自我画像"段显示 LLM 写的 persona_summary 文本，但没有任何"上次更新是什么时候"指示。如果用户没启用 consolidate（默认关），persona_summary 可能从首次生成后就再也没动过——内容随时间就跟不上"宠物和用户当前实际关系"。Cφ 加了"立即生成画像" 空态按钮，但有内容的态没有等价信号告诉用户"这画像可能旧了"。
+- 解法：
+  - `get_persona_summary` 命令返回类型从 `String` 升级为 `PersonaSummary { text, updated_at }`——直接拿 memory item 的 `updated_at` 字段（无新计算）。
+  - PanelPersona 拉新结构，setPersonaSummary(text) + setPersonaUpdatedAt(updated_at)。
+  - 在 persona 段已有内容下方追加一个小字 freshness label：
+    - "刚刚更新" / "N 小时前更新" / "N 天前更新"
+    - 7 天以上：变红、加 ⚠ 前缀、tooltip 解释 "consolidate 没在跑，画像跟不上节奏，开 设置 → 启用 consolidate 或 Memory tab 立即整理"
+    - 7 天以内：灰色斜体，tooltip 显示完整本地时间
+- 没有空态变化（Cφ 已经处理空态）。新增的纯前端 freshness 块只在有 personaSummary 时渲染。
+- 后端 type 改了一次接口；TS 同步更新。所有现有 cargo 测试通过；tsc 通过。
+- 7 天阈值选择：consolidate 默认 6h interval；正常使用 7 天会跑 28 次，足以保证画像新鲜。> 7 天 = 大概率 consolidate 被关或 LLM 反复决定不更新（信号不足）——两种情况都该提示用户。
+- 结果：用户开 Persona tab 一眼看到画像 + "3 天前更新"小字。如果看到 ⚠ 18 天前 红色——立刻明白要去打开 consolidate，比之前"画像看似 OK 但根本是 6 个月前的"有效得多。
+
 ## 2026-05-03 — Iter D4：ToneSnapshot 暴露 in_quiet_hours + 😴 chip
 - 现状缺口：D series 三连后我说"prompt/panel parity 完成"，再审视发现一个真实的盲区。`pre_quiet_minutes` 只在距 quiet 开始 ≤ 15 分钟时显（"🌙 距安静时段 8m"），表示"快进入"。**真的进入 quiet 后** pre_quiet 变 None，那段实际宠物在睡觉的时间 panel 没有任何 chip——用户晚上 23:30 打开 panel 看不到任何"现在宠物在 dormant"信号，只能从"宠物没说话 + tone strip 不少 chip 都消失了"间接推断。
 - 解法：补一个 `in_quiet_hours: bool` 字段：

@@ -2018,23 +2018,46 @@ pub fn build_butler_tasks_hint(now: chrono::NaiveDateTime) -> String {
     crate::redaction::redact_with_settings(&block)
 }
 
+/// Iter D5: serializable shape for `get_persona_summary` — text + last-updated
+/// timestamp so the Persona panel can show "X days ago" freshness. `text` is
+/// empty when no summary exists yet; `updated_at` is the ISO-8601 from the
+/// memory entry, also empty in that case.
+#[derive(serde::Serialize)]
+pub struct PersonaSummary {
+    pub text: String,
+    pub updated_at: String,
+}
+
 /// Tauri command returning the raw persona-summary description (Iter 105) — without
 /// the "你最近一次自我反思的画像（来自 consolidate）：" header `build_persona_hint`
 /// adds. The Persona panel surfaces this directly so users can read what the pet
-/// has written about itself. Empty when no summary exists yet.
+/// has written about itself. Iter D5: now returns text + updated_at so the panel
+/// can display freshness ("X 天前更新").
 #[tauri::command]
-pub fn get_persona_summary() -> String {
+pub fn get_persona_summary() -> PersonaSummary {
     let Ok(index) = crate::commands::memory::memory_list(Some("ai_insights".to_string())) else {
-        return String::new();
+        return PersonaSummary {
+            text: String::new(),
+            updated_at: String::new(),
+        };
     };
     let Some(cat) = index.categories.get("ai_insights") else {
-        return String::new();
+        return PersonaSummary {
+            text: String::new(),
+            updated_at: String::new(),
+        };
     };
     cat.items
         .iter()
         .find(|i| i.title == "persona_summary")
-        .map(|i| i.description.trim().to_string())
-        .unwrap_or_default()
+        .map(|i| PersonaSummary {
+            text: i.description.trim().to_string(),
+            updated_at: i.updated_at.clone(),
+        })
+        .unwrap_or_else(|| PersonaSummary {
+            text: String::new(),
+            updated_at: String::new(),
+        })
 }
 
 /// Read the pet's self-authored persona summary from `ai_insights/persona_summary`.
