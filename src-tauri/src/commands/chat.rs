@@ -48,6 +48,33 @@ pub fn trim_to_context(mut messages: Vec<ChatMessage>, max: usize) -> Vec<ChatMe
     messages
 }
 
+/// Iter R5: refresh the leading system message in-place with the current SOUL.md
+/// content. Reactive chat sessions bake SOUL into messages[0] at session creation
+/// (see `commands::session::create_session`), so any subsequent edit to SOUL.md
+/// would be invisible to that session unless we re-read on each turn. This helper
+/// runs at the head of `chat()` so the LLM always sees the latest soul, mirroring
+/// the proactive / telegram paths which already call `get_soul()` fresh per turn.
+///
+/// Behavior: if the first message has `role == "system"`, replace its content
+/// with `current_soul` (when non-empty); otherwise leave the list untouched —
+/// pre-Iter R5 sessions / odd histories without a leading system message stay
+/// behaving the same. `current_soul` is passed in (rather than read inside) so
+/// the helper stays pure and the test side can drive it deterministically.
+pub fn refresh_leading_soul(
+    mut messages: Vec<ChatMessage>,
+    current_soul: &str,
+) -> Vec<ChatMessage> {
+    if current_soul.trim().is_empty() {
+        return messages;
+    }
+    if let Some(first) = messages.first_mut() {
+        if first.role == "system" {
+            first.content = serde_json::Value::String(current_soul.to_string());
+        }
+    }
+    messages
+}
+
 /// Insert a transient system message carrying the pet's current mood and a nudge to update
 /// it after replying. Inserted right after the leading system block so it sits next to
 /// SOUL.md but before any conversation history. Callers (chat tauri command, telegram bot)
@@ -821,6 +848,11 @@ pub async fn chat(
     // Trim the inbound history to the configured cap before mood injection, so unbounded
     // frontend-side message arrays don't blow up token costs on long conversations.
     let trimmed = trim_to_context(messages, config.max_context_messages);
+    // Iter R5: refresh leading SOUL.md so edits take effect on the next turn
+    // without requiring a new session. Read on every turn — same model as
+    // proactive (which already calls get_soul fresh each cycle).
+    let current_soul = crate::commands::settings::get_soul().unwrap_or_default();
+    let trimmed = refresh_leading_soul(trimmed, &current_soul);
     let augmented = inject_mood_note(trimmed);
     // Iter 104: route-A persona layers also feed the reactive chat so the pet's
     // long-term identity (companionship_days / persona_summary / mood_trend) survives
@@ -929,6 +961,63 @@ mod trim_tests {
         let out = trim_to_context(msgs, 2);
         assert_eq!(out.len(), 2);
         assert_eq!(roles(&out), vec!["user", "assistant"]);
+    }
+
+    // -- Iter R5: refresh_leading_soul ---------------------------------------
+
+    fn content_str(m: &ChatMessage) -> &str {
+        m.content.as_str().unwrap_or("")
+    }
+
+    #[test]
+    fn refresh_leading_soul_replaces_first_system_content() {
+        let msgs = vec![msg("system", "OLD soul"), msg("user", "hi")];
+        let out = refresh_leading_soul(msgs, "FRESH soul");
+        assert_eq!(out.len(), 2, "no message count change");
+        assert_eq!(content_str(&out[0]), "FRESH soul");
+        assert_eq!(content_str(&out[1]), "hi", "user message untouched");
+    }
+
+    #[test]
+    fn refresh_leading_soul_no_op_when_first_is_not_system() {
+        // Histories with a leading user message exist when sessions were created
+        // pre-Iter R5 or via paths that don't bake SOUL in. Don't synthesize one.
+        let msgs = vec![msg("user", "u1"), msg("system", "embedded later")];
+        let out = refresh_leading_soul(msgs, "FRESH soul");
+        assert_eq!(content_str(&out[0]), "u1");
+        assert_eq!(content_str(&out[1]), "embedded later");
+    }
+
+    #[test]
+    fn refresh_leading_soul_only_touches_first_system_when_multiple() {
+        // The chat pipeline injects mood / persona system messages AFTER the
+        // session's leading SOUL slot. R5 must replace the SOUL slot only and
+        // leave subsequent system messages alone — they carry transient prompt
+        // context that doesn't come from SOUL.md.
+        let msgs = vec![
+            msg("system", "SOUL slot — stale"),
+            msg("system", "mood note slot"),
+            msg("user", "hi"),
+        ];
+        let out = refresh_leading_soul(msgs, "FRESH soul");
+        assert_eq!(content_str(&out[0]), "FRESH soul");
+        assert_eq!(content_str(&out[1]), "mood note slot");
+        assert_eq!(content_str(&out[2]), "hi");
+    }
+
+    #[test]
+    fn refresh_leading_soul_skips_when_current_is_blank() {
+        // Empty / whitespace SOUL would zero out the system slot — better to
+        // leave the prior content intact so the LLM still has *something*.
+        let msgs = vec![msg("system", "PRIOR soul"), msg("user", "hi")];
+        let out = refresh_leading_soul(msgs, "   \n  ");
+        assert_eq!(content_str(&out[0]), "PRIOR soul");
+    }
+
+    #[test]
+    fn refresh_leading_soul_empty_messages_passes_through() {
+        let out: Vec<ChatMessage> = refresh_leading_soul(vec![], "FRESH");
+        assert_eq!(out.len(), 0);
     }
 
     #[test]
