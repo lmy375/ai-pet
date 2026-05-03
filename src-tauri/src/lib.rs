@@ -112,6 +112,8 @@ pub fn run() {
             commands::debug::reset_llm_outcome_stats,
             commands::debug::get_env_tool_stats,
             commands::debug::reset_env_tool_stats,
+            commands::debug::get_prompt_tilt_stats,
+            commands::debug::reset_prompt_tilt_stats,
             decision_log::get_proactive_decisions,
             speech_history::get_recent_speeches,
             speech_history::get_lifetime_speech_count,

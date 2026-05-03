@@ -1104,6 +1104,14 @@ pub fn spawn(app: AppHandle) {
                     write_log(&log_store.0, &reason);
                 }
                 LoopAction::Run { idle_seconds, input_idle_seconds } => {
+                    // Record long-running prompt tilt (Iter 96): bump exactly one of four
+                    // buckets based on the active label set we computed for this Run. Done
+                    // here rather than after the LLM call so the count tracks "Run with
+                    // these rules dispatched" — the prompt was sent regardless of outcome.
+                    app.state::<crate::commands::debug::ProcessCountersStore>()
+                        .inner()
+                        .prompt_tilt
+                        .record_dispatch(&active_labels);
                     let outcome = run_proactive_turn(&app, idle_seconds, input_idle_seconds).await;
                     let chatty_part = chatty_tag.clone().unwrap_or_else(|| "-".to_string());
                     let outcome_counters = &app

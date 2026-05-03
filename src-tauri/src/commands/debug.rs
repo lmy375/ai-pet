@@ -143,6 +143,68 @@ pub fn new_env_tool_counters() -> EnvToolCountersStore {
     Arc::new(EnvToolCounters::default())
 }
 
+/// Counters tracking the prompt's "tilt" each time a proactive Run dispatches. For each
+/// Run, we look at the active rule labels and bump exactly one of four atomic buckets:
+///
+/// - `restraint_dominant`: more restraint rules than engagement rules (e.g., chatty +
+///   icebreaker active, no engagement-window) → prompt was nudging the pet to be quiet.
+/// - `engagement_dominant`: more engagement rules than restraint rules → prompt was
+///   nudging the pet to open up.
+/// - `balanced`: equal non-zero counts of both → mixed signals.
+/// - `neutral`: zero of both restraint and engagement (only instructional/corrective
+///   rules active, or no contextual rules at all) → prompt was directionally inert.
+///
+/// Sums across these four atomics equal the total number of dispatched Runs since the
+/// last reset. Lets the panel show "today the pet's prompt has been 60% restraint,
+/// 30% balanced, 10% engagement" — useful for diagnosing why the pet feels "off"
+/// even when individual gates look fine.
+#[derive(Default)]
+pub struct PromptTiltCounters {
+    pub restraint_dominant: AtomicU64,
+    pub engagement_dominant: AtomicU64,
+    pub balanced: AtomicU64,
+    pub neutral: AtomicU64,
+}
+
+impl PromptTiltCounters {
+    /// Classify the active labels for one dispatched Run and bump the matching bucket.
+    /// Mirrors the panel's badge-color logic in PanelDebug.tsx so the long-running
+    /// stats aggregate the same notion of tilt the user sees in the closed badge.
+    pub fn record_dispatch(&self, labels: &[&str]) {
+        let mut restraint = 0u64;
+        let mut engagement = 0u64;
+        for label in labels {
+            match *label {
+                // Restraint rules: tell the pet to stay quiet/brief.
+                "wake-back" | "pre-quiet" | "icebreaker" | "chatty" => restraint += 1,
+                // Engagement rules: tell the pet to open up.
+                "engagement-window" | "long-idle-no-restraint" => engagement += 1,
+                // Anything else (corrective / instructional) doesn't tilt the prompt
+                // toward quiet vs active behavior — leave it out of the comparison.
+                _ => {}
+            }
+        }
+        let bucket = if restraint > engagement {
+            &self.restraint_dominant
+        } else if engagement > restraint {
+            &self.engagement_dominant
+        } else if restraint + engagement == 0 {
+            &self.neutral
+        } else {
+            &self.balanced
+        };
+        bucket.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+pub type PromptTiltCountersStore = Arc<PromptTiltCounters>;
+
+#[cfg(test)]
+pub fn new_prompt_tilt_counters() -> PromptTiltCountersStore {
+    Arc::new(PromptTiltCounters::default())
+}
+
 /// Container for every per-process counter group the panel surfaces. Bundling them as a
 /// single Tauri State keeps `ToolContext` stable when we add a new metric: one field, one
 /// `app.state::<ProcessCountersStore>()` lookup, no plumbing through 5 callsites and
@@ -154,6 +216,7 @@ pub struct ProcessCounters {
     pub mood_tag: MoodTagCounters,
     pub llm_outcome: LlmOutcomeCounters,
     pub env_tool: EnvToolCounters,
+    pub prompt_tilt: PromptTiltCounters,
 }
 
 pub type ProcessCountersStore = Arc<ProcessCounters>;
@@ -380,6 +443,34 @@ pub fn reset_env_tool_stats(counters: State<'_, ProcessCountersStore>) {
     e.memory_search.store(0, Ordering::Relaxed);
 }
 
+#[derive(serde::Serialize)]
+pub struct PromptTiltStats {
+    pub restraint_dominant: u64,
+    pub engagement_dominant: u64,
+    pub balanced: u64,
+    pub neutral: u64,
+}
+
+#[tauri::command]
+pub fn get_prompt_tilt_stats(counters: State<'_, ProcessCountersStore>) -> PromptTiltStats {
+    let p = &counters.prompt_tilt;
+    PromptTiltStats {
+        restraint_dominant: p.restraint_dominant.load(Ordering::Relaxed),
+        engagement_dominant: p.engagement_dominant.load(Ordering::Relaxed),
+        balanced: p.balanced.load(Ordering::Relaxed),
+        neutral: p.neutral.load(Ordering::Relaxed),
+    }
+}
+
+#[tauri::command]
+pub fn reset_prompt_tilt_stats(counters: State<'_, ProcessCountersStore>) {
+    let p = &counters.prompt_tilt;
+    p.restraint_dominant.store(0, Ordering::Relaxed);
+    p.engagement_dominant.store(0, Ordering::Relaxed);
+    p.balanced.store(0, Ordering::Relaxed);
+    p.neutral.store(0, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{new_cache_counters, write_log, MAX_LOG_LINES};
@@ -508,6 +599,49 @@ mod tests {
         assert_eq!(c.spoke_with_any.load(Ordering::Relaxed), 2);
         assert_eq!(c.weather.load(Ordering::Relaxed), 2);
         assert_eq!(c.memory_search.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn prompt_tilt_record_dispatch_classifies_correctly() {
+        let c = super::new_prompt_tilt_counters();
+        // 2 restraint vs 0 engagement → restraint_dominant
+        c.record_dispatch(&["chatty", "icebreaker"]);
+        // 0 restraint vs 1 engagement → engagement_dominant
+        c.record_dispatch(&["engagement-window"]);
+        // 1 restraint vs 1 engagement → balanced (mixed but equal)
+        c.record_dispatch(&["chatty", "long-idle-no-restraint"]);
+        // Only instructional/corrective → neutral
+        c.record_dispatch(&["plan", "env-awareness"]);
+        // Empty → also neutral (no rules at all)
+        c.record_dispatch(&[]);
+        assert_eq!(c.restraint_dominant.load(Ordering::Relaxed), 1);
+        assert_eq!(c.engagement_dominant.load(Ordering::Relaxed), 1);
+        assert_eq!(c.balanced.load(Ordering::Relaxed), 1);
+        assert_eq!(c.neutral.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn prompt_tilt_unknown_labels_ignored() {
+        // Unknown labels (typos / future labels not yet classified) don't count toward
+        // restraint or engagement; they leave the bucket determined by the known ones.
+        let c = super::new_prompt_tilt_counters();
+        c.record_dispatch(&["chatty", "future-unknown-label"]);
+        assert_eq!(c.restraint_dominant.load(Ordering::Relaxed), 1);
+        assert_eq!(c.engagement_dominant.load(Ordering::Relaxed), 0);
+        assert_eq!(c.neutral.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn prompt_tilt_can_be_reset() {
+        let c = super::new_prompt_tilt_counters();
+        c.record_dispatch(&["chatty"]);
+        c.record_dispatch(&["engagement-window"]);
+        c.restraint_dominant.store(0, Ordering::Relaxed);
+        c.engagement_dominant.store(0, Ordering::Relaxed);
+        c.balanced.store(0, Ordering::Relaxed);
+        c.neutral.store(0, Ordering::Relaxed);
+        assert_eq!(c.restraint_dominant.load(Ordering::Relaxed), 0);
+        assert_eq!(c.engagement_dominant.load(Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -35,6 +35,13 @@ interface EnvToolStats {
   memory_search: number;
 }
 
+interface PromptTiltStats {
+  restraint_dominant: number;
+  engagement_dominant: number;
+  balanced: number;
+  neutral: number;
+}
+
 interface PendingReminder {
   time: string;
   topic: string;
@@ -81,6 +88,12 @@ export function PanelDebug() {
     upcoming_events: 0,
     memory_search: 0,
   });
+  const [promptTiltStats, setPromptTiltStats] = useState<PromptTiltStats>({
+    restraint_dominant: 0,
+    engagement_dominant: 0,
+    balanced: 0,
+    neutral: 0,
+  });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
   const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
@@ -94,7 +107,7 @@ export function PanelDebug() {
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut, envT] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut, envT, tilt] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
@@ -106,6 +119,7 @@ export function PanelDebug() {
         invoke<number>("get_today_speech_count"),
         invoke<LlmOutcomeStats>("get_llm_outcome_stats"),
         invoke<EnvToolStats>("get_env_tool_stats"),
+        invoke<PromptTiltStats>("get_prompt_tilt_stats"),
       ]);
       setLogs(result);
       setCacheStats(stats);
@@ -118,6 +132,7 @@ export function PanelDebug() {
       setTodaySpeechCount(today);
       setLlmOutcomeStats(llmOut);
       setEnvToolStats(envT);
+      setPromptTiltStats(tilt);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -167,6 +182,16 @@ export function PanelDebug() {
       weather: 0,
       upcoming_events: 0,
       memory_search: 0,
+    });
+  };
+
+  const handleResetPromptTiltStats = async () => {
+    await invoke("reset_prompt_tilt_stats");
+    setPromptTiltStats({
+      restraint_dominant: 0,
+      engagement_dominant: 0,
+      balanced: 0,
+      neutral: 0,
     });
   };
 
@@ -388,6 +413,52 @@ export function PanelDebug() {
             </button>
           </span>
         )}
+        {(() => {
+          const t = promptTiltStats;
+          const total = t.restraint_dominant + t.engagement_dominant + t.balanced + t.neutral;
+          if (total === 0) return null;
+          // Pick the dominant bucket; ties fall back to "balanced/neutral" priority.
+          const buckets: { key: keyof PromptTiltStats; label: string; color: string }[] = [
+            { key: "restraint_dominant", label: "克制", color: "#dc2626" },
+            { key: "engagement_dominant", label: "引导", color: "#16a34a" },
+            { key: "balanced", label: "平衡", color: "#7c3aed" },
+            { key: "neutral", label: "中性", color: "#94a3b8" },
+          ];
+          const dominant = buckets.reduce((best, b) =>
+            t[b.key] > t[best.key] ? b : best,
+          );
+          const pct = Math.round((t[dominant.key] / total) * 100);
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+              <span
+                style={{
+                  fontSize: "12px",
+                  color: dominant.color,
+                  alignSelf: "center",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                }}
+                title={`累计 ${total} 次 Run 派发的 prompt 倾向分布: 克制 ${t.restraint_dominant} · 引导 ${t.engagement_dominant} · 平衡 ${t.balanced} · 中性 ${t.neutral}。重置后从零开始累计。`}
+              >
+                倾向 {dominant.label} {pct}% ({t[dominant.key]}/{total})
+              </span>
+              <button
+                onClick={handleResetPromptTiltStats}
+                title="重置 prompt 倾向累计统计"
+                style={{
+                  fontSize: "10px",
+                  padding: "2px 6px",
+                  borderRadius: "4px",
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  color: "#64748b",
+                  cursor: "pointer",
+                }}
+              >
+                重置
+              </button>
+            </span>
+          );
+        })()}
         {tone && tone.active_prompt_rules.length > 0 && (() => {
           // Compute dominant nature so the closed badge alone signals "pet is being
           // restrained vs engaged vs neutral". Count only restraint and engagement —

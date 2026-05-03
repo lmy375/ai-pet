@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 96 设计要点（已实现）
+- **4 bucket 互斥求和=N 而非各自独立累加**：本可以简单两个 atomic（restraint_count_total / engagement_count_total），看到 R=12 E=4 推断"克制主导"。但单 Run 可能有多条 restraint 规则，求和会高估发生频率。每 Run 单一分类 bump 互斥 bucket，4 个 bucket 加起来 = Run 总次数，比例直接等于"那一类 dispatch 的占比"。
+- **classification 与 panel badge 完全一致**：Iter 95 badge 颜色 = `restraint > engagement ? red : engagement > restraint ? green : (R+E==0 ? purple-neutral : purple-balanced)`。record_dispatch 完全镜像这个判断——保证"长期 chip 显示克制 60%"和"打开 panel 时 badge 是红色"两个观察是相同事实的两个时间尺度展示。
+- **只 Run 派发计数，Skip/Silent 不计**：Skip 表示 gate 拦截（用户活跃 / 安静时段），Silent 表示 disabled——这两种情况虽然也"算了一次 active_labels"，但 prompt 没真的发给 LLM。计入会让 idle 用户的 12 次/小时 Skip 把统计淹没成"60% restraint"——其实根本没派发。所以只在 Run 路径计数，反映 prompt 真正在工作的那些时刻。
+- **dominant chip 的 4 路 reduce**：用 `reduce((best, b) => t[b.key] > t[best.key] ? b : best)` 选最大 bucket。tied 时 reduce 保留先入者——按 buckets 数组顺序：restraint > engagement > balanced > neutral 优先级。这个 tie-breaker 选择是设计判断："如果 restraint 和 balanced 持平，更倾向报告 restraint"——因为 restraint 更值得用户警觉。
+- **总数 0 时不渲染**：和其他 chip 同策略。新启动 panel 上不会冒出空 chip 干扰。Run 一次后立刻 1/1=100% 主导某类——预期外的"100% chatty 主导"瞬间值不会持续误导（很快被后续 Run 稀释）。
+- **不持久化跨重启**：和其他 process_counters 一致。这是"调试 prompt 时看效果"的指标——重启清零让用户能针对一段使用窗口测量。如果将来想看"过去一周倾向"，需要走 speech_daily 类似的文件分桶（不是这个 iter 的范围）。
+- **buckets 数组用对象数组而非分段 if**：`{key, label, color}[]` 让 chip 渲染逻辑统一——选 dominant 后直接拿 label/color，无 switch。新增 bucket 类型只需加一行数组项目。
+
 ## Iter 95 设计要点（已实现）
 - **只数 restraint vs engagement，忽略 corrective/instructional**：badge 颜色应该传递"宠物现在被压还是被激发"。corrective（"过去做错了，注意改"）和 instructional（"做事时按某种格式"）都不直接影响"开不开口"，纳入计数会污染倾向信号。例如纯 instructional 规则一堆活跃，红色或绿色都是误导——保持紫色（中性）正确。
 - **strict > 而非 ≥**：tilt 判断用严格大于。1 vs 1 仍然紫色；2 vs 2 也紫色。"平衡"也是一种状态，不应该归到任何一边。如果用 >=，1==1 时会被随便归到 restraint（因为先判），破坏对称性。
