@@ -30,6 +30,14 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 90 设计要点（已实现）
+- **共享 parser helper**：Iter 89 用 substring contains，Iter 90 需要枚举 keys——共用一个解析函数让两个测试都看同一个真相。Iter 89 的 contains 模式有 false-positive 风险（label 名字出现在 comment 里），key parse 则严格只承认对象字面量的 key。重构 Iter 89 复用 helper 顺带提升它的严格度。
+- **bare key 检测从 indent depend 改为更通用**：原 Iter 89 的 `"\n  plan:"` 模式硬编码两空格 indent。helper 改用 trim + `find(": {")` 模式，缩进无关——TS prettier 配置改成 4 空格也能工作。
+- **HashSet 双向比对**：Vec → HashSet 转换 O(n)，N=8 时几乎免费；让 contains 是 O(1) 而不是线性扫，且测试逻辑更可读。
+- **三种漂移场景全覆盖**：(a) backend 加 label 忘改 TS、(b) TS 加 ghost key 没 backend 对应、(c) backend 重命名 label。前两种各 fail 一个测试，(c) 因为旧 key 仍在 TS 但 backend 不再产 → 触发 ghost test fail；同时新 label 无翻译 → 触发 coverage test fail。两个测试合在一起捕获全部漂移类型。
+- **不是 IndexMap 顺序检查**：本可以也断言 frontend 字典 key 顺序匹配 firing order。但 firing order 是 backend 决策概念，UI 展示顺序是另一种关注（panel 已按 active_prompt_rules 顺序渲染），dict 写入顺序无关紧要。增加这个约束反而限制开发者自由排序字典。
+- **panic message 给修复指引**：失败时输出 `"...要么删了，要么补 backend label"` 中文提示——开发者一眼知道两条路径选哪条。"被动写错误信息"也是 API 设计，让测试失败比 silent 更友好。
+
 ## Iter 89 设计要点（已实现）
 - **跨语言对齐用 Rust test 而非前端 test runner**：项目还没有 vitest / jest 之类前端测试基础设施。引入只为这一个 invariant 不划算。Rust 已有 cargo test 跑得起来，IO + string scan 能覆盖此场景，零新依赖。
 - **literal 字符串扫描而非 TS 解析**：tree-sitter / oxc 之类能 robust 解 TS object literal，但是 over-engineering。当前 8 条 label 都是字符串字面量 + kebab-case，contains check 误判概率 ≈ 0。如果未来 label 集合膨胀或者命名碰撞，再升级为 oxc parser 一次性投入。

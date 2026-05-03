@@ -1736,17 +1736,11 @@ mod prompt_tests {
         );
     }
 
-    #[test]
-    fn frontend_prompt_rule_descriptions_cover_every_backend_label() {
-        // Iter 89 — guard the contract between the Rust label helpers and the frontend
-        // PROMPT_RULE_DESCRIPTIONS dictionary in PanelDebug.tsx. If either side adds a
-        // label without updating the other, the panel falls back to "(label X 暂无中文
-        // 描述)" — visible but easy to miss in dev. This test fails CI instead.
-        //
-        // We scan PanelDebug.tsx for literal `"<label>":` occurrences inside the dict.
-        // Rust labels are kebab-case (`wake-back`, `env-awareness`) and unique enough
-        // that incidental substring matches elsewhere in the file are vanishingly
-        // unlikely; if a future label collides, escalate to a real TS parser.
+    /// Read PanelDebug.tsx and return the kebab/snake keys defined in
+    /// PROMPT_RULE_DESCRIPTIONS. Used by both alignment tests so the parsing logic
+    /// only lives in one place. Plain string scanning — no regex dep — and tolerant
+    /// of both quoted (`"wake-back": {`) and bare-identifier (`plan: {`) keys.
+    fn parse_prompt_rule_dict_keys() -> Vec<String> {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
             .expect("CARGO_MANIFEST_DIR is set during cargo test runs");
         let panel_path = std::path::PathBuf::from(manifest_dir)
@@ -1755,35 +1749,98 @@ mod prompt_tests {
             .join("components")
             .join("panel")
             .join("PanelDebug.tsx");
-        let panel_src = std::fs::read_to_string(&panel_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to read PanelDebug.tsx at {}: {}. \
-                 Did the path move? Adjust this test if so.",
-                panel_path.display(),
-                e
-            )
-        });
-        // Sanity: the dictionary itself must exist; otherwise our coverage check is
-        // vacuously true for every label.
+        let panel_src = std::fs::read_to_string(&panel_path)
+            .unwrap_or_else(|e| panic!("read PanelDebug.tsx: {}", e));
+        let mut keys: Vec<String> = Vec::new();
+        let mut in_dict = false;
+        for line in panel_src.lines() {
+            if line.starts_with("const PROMPT_RULE_DESCRIPTIONS") {
+                in_dict = true;
+                continue;
+            }
+            if !in_dict {
+                continue;
+            }
+            let trimmed = line.trim();
+            if trimmed == "};" {
+                break;
+            }
+            // Each top-level entry starts with `<key>: {` (key value is itself a {…}
+            // object literal). Inner lines use `title: "..."` / `summary: "..."` and
+            // don't match `: {` so they're naturally skipped.
+            if let Some(idx) = trimmed.find(": {") {
+                let raw = trimmed[..idx].trim().trim_matches('"');
+                if !raw.is_empty()
+                    && raw
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                {
+                    keys.push(raw.to_string());
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn frontend_prompt_rule_descriptions_have_no_ghost_labels() {
+        // Iter 90 — reverse of Iter 89's coverage check. A "ghost" entry is a key in
+        // PROMPT_RULE_DESCRIPTIONS that no backend label helper ever returns; it
+        // wastes dictionary space and quietly hides a UI string nobody can ever see.
+        // Catches dead translations left behind after a backend rule was renamed or
+        // removed.
+        let frontend_keys = parse_prompt_rule_dict_keys();
         assert!(
-            panel_src.contains("const PROMPT_RULE_DESCRIPTIONS"),
-            "PROMPT_RULE_DESCRIPTIONS dictionary not found in PanelDebug.tsx — \
-             the frontend may have moved or renamed it. Update this test."
+            !frontend_keys.is_empty(),
+            "PROMPT_RULE_DESCRIPTIONS dictionary appears empty — parser may be broken \
+             or the dict was emptied. Iter 89's test should also be failing."
         );
+        // All-true / max-trigger inputs surface every label both backend helpers can
+        // ever produce. Same input recipe as Iter 89's test for consistency.
+        let env = active_environmental_rule_labels(true, true, true, true, true);
+        let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
+        let backend: std::collections::HashSet<&'static str> =
+            env.iter().chain(data.iter()).copied().collect();
+        let ghosts: Vec<&str> = frontend_keys
+            .iter()
+            .filter(|k| !backend.contains(k.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        assert!(
+            ghosts.is_empty(),
+            "PROMPT_RULE_DESCRIPTIONS contains ghost keys with no backend producer: \
+             {:?}. Either remove them, or add the corresponding backend label.",
+            ghosts
+        );
+    }
+
+    #[test]
+    fn frontend_prompt_rule_descriptions_cover_every_backend_label() {
+        // Iter 89 — guard the contract between the Rust label helpers and the frontend
+        // PROMPT_RULE_DESCRIPTIONS dictionary in PanelDebug.tsx. If either side adds a
+        // label without updating the other, the panel falls back to "(label X 暂无中文
+        // 描述)" — visible but easy to miss in dev. This test fails CI instead.
+        //
+        // Iter 90 unified the parsing path: both this test and the ghost-keys test go
+        // through `parse_prompt_rule_dict_keys`, so they validate against the same
+        // canonical key set extracted from the dictionary block.
+        let frontend_keys = parse_prompt_rule_dict_keys();
+        assert!(
+            !frontend_keys.is_empty(),
+            "PROMPT_RULE_DESCRIPTIONS dictionary not found or empty in PanelDebug.tsx \
+             — the frontend may have moved or renamed it. Update parse_prompt_rule_dict_keys."
+        );
+        let frontend_set: std::collections::HashSet<&str> =
+            frontend_keys.iter().map(|s| s.as_str()).collect();
         // All-true inputs surface every possible label both helpers can ever return.
         let env = active_environmental_rule_labels(true, true, true, true, true);
         let data = active_data_driven_rule_labels(0, 999, 1, 999, 0);
-        let mut missing = Vec::new();
-        for label in env.iter().chain(data.iter()) {
-            // Match either `"label":` (when key is quoted, mandatory for kebab-case
-            // identifiers like wake-back) or `label:` (used by the JS-shorthand bare
-            // identifier when label is a valid ECMAScript identifier, e.g. `plan`).
-            let quoted = format!("\"{}\":", label);
-            let bare = format!("\n  {}:", label);
-            if !panel_src.contains(&quoted) && !panel_src.contains(&bare) {
-                missing.push(*label);
-            }
-        }
+        let missing: Vec<&'static str> = env
+            .iter()
+            .chain(data.iter())
+            .filter(|l| !frontend_set.contains(*l))
+            .copied()
+            .collect();
         assert!(
             missing.is_empty(),
             "PanelDebug.tsx PROMPT_RULE_DESCRIPTIONS missing entries for backend \

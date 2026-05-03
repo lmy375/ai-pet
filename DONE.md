@@ -2,6 +2,16 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 90：反向对齐——禁止前端"幽灵 label"
+- 新单测 `frontend_prompt_rule_descriptions_have_no_ghost_labels`：扫 `PROMPT_RULE_DESCRIPTIONS` 所有 key，断言每个 key 都能在 backend 全集（env+data 全开）中找到。失败时列出 ghost keys，提示"要么删了，要么补 backend label"。
+- 抽出共用 helper `parse_prompt_rule_dict_keys() -> Vec<String>`：从 `const PROMPT_RULE_DESCRIPTIONS` 起始扫到 `};` 结束，每行 `<key>: {` 模式提取 key（兼容 `"wake-back": {` 和 `plan: {` 两种 JS 写法）。纯字符串扫描零依赖，避免引入 regex crate。
+- 顺手把 Iter 89 的 `frontend_prompt_rule_descriptions_cover_every_backend_label` 也改用 `parse_prompt_rule_dict_keys`，让两个测试用同一个 key 解析路径——避免一边用 substring contains 一边用 key parse 导致结果分叉。
+- 现在 backend ↔ frontend label 集合双向对齐：
+  - 加 backend label 但忘改 TS → Iter 89 fail
+  - 改 TS 但 backend 没产 label → Iter 90 fail
+  - 重命名 backend label 但前端没跟 → Iter 89 fail（旧 key 被识别为 ghost 触发 90 fail，新 label 没翻译触发 89 fail）
+- 177 tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 89：cargo test 守门 frontend label 字典与 backend 对齐
 - 新单测 `frontend_prompt_rule_descriptions_cover_every_backend_label` 在 `proactive.rs` 测试模块里：用 `CARGO_MANIFEST_DIR/../src/components/panel/PanelDebug.tsx` 路径读 frontend 文件，遍历 `active_environmental_rule_labels(true, ..., true)` + `active_data_driven_rule_labels(0, 999, 1, 999, 0)` 返回的所有 label，断言每个 label 在 TS 文件里能匹配到 `"label":` 或 `\n  label:`（覆盖 quoted 和 bare-identifier 两种 JS 写法）。
 - 同步加 sanity check：`PROMPT_RULE_DESCRIPTIONS` 字符串本身必须存在，避免文件移动 / 重命名 / 删字典时测试 vacuously 通过。
