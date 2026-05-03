@@ -107,6 +107,12 @@ export function PanelDebug() {
   const [feedbackFilter, setFeedbackFilter] = useState<
     "all" | "replied" | "ignored" | "dismissed"
   >("all");
+  // Iter R38: same pattern applied to decision_log timeline. Four common
+  // kinds for filter (all / Spoke / LlmSilent / Skip); rare kinds (Silent
+  // pre-LLM / LlmError / Run wrapper / ToolReview*) appear under "all".
+  const [decisionFilter, setDecisionFilter] = useState<
+    "all" | "Spoke" | "LlmSilent" | "Skip"
+  >("all");
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
@@ -879,21 +885,97 @@ export function PanelDebug() {
           <div style={{ color: "#64748b", marginBottom: "4px", fontFamily: "inherit", fontSize: "12px" }}>
             最近 {decisions.length} 次主动开口判断（最新在底部）
           </div>
-          {decisions.map((d, i) => {
-            const isOutcome = d.kind === "Spoke" || d.kind === "LlmSilent" || d.kind === "LlmError";
+          {/* Iter R38: filter buttons mirroring R37 feedback-timeline pattern */}
+          {(() => {
+            const spokeCt = decisions.filter((d) => d.kind === "Spoke").length;
+            const silentCt = decisions.filter((d) => d.kind === "LlmSilent").length;
+            const skipCt = decisions.filter((d) => d.kind === "Skip").length;
+            const btnStyle = (active: boolean, accent: string) => ({
+              padding: "2px 8px",
+              fontSize: "10px",
+              borderRadius: "10px",
+              border: `1px solid ${active ? accent : "#cbd5e1"}`,
+              background: active ? accent : "#fff",
+              color: active ? "#fff" : "#475569",
+              cursor: "pointer",
+              fontWeight: 600 as const,
+              fontFamily: "inherit",
+            });
             return (
-              <div key={i} style={{ display: "flex", gap: "8px" }}>
-                <span style={{ color: "#94a3b8" }}>{d.timestamp.slice(11)}</span>
-                <span style={{ color: kindColor(d.kind), fontWeight: 600, minWidth: "44px" }}>
-                  {/* Tree-like connector visually links an outcome row to the Run above it */}
-                  {isOutcome ? "└ " : ""}{d.kind}
-                </span>
-                <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>
-                  {localizeReason(d.kind, d.reason)}
-                </span>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "6px",
+                  marginBottom: "6px",
+                  flexWrap: "wrap",
+                  fontFamily: "inherit",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setDecisionFilter("all")}
+                  style={btnStyle(decisionFilter === "all", "#475569")}
+                  title="显示全部决策（含 Run / Silent / LlmError / ToolReview*）"
+                >
+                  全部 {decisions.length}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDecisionFilter("Spoke")}
+                  style={btnStyle(decisionFilter === "Spoke", "#16a34a")}
+                  title="只看 LLM 选择开口的轮次"
+                >
+                  开口 {spokeCt}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDecisionFilter("LlmSilent")}
+                  style={btnStyle(decisionFilter === "LlmSilent", "#a855f7")}
+                  title="只看 LLM 选择沉默的轮次"
+                >
+                  沉默 {silentCt}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDecisionFilter("Skip")}
+                  style={btnStyle(decisionFilter === "Skip", "#f59e0b")}
+                  title="只看 gate 阻止 LLM 跑的轮次"
+                >
+                  跳过 {skipCt}
+                </button>
               </div>
             );
-          })}
+          })()}
+          {(() => {
+            const filtered =
+              decisionFilter === "all"
+                ? decisions
+                : decisions.filter((d) => d.kind === decisionFilter);
+            if (filtered.length === 0) {
+              return (
+                <div style={{ color: "#94a3b8", fontStyle: "italic", fontFamily: "inherit" }}>
+                  当前过滤下没有匹配条目。
+                </div>
+              );
+            }
+            return filtered.map((d, i) => {
+              const isOutcome = d.kind === "Spoke" || d.kind === "LlmSilent" || d.kind === "LlmError";
+              return (
+                <div key={i} style={{ display: "flex", gap: "8px" }}>
+                  <span style={{ color: "#94a3b8" }}>{d.timestamp.slice(11)}</span>
+                  <span style={{ color: kindColor(d.kind), fontWeight: 600, minWidth: "44px" }}>
+                    {/* Tree-like connector visually links an outcome row to the Run above it.
+                        When filtering to a single kind, the wrapping Run is hidden — └ may
+                        still appear which is fine (same kind across rows looks consistent). */}
+                    {isOutcome ? "└ " : ""}{d.kind}
+                  </span>
+                  <span style={{ color: "#475569", flex: 1, wordBreak: "break-all" }}>
+                    {localizeReason(d.kind, d.reason)}
+                  </span>
+                </div>
+              );
+            });
+          })()}
         </div>
       )}
 
