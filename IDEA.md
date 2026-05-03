@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R59 设计要点（已实现）
+- **read + write helper 对称是完整的 testability**：R53 + R56 测 read 路径 (compute_*_remaining)。R59 测 write 路径 (compute_new_*)。**每个 stateful 模块都应该有 read + write 两套 pure helpers**——单测覆盖才完整。如果只测 read 不测 write，setter boundary case (0/负数/empty/whitespace 等) 全是黑盒。R59 关闭这个 testability gap。
+- **defense in depth: whitespace as empty**：compute_new_transient_note 把 " "/"\t\n" 当 empty 处理。诱惑是"frontend 应该 trim，backend 信任输入"。但**pure helper 不依赖 caller 行为** —— defense at boundary。Trade-off: backend 多 1 行 trim 检查 vs 一旦 frontend bug 就保存了空白 note。明显前者收益。这条 R-series 早期已用过（R12 daily_review skip empty body / R26 feedback_aggregate skip < 5 samples 等）。
+- **`&str` for pure helpers**：compute_new_transient_note 接 `&str` 而不是 `String`。**pure helpers 默认 borrow 不 own** —— 让 caller 决定 ownership。Tauri command 接 `String` arg, pass `&text` 给 helper, helper 在 `text.trim().to_string()` 才转 own。这种"borrow when possible" 是 Rust 习惯。
+- **trim ≠ collapse internal whitespace**：" in a meeting " trim 后是 "in a meeting"，不是 "in a meeting"（多空格压一个）。internal whitespace 是用户语义一部分（句子停顿 / 缩进），不该 collapse。**trim semantics 应该明确：仅去边缘 noise**。
+- **R-series user-control cluster 8 iter 完整化**：R52 (mute backend) → R53 (mute read test) → R54 (mute preset menu) → R55 (note backend) → R56 (note read test) → R57 (note refresh-on-open) → R58 (mute refresh-on-click) → R59 (mute+note write test)。**8 iter 全在同 cluster，建立完整 stateful module pattern**：backend struct + 4 pure helpers (read active / read remaining / write new / clear) + 测试 + UI button + chip + popover/menu + auto-refresh。这套模板**适合所有 transient state 工具**，未来加 mood preset / focus level 等可以照搬。
+- **518 tests 大多在 user-control cluster**：R-series 50+ iter 中 user-control cluster 单独贡献 ~30 tests（R53 5 + R56 4 + R59 9 = 18 + 间接覆盖 + boundary case）。**真正复杂的功能值得高密度测试**——单 iter 5-10 test 是 mature project 健康比例。
+- **Tauri command 应该尽量是 thin wrapper**：set_mute_minutes / set_transient_note 现在都是 ~10 行 wrapper —— 调 pure helper + write mutex + format response。**Tauri 命令本身没有 logic 该 test**，所有 logic 在 pure helpers 里。这是 R-series 反复强调的纪律 (R52 mute / R55 note 等)，R59 把这个原则贯彻到底 —— 已经 ship 的 command 也回头还成 thin wrapper。
+
 ## Iter R58 设计要点（已实现）
 - **codified rule audit 第一次践行 R57 原则**：R57 codified "transient state needs refresh on user-interaction entry"。R58 立刻 audit 同 codebase 还有谁违反 —— R52 mute 同样 latent bug。这种 codified rule → audit-and-backfill 是 R-series 反复践行的节奏（R20→R21+R22 / R29→R30 / R46→R47）。**rule 价值不在 codify 一次，而是反复 audit 让全 codebase 都跟上**。R58 是这条节奏的又一次实例化，证明 rule 真的 actively 应用。
 - **Promise<boolean> return 解 closure-over-stale-state 坑**：React useState 的 setMuted 触发 next-render 才生效。如果 `setMuted(isMuted); if (muted) ...` 这种代码 sequence 里 `muted` 仍是 closure 里捕获的旧值。**直接 return fresh value** 让同 promise chain 内拿到 truth = 经典 React closure 坑解法。这条原则适用所有"先 fetch 再 act" 的 async handler。

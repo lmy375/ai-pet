@@ -221,6 +221,39 @@ pub fn transient_note_remaining_seconds() -> Option<i64> {
     compute_transient_note_remaining(note.as_ref(), chrono::Local::now())
 }
 
+/// Iter R59: pure helper computing the new MUTE_UNTIL value given a
+/// `minutes` request and current `now`. Returns None when minutes ≤ 0
+/// (caller treats this as "clear"); Some(now + minutes) otherwise.
+/// Pure / testable — extract setter logic from the Tauri command so
+/// boundary cases (negative / zero) are unit-test verifiable.
+pub fn compute_new_mute_until(
+    minutes: i64,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    if minutes <= 0 {
+        return None;
+    }
+    Some(now + chrono::Duration::minutes(minutes))
+}
+
+/// Iter R59: pure helper computing the new TRANSIENT_NOTE value. Empty
+/// (or whitespace-only) text or minutes ≤ 0 → None (clear). Otherwise
+/// Some(TransientNote { trimmed text, until = now + minutes }).
+pub fn compute_new_transient_note(
+    text: &str,
+    minutes: i64,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<TransientNote> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || minutes <= 0 {
+        return None;
+    }
+    Some(TransientNote {
+        text: trimmed.to_string(),
+        until: now + chrono::Duration::minutes(minutes),
+    })
+}
+
 /// Iter R52 / R53: pure helper computing remaining mute seconds. Returns
 /// `None` when `until` is None (never set / cleared) or already past.
 /// Returns `Some(positive)` when mute is still active. Pure / testable —
@@ -906,5 +939,74 @@ mod tests {
             until: now,
         };
         assert_eq!(compute_transient_note_remaining(Some(&note), now), None);
+    }
+
+    // -- Iter R59: compute_new_mute_until tests -------------------------------
+
+    #[test]
+    fn new_mute_until_returns_none_for_zero_minutes() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert_eq!(compute_new_mute_until(0, now), None);
+    }
+
+    #[test]
+    fn new_mute_until_returns_none_for_negative_minutes() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert_eq!(compute_new_mute_until(-5, now), None);
+        assert_eq!(compute_new_mute_until(-1, now), None);
+    }
+
+    #[test]
+    fn new_mute_until_returns_now_plus_minutes_for_positive() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let until = compute_new_mute_until(30, now).expect("positive minutes → Some");
+        let diff = (until - now).num_minutes();
+        assert_eq!(diff, 30);
+    }
+
+    #[test]
+    fn new_mute_until_returns_one_minute_for_minutes_equals_one() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let until = compute_new_mute_until(1, now).expect("1 min → Some");
+        assert_eq!((until - now).num_minutes(), 1);
+    }
+
+    // -- Iter R59: compute_new_transient_note tests ---------------------------
+
+    #[test]
+    fn new_transient_note_returns_none_for_empty_text() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert!(compute_new_transient_note("", 30, now).is_none());
+    }
+
+    #[test]
+    fn new_transient_note_returns_none_for_whitespace_text() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        // Caller's whitespace-only text should clear, not save a vacuous note.
+        assert!(compute_new_transient_note("   ", 30, now).is_none());
+        assert!(compute_new_transient_note("\t\n  \t", 30, now).is_none());
+    }
+
+    #[test]
+    fn new_transient_note_returns_none_for_zero_or_negative_minutes() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert!(compute_new_transient_note("valid text", 0, now).is_none());
+        assert!(compute_new_transient_note("valid text", -10, now).is_none());
+    }
+
+    #[test]
+    fn new_transient_note_trims_whitespace() {
+        // Leading/trailing whitespace stripped; internal whitespace preserved.
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = compute_new_transient_note("  in a meeting until 2pm  ", 30, now)
+            .expect("non-empty text + positive minutes → Some");
+        assert_eq!(note.text, "in a meeting until 2pm");
+    }
+
+    #[test]
+    fn new_transient_note_sets_until_correctly() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = compute_new_transient_note("hi", 60, now).unwrap();
+        assert_eq!((note.until - now).num_minutes(), 60);
     }
 }
