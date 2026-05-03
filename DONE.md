@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R56：transient note remaining 时长 surface（R55 follow-up）
+- 现状缺口：R55 chip "📝 {text}" 只显示文本，用户**不知道"这条 note 还有多久到期"**。如果 user 设了"开会 4 小时" note 后过 3 小时回来想确认，无法看到剩余时间，得重新设。Mute chip (R52) 已显"剩 Nm"，note chip 缺这个对称信息。
+- 解法 — 镜像 R52 compute_mute_remaining 模式：
+  - 新 `compute_transient_note_remaining(note, now) -> Option<i64>` 纯函数 in gate.rs。同 R52 boundary semantics（>0 严格，equality 返 None）。
+  - 4 单测：None / active / expired / boundary at exact expiry。
+  - production wrapper `transient_note_remaining_seconds()` 读静态 + Local::now()。
+  - ToneSnapshot 加 `transient_note_remaining_seconds: Option<i64>` 字段。
+  - panelTypes.ts 同步类型。
+  - PanelToneStrip chip 改"📝 {text} · 剩 Nm"，hover title 显精确分钟数。
+- 决策 — 镜像 R52 helper 形态：compute_mute_remaining + compute_transient_note_remaining 同形态、同 boundary semantics、同测试结构。**对称 helper 让 mental model 简单** —— 学一个会另一个。如果之后加第三 transient feature (mood preset 等), 同 pattern 复用。
+- 决策 — chip 内附"剩 Nm" 后缀而非 hover-only：mute chip "🔇 静音 30m" 直接显时间。note chip 应该一致，否则 user mental model 撕裂。**对称 visual** = 一致 chip-display rule。
+- 决策 — Math.max(1, round(secs/60)) 让 < 1 min 显"剩 1m"：59 秒到 0 秒之间显示"剩 0m" 看着像已过期；显"剩 1m" 更准确（虽然 round-up 但用户感知一致）。**human-friendly time display** 优于 mathematically-precise 0。
+- 决策 — chip maxWidth 240→260：之前 240px 紧凑现在加"· 剩 Nm" 多 ~50px 的尾巴空间。微调让长 note 仍能 ellipsis 但短 note 时尾巴有空间。**chip 尺寸跟内容动态调整**。
+- 决策 — Tauri 命令不变：set_transient_note / get_transient_note 已经返回 (text, until_iso)。frontend 可以从 until_iso 自己算 remaining，但 backend 已经算的一遍了 — ToneSnapshot 直接给 remaining 数字更经济（避免 frontend 重新 parse ISO）。
+- 决策 — 不写 Tauri 命令测试：仍用 R53 同样的"测 logic 不测 wiring"原则。新 helper 测试覆盖核心 boundary。
+- 测试结果：509 cargo（+4）；clippy clean；fmt clean；tsc clean。
+- 结果：mute chip 跟 note chip 现在 visually 对称 —— 都显 "{符号} {状态} · 剩 Nm"。R52+R55+R56 三 iter 把 user-control 双工具完整化：silence + context 都有 remaining 时长可见。**对称 surface 是 mature UX 标志**。
+
 ## 2026-05-04 — Iter R55：transient instruction note 完整 stack（"我在开会"上下文留言）
 - 现状缺口：R52 mute 完全阻塞 pet — 适合"完全静一段时间"。但用户经常想的是"我在开会，你别打扰但万一有真急事还是说一声"或"今天身体不舒服请轻点开口"——**需要 context 而非 silence**。memory_edit 写 todo 类是 future 提醒不是 current state directive。需要新工具：transient instruction note。
 - 解法 — 完整端到端 feature stack：

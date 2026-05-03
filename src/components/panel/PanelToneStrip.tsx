@@ -168,24 +168,36 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           🤐 沉默 ×{tone.consecutive_silent_streak}
         </span>
       )}
-      {tone.transient_note && (
-        <span
-          title={`用户当前留下的状态/指令：「${tone.transient_note}」 — pet 开口时会读到这条 [临时指示]，应当尊重。R55 transient note，自动到期。`}
-          style={{
-            color: "#fff",
-            background: "#0891b2",
-            padding: "1px 8px",
-            borderRadius: "10px",
-            fontWeight: 600,
-            maxWidth: "240px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          📝 {tone.transient_note}
-        </span>
-      )}
+      {tone.transient_note && (() => {
+        // R56: append remaining minutes to chip when known. Helps user
+        // see "how much longer this note is in effect" without opening
+        // the popover. Hover title gets full text + precise duration.
+        const remaining = tone.transient_note_remaining_seconds;
+        const minutesLeft = remaining !== null ? Math.max(1, Math.round(remaining / 60)) : null;
+        const suffix = minutesLeft !== null ? ` · 剩 ${minutesLeft}m` : "";
+        return (
+          <span
+            title={
+              minutesLeft !== null
+                ? `用户当前留下的状态/指令：「${tone.transient_note}」（剩 ${minutesLeft} 分钟）— pet 开口时会读到这条 [临时指示]，应当尊重。R55 transient note，到期自动清除。`
+                : `用户当前留下的状态/指令：「${tone.transient_note}」 — pet 开口时会读到这条 [临时指示]，应当尊重。R55 transient note。`
+            }
+            style={{
+              color: "#fff",
+              background: "#0891b2",
+              padding: "1px 8px",
+              borderRadius: "10px",
+              fontWeight: 600,
+              maxWidth: "260px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            📝 {tone.transient_note}{suffix}
+          </span>
+        );
+      })()}
       {tone.mute_remaining_seconds !== null && tone.mute_remaining_seconds > 0 && (() => {
         // Iter R52: transient mute chip. User explicitly muted pet for a
         // session via the 🔇 button in ChatPanel; chip surfaces "still

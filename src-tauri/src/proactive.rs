@@ -347,6 +347,10 @@ pub struct ToneSnapshot {
     /// expired). Some(text) = active note text. Distinct from mute —
     /// note adds context, doesn't block.
     pub transient_note: Option<String>,
+    /// Iter R56: transient note remaining seconds — symmetric with
+    /// `mute_remaining_seconds` (R52). Lets panel chip and button hover
+    /// show countdown so user sees how long until note auto-expires.
+    pub transient_note_remaining_seconds: Option<i64>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -817,6 +821,8 @@ pub async fn build_tone_snapshot(
         // Iter R55: transient note. Same pure helper as prompt assembler,
         // chip + prompt + gate-bypass all read same source.
         transient_note: transient_note_active(),
+        // Iter R56: transient note remaining seconds for chip/hover countdown.
+        transient_note_remaining_seconds: transient_note_remaining_seconds(),
     })
 }
 

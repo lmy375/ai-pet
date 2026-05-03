@@ -197,6 +197,30 @@ pub fn transient_note_active() -> Option<String> {
     compute_transient_note_active(note.as_ref(), chrono::Local::now())
 }
 
+/// Iter R56: pure helper computing remaining seconds for the transient
+/// note. Mirrors `compute_mute_remaining` shape; symmetric pair (mute +
+/// note) both expose remaining for chip / hover countdown. Returns None
+/// when note is None or already expired (same boundary semantics: gate
+/// releases at exact expiry, > 0 strict).
+pub fn compute_transient_note_remaining(
+    note: Option<&TransientNote>,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<i64> {
+    let n = note?;
+    let remaining = (n.until - now).num_seconds();
+    if remaining > 0 {
+        Some(remaining)
+    } else {
+        None
+    }
+}
+
+/// Iter R56: production wrapper for `compute_transient_note_remaining`.
+pub fn transient_note_remaining_seconds() -> Option<i64> {
+    let note = TRANSIENT_NOTE.lock().ok().and_then(|g| g.clone());
+    compute_transient_note_remaining(note.as_ref(), chrono::Local::now())
+}
+
 /// Iter R52 / R53: pure helper computing remaining mute seconds. Returns
 /// `None` when `until` is None (never set / cleared) or already past.
 /// Returns `Some(positive)` when mute is still active. Pure / testable —
@@ -840,5 +864,47 @@ mod tests {
             compute_transient_note_active(Some(&note), now).as_deref(),
             Some("almost gone"),
         );
+    }
+
+    // -- Iter R56: compute_transient_note_remaining tests ---------------------
+
+    #[test]
+    fn note_remaining_returns_none_when_note_is_none() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        assert_eq!(compute_transient_note_remaining(None, now), None);
+    }
+
+    #[test]
+    fn note_remaining_returns_seconds_when_active() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = TransientNote {
+            text: "x".to_string(),
+            until: now + chrono::Duration::minutes(45),
+        };
+        let remaining = compute_transient_note_remaining(Some(&note), now)
+            .expect("active note should return Some");
+        assert_eq!(remaining, 45 * 60);
+    }
+
+    #[test]
+    fn note_remaining_returns_none_when_expired() {
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = TransientNote {
+            text: "x".to_string(),
+            until: now - chrono::Duration::minutes(5),
+        };
+        assert_eq!(compute_transient_note_remaining(Some(&note), now), None);
+    }
+
+    #[test]
+    fn note_remaining_returns_none_at_exact_expiry() {
+        // Boundary: > 0 strict, equality returns None — symmetric with
+        // compute_mute_remaining.
+        let now = now_at(2026, 5, 4, 10, 0);
+        let note = TransientNote {
+            text: "x".to_string(),
+            until: now,
+        };
+        assert_eq!(compute_transient_note_remaining(Some(&note), now), None);
     }
 }

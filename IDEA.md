@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R56 设计要点（已实现）
+- **对称 surface 是 mature UX 标志**：mute chip 显"剩 30m"，note chip 不显—— 这种**不对称** 让用户疑惑"为什么 mute 有时长 note 没有？"。R56 加 transient_note_remaining_seconds 让 note chip 也显时长，**双工具对称完整**。同 user-domain 的相似工具应该尽量对称 surface，不一致 = mental friction。这条原则适用所有 R-series user-control 工具：未来加第三 transient feature 也该有 remaining。
+- **镜像 helper 是 R-series codified 模式**：compute_mute_remaining (R52) + compute_transient_note_remaining (R56) 形态、boundary semantics、测试结构都对称。**同 pattern 重复让代码可预测** —— 看一个 helper 知道另一个怎么写。R23 / R34 / R35 / R51 都是这种"镜像 pair" 设计。
+- **human-friendly time vs mathematically-precise**：59 秒 round-down 到 0 显示"剩 0m" 看着像已过期，但实际还有 1 分钟前的窗口。Math.max(1, round) 让 last 60 sec 显"剩 1m" — 不精确但符合"还有时间" 的 user perception。**显示数字优先 perceptual correctness 而非 mathematical precision** —— stats card R50 / R51 也是这种思路（< 10 1 位小数 vs ≥ 10 整数）。
+- **chip 尺寸动态跟内容调整**：maxWidth 从 240 → 260px 因为加了 ~50px 尾巴。**panel chip max-width 应该跟最长可能内容匹配** —— 太紧 ellipsis 提前破坏，太宽吃别的 chip 空间。这种 micro-tuning 是 polish-phase iter 的常态工作。
+- **backend 算 remaining vs frontend 自己 derive**：ToneSnapshot 给 remaining 数字而不只 ISO until。frontend 拿到 ISO 自己 (Date.parse - now) 也能算。但 (a) Tauri ISO 字符串 parsing 有时区/格式可能差异; (b) 跨 multiple frontends (panel + tray + future widget) 都要重复算; (c) backend 一次 compute share。**预 compute 在 backend 是 polyglot system 的稳妥选择**。
+- **R56 是 R55 的"配套 polish"**：feature ship 后立刻收尾 surface 完整。R52 mute 跟 R56 note 都做完了 remaining display。**feature ship 不只是 logic 跑通，还要 surface 完整**。后续 IDEA 提醒：每加 transient state 都要 audit "remaining display 有了吗 / chip 跟 button 对称吗 / hover 解释了 lifecycle 吗"。
+- **R52→R55→R56 = 5 iter 在 user-control cluster**：R52 mute backend+frontend, R53 mute test, R54 mute preset menu, R55 note backend+frontend, R56 note remaining。**5 iter 在同 cluster 是 R-series cluster 长度新纪录** (之前 max=3)。说明 user-control 是高 ROI 维度 —— 真实痛点解决 + 多个工具叠加生产力。
+
 ## Iter R55 设计要点（已实现）
 - **mute vs note 是 user-control 双工具**：mute 是 binary block (R52)，note 是 contextual augment (R55)。两者**正交而非互斥**，可叠用。这种"不同工具承载不同 user intent"是 mature UX 的标志 —— 一个万能工具 (e.g. settings flag) 永远不如多个针对性工具好用。**R-series 进入 mature 期后 user-control 应该展开成多种细分**。下一候选：mood preset quick toggle ("让 pet 这小时低调一点 / 活泼一点"), tone preset 等。
 - **directive 强度跟来源对应**：一般 prompt hint 是 system inference (e.g. "用户最近多次被忽略" — 系统观察)。R55 transient note 是 user explicit input。文案 "[临时指示] ... 不要怀疑或追问" 比一般 hints 强得多 —— 因为来源 trustworthy。**LLM 看到 prompt 时应根据 source 调 trust** —— 系统 inference 可争议，user explicit 该 obey。这条原则可推广：未来加 user-set 字段时都用 explicit "[xxx]" header 标注 trust level。
