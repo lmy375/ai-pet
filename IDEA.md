@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter QG5c1 设计要点（已实现）
+- **拆 source ≠ 拆 tests**：之前几片 QG5 都是源 + 测一起搬。这次故意留 tests 在 prompt_tests，因为 active_*_rule_labels tests 和 proactive_rules / build_proactive_prompt tests 在同一 mod 深度交错，先拆一半会让 prompt_tests 残骸难看。等 QG5c2 把整个 prompt 系统一起搬，整 mod 一起迁移。"`use super::*` + glob re-export" 的组合让这种"分阶段 source/test 迁移"零代价。
+- **rate-limit machinery 跟 rule 走**：LAST_LATE_NIGHT_WELLNESS_AT static 是 R8 给 late-night-wellness rule 加的 rate limit。它是 rule 实现细节，不该外露给其他子系统。跟 rule 一起迁移让"如果未来加新的 rate-limited rule，模式继续在这一个文件" 成立。
+- **拆细路径上的"什么是 cohesive unit" 反复审视**：迁移到第四个 sub-module 后开始能看到 cohesive unit 的轮廓更清晰：reminders 是用户提醒，butler 是宠物管家，time_helpers 是纯时间标签，prompt_rules 是规则决策器。剩下 prompt_assembler（QG5c2）+ gate (QG5d) + telemetry (QG5e)，应该都能保持 cohesion。
+- **prompt rules vs prompt assembler 分割是有的**：rule-label 决定 *哪些* hint 进 prompt（决策层）；proactive_rules + build_proactive_prompt 把 hints 加 PromptInputs 数据 *组装* 成 prompt 文字（渲染层）。分两层独立 testable 并且未来如果想换 prompt 模板（比如 markdown 风格 vs 紧凑风格），只动 assembler 不动 rules。
+- **23% 累计缩小，剩 ~2200 lines 估**：当前 4214 行，剩下约 2200 行的"prompt assembler + gate + telemetry + run_proactive_turn + tone snapshot + Tauri commands" 集合。预计 QG5c2 + QG5d + QG5e 三 iter 后稳定在 1500-2000 行的 orchestration-only 体量。
+
 ## Iter QG5c-prep 设计要点（已实现）
 - **prep iter 的价值**：直接做 QG5c (prompt rules) 会需要同时搬 prompt rules 本身 + 它依赖的 8 个纯 helper + 三个独立 test mod + 嵌入 prompt_tests 的 4-5 个 helper test。一次性 diff 容易出错难 review。先抽 pure deps（依赖 graph 上的叶子）让 QG5c 的 diff 严格只 about prompt rules——staged refactor。
 - **依赖 graph 的叶子先抽**：这个原则在 QG5 全程都适用：reminders / butler / time_helpers 都是叶子（不依赖其他 proactive 子系统）。下一片 prompt rules 是中间层（依赖 time_helpers），再下一片 gate (evaluate_pre_input_idle 用 in_quiet_hours) 也变得简单。

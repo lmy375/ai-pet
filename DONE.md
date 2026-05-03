@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG5c1：rule-label 生成器抽离到 `proactive/prompt_rules.rs`
+- 现状：QG5c-prep 抽完 time helpers 后，prompt rules 的依赖图变干净。下一步抽 rule-label 生成器（决定哪些 label 当前激活），把 prompt_rules 的"决策" 部分独立出来。
+- 改动：
+  - 新文件 `src-tauri/src/proactive/prompt_rules.rs` 266 行
+  - 移过去：3 个 `active_*_rule_labels` 函数 + 4 个阈值 const（ENV_AWARENESS_*, LONG_*）+ 3 个 LATE_NIGHT_* const + LAST_LATE_NIGHT_WELLNESS_AT static + 3 个 late_night_wellness_* fns + env_awareness_low + companionship_milestone
+  - proactive.rs 添加 `mod prompt_rules;` + glob `pub use`，删除原定义
+  - **测试故意留 prompt_tests**：`mod prompt_tests` 用 `use super::*` 通过 re-export 拿到所有移走的 fns，零 test diff。下一片 QG5c2 把测试和源代码一起搬。
+  - proactive.rs 净减 ~229 行（4443 → 4214）
+- 决策 — 测试不一并迁移：rule-label 测试和 proactive_rules / build_proactive_prompt 的 prompt-assembly 测试在 prompt_tests 里深度交错（active_composite_rule_labels 的 boundary tests + proactive_rules_has_match_arm + frontend alignment 都在同一 mod）。提前拆 rule-label tests 出来意味着 prompt_tests 里要剩下"半个" 文件 — 反而难 review。等 QG5c2 把整个 prompt 系统一起搬，prompt_tests 整体迁移最干净。
+- 决策 — `pub static LAST_LATE_NIGHT_WELLNESS_AT` 跟着规则走：static 是 rate-limit 实现细节，与 active_composite 中的 late-night-wellness label 强耦合。和它一起迁移让"late-night-wellness 子系统" 成为一个完整 unit。
+- 决策 — `format_companionship_line` 留 proactive.rs：它是 prompt 中的 line renderer（"陪伴第 X 天"），跟 build_proactive_prompt 在一起。`companionship_milestone`（rule label producer）走，是因为它产生的是 label 字符串而非 prompt line。两者用途分立。
+- 测试结果：383 cargo（无变化—测试只是通过 re-export 找到迁移后的 fn）；clippy --all-targets clean；fmt clean；tsc clean。
+- 进度：QG5a (–110) + QG5b (–642) + QG5c-prep (–308) + QG5c1 (–229) 共减 ~1290 行（5500→4214，~23%）。
+
 ## 2026-05-03 — Iter QG5c-prep：纯时间/日历/idle 帮助器抽离
 - 现状：QG5c (prompt rules) 是最大块，直接做风险高。先抽出 prompt rules **依赖** 的纯帮助器到独立模块 — 让接下来的 QG5c slice 拿到更干净的边界。
 - 改动：
