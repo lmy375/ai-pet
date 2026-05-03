@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R50 设计要点（已实现）
+- **派生统计是 panel 高阶维度**：raw counts (today/week/lifetime) 是基础数据。avg = lifetime/days 是**它们之间的 ratio**，揭示 base data 不能直接显示的特性 ("intensity of engagement")。**panel 设计成熟期应该多投资 derived stats**，不只 surface raw counters。R-series 之前的 panel chip 都是 raw signal (count / boolean / category)，R50 第一次显式加 derived ratio。后续候选：speech length avg / day 内 hour 分布 / topic frequency rank 等。
+- **精度跟范围匹配**：小数值（< 10）保留 1 位小数，大数值（≥ 10）取整。原因：**0.5 vs 1.5 vs 2.0 对小数 avg 有 meaning**（区分"基本不说" vs "每日固定一两次" vs "频繁"），而 23.4 vs 23.0 几乎相同感受。这是统计 readout 设计的常见 idiom —— "absolute precision" 不如 "perceptually meaningful precision"。
+- **色彩归属应表达"主导维度"**：avg 的色用 teal（陪伴日数同色）而非紫（累计同色）。原因：avg 的 character 由分母（陪伴天数）决定 —— 同样累计 100 次，30 天 vs 365 天的 avg 性质截然不同。**color reflects the "shaping factor"** ——不是简单"derived from 哪个 column"。这是 panel 视觉语义的细致设计。
+- **zero-state hide 优于 fake 0**：companionshipDays = 0 时 "/日均" 列直接 hide。如果显 "0 /日均" 或 "Inf /日均" 都是 misleading 第 0 天数据。**面板列应当在数据无意义时整列消失**，而不是显错误数字。这条原则跟 R45 "👋N 仅 N>0 时显" / R26 "dismissed=0 时省略 segment" 一致 —— **zero-state visual 应当 invisible**。
+- **panel 列顺序表达数据维度**：今日 → 本周 → 累计 → /日均 → 前开口 → 陪伴。这个序列是 short → medium → long → derived → instant → totale。**panel 列顺序是隐性 information architecture** —— 用户从左到右读，应该感受到数据维度的递进。如果 derived 放最前 / instant 放最后，序列变 chaotic mental scan。
+- **R-series mature 期的细致信号**：R50 不引入新概念（speech_count / companionship_days 已存在），只组合现有数据加新视角。**mature phase 价值在重组、抽 ratio、加 derived view** —— 不一定要新增数据流。每个 backend 数据如果有多个可显视角（raw / ratio / band / trend），panel 应该都给。R23 cooldown breakdown 也是这种 reorganization。
+- **Live2D cluster 暂搁置**：R49 改了 loading status 是 Live2D cluster 起点，但 R50 转 PanelStatsCard 而不是继续 Live2D 内部。**polish cluster 切换不必须 3 iter 完成 —— low-priority cluster 可以"开始即结束"**。Live2D 内部动画风险高、价值有限（Live2D 库自带 idle motion），R49 单 iter loading-status 改进已是该 cluster 实际能做的全部。**cluster size 应跟内容匹配，不是固定 3 iter**。
+
 ## Iter R49 设计要点（已实现）
 - **dev message leaking to user 是隐性反模式**："importing pixi.js" 是 dev-mode 诊断输出，但被 setStatus 直接显给 user。**在 dev 期写的临时 status 文案 上线前应该 audit 替换** —— "对开发者 vs 对用户" 两个 audience 用同一 string 不合适。R49 第一次 codify 这个反模式。其他 components 该 audit：是否有 "loading from API…" / "checking cache..." 等技术语言直接 surface 给 user？
 - **internal data / display value 二元 = audience separation**：R49 保留 `status` 用作 dev-visible state，`displayStatus` 是面向 user 的 transformed value。**两个 audience (dev / user) 看的应该是不同的 representation**。R23 cooldown breakdown 也用同样 idiom (internal `cooldown_breakdown` data 跟 hover-displayed math)。**应用一致**：anywhere 数据精确度 vs 用户友好度 trade-off 时，存 raw + derive friendly。
