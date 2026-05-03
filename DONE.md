@@ -2,6 +2,25 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R46：ChatPanel ⚙ CSS :hover + textarea focus ring（ChatPanel cluster 起点）
+- 现状缺口：ChatPanel 两个 issue：
+  1. ⚙ 设置按钮 hover 用 onMouseEnter/onMouseLeave 修改 inline style.opacity —— R41 IDEA codified "CSS pseudo-class > React state for pure visual states"，这是 outdated pattern。
+  2. textarea 设了 `outline: none` 移除 browser default focus ring 但**没有 replacement** —— 用户聚焦后没 visual feedback，不知道是否在打字 focus 状态。**accessibility hole**：keyboard-only 用户找不到 focus 在哪。
+- 解法 — 两 issue 在同一 ChatPanel cluster 起点 iter 一起还：
+  - 新 inline `<style>` 块 `PANEL_STYLES` 加两 rule：
+    - `.pet-settings-btn { opacity: 0.7; transition: opacity 200ms ease-out; }`
+    - `.pet-settings-btn:hover { opacity: 1; }`
+    - `.pet-chat-input:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,0.18); }`
+  - textarea 加 className "pet-chat-input"，inline style 加 `transition: border-color 150ms, box-shadow 150ms ease-out` 让 focus 进入柔和。
+  - ⚙ button 加 className "pet-settings-btn"，移除 onMouseEnter/Leave 两 handler + transition prop（迁到 CSS）。
+- 决策 — focus ring 用 box-shadow 而非 outline：outline 不参与 box-sizing，可能跟周围元素 overlap 不好控制。box-shadow 0 0 0 2px 是 padding 一圈光圈，**圆角 textarea 自动 follow border-radius** —— outline 在某些浏览器圆角下还是矩形。**box-shadow focus ring** 是现代 web app 标准。
+- 决策 — accent #38bdf8 (天蓝) +18% alpha：跟 R-series 视觉色调一致（tab 也用 #38bdf8 系列）。alpha 0.18 让光圈柔和不刺眼，比纯 #38bdf8 outline 更"polished feel"。**focus 强调应该被察觉但不抢戏**。
+- 决策 — 1 iter 解决 2 issue：⚙ hover 重构 + textarea focus ring 都是 ChatPanel UX。在 polish cluster 起点把"老 issue 该还的债"和"新 polish 该加的"一起做。比分两 iter 各做 1 件经济。**polish iter 同 component 内多 issue 可批量**，跟 R30 (settings UI 多字段) / R39 (PanelFilterButtonRow 同 iter 重构 2 caller + 加 1 caller) 同思路。
+- 决策 — 沿用 R40-R44 inline `<style>` + className pattern：跨 component 复用 visual recipe，跟 R43 IDEA "pattern 跨 component 复用 ≠ 抽组件" 一致。ChatBubble.tsx / App.tsx tab / ChatPanel.tsx 三处都用这个 pattern —— 形成 R-series stable vocabulary。
+- 决策 — 不写测试：CSS 行为 native，类型对齐 tsc 验。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：ChatPanel cluster 起点。⚙ 按钮 hover 状态从 React-state 升级到 CSS-native；textarea focus 终于有视觉反馈，accessibility 修复。**polish iter 适合 cluster 入口处批量还旧债** —— 就像 R32 cleanup iter 一次清两 dead code，R46 一次修两 ChatPanel issue。
+
 ## 2026-05-04 — Iter R45：Tab unread badge — pet 在 hidden 期间开口的 surface
 - 现状缺口：bubble 渲染条件 `visible={showBubble && !hidden && !bubbleDismissed}` —— 当 hidden=true (pet auto-hidden)，proactive 主动开口的 bubble 不显示。但 backend 仍触发 proactive-message 事件、写 speech_history、产生反馈分类（被算 "ignored"）。**用户回来时根本不知道 pet 趁他不在时说过 N 次话**。Tab 是 hidden 期间唯一 visible UI，应该承载这个 unread 状态。
 - 解法 — useEffect 监听 + 计数 + badge：
