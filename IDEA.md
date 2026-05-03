@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R1b 设计要点（已实现）
+- **frontend gate vs backend gate 是 UX 边界判断**：threshold "5 秒内 = quick" 这个数字属于"用户视角的快慢" 不是业务规则。frontend 决定。后端 record_bubble_dismissed 只接受请求 — 信任 caller 已经做了过滤。这种 separation 让"调阈值" 是改 1 行 TS const 而不是后端逻辑变更。一般原则：**UX 决策不该跨语言**。
+- **rename `ignore_ratio` → `negative_signal_ratio` 是必要的**：诱惑是"加 Dismissed 但保持 ignore_ratio 名字" — 短期省 LOC 但长期误导（"为什么 ignore_ratio 包含 dismissed 项？"）。语义扩展时**rename 比加注释更便宜**。caller 只在 gate.rs 单点（grep 只 2 处），rename 成本极低。这是"refactor 时择捷径还是择正确" 的小型例题：选正确。
+- **uniform weight 比 weighted 计入 ratio**：Dismissed 应该算 1.5 ignored 吗？理论上是。但加权后 R7 step function 不再"心算友好" — panel 看到 4 个 dismissed + 6 个 replied 就知道 ratio 0.4，加权变 4×1.5/10 = 0.6 完全不同直觉。"auditable simplicity" 优先。Dismissed 信号自然比 Ignored 强这件事**会通过 frequency 自己说话** — 用户真不喜欢就会经常 click，ratio 自然 push 到 1.0。
+- **双信号容忍是 feature 不是 bug**：dismiss + 下一 tick ignored 双计 = 同一个负事件在 ratio 里被算 2 次。第一感觉是"重复计算" 想 dedup。但实际上"用户 click 立刻拒绝 + 整段窗口完全没回" 比"只是被动没看到" 是不同强度的负反馈。算 2 次正好让 ratio 反映"这个 turn 是真负面" — emergent weighting 通过 event count 而不是 multiplier。设计哲学：**让 multi-event 的频率代替显式 weight**。
+- **bubbleShownAt 用 useRef 不用 useState**：阈值判断只读，不触发 re-render。用 useRef 避免 setShownAt(timestamp) → component re-render → useEffect 又 reset 一遍 → 死循环。这是 React 中"参数化的 mutable state" vs "影响 render 的 state" 的经典区分 — 前者用 useRef，后者用 useState。
+- **`onClick` prop optional + cursor 配套切换**：ChatBubble 单独 import 时（如 storybook / 其他 view）不一定有 dismiss 回调，cursor 该是 default 而不是 pointer 误导用户"这能点"。`cursor: onClick ? "pointer" : "default"` 把 affordance 跟 capability 绑定，干净。
+- **向 R7 添加输入信号比改 R7 输出公式更便宜**：本来想做"R7b: Dismissed 触发更激进 cooldown 翻倍"，但发现只要把 Dismissed 计入 ratio，原 R7 step function（>0.6 翻倍）已经响应正确 — 多用户 dismiss → ratio↑ → 自动翻倍。**新信号 + 现有 adapter** 比 **现有信号 + 新 adapter** 通常更便宜，因为 adapter 是 gate-critical path 一动得验全套。
+
 ## Iter R16 设计要点（已实现）
 - **写→读对称是 memory subsystem 的隐藏 invariant**：R12 / R12b 写 review 是上半场，但**写完不读 = 写了等于没写**。系统设计里"someone writes X, eventually someone reads X" 是 implicit invariant — 一旦发现"写完没人读"，要么是死代码，要么是漏了 read 路径。R16 是对这条 invariant 的还债。每加一种 memory write，都要 ask "what reads this?" — 没答案就先别加 write。
 - **两层 hint 互补 vs 单层合并**：第一直觉是"R14 已经有 cross_day_hint，把 yesterday recap 拼进去就行"。但两者**信息颗粒度不同**：recap 是"全貌摘要"（昨天主动开口 7 次，计划 3/5），尾声是"具体片段"（最后两句的内容）。**合并会让两个不同分辨率的信号挤在一行模糊化**。分开 push 让 LLM 可以独立选择 — 它可以"今天先用 recap 总结打开"或"直接续昨晚最后那句话题"。"高密度 + 低密度" 信号应该独立可见。

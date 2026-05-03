@@ -129,6 +129,7 @@ pub fn run() {
             tool_review::list_pending_tool_reviews,
             tool_call_history::get_recent_tool_calls,
             feedback_history::get_recent_feedback,
+            feedback_history::record_bubble_dismissed,
             redaction::get_redaction_stats,
             redaction::reset_redaction_stats,
             decision_log::get_proactive_decisions,

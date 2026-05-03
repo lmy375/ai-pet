@@ -21,13 +21,34 @@ function App() {
   // utterances at 9am stuck on screen all day. 60s is enough to read; if the
   // user wants the message back they can open the chat panel for full history.
   // Loading bubbles (mid-stream) and the message arrival reset the timer.
+  //
+  // Iter R1b: track when the current bubble first appeared so a click within
+  // the QUICK_DISMISS_MS window records an active-rejection feedback signal
+  // (distinct from passive ignore). Click after the window still hides the
+  // bubble but doesn't pollute feedback history with late hides.
+  const QUICK_DISMISS_MS = 5000;
   const [bubbleDismissed, setBubbleDismissed] = useState(false);
+  const bubbleShownAt = useRef<number | null>(null);
   useEffect(() => {
     setBubbleDismissed(false);
-    if (!showBubble || !displayMessage || isLoading) return;
+    if (!showBubble || !displayMessage || isLoading) {
+      bubbleShownAt.current = null;
+      return;
+    }
+    bubbleShownAt.current = Date.now();
     const t = setTimeout(() => setBubbleDismissed(true), 60_000);
     return () => clearTimeout(t);
   }, [displayMessage, showBubble, isLoading]);
+
+  const handleBubbleClick = useCallback(() => {
+    const shownAt = bubbleShownAt.current;
+    setBubbleDismissed(true);
+    if (shownAt && Date.now() - shownAt < QUICK_DISMISS_MS && displayMessage) {
+      invoke("record_bubble_dismissed", { excerpt: displayMessage }).catch(
+        console.error,
+      );
+    }
+  }, [displayMessage]);
 
   const handleModelReady = useCallback((model: any) => {
     modelRef.current = model;
@@ -101,6 +122,7 @@ function App() {
       <ChatBubble
         message={displayMessage}
         visible={showBubble && !hidden && !bubbleDismissed}
+        onClick={handleBubbleClick}
       />
       <Live2DCharacter
         key={settings.live_2d_model_path}

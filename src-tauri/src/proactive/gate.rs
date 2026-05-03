@@ -180,7 +180,7 @@ pub async fn evaluate_loop_tick(
     // matters — mode is user intent, R7 is observed-feedback fine-tune.
     let mode_cooldown = cfg.effective_cooldown_base();
     let recent_fb = crate::feedback_history::recent_feedback(20).await;
-    let effective_cooldown = match crate::feedback_history::ignore_ratio(&recent_fb) {
+    let effective_cooldown = match crate::feedback_history::negative_signal_ratio(&recent_fb) {
         Some((ratio, n)) => {
             crate::feedback_history::adapted_cooldown_seconds(mode_cooldown, ratio, n)
         }

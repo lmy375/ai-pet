@@ -1,13 +1,15 @@
 interface Props {
   message: string;
   visible: boolean;
+  onClick?: () => void;
 }
 
-export function ChatBubble({ message, visible }: Props) {
+export function ChatBubble({ message, visible, onClick }: Props) {
   if (!visible || !message) return null;
 
   return (
     <div
+      onClick={onClick}
       style={{
         position: "absolute",
         bottom: "100px",
@@ -25,6 +27,7 @@ export function ChatBubble({ message, visible }: Props) {
         color: "#333",
         zIndex: 10,
         wordBreak: "break-word",
+        cursor: onClick ? "pointer" : "default",
       }}
     >
       {message}

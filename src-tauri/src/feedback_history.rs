@@ -39,6 +39,11 @@ pub const FEEDBACK_EXCERPT_CHARS: usize = 40;
 pub enum FeedbackKind {
     Replied,
     Ignored,
+    /// Iter R1b: user clicked the desktop bubble within 5s of it appearing —
+    /// active rejection (saw + dismissed), distinct from passive `Ignored`
+    /// (no interaction at all). Counted as negative in `negative_signal_ratio`
+    /// alongside `Ignored`.
+    Dismissed,
 }
 
 impl FeedbackKind {
@@ -46,6 +51,7 @@ impl FeedbackKind {
         match self {
             FeedbackKind::Replied => "replied",
             FeedbackKind::Ignored => "ignored",
+            FeedbackKind::Dismissed => "dismissed",
         }
     }
 }
@@ -91,6 +97,7 @@ pub fn parse_line(line: &str) -> Option<FeedbackEntry> {
     let kind = match kind_str {
         "replied" => FeedbackKind::Replied,
         "ignored" => FeedbackKind::Ignored,
+        "dismissed" => FeedbackKind::Dismissed,
         _ => return None,
     };
     Some(FeedbackEntry {
@@ -158,19 +165,37 @@ pub async fn get_recent_feedback() -> Vec<FeedbackEntry> {
     entries
 }
 
-/// Iter R7: compute the share of `Ignored` outcomes in `entries`. Returns
+/// Iter R1b: frontend ChatBubble fires this when the user actively dismisses
+/// the bubble within the "quick" window (< 5s). Records a `Dismissed` entry
+/// against the proactive utterance excerpt. Frontend is the gate-keeper —
+/// after the threshold, the click still hides the bubble but does NOT call
+/// this command, so passive late-hides don't pollute feedback history.
+#[tauri::command]
+pub async fn record_bubble_dismissed(excerpt: String) {
+    record_event(FeedbackKind::Dismissed, &excerpt).await;
+}
+
+/// Iter R7 / R1b: compute the share of *negative-signal* outcomes in
+/// `entries`. Negative = `Ignored` OR `Dismissed`. Returns
 /// `Some((ratio, total))` where ratio is in 0.0..=1.0 and total is the
 /// sample count. Returns `None` for empty input so callers can gate on
 /// "have enough data" without an extra check.
-pub fn ignore_ratio(entries: &[FeedbackEntry]) -> Option<(f64, usize)> {
+///
+/// `Dismissed` was added in R1b — counted alongside `Ignored` because
+/// both signal "the user did not engage with this turn". Active dismissal
+/// is arguably *stronger* negative than passive ignore, but counting them
+/// uniformly keeps the adapter step-function (R7's three-band cooldown)
+/// auditable: a panel reader can see the dismiss and ignore counts and
+/// know they collapse to one ratio.
+pub fn negative_signal_ratio(entries: &[FeedbackEntry]) -> Option<(f64, usize)> {
     if entries.is_empty() {
         return None;
     }
-    let ignored = entries
+    let negative = entries
         .iter()
-        .filter(|e| matches!(e.kind, FeedbackKind::Ignored))
+        .filter(|e| matches!(e.kind, FeedbackKind::Ignored | FeedbackKind::Dismissed))
         .count();
-    Some((ignored as f64 / entries.len() as f64, entries.len()))
+    Some((negative as f64 / entries.len() as f64, entries.len()))
 }
 
 /// Iter R7: minimum samples before the adapter has any effect. Below this
@@ -230,6 +255,10 @@ pub fn format_feedback_hint(entries: &[FeedbackEntry]) -> String {
         ),
         FeedbackKind::Ignored => format!(
             "上次你说「{}」，用户没回应 — 这次开口要更有钩子或干脆放短一点（甚至选择沉默）。",
+            latest.excerpt
+        ),
+        FeedbackKind::Dismissed => format!(
+            "上次你说「{}」，用户**主动点掉了**气泡 — 比单纯没回应更明显的不感兴趣信号。这次开口要么换完全不同的话题，要么干脆沉默。",
             latest.excerpt
         ),
     }
@@ -343,12 +372,12 @@ mod tests {
     }
 
     #[test]
-    fn ignore_ratio_returns_none_for_empty_input() {
-        assert_eq!(ignore_ratio(&[]), None);
+    fn negative_signal_ratio_returns_none_for_empty_input() {
+        assert_eq!(negative_signal_ratio(&[]), None);
     }
 
     #[test]
-    fn ignore_ratio_counts_correctly() {
+    fn negative_signal_ratio_counts_correctly() {
         // 3 ignored / 5 total = 0.6.
         let entries = vec![
             entry(FeedbackKind::Ignored, "a"),
@@ -357,28 +386,68 @@ mod tests {
             entry(FeedbackKind::Replied, "d"),
             entry(FeedbackKind::Ignored, "e"),
         ];
-        let (ratio, n) = ignore_ratio(&entries).expect("non-empty must yield Some");
+        let (ratio, n) = negative_signal_ratio(&entries).expect("non-empty must yield Some");
         assert_eq!(n, 5);
         assert!((ratio - 0.6).abs() < 1e-9, "expected 0.6, got {}", ratio);
     }
 
     #[test]
-    fn ignore_ratio_handles_all_replied() {
+    fn negative_signal_ratio_handles_all_replied() {
         let entries = vec![
             entry(FeedbackKind::Replied, "a"),
             entry(FeedbackKind::Replied, "b"),
         ];
-        let (ratio, n) = ignore_ratio(&entries).unwrap();
+        let (ratio, n) = negative_signal_ratio(&entries).unwrap();
         assert_eq!(n, 2);
         assert_eq!(ratio, 0.0);
     }
 
     #[test]
-    fn ignore_ratio_handles_all_ignored() {
+    fn negative_signal_ratio_handles_all_ignored() {
         let entries = vec![entry(FeedbackKind::Ignored, "a"); 3];
-        let (ratio, n) = ignore_ratio(&entries).unwrap();
+        let (ratio, n) = negative_signal_ratio(&entries).unwrap();
         assert_eq!(n, 3);
         assert_eq!(ratio, 1.0);
+    }
+
+    #[test]
+    fn negative_signal_ratio_counts_dismissed_alongside_ignored() {
+        // R1b: 2 ignored + 1 dismissed = 3 negative / 5 total = 0.6.
+        let entries = vec![
+            entry(FeedbackKind::Ignored, "a"),
+            entry(FeedbackKind::Dismissed, "b"),
+            entry(FeedbackKind::Replied, "c"),
+            entry(FeedbackKind::Replied, "d"),
+            entry(FeedbackKind::Ignored, "e"),
+        ];
+        let (ratio, n) = negative_signal_ratio(&entries).unwrap();
+        assert_eq!(n, 5);
+        assert!((ratio - 0.6).abs() < 1e-9, "expected 0.6, got {}", ratio);
+    }
+
+    #[test]
+    fn negative_signal_ratio_handles_all_dismissed() {
+        let entries = vec![entry(FeedbackKind::Dismissed, "a"); 4];
+        let (ratio, n) = negative_signal_ratio(&entries).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(ratio, 1.0);
+    }
+
+    #[test]
+    fn dismissed_round_trips_through_format_and_parse() {
+        // R1b: log line written today must be readable on next process start.
+        let line = format_line("2026-05-04T12:00:00+08:00", FeedbackKind::Dismissed, "x");
+        let parsed = parse_line(&line).unwrap();
+        assert_eq!(parsed.kind, FeedbackKind::Dismissed);
+        assert_eq!(parsed.excerpt, "x");
+    }
+
+    #[test]
+    fn format_feedback_hint_handles_dismissed_with_stronger_phrasing() {
+        let h = format_feedback_hint(&[entry(FeedbackKind::Dismissed, "在忙工作？")]);
+        assert!(h.contains("在忙工作？"));
+        // Stronger phrasing — calls out active dismissal explicitly.
+        assert!(h.contains("主动点掉"));
     }
 
     #[test]

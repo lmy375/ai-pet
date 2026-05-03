@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R1b：ChatBubble 5 秒内点击 = active dismiss 反馈信号
+- 现状缺口：R1 实现了 ignored/replied 二分但仅作"是否在下一次 tick 前回复" 推断 — 用户**主动**点掉气泡的强信号丢了。pet 说"在忙吗"，用户立刻 click 关掉 → 是清晰的"我看到了，我不想理"，比"60s 后自动消失" 的 ignored 信号强得多。R1 任务 deliberately 留了 R1b 后续做这个 UI hookup。
+- 解法 — 三段式分工：
+  - **Backend**：FeedbackKind 加 Dismissed variant（serde "dismissed"），as_str / parse_line / format_feedback_hint 全分支处理。新 Tauri 命令 `record_bubble_dismissed(excerpt: String)` 直接调 record_event。Hint phrasing 区分："上次你说 X，用户**主动点掉了**气泡 — 比单纯没回应更明显的不感兴趣信号" 比 ignored 的 "用户没回应" 更直接。
+  - **Ratio 适配器**：函数 `ignore_ratio` 重命名为 `negative_signal_ratio`，Ignored | Dismissed 都计入。R7 cooldown 适配器无逻辑变化（仍是三档 step function），但分母分子语义升级到"任何负信号"。gate.rs 单点 caller 跟改。
+  - **Frontend**：ChatBubble 加 onClick prop + cursor pointer。App.tsx 用 useRef 跟踪 bubbleShownAt — displayMessage 变更或 showBubble flip 时设 Date.now()，重置时设 null。click handler `setBubbleDismissed(true)` + 仅当 `Date.now() - shownAt < 5000` 调 invoke("record_bubble_dismissed")。后期 click（>5s）只隐藏不发信号，避免污染 history。
+- 决策 — Dismissed 与 Ignored 等权重计入 ratio：诱惑是 Dismissed 算 1.5 / Ignored 算 1，因为 Dismissed 信号更强。但 R7 step-function 设计原则是"panel reader 一眼算得对" — 加权后 ratio 不再是简单"负 / 总"。简单计入 + 让 Dismissed event 自身的频率说话（用户真的常点 → ratio 自然 1.0 → cooldown ×2）效果同等且更可读。
+- 决策 — 双信号容忍（同一 turn dismiss + 下一 tick ignored 双计）：用户 click → record Dismissed，但下一次 proactive turn 仍会基于 raw_awaiting=true 写一个 Ignored。两条 entry 进 history。这是 *intentional* — 一个强反应在 ratio 中应该体现得更重，反而是好事。如果未来真嫌 noisy 可加 LAST_FEEDBACK_RECORDED_FOR 跨 surface 的 dedup，但目前不是问题。
+- 决策 — 5 秒阈值 frontend 决定：threshold 是用户感知层面的"快速反应 vs 慢慢决定"。这个判断属于 UI 行为而不是后端业务，let frontend gate it。后端只接受 record_bubble_dismissed 命令。如果未来要可配置（比如 "敏感模式" 把阈值放到 3s），改一处 const 即可。
+- 决策 — 不清 raw_awaiting：click-to-dismiss 不算"用户主动 engage"。awaiting 表示"等用户回应"，dismiss 是"用户拒绝回应" — awaiting 状态正确地保持 true，让下一次 tick 对该 turn 也分类 Ignored。语义清晰。
+- 决策 — fmt 把 multi-line `matches!` 自动塌缩到一行：原本写 `matches!(e.kind, FeedbackKind::Ignored | FeedbackKind::Dismissed)` 多行但 rustfmt 喜欢 single line，照做。
+- 测试（5 新单测，feedback_history.rs 重命名后旧测试全更新）：
+  - negative_signal_ratio_counts_dismissed_alongside_ignored: 1 dismissed + 2 ignored / 5 → 0.6
+  - negative_signal_ratio_handles_all_dismissed: 全 Dismissed → 1.0
+  - dismissed_round_trips_through_format_and_parse: write → read 闭合
+  - format_feedback_hint_handles_dismissed_with_stronger_phrasing: hint 含"主动点掉"
+  - 4 个旧 ignore_ratio_* tests 全部 rename 到 negative_signal_ratio_*
+- 测试结果：443 cargo（+4 净增；4 重命名 + 4 全新 - 0 删除）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：用户现在可以**主动**告诉 pet "这条不要"。R7 cooldown 适配器获得"用户实际不喜欢什么样的开口" 的强力新数据源。pet 学习曲线大幅缩短 — 主动反馈比被动观察 ignored 信号收敛得快得多。R1 → R1b 形成完整反馈闭环。
+
 ## 2026-05-04 — Iter R16：yesterday review description 注入 first-of-day prompt（write→read 闭环）
 - 现状缺口：R12 每天 22:00 后写 daily_review 到 ai_insights memory，R12b 把 description 升级到含 progress 标记。但**这些条目从来没被读回来**。memory 里有"今天主动开口 7 次，计划 3/5"，但今天的 first-of-day proactive prompt 看不到 — pet 写完日记自己再也不翻。R14 cross_day_hint 提取昨日尾声 2 条 speeches 是"具体片段" 维度，缺"全貌"维度。
 - 解法 — pure reframer + first-of-day 触发：
