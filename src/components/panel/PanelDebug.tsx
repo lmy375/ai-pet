@@ -54,6 +54,7 @@ export function PanelDebug() {
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
   const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
+  const [weekSpeechCount, setWeekSpeechCount] = useState<number>(0);
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
   const [redactionStats, setRedactionStats] = useState<RedactionStats>({ calls: 0, hits: 0 });
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
@@ -66,7 +67,7 @@ export function PanelDebug() {
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut, envT, tilt, days, redact] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, week, llmOut, envT, tilt, days, redact] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
@@ -76,6 +77,7 @@ export function PanelDebug() {
         invoke<PendingReminder[]>("get_pending_reminders"),
         invoke<number>("get_lifetime_speech_count"),
         invoke<number>("get_today_speech_count"),
+        invoke<number>("get_week_speech_count"),
         invoke<LlmOutcomeStats>("get_llm_outcome_stats"),
         invoke<EnvToolStats>("get_env_tool_stats"),
         invoke<PromptTiltStats>("get_prompt_tilt_stats"),
@@ -91,6 +93,7 @@ export function PanelDebug() {
       setReminders(reminderList);
       setLifetimeSpeechCount(lifetime);
       setTodaySpeechCount(today);
+      setWeekSpeechCount(week);
       setLlmOutcomeStats(llmOut);
       setEnvToolStats(envT);
       setPromptTiltStats(tilt);
@@ -350,6 +353,7 @@ export function PanelDebug() {
 
       <PanelStatsCard
         todaySpeechCount={todaySpeechCount}
+        weekSpeechCount={weekSpeechCount}
         lifetimeSpeechCount={lifetimeSpeechCount}
         companionshipDays={companionshipDays}
         tone={tone}

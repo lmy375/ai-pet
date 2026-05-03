@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter 74 设计要点（已实现）
+- **挑这个迭代是因为路线 F 已收官、路线 G 还很轻**：companion register 大改动需要更深的设计迭代（mood/persona/语气都已经很多互动），而这个 cosmetic 增量是低风险高频可见——天天打开 panel 就能看到。
+- **"本周" = 今天 + 过去 6 天 = 滚动 7 天**：而不是"自然周一到当前"。理由：(a) 滚动避免周一早上"本周"显示 0 的尴尬；(b) 用户感知"上周这时候"更接近"7 天前"而不是"上一个 ISO 周"。代价是周界限不再对齐 ISO 周，但这层显示是体感量化、不是统计学。
+- **`sum_recent_days(map, today, n)` 而不是直接硬编码 7**：让"周/旬/月"未来都能复用。如果以后要加"本月"列，调用 sum_recent_days(30) 就行。这是把 magic number 7 提出来的小坚持，符合项目里的 pure-helper 习惯。
+- **column 顺序：今日→本周→累计**：从近到远，符合阅读 flow（左到右越来越长时间维度）。本来想"本周→今日"——但今日是最常被读的数字，应该在最左视觉权重最强位置。
+- **fontSize 16px 给本周**：今日 20px、累计 28px 是已经定了的。本周 16px = "辅助但仍清晰可读"。companionship 也是 16px——所以视觉上本周和陪伴在同一辅助层级。
+- **不引入 chatty_week_threshold**：曾考虑加一个 weekly cap rule 类似 chatty_day。但周维度更模糊（中间 1-2 天爆发但其他天为 0 算 chatty 吗？）。daily threshold 已足够，weekly 是 informational only。
+- **不动 ToneSnapshot**：本周值不参与 prompt 决策，仅 panel 显示。stays out of `get_tone_snapshot` 这个 prompt-feeder。
+
 ## Iter Cμ 设计要点（已实现）
 - **新函数 vs 复用 `idle_tier`**：`idle_tier` 已有，但其 framing 是 pet 自身视角（"刚说过话还热着" / "几小时没说话"）。如果给 user-absence 用同一个函数，文字会错位——pet 不是"自己几小时没说话"了，是"用户几小时没出现"了。两个 axis 各自的措辞独立，pure-function 多一个比挤进同一个更清楚。Iter Cβ 加 weekday 也是同思路：每个语义维度独立 helper。
 - **register 注入位置**：放在已经存在的"约 N 分钟"后面括号里，最小破坏现有 prompt 结构。曾考虑做成独立一行 hint section，像 wake_hint / speech_hint 那样，但那会把"距用户互动 X 分钟"的语义切成两片：数字一行、register 另一行。括号同行更紧凑、阅读 flow 不断。

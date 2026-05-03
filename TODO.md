@@ -43,4 +43,4 @@
   让用户看到宠物"记住了什么"。增强信任也帮 debug。
 
 ### 历史保留候选
-- [ ] Iter 74：speech_daily.json 扩展 panel stats 卡为"今日 / 本周 / 累计"三列。视觉。
+- [x] Iter 74：speech_daily.json 扩展 panel stats 卡为"今日 / 本周 / 累计"三列（2026-05-03 完成）

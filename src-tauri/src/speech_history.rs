@@ -244,6 +244,43 @@ pub async fn get_today_speech_count() -> u64 {
     today_speech_count().await
 }
 
+/// Iter 74: pure helper — sum the daily-bucket map across the last `n` days
+/// ending at `today` (inclusive). Used by `week_speech_count` so the same
+/// arithmetic is unit-testable without the on-disk daily file. `n=7` gives
+/// "today + 6 prior days = rolling week".
+pub fn sum_recent_days(
+    map: &BTreeMap<String, u64>,
+    today: chrono::NaiveDate,
+    n: usize,
+) -> u64 {
+    let mut total: u64 = 0;
+    for offset in 0..n {
+        let d = today - chrono::Duration::days(offset as i64);
+        let key = d.format("%Y-%m-%d").to_string();
+        if let Some(v) = map.get(&key) {
+            total = total.saturating_add(*v);
+        }
+    }
+    total
+}
+
+/// Number of proactive utterances recorded across the trailing 7-day window
+/// (today + 6 prior days, local time). Returns 0 if the daily file is missing.
+pub async fn week_speech_count() -> u64 {
+    let Some(path) = daily_path() else {
+        return 0;
+    };
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let map = parse_daily(&content);
+    sum_recent_days(&map, chrono::Local::now().date_naive(), 7)
+}
+
+/// Tauri command for the panel — trailing 7-day proactive speech count.
+#[tauri::command]
+pub async fn get_week_speech_count() -> u64 {
+    week_speech_count().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +368,43 @@ mod tests {
         let pruned = prune_daily(m, today, 30);
         assert!(pruned.contains_key("not-a-date"));
         assert!(!pruned.contains_key("2026-01-01"));
+    }
+
+    #[test]
+    fn sum_recent_days_basic() {
+        let mut m = BTreeMap::new();
+        m.insert("2026-05-01".to_string(), 3);
+        m.insert("2026-05-02".to_string(), 5);
+        m.insert("2026-05-03".to_string(), 7); // today
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        // 7-day window ending today = 2026-04-27..2026-05-03 inclusive. Only 3 days
+        // present, others zero.
+        assert_eq!(sum_recent_days(&m, today, 7), 3 + 5 + 7);
+    }
+
+    #[test]
+    fn sum_recent_days_window_excludes_older() {
+        let mut m = BTreeMap::new();
+        m.insert("2026-04-26".to_string(), 100); // 7 days before today → excluded by 7-window
+        m.insert("2026-05-03".to_string(), 4);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        // 7-day window: 2026-04-27..2026-05-03. 04-26 is outside.
+        assert_eq!(sum_recent_days(&m, today, 7), 4);
+    }
+
+    #[test]
+    fn sum_recent_days_zero_window_returns_zero() {
+        let mut m = BTreeMap::new();
+        m.insert("2026-05-03".to_string(), 99);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        assert_eq!(sum_recent_days(&m, today, 0), 0);
+    }
+
+    #[test]
+    fn sum_recent_days_handles_empty_map() {
+        let m = BTreeMap::new();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        assert_eq!(sum_recent_days(&m, today, 7), 0);
     }
 
     #[test]
