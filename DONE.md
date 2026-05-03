@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG5b：butler_tasks schedule 子系统拆分
+- 现状：QG5a 把 reminders 抽走 ~110 行后，proactive.rs 还是 5393 行。butler 子系统是下一个 cohesive 自然块（Iter Cζ-Cπ 累积建立的 schedule + due + completion + format 整套）。
+- 改动：
+  - 新文件 `src-tauri/src/proactive/butler_schedule.rs` 628 行（241 src + 387 tests + private helper）
+  - 移过去：
+    - `ButlerSchedule` enum、`parse_butler_schedule_prefix`、`is_butler_due`、`is_completed_once`、`has_butler_error`、`format_butler_tasks_block` 6 个 pub 项
+    - `BUTLER_TASKS_HINT_MAX_ITEMS` / `BUTLER_TASKS_HINT_DESC_CHARS` 两个常量
+    - 私有 `parse_updated_at_local` helper（`is_butler_due` / `is_completed_once` 共用）
+    - 24 个相关单测 + 私有 `fixed_now()` / `count_task_lines_with_marker()` test helper
+  - proactive.rs：`mod butler_schedule;` + glob `pub use` 加进 head；删除原定义和 `mod prompt_tests` 里的 butler 测试段（行 3216-3625 一整段）
+  - proactive.rs 净减 ~640 行（5393 → 4751，~12% 缩小）
+- 决策 — `parse_updated_at_local` 留私（不导出）：仅 butler 内部用。如果未来 reminders 也想 parse `updated_at` 再考虑提到 `proactive` 顶层，但 YAGNI。
+- 决策 — `build_butler_tasks_hint` (memory IO + redact) 留 proactive.rs：和 QG5a 一样模式——pure formatter 移走，env-touching builder 留 parent。两者保持一致 = future maintainer 看一眼就懂"哪类该留、哪类该走"。
+- 决策 — 移动测试 helper（`fixed_now` / `count_task_lines_with_marker`）：仅 butler 用，跟着 butler 测试走。检查发现 fixed_now 真的只在 butler 测试里调用，移走零风险。
+- 测试结果：383 cargo（无变化—测试只换了运行位置）；clippy --all-targets clean；fmt clean；tsc clean。
+- 路线进度：QG5a + QG5b 共减 ~750 行 (~14%)。剩余 QG5c-e（prompt rules、gate、telemetry）将进一步把 proactive.rs 推向 < 3000 行可维护体量。
+
 ## 2026-05-03 — Iter QG5a：reminders 子系统拆分到 `proactive/reminders.rs`
 - 现状：proactive.rs 5500+ 行，QG5 一直被 deferred 因为"太大单 iter 做不完"。改"全切"为"一片一片切"——每 iter 抽一个 cohesive 子系统，public API 由 `pub use` glob 保持稳定。
 - 选 reminders 作为第一片：(a) 完全自包含（无内部依赖于其他 proactive 状态）；(b) 已经是清晰边界（5 个 pub fn + 1 enum + 17 个 unit tests）；(c) 已被外部模块（`consolidate.rs`）通过 `crate::proactive::...` 引用——good 切口测试 re-export 是否真的兼容。
