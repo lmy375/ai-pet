@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 100：里程碑盘点 STATUS.md
+- 新建 `STATUS.md`：以"实时陪伴 AI 桌面宠物"原始目标为锚，对照 IDEA.md 起点列
+  的 5 条差距逐项核对，标记现状闭合度（① 主动发言 ✓ / ② 环境感知 大部分 ✓ /
+  ③ 情绪演化 ✓ / ④ 节奏控制 体系化 ✓ / ⑤ 记忆系统 ✓ + 强化）。
+- 列出"起点没有但浮现的能力"：prompt 自我画像、data→prompt 反馈环、复合规则、三层
+  守护测试、panel 模块化拆分。
+- 量化体量：14k 行代码、184 单测、~40 Tauri commands、5 组 atomic counters、9 类
+  持久化文件。
+- 标记仍有的空白：Live2D 表情薄、多窗口 panel 数据轮询独立、无跨设备、缺隐私
+  filter、缺长期人格演化、macOS 通知 hook 还 deferred。
+- 给出未来路线粗排：A 长期人格演化 / B 表情系统升级 / C 隐私 filter / D 记忆
+  surface / E 跨设备同步——按价值密度排序，A 最优先因为它把已有 infra 全部串起来。
+- 诚实评估"是真实伙伴吗"：技术上 5 条差距已闭合，体感上还差人格深度 + 表情丰富度，
+  下一阶段 99 次最值得投 A（人格演化）。
+- 这个 iter 不写代码、不加测试，纯文档盘点；让累积 99 个微观迭代后的项目方向感重新
+  对齐。后续 TODO 也据此重排——把人格演化（A 路线）作为 Iter 101 的入口。
+
 ## 2026-05-03 — Iter 99：再拆出 PanelStatsCard + PanelToneStrip
 - 新文件 `src/components/panel/PanelStatsCard.tsx`：封装 lifetime + today 大数字 + 克制模式 / 破冰阶段 badge。props 仅 3 个（todaySpeechCount / lifetimeSpeechCount / tone），逻辑（restraining 派生 + 颜色切换 + 文案分支）全部内化。
 - 新文件 `src/components/panel/PanelToneStrip.tsx`：封装 tone snapshot 一行 chip strip（period / cadence / wake / pre-quiet / 破冰 / mood / motion）。tone null 时直接 return null，外层无需 conditional render。
