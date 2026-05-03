@@ -2,6 +2,17 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 106：panel stats 卡加"陪伴 N 天"指示
+- 新 Tauri command `companionship::get_companionship_days() -> u64`：薄封装现有 `companionship_days()`，调用即首次会触发 install_date.txt 自动初始化（zero-config）。注册到 invoke handler。
+- 前端 PanelDebug fetchLogs 的 Promise.all 加 `invoke("get_companionship_days")`；新 state `companionshipDays` 透传到 PanelStatsCard。
+- PanelStatsCard 新 prop `companionshipDays: number`：在累计行后插入第三块（左侧 1px 分隔线 + 16px 青色 mono 数字 + 副标）。文案根据 day 0 / day N 切换：
+  - 0 → "天（今天初识）"
+  - N ≥ 1 → "天陪伴"
+- 视觉层级：lifetime 28px 紫色（主），today 20px 蓝色（次），companionship 16px 青色（背景上下文）。三个数字依重要性递减、依颜色区分语义——避免新数字喧宾夺主，但又比 chip strip 里的小指标更显眼。
+- tooltip 解释 "自首次启动起算" + 持久化文件位置，让用户知道这个数字怎么来的。
+- 路线 A 现在三层 prompt 注入（companionship_days / persona / mood_trend）+ 用户面板可见 panel chip = 数据从输入到输出的闭环。
+- 213 cargo tests + tsc 全过；零 warning。
+
 ## 2026-05-03 — Iter 104：路线 A 三层信息也注入反应式 chat 的 system prompt
 - `commands::chat` 新增 3 个公共函数：`format_persona_layer(days, persona, trend) -> String`（pure，可测）/ `build_persona_layer_async()`（pulls companionship_days + persona_summary + mood_trend from disk）/ `inject_persona_layer(messages)`（async，按 inject_mood_note 同样的 "before first non-system message" 规则插入）。
 - 反应式 chat handler `chat()` 在 inject_mood_note 之后链式调 inject_persona_layer，让用户主动来聊时也看到完整长期人格背景。

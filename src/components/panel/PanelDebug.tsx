@@ -53,6 +53,7 @@ export function PanelDebug() {
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
   const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
   const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
+  const [companionshipDays, setCompanionshipDays] = useState<number>(0);
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
   const [triggeringProactive, setTriggeringProactive] = useState(false);
@@ -63,7 +64,7 @@ export function PanelDebug() {
 
   const fetchLogs = async () => {
     try {
-      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut, envT, tilt] = await Promise.all([
+      const [result, stats, dec, mts, speeches, toneSnap, reminderList, lifetime, today, llmOut, envT, tilt, days] = await Promise.all([
         invoke<string[]>("get_logs"),
         invoke<CacheStats>("get_cache_stats"),
         invoke<ProactiveDecision[]>("get_proactive_decisions"),
@@ -76,6 +77,7 @@ export function PanelDebug() {
         invoke<LlmOutcomeStats>("get_llm_outcome_stats"),
         invoke<EnvToolStats>("get_env_tool_stats"),
         invoke<PromptTiltStats>("get_prompt_tilt_stats"),
+        invoke<number>("get_companionship_days"),
       ]);
       setLogs(result);
       setCacheStats(stats);
@@ -89,6 +91,7 @@ export function PanelDebug() {
       setLlmOutcomeStats(llmOut);
       setEnvToolStats(envT);
       setPromptTiltStats(tilt);
+      setCompanionshipDays(days);
     } catch (e) {
       console.error("Failed to fetch logs:", e);
     }
@@ -337,6 +340,7 @@ export function PanelDebug() {
       <PanelStatsCard
         todaySpeechCount={todaySpeechCount}
         lifetimeSpeechCount={lifetimeSpeechCount}
+        companionshipDays={companionshipDays}
         tone={tone}
       />
 

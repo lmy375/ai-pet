@@ -120,6 +120,7 @@ pub fn run() {
             speech_history::get_recent_speeches,
             speech_history::get_lifetime_speech_count,
             speech_history::get_today_speech_count,
+            companionship::get_companionship_days,
             proactive::get_tone_snapshot,
             proactive::get_pending_reminders,
             consolidate::trigger_consolidate,
