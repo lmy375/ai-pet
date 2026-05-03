@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R49 设计要点（已实现）
+- **dev message leaking to user 是隐性反模式**："importing pixi.js" 是 dev-mode 诊断输出，但被 setStatus 直接显给 user。**在 dev 期写的临时 status 文案 上线前应该 audit 替换** —— "对开发者 vs 对用户" 两个 audience 用同一 string 不合适。R49 第一次 codify 这个反模式。其他 components 该 audit：是否有 "loading from API…" / "checking cache..." 等技术语言直接 surface 给 user？
+- **internal data / display value 二元 = audience separation**：R49 保留 `status` 用作 dev-visible state，`displayStatus` 是面向 user 的 transformed value。**两个 audience (dev / user) 看的应该是不同的 representation**。R23 cooldown breakdown 也用同样 idiom (internal `cooldown_breakdown` data 跟 hover-displayed math)。**应用一致**：anywhere 数据精确度 vs 用户友好度 trade-off 时，存 raw + derive friendly。
+- **system event timing 偏慢 vs user-action timing 偏快**：R49 fadeIn 240ms vs R40 ChatBubble 220ms vs R41 :active 80ms。粗略规律：system spin-up 250-300ms（"加载需要点时间，理所当然"），user-triggered animation 200-250ms（"我做了什么应快速反馈"），press feedback 50-100ms（"我刚按下应即时"）。**timing 跟 action causality 对应** —— user 知道是自己触发的事件应快，system 自发事件可慢。
+- **Error 文案不友好化**：保留 `Error: ${err.message}` 原始 detail。**friendly text 适合"成功流程"，error 适合"actionable detail"**。如果 error 也变成"出错了，请稍后再试"，user 失去诊断信息（"是网络？是文件？是权限？"）。错误是 user 唯一需要技术信息的时刻。
+- **polish cluster 从低风险面开始**：Live2D 主体涉及 cubism4 库 + canvas 绘制，risky。R49 选 loading status div 这个**界面包装层** —— 零侵入 Live2D 内部。**Live2D 内部动画调整（model.motion / parameter 调用）该留给以后专门 iter** 或者根本不动（pet 已 functional）。Polish cluster 应当先动外围再动核心。
+- **保留 6 个 setStatus 中间 stage**：诱惑是缩成 setStatus("正在唤醒…") 单 call。但 dev 需要 "stuck on which stage" 的诊断。**view 层简化 ≠ data 层简化** —— 同一原则在 R23 cooldown breakdown / R45 unread badge cap 都践行。两者各自服务不同 reader。
+- **Live2D cluster 候选 R50/R51**：(a) idle breathing animation via Live2D model parameter (PARAM_BREATH)？(b) tap interaction visual feedback（pet 被点击后 scale 短暂）？(c) hover gaze（pet 看向鼠标位置）？这三都涉及 Live2D model API。**风险 / 价值匹配** — 价值最高是 hover gaze（让 pet 显著"活" 起来），但 risk 也最高（gaze 实现复杂）。如果 R50/51 做 Live2D 内部，需要先调研模型 API 再决定。
+
 ## Iter R48 设计要点（已实现）
 - **stagger 比例决定 perception 不是任意拍**：3 dots 错峰 0.18s，跟 1.2s period 的 1/6.7。这让"波纹从左到右流动" 视觉清晰。如果用 0.4s 错峰，3 dots 接近同时（差距 < 1/3 周期），视觉退化成"3 dots 同时跳"。如果用 0.05s，差距太小，看不出错峰。**stagger 应该 ≈ 1/N period** (N = dot 数) 形成流动感，N 多了用 1/(2N) 让流动更密。这是 ambient cascade 设计的经验数字。
 - **multi-dimensional motion > single-dimensional**：dots 用 opacity + translateY 双维。opacity 单维像 "fade in/out 闪光"；translateY 加上让它像"心跳起伏"。**两维让 motion 更有机** —— 单维容易显 "machine"，多维显 "alive"。但 dimension 加多了反而 chaos —— 3 维 (opacity + scale + rotate) 会显躁。Two is the sweet spot for "alive but not chaotic"。
