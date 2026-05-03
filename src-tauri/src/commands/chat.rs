@@ -685,6 +685,14 @@ pub async fn run_chat_pipeline(
                                         "Tool review approved [{}] {}",
                                         review_id, tc_name
                                     ));
+                                    if let Some(d) = &ctx.decision_log {
+                                        crate::tool_review::record_review_outcome(
+                                            d,
+                                            crate::tool_review::KIND_REVIEW_APPROVE,
+                                            &review_id,
+                                            tc_name,
+                                        );
+                                    }
                                     None // proceed to execute
                                 }
                                 Ok(Ok(crate::tool_review::ToolReviewDecision::Deny)) => {
@@ -692,6 +700,14 @@ pub async fn run_chat_pipeline(
                                         "Tool review denied [{}] {}",
                                         review_id, tc_name
                                     ));
+                                    if let Some(d) = &ctx.decision_log {
+                                        crate::tool_review::record_review_outcome(
+                                            d,
+                                            crate::tool_review::KIND_REVIEW_DENY,
+                                            &review_id,
+                                            tc_name,
+                                        );
+                                    }
                                     Some(crate::tool_review::denied_result_json(
                                         "用户在审核界面拒绝了此次调用",
                                         assessment.safe_alternative.as_deref(),
@@ -704,6 +720,14 @@ pub async fn run_chat_pipeline(
                                         "Tool review channel lost [{}] {} — default-deny",
                                         review_id, tc_name
                                     ));
+                                    if let Some(d) = &ctx.decision_log {
+                                        crate::tool_review::record_review_outcome(
+                                            d,
+                                            crate::tool_review::KIND_REVIEW_DENY,
+                                            &review_id,
+                                            tc_name,
+                                        );
+                                    }
                                     Some(crate::tool_review::denied_result_json(
                                         "审核通道异常关闭",
                                         assessment.safe_alternative.as_deref(),
@@ -716,6 +740,14 @@ pub async fn run_chat_pipeline(
                                         "Tool review timed out [{}] {} — default-deny",
                                         review_id, tc_name
                                     ));
+                                    if let Some(d) = &ctx.decision_log {
+                                        crate::tool_review::record_review_outcome(
+                                            d,
+                                            crate::tool_review::KIND_REVIEW_TIMEOUT,
+                                            &review_id,
+                                            tc_name,
+                                        );
+                                    }
                                     Some(crate::tool_review::timeout_result_json(
                                         assessment.safe_alternative.as_deref(),
                                     ))
@@ -775,10 +807,12 @@ pub async fn chat(
     interaction_clock: State<'_, InteractionClockStore>,
     process_counters: State<'_, ProcessCountersStore>,
     tool_review: State<'_, crate::tool_review::ToolReviewRegistryStore>,
+    decision_log: State<'_, crate::decision_log::DecisionLogStore>,
 ) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
     let ctx = ToolContext::from_states(&log_store, &shell_store, &process_counters)
-        .with_tool_review(tool_review.inner().clone());
+        .with_tool_review(tool_review.inner().clone())
+        .with_decision_log(decision_log.inner().clone());
     let mcp = mcp_store.inner().clone();
     let clock = interaction_clock.inner().clone();
     // Inbound user message — clears the "awaiting reply to previous proactive" flag so the

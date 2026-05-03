@@ -170,6 +170,25 @@ pub fn new_tool_review_registry() -> ToolReviewRegistryStore {
     Arc::new(ToolReviewRegistry::new())
 }
 
+/// Iter R2: kinds used in `decision_log` for the three review outcomes.
+/// Centralized so the panel "decisions" view can match on stable strings.
+pub const KIND_REVIEW_APPROVE: &str = "ToolReviewApprove";
+pub const KIND_REVIEW_DENY: &str = "ToolReviewDeny";
+pub const KIND_REVIEW_TIMEOUT: &str = "ToolReviewTimeout";
+
+/// Iter R2: push a tool-review outcome onto the proactive decision log so the
+/// panel's "recent decisions" view shows approve / deny / timeout events
+/// alongside Spoke / Silent / Skip. Reason format is `{review_id} {tool_name}`
+/// — keeps it grep-friendly and parseable.
+pub fn record_review_outcome(
+    decisions: &crate::decision_log::DecisionLog,
+    kind: &str,
+    review_id: &str,
+    tool_name: &str,
+) {
+    decisions.push(kind, format!("{} {}", review_id, tool_name));
+}
+
 /// Synthetic tool result returned to the LLM when the user denies. The hint
 /// surface lets the model self-correct without burning another tool call.
 pub fn denied_result_json(reason: &str, safe_alternative: Option<&str>) -> String {
@@ -341,5 +360,26 @@ mod tests {
     #[test]
     fn timeout_constant_is_one_minute() {
         assert_eq!(REVIEW_TIMEOUT_SECONDS, 60);
+    }
+
+    #[test]
+    fn record_review_outcome_pushes_decision_with_id_and_tool() {
+        // Iter R2: outcomes (approve / deny / timeout) must land in the same
+        // ring buffer the proactive Spoke / Silent / Skip entries use, so the
+        // panel "decisions" view is one timeline. Pin the kind strings + the
+        // reason format so future panel parsers don't drift.
+        use crate::decision_log::DecisionLog;
+        let log = DecisionLog::new();
+        record_review_outcome(&log, KIND_REVIEW_APPROVE, "tr-1", "bash");
+        record_review_outcome(&log, KIND_REVIEW_DENY, "tr-2", "write_file");
+        record_review_outcome(&log, KIND_REVIEW_TIMEOUT, "tr-3", "memory_edit");
+        let snap = log.snapshot();
+        assert_eq!(snap.len(), 3);
+        assert_eq!(snap[0].kind, "ToolReviewApprove");
+        assert_eq!(snap[0].reason, "tr-1 bash");
+        assert_eq!(snap[1].kind, "ToolReviewDeny");
+        assert_eq!(snap[1].reason, "tr-2 write_file");
+        assert_eq!(snap[2].kind, "ToolReviewTimeout");
+        assert_eq!(snap[2].reason, "tr-3 memory_edit");
     }
 }

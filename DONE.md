@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R2：TR3 review 结果写入 decision_log + 路线规划补全
+- 现状缺口：TR3 把 high-risk approve / deny / timeout 写到 app.log，但 panel 的 "recent decisions" view（QG3 时设置好的时间线）只看到 Spoke / Silent / Skip。tool-review 是真正"宠物想做的事被拦下" 决策事件，理应共享同一个 timeline——让用户在一条时间线里看完"宠物今天试图做什么 + 哪些被你拦了"。
+- 解法：
+  - `tool_review.rs` 加 3 个 `pub const KIND_REVIEW_{APPROVE,DENY,TIMEOUT}` + `pub fn record_review_outcome(&DecisionLog, kind, review_id, tool_name)` —— 单点 push，reason format 固定 `"{review_id} {tool_name}"`，方便未来 panel 解析。
+  - `ToolContext` 加 `decision_log: Option<DecisionLogStore>` + `with_decision_log` builder。symmetric with `with_tool_review`。
+  - desktop chat / proactive 入口都 attach；telegram / consolidate 留 None（autonomous 路径不写 panel timeline）。
+  - chat pipeline TR3 的 4 个 outcome 分支（Approve / Deny / channel-lost / Timeout）每个都加 `if let Some(d) = &ctx.decision_log { record_review_outcome(...) }`。channel-lost 分类为 Deny。
+  - 前端 PanelDebug：`kindColor` 加 3 个新 kind（蓝/红/橙），`localizeReason` 加 3 个新分支（中文友好渲染："用户允许了高风险工具调用（tr-1 bash）" / 拒绝 / 60秒未审核）。
+- 路线规划（gap analysis 后写入 TODO.md）：
+  - **Iter R1**：用户反馈信号采集——区分 dismiss / 回复 / 忽略 60s，写 feedback_history.log，注入 proactive prompt
+  - **Iter R3**：late-night wellness nudge 复合规则（0-3 点 + idle < 5min → 强制提醒休息）
+  - **Iter R4**：PanelDebug 显示 tool call purpose + risk 历史
+  - **Iter R5**：SOUL.md hot reload
+  - 这些是"companion-grade 体验补全" 系列——不是新功能，而是把现有信号闭回宠物判断里。
+- 决策 — 不在 panel 加 ToolReview 专门 view：决策 timeline 已经 16 容量足够，TR review 是低频事件（每天最多几次），混在主时间线里 user 一眼能看到"今天 8 次决策中有 3 次 review"反而比独立 tab 信息密度高。如果未来 review 频率高到污染时间线再分屏。
+- 测试：1 新单测 `record_review_outcome_pushes_decision_with_id_and_tool` —— push 三种 kind + 检查 snapshot 顺序与 reason 格式钉死，guards future panel parser drift。
+- 测试结果：350 cargo（+1）；clippy clean；fmt clean；tsc clean。
+- 结果：tool-review 现在和 proactive 决策共享一条 timeline。新装用户在 panel 一眼能看到"宠物今天有 12 次主动开口尝试 + 2 次工具被我拦了"，是 companion 行为可解释性的最后一道补丁。
+- 同时收掉 Iter Dx：早就由 Cε / Cη / Cθ / Cπ 在 PanelMemory.tsx 里做完了，留 TODO 不必要。
+
 ## 2026-05-03 — Iter TR3：高风险工具调用的人工审核 gate（60s 超时默认拒绝）
 - 现状缺口：TR1 + TR2 把 purpose 和 risk classification 都做了，但 high-risk 工具（bash / write_file / memory delete）仍按 observe-only 直接执行。TR3 把这道墙立起来：高风险时弹 panel 模态请求 approve / deny；用户 60 秒不响应按 safe default（拒绝）处理；无论结果都把结构化 JSON 返给 LLM 让它能选 safe_alternative 重试。
 - 后端 — 新模块 `src/tool_review.rs`：

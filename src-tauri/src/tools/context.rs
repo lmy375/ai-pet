@@ -23,6 +23,11 @@ pub struct ToolContext {
     /// `None` for telegram / consolidate / autonomous flows that have no UX
     /// surface — those paths skip review and execute high-risk tools directly.
     pub tool_review: Option<ToolReviewRegistryStore>,
+    /// Iter R2: optional decision-log handle so tool-review outcomes (approve /
+    /// deny / timeout) land alongside the proactive Spoke / Silent / Skip
+    /// entries the panel already shows. None for paths that don't surface to
+    /// the panel.
+    pub decision_log: Option<crate::decision_log::DecisionLogStore>,
 }
 
 impl ToolContext {
@@ -37,6 +42,7 @@ impl ToolContext {
             process_counters,
             tools_used: None,
             tool_review: None,
+            decision_log: None,
         }
     }
 
@@ -51,6 +57,7 @@ impl ToolContext {
             process_counters: process_counters.inner().clone(),
             tools_used: None,
             tool_review: None,
+            decision_log: None,
         }
     }
 
@@ -59,6 +66,13 @@ impl ToolContext {
     /// for user approve/deny before execution.
     pub fn with_tool_review(mut self, registry: ToolReviewRegistryStore) -> Self {
         self.tool_review = Some(registry);
+        self
+    }
+
+    /// Iter R2: attach a decision-log handle so the chat pipeline can push
+    /// tool-review outcomes onto the same log the proactive loop uses.
+    pub fn with_decision_log(mut self, log: crate::decision_log::DecisionLogStore) -> Self {
+        self.decision_log = Some(log);
         self
     }
 

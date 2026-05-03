@@ -127,8 +127,38 @@
   Tag 统计观察实际命中率，决定是否要再加强 prompt。
 
 ### 路线 D：记忆 surface
-- [ ] Iter Dx：panel 加 Memory tab（已有 PanelMemory.tsx，需要从 yaml 索引展开成可读 UI），
-  让用户看到宠物"记住了什么"。增强信任也帮 debug。
+- [x] Iter Dx：panel 加 Memory tab — 实际由 Iter Cε / Cη / Cθ / Cπ 等连续 iter 完成，
+  PanelMemory.tsx 已 835 行（categories / butler / schedule / history 全在），
+  专门 iter 不需要再做（2026-05-03 确认收官）
+
+## 下一阶段：companion-grade 体验补全（2026-05-03 TR3 收口后新增）
+
+QG1-6 + TR1-3 把质量基线和工具审计闭环了。现在的差距在"真实伙伴感"上 — 不是
+更多功能，而是把现有信号闭回宠物的判断里。优先级从高到低：
+
+- [ ] Iter R1：用户反馈信号采集 + 注入 proactive prompt。
+  - AI prompt：在 ChatBubble 的 60s 自动消失之外，区分 (a) 用户主动 dismiss（< 5s 关掉）
+    (b) 用户回复 (c) 用户忽略到 60s 超时。把这三种结果记到 speech_history 同级的
+    `feedback_history.log`，proactive prompt 加 hint："上次你说『X』，用户 N 秒后忽略了"。
+    让 LLM 学着调整开口节奏 / 内容。补 unit test 钉住注入字段。
+
+- [x] Iter R2：TR3 review 结果写入 decision_log（2026-05-03 完成 — Iter R2）
+
+- [ ] Iter R3：late-night wellness nudge 复合规则。
+  - AI prompt：proactive prompt 加 composite rule：当 0:00-3:00 之间且 idle_minutes < 5
+    （仍在用电脑），engagement 类提示文字偏向「该休息了」而非常规 chatty 引导。
+    扩展 active_composite_rule_labels + tests。这是 plan_hint 之外的硬规则 wellness
+    nudge — 即使 pet 自己没写 daily_plan 也会强制触发。
+
+- [ ] Iter R4：PanelDebug 显示 tool call purpose（TR1 follow-up）。
+  - AI prompt：TR1 已经把 purpose 写进 app.log。在 PanelDebug 的"调试日志" view 之外
+    新加一个"工具调用历史" 折叠区，从 app.log 解析出最近 N 次 Tool call 行（含 purpose
+    + risk level），用 ToolCallBlock 风格展示。是 prompt tuning 时的高频调试需求。
+
+- [ ] Iter R5：SOUL.md hot reload。
+  - AI prompt：当前 SOUL.md 改了得重启 app 才生效，开发体验差。给 SOUL.md 加 file watcher
+    （或每次 proactive turn 重读，缓存一句话）让改动立即生效。设置面板加"立即重新加载 SOUL"
+    按钮作为 fallback。
 
 ### 历史保留候选
 - [x] Iter 74：speech_daily.json 扩展 panel stats 卡为"今日 / 本周 / 累计"三列（2026-05-03 完成）

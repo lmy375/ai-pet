@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R2 设计要点（已实现）+ 后续路线规划
+- **timeline 统一比 tab 分立更有信息量**：原本可以加 "Tool Review" 专门 panel tab，但 review 是低频事件（高 risk 工具调用一般 < 几次/天）。混在 decision timeline 里反而能让用户瞬间看到"今天 12 决策 + 2 review"，对 review 异常突增时更敏感。density first, separation second.
+- **Optional 字段叠加是 ToolContext 演化的稳定模式**：tools_used (Iter E4) → tool_review (TR3) → decision_log (R2)。每个都是 `Option` + `with_X` builder。autonomous 路径（telegram / consolidate）始终用 None，desktop / proactive 路径 attach。Rust 这种"零成本 opt-in" pattern 是 backward compat 的优秀解法。
+- **kind 字符串 const 化是面向未来 parser 的契约**：`KIND_REVIEW_APPROVE` 等 pub const 让 panel 测试 / 未来 log scraper / metrics aggregator 都不用 hardcode 字符串。同时 Rust 编译期就能 catch typo。
+- **gap analysis 在 backlog 干涸时强制做**：到这步所有 explicit TODO 都做完了，剩下的或 gated（8b / 12b）或太大（QG5）。这时不应该编小修小补让 TODO 看起来满，应该真正 stand back 评估"距 companion 目标差多远"。R1-R5 是这次 stand-back 的产物：每条都是"现有数据再向前一步利用"，不是新加抽象。这是 backlog management 的 healthy moment。
+- **R 系列优先级原则**：(R1 反馈采集) 是 input 层最大杠杆——pet 当前对 user 反应近乎盲；做了之后 prompt 才能真的"learn from sessions"。R3-R5 都是 R1 的下游或者独立 polishing。所以 R1 是下一个 iter 自然的接力。
+- **不做 toolreview-specific dashboard**：tool-review 本质上是不该频繁发生的事件。如果发生频繁（panel timeline 都被它淹没），那就是 prompt + 工具集需要重新设计的信号——不是"加个独立面板"能解决。timeline 一线诊断够用。
+
 ## Iter TR3 设计要点（已实现）
 - **TR1 → TR2 → TR3 递进式安全设计**：先有 purpose（每次调用要写明意图），再有 classifier（按工具名 + args 分级），最后有 enforcement（高风险阻塞）。每步都独立可工作 + 数据上下游兼容。这是"安全机制循序渐进"的范式：先 audit，再 classify，再 enforce。如果一开始就直接做 review gate，没有 purpose 字段 panel 就显示不出"为什么 LLM 要调它"。
 - **polling 设计的杠杆**：QG6 把 panel 收敛成 1 Hz 单 IPC，TR3 直接复用——`pending_tool_reviews` 加进 snapshot 字段就完了，前端 polling 自然检测到。架构投资在 N 个 iter 后产生复利：QG6 是抽象基础，TR3 是受益方。
