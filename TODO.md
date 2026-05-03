@@ -15,8 +15,21 @@
 
 - [x] Quality Gate 4：补齐 prompt reinjection redaction（2026-05-03 完成 — Iter QG4）
 
-- [ ] Quality Gate 5：拆分 `src-tauri/src/proactive.rs`。
-  - AI prompt：在不改变行为的前提下，把 proactive 的纯逻辑按 gate、prompt rules、reminders、butler schedule、telemetry 拆到子模块。先移动代码和测试，保持 public API 稳定；每一步都运行 `cargo test`，避免大爆炸式重构。
+- [ ] Quality Gate 5：拆分 `src-tauri/src/proactive.rs`（incremental——一次一片）。
+  - AI prompt：每个 iter 抽一个完整 cohesive 子系统到 `src/proactive/<sub>.rs`，glob `pub use`
+    re-export 保 public API 不变。先做行为不变的纯移动，之后行有余力再做内部清理。
+  - [x] QG5a：reminders 子系统（`ReminderTarget` / `parse_reminder_prefix` / `is_reminder_due` /
+    `format_target` / `is_stale_reminder` / `format_reminders_hint` + 17 测试）2026-05-03 完成
+  - [ ] QG5b：butler_tasks schedule 子系统（`ButlerSchedule` / `parse_butler_schedule_prefix` /
+    `is_butler_due` / `has_butler_error` / `is_completed_once` / `format_butler_tasks_block` /
+    `build_butler_tasks_hint`）
+  - [ ] QG5c：prompt rules 子系统（`active_environmental_rule_labels` / `active_data_driven_*` /
+    `active_composite_*` / `proactive_rules` / `build_proactive_prompt` / `PromptInputs` +
+    所有 prompt_tests）—— 最大块
+  - [ ] QG5d：gate 子系统（`evaluate_pre_input_idle` / `evaluate_input_idle_gate` /
+    `evaluate_loop_tick` / `LoopAction` / `wake_recent` / `in_quiet_hours` / gate_tests）
+  - [ ] QG5e：telemetry 子系统（`record_proactive_outcome` / `append_outcome_tag` /
+    `ProactiveTurnOutcome` / `LAST_PROACTIVE_*` static stashes）
 
 - [x] Quality Gate 6：减少 panel 高频 IPC（2026-05-03 完成 — Iter QG6）
 

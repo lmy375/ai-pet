@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG5a：reminders 子系统拆分到 `proactive/reminders.rs`
+- 现状：proactive.rs 5500+ 行，QG5 一直被 deferred 因为"太大单 iter 做不完"。改"全切"为"一片一片切"——每 iter 抽一个 cohesive 子系统，public API 由 `pub use` glob 保持稳定。
+- 选 reminders 作为第一片：(a) 完全自包含（无内部依赖于其他 proactive 状态）；(b) 已经是清晰边界（5 个 pub fn + 1 enum + 17 个 unit tests）；(c) 已被外部模块（`consolidate.rs`）通过 `crate::proactive::...` 引用——good 切口测试 re-export 是否真的兼容。
+- 改动：
+  - 新文件 `src-tauri/src/proactive/reminders.rs`（283 行：170 src + 113 tests）
+  - 移过去：`ReminderTarget` enum / `parse_reminder_prefix` / `is_reminder_due` / `format_target` / `is_stale_reminder` / `format_reminders_hint` + 17 测试（重命名 `mod reminder_tests` → `mod tests` 因为已经在子文件里）
+  - proactive.rs 头部：`mod reminders;` + `pub use self::reminders::*;`
+  - proactive.rs 净减 ~110 行（5500→5393）
+- 决策 — Rust 2018 module nesting：用 `src/proactive.rs` + `src/proactive/<sub>.rs` 而不是 `src/proactive/mod.rs` 改造。理由：(a) 保留 git blame on proactive.rs；(b) 渐进式不改变现有 grep / IDE 路径；(c) 现代 Rust 推荐的格式。
+- 决策 — `pub use self::reminders::*;` 全 glob 而不是 explicit `pub use self::reminders::{ReminderTarget, parse_reminder_prefix, ...}`：glob 不会触发 `unused_import` lint（即使 proactive.rs 自己只用部分），并且未来加 / 删 reminders 公共 API 时不需要同步改 re-export 列表。
+- 决策 — 测试整体跟随源代码移动：`mod tests` 内嵌在子模块中，比保留在 proactive.rs 顶层更符合 "测试与代码同居" 的 Rust 习惯。
+- 测试结果：383 cargo（无变化—测试只是换了运行位置）；clippy --all-targets clean；fmt clean；tsc clean。
+- 路线 — TODO.md 加 QG5a-e checklist：
+  - [x] QG5a reminders（本 iter）
+  - [ ] QG5b butler_tasks schedule
+  - [ ] QG5c prompt rules（最大块）
+  - [ ] QG5d gate logic
+  - [ ] QG5e telemetry / static stashes
+  - 这种 incremental decomposition 比一次大重构 risk 小：每片独立 commit，easy revert，每片测试都跑。
+
 ## 2026-05-03 — Iter R7：feedback ratio 驱动 cooldown（capture→surface→drive 闭环）
 - 现状缺口：R1 采集 + R6 surface 后，"被忽略" 信号还是被动数据——LLM prompt 里有提示但 cooldown gate 不动。如果用户 7/10 都忽略，pet 还是按基线 cooldown 继续重复试探，违背"宠物会读空气" 的设计意图。
 - 解法 — 三段 pure helpers + 一处 gate 改动：
