@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D7：consolidate 返回 LLM summary，让 panel banner 反映真实成果
+- 现状缺口：用户点 "立即整理" / "立即生成画像" 按钮后，banner 显示 "Consolidation finished in 1234 ms (12 items at start)"——只有时长和 before-count，没有"实际改了什么"。LLM 的 summary（"合并了 2 条 / 删了 1 条 todo / persona_summary 已 update / 没改动" 之类）被记到 LogStore 然后丢弃。要看必须打开 PanelDebug logs 翻找。Cφ 的"立即生成画像" UX 只成了一半——告诉用户"跑了"，但没告诉"做了什么"。
+- 解法：propagate up:
+  - `run_consolidation` 返回类型从 `Result<(), String>` → `Result<String, String>`，返回 LLM 的 summary 文本（已经在内部 captured + 200-char 截断 logged，本来就有，只是被丢弃）。
+  - `trigger_consolidate` 命令包装 `summary.trim().chars().take(160).collect()` 短摘要并拼到时长 prefix 之后：`"Consolidation finished in N ms (X items at start) · 合并了 2 条…"`。160 chars 比 logged 的 200 短一档，banner 不会过长。
+  - 如果 LLM 没输出 summary（罕见，prompt 明确要求），fallback 到原 prefix-only 字符串。
+  - spawn loop 那条 `if let Err(e) = run_consolidation(...)` 自动兼容（Ok 路径的新 String 直接被丢，本就不用）。
+- panel 端零改动：handleTriggerConsolidate / handleConsolidate 都直接用 `await invoke<string>("trigger_consolidate")` → setConsolidateMsg(status)。banner 自然变长 / 包含信息。
+- 测试：302 cargo 不变（Result 类型改变内部 ?-bubble 不破坏，logger / banner 都是 view-time）；tsc 干净。
+- 设计选择：不另开 Tauri command 把 last summary 持久化——当下场景就是"点了按钮立刻看反馈"，单次返回足矣。如果未来要做"consolidate 历史" panel section 再考虑。
+- 结果：用户点按钮 → 看到 LLM 的 summary 真容（"合并了 X 条" / "没改动" / "持久画像更新"）。从"我让它跑了"升级为"它做了 Y"。这是 Cφ "立即触发" UX 的合理 follow-up。
+
 ## 2026-05-03 — Iter D6：butler 执行后让宠物在 bubble 里简短提一下
 - 现状缺口：Cε 让 LLM 执行 butler_task 后写 butler_history（panel 时间线看得到）；Cπ 让失败留 [error] 标记。但有一个细微 UX 缺口：执行成功时，LLM **可能**在它的开口里提一下"我帮你写好了 today.md"——也可能完全不提，只 update 了 butler_tasks 条目就过去了。结果用户的 bubble 看到的是普通闲聊，必须打开 panel 才发现 timeline 多了一条。"trust loop" 在 panel-only 上断开。
 - 解法：在 `format_butler_tasks_block` 的 footer 加一段：
