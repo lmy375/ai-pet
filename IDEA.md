@@ -30,6 +30,15 @@
 - **Iter 7**：日历/天气/系统通知集成（通过 MCP 或新工具），让主动话题更丰富。
 - **Iter 8**：让宠物的 Live2D 表情/动作根据情绪变化（替代单一动作）。
 
+## Iter 104 设计要点（已实现）— 路线 A 延展到反应式路径
+- **proactive 注入 vs chat 注入**：proactive 的"长期人格" hints 是嵌在大块 `[系统提示·主动开口检查]` 里的 sections。reactive chat 走另一种语境（用户来聊），人格背景应该是**独立 system note**，让 LLM 看到"这是宠物长期身份描述，与具体对话无关"。所以做了独立的 `[宠物的长期人格画像]` 包装。
+- **format_persona_layer 是 pure 而非 async**：把 IO 抽到外层 wrapper（build_persona_layer_async）。pure 函数能被单测精确锁顺序、空处理、whitespace 等行为，IO 部分只剩薄薄一层组装。这是 Iter 89/90/91 alignment 测试同样的设计哲学：业务逻辑可测，IO 边界扁平。
+- **whitespace-only 当空**：persona / mood_trend 内部已经处理 None / 空时返空字符串，但保险起见这里再 trim 一次。多重防御让"空内容混了空格"不会偷偷在 system note 里加一个空 block。
+- **顺序保持**：companionship → persona → mood_trend，和 proactive 的顺序一致。LLM 在两条路径上看到的人格层结构相同——降低"宠物在 chat 里和 proactive 里像两只不同的宠物"概率。
+- **复用 inject_mood_note 的 insertion 规则**：找到第一个非 system 的位置插入。如果未来用户聊天历史里有多条 system message（比如未来加了某些 ad-hoc 系统指令），新 note 会被插在所有 system 后但用户消息前——和 mood_note 同位次。
+- **不让 chat 也写 mood_history**：record_mood 只在 proactive turn 后调，因为那里有 mood update 的真实信号。chat 后用户聊一句也"读"了一次 mood，但那不是宠物自发的情绪转变；如果计入会让 trend 偏向"用户来聊我就 Idle"——破坏 trend 信号纯度。
+- **Telegram 自动跟随**：Telegram bot 也通过 run_chat_pipeline 调用，但 inject_persona_layer 是在 chat handler 而非 pipeline 内。如果要让 Telegram 也注入，需要在 telegram/bot.rs 那边显式调一下。当前先保持只 desktop chat，未来再扩展（看 Telegram 用户对长期人格感的体感再决定）。
+
 ## Iter 103 设计要点（已实现）— 路线 A 第三步（路线 A 收官）
 - **去重而非全部记录**：mood 在 proactive 周期被频繁 re-read，但实际转变不那么频繁。如果每次 record 都写，"我最近 30 次心情" 容易变成 "30 次都是同一个 Idle"——失去趋势意义。dedup 让 history 抓"心情演化的关键点"。
 - **`<ts> <motion> | <text>` 格式而非空格分隔**：mood text 含中文标点可能含空格、特殊字符。pipe + space 三字符 ` | ` 作 separator 几乎不会和真实文本碰撞，但又比 JSON Lines 轻量——`parse_motion_text` 一行 split_once 搞定。
