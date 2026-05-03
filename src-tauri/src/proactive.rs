@@ -933,28 +933,43 @@ async fn run_proactive_turn(
     // Pull the pet's recent proactive lines from a dedicated history file so the model
     // doesn't repeat itself. Independent of session messages — survives session resets
     // and chat.max_context_messages trimming.
-    let speech_hint = {
-        let recent = crate::speech_history::recent_speeches(5).await;
-        if recent.is_empty() {
-            String::new()
-        } else {
-            // Iter Cy: redact each line before re-injecting into the prompt. The pet's
-            // own past utterances may have referenced private terms (the LLM doesn't
-            // know to self-redact); redacting at read-time prevents re-leak even
-            // though the on-disk history file stays pristine.
-            let bullets: Vec<String> = recent
-                .iter()
-                .map(|line| {
-                    let stripped = crate::speech_history::strip_timestamp(line);
-                    format!("· {}", crate::redaction::redact_with_settings(stripped))
-                })
-                .collect();
-            format!(
-                "你最近主动说过的几句话（旧→新），开口前看一眼避免重复：\n{}",
-                bullets.join("\n")
-            )
-        }
+    // Iter R11: read recent speeches once and reuse for both speech_hint
+    // (the bullet list of past utterances) and repeated_topic_hint (the
+    // redundancy detector). Same window so both layers see the same
+    // mental model.
+    let recent_speeches = crate::speech_history::recent_speeches(5).await;
+    let speech_hint = if recent_speeches.is_empty() {
+        String::new()
+    } else {
+        // Iter Cy: redact each line before re-injecting into the prompt. The pet's
+        // own past utterances may have referenced private terms (the LLM doesn't
+        // know to self-redact); redacting at read-time prevents re-leak even
+        // though the on-disk history file stays pristine.
+        let bullets: Vec<String> = recent_speeches
+            .iter()
+            .map(|line| {
+                let stripped = crate::speech_history::strip_timestamp(line);
+                format!("· {}", crate::redaction::redact_with_settings(stripped))
+            })
+            .collect();
+        format!(
+            "你最近主动说过的几句话（旧→新），开口前看一眼避免重复：\n{}",
+            bullets.join("\n")
+        )
     };
+    // Iter R11: 4-char window, fires when a topic appears in ≥ 3 of the
+    // last 5 utterances. The bullets in `speech_hint` already redact
+    // private terms; the detector runs on raw lines (after timestamp
+    // strip) so it operates on actual content. Resulting hint then gets
+    // its own redaction pass — defense in depth.
+    let repeated_topic_hint =
+        match crate::speech_history::detect_repeated_topic(&recent_speeches, 4, 3) {
+            Some(topic) => crate::redaction::redact_with_settings(&format!(
+                "你最近多次提到「{}」——这次开口请换个角度或换个话题，避免让用户觉得在重复。",
+                topic
+            )),
+            None => String::new(),
+        };
 
     // Surface the user's active Focus mode (if any) so the pet can speak around it. This
     // path normally only runs when the user has unset `respect_focus_mode` — otherwise the
@@ -1072,6 +1087,7 @@ async fn run_proactive_turn(
         feedback_hint: &feedback_hint,
         hour: now_local.hour() as u8,
         recently_fired_wellness: late_night_wellness_in_cooldown(),
+        repeated_topic_hint: &repeated_topic_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -1513,6 +1529,9 @@ mod prompt_tests {
             // Default false — pre-Iter R8 gate state. Tests for the rate limit
             // bump this to true to verify suppression.
             recently_fired_wellness: false,
+            // Default empty — pre-Iter R11 state, no detected redundancy.
+            // Tests for the topic-repeat rule set this explicitly.
+            repeated_topic_hint: "",
         }
     }
 

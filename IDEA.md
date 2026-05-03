@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R11 设计要点（已实现）
+- **machine 检测 vs LLM 自觉**：speech_hint 已经把过去 5 条 bullet list 给 LLM 看了，原则上 LLM 应该自觉避免重复。但实践中 LLM 在 prompt 整体很长时容易忽略 bullet list 的内容（"我看到了但没真的对照"）。R11 用机器代替 LLM 做对照，给出**结构化警报** "你说了 N 次 X" — 比让 LLM 自审更强信号。这是"explicit 比 implicit 强" 在 prompt 设计中的应用。
+- **char ngram 是 Chinese-friendly 的 lazy tokenization**：jieba / pkuseg 之类真分词依赖外部库 + Chinese training data + 大量启动成本。4-char sliding window 是 0-deps 的"足够好" 近似 — 4-gram 在 Chinese 里对应"双词组"的 95% 情况（"工作进展" / "项目早会" / "周末计划" 等）。stop-word 过滤通过 whitespace/uniform-char skip 简单规避。这种"用编程语言原生工具做 80% 的工作" 在多语言场景下经常优于"上重型 NLP 库"。
+- **空格 + uniform-char 这两个 skip 规则**：从 false positive case 反推。空格 → 跨词边界（"了 哎"）；uniform-char → filler（"嗯嗯嗯嗯"）。这两个简单 rule 把误判率显著降下来，不需要复杂 stopword list。production 中如果再发现新 false positive 模式，加第三第四 rule。
+- **windowing parameter 对齐 R7 / R10 / R6**：3-of-5 ratio 与 R7 cooldown 同源思路（>60% trigger）。"60% repetition = 显著重复"是数字直觉。其他位置如果要"显著" threshold 也用 60%。
+- **redact 过 ngram 输出**：detector 不读 settings，只看 raw text。如果用户名是"张三"且最近 3 条都提到 "和张三", 4-gram "和张三同" 可能命中。过 redact 防止 ngram 文字本身泄漏。是 QG4 redact-on-reinjection pattern 的延续。
+- **复用 recent_speeches 单次 fetch**：原 speech_hint 调一次 recent_speeches(5)。改成 binding 后 speech_hint + repeated_topic_hint 两层共用。零额外 IO，相同窗口意味着两层 hint 一致 mental model。微小但合理的优化。
+
 ## Iter R10 设计要点（已实现）
 - **R series 的"chip 化"是 R6/R7 之后的自然下一步**：R6 在 PanelDebug 加了反馈 timeline，R7 用 ratio 改 cooldown。但 timeline collapsible 默认收起，用户日常 panel 看不到。chip 化让"宠物现在被听见多少" 进入 always-visible 一行。这是 D series chip strip 的延续 design pattern：每个有意义的 binary/ratio signal 应该有一个 chip。
 - **chip 颜色与 R7 adapter 临界点对齐**：>0.6 红 / <0.2 绿 / else 灰，正好对应 cooldown ×2 / ×0.7 / unchanged。这种"chip 颜色 = 系统行为预测器" 的契约让用户的 mental model 很清晰：看到红色 → 知道宠物会自动安静下来 → 不需要 manual settings 调整。
