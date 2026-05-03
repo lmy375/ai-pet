@@ -46,7 +46,9 @@
   （2026-05-03 完成）
 - [x] Iter D6：butler 执行后 prompt 教 LLM 在 bubble 里简短提一下「我帮你做了 X」
   + contract test 钉住 phrase（2026-05-03 完成）
-- D series 六连完成，panel + prompt + bubble 三方反馈闭环。
+- [x] Iter D7：consolidate 返回 LLM summary，panel banner 显示"做了什么"而不只是
+  "跑了多久"（2026-05-03 完成）
+- D series 七连完成。
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）

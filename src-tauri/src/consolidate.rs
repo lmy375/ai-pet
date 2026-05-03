@@ -73,17 +73,29 @@ pub fn spawn(app: AppHandle) {
 pub async fn trigger_consolidate(app: tauri::AppHandle) -> Result<String, String> {
     let total = total_memory_items();
     let started = std::time::Instant::now();
-    run_consolidation(&app, total).await?;
-    Ok(format!(
+    let summary = run_consolidation(&app, total).await?;
+    let elapsed_ms = started.elapsed().as_millis();
+    // Iter D7: include the LLM's own short summary so the panel banner reflects
+    // what actually changed ("合并了 2 条 / 删了 1 条 todo / persona_summary 已
+    // update") instead of just "Consolidation finished in N ms". Strip / truncate
+    // before display: long-form summaries get noisy in a banner.
+    let summary_snippet: String = summary.trim().chars().take(160).collect();
+    let prefix = format!(
         "Consolidation finished in {} ms ({} items at start)",
-        started.elapsed().as_millis(),
-        total,
-    ))
+        elapsed_ms, total
+    );
+    if summary_snippet.is_empty() {
+        Ok(prefix)
+    } else {
+        Ok(format!("{} · {}", prefix, summary_snippet))
+    }
 }
 
 /// Build the consolidation prompt, run it through the chat pipeline so the LLM can call
-/// `memory_edit`, and log a before/after item count.
-async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), String> {
+/// `memory_edit`, and log a before/after item count. Iter D7: returns the LLM's short
+/// summary so the panel banner can show it; empty string when the LLM produced no
+/// summary text (rare — the prompt asks for one explicitly).
+async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<String, String> {
     let config = AiConfig::from_settings()?;
     let mcp_store = app.state::<McpManagerStore>().inner().clone();
     let log_store = app.state::<LogStore>().inner().clone();
@@ -252,7 +264,7 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<(), S
     };
     let _ = app.emit("chat-done", payload);
 
-    Ok(())
+    Ok(summary)
 }
 
 /// Sweep the pet's `ai_insights/daily_plan` entry when its `updated_at` is older than

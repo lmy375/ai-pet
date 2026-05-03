@@ -1,5 +1,12 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D7 设计要点（已实现）
+- **propagate up vs persist**：曾考虑加 `last_consolidate_summary` 全局 atomic，让 panel 任意时间能拉。但 banner 是"点完按钮立刻看"的临时 feedback——没必要持久化，让 trigger_consolidate 直接返回更直接。如果以后做 "consolidate 历史" 时再加。
+- **160 vs 200 chars**：logged 截到 200，banner 截到 160。banner 在 panel 横幅里高度敏感，160 加 prefix 字符串大约填一行半；200 容易换行多次。
+- **spawn loop 调用兼容**：`if let Err(e) = run_consolidation(...).await` 在新签名下 Ok arm 含的 String 自动 drop，行为不变。这是 Rust `if let Err()` 的隐式好处——添加 Ok payload 不破坏只关心 Err 的调用方。
+- **prefix · summary 分隔符**：`·` 比 `\n` 在 banner 单行更合适；比 `:` 视觉更轻；和项目其他地方用 `·` 作 chip 分隔器一致。
+- **不写新单测**：纯返回值传播，没新逻辑分支。LLM summary 的具体内容是 model-driven 不可单测；时长格式化 / chars().take(160) 是 trivial。
+
 ## Iter D6 设计要点（已实现）
 - **prompt-only fix vs UI 改动**：曾考虑做"butler 执行检测后强制 emit 一条 toast"。但那意味着 panel 持续监听 butler_history poll、状态机复杂；prompt 内一句话教 LLM 把执行反馈带进 bubble 是更简洁的路径。LLM agent 模式的好处之一就是：行为塑造不必硬编码到代码层。
 - **位置 schedule 之后、错误之前**：footer 里现在有三个段落：操作指南（update/delete）→ schedule 含义 → "记得提一下" → 错误处理。"提一下"放第三段是因为它依附于"成功执行"语义，紧跟操作指南之后；错误处理段需要 LLM 已经知道前面的执行流程才有意义，所以放最后。
