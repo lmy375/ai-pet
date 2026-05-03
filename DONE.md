@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG5d：gate 子系统拆分到 `proactive/gate.rs`
+- 现状：QG5c2 后 prompt 系统 (rules + assembler + tests + 时间 helpers) 都各自模块化。下一片是 gate 决策子系统——决定每次 loop tick 该 Silent / Skip / Run 哪条。
+- 改动：
+  - 新文件 `src-tauri/src/proactive/gate.rs` 654 行（180 src + 470 tests + 4 行 mod doc）
+  - 移过去：`enum LoopAction`（pub 升级，spawn loop body 经 re-export 用）、`WAKE_GRACE_WINDOW_SECS` const、`wake_recent` fn、`evaluate_pre_input_idle`、`evaluate_input_idle_gate`、`evaluate_loop_tick` async + `mod gate_tests`（重命名为 `mod tests`）
+  - tests 引用 `crate::commands::settings::ProactiveConfig`、`super::*`（gate 同模块）、`super::ClockSnapshot`（通过 `use super::ClockSnapshot;` 显式从 proactive 父模块导入）
+  - proactive.rs：`mod gate;` + glob `pub use` 加进 head；删除原 LoopAction enum、4 个 fn 定义和 470 行 gate_tests block
+  - 同时删除 proactive.rs 顶层 `use crate::input_idle::user_input_idle_seconds`（unused after gate moves）
+  - proactive.rs 净减 ~640 行（3872 → 3232）
+- 决策 — gate.rs 是第二大 sub-module（仅次 butler_schedule）：650 行 vs reminders 280 / time_helpers 317 / prompt_rules 266 / prompt_assembler 375。gate tests 量大（470 行）因为有 7 大类边界（disabled/awaiting/cooldown/quiet/focus/wake/input_idle）每个都需要细粒度 tests。
+- 决策 — `evaluate_loop_tick` async fn 跟着走：依赖 AppHandle + InteractionClockStore + WakeDetectorStore + feedback_history 各种 IO 调用，但 spawn loop body 只用 `evaluate_loop_tick(&app, &settings)` 一次。让它 pub + 跟同 mod gate 测试代码一起。
+- 决策 — `super::ClockSnapshot` 显式 use：避免含糊 `super::*` 让 grep 帮不上忙。明确"gate 依赖 parent 的 ClockSnapshot 类型"，类似 prompt_assembler 的 `use super::{...}` 模式。
+- 决策 — `pub const WAKE_GRACE_WINDOW_SECS`：原本 private const，但 gate 上提到模块顶层 const + glob re-export 让外部如果未来要 surface "wake softening 窗口" 给 panel 也能直接 import 不需要再改 visibility。
+- 测试结果：383 cargo（无变化—测试只换了运行位置）；clippy --all-targets clean；fmt clean；tsc clean。
+- 进度：QG5a (–110) + QG5b (–642) + QG5c-prep (–308) + QG5c1 (–229) + QG5c2 (–342) + QG5d (–640) 共减 ~2270 行（5500→3232，~41%）。剩 QG5e（telemetry / static stashes 等）。
+
 ## 2026-05-03 — Iter QG5c2：prompt assembler 抽离到 `proactive/prompt_assembler.rs`
 - 现状：QG5c1 抽完 rule-label 生成器后，prompt 系统的"决策" 和"渲染" 分离了。这次抽走渲染层 — PromptInputs 数据结构 + proactive_rules 规则-文字映射 + build_proactive_prompt 装配 + 两个 hint formatters + SILENT_MARKER。
 - 改动：

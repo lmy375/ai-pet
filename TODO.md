@@ -34,8 +34,10 @@
     `proactive_rules` + `build_proactive_prompt` + `push_if_nonempty` +
     `format_proactive_mood_hint` + `format_plan_hint`。tests 暂留 prompt_tests 用
     `use super::*;` 通过 re-export 解析）
-  - [ ] QG5d：gate 子系统（`evaluate_pre_input_idle` / `evaluate_input_idle_gate` /
-    `evaluate_loop_tick` / `LoopAction` / `wake_recent` / `in_quiet_hours` / gate_tests）
+  - [x] QG5d：gate 子系统（`LoopAction` / `evaluate_pre_input_idle` /
+    `evaluate_input_idle_gate` / `evaluate_loop_tick` / `wake_recent` /
+    `WAKE_GRACE_WINDOW_SECS` + 全套 gate_tests）2026-05-03 完成。`in_quiet_hours`
+    已在 QG5c-prep 时移到 time_helpers，gate 通过 `super::in_quiet_hours` 引用
   - [ ] QG5e：telemetry 子系统（`record_proactive_outcome` / `append_outcome_tag` /
     `ProactiveTurnOutcome` / `LAST_PROACTIVE_*` static stashes）
 
