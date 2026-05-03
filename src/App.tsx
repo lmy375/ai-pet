@@ -87,36 +87,54 @@ function App() {
         overflow: "hidden",
       }}
     >
-      {/* Tab indicator — visible strip when hidden */}
+      {/* Tab indicator — visible strip when hidden.
+          Iter R43: slide-in animation when transitioning to hidden state +
+          hover widen affordance. Mirrors ChatBubble's interaction state
+          machine (R40+R41+R42) — entrance animation + hover state for
+          "I am here, click me to bring pet back". */}
       {hidden && (
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            top: "50%",
-            transform: "translateY(-50%)",
-            width: "16px",
-            height: "50px",
-            background: "linear-gradient(180deg, #7dd3fc 0%, #38bdf8 50%, #0ea5e9 100%)",
-            borderRadius: "10px 0 0 10px",
-            boxShadow: "-2px 0 8px rgba(56,189,248,0.3)",
-            zIndex: 50,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
+        <>
+          <style>{`
+            @keyframes pet-tab-slide-in {
+              from { left: -16px; opacity: 0; }
+              to   { left: 0; opacity: 1; }
+            }
+            .pet-tab:hover {
+              width: 22px;
+            }
+          `}</style>
           <div
+            className="pet-tab"
             style={{
-              width: "0",
-              height: "0",
-              borderTop: "6px solid transparent",
-              borderBottom: "6px solid transparent",
-              borderRight: "6px solid rgba(255,255,255,0.8)",
+              position: "absolute",
+              left: 0,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: "16px",
+              height: "50px",
+              background: "linear-gradient(180deg, #7dd3fc 0%, #38bdf8 50%, #0ea5e9 100%)",
+              borderRadius: "10px 0 0 10px",
+              boxShadow: "-2px 0 8px rgba(56,189,248,0.3)",
+              zIndex: 50,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              animation: "pet-tab-slide-in 280ms ease-out",
+              transition: "width 120ms ease-out",
             }}
-          />
-        </div>
+          >
+            <div
+              style={{
+                width: "0",
+                height: "0",
+                borderTop: "6px solid transparent",
+                borderBottom: "6px solid transparent",
+                borderRight: "6px solid rgba(255,255,255,0.8)",
+              }}
+            />
+          </div>
+        </>
       )}
 
       <ChatBubble

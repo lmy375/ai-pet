@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R43 设计要点（已实现）
+- **inline `<style>` + className pattern 跨 component 复用**：R40-R42 在 ChatBubble.tsx 用了"inline `<style>` 嵌 component-scoped CSS" 模式。R43 把它复用到 App.tsx 的 inline tab JSX。**pattern 复用 ≠ 一定要抽组件** —— R39 抽 PanelFilterButtonRow 是因为 3 caller 同样形态。R43 的 Tab inline JSX 只有 1 caller，pattern 复制即可。**当 visual recipe 跨组件相似但实现细节不同时，复制 recipe 比抽组件经济**。
+- **transform 已用就别再加 transform**：tab 用 transform: translateY(-50%) 居中。诱惑是用 transform: translateX(-100%) 做滑入。但叠加 transform 容易冲突 — keyframe 写 `transform: translateX(-100%)` 会覆盖 translateY(-50%) 让 tab 失去居中。**用其他属性 (left)** 做滑入避免冲突。这是 CSS animation 的 footgun pattern — animation 的 from/to 属性会替换整个 transform，不是 merge。
+- **timing 微差表达 component 角色**：bubble 220ms = "活物开口"，tab 280ms = "system 元素摆放"。差 60ms 不是任意拍 — 是想让 user 感觉到 bubble 比 tab "活" 那么一点。**timing 是 visual 的语气** —— 同样是 fadeIn，宠物的略快略轻盈，UI chrome 的略缓略机械。
+- **hover affordance：形状变化 > 颜色变化**：诱惑是 hover 时换 tab 颜色加深。但 tab 已经有 gradient (#7dd3fc → #0ea5e9)，加深会让 visual 变重复杂。形状变化（width 16→22）是更直接的 "召唤"，跟 native scrollbar / file dropdown handle 的 hover 一致。**形状是 affordance 的第一语言**，颜色是次级强化。
+- **+37.5% width 是 hover 加重的甜蜜点**：太多增（30→50）让 tab 喧宾夺主。太少（16→18）user 察觉不到。20-25% 觉察 + 不抢戏 — R43 选 22 (37.5%) 偏多一点考虑这是"找回 pet 的关键入口"，应该比普通 hover 更勾人一点。**hover 强度跟 affordance 重要性匹配** —— 关键入口可比普通 hover 更显著。
+- **不抽组件的纪律**：Tab 30 行 JSX 在 App.tsx 内，0 state，0 复用。抽 `<TabIndicator />` 会引入 prop drilling (hidden 状态从 App 传入) 但 0 收益。**< 50 行 + 单 caller + 0 state 不抽** 是 React-component 经济。R39 抽 PanelFilterButtonRow 是 3 caller + 共享 props 设计，那种 case 才值得抽。
+- **polish cluster 流转**：R40-R42 bubble cluster (3 iter) → R43 tab cluster start。**polish 期连续 cluster 切换是健康节奏** —— 每 cluster 收 endings 完整再换下一个。后续可能：R44 tab 再加 1 个 micro-state（如 active press）→ tab cluster 完成 → R45 转 Live2D 或 ChatPanel。**clusters as iter unit** 是 mature phase 的高阶抽象 —— 不只 single iter 闭环，还有 cluster 闭环。
+
 ## Iter R42 设计要点（已实现）
 - **interaction state machine 完整 = polish 完成**：4 micro-states (idle / fadeIn-mount / hover / press) 每个有自己的 visual transition。这是 desktop UI 的 mature interaction model —— 缺一种状态都会让 affordance 模糊。R40-R42 三连 iter 把 bubble 从"显示文字的盒子" 升级到"可交互的活物"。**polish phase 的"完成" 标志 = state machine 的 N 状态都有 visual signature**。
 - **transition timing 跟 metaphor 匹配**：transform 80ms 快（press 是物理瞬时反应），border-color 120ms 慢（hover 是视觉渐进强调）。两者不同 timing 让 affordance 自然区分 "我感觉到了" (fast) vs "我变得显眼了" (slow)。**timing function 不是装饰参数，是 metaphor 的物理建模**。新加 transition 时该问"这个变化是物理动作还是视觉强化？"。
