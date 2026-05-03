@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R57：note popover 打开时 refresh state（修 R55 stale-state bug）
+- 现状缺口：R55 popover 用户体验有 latent bug —— popover 打开时不 fetch 当前 note 状态，只 mount 时 fetch 一次。流程：用户 set 60min note → 60min 后 backend 自动 expire → user 打开 popover → 看到 stale "noteActive=true" + 老 text。**state 跟 backend 失同步**，user 可能困惑"为什么显示有 note 但 chip 没有？"
+- 解法 — handleNoteToggle async + selective refresh：
+  - 新 `handleNoteToggle` 替代直接的 `setShowNotePopover((v) => !v)`。
+  - 关闭时直接 close，不触发 fetch。
+  - 打开时 `await invoke("get_transient_note")`：
+    - if text → setNoteText(text) + setNoteActive(true)
+    - else → setNoteActive(false)，**不清空 noteText**（保留 user-typed 草稿）
+  - 错误吞掉只 console.error，不阻塞 popover 打开。
+- 决策 — preserve draft on inactive：诱惑是"无 note 时清空 textarea 让 popover 干净"。但 user 可能 type 一半文本（"我今天身体...") 然后误关 popover —— 重开 textarea 空让所有 typing 丢。**保留 draft = 防数据丢失**。Trade-off：可能让 user 困惑"我之前 type 的 draft 还在但没保存"，但 hover 文案 + 保存按钮 disabled (when text empty) 已经传达"未保存"。
+- 决策 — 仅 open 时 fetch，close 跳过：close 不需要 fetch（user 主动关，状态没变）。**fetch 只在 state 可能 stale 的时刻**触发，避免不必要 IPC。
+- 决策 — open 是 async：诱惑是 sync set state 让 popover 立刻显示，async fetch 完成后 update。但 stale state flash 比 100ms 延迟更扰 UX —— popover 先显 stale "已激活" 然后突然变 "未激活" 才是真问题。**接受小延迟**让 popover 显示永远反映 backend truth。
+- 决策 — 不清 stale text 在 expired-but-popover-was-stale-active case：如果 backend 显示 active + text，handleNoteToggle 会 setNoteText 更新到最新 backend text。如果 backend 显 inactive，noteText 留旧 draft。**两个 case 都不会让 user 看到 misleading "active" + 错的 text**。
+- 决策 — 不写测试：UI lifecycle，类型安全 by tsc。
+- 测试结果：509 cargo（无变化）；clippy clean；tsc clean。
+- 结果：popover 打开瞬间永远反映当前 backend truth。R55 latent stale-state bug 修复。**这是 transient state 系统的常见 stale-fetch bug** —— state 在 backend 可能 expire / change 而 frontend cache 不知道。**任何 backend transient state 都该在 user-action 入口 refresh fetch**。
+
 ## 2026-05-04 — Iter R56：transient note remaining 时长 surface（R55 follow-up）
 - 现状缺口：R55 chip "📝 {text}" 只显示文本，用户**不知道"这条 note 还有多久到期"**。如果 user 设了"开会 4 小时" note 后过 3 小时回来想确认，无法看到剩余时间，得重新设。Mute chip (R52) 已显"剩 Nm"，note chip 缺这个对称信息。
 - 解法 — 镜像 R52 compute_mute_remaining 模式：
