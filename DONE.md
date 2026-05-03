@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter D11：awaiting gate auto-expire 4h（修复"宠物永久 muted"潜在 bug）
+- 现状缺口（实际是个潜伏行为 bug）：D10 surfaced awaiting gate 后审视发现：mark_user_message 是**唯一**清除 awaiting_user_reply 的入口。如果用户在宠物刚说完话后没回应、关 laptop 走人、几小时甚至几天后回来——开机时 awaiting 还是 true，宠物会一直 skip 所有 proactive 评估。和 cooldown 的 wake_soft 不同（Iter 5 已经 soft 化），awaiting 没有任何时间维度的释放机制。"我以为它打不打理我了" 的体验源头之一。
+- 解法：在 `InteractionClock::snapshot` 加 `effective_awaiting(raw, since_proactive)` 纯函数判断：raw=true AND `since_last_proactive < AWAITING_AUTO_CLEAR_SECONDS (4h)` 才返 true。否则视作"过期了，原'别 double up'语义早不适用"。
+  - ClockInner 的 raw 状态不变（只 `mark_user_message` 才能权威清空），保持事件驱动语义。
+  - snapshot 返回 effective 值 — 同一份真实状态被 panel chip 和 gate check 一起读到，永不漂移。
+  - panel 的 💭 等回应 chip（D10）现在也会自动消失，gate 也自动放过，行为统一。
+- AWAITING_AUTO_CLEAR_SECONDS = 4 小时：
+  - 比 short break（午饭+会议）长，足以保留正常 polite-wait 体验
+  - 比单日工作长足够的 buffer——绝大部分 lunch / meeting / focus 时段一两小时内
+  - 4h 后 awaiting 还在 → 用户大概率离开了 desk + 没回，pet 可以重新评估了
+- 4 个新单测覆盖：raw=false 永远 false / raw=true + recent 仍 true / raw=true + threshold 边界 / since=None defensive case。测试总数 302 → 306。
+- 这是 D series 里第一个**真正改变行为**的 iter（不只是 surface state）。原来是潜伏 bug：长别后 pet 永远静默；现在是设计良好行为：长别后 pet 自动重新评估。
+- 与 wake_soft（cooldown 的 soft 机制）相辅相成：cooldown 由 wake-from-sleep event 软化，awaiting 由时间长度软化。两个 gate 的"长别豁免"现在都覆盖。
+
 ## 2026-05-03 — Iter D10：ToneSnapshot 暴露 awaiting_user_reply + 💭 chip
 - 现状缺口：D9 surfaced cooldown gate；但 awaiting gate（Iter 5 的另一个）一直没暴露。"宠物刚开过口但你还没回 → gate 让宠物先等等" 这种 polite-wait 状态对用户完全不可见——他们只感觉"宠物冷淡了"，不知道是因为他们自己上次没回应。
 - 解法：D series 标准模板：
