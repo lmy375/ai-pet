@@ -76,6 +76,34 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           </span>
         );
       })()}
+      {tone.speech_register && (() => {
+        const { kind, mean_chars, samples } = tone.speech_register;
+        // R20: long/short = monotone register → warning amber; mixed =
+        // already varying → calm green. Mirrors the "feedback chip"
+        // pattern (band → color) so the strip's color language stays
+        // consistent.
+        const label =
+          kind === "long" ? "长" : kind === "short" ? "短" : "混合";
+        const isMonotone = kind === "long" || kind === "short";
+        const bg = isMonotone ? "#d97706" : "#16a34a";
+        const titleText = isMonotone
+          ? `最近 ${samples} 句开口都偏${label}（平均 ${mean_chars} 字）— R19 给 LLM 提示换 register。`
+          : `最近 ${samples} 句开口长短交替（平均 ${mean_chars} 字）— register 在自然变化，pet 没卡在单一长度。`;
+        return (
+          <span
+            title={titleText}
+            style={{
+              color: "#fff",
+              background: bg,
+              padding: "1px 8px",
+              borderRadius: "10px",
+              fontWeight: 600,
+            }}
+          >
+            📏 {label}（{mean_chars}）
+          </span>
+        );
+      })()}
       <span title="period_of_day(now)">⏱ {tone.period}</span>
       {tone.day_of_week && (
         <span title="weekday + 工作日/周末（Iter Cβ — proactive prompt 时间行已包含）">

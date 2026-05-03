@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R20 设计要点（已实现）
+- **新原则：所有 prompt 信号都该 panel 可见**：R1c 把 dismiss 信号 surface 到 panel；R20 把 register 信号 surface 到 panel。这不是巧合 —— 两次都是回头补"信号写但没看见"的债。**新加 prompt hint 应该 same iter 加 panel chip** 而不是事后 follow-up。从此往后这条作 codebase rule，免得每过 2-3 iter 就要回来还一笔。
+- **classifier 同源 + 双消费者形态各异**：R19 prompt 只要"long/short" 两态（mixed 不 nudge），R20 panel 要"long/short/mixed" 三态。诱惑是写两个 fn — `format_speech_length_hint` 和 `format_speech_register_chip`。但底层"看 5 条 speech 怎么分类" 就是一个判断，**应该一处实现**。抽 `classify_speech_register` → 两边 pull format。这是"data + view 分离" 在 Rust 里的实现 — pure data fn 出在 lib，view-specific transformer 各 module 自己写。
+- **mixed 在 panel 是 first-class，在 prompt 是 silent**：同一种 state 不同 surface 的 visibility 应该独立判断。Panel 是 dashboard — 让 user "看到我的 pet 在 mixed register" 是 useful。Prompt 是 nudge channel — 没异常的时候不打扰 LLM 是 useful。**不要把 surface 决策和 classifier 决策耦合**。这次重构前 R19 collapse 了 mixed → ""，等于 classifier 给 view 让步；R20 把它矫正回独立。
+- **颜色编码 = 信号 binary 化**：橙（卡）/ 绿（健康）的 chip 颜色是给 user 一眼判断的视觉密码。如果三态都用 gray，user 必须读文字才知道"这是好还是坏" — 多 100ms 认知。两色简化够用：长 / 短 都"卡"，所以同色（橙）；mixed 是"健康"另色（绿）。**用色彩做 binary classification + 文字做 detail** 是 dashboard 设计的成熟模式。
+- **抽 classifier 时 Summary 字段要超 caller 当前需求**：mean_chars + samples + kind 三字段。R19 prompt 要 mean 和 samples（写在文案里）。R20 panel 当下只用 mean 和 kind。R-future（panel hover / prompt hint refinement / panel chart）可能要 samples。**helper return 应该匹配 callers 的 superset**，跟 R18 read_ai_insights_item 同思路 — 多 1-2 字段 cheap，砍了再回来加贵。
+- **panel chip placement 跟 conceptual 邻居放一起**：📏 register 接 💬 feedback chip 后，因为两者都在 talk about "宠物开口的形态"（feedback = 用户怎么接受，register = 宠物怎么说）。⏱ period 是时间维度，单独一组。**chip ordering 是隐性 information architecture** — 相关 chip 视觉相邻让 user 把它们建立 mental cluster。
+- **括号里 "(数字)" 而不是 "(avg N 字)"**：单 chip visual budget 极小（5-8 字内）。括号文字越短越好，hover 才放完整 "avg X 字 / 共 Y 句"。"📏 长（27）" 比 "📏 长 avg 27 字" 干净 4 倍。**panel 文字优化是反复练习的 craft**，每个 chip 都该问"hover 能塞的为什么放 chip 上"。
+
 ## Iter R19 设计要点（已实现）
 - **register variance 是"像真人" 的关键 micro-cue**：内容多样性 (R11) + 时间分布 (R7 cooldown) + 长度多样性 (R19) 是三条独立的"机器化 vs 人化" 维度。三条任意一条单 register（同话题 / 同时间 / 同长度）都会让 pet 显得 robotic。R11 检测话题重复后，R19 是同一思路在 length 维度的延伸。**让 LLM 自己看到自己的统计** 是 prompt design 的强招 — 它不会自审 character distribution，但你给它"你最近 5 句平均 30 字" 的硬数字，它会调整。
 - **"全或无" 比"variance metric" 更稳**：诱惑是 std deviation < 5 chars → 单 register。但 5 个样本计 std dev 噪声极大，几个 outlier 就让阈值进进出出 thrash。"全部 ≥ 25 → 警告偏长，全部 ≤ 8 → 警告偏短，混合 → 不警告" 是简单 gate，不会因边界 case 在两次 tick 间反复 fire。**判定函数应该有 hysteresis**，全或无天然有 — 一旦混合就立刻安静，不会摇摆。
