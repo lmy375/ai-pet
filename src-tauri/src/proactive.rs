@@ -1136,6 +1136,22 @@ async fn run_proactive_turn(
     let feedback_hint = crate::feedback_history::format_feedback_hint(&recent_feedback);
     let feedback_aggregate_hint =
         crate::feedback_history::format_feedback_aggregate_hint(&recent_feedback);
+    // Iter R33: trailing silence streak detection. Reads the ring buffer
+    // (cap=5) and counts how many of the most-recent turns ended in
+    // "silent". If ≥3, prompt gets a nudge to break the streak — but
+    // softly ("否则继续沉默也无妨" preserves LLM judgment).
+    let consecutive_silent_hint = {
+        const SILENT_STREAK_THRESHOLD: usize = 3;
+        let streak = LAST_PROACTIVE_TURNS
+            .lock()
+            .ok()
+            .map(|g| {
+                let snap: Vec<TurnRecord> = g.iter().cloned().collect();
+                count_trailing_silent(&snap)
+            })
+            .unwrap_or(0);
+        format_consecutive_silent_hint(streak, SILENT_STREAK_THRESHOLD)
+    };
 
     // If the proactive loop noticed a sleep gap recently (≤ 10 minutes ago), surface it
     // so the LLM can choose a "welcome back" register. Strong signal that the user was
@@ -1360,6 +1376,7 @@ async fn run_proactive_turn(
         user_name: &user_name,
         feedback_hint: &feedback_hint,
         feedback_aggregate_hint: &feedback_aggregate_hint,
+        consecutive_silent_hint: &consecutive_silent_hint,
         hour: now_local.hour() as u8,
         recently_fired_wellness: late_night_wellness_in_cooldown(),
         repeated_topic_hint: &repeated_topic_hint,
@@ -1860,6 +1877,7 @@ mod prompt_tests {
             // the feedback hint set this explicitly.
             feedback_hint: "",
             feedback_aggregate_hint: "",
+            consecutive_silent_hint: "",
             // Default 14 (afternoon) — well outside the late-night-wellness window
             // (hours 0..LATE_NIGHT_END_HOUR=4) so existing tests stay neutral.
             // Tests for the late-night rule set this to 0/1/2/3 explicitly.
