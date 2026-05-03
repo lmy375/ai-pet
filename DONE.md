@@ -2,6 +2,30 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter QG4：补齐 prompt 重注入路径的 redaction
+- 现状审计 — 发现 3 个未走 `redact_with_settings` 的重注入点，全部在 proactive prompt 构建路径上：
+  1. `mood_hint` (run_proactive_turn 内嵌, 旧 line 1750)：直接 `format!(text.trim())`。chat.rs `inject_mood_note` 早就 redact 了，proactive 一直漏。
+  2. `build_reminders_hint` (line ~2056)：`format!("· {} {}（条目标题: {}）", when, topic, item.title)` —— topic（用户口述）+ title（LLM 取的）双双裸出。
+  3. `build_plan_hint` (line ~2500)：`format!("...\n{}", item.description.trim())` —— LLM 自己写的 daily_plan，即使是它写的也不能保证已过滤（reactive 时 LLM 可能直接吸收用户原话）。
+  其他点验证通过：`inject_mood_note` (chat.rs)、`build_persona_hint`、`build_user_profile_hint`、`build_butler_tasks_hint`、speech_hint、mood_trend（不含用户文本）都已 redact 或天然安全。`get_pending_reminders` 是 panel 用户面命令——故意不 redact（用户看自己的内容不需要打码）。
+- 解法 — 三个 builder 都拆出"pure formatter + closure-based redact 注入"模式：
+  - `pub fn format_reminders_hint(items, redact: &dyn Fn(&str) -> String)` —— `items: &[(time, topic, title)]`，每条 topic + title 都过 redact 后再格式化；空列表返空串。
+  - `pub fn format_plan_hint(description, redact)` —— trim 后过 redact 再 wrap header。
+  - `pub fn format_proactive_mood_hint(text, redact)` —— 复用 inline 逻辑，empty 走 first-time placeholder。
+  - 三个 thin async/sync wrapper（`build_reminders_hint`/`build_plan_hint`/`run_proactive_turn` 内 mood_hint 计算）调用 pure formatter，传入 `&|s| redaction::redact_with_settings(s)`。
+- 决策 — closure 而不是 `patterns: &[String]`：closure 让 wrapper 用 `redact_with_settings`（含子串 + regex 两层），同时让测试用 substring-only 注入 + `redaction::redact_text` 做断言。如果直接传 patterns 就要选一种（substr 或 regex），丢覆盖。closure 是 +1 类型参数换 100% 灵活。
+- 决策 — 不动 `inject_mood_note` / `build_persona_hint` / `build_user_profile_hint` / `build_butler_tasks_hint`：审计后确认它们已经 redact 过，且当前测试已经覆盖。这次 iter 严格只补漏，不改动已对齐的路径——避免大 PR、避免误伤。
+- 测试 — 6 个新 unit test（`prompt_tests` 模块）：
+  - `test_redactor(&[&str])` 辅助：用 `redact_text` 模拟一个固定子串 redact 闭包，不碰 settings 状态。
+  - `format_reminders_hint_redacts_topic_and_title`：钉住 topic + title 都 redact，原文不残留。
+  - `format_reminders_hint_empty_returns_empty_string`：空列表无 header。
+  - `format_plan_hint_redacts_description`：description 子串 redact。
+  - `format_plan_hint_empty_or_whitespace_returns_empty`：空 / 空白返空。
+  - `format_proactive_mood_hint_redacts_text`：mood text 子串 redact。
+  - `format_proactive_mood_hint_empty_returns_first_time_message`：empty path 用 first-time 占位文本。
+- 测试结果：319 cargo（+6）；clippy --all-targets clean；fmt clean；tsc clean。
+- 结果：proactive prompt 的 7 个内容来源（mood / reminders / plan / persona / user_profile / butler_tasks / speech）全部走 redact_with_settings。隐私 filter 不再有"loop fire 时漏一手"的盲区。
+
 ## 2026-05-03 — Iter QG3：统一手动 trigger 与后台 loop 的 proactive telemetry
 - 现状缺口：panel 上点 "立即触发" 走 `trigger_proactive_turn`，结果 outcome 不进 llm_outcome 计数、env_tool 不 record_spoke、decision_log 不 push。这意味着开发者用 panel 手动触发开口的所有数据都"消失"——既看不到 panel 的 "LLM 沉默率"，"环境感知率" 也漏统计，decision log 不显示。完全形成观察盲区。
 - 解法：抽出 `record_proactive_outcome` 共享 helper（pure-ish，touches atomics + decisions log）放到 proactive.rs 中游：
