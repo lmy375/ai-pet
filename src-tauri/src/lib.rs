@@ -126,6 +126,7 @@ pub fn run() {
             speech_history::get_recent_speeches,
             speech_history::get_lifetime_speech_count,
             speech_history::get_today_speech_count,
+            speech_history::get_week_speech_count,
             companionship::get_companionship_days,
             companionship::get_install_date,
             proactive::get_persona_summary,

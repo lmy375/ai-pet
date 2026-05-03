@@ -2,25 +2,27 @@ import type { ToneSnapshot } from "./panelTypes";
 
 /**
  * Prominent lifetime stats card (Iter 99 — extracted from PanelDebug; Iter 106 —
- * companionship-days indicator added).
+ * companionship-days indicator added; Iter 74 — weekly column added).
  *
- * Renders three stats horizontally: today's count (20px sky blue / orange when
- * restraining), lifetime count (28px purple, the dominant number), and companionship
- * days (16px muted teal — quieter so it sits as identity context rather than primary
- * data). A single trailing badge shows either "克制模式" (when chatty threshold
- * crossed) or "破冰阶段" (when lifetime < 3); both states are mutually exclusive.
+ * Renders four stats horizontally: today's count (20px sky blue / orange when
+ * restraining), trailing 7-day count (16px muted indigo), lifetime count (28px
+ * purple, the dominant number), and companionship days (16px muted teal — quieter
+ * so it sits as identity context rather than primary data). A single trailing
+ * badge shows either "克制模式" (when chatty threshold crossed) or "破冰阶段"
+ * (when lifetime < 3); both states are mutually exclusive.
  *
  * Pure presentation — all state lives in PanelDebug.
  */
 interface PanelStatsCardProps {
   todaySpeechCount: number;
+  weekSpeechCount: number;
   lifetimeSpeechCount: number;
   companionshipDays: number;
   tone: ToneSnapshot | null;
 }
 
 export function PanelStatsCard(props: PanelStatsCardProps) {
-  const { todaySpeechCount, lifetimeSpeechCount, companionshipDays, tone } = props;
+  const { todaySpeechCount, weekSpeechCount, lifetimeSpeechCount, companionshipDays, tone } = props;
   const threshold = tone?.chatty_day_threshold ?? 0;
   const restraining = threshold > 0 && todaySpeechCount >= threshold;
   const todayColor = restraining ? "#ea580c" : "#0ea5e9";
@@ -52,6 +54,23 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           {todaySpeechCount}
         </span>
         <span style={{ fontSize: "11px", color: "#64748b" }}>今日</span>
+      </div>
+      <div
+        style={{ display: "flex", alignItems: "baseline", gap: "6px" }}
+        title="今天 + 过去 6 天 = 滚动 7 天的主动开口次数。来自 speech_daily.json 各日 bucket 求和。"
+      >
+        <span
+          style={{
+            fontSize: "16px",
+            fontWeight: 600,
+            color: "#6366f1",
+            lineHeight: 1,
+            fontFamily: "'SF Mono', 'Menlo', monospace",
+          }}
+        >
+          {weekSpeechCount}
+        </span>
+        <span style={{ fontSize: "11px", color: "#64748b" }}>本周</span>
       </div>
       <div
         style={{ display: "flex", alignItems: "baseline", gap: "6px" }}

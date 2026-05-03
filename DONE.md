@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter 74：panel stats 卡加"本周"列
+- 来自历史保留候选的小迭代。speech_daily.json（Iter 71-73 创建）已经按日 bucketed 了 90 天数据，但 PanelStatsCard 只用了"今日"。"本周"维度 = 今天 + 过去 6 天 sum，能立刻给出"最近一周宠物开口频率"印象——比单看"今日"波动小，比"累计"对当下使用强度更敏感。
+- 后端：
+  - `speech_history::sum_recent_days(map, today, n)` 纯函数：按日 key 倒推 n 天累加。
+  - `speech_history::week_speech_count()` 异步 wrapper：读 speech_daily.json + parse_daily + sum_recent_days(7)。
+  - Tauri command `get_week_speech_count`，注册进 lib.rs。
+- 4 个新单测覆盖 sum_recent_days：基本求和、窗外日期不计入、零窗口、空 map。测试总数 279 → 283。
+- 前端：
+  - `PanelDebug` 增 `weekSpeechCount` state，加进 `Promise.all` 并行批；
+  - `PanelStatsCard` props 加 `weekSpeechCount`，在"今日"和"累计"之间插入"本周"列（16px、靛紫 `#6366f1`）。视觉层级：今日 20px > 本周 16px > 累计 28px > 陪伴 16px——今日和累计是主轴，本周和陪伴是辅助；尺寸表达层级。
+- 不重启 fetchLogs 计时器：周计数和现有 stats 共用 1s 轮询；4 字节多回传可忽略。
+- 与 chatty_day_threshold 的关系：今日列已经显示 chatty 状态（橙色 + 克制模式 badge），本周列纯量化，不参与 register。
+- 结果：用户打开 panel 一眼就能看到"今日 X / 本周 Y / 累计 Z / 陪伴 D 天"四个维度的开口节奏，对宠物的活跃度有更立体的概念。比如"今日 5 / 本周 30"可能感觉比"今日 5 / 本周 8"友好得多。
+
 ## 2026-05-03 — Iter Cμ：proactive prompt 加 user_absence_tier 语气线索
 - 现状缺口：proactive prompt 把 `idle_minutes` 直接当数字喂给 LLM——`已经过去约 N 分钟`。LLM 看到 "5 分钟" 和 "300 分钟" 在数学上不同，但语义档次没显式给。结果：用户离开 5 小时回来后，宠物开口的 register 跟 5 分钟回来差不多，而不是 "终于回来了" / "想你了一下" 那种长别久离的感觉。
 - 解法：新增 pure 函数 `user_absence_tier(idle_minutes)` 映射到六档语气线索：
