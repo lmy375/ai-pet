@@ -98,6 +98,71 @@ export function PanelMemory() {
     return () => clearInterval(t);
   }, []);
 
+  // ---- Iter Cθ: schedule-aware rendering for butler_tasks items ---------------
+  // Pure TS mirror of proactive.rs::parse_butler_schedule_prefix + is_butler_due.
+  // Lets the panel render `[every: HH:MM]` / `[once: ...]` as a chip and flag due
+  // tasks in real time, instead of users needing to do the math themselves.
+  type ButlerSchedule =
+    | { kind: "every"; hour: number; minute: number }
+    | { kind: "once"; year: number; month: number; day: number; hour: number; minute: number };
+
+  const parseButlerSchedule = (desc: string): { schedule: ButlerSchedule; topic: string } | null => {
+    const trimmed = desc.replace(/^\s+/, "");
+    const m = trimmed.match(/^\[(every|once):\s*([^\]]+)\]\s*(.*)$/);
+    if (!m) return null;
+    const [, kind, body, topic] = m;
+    if (!topic.trim()) return null;
+    if (kind === "every") {
+      const hm = body.trim().match(/^(\d{1,2}):(\d{1,2})$/);
+      if (!hm) return null;
+      const hour = Number(hm[1]);
+      const minute = Number(hm[2]);
+      if (hour > 23 || minute > 59) return null;
+      return { schedule: { kind: "every", hour, minute }, topic: topic.trim() };
+    }
+    // once
+    const dt = body.trim().match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{1,2})$/);
+    if (!dt) return null;
+    return {
+      schedule: {
+        kind: "once",
+        year: Number(dt[1]),
+        month: Number(dt[2]),
+        day: Number(dt[3]),
+        hour: Number(dt[4]),
+        minute: Number(dt[5]),
+      },
+      topic: topic.trim(),
+    };
+  };
+
+  const isButlerDue = (schedule: ButlerSchedule, lastUpdated: string, now: Date): boolean => {
+    const last = lastUpdated ? new Date(lastUpdated) : null;
+    const lastValid = last && !isNaN(last.getTime()) ? last : null;
+    if (schedule.kind === "once") {
+      const target = new Date(
+        schedule.year,
+        schedule.month - 1,
+        schedule.day,
+        schedule.hour,
+        schedule.minute,
+      );
+      if (now < target) return false;
+      return !lastValid || lastValid < target;
+    }
+    // every
+    const targetToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      schedule.hour,
+      schedule.minute,
+    );
+    const mostRecentFire =
+      now >= targetToday ? targetToday : new Date(targetToday.getTime() - 24 * 3600 * 1000);
+    return !lastValid || lastValid < mostRecentFire;
+  };
+
   // Pure helper: parse a butler-history line into structured fields.
   // Format: "<ts> <action> <title> :: <desc>". Falls back gracefully on malformed lines.
   const parseButlerLine = (line: string) => {
@@ -486,35 +551,106 @@ export function PanelMemory() {
               {cat.items.length === 0 && (
                 <div style={{ color: "#94a3b8", fontSize: 12, paddingLeft: 4 }}>暂无记忆</div>
               )}
-              {cat.items.map((item, i) => (
-                <div key={i} style={s.item}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={s.itemTitle}>{item.title}</div>
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <button
-                        style={s.btn}
-                        onClick={() =>
-                          setEditingItem({
-                            category: catKey,
-                            title: item.title,
-                            description: item.description,
-                            isNew: false,
-                          })
-                        }
-                      >
-                        编辑
-                      </button>
-                      <button style={s.btnDanger} onClick={() => handleDelete(catKey, item.title)}>
-                        删除
-                      </button>
+              {cat.items.map((item, i) => {
+                // Iter Cθ: only butler_tasks pays the parse cost; other categories
+                // skip the work entirely. parsed === null when no schedule prefix.
+                const parsed =
+                  catKey === "butler_tasks" ? parseButlerSchedule(item.description) : null;
+                const due =
+                  parsed && item.updated_at
+                    ? isButlerDue(parsed.schedule, item.updated_at, new Date())
+                    : false;
+                const scheduleLabel = parsed
+                  ? parsed.schedule.kind === "every"
+                    ? `每天 ${String(parsed.schedule.hour).padStart(2, "0")}:${String(
+                        parsed.schedule.minute,
+                      ).padStart(2, "0")}`
+                    : `${parsed.schedule.year}-${String(parsed.schedule.month).padStart(
+                        2,
+                        "0",
+                      )}-${String(parsed.schedule.day).padStart(2, "0")} ${String(
+                        parsed.schedule.hour,
+                      ).padStart(2, "0")}:${String(parsed.schedule.minute).padStart(2, "0")}`
+                  : null;
+                // Strip the schedule prefix from the displayed description so the
+                // chip carries that information without the user having to read
+                // the raw bracket notation in two places.
+                const displayDesc = parsed ? parsed.topic : item.description;
+                return (
+                  <div key={i} style={s.item}>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <div style={s.itemTitle}>{item.title}</div>
+                        {scheduleLabel && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              background: parsed!.schedule.kind === "every" ? "#dbeafe" : "#fef3c7",
+                              color: parsed!.schedule.kind === "every" ? "#1e40af" : "#92400e",
+                              fontFamily: "'SF Mono', monospace",
+                            }}
+                            title={
+                              parsed!.schedule.kind === "every"
+                                ? "每日定时触发，到期后下一轮 proactive 主动开口时执行"
+                                : "单次定时触发"
+                            }
+                          >
+                            {parsed!.schedule.kind === "every" ? "🔁" : "📅"} {scheduleLabel}
+                          </span>
+                        )}
+                        {due && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              background: "#fee2e2",
+                              color: "#b91c1c",
+                              fontWeight: 600,
+                            }}
+                            title="计划时间已到、自上次到期后还没被宠物 update——下一次 proactive 会优先处理。"
+                          >
+                            ⏰ 到期
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button
+                          style={s.btn}
+                          onClick={() =>
+                            setEditingItem({
+                              category: catKey,
+                              title: item.title,
+                              description: item.description,
+                              isNew: false,
+                            })
+                          }
+                        >
+                          编辑
+                        </button>
+                        <button
+                          style={s.btnDanger}
+                          onClick={() => handleDelete(catKey, item.title)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                    <div style={s.itemDesc}>{displayDesc}</div>
+                    <div style={s.itemMeta}>
+                      {item.detail_path} | 更新于 {item.updated_at?.slice(0, 16).replace("T", " ")}
                     </div>
                   </div>
-                  <div style={s.itemDesc}>{item.description}</div>
-                  <div style={s.itemMeta}>
-                    {item.detail_path} | 更新于 {item.updated_at?.slice(0, 16).replace("T", " ")}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           );
         })}
