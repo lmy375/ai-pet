@@ -1,5 +1,13 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter D11 设计要点（已实现）
+- **看到 D10 之后立刻意识到这是 bug**：D10 加 chip 时检查 awaiting 的 lifecycle，发现"只有 mark_user_message 清"。Cooldown 有 wake_soft 软化，awaiting 没任何 time-based 释放。这是项目里被搁置了很久的潜伏问题。如果不是 D10 强迫我盯着这个 gate，可能再过几个月才发现。
+- **state vs effective 双轨**：raw 状态留在 ClockInner，effective 在 snapshot 返回。这种"权威态/视图态"分离让"用户回了一句"仍然是清除 awaiting 的唯一权威路径——可以追溯、可以 invariant-check；effective 是 snapshot 时的视图，可以根据时间衰减。这个 pattern 借自 D5 的"updated_at 是 schema 真值，前端把它转成相对时间"。
+- **4 小时阈值理由**：lunch + 会议典型 < 2h、单次睡眠 ≥ 7h。4h 在两者之间——足够 honor "polite wait"，又不至于变成"用户回家几小时还得听宠物等回应"。如果未来用户反馈"宠物太快忘了 polite wait" 或 "宠物太久不动" 再调。
+- **None case defensive**：如果 awaiting=true 但 since_last_proactive=None（不该发生但 belt-and-suspenders），返 false。让 mark_proactive_spoken 设原子地维护 invariant，但 snapshot 不依赖那个 invariant。
+- **同 wake_soft 平行**：cooldown 在 wake-recent 时 soft；awaiting 在 4h 后 soft。两个机制各自处理对应 gate 的"长别豁免"。可以想象未来加一个统一的"长别时所有 gate 都软化"——目前两个 gate 各管各的更可读。
+- **测试只测 pure 函数**：snapshot 调用本身依赖 Instant，无法 deterministic 单测；提取 `effective_awaiting` 后所有边界用 (bool, Option<u64>) 输入测，简单且完整。
+
 ## Iter D10 设计要点（已实现）
 - **D10 是 D series 必然延伸**：D9 surfaced cooldown 那一刻我已经知道 awaiting 是同样问题——不同 gate 同样 invisible。本来想在 D9 一起做，但分两 iter 让 commit 历史更清晰、scope 更小、也方便单独 revert。
 - **状态 vs 时间双 gate**：awaiting 是 state（boolean，事件驱动 reset），cooldown 是 time（duration，时钟驱动 reset）。两个 chip 并列出现时给用户的认知不冗余——明白宠物因为两个独立原因都在等。

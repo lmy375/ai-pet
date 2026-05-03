@@ -90,13 +90,45 @@ impl InteractionClock {
 
     pub async fn snapshot(&self) -> ClockSnapshot {
         let g = self.inner.lock().await;
+        let since_proactive = g.last_proactive.map(|t| t.elapsed().as_secs());
         ClockSnapshot {
             idle_seconds: g.last.elapsed().as_secs(),
-            since_last_proactive_seconds: g.last_proactive.map(|t| t.elapsed().as_secs()),
-            awaiting_user_reply: g.awaiting_user_reply,
+            since_last_proactive_seconds: since_proactive,
+            // Iter D11: auto-expire awaiting after AWAITING_AUTO_CLEAR_SECONDS.
+            // The raw state in ClockInner stays — only `mark_user_message` is the
+            // canonical clearer — but snapshot reports the effective gate state
+            // so both proactive's gate check and the panel chip honor the same
+            // expiry. Without this, a pet that spoke once and the user closed
+            // the laptop without replying would stay muted indefinitely on the
+            // next session, even hours later.
+            awaiting_user_reply: effective_awaiting(g.awaiting_user_reply, since_proactive),
         }
     }
 }
+
+/// Iter D11: pure decider — given raw awaiting state and seconds since pet's last
+/// proactive utterance, return whether the awaiting gate should still fire.
+/// Returns true only when the raw flag is set AND the gap is short enough that
+/// the original "polite-wait, don't double up" intent still applies. After
+/// AWAITING_AUTO_CLEAR_SECONDS the gate falls off so the pet doesn't stay
+/// permanently muted across long absences.
+pub fn effective_awaiting(raw_awaiting: bool, since_last_proactive_seconds: Option<u64>) -> bool {
+    if !raw_awaiting {
+        return false;
+    }
+    match since_last_proactive_seconds {
+        Some(secs) => secs < AWAITING_AUTO_CLEAR_SECONDS,
+        // No prior proactive recorded but flag is set — treat as not-fresh.
+        // Shouldn't really happen since mark_proactive_spoken sets both, but
+        // belt-and-suspenders.
+        None => false,
+    }
+}
+
+/// Iter D11: how long the awaiting gate honors the raw flag before auto-clearing.
+/// 4 hours: covers a typical "stepped away for lunch + meeting" without forcing
+/// the user to chat back; long enough that re-firing the gate later isn't rude.
+pub const AWAITING_AUTO_CLEAR_SECONDS: u64 = 4 * 3600;
 
 pub type InteractionClockStore = Arc<InteractionClock>;
 
@@ -2682,6 +2714,38 @@ mod prompt_tests {
         inputs.companionship_days = 5; // not a milestone
         let rules = proactive_rules(&inputs);
         assert!(!rules.iter().any(|r| r.contains("今天是和用户相处的")));
+    }
+
+    #[test]
+    fn effective_awaiting_clears_when_raw_false() {
+        // Raw flag false → always false regardless of timing.
+        assert!(!effective_awaiting(false, Some(0)));
+        assert!(!effective_awaiting(false, Some(99999)));
+        assert!(!effective_awaiting(false, None));
+    }
+
+    #[test]
+    fn effective_awaiting_honors_recent_raw() {
+        // Raw flag true and pet spoke recently → gate fires.
+        assert!(effective_awaiting(true, Some(0)));
+        assert!(effective_awaiting(true, Some(60)));
+        assert!(effective_awaiting(true, Some(AWAITING_AUTO_CLEAR_SECONDS - 1)));
+    }
+
+    #[test]
+    fn effective_awaiting_expires_after_threshold() {
+        // Raw flag true but pet spoke long ago → gate falls off.
+        assert!(!effective_awaiting(true, Some(AWAITING_AUTO_CLEAR_SECONDS)));
+        assert!(!effective_awaiting(true, Some(AWAITING_AUTO_CLEAR_SECONDS + 1)));
+        assert!(!effective_awaiting(true, Some(99999)));
+    }
+
+    #[test]
+    fn effective_awaiting_none_since_proactive_does_not_fire() {
+        // Defensive: raw flag set but no recorded last_proactive — treat as
+        // "shouldn't be awaiting" (mark_proactive_spoken sets both atomically,
+        // so this state shouldn't happen, but we don't panic if it does).
+        assert!(!effective_awaiting(true, None));
     }
 
     #[test]

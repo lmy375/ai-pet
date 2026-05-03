@@ -54,7 +54,9 @@
   冷却 Nm chip — gate 状态全可见（2026-05-03 完成）
 - [x] Iter D10：ToneSnapshot 暴露 awaiting_user_reply + PanelToneStrip 显 💭 等回应
   chip — D series 第二个"为什么静默" gate（2026-05-03 完成）
-- D series 十连完成；7 个 proactive gate 中 5 个有 panel chip / 2 个隐含 (idle 数字)。
+- [x] Iter D11：awaiting gate 4h auto-expire + effective_awaiting pure helper —— 修复
+  长别后宠物永久 muted 的潜伏 bug；4 单测覆盖（2026-05-03 完成）
+- D series 十一连完成；从 surface 到修复行为，gate 体系完整。
 
 ### 路线 F：宠物管家（用户委托执行实际工作）— Iter Cγ 起步
 - [x] Iter Cγ：butler_tasks 记忆类别 + 提示注入 + tools 描述 + panel 顺序（2026-05-03 完成）
