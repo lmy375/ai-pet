@@ -2,6 +2,30 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-03 — Iter R12b：daily review 加入 plan progress 解析（"计划 N/M" 替代"有计划"）
+- 现状缺口：R12 description 写"今天主动开口 7 次，有计划"。"有计划" 没说明做了多少 — 用户瞄一眼 panel 看不到 progress。daily_plan 本身已经用 `[N/M]` 标记进度（如"· 关心工作 [1/2]"），但这个信号没被 review 摘要复用。
+- 解法 — 纯解析器 + description 升级：
+  - 新 `pub fn parse_plan_progress(plan_description) -> Option<(u32, u32)>` 在 daily_review.rs：扫 `[...]` 块，要求内部是 `digits/digits` 格式，sum N + sum M 返回 (completed, total)。`[remind: 09:00]` / `[every: 18:00]` / `[review]` 这些 schema 标记自然不命中（含字母/冒号），没有误伤。
+  - `format_daily_review_description` 改签名 `(speech_count, plan_progress: Option<(u32, u32)>, has_plan)`：3 分支 — Some((c,t)) → "，计划 c/t" / None + has_plan → "，有计划"（free-text 计划兜底）/ None + !has_plan → 无后缀。
+  - maybe_run_daily_review 调 parse 把 plan_raw 转 progress，传给 description formatter。
+- 决策 — `M == 0` 跳过：`[1/0]` 是退化 case（"完成 1 个目标里的 0 个" 无意义）。skip 但不破坏其他 marker。`parse_progress("· good [2/3]\n· bad [1/0]")` → `Some((2, 3))`。
+- 决策 — 严格 digit-only：`[a/b]` / `[/3]` / `[3/]` 全部拒绝。`[remind: 09:00]` 含字母 + 冒号，第一道 split_once('/') 后 `c_trim = "remind: 09"` 非全数字 → reject。reminder/butler schedule 标记不会被误算成 progress。
+- 决策 — 容忍空格：`[ 1 / 2 ]` 接受（人手写计划带空格很常见）。c_trim/t_trim 用 `trim()` 后再 parse。
+- 决策 — saturating_add 防溢出：u32 ceiling 在 4B，但理论用户可能造极端 plan（虽然不会）。一致用 saturating 写法，安全免责。
+- 决策 — pure parser 留 daily_review.rs：跟 gate / formatter 同模块，纯计算 + tests，调用面只在 maybe_run_daily_review 单点。
+- 决策 — `Iter R12c` 取代旧 R12b（LLM 总结）：原 R12b 写的"LLM 一句话"需要把 maybe_run_daily_review 从 clock-pure 升级到 app-aware（拿 AppHandle / McpManagerStore / LogStore 等）— scope 比想象大。R12b 改成此 deterministic upgrade，LLM 版本另列 R12c。
+- 测试（8 新单测）：
+  - description_shows_concrete_plan_progress_when_parseable：Some((1,3)) → "计划 1/3"，Some((0,5)) → "计划 0/5"，None + has_plan → "有计划"
+  - parse_progress_sums_multiple_markers：3 行 plan → (2, 4)
+  - parse_progress_handles_single_marker：1 行 → 直传
+  - parse_progress_returns_none_for_no_markers：empty / 自由文本 / 无方括号
+  - parse_progress_skips_malformed_markers：[a/b] / [10] / [/3] / [3/]
+  - parse_progress_skips_marker_with_zero_total：[1/0] skip 但 [2/3] 仍命中
+  - parse_progress_ignores_non_progress_brackets：[remind: 09:00] / [every: 18:00] 不参与
+  - parse_progress_handles_whitespace_inside_marker：[ 1 / 2 ] 接受
+- 测试结果：432 cargo（+8）；clippy --all-targets clean；fmt 自动修了 proactive.rs 一处缩进。
+- 结果：panel 现在能在一行看到"今天主动开口 7 次，计划 3/5" — 数字立等可见的进度。pet 的"今天我们做了什么" 不再是模糊"有计划"，而是 quantified。明天 cross_day_hint / 早起 prompt 可以基于 progress=3/5 生成"昨天还有 2 件没做完，今天接着推" 之类的 callback。
+
 ## 2026-05-03 — Iter R12：daily review 自动生成（22:00 写 ai_insights/daily_review_YYYY-MM-DD）
 - 现状缺口：pet 每天的"经验"有 mood / persona / butler_history / speech_history 各自分散。"今天我们一起做了什么"没有统一的 retrospective artifact — 隔天没办法快速 reload 昨天上下文，跨日叙事（R14）只能拉昨日 speeches 的尾声 2 条，看不到"今天的全貌"。R12 把"日终回顾"沉淀成 ai_insights memory entry，结构化、可读、可被未来 prompt/UI 复用。
 - 解法 — pure gate + thin async writer：

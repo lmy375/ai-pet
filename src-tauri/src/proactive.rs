@@ -1519,7 +1519,11 @@ async fn maybe_run_daily_review(now_local: chrono::DateTime<chrono::Local>) {
         .collect();
     let plan_raw = read_daily_plan_description();
     let detail = format_daily_review_detail(&lines, &plan_raw, today);
-    let description = format_daily_review_description(lines.len(), !plan_raw.trim().is_empty());
+    // Iter R12b: pull `[N/M]` progress markers out of the plan into the
+    // index description when parseable; falls back to "有计划" otherwise.
+    let plan_progress = parse_plan_progress(&plan_raw);
+    let description =
+        format_daily_review_description(lines.len(), plan_progress, !plan_raw.trim().is_empty());
     let _ = crate::commands::memory::memory_edit(
         "create".to_string(),
         "ai_insights".to_string(),
