@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R50：PanelStatsCard 加 avg-per-day 派生统计
+- 现状缺口：PanelStatsCard 显 today / 本周 / 累计 / 前开口 / 陪伴 五列。但**缺一个 lifetime / 陪伴天数 的 ratio** —— 即"平均每天 N 次主动开口"。这个 derived stat 揭示**长期 engagement 强度**："是常聊伴侣还是少聊伴侣"。0.5/天 = 安静陪伴，5/天 = 健谈日常。这条信号对比 today / week 的 short-window 视角更有 long-term character signal。
+- 解法 — 派生统计 column：
+  - 计算：`avg = lifetimeSpeechCount / companionshipDays`
+  - 显示：< 10 取 1 位小数 (e.g. "2.3 /日均")，≥ 10 取整数（"15 /日均" 不带小数避免 visual 噪音）
+  - 隐藏 condition：`companionshipDays < 1` 时 hide —— 第 0 天分母无意义
+  - 色：teal `#0d9488` 跟"陪伴天数" 同色，暗示"派生自陪伴时长" 关系
+  - 位置：在累计后、前开口前 —— 累计 → avg/日 → 前开口 是 cumulative → derived → instant 的逻辑层次
+  - title hover 全文档：`累计 N / 陪伴 D = 平均 X 次/天`
+- 决策 — < 10 / ≥ 10 二档精度：1.5 这种小数对 small avg 有意义（区分 1.5 vs 2.0 跟健谈度有关），但 23.4 vs 23.0 区分意义低，取整减 visual 噪音。**精度跟数值范围匹配**——大数减位，小数留位。
+- 决策 — 跟"陪伴天数" 用同色 (teal) 而非"累计" 紫：avg 的"derived from 陪伴"语义比"derived from 累计"更值得 surface ——陪伴时间是分母决定 avg 性质（同样累计 100 次，30 天 vs 365 天的 avg 截然不同）。**色彩归属应表达"主导维度"** 而不是简单"哪个分子来"。
+- 决策 — companionshipDays >= 1 才显示：第 0 天（首日）lifetime 是当天累计，"avg/日均" = lifetime / 1 = 当天数 = 跟今日重复信息。等到 day 1+ 有意义。**派生统计应当 zero-state hidden 而不是 fake 0** —— 跟 R45 unread badge "dismissed=0 不显示" 同思路。
+- 决策 — 位置在累计后：cumulative (lifetime) → derived (avg) → instant (since-last) 是 3 时间维度的自然过渡。前开口 + 陪伴本身一对（瞬时 + 总时长），avg 是它们之间的"密度"。**panel 列顺序应表达数据维度递进**。
+- 决策 — 不写测试：纯 frontend derived rendering，类型 check + cargo build clean 验。
+- 测试结果：495 cargo（无变化）；clippy clean；tsc clean。
+- 结果：用户在 panel 看到自己跟 pet 的 "/日均" 数字 —— 一个 long-term character readout。如果 0.3 /日均，知道 pet 算是低存在感伴侣；3.5 /日均 知道 pet 是高频陪伴。**派生统计是 panel 设计的高阶层** —— 不只显原始数据，给数据间 ratio / trend / pattern。R-series stats card 现在 6 列，覆盖 short / medium / long / cumulative / derived / instant 六维度。
+
 ## 2026-05-04 — Iter R49：Live2D loading status 友好文案 + fade-in（Live2D cluster 起点）
 - 现状缺口：Live2DCharacter 启动过程中 setStatus 通过 6 个 dev-y 阶段：`"initializing..."` → `"importing pixi.js..."` → `"checking cubism core..."` → `"importing live2d..."` → `"creating pixi app..."` → `"loading model: ..."`。**这些消息直接显给 end user**。普通用户看到 "importing pixi.js" 莫名其妙 —— "什么是 pixi.js？" 暴露了 implementation detail。这是 R-series 第一个被识别的"dev message leaking to user" 反模式。
 - 解法 — derived display status + fadeIn keyframe：

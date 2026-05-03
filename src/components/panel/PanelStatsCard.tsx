@@ -103,6 +103,38 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
         <span style={{ fontSize: "11px", color: "#64748b" }}>累计</span>
       </div>
       <span style={{ fontSize: "12px", color: "#64748b" }}>次主动开口</span>
+      {/* Iter R50: average speeches per day — derived stat lifetime / max(1, companionshipDays).
+          Indicates long-term engagement intensity ("是常聊还是少聊的伴侣关系"). Hidden
+          on day 0 (no meaningful average from a single-day denominator). */}
+      {companionshipDays >= 1 && (
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "baseline",
+            gap: "4px",
+            marginLeft: "8px",
+            paddingLeft: "12px",
+            borderLeft: "1px solid #e2e8f0",
+          }}
+          title={`累计 ${lifetimeSpeechCount} 次 / 陪伴 ${companionshipDays} 天 = 平均每天 ${(lifetimeSpeechCount / companionshipDays).toFixed(1)} 次主动开口。`}
+        >
+          <span
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "#0d9488",
+              lineHeight: 1,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+          >
+            {(() => {
+              const avg = lifetimeSpeechCount / companionshipDays;
+              return avg < 10 ? avg.toFixed(1) : Math.round(avg).toString();
+            })()}
+          </span>
+          <span style={{ fontSize: "11px", color: "#94a3b8" }}>/日均</span>
+        </span>
+      )}
       <span
         style={{
           display: "inline-flex",
