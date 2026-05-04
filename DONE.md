@@ -2,6 +2,28 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R81：deadline 紧迫度驱动 cooldown 缩半（cluster R77-R80 真正 closure）
+- 现状缺口：R77-R80 把 deadline 数据 → prompt hint → 教学 → chat layer → panel chip 全做齐了，但 deadline 信号 **没有 actually 改变 pet 的 cadence** —— chip 红了、prompt 提到了，但 cooldown gate 还是按 R7 feedback + R13 mode 走，pet 仍按"之前的"节奏说话。Real partner 在 user 有 deadline 时不会保持 quiet rhythm。
+- 改动：
+  - `src-tauri/src/proactive/butler_schedule.rs`：
+    - 新 pure helper `deadline_urgency_factor(urgent_count: u64) -> f64`：count >= 1 → 0.5，否则 1.0。discrete switch 而非 continuous 函数（magnitude 已在 prompt hint 反映，gate 不需要 redundant encoding）。
+    - 3 新单测 covering 0 / 1 / many urgent counts。
+  - `src-tauri/src/proactive.rs` (`CooldownBreakdown` + `build_cooldown_breakdown`)：
+    - struct 加 `urgent_deadline_count: u64` + `deadline_factor: f64` 两字段，doc 标注 R81。
+    - `build_cooldown_breakdown` 签名加 `urgent_deadline_count` arg；effective 计算改为 `(after_mode * feedback_factor * deadline_factor) as u64`。
+    - `build_tone_snapshot` 把 inline 在 struct 字面量里的 urgent_count 计算 lift 到 outer scope —— breakdown 和 ⏳ chip 共享同一 count（single source of truth）。
+  - `src-tauri/src/proactive/gate.rs` (`evaluate_loop_tick`)：
+    - 在 R7 feedback adaptation 后新增 deadline-shrink 步：读 butler_tasks → parse_butler_deadline_prefix → count_urgent → deadline_urgency_factor → multiply。
+    - effective_cooldown 现在是 `((after_feedback as f64) * deadline_factor) as u64`，下游 `evaluate_pre_input_idle` 行为不变（仍接 effective_cooldown_seconds: u64）。
+  - `src/components/panel/panelTypes.ts`：`cooldown_breakdown` 类型加 `urgent_deadline_count: number; deadline_factor: number;` 两字段。
+  - `src/components/panel/PanelToneStrip.tsx`：cooldown chip hover 拼接 "× 0.5 (deadline 紧迫 N)" 段（仅 urgent_count > 0 时显示）。chip 颜色不变（已被 R28 feedback band 占用通道）。
+- 验证：
+  - `cargo test`：615 passed（前 612 + 3 新）。
+  - `cargo clippy --tests --all-features`：clean。
+  - `cargo fmt --check`：clean（修了 gate.rs 一处自动 wrap → single-line 格式）。
+  - `pnpm tsc --noEmit`：clean。
+- 用户体感（once shipped）：在有 imminent / overdue deadline 时，pet 主动开口频率约翻倍（cooldown × 0.5）；hover 冷却 chip 看到 derivation "1800s × 1.0 (balanced) × 1.0 (mid) × 0.5 (deadline 紧迫 1) = 900s"，math 透明。
+
 ## 2026-05-04 — Iter R80：PanelMemory butler_tasks 加 `[deadline:]` chip + placeholder 教学
 - 现状缺口：R77-R79 deadline cluster 在 prompt / LLM 教学 / panel chip / chat layer / telegram 都覆盖，但 PanelMemory 列表（user-author 主入口）还没教 `[deadline:]` 也没区分 deadline-prefixed item 视觉。User 在这里手动加 deadline 任务时不知道 syntax + 看不到 urgency。
 - 改动：

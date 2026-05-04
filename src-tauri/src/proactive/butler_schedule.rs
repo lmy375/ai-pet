@@ -218,6 +218,27 @@ pub fn count_urgent_butler_deadlines(
         .count() as u64
 }
 
+/// Iter R81: cooldown shrink factor when an Imminent or Overdue deadline is
+/// pending. A real partner doesn't keep its quiet rhythm when something with
+/// a deadline is bearing down on the user — so we halve the effective cooldown
+/// while urgent deadlines exist, letting the proactive loop fire ~2× more
+/// often. Pure helper; caller multiplies the result into the cooldown chain
+/// alongside `mode_factor` and `feedback_factor`. Returns `1.0` (no shrink)
+/// when `urgent_count == 0` — the common steady-state path.
+///
+/// `urgent_count` comes from `count_urgent_butler_deadlines`. We only branch
+/// on zero vs non-zero — the magnitude of urgency is already reflected in the
+/// prompt-side hint (R77/R79). The factor is a discrete switch so the chip
+/// hover stays readable ("× 0.5 (deadline 紧迫)") rather than a continuous
+/// slope that's hard to reason about.
+pub fn deadline_urgency_factor(urgent_count: u64) -> f64 {
+    if urgent_count >= 1 {
+        0.5
+    } else {
+        1.0
+    }
+}
+
 /// Iter R77: pure classifier. `now < deadline by ≤ 1h` → Imminent; `1-6h ahead`
 /// → Approaching; `> 6h ahead` → Distant; `now ≥ deadline` → Overdue. Pure /
 /// testable — caller passes both args.
@@ -903,5 +924,27 @@ mod tests {
     fn urgent_count_empty_input_zero() {
         let now = dt(2026, 5, 10, 12, 0);
         assert_eq!(count_urgent_butler_deadlines(&[], now), 0);
+    }
+
+    // -- Iter R81: deadline_urgency_factor tests ----------------------------
+
+    #[test]
+    fn deadline_factor_zero_urgent_returns_one() {
+        // No urgent deadlines → no shrink. Steady-state.
+        assert_eq!(deadline_urgency_factor(0), 1.0);
+    }
+
+    #[test]
+    fn deadline_factor_single_urgent_halves_cooldown() {
+        // One Imminent or Overdue deadline → cooldown × 0.5.
+        assert_eq!(deadline_urgency_factor(1), 0.5);
+    }
+
+    #[test]
+    fn deadline_factor_many_urgent_still_half() {
+        // Discrete switch — count > 1 doesn't shrink further. Magnitude is
+        // expressed in the prompt-side hint (R77/R79), not the gate factor.
+        assert_eq!(deadline_urgency_factor(5), 0.5);
+        assert_eq!(deadline_urgency_factor(100), 0.5);
     }
 }
