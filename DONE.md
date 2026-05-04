@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R67：deep-focus history 持久化到磁盘
+- 现状缺口：R66 IDEA 显式标"R67+ 候选"——`Mutex<Vec<DailyBlockStats>>` 全 in-memory，process 重启后 history 全失。"昨日深度专注 recap" 是 first-of-day hint，重启后 hint 无源就没了。
+- 改动：
+  - `proactive/active_app.rs`：
+    - `DailyBlockStats` 加 `serde::Deserialize` derive（serialize 已有，R67 加 deserialize 让 round-trip 完整）。
+    - 新 fn `block_history_path()`：`~/.config/pet/daily_block_history.json` 路径，dirs::config_dir 失败时返回 None（degrade 到 memory-only）。
+    - 新 fn `save_block_history(history)`：JSON pretty-write，错误吞掉（best-effort + eprintln 日志），创建 parent dir。
+    - 新 fn `load_block_history()`：读取 + 解析；任何 IO/parse 错都返回空 Vec（坏 JSON 不应 freeze 系统）。
+    - 新 fn `load_block_history_into_memory()`：startup hook，幂等 —— 仅当 memory 空时填，避免 clobber 已 finalize 数据。
+    - `finalize_stretch` 调用 `save_block_history` 在释放 in-memory 锁之后（减少 mutex 持有时间，避免 IO 阻塞读路径）。
+  - `lib.rs` setup：在 `proactive::spawn` 之前调 `load_block_history_into_memory`，让首 tick 看见上次进程留下的 history。
+  - `active_app.rs` tests：新 `TEST_LOCK: Mutex<()>` 串行化 5 个 mutate-static 测试（R66 vec + R67 disk IO 让 race 窗口变长）。新 4 单测覆盖 serde round-trip / corrupt JSON tolerance / temp-path round-trip / load idempotent。
+  - **556 tests pass**（552 → 556, +4 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **R66 yesterday recap hint 真的能跨重启用**：app 关重开，next-day first-of-day prompt 仍有"昨日深度专注 N 次"上下文。
+  - **history vec 现在是持久 stat**：再加"本周专注总分钟" 类 surface 时，重启不会重置基线。
+  - **error 三层 fallback**：path None → memory-only；file missing → empty Vec；parse fail → empty Vec + log。坏数据不会永久 freeze。
+
 ## 2026-05-04 — Iter R66：deep-focus history vec + 昨日深度专注 first-of-day recap hint
 - 现状缺口：R65 用 `Mutex<Option<DailyBlockStats>>` 单 slot 存今日 stat。今日第一次 finalize 会覆盖昨日的 record，**昨日 stat 立刻丢失**，无法做"昨日深度专注"recap。
 - 改动：
