@@ -171,14 +171,102 @@ pub const RECOVERY_HINT_GRACE_SECS: u64 = 600;
 /// refresh — overwrites prior LastHardBlock with current values
 /// so peak_minutes always reflects the latest block tick (which is
 /// also the last value before the block clears).
+///
+/// Iter R65: when the prior block tick was >120s ago (= the previous
+/// stretch ended without recovery being taken), finalize the prior
+/// peak into today's daily stats before recording the new stretch.
+/// Same-stretch refreshes (≤120s elapsed since prior tick) just
+/// update peak. None → no prev to finalize, fresh record.
 pub fn record_hard_block(app: &str, peak_minutes: u64) {
     if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
+        // Iter R65: stretch-transition detection. 120s = ~2× nominal
+        // tick interval; covers normal continuity, flags when prev
+        // stretch must have ended without a recovery take_recovery_hint.
+        let prev_to_finalize = match g.as_ref() {
+            None => None,
+            Some(prev) if prev.marked_at.elapsed().as_secs() > 120 => Some(prev.peak_minutes),
+            Some(_) => None,
+        };
+        if let Some(peak) = prev_to_finalize {
+            finalize_stretch(peak);
+        }
         *g = Some(LastHardBlock {
             app: app.to_string(),
             peak_minutes,
             marked_at: Instant::now(),
         });
     }
+}
+
+/// Iter R65: today's deep-focus stretch summary. `count` is finalized
+/// stretches (a stretch finalizes either via take_recovery_hint or via
+/// stretch-transition detection in record_hard_block). `total_minutes`
+/// is the sum of those stretches' peak_minutes. The currently-active
+/// stretch (if any) is *not* counted yet — it'll be added when it
+/// finalizes. So "今日深度专注 N 次, X 分钟" reflects completed
+/// sessions only, not in-progress.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct DailyBlockStats {
+    /// Local date the stats apply to. Daily roll-over resets count and
+    /// total_minutes to 0 in `compute_finalize_stats` when a new day's
+    /// finalize comes in.
+    pub date: chrono::NaiveDate,
+    pub count: u64,
+    pub total_minutes: u64,
+}
+
+/// Iter R65: process-wide daily-block accumulator. None on fresh
+/// process / before any stretch has finalized. Reset implicitly on
+/// date roll-over inside `compute_finalize_stats`.
+pub static DAILY_BLOCK_STATS: std::sync::Mutex<Option<DailyBlockStats>> =
+    std::sync::Mutex::new(None);
+
+/// Iter R65: pure helper. Given prior stats + today's date + the peak
+/// minutes of a just-finalized stretch, returns the new stats. Same
+/// date → increment count + add minutes; different date / None → reset
+/// to fresh-day stats with the just-finalized stretch as the first.
+pub fn compute_finalize_stats(
+    prev: Option<&DailyBlockStats>,
+    today: chrono::NaiveDate,
+    peak_minutes: u64,
+) -> DailyBlockStats {
+    match prev {
+        Some(s) if s.date == today => DailyBlockStats {
+            date: today,
+            count: s.count + 1,
+            total_minutes: s.total_minutes.saturating_add(peak_minutes),
+        },
+        _ => DailyBlockStats {
+            date: today,
+            count: 1,
+            total_minutes: peak_minutes,
+        },
+    }
+}
+
+/// Iter R65: production wrapper. Reads DAILY_BLOCK_STATS + Local date,
+/// delegates to `compute_finalize_stats`, writes back. Called from
+/// `record_hard_block` (transition) and `take_recovery_hint`
+/// (clean end). Either path counts a stretch exactly once.
+pub fn finalize_stretch(peak_minutes: u64) {
+    let today = chrono::Local::now().date_naive();
+    if let Ok(mut g) = DAILY_BLOCK_STATS.lock() {
+        let next = compute_finalize_stats(g.as_ref(), today, peak_minutes);
+        *g = Some(next);
+    }
+}
+
+/// Iter R65: panel-side read of today's stats. Filters out stale stats
+/// from prior days so a 24h-stale record doesn't bleed into today's
+/// surface (the static will be overwritten on next finalize anyway,
+/// but a pure read should not pretend yesterday is today).
+pub fn current_daily_block_stats() -> Option<DailyBlockStats> {
+    let today = chrono::Local::now().date_naive();
+    DAILY_BLOCK_STATS
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .filter(|s| s.date == today)
 }
 
 /// Iter R63: pure helper. Returns Some((app, minutes)) when the last
@@ -229,6 +317,15 @@ pub fn take_recovery_hint() -> String {
         return String::new();
     };
     *g = None;
+    // Iter R65: clean-end finalize. Stretch is over (we're injecting
+    // recovery hint), bump today's stats with this stretch's peak.
+    // `record_hard_block` is the other finalize path (interrupt-end);
+    // each stretch counted exactly once across both. finalize_stretch
+    // locks a *different* mutex (DAILY_BLOCK_STATS), so calling it
+    // while LAST_HARD_BLOCK is held doesn't deadlock — but for
+    // clarity we drop g first.
+    drop(g);
+    finalize_stretch(mins);
     let redacted = crate::redaction::redact_with_settings(&app);
     format_deep_focus_recovery_hint(&redacted, mins)
 }
@@ -636,6 +733,97 @@ mod tests {
         }
         assert_eq!(take_recovery_hint(), "");
         if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
+            *g = original;
+        }
+    }
+
+    // -- Iter R65: compute_finalize_stats tests -----------------------------
+
+    use chrono::NaiveDate;
+
+    #[test]
+    fn finalize_stats_creates_fresh_when_no_prev() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let next = compute_finalize_stats(None, today, 95);
+        assert_eq!(
+            next,
+            DailyBlockStats {
+                date: today,
+                count: 1,
+                total_minutes: 95,
+            }
+        );
+    }
+
+    #[test]
+    fn finalize_stats_increments_when_same_date() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let prev = DailyBlockStats {
+            date: today,
+            count: 2,
+            total_minutes: 180,
+        };
+        let next = compute_finalize_stats(Some(&prev), today, 95);
+        assert_eq!(
+            next,
+            DailyBlockStats {
+                date: today,
+                count: 3,
+                total_minutes: 275,
+            }
+        );
+    }
+
+    #[test]
+    fn finalize_stats_resets_when_date_rolls_over() {
+        let yesterday = NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let prev = DailyBlockStats {
+            date: yesterday,
+            count: 5,
+            total_minutes: 600,
+        };
+        // First finalize today after yesterday's accumulation should reset.
+        let next = compute_finalize_stats(Some(&prev), today, 95);
+        assert_eq!(
+            next,
+            DailyBlockStats {
+                date: today,
+                count: 1,
+                total_minutes: 95,
+            }
+        );
+    }
+
+    #[test]
+    fn finalize_stats_saturates_on_overflow() {
+        // Defensive — total_minutes is u64, but check saturating math
+        // doesn't panic. Real-world numbers stay small.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let prev = DailyBlockStats {
+            date: today,
+            count: 1,
+            total_minutes: u64::MAX - 50,
+        };
+        let next = compute_finalize_stats(Some(&prev), today, 100);
+        assert_eq!(next.total_minutes, u64::MAX);
+    }
+
+    #[test]
+    fn finalize_stretch_round_trip_records_today() {
+        // Reset DAILY_BLOCK_STATS, run finalize, verify today's record.
+        let original = DAILY_BLOCK_STATS.lock().ok().and_then(|g| g.clone());
+        if let Ok(mut g) = DAILY_BLOCK_STATS.lock() {
+            *g = None;
+        }
+        finalize_stretch(91);
+        finalize_stretch(120);
+        let after = current_daily_block_stats().expect("two finalizes recorded");
+        assert_eq!(after.count, 2);
+        assert_eq!(after.total_minutes, 211);
+        assert_eq!(after.date, chrono::Local::now().date_naive());
+        // Restore.
+        if let Ok(mut g) = DAILY_BLOCK_STATS.lock() {
             *g = original;
         }
     }

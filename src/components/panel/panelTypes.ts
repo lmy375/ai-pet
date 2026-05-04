@@ -158,6 +158,14 @@ export interface ToneSnapshot {
   // of the const default — non-balanced users see chip color match gate
   // behavior.
   effective_hard_block_minutes: number;
+  // Iter R65: today's deep-focus stretch summary — finalized stretches
+  // only (currently-active stretch not counted yet). null when nothing
+  // finalized today (fresh process or new day rolled over).
+  daily_block_stats: {
+    date: string; // YYYY-MM-DD ISO
+    count: number;
+    total_minutes: number;
+  } | null;
 }
 
 /**

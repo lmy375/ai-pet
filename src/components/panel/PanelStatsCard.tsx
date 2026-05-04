@@ -235,6 +235,39 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           {companionshipDays === 0 ? "天（今天初识）" : "天陪伴"}
         </span>
       </span>
+      {/* Iter R65: today's deep-focus stretch summary. Finalized stretches
+          only — in-progress block doesn't count yet (it'll show after
+          finalize on transition or recovery hint). Hidden until at least
+          one stretch finalizes today; avoids "🛑 0 次" empty state being
+          a permanent default for users who never hit deep focus. */}
+      {tone?.daily_block_stats && tone.daily_block_stats.count > 0 && (
+        <span
+          title={`今日完成 ${tone.daily_block_stats.count} 次深度专注（≥${tone.effective_hard_block_minutes ?? 90}m 同 app 触发的 R62 hard-block stretch），峰值时长合计 ${tone.daily_block_stats.total_minutes} 分钟。当前进行中的不计，要等切 app 或 take recovery hint 才 finalize。日期 ${tone.daily_block_stats.date}。`}
+          style={{
+            display: "inline-flex",
+            alignItems: "baseline",
+            gap: "4px",
+            marginLeft: "8px",
+            paddingLeft: "12px",
+            borderLeft: "1px solid #e2e8f0",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "16px",
+              fontWeight: 600,
+              color: "#7f1d1d",
+              lineHeight: 1,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+          >
+            🛑 {tone.daily_block_stats.count}
+          </span>
+          <span style={{ fontSize: "11px", color: "#64748b" }}>
+            次/{tone.daily_block_stats.total_minutes}m
+          </span>
+        </span>
+      )}
       {/* Iter D2: celebration cue on milestone days (7 / 30 / 100 / 180 / 365 /
           yearly). The same signal drives the proactive prompt's
           companionship-milestone rule (Cρ). */}

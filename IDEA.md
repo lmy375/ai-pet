@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R65 设计要点（已实现）
+- **R62/R63/R64 cluster 至此扩展为 4 iter**：R62 阻塞 → R63 recovery → R64 mode dial → R65 stats accumulate。**这是 R-series 第二个超过 3 iter 的 cluster**（R52-R59 user-control 是第一个）。**cluster 长度不预定**，只要每个 iter 都打开新 surface 就该继续。
+- **stretch 检测的 transition vs clean-end 二分**：每个 stretch 必有终点，但终点种类有二：(1) 用户切出来 → take_recovery_hint clean-end finalize；(2) gate skip 持续但没 run 路径触发 take（如 quiet hours 期间） → record_hard_block 看到 prev.marked_at > 120s 后 transition-finalize。**两个 finalize 路径互斥不重复**：take_recovery_hint 后立刻 *g = None，下次 record_hard_block 看 None → 不 finalize 任何东西，只 record 新 stretch。
+- **120s 阈值的选取**：proactive interval 通常 60s，所以正常 stretch 内连续 record_hard_block 间隔约 60s。120s = 2× nominal，留一倍冗余应对调度抖动。**< 60s 太敏感** 会把单 stretch 切成多 stretch；> 300s 太松 会让真正中断的两段被合并。
+- **finalize_stretch 锁顺序的小心**：take_recovery_hint 持有 LAST_HARD_BLOCK 锁时调 finalize_stretch（要求 DAILY_BLOCK_STATS 锁）。两 mutex 不同 instance 不死锁，但**为可读性 drop g 后再调 finalize**。这一点跟 R57/R58 的"ergonomic 重于优化"一致 —— 显式生命周期减少未来误读。
+- **count 不含 in-progress**：用户体验"今日 N 次专注" = 完成的 N 次。当前还在 deep focus 中的 stretch 不算 count，不计 minutes。**stat 是 retrospective**，不是实时。如果 user 想看"现在专注多久" 看 active_app chip 即可。这种"完成 vs 正在"的二分让数字更稳定（不会跳）。
+- **PanelStatsCard 的 "🛑 N 次/Xm" 显示决策**：count > 0 才渲染。空态不显"今日 0 次"，避免给"专注时间不长" 用户负面暗示。**stat 应该是 confirmation 而非 reminder**。看到 🛑 是"我今天确实专注了" 的肯定，看不到是"还没刷新到今日统计" 的中性。
+- **date 滚动的处理 = 在 finalize 时检查**：compute_finalize_stats 看到 prev.date != today 就 reset。意思是"昨天最后那次 stretch 如果跨夜 finalize，会算到今日"。**简化模型：finalize 那一刻属于哪天就归哪天**，不做跨日 split。代价是某些极端 edge case（开发狗血特殊场景）count 偏移，正常使用场景无差。
+- **u64 saturating_add 的防御意义**：total_minutes 用 saturating_add；现实中 u64 = 约 35 万年，但显式 saturating 标 intent —— stat 是"近似" 不是"账本"，溢出退化到上限优于 panic。
+
 ## Iter R64 设计要点（已实现）
 - **R62 hard-block threshold 该不该全局固定？**：R62 用 const = 90，R29/R30 让用户能选 companion_mode (chatty / balanced / quiet) 但只调 cooldown / chatty_threshold。R62 的 90min 阈值跟用户偏好脱节 —— quiet 用户希望"我专注 60min 你就别打扰"，chatty 用户希望"我专注 2 小时你也试试"。**user dial 应该是 holistic 的**，每个 gate 的 magic number 都该跟 mode 一致。R64 把 R62 这个 magic number 也接进 mode 系统。
 - **chatty=135 / balanced=90 / quiet=60 三档**：math 选 base × 3/2 / base × 2/3 — symmetric multipliers，integer math 在 90 → 135/60 上 round-trip 干净。**quiet=60 跟 R27 directive 边界重合 = 软硬同步**：quiet 用户 R27 directive 立刻升级硬阻塞，pet "不犹豫" 退后；balanced 留 30 min 缓冲让 R27 自我纠偏；chatty 直接跳过 R27 缓冲扩到 135。**multiplier 选 1.5x / 0.67x 而非 2x / 0.5x** 是因为 hard-block 不像 cooldown 那么 user-tolerant — 翻倍会让 chatty 用户在 3 小时同 app 后才阻塞，太晚。
