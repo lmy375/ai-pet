@@ -169,6 +169,11 @@ export interface ToneSnapshot {
     total_minutes: number;
     max_single_stretch_minutes: number;
   } | null;
+  // Iter R76: true when today's max_single_stretch_minutes strictly exceeds
+  // the prior 7-day best (R74 semantics). PanelStatsCard renders a ⭐
+  // icon next to the daily column when set so the user sees record at-a-
+  // glance without reading the tooltip.
+  is_personal_record_today: boolean;
   // Iter R68 + R73: last-7-day aggregate — summed across DAILY_BLOCK_HISTORY
   // entries in [today-6 .. today]. null when window has no entries (fresh
   // install / quiet week). `days` = distinct days with at least one

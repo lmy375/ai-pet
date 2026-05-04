@@ -2,6 +2,18 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R76：PanelStatsCard 加 ⭐ 破纪录视觉指示
+- 现状缺口：R74 proactive + R75 chat 两路径都有 record 信号，但 panel 看不到。Panel 用户 retrospect 看 "今天 N 次/Xm/峰 Ym" 不知道这是不是破了纪录。
+- 改动：
+  - `proactive.rs`：ToneSnapshot 加 `is_personal_record_today: bool` 字段；build_tone_snapshot 用 `!current_personal_record_hint().is_empty()` 复用 R74 single-source-of-truth helper（empty 字符串 == 没 record）。**避免三个 surface 各自重新实现 strict-> check**。
+  - `panelTypes.ts`：TS 类型加同字段。
+  - `PanelStatsCard.tsx`：daily column chip 后追加 ⭐ icon (font-size 13px) 当 `is_personal_record_today === true`。tooltip append "⭐今天最长一次专注超过最近 7 天此前最长——破纪录"。
+  - **595 tests pass**（无新单测——纯 wiring 不必凑测试，所有 record-detection 逻辑 R74 已覆盖）；clippy/fmt/tsc clean。
+- 影响：
+  - **R62-R76 deep-focus cluster 第一阶段收官**：14 iter 完成 gate → recovery → mode → stat 三维度 → cross-surface 对齐 → record celebration 三 surface (proactive/chat/panel)。
+  - **三 surface 永不 drift**：单 helper 决定 record，三处同步。
+  - **下 iter 该换方向**：cluster 已饱和，避免 over-investment 风险。
+
 ## 2026-05-04 — Iter R75：focus_context layer 也注入 record 信息（chat + telegram parity）
 - 现状缺口：R74 personal-record 只 inject proactive prompt。reactive chat / telegram 用 focus_context layer，里头没 record 信息——user 通过 chat 问"我今天最长一次专注多久"AI 不知道破不破纪录。
 - 改动：
