@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R69：deep-focus week-over-week trend 指示
+- 现状缺口：R68 surface 了本周聚合，但用户看不出"本周比上周怎么样"。R68 IDEA 列了三个候选，R69 选 trend（数据已有 + 视觉小 + 单 hover 能看完整 math，cluster 延展度最高）。
+- 改动：
+  - `proactive/active_app.rs`：
+    - cap 从 7 升到 14 —— trend 需要 prior week (今天-13..=今天-7 区间) 数据，cap=7 全 evict 不够用。新 cap 恰好 = 两周覆盖。
+    - 新 struct `WeekOverWeekTrend { this_week_minutes, prior_week_minutes, direction, delta_percent }`。direction ∈ "up" / "flat" / "down"。
+    - 纯函数 `compute_week_over_week_trend(history, today) -> Option<WeekOverWeekTrend>`：filter 两窗口 → sum minutes（saturating）→ % delta（i128 中间防 overflow，clamp ±999 防 display absurdity）→ direction by ±15% threshold。prior == 0 OR this == 0 → None。
+    - 生产 wrapper `current_week_over_week_trend()`。
+  - `proactive.rs`：ToneSnapshot 加 `week_trend: Option<WeekOverWeekTrend>` 字段。
+  - `panelTypes.ts`：TS 类型加同字段，direction 限定 union。
+  - `PanelStatsCard.tsx`：weekly column 之后加 inline ↑/=/↓ 趋势图标 (12px)。up=green #16a34a (肯定)，down/flat=muted gray #94a3b8 (信息中性)。tooltip 拼接基础信息 + trend math (`vs 上周 +20%（300m vs 200m）`)。trend 数据不足时仍显示 weekly column 但 tooltip 标"数据不足（需 8+ 天 history）"。
+  - 7 单测覆盖 trend 各分支：prior empty → None / this empty → None / +50% up / -60% down / +10% flat / extreme clamp / today excluded from prior。**569 tests pass**（562 → 569, +7 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **deep-focus cluster 第 8 iter 收尾视觉**：R62-R69 完整链：gate (R62) → recovery (R63) → mode dial (R64) → today stat (R65) → history vec (R66) → persistence (R67) → weekly aggregate (R68) → trend (R69)。
+  - **数据 retrospective 完整**：今日 + 本周 + week-over-week trend 三层。
+  - **趋势 down 用 gray 而非 red**：down 不是 negative judgment（"专注少了不该"），是 neutral information。color 不传 should/shouldn't。
+
 ## 2026-05-04 — Iter R68：本周 deep-focus 聚合 + PanelStatsCard 新列
 - 现状缺口：R66 的 cap=7 future-proof "剩 5 槽位预留'本周专注总分钟' 等扩展"。R67 持久化让数据真存活，但 panel 还是只显今日列，本周聚合没 surface。R68 兑现 promise。
 - 改动：

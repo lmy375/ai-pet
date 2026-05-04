@@ -235,38 +235,72 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           {companionshipDays === 0 ? "天（今天初识）" : "天陪伴"}
         </span>
       </span>
-      {/* Iter R68: weekly deep-focus aggregate, sits before today's column
-          so user reads "本周整体 → 今日聚焦" left-to-right. Hidden when
-          window empty (consistent with daily empty-state hide). days
-          subtitle shows "Y 天/共 N 次/Xm" so summary self-explains depth. */}
-      {tone?.weekly_block_stats && tone.weekly_block_stats.total_count > 0 && (
-        <span
-          title={`本周（最近 7 天）有 ${tone.weekly_block_stats.days} 天进入深度专注，共完成 ${tone.weekly_block_stats.total_count} 次 stretch，峰值时长合计 ${tone.weekly_block_stats.total_minutes} 分钟。来自 R67 持久化的 DAILY_BLOCK_HISTORY，cap=7 entries。`}
-          style={{
-            display: "inline-flex",
-            alignItems: "baseline",
-            gap: "4px",
-            marginLeft: "8px",
-            paddingLeft: "12px",
-            borderLeft: "1px solid #e2e8f0",
-          }}
-        >
+      {/* Iter R68 + R69: weekly deep-focus aggregate, sits before today's column
+          so user reads "本周整体 → 今日聚焦" left-to-right. R69 adds inline
+          ↑/=/↓ trend arrow when prior-week data is available (need 8+ days
+          history). Hidden when window empty (consistent with daily empty-state). */}
+      {tone?.weekly_block_stats && tone.weekly_block_stats.total_count > 0 && (() => {
+        const trend = tone.week_trend;
+        let trendIcon = "";
+        let trendColor = "#94a3b8";
+        let trendTitle = "";
+        if (trend) {
+          if (trend.direction === "up") {
+            trendIcon = "↑";
+            trendColor = "#16a34a"; // green — more focus
+            trendTitle = `vs 上周 +${trend.delta_percent}%（${trend.this_week_minutes}m vs ${trend.prior_week_minutes}m）`;
+          } else if (trend.direction === "down") {
+            trendIcon = "↓";
+            trendColor = "#94a3b8"; // muted — less focus, no judgment
+            trendTitle = `vs 上周 ${trend.delta_percent}%（${trend.this_week_minutes}m vs ${trend.prior_week_minutes}m）`;
+          } else {
+            trendIcon = "=";
+            trendColor = "#94a3b8";
+            trendTitle = `vs 上周 ${trend.delta_percent >= 0 ? "+" : ""}${trend.delta_percent}%（${trend.this_week_minutes}m vs ${trend.prior_week_minutes}m，± 15% 内算持平）`;
+          }
+        }
+        const baseTitle = `本周（最近 7 天）有 ${tone.weekly_block_stats!.days} 天进入深度专注，共完成 ${tone.weekly_block_stats!.total_count} 次 stretch，峰值时长合计 ${tone.weekly_block_stats!.total_minutes} 分钟。来自 R67 持久化的 DAILY_BLOCK_HISTORY，cap=14 entries。`;
+        return (
           <span
+            title={trendTitle ? `${baseTitle}\n${trendTitle}` : `${baseTitle}\n趋势: 数据不足（需 8+ 天 history）。`}
             style={{
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "#9f1239",
-              lineHeight: 1,
-              fontFamily: "'SF Mono', 'Menlo', monospace",
+              display: "inline-flex",
+              alignItems: "baseline",
+              gap: "4px",
+              marginLeft: "8px",
+              paddingLeft: "12px",
+              borderLeft: "1px solid #e2e8f0",
             }}
           >
-            🛑 {tone.weekly_block_stats.total_count}
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "#9f1239",
+                lineHeight: 1,
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+            >
+              🛑 {tone.weekly_block_stats!.total_count}
+            </span>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+              本周/{tone.weekly_block_stats!.total_minutes}m/{tone.weekly_block_stats!.days}天
+            </span>
+            {trendIcon && (
+              <span
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: trendColor,
+                  lineHeight: 1,
+                }}
+              >
+                {trendIcon}
+              </span>
+            )}
           </span>
-          <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-            本周/{tone.weekly_block_stats.total_minutes}m/{tone.weekly_block_stats.days}天
-          </span>
-        </span>
-      )}
+        );
+      })()}
       {/* Iter R65: today's deep-focus stretch summary. Finalized stretches
           only — in-progress block doesn't count yet (it'll show after
           finalize on transition or recovery hint). Hidden until at least

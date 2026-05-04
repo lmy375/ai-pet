@@ -227,11 +227,13 @@ pub struct DailyBlockStats {
 pub static DAILY_BLOCK_HISTORY: std::sync::Mutex<Vec<DailyBlockStats>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Iter R66: how many days of history we keep. 7 = one week, lets us
-/// later surface "last 7 day total" without unbounded growth. Today +
-/// yesterday are the two needed entries today; the remaining 5 sit as
-/// future-proof room for "本周专注时长" stat surfaces.
-pub const DAILY_BLOCK_HISTORY_CAP: usize = 7;
+/// Iter R66/R69: how many days of history we keep. R66 set cap=7 (one
+/// week) for "today + yesterday + 5 future-proof slots". R69 bumped to
+/// 14 so week-over-week trend (this week vs prior week) has both
+/// windows' data available — prior week needs entries from days 8-14 ago,
+/// which cap=7 would have dropped. 14 = exactly two windows' worth, no
+/// over-allocation for far-future use cases.
+pub const DAILY_BLOCK_HISTORY_CAP: usize = 14;
 
 /// Iter R66: pure helper. Given existing history + today's date + the
 /// peak minutes of a just-finalized stretch + cap, returns the new
@@ -362,6 +364,83 @@ pub fn current_weekly_block_summary() -> Option<WeeklyBlockSummary> {
         .map(|g| g.clone())
         .unwrap_or_default();
     compute_weekly_block_summary(&snap, today)
+}
+
+/// Iter R69: week-over-week trend direction. "up" / "flat" / "down"
+/// based on ±15% threshold against prior-week baseline. Pure / serde
+/// for panel surfacing.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct WeekOverWeekTrend {
+    pub this_week_minutes: u64,
+    pub prior_week_minutes: u64,
+    /// "up" / "flat" / "down" — direction of change against prior week.
+    pub direction: String,
+    /// Signed percentage delta vs prior week, rounded to nearest int.
+    /// Saturating math; capped at ±999 for display sanity.
+    pub delta_percent: i64,
+}
+
+/// Iter R69: pure helper. Compares last 7 days (today inclusive) vs
+/// prior 7 days (today-13..=today-7). Returns None when prior week
+/// has no data (can't compute % delta against zero baseline) or this
+/// week is empty (no signal to show). Threshold ±15% separates "flat"
+/// from "up"/"down" — small fluctuations are noise, not trend.
+pub fn compute_week_over_week_trend(
+    history: &[DailyBlockStats],
+    today: chrono::NaiveDate,
+) -> Option<WeekOverWeekTrend> {
+    let this_week_start = today - chrono::Duration::days(6);
+    let prior_week_start = today - chrono::Duration::days(13);
+    let prior_week_end = today - chrono::Duration::days(7);
+
+    let this_week_minutes: u64 = history
+        .iter()
+        .filter(|s| s.date >= this_week_start && s.date <= today)
+        .map(|s| s.total_minutes)
+        .fold(0u64, |a, b| a.saturating_add(b));
+    let prior_week_minutes: u64 = history
+        .iter()
+        .filter(|s| s.date >= prior_week_start && s.date <= prior_week_end)
+        .map(|s| s.total_minutes)
+        .fold(0u64, |a, b| a.saturating_add(b));
+
+    if prior_week_minutes == 0 || this_week_minutes == 0 {
+        return None;
+    }
+
+    // delta_percent = (this - prior) / prior × 100, signed.
+    // Use i128 intermediate to avoid u64 -> i64 overflow on extreme values.
+    let this_i = this_week_minutes as i128;
+    let prior_i = prior_week_minutes as i128;
+    let raw_delta = (this_i - prior_i) * 100 / prior_i;
+    let delta_percent = raw_delta.clamp(-999, 999) as i64;
+
+    let direction = if delta_percent > 15 {
+        "up"
+    } else if delta_percent < -15 {
+        "down"
+    } else {
+        "flat"
+    }
+    .to_string();
+
+    Some(WeekOverWeekTrend {
+        this_week_minutes,
+        prior_week_minutes,
+        direction,
+        delta_percent,
+    })
+}
+
+/// Iter R69: production wrapper reading DAILY_BLOCK_HISTORY + Local today.
+pub fn current_week_over_week_trend() -> Option<WeekOverWeekTrend> {
+    let today = chrono::Local::now().date_naive();
+    let snap = DAILY_BLOCK_HISTORY
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    compute_week_over_week_trend(&snap, today)
 }
 
 /// Iter R66: pure formatter for the yesterday-deep-focus-recap hint.
@@ -1225,6 +1304,129 @@ mod tests {
             total_minutes: 0,
         }];
         assert_eq!(compute_weekly_block_summary(&history, today), None);
+    }
+
+    // -- Iter R69: compute_week_over_week_trend tests -----------------------
+
+    #[test]
+    fn week_trend_returns_none_when_prior_empty() {
+        // No prior week data → can't compute delta.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![DailyBlockStats {
+            date: today,
+            count: 3,
+            total_minutes: 200,
+        }];
+        assert_eq!(compute_week_over_week_trend(&history, today), None);
+    }
+
+    #[test]
+    fn week_trend_returns_none_when_this_week_empty() {
+        // Prior week has data but this week doesn't → no signal.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(), // 9 days ago
+            count: 5,
+            total_minutes: 500,
+        }];
+        assert_eq!(compute_week_over_week_trend(&history, today), None);
+    }
+
+    #[test]
+    fn week_trend_up_when_this_week_50_percent_higher() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(), // prior week
+                count: 2,
+                total_minutes: 200,
+            },
+            DailyBlockStats {
+                date: today,
+                count: 3,
+                total_minutes: 300, // +50% vs prior
+            },
+        ];
+        let trend = compute_week_over_week_trend(&history, today).expect("both weeks present");
+        assert_eq!(trend.this_week_minutes, 300);
+        assert_eq!(trend.prior_week_minutes, 200);
+        assert_eq!(trend.direction, "up");
+        assert_eq!(trend.delta_percent, 50);
+    }
+
+    #[test]
+    fn week_trend_down_when_this_week_lower() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(),
+                count: 5,
+                total_minutes: 500,
+            },
+            DailyBlockStats {
+                date: today,
+                count: 2,
+                total_minutes: 200, // -60% vs prior
+            },
+        ];
+        let trend = compute_week_over_week_trend(&history, today).unwrap();
+        assert_eq!(trend.direction, "down");
+        assert_eq!(trend.delta_percent, -60);
+    }
+
+    #[test]
+    fn week_trend_flat_within_15_percent_band() {
+        // ±15% counts as flat — small fluctuations aren't trend.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(),
+                count: 2,
+                total_minutes: 200,
+            },
+            DailyBlockStats {
+                date: today,
+                count: 2,
+                total_minutes: 220, // +10%
+            },
+        ];
+        let trend = compute_week_over_week_trend(&history, today).unwrap();
+        assert_eq!(trend.direction, "flat");
+        assert_eq!(trend.delta_percent, 10);
+    }
+
+    #[test]
+    fn week_trend_clamps_extreme_delta() {
+        // Defensive: 100x increase should clamp to +999% for display.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(),
+                count: 1,
+                total_minutes: 1, // tiny prior baseline
+            },
+            DailyBlockStats {
+                date: today,
+                count: 1,
+                total_minutes: 1000, // 99,900% raw
+            },
+        ];
+        let trend = compute_week_over_week_trend(&history, today).unwrap();
+        assert_eq!(trend.delta_percent, 999);
+        assert_eq!(trend.direction, "up");
+    }
+
+    #[test]
+    fn week_trend_excludes_today_from_prior_window() {
+        // Today is day 14. prior_week = today-13..=today-7 = day 1..=day 7.
+        // Today's entry should NOT appear in prior_week_minutes.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![DailyBlockStats {
+            date: today,
+            count: 5,
+            total_minutes: 999, // huge today; prior should still be 0 → None.
+        }];
+        assert_eq!(compute_week_over_week_trend(&history, today), None);
     }
 
     #[test]

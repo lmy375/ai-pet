@@ -176,6 +176,16 @@ export interface ToneSnapshot {
     total_count: number;
     total_minutes: number;
   } | null;
+  // Iter R69: week-over-week trend for deep-focus minutes. null until 8+
+  // days of history give both windows data. direction ∈ "up" / "flat" /
+  // "down" (±15% threshold separates flat from change). delta_percent
+  // signed and clamped to ±999 for sane display.
+  week_trend: {
+    this_week_minutes: number;
+    prior_week_minutes: number;
+    direction: "up" | "flat" | "down";
+    delta_percent: number;
+  } | null;
 }
 
 /**
