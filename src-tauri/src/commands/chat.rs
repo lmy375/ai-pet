@@ -291,6 +291,87 @@ pub fn format_focus_context_layer(
     lines.join("\n")
 }
 
+/// Iter R79: chat-flavored formatter for deadline context. Distinct from
+/// `format_butler_deadlines_hint` (proactive's framing — "你 might bring
+/// it up if appropriate") which assumes pet initiates. Chat framing is
+/// reverse: "user 可能问起，这是 ground truth"; pet doesn't volunteer.
+/// Pure — caller passes the `(deadline, topic)` pairs + now. Returns ""
+/// when no items in non-Distant tiers (consistent with other empty-skip
+/// layers). Includes Approaching (1-6h) since user might query it
+/// reactively even if proactive wouldn't bring it up yet.
+pub fn format_deadline_chat_layer(
+    items: &[(chrono::NaiveDateTime, String)],
+    now: chrono::NaiveDateTime,
+) -> String {
+    use crate::proactive::{compute_deadline_urgency, DeadlineUrgency};
+    let mut bullets: Vec<String> = Vec::new();
+    for (deadline, topic) in items {
+        let urgency = compute_deadline_urgency(*deadline, now);
+        let bullet = match urgency {
+            DeadlineUrgency::Distant => continue,
+            DeadlineUrgency::Approaching => {
+                let hours = (*deadline - now).num_hours().max(1);
+                format!("· {}（约 {} 小时后到 deadline）", topic, hours)
+            }
+            DeadlineUrgency::Imminent => {
+                let mins = (*deadline - now).num_minutes().max(0);
+                format!("· {}（仅剩 {} 分钟到 deadline）", topic, mins)
+            }
+            DeadlineUrgency::Overdue => {
+                let mins = (now - *deadline).num_minutes();
+                if mins < 60 {
+                    format!("· {}（deadline 已过 {} 分钟）", topic, mins)
+                } else {
+                    let hours = mins / 60;
+                    format!("· {}（deadline 已过 {} 小时）", topic, hours)
+                }
+            }
+        };
+        bullets.push(bullet);
+    }
+    if bullets.is_empty() {
+        return String::new();
+    }
+    format!(
+        "[当前 deadline 概况]\n{}\n用户如果问起这些任务，根据剩余时间给出对应的紧迫度回应；如果他没问，不必主动列举。",
+        bullets.join("\n")
+    )
+}
+
+/// Iter R79: read butler_tasks memory, parse `[deadline:]` prefixes, format
+/// chat-flavored layer, inject as system note. Same insertion idiom as the
+/// other injectors. No-op when no non-Distant deadlines.
+pub fn inject_deadline_context_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let now = chrono::Local::now().naive_local();
+    let items: Vec<(chrono::NaiveDateTime, String)> =
+        crate::commands::memory::memory_list(Some("butler_tasks".to_string()))
+            .ok()
+            .and_then(|idx| idx.categories.get("butler_tasks").cloned())
+            .map(|cat| {
+                cat.items
+                    .iter()
+                    .filter_map(|i| crate::proactive::parse_butler_deadline_prefix(&i.description))
+                    .collect()
+            })
+            .unwrap_or_default();
+    let body = format_deadline_chat_layer(&items, now);
+    if body.is_empty() {
+        return messages;
+    }
+    let body = crate::redaction::redact_with_settings(&body);
+    let note: ChatMessage = serde_json::from_value(serde_json::json!({
+        "role": "system",
+        "content": body,
+    }))
+    .expect("static deadline chat layer JSON should always parse");
+    let insert_at = messages
+        .iter()
+        .position(|m| m.role != "system")
+        .unwrap_or(messages.len());
+    messages.insert(insert_at, note);
+    messages
+}
+
 /// Iter R70/R71: inject the focus-context system note into reactive chat (or
 /// telegram). Reads current_daily_block_stats + current_weekly_block_summary +
 /// snapshot_active_app, gates in-progress on `IN_PROGRESS_FOCUS_MIN_MINUTES`,
@@ -1091,6 +1172,10 @@ pub async fn chat(
     // "今天怎么样" coherently and stay brief if user is mid-focus. No-op
     // when no stats yet (fresh install / quiet day).
     let augmented = inject_focus_context_layer(augmented);
+    // Iter R79: surface non-Distant deadline-prefixed butler_tasks so AI
+    // can answer "我有什么 deadline" reactively. R77/R78 covered proactive
+    // + LLM teaching + panel; R79 closes reactive chat path.
+    let augmented = inject_deadline_context_layer(augmented);
     let result = run_chat_pipeline(augmented, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
@@ -1483,6 +1568,74 @@ mod trim_tests {
         };
         let out = format_focus_context_layer(Some(&today), None, None, Some((95, 0)));
         assert!(!out.contains("破纪录"));
+    }
+
+    // -- Iter R79: format_deadline_chat_layer tests -------------------------
+
+    #[test]
+    fn deadline_chat_layer_returns_empty_when_all_distant_or_none() {
+        let now = NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(8, 0, 0)
+            .unwrap();
+        // Empty input.
+        assert_eq!(format_deadline_chat_layer(&[], now), "");
+        // All distant (≥6h away).
+        let items = vec![(
+            NaiveDate::from_ymd_opt(2026, 5, 12)
+                .unwrap()
+                .and_hms_opt(14, 0, 0)
+                .unwrap(),
+            "future".to_string(),
+        )];
+        assert_eq!(format_deadline_chat_layer(&items, now), "");
+    }
+
+    #[test]
+    fn deadline_chat_layer_includes_approaching_unlike_proactive_filter() {
+        // R79 distinction: chat layer surfaces Approaching too (user might ask),
+        // even though R77's proactive format would also include it.
+        let now = NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(11, 0, 0)
+            .unwrap();
+        let items = vec![(
+            NaiveDate::from_ymd_opt(2026, 5, 10)
+                .unwrap()
+                .and_hms_opt(14, 0, 0)
+                .unwrap(),
+            "review PR".to_string(),
+        )];
+        let out = format_deadline_chat_layer(&items, now);
+        assert!(out.contains("[当前 deadline 概况]"));
+        assert!(out.contains("review PR"));
+        assert!(out.contains("约 3 小时后"));
+        // Chat-specific tail wording differs from proactive.
+        assert!(out.contains("不必主动列举"));
+    }
+
+    #[test]
+    fn deadline_chat_layer_handles_overdue_minutes_then_hours() {
+        let now = NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(14, 30, 0)
+            .unwrap();
+        let items = vec![(
+            NaiveDate::from_ymd_opt(2026, 5, 10)
+                .unwrap()
+                .and_hms_opt(14, 0, 0)
+                .unwrap(),
+            "missed".to_string(),
+        )];
+        let out = format_deadline_chat_layer(&items, now);
+        assert!(out.contains("已过 30 分钟"));
+        // > 1 hour formats as hours.
+        let now2 = NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(17, 0, 0)
+            .unwrap();
+        let out2 = format_deadline_chat_layer(&items, now2);
+        assert!(out2.contains("已过 3 小时"));
     }
 
     #[test]

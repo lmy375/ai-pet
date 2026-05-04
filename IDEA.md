@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R79 设计要点（已实现）
+- **chat layer 跟 proactive prompt 文案 framing 不同**：proactive 是 "你 might bring it up" (pet initiates)，chat 是 "user 可能问起，这是 ground truth" (pet responds)。R79 写独立 format_deadline_chat_layer 而非 reuse format_butler_deadlines_hint。**modality 决定 framing**——shared data, separate prose。
+- **chat 层包含 Approaching 而 proactive 不也包**：proactive R77 format 已含 Approaching（"约 N 小时后"）。chat R79 跟它保持一致——user 可能问起 4 小时后的 deadline。但 panel chip R78 仅 imminent + overdue（"act now" 焦点）。**三个 surface 三个 fidelity 阈值**：chat = "可问"（包含 Approaching），proactive = "可提"（包含 Approaching），chip = "必须看"（仅 imminent + overdue）。
+- **R77 → R78 → R79 deadline cluster 三 surface**：proactive prompt (R77) → LLM 教学 + panel chip (R78) → chat layer (R79)。**单 cluster 三 iter 完成 cross-surface coverage**——之前 deep-focus cluster 用了 14 iter 才到这个状态，deadline cluster 紧凑得多。**学习效率：第二个同类 cluster 比第一个快**。
+- **redact_with_settings 在 wrapper 内**：format_deadline_chat_layer 是 pure helper（不读 settings），inject_deadline_context_layer wrapper 在 inject 前 redact 整段。**沿 R20 codified pattern**：pure 不知 settings，wrapper 知。
+- **layer 链长到 5**：mood / persona / recent_speech / focus_context / deadline_context。每层独立可 toggle，互不重叠。**"添加新 layer" 是高 leverage 操作**——一次实现 chat + telegram 都得到。
+- **不全 reuse R77 build_butler_deadlines_hint**：考虑过让 chat 直接 inject 同一字符串，但 framing 不同（proactive 用 "如果用户当前没在专注" 暗示 pet 主导，chat 应让 user 主导）。**copy-paste-with-edit 比 reuse-with-flag 更直白**——加 flag 的 helper 更难读。
+- **R79 也可作"R77 reuse 没问题就 ship 简单版"反例**：理论上 R79 用 build_butler_deadlines_hint 一行也能 work，少 30 行新 helper。但 framing 不一致会让 LLM 偶尔在 reactive chat 主动 brag deadline——bad UX。**framing 是 fidelity 决定，不是 LOC 优化**。
+- **测试覆盖 chat-specific 的 distinguishing tail**：测试 assert "不必主动列举" 这句 chat 特有 tail。**测试不只验数据正确，也锁 framing 正确**。
+
 ## Iter R78 设计要点（已实现）
 - **教 LLM 用 [deadline:] 是 R77 的 unblocking 必要条件**：R77 加了 parser + classifier + prompt nudge，但没 LLM 教学，自然对话里"周五前发出去"的 phrasing 不会创建 deadline-prefixed butler task。**R77 + R78 是必然 paired** —— 数据结构 + 教学语料缺一不可。
 - **TOOL_USAGE_PROMPT 是 leverage 最高的修改点**：每次 reactive chat / telegram 都会注入这段。一处文字改动，所有路径自动 LLM 学到。**修改 prompt 比修改代码 reach 更广**——好的 prompt 比代码更易演化。
