@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R74：personal-record prompt nudge "[今日破纪录]"
+- 现状缺口：R72/R73 把 peak 维度加到 day + week，panel 都能看，但 LLM 主动开口时不知道今天有没有破纪录。data 沉淀够了，inject 时机到。R72 IDEA "先 surface 后 inject" 节奏第三阶。
+- 改动：
+  - `proactive/active_app.rs`：
+    - 纯函数 `compute_personal_record_hint(today_peak, prior_week_peak) -> Option<String>`：strict > 才 fire（tied 不算）；today=0 / prior=0 都返回 None（need real baseline）。
+    - 生产 wrapper `current_personal_record_hint() -> String`：从 DAILY_BLOCK_HISTORY 读今日 peak（找 today entry）+ 排除今日的 7-day prior peak（filter `< today`）。
+    - 6 单测覆盖 truth table：today=0 / prior=0 / tied / lower / strictly higher / +1 boundary。
+  - `prompt_assembler.rs`：PromptInputs 加 `personal_record_hint: &'a str` 字段；assembler push 在 yesterday_focus_hint 之后。
+  - `proactive.rs` run_proactive_turn：调 `current_personal_record_hint()` 每次 turn（不 first-of-day gate，record 应当 fire 立即不等次日）。base_inputs() 默认 ""。
+  - **591 tests pass**（585 → 591, +6 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **deep-focus stat data → surface → narrate 三阶完成**：R72 data，R73 surface，R74 narrate（LLM）。
+  - **prompt 文案防 spam**：含"不必每次都提（如果用户已经很累就别强调）"留 LLM context-aware judgment 空间。
+  - **stat celebration 严格阈值**：strict > only 避免 record 通货膨胀。
+
 ## 2026-05-04 — Iter R73：weekly summary 加 peak_single_stretch 维度 + panel tooltip surface
 - 现状缺口：R72 给 DailyBlockStats 加 day-level depth (max_single_stretch_minutes)，但 WeeklyBlockSummary 还没对应 weekly-level peak。stat granularity hierarchy 缺一层。
 - 改动：

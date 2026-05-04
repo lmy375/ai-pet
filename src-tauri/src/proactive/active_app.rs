@@ -479,6 +479,52 @@ pub fn current_week_over_week_trend() -> Option<WeekOverWeekTrend> {
     compute_week_over_week_trend(&snap, today)
 }
 
+/// Iter R74: pure helper computing the "[今日破纪录]" celebration hint.
+/// Fires only when today's peak strictly exceeds the prior 7-day best
+/// (excluding today). Tied / lower / no-baseline cases all return None
+/// so the LLM doesn't get spammed with "今天表现良好" that's actually
+/// just noise. Both inputs in minutes; both must be > 0 (we need a real
+/// baseline to "break").
+pub fn compute_personal_record_hint(today_peak: u64, prior_week_peak: u64) -> Option<String> {
+    if today_peak == 0 || prior_week_peak == 0 {
+        return None;
+    }
+    if today_peak <= prior_week_peak {
+        return None;
+    }
+    Some(format!(
+        "[今日破纪录] 用户今天最长一次专注 {} 分钟，超过最近 7 天的之前最长 {} 分钟。可以温和肯定一下 / 替他高兴，不必夸张，也不必每次都提（如果用户已经很累就别强调）。",
+        today_peak, prior_week_peak
+    ))
+}
+
+/// Iter R74: production wrapper. Reads DAILY_BLOCK_HISTORY + Local today,
+/// extracts today_peak from today's entry (0 when no stretch finalized
+/// yet) and prior_week_peak from entries in [today-6 .. today-1] window
+/// (strictly excluding today). Empty string when compute_personal_record_hint
+/// returns None — caller can `push_if_nonempty` directly.
+pub fn current_personal_record_hint() -> String {
+    let today = chrono::Local::now().date_naive();
+    let history = DAILY_BLOCK_HISTORY
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let today_peak = history
+        .iter()
+        .find(|s| s.date == today)
+        .map(|s| s.max_single_stretch_minutes)
+        .unwrap_or(0);
+    let week_start = today - chrono::Duration::days(6);
+    let prior_week_peak = history
+        .iter()
+        .filter(|s| s.date >= week_start && s.date < today)
+        .map(|s| s.max_single_stretch_minutes)
+        .max()
+        .unwrap_or(0);
+    compute_personal_record_hint(today_peak, prior_week_peak).unwrap_or_default()
+}
+
 /// Iter R66: pure formatter for the yesterday-deep-focus-recap hint.
 /// Returns "" when stats is None or count is 0 (no history / quiet
 /// day); otherwise frames yesterday's stretches in past-tense
@@ -1614,6 +1660,47 @@ mod tests {
         }];
         let summary = compute_weekly_block_summary(&history, today).unwrap();
         assert_eq!(summary.peak_single_stretch_minutes, 0);
+    }
+
+    // -- Iter R74: compute_personal_record_hint tests ----------------------
+
+    #[test]
+    fn personal_record_returns_none_when_today_zero() {
+        // No today peak yet (no stretch finalized today) — nothing to celebrate.
+        assert_eq!(compute_personal_record_hint(0, 100), None);
+    }
+
+    #[test]
+    fn personal_record_returns_none_when_prior_zero() {
+        // No baseline within prior 7 days — can't claim "record" without one.
+        assert_eq!(compute_personal_record_hint(120, 0), None);
+    }
+
+    #[test]
+    fn personal_record_returns_none_when_tied() {
+        // Tied !=record. Strict > only.
+        assert_eq!(compute_personal_record_hint(100, 100), None);
+    }
+
+    #[test]
+    fn personal_record_returns_none_when_today_lower() {
+        assert_eq!(compute_personal_record_hint(95, 150), None);
+    }
+
+    #[test]
+    fn personal_record_returns_some_when_today_strictly_higher() {
+        let out = compute_personal_record_hint(150, 100).expect("strict > → Some");
+        assert!(out.contains("[今日破纪录]"));
+        assert!(out.contains("150"));
+        assert!(out.contains("100"));
+        assert!(out.contains("温和肯定"));
+    }
+
+    #[test]
+    fn personal_record_one_minute_above_prior_still_fires() {
+        // Boundary: 101 > 100 by exactly 1.
+        let out = compute_personal_record_hint(101, 100).expect("strict > → Some");
+        assert!(out.contains("101"));
     }
 
     #[test]
