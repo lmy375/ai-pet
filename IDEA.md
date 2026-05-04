@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R70 设计要点（已实现）
+- **R69 IDEA 标的"换方向"立刻执行**：R69 闭合 deep-focus cluster 后写 "下 iter 该换方向了 —— butler / reactive chat / user_profile"。R70 选 reactive chat 方向，让 deep-focus 数据**穿过 modality 边界**到反应式聊天。**cluster 闭合后第一 iter 应该 explicit cross-domain**，verify 解耦了。
+- **inject_focus_context_layer 紧跟 R9 inject_recent_speech_layer pattern**：注入位置（before first non-system msg）+ JSON 构造 + no-op when empty body 完全沿用 R9 的 idiom。**新 layer 加 reactive chat 已是 codified pattern**，第四个 layer 不发明新模式。
+- **layer 顺序：mood → persona → recent_speech → focus_context**：mood = 当下情绪，persona = 长期画像，recent_speech = 主动开口轨迹，focus_context = 行为强度。**from immediate-state → long-term-identity → recent-output → behavior-data**。每层互不重叠，叠加给 LLM 多角度。
+- **format_focus_context_layer 双 None / 双 zero-count → ""**：层级条件防御。今日 entry 存在但 count==0（理论不出现，今日 entry 仅在 finalize 后写）也 skip。**"什么都没说" 比 "今天完成 0 次专注" 更适合作为 system message**——empty 是合理的 unprime。
+- **tail guidance 写"如果...自然提及；如果...回答简洁"**：只在 user 问起时才提及，不让 LLM 主动 brag stats。**system context = primer，不是 mandate**。这是从 R66 yesterday recap "自然带过即可，不必非提" 已 codified 的原则。
+- **没有给 reactive chat 加 "current focus minutes" 实时信号**：考虑过加 active_app duration 实时数据，但 chat 是 user-initiated，不需要立即知道用户当前还在不在专注（user 都开 chat 了，明显从 task 切出来了）。**实时信号给 proactive；retrospective 给 reactive**——modality 决定数据时效性需求。
+- **没用 LAST_HARD_BLOCK 或 take_recovery_hint**：R63 的 recovery hint 是单 shot for proactive。reactive chat 用 retrospective stat 而非 transient marker。**transient state 不跨 modality**——LAST_HARD_BLOCK 只 proactive 取，reactive 不重复消费。
+- **跨模块 import path 的小坑**：`crate::proactive::active_app::Foo` failed 因为 module 是 private + glob re-export。`crate::proactive::Foo` 才对。**glob re-export 是 public API**, 内部模块路径不是。这种小细节比逻辑设计更易踩。
+
 ## Iter R69 设计要点（已实现）
 - **R68 IDEA 候选三选一直接执行 trend 指示**：R68 IDEA 列了 (a) sparkline (b) butler deadline (c) trend。trend 是 cluster 内最自然延展（数据已有 + 视觉极小 + 用户单点 hover 能看完整 math），R69 选这条。**candidate list 选 highest cohesion-with-current-cluster 的执行**，避免每 iter 切方向。
 - **cap 7 → 14 是必然要求**：trend 需要 prior week 数据 = 8-14 天前的 entry，cap=7 全 evict。**前 iter 的设计 affordance 不够 long-term 时**，下个 iter 必然要扩；这种 progressive widen 比一上来 cap=30 更安全（用过才知道要多大）。

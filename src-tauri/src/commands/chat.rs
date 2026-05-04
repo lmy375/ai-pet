@@ -211,6 +211,72 @@ pub fn format_recent_speech_layer(lines: &[String]) -> String {
     )
 }
 
+/// Iter R70: format a "what the user has been doing focus-wise today / this week"
+/// system note for reactive chat. Lets the AI answer "我今天怎么样" coherently
+/// without the user re-explaining, and stay brief if the user is mid-focus.
+/// Pure — caller passes already-fetched stats so the formatter is unit-testable
+/// without static / clock access. Empty when all three sources are None
+/// (fresh install / quiet day → no useful context to inject).
+pub fn format_focus_context_layer(
+    today: Option<&crate::proactive::DailyBlockStats>,
+    weekly: Option<&crate::proactive::WeeklyBlockSummary>,
+) -> String {
+    // Skip the layer entirely when neither source has signal — no point
+    // priming the model with "用户没专注过" trivia.
+    let has_today = today.map(|s| s.count > 0).unwrap_or(false);
+    let has_weekly = weekly.map(|s| s.total_count > 0).unwrap_or(false);
+    if !has_today && !has_weekly {
+        return String::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("[今日专注状态]".to_string());
+    if let Some(s) = today {
+        if s.count > 0 {
+            lines.push(format!(
+                "今天完成 {} 次深度专注，合计 {} 分钟。",
+                s.count, s.total_minutes
+            ));
+        }
+    }
+    if let Some(w) = weekly {
+        if w.total_count > 0 {
+            lines.push(format!(
+                "本周（最近 7 天）累计 {} 次专注 / {} 分钟 / 跨 {} 天。",
+                w.total_count, w.total_minutes, w.days
+            ));
+        }
+    }
+    lines.push(
+        "如果用户问起「今天怎么样」之类，可以自然提及；如果用户刚结束一段专注或正在专注中，回答简洁，不长篇大论。"
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+/// Iter R70: inject the focus-context system note into reactive chat.
+/// Reads current_daily_block_stats + current_weekly_block_summary, formats,
+/// inserts before the first non-system message (same idiom as the other
+/// injectors). No-op when format_focus_context_layer returns empty.
+pub fn inject_focus_context_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let today = crate::proactive::current_daily_block_stats();
+    let weekly = crate::proactive::current_weekly_block_summary();
+    let body = format_focus_context_layer(today.as_ref(), weekly.as_ref());
+    if body.is_empty() {
+        return messages;
+    }
+    let note: ChatMessage = serde_json::from_value(serde_json::json!({
+        "role": "system",
+        "content": body,
+    }))
+    .expect("static focus-context layer JSON should always parse");
+    let insert_at = messages
+        .iter()
+        .position(|m| m.role != "system")
+        .unwrap_or(messages.len());
+    messages.insert(insert_at, note);
+    messages
+}
+
 /// Inject the recent-speech layer into a reactive chat message list. Same
 /// "after leading systems, before user/assistant history" insertion rule as
 /// `inject_mood_note` and `inject_persona_layer`. No-op when there are no
@@ -949,6 +1015,10 @@ pub async fn chat(
     // gets a blank stare because the bubble's history isn't in the chat
     // session's message list.
     let augmented = inject_recent_speech_layer(augmented).await;
+    // Iter R70: surface today/weekly deep-focus stats so AI can answer
+    // "今天怎么样" coherently and stay brief if user is mid-focus. No-op
+    // when no stats yet (fresh install / quiet day).
+    let augmented = inject_focus_context_layer(augmented);
     let result = run_chat_pipeline(augmented, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
@@ -1154,6 +1224,94 @@ mod trim_tests {
         let out = format_recent_speech_layer(&lines);
         assert!(!out.contains("2026-05-03T10:00:00"));
         assert!(out.contains("早上好"));
+    }
+
+    // -- Iter R70: format_focus_context_layer --------------------------------
+
+    use crate::proactive::{DailyBlockStats, WeeklyBlockSummary};
+    use chrono::NaiveDate;
+
+    #[test]
+    fn focus_context_returns_empty_when_no_stats() {
+        assert_eq!(format_focus_context_layer(None, None), "");
+    }
+
+    #[test]
+    fn focus_context_returns_empty_when_zero_count_today_and_no_weekly() {
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 0,
+            total_minutes: 0,
+        };
+        // Defensive: today entry exists with zero count, weekly None.
+        assert_eq!(format_focus_context_layer(Some(&today), None), "");
+    }
+
+    #[test]
+    fn focus_context_includes_today_when_count_positive() {
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 3,
+            total_minutes: 270,
+        };
+        let out = format_focus_context_layer(Some(&today), None);
+        assert!(out.contains("[今日专注状态]"));
+        assert!(out.contains("3 次"));
+        assert!(out.contains("270"));
+        assert!(out.contains("简洁"));
+    }
+
+    #[test]
+    fn focus_context_includes_weekly_when_count_positive() {
+        let weekly = WeeklyBlockSummary {
+            days: 4,
+            total_count: 9,
+            total_minutes: 810,
+        };
+        let out = format_focus_context_layer(None, Some(&weekly));
+        assert!(out.contains("[今日专注状态]"));
+        assert!(out.contains("9 次"));
+        assert!(out.contains("810"));
+        assert!(out.contains("4 天"));
+    }
+
+    #[test]
+    fn focus_context_combines_today_and_weekly_when_both_present() {
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 2,
+            total_minutes: 180,
+        };
+        let weekly = WeeklyBlockSummary {
+            days: 3,
+            total_count: 5,
+            total_minutes: 450,
+        };
+        let out = format_focus_context_layer(Some(&today), Some(&weekly));
+        // Both stats appear; tail guidance always present.
+        assert!(out.contains("今天完成 2 次"));
+        assert!(out.contains("本周（最近 7 天）累计 5 次"));
+        assert!(out.contains("简洁"));
+    }
+
+    #[test]
+    fn focus_context_skips_today_line_when_zero_count_with_weekly_present() {
+        // If today has zero count but weekly has data, only weekly line
+        // appears (today line is conditionally skipped).
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 0,
+            total_minutes: 0,
+        };
+        let weekly = WeeklyBlockSummary {
+            days: 2,
+            total_count: 3,
+            total_minutes: 270,
+        };
+        let out = format_focus_context_layer(Some(&today), Some(&weekly));
+        assert!(out.contains("[今日专注状态]"));
+        assert!(!out.contains("今天完成 0"));
+        assert!(out.contains("本周（最近 7 天）累计 3 次"));
     }
 
     #[test]
