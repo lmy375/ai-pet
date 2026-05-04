@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R80：PanelMemory butler_tasks 加 `[deadline:]` chip + placeholder 教学
+- 现状缺口：R77-R79 deadline cluster 在 prompt / LLM 教学 / panel chip / chat layer / telegram 都覆盖，但 PanelMemory 列表（user-author 主入口）还没教 `[deadline:]` 也没区分 deadline-prefixed item 视觉。User 在这里手动加 deadline 任务时不知道 syntax + 看不到 urgency。
+- 改动：
+  - `PanelMemory.tsx`：
+    - parseButlerSchedule 扩展正则 `(every|once|deadline):` 加第三 kind。once + deadline 共享 YYYY-MM-DD HH:MM body shape 复用解析。
+    - 新 `computeDeadlineUrgency` TS 镜像 Rust R77 helper（4 段 distant/approaching/imminent/overdue 同阈值）。
+    - chip 4-way styling：every 蓝循环 / once amber / deadline 按 urgency 4 段（distant 灰 / approaching amber / imminent 红 / overdue 深红）。
+    - deadline kind 不参与 isButlerDue check（语义不同——pet 不自动执行 deadline）。
+    - placeholder 加 `[deadline: 2026-05-10 14:00] 把文档发出去 (user 必须在那之前自己完成，pet 临近时提醒)` 例句教 user syntax。
+  - **612 tests pass**（无新单测——TS only frontend，Rust 已 R77 测过 urgency 阈值）；TS clean。
+- 影响：
+  - **deadline cluster 8 surface 全闭合**：data + prompt + LLM 教学 + panel chip + chat layer + telegram + PanelMemory chip + placeholder 教 user。R77-R80 4 iter 完成。
+  - **user-author 入口不教 = 死循环 fix**：之前 LLM 会创建 deadline 但 user 看不到示范，user 手动加时也不知道 syntax。R80 双路径教学。
+  - **下 iter 应换方向**——deadline cluster 完整。
+
 ## 2026-05-04 — Iter R79：deadline 信息 cross-modality 到 reactive chat + telegram
 - 现状缺口：R77/R78 让 deadline 信号进 proactive prompt + panel chip + LLM 教学。但 reactive chat / telegram path 看不到 deadline 数据——user 通过 chat 问 "我有什么 deadline" AI 没法回答。
 - 改动：
