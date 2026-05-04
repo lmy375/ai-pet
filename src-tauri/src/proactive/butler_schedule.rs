@@ -203,6 +203,21 @@ pub enum DeadlineUrgency {
     Overdue,
 }
 
+/// Iter R78: pure helper counting deadlines that are Imminent (<1h) or Overdue
+/// in a list of `(deadline, _topic)` pairs. Approaching (1-6h away) and
+/// Distant don't count — chip surface is for "must pay attention now",
+/// not awareness-of-the-day. Pure / testable.
+pub fn count_urgent_butler_deadlines(
+    items: &[(chrono::NaiveDateTime, String)],
+    now: chrono::NaiveDateTime,
+) -> u64 {
+    items
+        .iter()
+        .map(|(d, _)| compute_deadline_urgency(*d, now))
+        .filter(|u| matches!(u, DeadlineUrgency::Imminent | DeadlineUrgency::Overdue))
+        .count() as u64
+}
+
 /// Iter R77: pure classifier. `now < deadline by ≤ 1h` → Imminent; `1-6h ahead`
 /// → Approaching; `> 6h ahead` → Distant; `now ≥ deadline` → Overdue. Pure /
 /// testable — caller passes both args.
@@ -858,5 +873,35 @@ mod tests {
         assert!(!out.contains("future task")); // distant filtered
         assert!(out.contains("soon thing"));
         assert!(out.contains("missed thing"));
+    }
+
+    // -- Iter R78: count_urgent_butler_deadlines tests ----------------------
+
+    #[test]
+    fn urgent_count_zero_for_distant_and_approaching_only() {
+        // Approaching (1-6h) and Distant (>6h) don't count toward "urgent".
+        let now = dt(2026, 5, 10, 8, 0);
+        let items = vec![
+            (dt(2026, 5, 10, 12, 0), "approaching".to_string()), // 4h away
+            (dt(2026, 5, 12, 12, 0), "distant".to_string()),     // 2 days away
+        ];
+        assert_eq!(count_urgent_butler_deadlines(&items, now), 0);
+    }
+
+    #[test]
+    fn urgent_count_includes_imminent_and_overdue() {
+        let now = dt(2026, 5, 10, 12, 0);
+        let items = vec![
+            (dt(2026, 5, 10, 12, 30), "imminent".to_string()), // 30 min away
+            (dt(2026, 5, 10, 11, 0), "overdue".to_string()),   // 1h ago
+            (dt(2026, 5, 10, 14, 0), "approaching".to_string()), // 2h away — no
+        ];
+        assert_eq!(count_urgent_butler_deadlines(&items, now), 2);
+    }
+
+    #[test]
+    fn urgent_count_empty_input_zero() {
+        let now = dt(2026, 5, 10, 12, 0);
+        assert_eq!(count_urgent_butler_deadlines(&[], now), 0);
     }
 }

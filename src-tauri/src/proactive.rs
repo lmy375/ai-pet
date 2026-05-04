@@ -369,6 +369,11 @@ pub struct ToneSnapshot {
     /// can render a ⭐ icon for at-a-glance celebration without re-running
     /// the comparison logic in TS.
     pub is_personal_record_today: bool,
+    /// Iter R78: count of butler_tasks with `[deadline:]` prefix whose
+    /// urgency is Imminent (<1h) or Overdue. Approaching (1-6h) and Distant
+    /// don't contribute — chip is for "act now", not awareness. 0 when
+    /// no deadline-prefixed tasks or all still distant.
+    pub urgent_deadline_count: u64,
     /// Iter R68: weekly deep-focus summary — aggregated across last 7
     /// calendar days from DAILY_BLOCK_HISTORY. None when no entries in
     /// the window (fresh install / 7+ days quiet). Surfaced so the user
@@ -875,6 +880,24 @@ pub async fn build_tone_snapshot(
         // proactive prompt, and chat layer all agree on what's a record.
         is_personal_record_today: !crate::proactive::active_app::current_personal_record_hint()
             .is_empty(),
+        // Iter R78: read butler_tasks once, parse [deadline:] prefixes, count
+        // urgent items. Same memory category as build_butler_deadlines_hint;
+        // panel reads cheaply (no IO inside the hot path on tone-snapshot ticks).
+        urgent_deadline_count: {
+            let now = chrono::Local::now().naive_local();
+            let items: Vec<(chrono::NaiveDateTime, String)> =
+                crate::commands::memory::memory_list(Some("butler_tasks".to_string()))
+                    .ok()
+                    .and_then(|idx| idx.categories.get("butler_tasks").cloned())
+                    .map(|cat| {
+                        cat.items
+                            .iter()
+                            .filter_map(|i| parse_butler_deadline_prefix(&i.description))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            count_urgent_butler_deadlines(&items, now)
+        },
         // Iter R68: weekly deep-focus summary — aggregated across last 7
         // calendar days. Same DAILY_BLOCK_HISTORY source as daily_block_stats.
         weekly_block_stats: crate::proactive::active_app::current_weekly_block_summary(),

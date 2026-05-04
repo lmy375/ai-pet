@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R78：教 LLM 用 `[deadline:]` + PanelToneStrip ⏳ deadline chip
+- 现状缺口：R77 加了 parser + classifier + prompt nudge，但 (a) LLM 不知道 `[deadline:]` 跟 `[once:]` 的区别 — 自然对话里"周五前发出去" phrasing 会创建 `[once:]`（错——pet 不能自己发出去）；(b) panel 没 visual 显示有 urgent deadline。
+- 改动：
+  - `commands/chat.rs`：TOOL_USAGE_PROMPT 加段落教 `[deadline:]` 用法 + 与 `[once:]` 对比 ("一次性执行 vs 截止前提醒")。Pin test 加 2 assert 锁住教学段不丢。
+  - `proactive/butler_schedule.rs`：新 `count_urgent_butler_deadlines(items, now) -> u64` 纯函数，仅计 Imminent + Overdue（Approaching 不计）。3 单测覆盖 0 / 混合 / 空列表。
+  - `proactive.rs`：ToneSnapshot 加 `urgent_deadline_count: u64` 字段；build_tone_snapshot 内联 memory_list + parse + count（只一处使用，不抽 wrapper）。
+  - `panelTypes.ts`：TS 类型加同字段。
+  - `PanelToneStrip.tsx`：⏳ chip "deadline N" 红色 #b91c1c，count > 0 才显，hover tooltip 解释 imminent/overdue 含义 + override deep-focus 静默原则。
+  - **609 tests pass**（606 → 609, +3 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **R77 + R78 闭合 deadline cluster**：data + prompt nudge + LLM 教学 + panel chip 全到位。
+  - **教学 prompt 是 leverage 最高修改**：一处文字改，reactive chat / telegram / 所有路径自动学到。
+  - **chip 不冗余 prompt**：仅 imminent + overdue 计入 chip，approaching 留给 prompt——多 surface 同信号差异化 fidelity。
+
 ## 2026-05-04 — Iter R77：butler_tasks `[deadline:]` 前缀 + 紧迫度分级 prompt nudge
 - 现状缺口：butler_tasks 已支持 `[every:]`/`[once:]` 调度（pet 自动执行），但**缺"截止时间"语义**——user 委托"周五 14:00 前回邮件"，pet 不能自动执行（user 自己回），但应该**临近截止时提醒**。R76 IDEA 标的"换方向" iter，远离 deep-focus cluster。
 - 改动：
