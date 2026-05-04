@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R77 设计要点（已实现）
+- **R76 IDEA 标"换方向"立刻执行**：deep-focus cluster 闭合后第一个 fresh-direction iter。选 butler_tasks deadline 因为 (a) 直接 user-action 相关（不是 "pet 注意 user 的状态" 而是 "user 委托给 pet 的事"）(b) 用现有 butler memory 基础设施 (c) cluster 关联度低，避免新 cluster 立刻 over-investing。
+- **`[deadline:]` 跟 `[once:]` 语义区分**：`[once: 14:00]` = "pet 在 14:00 自动执行此任务"，`[deadline: 14:00]` = "user 必须在 14:00 之前完成"。**前者 pet 是 actor, 后者 user 是 actor**。同样的时间 prefix，行为不同：once → is_butler_due → 自动 fire 执行；deadline → urgency classifier → 提醒 user。
+- **不复用 ButlerSchedule enum 加 Deadline 变体**：考虑过 `ButlerSchedule::Deadline(NaiveDateTime)`，但 is_butler_due / is_completed_once 都不适用 deadline 语义。**新概念用新类型**——独立的 `parse_butler_deadline_prefix` + `DeadlineUrgency` enum。
+- **4 段 urgency tier**：Distant(>6h) / Approaching(1-6h) / Imminent(<1h) / Overdue(过期)。**threshold 分布反映 actionable density**：6h 是工作日里"差不多还有时间但要规划"的阈值，1h 是"必须立刻处理"的阈值。Distant 不进 prompt（不是 actionable signal）。
+- **format_butler_deadlines_hint 内部 filter Distant**：纯 helper 内部跳过 Distant 而非 caller 提前过滤。**让 helper "知道什么不该 render"**——caller 只 fetch 全 list，helper 决定显示哪些。这种 inversion 让 caller 简单。
+- **整数 hour 计数 max(1)**：`(*deadline - now).num_hours().max(1)`——防止 1 小时刚好的 boundary case 显 "约 0 小时" (整数除法)。**stat 显示要给"看着合理"，不是数学严格**——0 小时不如 1 小时来得实际。
+- **prompt 文案区分"专注 vs 不专注"上下文**：tail "如果用户当前没在专注其他事，可以提一下；如果在专注中，仅在 imminent / overdue 时才打断"。**urgency tier 决定打扰许可**——相当于 deep-focus cluster R71 in_progress 信号反向利用：urgent enough 才 override deep_focus 静默原则。
+- **R-series 单 iter 多 helper + 完整 wiring**：R77 一 iter 包含 parse + classify + format + 3 个 wrapper + run_proactive_turn 接入 + 11 单测。**bigger iter when helpers are tightly coupled**——split 成 R77/R78 反而 R78 是孤儿数据没用。
+
 ## Iter R76 设计要点（已实现）
 - **R74→R75→R76 closes the record cluster across 3 surfaces**：proactive prompt（R74） / chat layer（R75） / panel chip（R76）。同 strict-> 语义共享 single source of truth = `current_personal_record_hint()` 是否非空。**三个 surface 不重新实现 record check**，调一次 helper 看 emptiness。这种"empty-string-as-bool"的 reuse 比单加 bool helper 更省一个函数，但 readability 略低——R76 加了清晰注释解释 "non-empty hint == record fired"。
 - **panel side 不重做 record 计算**：本来可以让 frontend 把 today.peak vs week.peak 比一下自己判定。但那样 (a) frontend 需要再做一次 strict-> check，(b) 三 surface 的语义边界容易 drift。**让 backend single-source-of-truth + bool flag 出来**，frontend 只 render，三处永远一致。

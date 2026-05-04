@@ -1460,6 +1460,13 @@ async fn run_proactive_turn(
     // (`[every: HH:MM]` / `[once: ...]` prefixes); `now` is passed so due tasks
     // bubble to the top with a "⏰ 到期" marker.
     let butler_tasks_hint = build_butler_tasks_hint(now_local.naive_local());
+
+    // Iter R77: pull butler_tasks with `[deadline:]` prefix and format the
+    // urgency-aware hint. Reads same memory category as butler_tasks_hint
+    // but filters to deadline-prefixed items only — pet reminds user about
+    // the deadline rather than auto-executing. Empty when no Approaching /
+    // Imminent / Overdue deadlines.
+    let deadline_hint = build_butler_deadlines_hint(now_local.naive_local());
     // Iter Cυ: owner-name from settings, empty when unset.
     let user_name = get_settings().map(|s| s.user_name).unwrap_or_default();
 
@@ -1610,6 +1617,7 @@ async fn run_proactive_turn(
         deep_focus_recovery_hint: &deep_focus_recovery_hint,
         yesterday_focus_hint: &yesterday_focus_hint,
         personal_record_hint: &personal_record_hint,
+        deadline_hint: &deadline_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -1761,6 +1769,29 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
 // the top of this file so external callers (`consolidate.rs`'s
 // `is_completed_once` import, panel commands) keep using
 // `crate::proactive::...` paths.
+
+/// Iter R77: read butler_tasks memory + extract `[deadline:]` prefixed items,
+/// format the urgency-tier hint. Distinct from build_butler_tasks_hint
+/// which surfaces the full task list — this one is laser-focused on
+/// time-urgent deadline reminders. Empty when no deadlines / all Distant.
+pub fn build_butler_deadlines_hint(now: chrono::NaiveDateTime) -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("butler_tasks") else {
+        return String::new();
+    };
+    let items: Vec<(chrono::NaiveDateTime, String)> = cat
+        .items
+        .iter()
+        .filter_map(|i| parse_butler_deadline_prefix(&i.description))
+        .collect();
+    let block = format_butler_deadlines_hint(&items, now);
+    if block.is_empty() {
+        return String::new();
+    }
+    crate::redaction::redact_with_settings(&block)
+}
 
 /// Read butler_tasks memory entries and format the prompt-side digest. `now` is
 /// injected so the call site (run_proactive_turn) shares one clock anchor with the
@@ -2129,6 +2160,8 @@ mod prompt_tests {
             yesterday_focus_hint: "",
             // Default empty — pre-Iter R74 state, no personal record beaten today.
             personal_record_hint: "",
+            // Default empty — pre-Iter R77 state, no deadline-prefixed butler tasks.
+            deadline_hint: "",
         }
     }
 
