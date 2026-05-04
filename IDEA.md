@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R76 设计要点（已实现）
+- **R74→R75→R76 closes the record cluster across 3 surfaces**：proactive prompt（R74） / chat layer（R75） / panel chip（R76）。同 strict-> 语义共享 single source of truth = `current_personal_record_hint()` 是否非空。**三个 surface 不重新实现 record check**，调一次 helper 看 emptiness。这种"empty-string-as-bool"的 reuse 比单加 bool helper 更省一个函数，但 readability 略低——R76 加了清晰注释解释 "non-empty hint == record fired"。
+- **panel side 不重做 record 计算**：本来可以让 frontend 把 today.peak vs week.peak 比一下自己判定。但那样 (a) frontend 需要再做一次 strict-> check，(b) 三 surface 的语义边界容易 drift。**让 backend single-source-of-truth + bool flag 出来**，frontend 只 render，三处永远一致。
+- **⭐ icon 而非文字**：panel 已经 busy 多 chip，再加文字 "破纪录" 浪费空间。**emoji 是高密度 visual cue**——一颗星表达"今天特别"，hover tooltip 详细解释。
+- **⭐ 跟在 chip 数字之后**：放 chip 内部紧邻 "次/Xm" stat 文字。视觉上"宠物盖了个章"——right-of-data 的位置比 left-of-data 更像 "approval mark"。
+- **iter 没新单测**：R76 是 surface 加 chip，所有 record-detection 逻辑已 R74 测过。没有新逻辑加测。**纯 wiring iter 不必凑测试**——595 testable surfaces 不必每 iter 都加。这一点跟 R-series cluster 通常 3-6 测/iter 不同；reflect 这是 thin-passthrough 性质 iter。
+- **R76 完成 deep-focus cluster 的 cross-surface 对齐**：R62 起 14 iter。从 gate (R62) → recovery (R63) → mode (R64) → today stat (R65) → history vec (R66) → persist (R67) → weekly (R68) → trend (R69) → chat layer (R70) → in-progress (R71) → day peak (R72) → week peak (R73) → record proactive (R74) → record chat (R75) → record panel (R76)。**深度链条第一阶段收官**。
+- **下个 iter 该换方向**：cluster 长到 14 iter 不健康，开始有 over-investment 风险。R77 候选: butler_tasks deadline / settings reorganization / persona_summary auto-derived focus pattern / panel layout density audit。
+
 ## Iter R75 设计要点（已实现）
 - **R74 IDEA 标的"cross modality"立刻执行**：R74 personal-record 只 inject proactive prompt。R75 把 record 信息也嵌进 reactive chat / telegram 共享的 focus_context layer。**modality parity 是 cross-domain bridge 的标准 follow-up**——R70-R71 已建立 layer 机制，R75 让 record 数据穿过去。
 - **同 strict-> 阈值在 chat 和 proactive 共享**：R74 compute_personal_record_hint 用 strict > 0 双条件；R75 format_focus_context_layer 内部也是同 logic。**两路径不能 drift**——单 source DAILY_BLOCK_HISTORY，单语义 strict-> only。

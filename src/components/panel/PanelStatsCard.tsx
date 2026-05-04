@@ -302,18 +302,22 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           </span>
         );
       })()}
-      {/* Iter R65 + R72: today's deep-focus stretch summary. R72 adds
-          longest-single-stretch info to tooltip + small peak indicator
-          when peak ≥ effective hard-block threshold. Hidden until at
-          least one stretch finalizes today. */}
+      {/* Iter R65 + R72 + R76: today's deep-focus stretch summary. R72
+          adds longest-single-stretch info; R76 adds ⭐ when today's peak
+          is a personal record (matches R74's strict-> proactive semantics).
+          Hidden until at least one stretch finalizes today. */}
       {tone?.daily_block_stats && tone.daily_block_stats.count > 0 && (() => {
         const stats = tone.daily_block_stats!;
         const hardThreshold = tone.effective_hard_block_minutes ?? 90;
         const showPeak = stats.max_single_stretch_minutes > 0 && stats.count > 1;
         const peakSuffix = showPeak ? `，最长一次 ${stats.max_single_stretch_minutes}m` : "";
+        const isRecord = tone?.is_personal_record_today ?? false;
+        const recordSuffix = isRecord
+          ? "，⭐今天最长一次专注超过最近 7 天此前最长——破纪录"
+          : "";
         return (
           <span
-            title={`今日完成 ${stats.count} 次深度专注（≥${hardThreshold}m 同 app 触发的 R62 hard-block stretch），峰值时长合计 ${stats.total_minutes} 分钟${peakSuffix}。当前进行中的不计，要等切 app 或 take recovery hint 才 finalize。日期 ${stats.date}。`}
+            title={`今日完成 ${stats.count} 次深度专注（≥${hardThreshold}m 同 app 触发的 R62 hard-block stretch），峰值时长合计 ${stats.total_minutes} 分钟${peakSuffix}${recordSuffix}。当前进行中的不计，要等切 app 或 take recovery hint 才 finalize。日期 ${stats.date}。`}
             style={{
               display: "inline-flex",
               alignItems: "baseline",
@@ -337,6 +341,17 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
             <span style={{ fontSize: "11px", color: "#64748b" }}>
               次/{stats.total_minutes}m{showPeak ? `/峰${stats.max_single_stretch_minutes}m` : ""}
             </span>
+            {isRecord && (
+              <span
+                style={{
+                  fontSize: "13px",
+                  lineHeight: 1,
+                  marginLeft: "2px",
+                }}
+              >
+                ⭐
+              </span>
+            )}
           </span>
         );
       })()}

@@ -363,6 +363,12 @@ pub struct ToneSnapshot {
     /// Surfaced so PanelStatsCard can show "今日深度专注 N 次, X 分钟"
     /// as a self-report stat distinct from the speech-count column.
     pub daily_block_stats: Option<crate::proactive::active_app::DailyBlockStats>,
+    /// Iter R76: panel-side flag for "today's peak is a personal record"
+    /// (R74 strict-> semantic). True when today's max_single_stretch
+    /// strictly exceeds the prior 7-day best. Surfaced so PanelStatsCard
+    /// can render a ⭐ icon for at-a-glance celebration without re-running
+    /// the comparison logic in TS.
+    pub is_personal_record_today: bool,
     /// Iter R68: weekly deep-focus summary — aggregated across last 7
     /// calendar days from DAILY_BLOCK_HISTORY. None when no entries in
     /// the window (fresh install / 7+ days quiet). Surfaced so the user
@@ -863,6 +869,12 @@ pub async fn build_tone_snapshot(
         // truth. None on fresh process / before any stretch finalizes
         // today (or yesterday's record filtered out by date check).
         daily_block_stats: crate::proactive::active_app::current_daily_block_stats(),
+        // Iter R76: panel-side record flag. Reuses the R74 wrapper's
+        // signal — non-empty hint string == record fired. Avoids a
+        // second history walk; same source as R74 / R75 so panel,
+        // proactive prompt, and chat layer all agree on what's a record.
+        is_personal_record_today: !crate::proactive::active_app::current_personal_record_hint()
+            .is_empty(),
         // Iter R68: weekly deep-focus summary — aggregated across last 7
         // calendar days. Same DAILY_BLOCK_HISTORY source as daily_block_stats.
         weekly_block_stats: crate::proactive::active_app::current_weekly_block_summary(),
