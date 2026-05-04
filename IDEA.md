@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R73 设计要点（已实现）
+- **R72 day-level 镜像扩展到 week-level**：R72 加 day-level `max_single_stretch_minutes`，R73 自然延展加 weekly `peak_single_stretch_minutes` —— 同一 depth 维度在 day + week 两 granularity 都可见。**stat 系统的 granularity hierarchy 应该 mirror 而非碎片化**。
+- **R72 IDEA 标的"R73 候选"立刻还**：R72 IDEA 写"R73+ 候选：weekly 也加 peak 字段"，R73 兑现。**candidate list 兑现节奏 = 下一 iter 立即取**，避免堆积变 backlog 黑洞。
+- **不加 prompt nudge**：R72 IDEA 提"先 surface 后 inject"——data ship 后让 user 在 panel 看到，pattern 验证再注入 LLM。R73 仍 only data + panel surface，prompt nudge 留 R74 候选。**功能演进的"先观察后行动"节奏**: 数据 → panel → prompt nudge 三阶递进。
+- **WeeklyBlockSummary 没加 #[serde(default)]**：跟 DailyBlockStats 不同，WeeklyBlockSummary 不写盘（只 in-memory ToneSnapshot 用），所以不需要 schema migration 标记。**serde default 只在 persistent 类型上 matter**。
+- **iter().max() 的 None 边界 unwrap_or(0)**：filter 后空 entries 已在更早 return None，理论上 iter().max() 不会 None。但 unwrap_or(0) 是防御性，避免假设传播；同时保证 zero-fallback 在测试中 explicit。**unwrap 在永不发生的 case 也写 default 值**——测试 / 静态分析能交叉验证。
+- **WeeklyBlockSummary 测试构造的批量 sed 修复**：跟 R72 同 pattern，3 处 chat.rs test fixtures 通过 5-line python 自动补 `peak_single_stretch_minutes: 0`。**schema 演进的工程化批改是 R72 codified 的 pattern**——R73 验证可重复。
+- **panel 用 tooltip 而非新 chip**：weekly chip 不再加新视觉元素（已显 N 次/Xm/Y天 + 趋势 ↑↓）。**信息进 tooltip 而非 chip** = 信息密度足够而 visual surface 不再扩张。chip 是 attention-grabber，tooltip 是 reference-on-demand，二者职责不同。
+
 ## Iter R72 设计要点（已实现）
 - **schema migration with `#[serde(default)]`**：DailyBlockStats 加新字段 `max_single_stretch_minutes`。R67 写盘的 JSON 没有此字段，原本会让 from_str 失败 → load_block_history 返回空 Vec → 用户丢历史。`#[serde(default)]` 让旧 JSON 自动用 0 fill，**演进式 schema 不破历史**。这是 R67 持久化写在 IDEA 里的 trade-off "坏数据不会永久 freeze" 的具体兑现。
 - **三个数据维度的语义区分**：`count` = 次数（频次 / 频度），`total_minutes` = 累计时长（量），`max_single_stretch_minutes` = 单次峰值（深度）。**三个维度互不替代**：5 次 30m 各 vs 1 次 150m 在 count + total 看似差不多，但深度差很多。R72 把"深度"维度也 surface。

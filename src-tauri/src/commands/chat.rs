@@ -1300,6 +1300,7 @@ mod trim_tests {
             days: 4,
             total_count: 9,
             total_minutes: 810,
+            peak_single_stretch_minutes: 0,
         };
         let out = format_focus_context_layer(None, Some(&weekly), None);
         assert!(out.contains("[今日专注状态]"));
@@ -1320,6 +1321,7 @@ mod trim_tests {
             days: 3,
             total_count: 5,
             total_minutes: 450,
+            peak_single_stretch_minutes: 0,
         };
         let out = format_focus_context_layer(Some(&today), Some(&weekly), None);
         // Both stats appear; tail guidance always present.
@@ -1342,6 +1344,7 @@ mod trim_tests {
             days: 2,
             total_count: 3,
             total_minutes: 270,
+            peak_single_stretch_minutes: 0,
         };
         let out = format_focus_context_layer(Some(&today), Some(&weekly), None);
         assert!(out.contains("[今日专注状态]"));
