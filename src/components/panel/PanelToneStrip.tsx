@@ -245,6 +245,20 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           🙉 拒绝 ×{tone.consecutive_negative_streak}
         </span>
       )}
+      {tone.urgent_deadline_count > 0 && (
+        <span
+          title={`butler_tasks 里有 ${tone.urgent_deadline_count} 条 [deadline:] 任务正在 imminent (<1h) 或 overdue。pet proactive prompt 已自动 inject [逼近的 deadline] 段，imminent / overdue 时会 override deep-focus 静默原则提醒用户。`}
+          style={{
+            color: "#fff",
+            background: "#b91c1c",
+            padding: "1px 8px",
+            borderRadius: "10px",
+            fontWeight: 600,
+          }}
+        >
+          ⏳ deadline {tone.urgent_deadline_count}
+        </span>
+      )}
       {tone.last_prompt_chars !== null && (() => {
         // R31 / R36: prompt size budget chip. Bands retuned in R36 based
         // on R-series accumulated reality — R32→R35 added 4 hints,

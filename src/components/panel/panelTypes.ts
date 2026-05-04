@@ -174,6 +174,9 @@ export interface ToneSnapshot {
   // icon next to the daily column when set so the user sees record at-a-
   // glance without reading the tooltip.
   is_personal_record_today: boolean;
+  // Iter R78: count of butler_tasks with [deadline:] prefix that are
+  // Imminent (<1h) or Overdue. PanelToneStrip renders a ⏳ chip when > 0.
+  urgent_deadline_count: number;
   // Iter R68 + R73: last-7-day aggregate — summed across DAILY_BLOCK_HISTORY
   // entries in [today-6 .. today]. null when window has no entries (fresh
   // install / quiet week). `days` = distinct days with at least one

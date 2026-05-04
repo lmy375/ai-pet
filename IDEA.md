@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R78 设计要点（已实现）
+- **教 LLM 用 [deadline:] 是 R77 的 unblocking 必要条件**：R77 加了 parser + classifier + prompt nudge，但没 LLM 教学，自然对话里"周五前发出去"的 phrasing 不会创建 deadline-prefixed butler task。**R77 + R78 是必然 paired** —— 数据结构 + 教学语料缺一不可。
+- **TOOL_USAGE_PROMPT 是 leverage 最高的修改点**：每次 reactive chat / telegram 都会注入这段。一处文字改动，所有路径自动 LLM 学到。**修改 prompt 比修改代码 reach 更广**——好的 prompt 比代码更易演化。
+- **Pin tests 强制保留教学**：assert TOOL_USAGE_PROMPT.contains("[deadline:") + 同对比文字。**Pin test 是 prompt 演化的版本控制**——避免未来重构 prompt 时无意删 critical 段。
+- **chip 不重复 prompt 信号**：⏳ deadline chip 只显 urgent_deadline_count（imminent + overdue 数）。Approaching 不显 chip 因为 prompt 已 inject "[逼近的 deadline]" 段，user 看到 pet 自己提就够了。**多 surface 同信号不必 redundant**——chip 是最 imminent 的 standalone 信号。
+- **count helper 跟 format helper 拆开**：format_butler_deadlines_hint 给 prompt 用（详细文本 + filter Distant），count_urgent_butler_deadlines 给 panel chip 用（数字 + 严格 imminent/overdue only）。**两个 surface 不同 fidelity 应有不同 helper**——共用一个会导致一方过滤太多另一方不够。
+- **chip 颜色 #b91c1c 红色**：跟 deep-focus deep-red (#7f1d1d) 区分但同 family。red = "需要注意"，多 chip 同色家族但深度 distinguishable。
+- **build_tone_snapshot inline IO 是 acceptable**：考虑过抽 wrapper，但 build_tone_snapshot 已经 IO-heavy（多次 memory_list / disk read），inline `memory::memory_list("butler_tasks")` 不是新概念。**抽函数的标准是"复用 ≥ 2"**——R78 panel only 一处用，不抽。R74 / R77 各自抽 wrapper 因为 prompt + chat layer 两处用。
+- **R78 是 R77 的 surface 闭合 iter**：R77 数据 → prompt; R78 data → panel + LLM 教学。**单 cluster 内 data → prompt → panel + teaching 三阶段**——跟 deep-focus cluster 的 data → surface → narrate 节奏对称但更紧凑（2 iter 而非 3+ iter）。
+
 ## Iter R77 设计要点（已实现）
 - **R76 IDEA 标"换方向"立刻执行**：deep-focus cluster 闭合后第一个 fresh-direction iter。选 butler_tasks deadline 因为 (a) 直接 user-action 相关（不是 "pet 注意 user 的状态" 而是 "user 委托给 pet 的事"）(b) 用现有 butler memory 基础设施 (c) cluster 关联度低，避免新 cluster 立刻 over-investing。
 - **`[deadline:]` 跟 `[once:]` 语义区分**：`[once: 14:00]` = "pet 在 14:00 自动执行此任务"，`[deadline: 14:00]` = "user 必须在 14:00 之前完成"。**前者 pet 是 actor, 后者 user 是 actor**。同样的时间 prefix，行为不同：once → is_butler_due → 自动 fire 执行；deadline → urgency classifier → 提醒 user。

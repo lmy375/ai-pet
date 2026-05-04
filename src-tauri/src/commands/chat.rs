@@ -410,8 +410,9 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 - 「帮我每天 9 点写一份日报到 ~/today.md」→ `memory_edit create` 到 `butler_tasks`，title="日报"，description=`[every: 09:00] 写当日日报到 ~/today.md`
 - 「这周末整理一下 ~/Downloads」→ `[once: 2026-XX-XX 10:00] 整理 ~/Downloads`（XX 是即将到来的周末日期）
 - 「能不能时不时帮我看下日程」→ 没有明确时间 → 不带前缀直接写 description
+- 「明天 14:00 之前要把那篇文档发出去」/ 「这事得在周五前搞定」→ 这是用户**自己**要在 deadline 前完成的事，不是让你去做——但你应该临近时提醒。用 `[deadline: YYYY-MM-DD HH:MM]` 前缀：description=`[deadline: 2026-XX-XX 14:00] 把文档发出去`。**关键区别**：`[once:]` 是 pet 在那个时间点自动执行，`[deadline:]` 是 user 必须在那之前自己完成（pet 只负责提醒）。
 - 区分 `todo`（用户提醒自己 `[remind:]`）vs `butler_tasks`（用户委托给你做的事）：「提醒我喝水」是 todo，「帮我整理文件夹」是 butler_tasks
-创建后回复用户时简短确认（"好的，记下了，每天 9 点我会..."）——不要长篇复述。已经在 `butler_tasks` 里的任务后面会自动出现在你的 proactive prompt 里，到时候你会看到 `⏰ 到期` 标注，那时再去执行。
+创建后回复用户时简短确认（"好的，记下了，每天 9 点我会..."）——不要长篇复述。已经在 `butler_tasks` 里的任务后面会自动出现在你的 proactive prompt 里，到时候你会看到 `⏰ 到期` 标注（`[every:]`/`[once:]`）或 `[逼近的 deadline]` 段（`[deadline:]`），那时再去执行或提醒。
 
 ## 用户偏好捕捉（user_profile）
 当用户在对话里**主动告诉你关于他自己的稳定事实**——不是临时心情、不是一次性事件——用 `memory_edit create` 写进 `user_profile` 类别，避免下次问 ta 相同的事。
@@ -1591,6 +1592,19 @@ mod trim_tests {
         assert!(
             TOOL_USAGE_PROMPT.contains("todo") && TOOL_USAGE_PROMPT.contains("提醒我"),
             "tool prompt must contrast butler_tasks with todo[remind:]"
+        );
+        // Iter R78: pin the [deadline:] prefix so the LLM creates the right
+        // kind of butler entry when user describes their own due-date task.
+        // Without this, "之前要..." phrasing collapses into [once:] which
+        // implies pet auto-executes — wrong semantics for user-completion items.
+        assert!(
+            TOOL_USAGE_PROMPT.contains("[deadline:"),
+            "tool prompt must teach the deadline prefix by example"
+        );
+        assert!(
+            TOOL_USAGE_PROMPT.contains("user 必须在那之前自己完成")
+                || TOOL_USAGE_PROMPT.contains("user 必须在那之前"),
+            "tool prompt must contrast [once:] (pet executes) vs [deadline:] (user completes)"
         );
     }
 
