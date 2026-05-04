@@ -363,6 +363,11 @@ pub struct ToneSnapshot {
     /// Surfaced so PanelStatsCard can show "今日深度专注 N 次, X 分钟"
     /// as a self-report stat distinct from the speech-count column.
     pub daily_block_stats: Option<crate::proactive::active_app::DailyBlockStats>,
+    /// Iter R68: weekly deep-focus summary — aggregated across last 7
+    /// calendar days from DAILY_BLOCK_HISTORY. None when no entries in
+    /// the window (fresh install / 7+ days quiet). Surfaced so the user
+    /// sees "本周专注 N 次/Xm/Y 天" trend distinct from today's row.
+    pub weekly_block_stats: Option<crate::proactive::active_app::WeeklyBlockSummary>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -853,6 +858,9 @@ pub async fn build_tone_snapshot(
         // truth. None on fresh process / before any stretch finalizes
         // today (or yesterday's record filtered out by date check).
         daily_block_stats: crate::proactive::active_app::current_daily_block_stats(),
+        // Iter R68: weekly deep-focus summary — aggregated across last 7
+        // calendar days. Same DAILY_BLOCK_HISTORY source as daily_block_stats.
+        weekly_block_stats: crate::proactive::active_app::current_weekly_block_summary(),
     })
 }
 
