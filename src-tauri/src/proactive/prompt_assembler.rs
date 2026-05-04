@@ -203,6 +203,13 @@ pub struct PromptInputs<'a> {
     /// register is mixed (already varying). Built from
     /// `speech_history::format_speech_length_hint`.
     pub length_register_hint: &'a str,
+    /// Iter R63: deep-focus recovery hint — "[刚结束深度专注] 用户刚从
+    /// 「X」的 N 分钟连续专注里切出来..." Fires on the first proactive
+    /// turn that runs within RECOVERY_HINT_GRACE_SECS (10 min) after a
+    /// hard-block stretch ends. Empty when no recent block or already
+    /// taken (single-shot per block stretch). Built from
+    /// `active_app::take_recovery_hint`.
+    pub deep_focus_recovery_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -383,6 +390,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);
     push_if_nonempty(&mut s, inputs.active_app_hint);
+    push_if_nonempty(&mut s, inputs.deep_focus_recovery_hint);
     push_if_nonempty(&mut s, inputs.length_register_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
