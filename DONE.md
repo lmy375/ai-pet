@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R62：deep-focus 90min+ 硬阻塞 gate
+- 现状缺口：R27 在 60m 同 app 时升级 prompt hint 为 directive "极简或选择沉默"，但**全靠 LLM 自觉**。模型偶尔忽略 directive 或被其他 hint 反向 weight，仍可能打扰用户长时间深度工作。**没有任何 gate-level hard skip**，pet 在 long deep-work session 中可能反复发起 turn。
+- 改动：
+  - `proactive/active_app.rs` 加 `HARD_FOCUS_BLOCK_MINUTES: u64 = 90` const —— 比 R27 的 60min 多出 30min（一个 nominal interval），让 R27 soft directive 自己有纠偏机会。
+  - 纯函数 `compute_deep_focus_block(prev, threshold, now) -> Option<u64>`：snapshot None / 时长 < threshold 返回 None，≥ threshold 返回 Some(minutes)。threshold 作参数注入而非硬编码 const，方便 unit test 多 threshold 验证。
+  - 生产 wrapper `deep_focus_block_minutes()` 读 LAST_ACTIVE_APP + Instant::now()。
+  - 新 helper `refresh_active_app_snapshot(current_app)` —— gate 在 evaluate_loop_tick 里手动 refresh snapshot（osascript ≤200ms / tick），保证 hard-block 触发后还能看到用户切 app。否则 gate skip → 不进 run_proactive_turn → snapshot 永远不 update → 阻塞自维持。idempotent 跟 update_and_format_active_app_hint 共写一个 static 不冲突。
+  - `evaluate_loop_tick` 加新 gate（mute 之后，pre_input_idle 之前）：refresh snapshot → if `deep_focus_block_minutes()` is Some → return Skip。
+  - 8 单测覆盖：deep_focus_block 4 个边界（None / 89m / 90m / 180m）+ 自定义 threshold + 89:30 边界（验证整数分钟数学）+ refresh_snapshot 写入 + None 安全。**527 tests pass**（519 → 527, +8 新）。
+  - `PanelToneStrip.tsx` active_app chip 升 4 段色：< 15 灰 / 15-59 橙（R15）/ 60-89 红 + 🔒（R27 directive）/ ≥90 deep-red #7f1d1d + 🔒🛑（R62 hard-block）。每段 hover tooltip 解释当前所处 regime + 距 R62 阈值还差多少分钟。
+- 影响：
+  - **节省 LLM 调用**：90min+ 同 app 的 ticks 不再发 LLM，直接 gate skip。R27 时还会发调用并依赖 LLM 返回 silent；R62 走更便宜路径。
+  - **保护 deep-work session**：用户连续 90min 同 app 时**绝对**不会被打扰，无需依赖 LLM 自觉度 / SOUL.md 调教。
+  - **panel 自洽**：chip 颜色升级直接对应 gate 行为变化，用户看到 deep-red 🔒🛑 就知道"pet 现在不会主动开口"。
+
 ## 2026-05-04 — Iter R61：tool outputs 切到 redact_with_settings（privacy audit 续）
 - 现状缺口：R60 audit 找到 feedback_hint 没 redact。R61 继续 audit —— grep `redact_text\b` 全 codebase 发现 system_tools.rs (Iter Cx) 和 calendar_tool.rs (Iter Cx) 两处用 `redact_text(text, &patterns)` —— **substring-only**，**bypass regex patterns**。Active app 名 / 日历事件标题如果含 email / 结构化 ID 等只有 regex 能 match 的私人内容，**regex 模式被绕过**。
 - 解法 — 全 swap 到 redact_with_settings：

@@ -120,18 +120,24 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
       )}
       {tone.active_app && (() => {
         const { app, minutes } = tone.active_app;
-        // R22 + R27: three bands matching the prompt-side gates —
+        // R22 + R27 + R62: four bands matching the prompt-side / gate-side gates —
         //   < 15m: gray (panel only, no prompt)
         //   15-59m: orange (R15 informational hint fires)
-        //   ≥60m: red (R27 deep-focus directive fires — "极简或选择沉默")
-        // Color escalation maps directly to escalating prompt intervention
-        // so user can see at a glance which regime the pet is currently
-        // playing under.
+        //   60-89m: red (R27 deep-focus directive fires — "极简或选择沉默")
+        //   ≥90m: deep red (R62 HARD-BLOCK — gate skips proactive turn entirely)
+        // Color escalation maps directly to escalating intervention so user
+        // can see at a glance which regime the pet is currently playing under.
         let bg: string;
         let titleText: string;
-        if (minutes >= 60) {
+        let suffix = "";
+        if (minutes >= 90) {
+          bg = "#7f1d1d"; // deep red — hard block, gate skips entirely
+          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（≥90m 硬阻塞）— R62 gate 直接 skip 这次 proactive turn，不发 LLM 调用。下次开口要等 app 切换或 mute / awaiting 等其他 gate 状态变化。`;
+          suffix = " 🔒🛑";
+        } else if (minutes >= 60) {
           bg = "#b91c1c"; // red — deep focus, explicit silence directive
-          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（深度专注期 ≥60m）— R27 directive 已 fire，prompt 显式要求 LLM 极简或沉默。`;
+          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（深度专注期 ≥60m）— R27 directive 已 fire，prompt 显式要求 LLM 极简或沉默。再过 ${90 - minutes} 分钟 R62 会升级为硬阻塞。`;
+          suffix = " 🔒";
         } else if (minutes >= 15) {
           bg = "#d97706"; // orange — R15 informational hint fired
           titleText = `用户已经在「${app}」里待了 ${minutes} 分钟 — R15 prompt hint 已 fire（≥15m 阈值，描述性）。`;
@@ -150,7 +156,7 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
               fontWeight: 600,
             }}
           >
-            🪟 {app}（{minutes}m{minutes >= 60 ? " 🔒" : ""}）
+            🪟 {app}（{minutes}m{suffix}）
           </span>
         );
       })()}

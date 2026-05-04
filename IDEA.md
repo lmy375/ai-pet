@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R62 设计要点（已实现）
+- **soft directive → hard block 的 escalation 第二台阶**：R15 (15m hint) → R27 (60m soft "极简或沉默") → R62 (90m gate skip) 三段。**每次升级都给上一台阶 30 分钟纠偏机会**——R27 在 60m 提示 LLM 自觉沉默，到 90m 还没切 app 说明用户**确实**在深度专注，硬阻塞是合理的。这种"先软后硬 + 阶梯化时长"避免了"60m 直接屏蔽"的过度反应。
+- **gate-side osascript 的成本权衡**：R62 在 evaluate_loop_tick 加了一次 `current_active_window` 调用 —— osascript ~50-200ms / 60s tick = ≤0.3% overhead。**显式付出 IO cost 换取 snapshot 不 stale**。alternative 是让 snapshot 只在 run_proactive_turn 更新，但**那样硬阻塞一旦触发就永久卡住**（gate 跳过 → 不进 run → 不更新 snapshot → 持续跳过）。staleness 自我维持的 trap。多花 200ms / tick 换 gate 永远见 fresh state，well worth it。
+- **idempotent refresh 是关键**：`refresh_active_app_snapshot` 写完后 `update_and_format_active_app_hint` 在 run_proactive_turn 里又会调 `compute_active_duration` 一次。两次背靠背调用必须 idempotent —— `compute_active_duration` 在 app 不变时返回 same since（"carries forward"）保证这一点。**多入口写同一 static 的设计前提是写函数 idempotent**。否则 gate 路径会 reset since 让所有 duration 重新计算。
+- **R52 / R55 / R62 三 gate 的 short-circuit 顺序**：mute (R52) → deep_focus_block (R62) → mute 配置（pre_input_idle）。**最便宜的 gate 放最前** —— mute 是纯 mutex 检查 (~ns)，deep_focus_block 需要 osascript (~ms)，pre_input_idle 需要 read settings + clock + focus state。**多 gate 系统按 IO cost 升序排列短路顺序** = 平均每 tick 总成本最小化。
+- **为什么不加 setting 让用户 disable hard-block**：R29 / R30 codified rule 是"yaml-only 字段必补 UI"，但 R62 只加 const 没加 setting，**目的是让 hard-block 是 invariant 而非可选**。如果用户能关，那"我用了 90 分钟它仍打扰我"就是用户 own choice，**避免 R62 沦为更激进的 R27 mood hint**。如果未来反馈说"我开会但需要被打扰"，再考虑加。**一次只加 invariant 一次只加 setting，不要 mixed**。
+- **panel chip 4 段色映射 gate 状态**：< 15 灰 / 15-59 橙 / 60-89 红 / ≥90 deep-red + 🔒🛑。**色彩饱和度 / icon 数量随 intervention 强度递增**：从"无 prompt nudge" → "soft hint" → "directive" → "skip turn"。chip suffix `🔒` (R27 lock icon) 在 R62 升级为 `🔒🛑` 表示"还有 stop sign"，让"我看到了红 + 锁 + 屏蔽" 三层视觉递增。
+- **跟 mute 概念区别**：mute 是用户主动按钮 → opt-in skip。R62 是系统观察 → opt-out skip（无配置可关）。**两个 skip 的"who decides" 不同**：mute = 用户当下意图，R62 = 系统从行为推断。前者写在状态 mutex，后者纯函数 derived。这种"显式 vs 推断" 的二分意识到了对 transparent UX 重要——chip 各显其色防止用户混淆"我关了静音怎么还不说话"。
+
 ## Iter R61 设计要点（已实现）
 - **R-series proactive-audit cadence is forming**：R60 → R61 都是 audit-driven。R60 grep `redact_with_settings` 调用点查 prompt 注入完整。R61 grep `redact_text` 调用点查 tool output 完整。**每次 audit 锁定一个 "boundary kind"，systematic grep + 一次性修**。这种节奏比"feature ship + reactive bug fix" 更适合 mature project —— 主动巡查比被动响应高效。
 - **redact_text vs redact_with_settings 命名隐患**：API 命名让 `redact_text` 看起来像 main entry point。但真正完整的是 `redact_with_settings`（含 regex）。**命名应该让"完整工具" 有更显眼的名字**，sub-helper 名字更长 / 标 internal。R61 IDEA 想到这点但不动 API 命名（影响测试 + 现有测试用 `redact_text` 直接调）。**API 命名重构的代价大于收益时，靠 audit + 文档** 替代。

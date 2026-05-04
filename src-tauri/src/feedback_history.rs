@@ -458,10 +458,7 @@ mod tests {
         // R60: redact closure should be applied to the excerpt before
         // injection. Test with a redact fn that replaces "项目X" with "(私人)".
         let redact = |s: &str| s.replace("项目X", "(私人)");
-        let h = format_feedback_hint(
-            &[entry(FeedbackKind::Replied, "项目X 进展如何？")],
-            &redact,
-        );
+        let h = format_feedback_hint(&[entry(FeedbackKind::Replied, "项目X 进展如何？")], &redact);
         assert!(h.contains("(私人)"));
         assert!(!h.contains("项目X"));
     }

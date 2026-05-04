@@ -296,6 +296,19 @@ pub async fn evaluate_loop_tick(
         let mins = remaining / 60;
         return LoopAction::Skip(format!("muted, {} min remaining", mins));
     }
+    // Iter R62: deep-focus hard-block gate. Refresh the active-app
+    // snapshot first so we see fresh state on every tick (the existing
+    // refresh inside `run_proactive_turn` only fires on actually-run
+    // ticks; a stuck block would otherwise persist indefinitely after
+    // the user switched apps). One osascript call per tick — same cost
+    // as inside run_proactive_turn, additive but small (≤200ms / 60s).
+    let current_app = crate::tools::system_tools::current_active_window()
+        .await
+        .map(|(app, _win)| app);
+    super::refresh_active_app_snapshot(current_app.as_deref());
+    if let Some(mins) = super::deep_focus_block_minutes() {
+        return LoopAction::Skip(format!("deep focus hard-block: {} min in same app", mins));
+    }
     let cfg = &settings.proactive;
     let clock = app.state::<InteractionClockStore>().inner().clone();
     let snap = clock.snapshot().await;
@@ -795,7 +808,13 @@ mod tests {
 
     // -- Iter R53: compute_mute_remaining tests -------------------------------
 
-    fn now_at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> chrono::DateTime<chrono::Local> {
+    fn now_at(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+    ) -> chrono::DateTime<chrono::Local> {
         use chrono::TimeZone;
         let naive = chrono::NaiveDate::from_ymd_opt(year, month, day)
             .unwrap()
@@ -830,8 +849,8 @@ mod tests {
     fn mute_remaining_returns_seconds_when_until_is_future() {
         let now = now_at(2026, 5, 4, 10, 0);
         let until = now + chrono::Duration::minutes(30);
-        let remaining = compute_mute_remaining(Some(until), now)
-            .expect("future mute should return Some");
+        let remaining =
+            compute_mute_remaining(Some(until), now).expect("future mute should return Some");
         assert_eq!(remaining, 30 * 60);
     }
 
