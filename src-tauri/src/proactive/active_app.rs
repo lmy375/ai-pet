@@ -215,58 +215,101 @@ pub struct DailyBlockStats {
     pub total_minutes: u64,
 }
 
-/// Iter R65: process-wide daily-block accumulator. None on fresh
-/// process / before any stretch has finalized. Reset implicitly on
-/// date roll-over inside `compute_finalize_stats`.
-pub static DAILY_BLOCK_STATS: std::sync::Mutex<Option<DailyBlockStats>> =
-    std::sync::Mutex::new(None);
+/// Iter R66: rolling history of daily deep-focus stats. Replaces R65's
+/// single-Option store so yesterday's data survives today's first
+/// finalize (R66 first-of-day yesterday-recap hint reads it). Sorted
+/// by date ascending; capped to last DAILY_BLOCK_HISTORY_CAP entries
+/// (older ones drained on overflow). Memory-only — restart loses
+/// history; persistence to ~/.config/pet would be a separate iter
+/// (R67+ candidate).
+pub static DAILY_BLOCK_HISTORY: std::sync::Mutex<Vec<DailyBlockStats>> =
+    std::sync::Mutex::new(Vec::new());
 
-/// Iter R65: pure helper. Given prior stats + today's date + the peak
-/// minutes of a just-finalized stretch, returns the new stats. Same
-/// date → increment count + add minutes; different date / None → reset
-/// to fresh-day stats with the just-finalized stretch as the first.
-pub fn compute_finalize_stats(
-    prev: Option<&DailyBlockStats>,
+/// Iter R66: how many days of history we keep. 7 = one week, lets us
+/// later surface "last 7 day total" without unbounded growth. Today +
+/// yesterday are the two needed entries today; the remaining 5 sit as
+/// future-proof room for "本周专注时长" stat surfaces.
+pub const DAILY_BLOCK_HISTORY_CAP: usize = 7;
+
+/// Iter R66: pure helper. Given existing history + today's date + the
+/// peak minutes of a just-finalized stretch + cap, returns the new
+/// history with today's entry incremented (or appended fresh) and the
+/// vec sorted-and-capped. Pure — caller passes everything, no static
+/// access, easy to unit-test cap / sort / increment branches.
+pub fn compute_history_after_finalize(
+    history: &[DailyBlockStats],
     today: chrono::NaiveDate,
     peak_minutes: u64,
-) -> DailyBlockStats {
-    match prev {
-        Some(s) if s.date == today => DailyBlockStats {
-            date: today,
-            count: s.count + 1,
-            total_minutes: s.total_minutes.saturating_add(peak_minutes),
-        },
-        _ => DailyBlockStats {
+    cap: usize,
+) -> Vec<DailyBlockStats> {
+    let mut out: Vec<DailyBlockStats> = history.to_vec();
+    if let Some(today_entry) = out.iter_mut().find(|s| s.date == today) {
+        today_entry.count += 1;
+        today_entry.total_minutes = today_entry.total_minutes.saturating_add(peak_minutes);
+    } else {
+        out.push(DailyBlockStats {
             date: today,
             count: 1,
             total_minutes: peak_minutes,
-        },
+        });
     }
+    out.sort_by_key(|s| s.date);
+    let len = out.len();
+    if len > cap {
+        out.drain(0..(len - cap));
+    }
+    out
 }
 
-/// Iter R65: production wrapper. Reads DAILY_BLOCK_STATS + Local date,
-/// delegates to `compute_finalize_stats`, writes back. Called from
-/// `record_hard_block` (transition) and `take_recovery_hint`
-/// (clean end). Either path counts a stretch exactly once.
+/// Iter R65/R66: production wrapper. Reads DAILY_BLOCK_HISTORY + Local
+/// date, delegates to `compute_history_after_finalize`, writes back.
+/// Called from `record_hard_block` (transition-finalize) and
+/// `take_recovery_hint` (clean-end finalize); each stretch counted
+/// exactly once across both paths.
 pub fn finalize_stretch(peak_minutes: u64) {
     let today = chrono::Local::now().date_naive();
-    if let Ok(mut g) = DAILY_BLOCK_STATS.lock() {
-        let next = compute_finalize_stats(g.as_ref(), today, peak_minutes);
-        *g = Some(next);
+    if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
+        let next = compute_history_after_finalize(&g, today, peak_minutes, DAILY_BLOCK_HISTORY_CAP);
+        *g = next;
     }
 }
 
-/// Iter R65: panel-side read of today's stats. Filters out stale stats
-/// from prior days so a 24h-stale record doesn't bleed into today's
-/// surface (the static will be overwritten on next finalize anyway,
-/// but a pure read should not pretend yesterday is today).
+/// Iter R65/R66: panel-side read of today's stats. Looks up today's
+/// entry in history. None if no stretch finalized today yet.
 pub fn current_daily_block_stats() -> Option<DailyBlockStats> {
     let today = chrono::Local::now().date_naive();
-    DAILY_BLOCK_STATS
+    DAILY_BLOCK_HISTORY
         .lock()
         .ok()
-        .and_then(|g| g.clone())
-        .filter(|s| s.date == today)
+        .and_then(|g| g.iter().find(|s| s.date == today).cloned())
+}
+
+/// Iter R66: yesterday's stats — read for first-of-day recap hint.
+/// None if yesterday's stretches never reached the gate (light day) /
+/// were all dropped by cap (long quiet stretch interrupted by a big
+/// "today" run, unlikely with cap=7) / process restarted today.
+pub fn yesterday_block_stats() -> Option<DailyBlockStats> {
+    let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
+    DAILY_BLOCK_HISTORY
+        .lock()
+        .ok()
+        .and_then(|g| g.iter().find(|s| s.date == yesterday).cloned())
+}
+
+/// Iter R66: pure formatter for the yesterday-deep-focus-recap hint.
+/// Returns "" when stats is None or count is 0 (no history / quiet
+/// day); otherwise frames yesterday's stretches in past-tense
+/// "你昨天完成 N 次..." for first-of-day proactive prompt injection.
+/// Pure — caller decides whether/when to inject (typically gated by
+/// `today_speech_count == 0` like cross_day_hint).
+pub fn format_yesterday_focus_recap_hint(stats: Option<&DailyBlockStats>) -> String {
+    match stats {
+        Some(s) if s.count > 0 => format!(
+            "[昨日深度专注] 你昨天完成 {} 次深度专注，合计 {} 分钟。如果想关心一下他「昨天那么努力 / 今天先轻松点」之类，自然带过即可，不必非提。",
+            s.count, s.total_minutes
+        ),
+        _ => String::new(),
+    }
 }
 
 /// Iter R63: pure helper. Returns Some((app, minutes)) when the last
@@ -737,94 +780,154 @@ mod tests {
         }
     }
 
-    // -- Iter R65: compute_finalize_stats tests -----------------------------
+    // -- Iter R66: compute_history_after_finalize tests ---------------------
 
     use chrono::NaiveDate;
 
     #[test]
-    fn finalize_stats_creates_fresh_when_no_prev() {
+    fn history_finalize_creates_fresh_when_empty() {
         let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
-        let next = compute_finalize_stats(None, today, 95);
-        assert_eq!(
-            next,
-            DailyBlockStats {
-                date: today,
-                count: 1,
-                total_minutes: 95,
-            }
-        );
+        let next = compute_history_after_finalize(&[], today, 95, 7);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].date, today);
+        assert_eq!(next[0].count, 1);
+        assert_eq!(next[0].total_minutes, 95);
     }
 
     #[test]
-    fn finalize_stats_increments_when_same_date() {
+    fn history_finalize_increments_when_today_exists() {
         let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
-        let prev = DailyBlockStats {
+        let history = vec![DailyBlockStats {
             date: today,
             count: 2,
             total_minutes: 180,
-        };
-        let next = compute_finalize_stats(Some(&prev), today, 95);
-        assert_eq!(
-            next,
-            DailyBlockStats {
-                date: today,
-                count: 3,
-                total_minutes: 275,
-            }
-        );
+        }];
+        let next = compute_history_after_finalize(&history, today, 95, 7);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].count, 3);
+        assert_eq!(next[0].total_minutes, 275);
     }
 
     #[test]
-    fn finalize_stats_resets_when_date_rolls_over() {
+    fn history_finalize_appends_when_new_date() {
         let yesterday = NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
         let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
-        let prev = DailyBlockStats {
+        let history = vec![DailyBlockStats {
             date: yesterday,
             count: 5,
             total_minutes: 600,
-        };
-        // First finalize today after yesterday's accumulation should reset.
-        let next = compute_finalize_stats(Some(&prev), today, 95);
-        assert_eq!(
-            next,
-            DailyBlockStats {
-                date: today,
-                count: 1,
-                total_minutes: 95,
-            }
-        );
+        }];
+        let next = compute_history_after_finalize(&history, today, 95, 7);
+        // Yesterday preserved + today's first entry appended.
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].date, yesterday);
+        assert_eq!(next[0].count, 5);
+        assert_eq!(next[1].date, today);
+        assert_eq!(next[1].count, 1);
+        assert_eq!(next[1].total_minutes, 95);
     }
 
     #[test]
-    fn finalize_stats_saturates_on_overflow() {
-        // Defensive — total_minutes is u64, but check saturating math
-        // doesn't panic. Real-world numbers stay small.
+    fn history_finalize_caps_oldest_when_exceeded() {
+        // 7-day cap; insert 8 entries, oldest should drop.
+        let mut history = Vec::new();
+        for d in 1..=7u32 {
+            history.push(DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, d).unwrap(),
+                count: 1,
+                total_minutes: 90,
+            });
+        }
+        let new_day = NaiveDate::from_ymd_opt(2026, 5, 8).unwrap();
+        let next = compute_history_after_finalize(&history, new_day, 95, 7);
+        assert_eq!(next.len(), 7);
+        // Oldest (May 1) dropped; new (May 8) appended.
+        assert_eq!(next[0].date, NaiveDate::from_ymd_opt(2026, 5, 2).unwrap());
+        assert_eq!(next[6].date, new_day);
+    }
+
+    #[test]
+    fn history_finalize_saturates_on_overflow() {
         let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
-        let prev = DailyBlockStats {
+        let history = vec![DailyBlockStats {
             date: today,
             count: 1,
             total_minutes: u64::MAX - 50,
-        };
-        let next = compute_finalize_stats(Some(&prev), today, 100);
-        assert_eq!(next.total_minutes, u64::MAX);
+        }];
+        let next = compute_history_after_finalize(&history, today, 100, 7);
+        assert_eq!(next[0].total_minutes, u64::MAX);
     }
 
     #[test]
-    fn finalize_stretch_round_trip_records_today() {
-        // Reset DAILY_BLOCK_STATS, run finalize, verify today's record.
-        let original = DAILY_BLOCK_STATS.lock().ok().and_then(|g| g.clone());
-        if let Ok(mut g) = DAILY_BLOCK_STATS.lock() {
-            *g = None;
+    fn history_finalize_keeps_sort_after_append() {
+        // Verify sort: append "earlier" date should not break ordering.
+        let earlier = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        let later = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![DailyBlockStats {
+            date: later,
+            count: 1,
+            total_minutes: 90,
+        }];
+        // Append entry for earlier date (out-of-order arrival).
+        let next = compute_history_after_finalize(&history, earlier, 95, 7);
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].date, earlier);
+        assert_eq!(next[1].date, later);
+    }
+
+    #[test]
+    fn finalize_stretch_round_trip_today_and_yesterday() {
+        // Reset DAILY_BLOCK_HISTORY, run finalize, verify today reads back.
+        let original = DAILY_BLOCK_HISTORY
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
+            *g = Vec::new();
         }
         finalize_stretch(91);
         finalize_stretch(120);
-        let after = current_daily_block_stats().expect("two finalizes recorded");
-        assert_eq!(after.count, 2);
-        assert_eq!(after.total_minutes, 211);
-        assert_eq!(after.date, chrono::Local::now().date_naive());
+        let today_stats = current_daily_block_stats().expect("two finalizes recorded");
+        assert_eq!(today_stats.count, 2);
+        assert_eq!(today_stats.total_minutes, 211);
+        assert_eq!(today_stats.date, chrono::Local::now().date_naive());
+        // Yesterday stats: nothing was finalized for yesterday in this test.
+        assert!(yesterday_block_stats().is_none());
         // Restore.
-        if let Ok(mut g) = DAILY_BLOCK_STATS.lock() {
+        if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
             *g = original;
         }
+    }
+
+    // -- Iter R66: format_yesterday_focus_recap_hint tests ------------------
+
+    #[test]
+    fn yesterday_focus_recap_returns_empty_when_none() {
+        assert_eq!(format_yesterday_focus_recap_hint(None), "");
+    }
+
+    #[test]
+    fn yesterday_focus_recap_returns_empty_when_zero_count() {
+        let s = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
+            count: 0,
+            total_minutes: 0,
+        };
+        assert_eq!(format_yesterday_focus_recap_hint(Some(&s)), "");
+    }
+
+    #[test]
+    fn yesterday_focus_recap_includes_count_and_minutes() {
+        let s = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
+            count: 3,
+            total_minutes: 270,
+        };
+        let out = format_yesterday_focus_recap_hint(Some(&s));
+        assert!(out.contains("昨日深度专注"));
+        assert!(out.contains("3 次"));
+        assert!(out.contains("270"));
+        assert!(out.contains("自然带过"));
     }
 }

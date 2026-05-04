@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R66 设计要点（已实现）
+- **R65 single-Option 升级到 history Vec**：R65 用 `Mutex<Option<DailyBlockStats>>` 存今日 stat。今日第一个 finalize 会覆盖昨日的 record，**昨日 stat 立刻丢失**，跨日 recap 无来源。R66 改 `Mutex<Vec<DailyBlockStats>>` 滚动 7 天历史，今日 finalize 不再 evict 昨日。**single-slot → history vec 是不可避免的演进**，从一开始就该用 vec —— 但 R65 当时只满足"今日 stat" 需求，over-engineer 是浪费。**演进式重构在需求来时再做**。
+- **cap = 7 = 一周的 future-proof**：今天 + 昨天只用 2 entries，剩 5 个槽位预留"本周专注总分钟" 等更广 stat。**cap 选择基于"未来一两个 iter 可能用到"的预期**，不为遥远功能预留太大缓存。7 是天然的人类周期边界。
+- **compute_finalize_stats 删了，compute_history_after_finalize 是 superset**：R65 的 compute_finalize_stats 只处理 single-slot 转换，R66 的 compute_history_after_finalize 处理 vec increment / append / sort / cap 一站式。**两个 helper 重叠 ≥80% 就不要并存**，删旧 helper + 移植测试到新 helper。tests 数量净增 4（5 → 9），覆盖范围加大（cap eviction / sort 是新检查点）。
+- **first-of-day 三 hint 互补**：cross_day_hint = 昨天最后 2 句话（continuity）；yesterday_recap_hint = 昨天 daily_review 的概要（high-level）；R66 yesterday_focus_hint = 昨天专注 stat（activity intensity）。**三层从 narrative → summary → behavioral**，给 LLM 多角度起手 context。**hint 的"互补维度"** 才值得多一条；如果 R66 hint 只是 R12 review 的子集就不值得加。
+- **yesterday_focus_hint 措辞 "自然带过即可，不必非提"**：避免 LLM 把每次第一句都说成"昨天你做了 N 次专注..."。**hint 要给 context 但留 LLM judgment 的空间**。R12c 的 review 概要也是这种风格 —— inject info，不强制 verbalization。
+- **memory-only 是 OK 的初始 trade-off**：R66 不写文件持久化。process restart 会丢历史。但 daemon-style 长跑 app 在 macOS 通常不重启 —— 早 commit 写持久化是过早优化。**先 ship 内存版**，观察 restart 频率 / 用户反馈再加 persistence（R67+ 候选）。
+- **out-of-order finalize 的容忍**：sort_by_key(date) 兜底任何插入顺序。如果将来加"补录昨天的 finalize"（比如 process 启动时从 disk 读) 这个保证已就绪。**预留排序保证是低成本 future-proofing**，比预留 10 字段昂贵的 schema 廉价。
+- **out_of_history 风险**：cap=7 + 8 天 finalize 会丢最早一天。如果用户连续高强度专注超 7 天，第 8 天 yesterday_block_stats 仍能拿到（只丢 7+ 天前的）。**cap 只压老数据，不压"昨天"** —— 永远不影响 R66 主功能。
+
 ## Iter R65 设计要点（已实现）
 - **R62/R63/R64 cluster 至此扩展为 4 iter**：R62 阻塞 → R63 recovery → R64 mode dial → R65 stats accumulate。**这是 R-series 第二个超过 3 iter 的 cluster**（R52-R59 user-control 是第一个）。**cluster 长度不预定**，只要每个 iter 都打开新 surface 就该继续。
 - **stretch 检测的 transition vs clean-end 二分**：每个 stretch 必有终点，但终点种类有二：(1) 用户切出来 → take_recovery_hint clean-end finalize；(2) gate skip 持续但没 run 路径触发 take（如 quiet hours 期间） → record_hard_block 看到 prev.marked_at > 120s 后 transition-finalize。**两个 finalize 路径互斥不重复**：take_recovery_hint 后立刻 *g = None，下次 record_hard_block 看 None → 不 finalize 任何东西，只 record 新 stretch。

@@ -210,6 +210,14 @@ pub struct PromptInputs<'a> {
     /// taken (single-shot per block stretch). Built from
     /// `active_app::take_recovery_hint`.
     pub deep_focus_recovery_hint: &'a str,
+    /// Iter R66: yesterday's deep-focus stretch recap — "[昨日深度专注]
+    /// 你昨天完成 N 次深度专注，合计 X 分钟..." Fires only at first-of-day
+    /// (`today_speech_count == 0`) alongside cross_day_hint and
+    /// yesterday_recap_hint, giving the LLM a sense of how hard the user
+    /// worked yesterday. Built from `active_app::yesterday_block_stats` +
+    /// `format_yesterday_focus_recap_hint`. Empty when no yesterday
+    /// stats / process restarted today.
+    pub yesterday_focus_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -391,6 +399,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.cross_day_hint);
     push_if_nonempty(&mut s, inputs.active_app_hint);
     push_if_nonempty(&mut s, inputs.deep_focus_recovery_hint);
+    push_if_nonempty(&mut s, inputs.yesterday_focus_hint);
     push_if_nonempty(&mut s, inputs.length_register_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
