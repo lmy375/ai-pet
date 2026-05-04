@@ -329,18 +329,29 @@ pub fn yesterday_block_stats() -> Option<DailyBlockStats> {
 /// minutes. Surfaced as a stat-card column distinct from today's row,
 /// so user sees "本周专注强度" trend without needing to mentally sum
 /// across 7 entries.
+/// Iter R73: peak_single_stretch_minutes added — the longest single
+/// stretch's peak across the whole week. Mirrors the day-level
+/// max_single_stretch_minutes (R72) at week scope so the depth
+/// dimension stays visible at both granularities. Lets future iters
+/// fire "[今日破纪录]" nudges when today's peak exceeds the week's
+/// prior best.
 #[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
 pub struct WeeklyBlockSummary {
     pub days: u64,
     pub total_count: u64,
     pub total_minutes: u64,
+    /// Iter R73: max of all entries' max_single_stretch_minutes inside
+    /// the 7-day window. 0 when entries pre-date R72 schema (their
+    /// max field defaulted to 0 via #[serde(default)]).
+    pub peak_single_stretch_minutes: u64,
 }
 
-/// Iter R68: pure helper. Filters history to last 7 calendar days
-/// (today inclusive, today - 6 days = oldest), sums counts + minutes.
-/// Returns None when no entries match (fresh install / 7+ days quiet)
-/// or total_count == 0 (defensive). Pure — caller passes `today` so
-/// tests can drive any date deterministically.
+/// Iter R68/R73: pure helper. Filters history to last 7 calendar days
+/// (today inclusive, today - 6 days = oldest), sums counts + minutes,
+/// and tracks the max single-stretch peak across the window. Returns
+/// None when no entries match (fresh install / 7+ days quiet) or
+/// total_count == 0 (defensive). Pure — caller passes `today` so tests
+/// can drive any date deterministically.
 pub fn compute_weekly_block_summary(
     history: &[DailyBlockStats],
     today: chrono::NaiveDate,
@@ -361,10 +372,20 @@ pub fn compute_weekly_block_summary(
     if total_count == 0 {
         return None;
     }
+    // Iter R73: peak across all entries' day-level max. iter().max() over
+    // u64 returns Option (empty iter → None), but we already checked
+    // entries non-empty above; unwrap_or(0) handles the zero-fallback
+    // for old schema entries with max field defaulting to 0.
+    let peak_single_stretch_minutes = entries
+        .iter()
+        .map(|s| s.max_single_stretch_minutes)
+        .max()
+        .unwrap_or(0);
     Some(WeeklyBlockSummary {
         days: entries.len() as u64,
         total_count,
         total_minutes,
+        peak_single_stretch_minutes,
     })
 }
 
@@ -1550,6 +1571,71 @@ mod tests {
         ];
         let summary = compute_weekly_block_summary(&history, today).expect("aggregates");
         assert_eq!(summary.total_minutes, u64::MAX);
+    }
+
+    // -- Iter R73: weekly peak_single_stretch aggregation -------------------
+
+    #[test]
+    fn weekly_summary_peak_picks_max_across_entries() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+                count: 1,
+                total_minutes: 95,
+                max_single_stretch_minutes: 95,
+            },
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 2).unwrap(),
+                count: 1,
+                total_minutes: 150,
+                max_single_stretch_minutes: 150, // week's peak
+            },
+            DailyBlockStats {
+                date: today,
+                count: 1,
+                total_minutes: 110,
+                max_single_stretch_minutes: 110,
+            },
+        ];
+        let summary = compute_weekly_block_summary(&history, today).unwrap();
+        assert_eq!(summary.peak_single_stretch_minutes, 150);
+    }
+
+    #[test]
+    fn weekly_summary_peak_zero_when_no_entry_has_max() {
+        // Old-schema entries (R67-R71) have max=0 by serde default.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![DailyBlockStats {
+            date: today,
+            count: 2,
+            total_minutes: 180,
+            max_single_stretch_minutes: 0,
+        }];
+        let summary = compute_weekly_block_summary(&history, today).unwrap();
+        assert_eq!(summary.peak_single_stretch_minutes, 0);
+    }
+
+    #[test]
+    fn weekly_summary_peak_excludes_out_of_window_entries() {
+        // Big peak from 8 days ago shouldn't bleed into this week's peak.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(), // 9 days ago — OUT
+                count: 1,
+                total_minutes: 300,
+                max_single_stretch_minutes: 300,
+            },
+            DailyBlockStats {
+                date: today,
+                count: 1,
+                total_minutes: 95,
+                max_single_stretch_minutes: 95,
+            },
+        ];
+        let summary = compute_weekly_block_summary(&history, today).unwrap();
+        assert_eq!(summary.peak_single_stretch_minutes, 95);
     }
 
     #[test]

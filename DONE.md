@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R73：weekly summary 加 peak_single_stretch 维度 + panel tooltip surface
+- 现状缺口：R72 给 DailyBlockStats 加 day-level depth (max_single_stretch_minutes)，但 WeeklyBlockSummary 还没对应 weekly-level peak。stat granularity hierarchy 缺一层。
+- 改动：
+  - `proactive/active_app.rs`：
+    - WeeklyBlockSummary 加 `peak_single_stretch_minutes: u64` 字段。
+    - compute_weekly_block_summary 用 `entries.iter().map(|s| s.max_single_stretch_minutes).max().unwrap_or(0)` 跨 7-day 窗口取最大。
+    - 3 新单测：peak picks max across entries / 全 0（旧 schema） / out-of-window 不漏。
+  - `chat.rs` 3 处 WeeklyBlockSummary test fixtures 用 5-line python 自动补 `peak_single_stretch_minutes: 0`（R72 codified pattern 重复使用）。
+  - `panelTypes.ts`：TS 类型加同字段。
+  - `PanelStatsCard.tsx`：weekly tooltip 拼接 "本周最长一次 X 分钟"（peak > 0 才追加），不加新 chip 元素（信息密度够用 tooltip 即可）。
+  - **585 tests pass**（582 → 585, +3 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **stat granularity hierarchy 完整**：count / total / peak 三维度在 day + week 两 granularity 都 mirror。
+  - **R72 IDEA 标的 candidate 立刻兑现**：candidate list 不堆积。
+  - **后续 prompt nudge 数据已就绪**：R74 候选可 fire "[今日破纪录]" hint 当 today_peak > weekly_peak（不含今日）。
+
 ## 2026-05-04 — Iter R72：今日单次最长 deep-focus 跟踪 + panel surface
 - 现状缺口：DailyBlockStats 只有 count（频次） + total_minutes（量），缺 "depth" 维度。5 次 30m 累计 150m 跟 1 次 150m 在 count + total 看不出差异，但深度差很多。
 - 改动：

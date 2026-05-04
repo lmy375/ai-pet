@@ -169,15 +169,17 @@ export interface ToneSnapshot {
     total_minutes: number;
     max_single_stretch_minutes: number;
   } | null;
-  // Iter R68: last-7-day aggregate — summed across DAILY_BLOCK_HISTORY
+  // Iter R68 + R73: last-7-day aggregate — summed across DAILY_BLOCK_HISTORY
   // entries in [today-6 .. today]. null when window has no entries (fresh
   // install / quiet week). `days` = distinct days with at least one
   // stretch in the window; total_count = stretches summed; total_minutes
-  // = peak minutes summed.
+  // = peak minutes summed; peak_single_stretch_minutes (R73) = max of
+  // entries' day-level peak across the window.
   weekly_block_stats: {
     days: number;
     total_count: number;
     total_minutes: number;
+    peak_single_stretch_minutes: number;
   } | null;
   // Iter R69: week-over-week trend for deep-focus minutes. null until 8+
   // days of history give both windows data. direction ∈ "up" / "flat" /

@@ -259,7 +259,8 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
             trendTitle = `vs 上周 ${trend.delta_percent >= 0 ? "+" : ""}${trend.delta_percent}%（${trend.this_week_minutes}m vs ${trend.prior_week_minutes}m，± 15% 内算持平）`;
           }
         }
-        const baseTitle = `本周（最近 7 天）有 ${tone.weekly_block_stats!.days} 天进入深度专注，共完成 ${tone.weekly_block_stats!.total_count} 次 stretch，峰值时长合计 ${tone.weekly_block_stats!.total_minutes} 分钟。来自 R67 持久化的 DAILY_BLOCK_HISTORY，cap=14 entries。`;
+        const wpeak = tone.weekly_block_stats!.peak_single_stretch_minutes;
+        const baseTitle = `本周（最近 7 天）有 ${tone.weekly_block_stats!.days} 天进入深度专注，共完成 ${tone.weekly_block_stats!.total_count} 次 stretch，峰值时长合计 ${tone.weekly_block_stats!.total_minutes} 分钟${wpeak > 0 ? `，本周最长一次 ${wpeak} 分钟` : ""}。来自 R67 持久化的 DAILY_BLOCK_HISTORY，cap=14 entries。`;
         return (
           <span
             title={trendTitle ? `${baseTitle}\n${trendTitle}` : `${baseTitle}\n趋势: 数据不足（需 8+ 天 history）。`}
