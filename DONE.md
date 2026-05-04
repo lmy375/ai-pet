@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R70：reactive chat 注入今日/本周 deep-focus 上下文
+- 现状缺口：R62-R69 deep-focus 数据全在 proactive prompt + panel 用。**反应式聊天完全不知道**，user 问"我今天怎么样"得不到准确回答；user 刚结束一段长专注开聊，pet 不知道要简短回答。**modality 间数据隔离**，需要 cross-domain bridge。
+- 改动：
+  - `commands/chat.rs`：
+    - 新纯函数 `format_focus_context_layer(today, weekly) -> String`：双 None / 双 zero-count → ""；any positive → "[今日专注状态] 今天完成 N 次... 本周累计 N 次... 如果用户问起自然提及，user 在专注中回答简洁"。
+    - 新 wrapper `inject_focus_context_layer(messages)`：读 current_daily_block_stats + current_weekly_block_summary，format，按 R9 / persona layer 同 idiom 插入第一个 non-system 之前。
+    - `chat()` pipeline 加 `let augmented = inject_focus_context_layer(augmented);` 在 inject_recent_speech_layer 后。
+  - 6 单测覆盖 None×2 → empty / zero-count today + None weekly → empty / today only / weekly only / 双 present 合并 / today zero-count + weekly present 跳过 today line。**575 tests pass**（569 → 575, +6 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **AI 回答"我今天怎么样"准确**：retrospective stat 进 reactive chat。
+  - **mid-focus chat 自动简短**：tail guidance 让 LLM 知道用户专注中要 brief。
+  - **layer 链长到 4 层**：mood / persona / recent_speech / focus_context，from immediate → identity → output → behavior。每层正交。
+  - **R69 closed deep-focus cluster 后第一 iter 顺利 cross-domain**：verify 数据可穿越 proactive ↔ reactive 边界。
+
 ## 2026-05-04 — Iter R69：deep-focus week-over-week trend 指示
 - 现状缺口：R68 surface 了本周聚合，但用户看不出"本周比上周怎么样"。R68 IDEA 列了三个候选，R69 选 trend（数据已有 + 视觉小 + 单 hover 能看完整 math，cluster 延展度最高）。
 - 改动：
