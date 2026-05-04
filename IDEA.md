@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R83 设计要点（已实现）
+- **Cν 的 4h 阈值不够覆盖"用户消失整天"的场景**：long-absence-reunion (Cν, 4h) 是为"用户去吃午饭 / 开会"设计的——pet 用"刚回来呀"的 warm 重逢感欢迎用户。但是当用户消失 24h 以上（出差 / 病了 / 周末没开机），4h 的"刚回来呀"语气就不合适了——感觉过于轻飘飘。Real partner 在朋友消失一整天后说话语气是 gentle check-in 而非 casual welcome。R83 加一个升级 tier。
+- **mutually exclusive 而非 stacking**：选择让 extreme-absence-reunion 替换 long-absence-reunion 而非两者共存。理由：(1) LLM 看到两个 reunion 信号会困惑选哪个；(2) extreme 是 long 的 strict superset 在阈值意义上，递进而非互补。**信号要单一明确**——多 tier 通过替换实现，不通过 stacking。
+- **24h = 1440 minutes 阈值的 calibration**：考虑过 12h、18h、24h、36h 四个值。12h 太接近 4h 偏短（一夜睡觉就 fire 不太对），18h 卡在 "工作日 + 一夜" 边界感觉 weird，24h = "一整天" 最直觉，36h = "两天" 偏迟。24h 也跟 user_absence_tier 的 "用户至少一天没和你互动" tier 对齐。**阈值跟现有 tier 系统对齐**——避免引入又一个独立 magic number。
+- **directive register 跟 long-absence 拉开距离**：long-absence 的 prompt 文案是"重逢感"+"刚回来呀"+"下午顺利吗"——casual welcome。extreme 改成"轻轻惦记"+"好久没见到你了，还好吗"+"这一天你都去哪儿啦"——concerned check-in。两个文案 register 故意区别明显，让 LLM 不会把 extreme 跑成 long 的 stronger 版（同 register 但更夸张），而是真的 shift register。**directive 是教 LLM 不同语气而非"更多同样的话"**。
+- **tests pin mutual exclusion**：4 单测涵盖：刚到 24h fires extreme（不 fire long）/ 24h 远超后还是只 extreme / 23h59m fires long 不 extreme / chatty gate 同 Cν 一样 still 抑制 extreme。**boundary tests + mutual exclusion tests + gating reuse tests 三角覆盖**。
+- **不加 panel chip surface**：考虑过 panelToneStrip 加 🌙 chip 显 absence-tier。但 user_absence_tier 已经在 PanelToneStrip D1 chip 里 surface 了（idle_register / idle_minutes）——已可见，不需要再 chip。**避免重复 surface**——同信号两个 chip 是 noise。
+- **下一 iter 候选**：(1) extreme 可以 also fire 在 wake-back path（如果系统刚唤醒 + idle ≥ 24h，gate 已经 soft，但 prompt-side 仍要 register-shift）；(2) reunion 信号写 last_reunion_at 到 ai_insights 让"上次重逢" cross-day 可见；(3) extreme reunion 触发后 24h 内不再重复 fire（避免 user 起来又去外面 30min 又触发）。
+
 ## Iter R82 设计要点（已实现）
 - **R81 行为透明度审计**：R81 让 deadline 紧迫时 cooldown × 0.5，但是用户从 panel 怎么看出来"现在 pet 在加速模式"？答案：只有 hover cooldown chip 才能看到 derivation 含 `× 0.5 (deadline 紧迫)` 段——**chip 自身没有任何视觉变化**。R82 补这个 gap。两层surface：(1) chip 加 ⚡ 角标（被动可见，不需 hover），(2) hover 增加 "cadence ×2 加速" 高层概括（人类语义而非 derivation math）。
 - **不染 chip 颜色**：feedback band (R28) 已经占用了 chip color channel——high_negative amber / low_negative green / mid cyan。再加 deadline 颜色会形成"哪个 reason 主导"的混乱。⚡ 红色独立小图标占用 trailing 空间，跟 chip 主色独立，**多信号 stacking via spatial separation rather than color override**。

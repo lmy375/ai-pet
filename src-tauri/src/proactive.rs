@@ -3064,6 +3064,78 @@ mod prompt_tests {
         .is_empty());
     }
 
+    // -- Iter R83: extreme-absence-reunion mutual-exclusion -----------------
+
+    #[test]
+    fn active_composite_rule_labels_extreme_absence_reunion_at_24h_threshold() {
+        // At EXTREME_ABSENCE_MINUTES exactly → extreme fires, long is suppressed.
+        let labels = active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            0,
+            5,
+            false,
+            EXTREME_ABSENCE_MINUTES,
+            14,
+            false,
+        );
+        assert_eq!(labels, vec!["extreme-absence-reunion"]);
+        assert!(!labels.contains(&"long-absence-reunion"));
+    }
+
+    #[test]
+    fn active_composite_rule_labels_extreme_absence_reunion_well_past_24h() {
+        // Days-long absence still resolves to extreme, not duplicated.
+        let labels = active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            0,
+            5,
+            false,
+            EXTREME_ABSENCE_MINUTES * 3,
+            14,
+            false,
+        );
+        assert_eq!(labels, vec!["extreme-absence-reunion"]);
+    }
+
+    #[test]
+    fn active_composite_rule_labels_just_below_24h_stays_long_absence() {
+        // EXTREME_ABSENCE_MINUTES - 1 → long fires, not extreme. Boundary
+        // pinned the same way Cν's threshold test pins LONG_ABSENCE_MINUTES.
+        let labels = active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            0,
+            5,
+            false,
+            EXTREME_ABSENCE_MINUTES - 1,
+            14,
+            false,
+        );
+        assert_eq!(labels, vec!["long-absence-reunion"]);
+    }
+
+    #[test]
+    fn active_composite_rule_labels_extreme_absence_still_gated_by_chatty() {
+        // Same gates as Cν: chatty active → both reunion variants silent.
+        assert!(active_composite_rule_labels(
+            false,
+            false,
+            Some(8),
+            5,
+            5,
+            false,
+            EXTREME_ABSENCE_MINUTES + 60,
+            14,
+            false,
+        )
+        .is_empty());
+    }
+
     #[test]
     fn active_composite_rule_labels_late_night_wellness_gating() {
         // Iter R3: late-night-wellness fires iff hour < LATE_NIGHT_END_HOUR (4)

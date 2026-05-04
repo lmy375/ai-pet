@@ -19,7 +19,7 @@
 use super::{
     active_composite_rule_labels, active_data_driven_rule_labels, active_environmental_rule_labels,
     companionship_milestone, format_companionship_line, ENV_AWARENESS_LOW_RATE_PCT,
-    LONG_ABSENCE_MINUTES, LONG_IDLE_MINUTES,
+    EXTREME_ABSENCE_MINUTES, LONG_ABSENCE_MINUTES, LONG_IDLE_MINUTES,
 };
 use crate::mood::{MOOD_CATEGORY, MOOD_TITLE};
 
@@ -352,6 +352,10 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
             "long-absence-reunion" => format!(
                 "- **用户离开了不短的时间**：约 {} 分钟没和你互动了（≥ {} 分钟阈值）。和 `wake-back`（系统刚唤醒）不同，这是用户那一侧的久别——开口要带「重逢感」：先简短关心一句、问一句轻松的归来话题（如「刚回来呀」「下午顺利吗」），不要立刻抛日程/工作类信息密集内容；语气比 wake-back 近一档但别热络过头。",
                 inputs.idle_minutes, LONG_ABSENCE_MINUTES
+            ),
+            "extreme-absence-reunion" => format!(
+                "- **用户已经一整天没出现了**：约 {} 分钟没和你互动了（≥ {} 分钟阈值，是 long-absence 的升级版）。这不是普通的久别，是「整天没看到你」级别的缺席——开口要带「真实伙伴的轻轻惦记」：先一句温和的检视感（「好久没见到你了，还好吗」「这一天你都去哪儿啦」），允许偶尔表达想念但**不要黏腻 / 不要质问**；语气比 long-absence 更柔，不抛任何工作 / 日程内容，只关心「人本身」。一句话搞定，给 ta 喘息空间。",
+                inputs.idle_minutes, EXTREME_ABSENCE_MINUTES
             ),
             "late-night-wellness" => format!(
                 "- **深夜还在用电脑**：现在已经 {} 点了，用户键鼠还活跃（{} 分钟内有动作）。这是 wellness 优先的时刻——这次开口请直接关心 ta 该休息了（「哎，{} 点了还在忙啊？该睡了」「夜深了，再不睡明天会累」之类）。语气暖但坚定，**不要**起新话题、不要追问工作进展、不要长篇——一句关心 + 一句「该睡了」就好。如果 ta 已经在做明显是收尾的事（关掉 IDE、回邮件等），可以更轻盈地说一声晚安。",

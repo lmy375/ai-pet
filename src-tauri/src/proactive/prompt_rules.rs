@@ -45,6 +45,14 @@ pub const LONG_IDLE_MINUTES: u64 = 60;
 /// out for lunch / in a meeting / asleep on a desktop / etc.
 pub const LONG_ABSENCE_MINUTES: u64 = 240;
 
+/// Iter R83: idle_minutes threshold for the stronger `extreme-absence-reunion`
+/// rule. 1440 = 24 hours — the user has been gone for ≥ a full day, well
+/// beyond Cν's "out for the afternoon" window. Pet should switch register
+/// from "刚回来呀" (Cν warmth) to "好久不见，还好吗" (gentle check-in concern).
+/// Mutually exclusive with `long-absence-reunion` — when extreme fires, long
+/// is suppressed so the LLM gets one clear signal, not two overlapping ones.
+pub const EXTREME_ABSENCE_MINUTES: u64 = 1440;
+
 /// Iter R3: the wee-night window in which the wellness nudge fires. Hours
 /// 0..LATE_NIGHT_END_HOUR — i.e. midnight through 3:59 — covers the band
 /// where staying on the computer is a wellness concern; 4am rolls into
@@ -215,6 +223,13 @@ pub fn active_environmental_rule_labels(
 /// - `long-idle-no-restraint`: it's been ≥ `LONG_IDLE_MINUTES` since the last proactive
 ///   AND the pet hasn't been chatty today AND we're not approaching quiet hours — a
 ///   safe window to surface a fresh topic instead of letting the silence drag on.
+/// - `long-absence-reunion` (Iter Cν): user idle ≥ `LONG_ABSENCE_MINUTES` (4h)
+///   AND under_chatty AND !pre_quiet — user is back after a half-day-ish gap.
+///   Mutually exclusive with `extreme-absence-reunion`.
+/// - `extreme-absence-reunion` (Iter R83): user idle ≥ `EXTREME_ABSENCE_MINUTES`
+///   (24h) — user has been gone for a full day or more. Replaces (suppresses)
+///   `long-absence-reunion` so the LLM gets one clear "shift register to
+///   gentle check-in concern" signal, not two overlapping ones.
 /// - `late-night-wellness` (Iter R3): hour < `LATE_NIGHT_END_HOUR` AND idle <
 ///   `LATE_NIGHT_ACTIVE_MAX_IDLE_MIN` — user is still at the keyboard past
 ///   midnight. Pet should nudge them to wrap up regardless of what the LLM
@@ -248,8 +263,19 @@ pub fn active_composite_rule_labels(
     // ≥ LONG_ABSENCE_MINUTES, regardless of pet-side cadence. Gates on
     // under_chatty (don't pile on if today's already chatty) and !pre_quiet
     // (don't add an opener register right before quiet hours kick in).
+    //
+    // Iter R83: when absence crosses EXTREME_ABSENCE_MINUTES (24h), escalate
+    // to `extreme-absence-reunion` and *suppress* the long-absence label —
+    // the LLM gets one signal, not two overlapping reunion cues. Real
+    // partner shifts from "刚回来呀" warmth to "好久不见，还好吗" check-in
+    // concern around the full-day mark; this rule encodes that shift.
     if idle_minutes >= LONG_ABSENCE_MINUTES && under_chatty && !pre_quiet {
-        labels.push("long-absence-reunion");
+        let label = if idle_minutes >= EXTREME_ABSENCE_MINUTES {
+            "extreme-absence-reunion"
+        } else {
+            "long-absence-reunion"
+        };
+        labels.push(label);
     }
     // Iter R3: late-night wellness — fires regardless of chatty / pre_quiet so
     // the pet always speaks up if user is still at the keyboard past midnight.
