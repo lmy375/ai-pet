@@ -218,6 +218,12 @@ pub struct PromptInputs<'a> {
     /// `format_yesterday_focus_recap_hint`. Empty when no yesterday
     /// stats / process restarted today.
     pub yesterday_focus_hint: &'a str,
+    /// Iter R74: personal-record celebration — "[今日破纪录] 用户今天最长
+    /// 一次专注 N 分钟..." Fires only when today's peak strictly exceeds
+    /// prior 7-day best (excludes today). Empty when tied / lower /
+    /// no-baseline. Pet uses to gently affirm without overdoing it.
+    /// Built from `active_app::current_personal_record_hint`.
+    pub personal_record_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -400,6 +406,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.active_app_hint);
     push_if_nonempty(&mut s, inputs.deep_focus_recovery_hint);
     push_if_nonempty(&mut s, inputs.yesterday_focus_hint);
+    push_if_nonempty(&mut s, inputs.personal_record_hint);
     push_if_nonempty(&mut s, inputs.length_register_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);

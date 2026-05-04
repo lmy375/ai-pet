@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R74 设计要点（已实现）
+- **R72 IDEA "先 surface 后 inject" 节奏到第三阶**：R72 加 day-level peak 字段（data） → R73 weekly peak（surface） → R74 prompt nudge（inject）。**三阶递进让 user 先 retrospect 看 stat，再让 LLM weave 进对话**。如果 R72 直接做 prompt nudge，user 还没建立 stat 信任就被宠物提醒"今天最长 X 分钟"——感觉算计；先 panel 让用户 retrospect 后注入是 conviction-building 顺序。
+- **strict > 阈值的选择**：tied 不算 record（"break" 字面意思就是超过）。也避免 user 重复触发 — 同一个 peak 多次 finalize（理论不发生但防御）不会重复 fire。第一次有 peak（prior=0）也不算 record（无 baseline）。**stat-celebration 的标准要 strict**，否则贬值快。
+- **prior_week_peak 排除今天**：使用 `< today` 而非 `<= today`。weekly_block_summary 的 peak_single_stretch_minutes (R73) 是包含今天的，对 panel 显示有用，但对"今日 vs 此前 7 天" 比较是 useless（"今天比包括今天的最大值高" 是不可能的）。**两个 peak 字段语义不同，分开计算**。
+- **运行时机：每次 proactive turn 都尝试 inject**：不像 R66 yesterday recap 仅 first-of-day，personal_record 只要数据满足就 fire。**好的 record celebration 应该在 record 发生后的下一次 turn 立即出现**，不必等到第二天。但用户能多次看到吗？只要今日 peak 没被新 finalize 超越就一直可见，turn-to-turn stable。
+- **prompt 文案"不必每次都提（如果用户已经很累就别强调）"**：让 LLM 自己 judge。**避免成 spam**——如果每个 turn 都 robotically 提 record，user 反感。LLM 做"context-aware celebration"。同 R66 yesterday focus 的 "自然带过即可，不必非提" 模式一致。
+- **没加 panel celebrate visual**：用 prompt-only 注入。**panel chip 已经显 max_single_stretch（R72） + week peak (R73 tooltip）**，再加"破纪录"指示 visual 冗余。celebration 是 LLM 的工作 (用语言)，不是 chip (用视觉)。**职责分离: panel = data, prompt = narrative**。
+- **测试 case 6 个覆盖 truth table**：today=0 / prior=0 / tied / lower / strictly higher / +1 boundary。**boundary case (+1) 单独测**避免 off-by-one；strict-only 阈值用 `<=` 实现，所以 today_peak == prior + 1 是首个 fire 点。
+- **R74 闭合 R72-R73 微 cluster**：data → surface → narrate 三 iter 后 deep-focus stat 完整覆盖。**未来扩展候选**：(a) 跨 modality (telegram chat 也注入 record hint 当 user 问起)；(b) 月度 peak（cap=14 不够，需扩 30+）；(c) "你的最长一次专注是 N 分钟" 历史最高记录（all-time）需要 separate persistence。
+
 ## Iter R73 设计要点（已实现）
 - **R72 day-level 镜像扩展到 week-level**：R72 加 day-level `max_single_stretch_minutes`，R73 自然延展加 weekly `peak_single_stretch_minutes` —— 同一 depth 维度在 day + week 两 granularity 都可见。**stat 系统的 granularity hierarchy 应该 mirror 而非碎片化**。
 - **R72 IDEA 标的"R73 候选"立刻还**：R72 IDEA 写"R73+ 候选：weekly 也加 peak 字段"，R73 兑现。**candidate list 兑现节奏 = 下一 iter 立即取**，避免堆积变 backlog 黑洞。

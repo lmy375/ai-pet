@@ -1487,6 +1487,13 @@ async fn run_proactive_turn(
         String::new()
     };
 
+    // Iter R74: personal-record celebration. Fires only when today's peak
+    // strictly exceeds the prior 7-day best (no tied / first-ever). Empty
+    // string when no record. Not first-of-day gated — celebrate as soon
+    // as the new peak finalizes (could be multiple turns after a long
+    // stretch wraps).
+    let personal_record_hint = current_personal_record_hint();
+
     // Iter R14: at the first proactive turn of a new day, surface yesterday's
     // last 2 utterances so the pet can pick up a thread instead of starting
     // cold every morning. Empty when (a) not first-of-day or (b) yesterday
@@ -1590,6 +1597,7 @@ async fn run_proactive_turn(
         length_register_hint: &length_register_hint,
         deep_focus_recovery_hint: &deep_focus_recovery_hint,
         yesterday_focus_hint: &yesterday_focus_hint,
+        personal_record_hint: &personal_record_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -2107,6 +2115,8 @@ mod prompt_tests {
             deep_focus_recovery_hint: "",
             // Default empty — pre-Iter R66 state, no yesterday focus history.
             yesterday_focus_hint: "",
+            // Default empty — pre-Iter R74 state, no personal record beaten today.
+            personal_record_hint: "",
         }
     }
 
