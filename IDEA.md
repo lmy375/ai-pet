@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R64 设计要点（已实现）
+- **R62 hard-block threshold 该不该全局固定？**：R62 用 const = 90，R29/R30 让用户能选 companion_mode (chatty / balanced / quiet) 但只调 cooldown / chatty_threshold。R62 的 90min 阈值跟用户偏好脱节 —— quiet 用户希望"我专注 60min 你就别打扰"，chatty 用户希望"我专注 2 小时你也试试"。**user dial 应该是 holistic 的**，每个 gate 的 magic number 都该跟 mode 一致。R64 把 R62 这个 magic number 也接进 mode 系统。
+- **chatty=135 / balanced=90 / quiet=60 三档**：math 选 base × 3/2 / base × 2/3 — symmetric multipliers，integer math 在 90 → 135/60 上 round-trip 干净。**quiet=60 跟 R27 directive 边界重合 = 软硬同步**：quiet 用户 R27 directive 立刻升级硬阻塞，pet "不犹豫" 退后；balanced 留 30 min 缓冲让 R27 自我纠偏；chatty 直接跳过 R27 缓冲扩到 135。**multiplier 选 1.5x / 0.67x 而非 2x / 0.5x** 是因为 hard-block 不像 cooldown 那么 user-tolerant — 翻倍会让 chatty 用户在 3 小时同 app 后才阻塞，太晚。
+- **API 边界 settings vs proactive**：apply_companion_mode_hard_block 放在 settings.rs（mode 调度是 settings 概念），但 ProactiveConfig::effective_hard_block_minutes(&self, base: u64) 让 caller 注入 base 而非硬编码 const。**避免 settings.rs 反向依赖 active_app::HARD_FOCUS_BLOCK_MINUTES const**。同 pattern 让 settings module 保持独立 / proactive module 保持自己的 magic numbers。
+- **gate 用 compute_deep_focus_block 而非 wrapper**：R62 时 `deep_focus_block_minutes()` 是 wrapper hardcode HARD_FOCUS_BLOCK_MINUTES。R64 gate 改用 cfg.effective_hard_block_minutes(...) 算出 threshold + 直接 `compute_deep_focus_block(prev, threshold, now)`。**wrapper 唯一 caller 改用 pure helper 后 wrapper 死代码** —— 删除而非保留。**helper 设计原则：pure helper 必留，wrapper 仅当多处调用时存在，单 caller 直接 inline pure**。
+- **panel chip threshold 从 snapshot 读**：之前 chip 写死 minutes >= 90，会跟 quiet/chatty 用户的 gate 行为脱节（chatty 用户在 90-134min 区间 chip 显 deep-red 但 gate 仍允许）。R64 加 ToneSnapshot.effective_hard_block_minutes 字段，chip 用此值做 threshold，hover tooltip 显当前 mode 的阈值。**chip 是 gate 的视觉镜像 — 阈值必须共享 source**。
+- **tooltip 解释三档值**：当前 mode 阈值 + 其他两档对照（chatty=135 / balanced=90 / quiet=60）写进 hover。让用户切换 mode 时知道"调小或调大会发生什么"，**为后续可能的 mode 切换实验做 affordance**。
+- **0 base 保留 opt-out 路径**：apply_companion_mode_hard_block(_, 0) 对所有 mode 都返回 0，跟 apply_companion_mode 一样。如果将来加 setting 让用户彻底关 hard-block (base = 0)，integer math 自动保留这个语义。**预留 future 控制点的方式 = math 不破坏 0 即 disabled**。
+
 ## Iter R63 设计要点（已实现）
 - **R62 → R63 是 "gate skip + recovery context" 一对**：R62 让 gate 在 90min+ 直接 skip，但 skip 一直 skip 不留 trace —— 用户真切出来后 pet 像"什么都没发生"一样开口。R63 补上 recovery hint：第一个 non-blocked turn injection "[刚结束深度专注] 用户刚从「X」N 分钟专注里切出来"。**block + recovery 是配对的，缺一就少了"伙伴注意到了" 那层**。
 - **take-on-use single-shot 模式**：take_recovery_hint 写完即清，所以同一个 block stretch 不会反复注入 hint。如果用户切到另一个 app 又快速回去深度专注，下一次 block 又被独立记录、下一次 recovery 又会触发。**state 设计跟着 user behavior 自动节奏**。

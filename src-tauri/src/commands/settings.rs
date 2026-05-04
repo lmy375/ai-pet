@@ -167,6 +167,23 @@ pub fn apply_companion_mode(mode: &str, base_cooldown: u64, base_chatty: u64) ->
     }
 }
 
+/// Iter R64: companion-mode dial for the R62 deep-focus hard-block
+/// threshold. Chatty users want pet to keep trying past 90min; quiet
+/// users want it to back off earlier (60 = matches R27 directive bound).
+/// - chatty: base × 3/2 (e.g. 90 → 135)
+/// - quiet: base × 2/3 (e.g. 90 → 60)
+/// - balanced / unknown: base unchanged (90)
+///
+/// Integer math, saturating, so 0 stays 0 (lets a future "no-block"
+/// opt-out cleanly). Pure / unit-testable.
+pub fn apply_companion_mode_hard_block(mode: &str, base: u64) -> u64 {
+    match mode {
+        "chatty" => base.saturating_mul(3) / 2,
+        "quiet" => base.saturating_mul(2) / 3,
+        _ => base, // balanced or unknown
+    }
+}
+
 impl ProactiveConfig {
     /// Iter R13 convenience: chatty-day threshold after applying
     /// companion_mode. Use this anywhere the prompt / gate / panel
@@ -193,6 +210,14 @@ impl ProactiveConfig {
             self.chatty_day_threshold,
         )
         .0
+    }
+
+    /// Iter R64: hard-block threshold (R62 const, default 90) after
+    /// applying companion_mode. Caller passes `base` (typically
+    /// `proactive::active_app::HARD_FOCUS_BLOCK_MINUTES`) so this stays
+    /// decoupled from the proactive module's const layout.
+    pub fn effective_hard_block_minutes(&self, base: u64) -> u64 {
+        apply_companion_mode_hard_block(&self.companion_mode, base)
     }
 }
 
@@ -507,6 +532,45 @@ mod tests {
         // Typo / missing field — don't punish the user with surprise behavior.
         assert_eq!(apply_companion_mode("typo", 1800, 5), (1800, 5));
         assert_eq!(apply_companion_mode("", 1800, 5), (1800, 5));
+    }
+
+    // -- Iter R64: apply_companion_mode_hard_block ---------------------------
+
+    #[test]
+    fn apply_companion_mode_hard_block_balanced_returns_base() {
+        assert_eq!(apply_companion_mode_hard_block("balanced", 90), 90);
+    }
+
+    #[test]
+    fn apply_companion_mode_hard_block_chatty_extends_threshold() {
+        // chatty users want pet to keep engaging past the default 90min;
+        // 1.5x = 135min lets pet still try mid-Pomodoro pairs.
+        assert_eq!(apply_companion_mode_hard_block("chatty", 90), 135);
+        assert_eq!(apply_companion_mode_hard_block("chatty", 60), 90);
+    }
+
+    #[test]
+    fn apply_companion_mode_hard_block_quiet_pulls_in_threshold() {
+        // quiet users want pet to back off sooner; 2/3x = 60min matches
+        // R27's existing directive boundary so soft + hard transitions
+        // coincide for quiet-mode users.
+        assert_eq!(apply_companion_mode_hard_block("quiet", 90), 60);
+        assert_eq!(apply_companion_mode_hard_block("quiet", 120), 80);
+    }
+
+    #[test]
+    fn apply_companion_mode_hard_block_unknown_falls_back_to_balanced() {
+        assert_eq!(apply_companion_mode_hard_block("typo", 90), 90);
+        assert_eq!(apply_companion_mode_hard_block("", 90), 90);
+    }
+
+    #[test]
+    fn apply_companion_mode_hard_block_zero_base_stays_zero() {
+        // 0 base = "no hard block" opt-out; multipliers preserve that
+        // (consistent with apply_companion_mode integer math semantics).
+        assert_eq!(apply_companion_mode_hard_block("chatty", 0), 0);
+        assert_eq!(apply_companion_mode_hard_block("quiet", 0), 0);
+        assert_eq!(apply_companion_mode_hard_block("balanced", 0), 0);
     }
 
     #[test]

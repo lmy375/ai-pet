@@ -136,13 +136,12 @@ pub fn compute_deep_focus_block(
     }
 }
 
-/// Iter R62: production wrapper. Reads LAST_ACTIVE_APP + Instant::now(),
-/// delegates to `compute_deep_focus_block`. Gate calls this; ToneSnapshot
-/// can read same wrapper to keep panel chip aligned with gate behavior.
-pub fn deep_focus_block_minutes() -> Option<u64> {
-    let prev = LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone());
-    compute_deep_focus_block(prev.as_ref(), HARD_FOCUS_BLOCK_MINUTES, Instant::now())
-}
+// Iter R62: production wrapper `deep_focus_block_minutes()` was inlined
+// in R64 — gate.rs now reads `LAST_ACTIVE_APP` + calls
+// `compute_deep_focus_block` directly with a config-derived threshold,
+// since the const-default 90 is no longer the only acceptable value.
+// Pure helper `compute_deep_focus_block` remains the single source of
+// truth.
 
 /// Iter R63: bookkeeping for the most recent hard-block. Gate writes
 /// this on every block tick (refreshing `marked_at` so the value reflects

@@ -152,6 +152,12 @@ export interface ToneSnapshot {
   // Iter R56: remaining seconds for transient note — symmetric with
   // mute_remaining_seconds. Used for chip / button countdown display.
   transient_note_remaining_seconds: number | null;
+  // Iter R64: effective hard-block threshold (minutes) after companion_mode
+  // applies (chatty=135 / balanced=90 / quiet=60). Same value the gate
+  // enforces, so the active_app chip can color-band against this instead
+  // of the const default — non-balanced users see chip color match gate
+  // behavior.
+  effective_hard_block_minutes: number;
 }
 
 /**
