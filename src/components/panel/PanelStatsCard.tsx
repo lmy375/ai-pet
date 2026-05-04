@@ -235,6 +235,38 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           {companionshipDays === 0 ? "天（今天初识）" : "天陪伴"}
         </span>
       </span>
+      {/* Iter R68: weekly deep-focus aggregate, sits before today's column
+          so user reads "本周整体 → 今日聚焦" left-to-right. Hidden when
+          window empty (consistent with daily empty-state hide). days
+          subtitle shows "Y 天/共 N 次/Xm" so summary self-explains depth. */}
+      {tone?.weekly_block_stats && tone.weekly_block_stats.total_count > 0 && (
+        <span
+          title={`本周（最近 7 天）有 ${tone.weekly_block_stats.days} 天进入深度专注，共完成 ${tone.weekly_block_stats.total_count} 次 stretch，峰值时长合计 ${tone.weekly_block_stats.total_minutes} 分钟。来自 R67 持久化的 DAILY_BLOCK_HISTORY，cap=7 entries。`}
+          style={{
+            display: "inline-flex",
+            alignItems: "baseline",
+            gap: "4px",
+            marginLeft: "8px",
+            paddingLeft: "12px",
+            borderLeft: "1px solid #e2e8f0",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "#9f1239",
+              lineHeight: 1,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+          >
+            🛑 {tone.weekly_block_stats.total_count}
+          </span>
+          <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+            本周/{tone.weekly_block_stats.total_minutes}m/{tone.weekly_block_stats.days}天
+          </span>
+        </span>
+      )}
       {/* Iter R65: today's deep-focus stretch summary. Finalized stretches
           only — in-progress block doesn't count yet (it'll show after
           finalize on transition or recovery hint). Hidden until at least

@@ -306,6 +306,64 @@ pub fn yesterday_block_stats() -> Option<DailyBlockStats> {
         .and_then(|g| g.iter().find(|s| s.date == yesterday).cloned())
 }
 
+/// Iter R68: weekly deep-focus summary — aggregated over last 7 calendar
+/// days. `days` counts how many distinct days have at least one stretch,
+/// `total_count` is sum of stretches, `total_minutes` is sum of peak
+/// minutes. Surfaced as a stat-card column distinct from today's row,
+/// so user sees "本周专注强度" trend without needing to mentally sum
+/// across 7 entries.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct WeeklyBlockSummary {
+    pub days: u64,
+    pub total_count: u64,
+    pub total_minutes: u64,
+}
+
+/// Iter R68: pure helper. Filters history to last 7 calendar days
+/// (today inclusive, today - 6 days = oldest), sums counts + minutes.
+/// Returns None when no entries match (fresh install / 7+ days quiet)
+/// or total_count == 0 (defensive). Pure — caller passes `today` so
+/// tests can drive any date deterministically.
+pub fn compute_weekly_block_summary(
+    history: &[DailyBlockStats],
+    today: chrono::NaiveDate,
+) -> Option<WeeklyBlockSummary> {
+    let week_start = today - chrono::Duration::days(6);
+    let entries: Vec<&DailyBlockStats> = history
+        .iter()
+        .filter(|s| s.date >= week_start && s.date <= today)
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    let total_count: u64 = entries.iter().map(|s| s.count).sum();
+    let total_minutes: u64 = entries
+        .iter()
+        .map(|s| s.total_minutes)
+        .fold(0u64, |a, b| a.saturating_add(b));
+    if total_count == 0 {
+        return None;
+    }
+    Some(WeeklyBlockSummary {
+        days: entries.len() as u64,
+        total_count,
+        total_minutes,
+    })
+}
+
+/// Iter R68: production wrapper reading DAILY_BLOCK_HISTORY + Local
+/// today. Same accessor as `current_daily_block_stats` —
+/// single-source-of-truth from history vec.
+pub fn current_weekly_block_summary() -> Option<WeeklyBlockSummary> {
+    let today = chrono::Local::now().date_naive();
+    let snap = DAILY_BLOCK_HISTORY
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    compute_weekly_block_summary(&snap, today)
+}
+
 /// Iter R66: pure formatter for the yesterday-deep-focus-recap hint.
 /// Returns "" when stats is None or count is 0 (no history / quiet
 /// day); otherwise frames yesterday's stretches in past-tense
@@ -1078,6 +1136,114 @@ mod tests {
         let back: Vec<DailyBlockStats> = serde_json::from_str(&raw).expect("parse");
         assert_eq!(back, history);
         let _ = std::fs::remove_file(&path);
+    }
+
+    // -- Iter R68: compute_weekly_block_summary tests -----------------------
+
+    #[test]
+    fn weekly_summary_returns_none_for_empty_history() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        assert_eq!(compute_weekly_block_summary(&[], today), None);
+    }
+
+    #[test]
+    fn weekly_summary_aggregates_within_7_day_window() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), // 3 days ago
+                count: 2,
+                total_minutes: 200,
+            },
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
+                count: 1,
+                total_minutes: 100,
+            },
+            DailyBlockStats {
+                date: today,
+                count: 3,
+                total_minutes: 300,
+            },
+        ];
+        let summary = compute_weekly_block_summary(&history, today).expect("entries match");
+        assert_eq!(summary.days, 3);
+        assert_eq!(summary.total_count, 6);
+        assert_eq!(summary.total_minutes, 600);
+    }
+
+    #[test]
+    fn weekly_summary_excludes_entries_older_than_7_days() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 8).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), // 7 days ago — included (boundary)
+                count: 1,
+                total_minutes: 90,
+            },
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 4, 30).unwrap(), // 8 days ago — excluded
+                count: 5,
+                total_minutes: 500,
+            },
+            DailyBlockStats {
+                date: today,
+                count: 2,
+                total_minutes: 200,
+            },
+        ];
+        // Window is today - 6..=today = 5/2..=5/8. So 5/1 is OUT (older than window).
+        let summary = compute_weekly_block_summary(&history, today).expect("today matches");
+        assert_eq!(summary.days, 1);
+        assert_eq!(summary.total_count, 2);
+        assert_eq!(summary.total_minutes, 200);
+    }
+
+    #[test]
+    fn weekly_summary_includes_window_oldest_boundary() {
+        // today - 6 days is the oldest day still inside the window.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 8).unwrap();
+        let oldest = NaiveDate::from_ymd_opt(2026, 5, 2).unwrap(); // exactly today - 6
+        let history = vec![DailyBlockStats {
+            date: oldest,
+            count: 1,
+            total_minutes: 95,
+        }];
+        let summary = compute_weekly_block_summary(&history, today).expect("boundary inclusive");
+        assert_eq!(summary.days, 1);
+        assert_eq!(summary.total_count, 1);
+    }
+
+    #[test]
+    fn weekly_summary_returns_none_when_all_entries_have_zero_count() {
+        // Defensive: a degenerate history of zero-count entries returns None
+        // (matches the "stat as confirmation, not zero-state" UX from R65).
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![DailyBlockStats {
+            date: today,
+            count: 0,
+            total_minutes: 0,
+        }];
+        assert_eq!(compute_weekly_block_summary(&history, today), None);
+    }
+
+    #[test]
+    fn weekly_summary_saturates_minutes_overflow() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
+                count: 1,
+                total_minutes: u64::MAX,
+            },
+            DailyBlockStats {
+                date: today,
+                count: 1,
+                total_minutes: 100,
+            },
+        ];
+        let summary = compute_weekly_block_summary(&history, today).expect("aggregates");
+        assert_eq!(summary.total_minutes, u64::MAX);
     }
 
     #[test]

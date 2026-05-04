@@ -166,6 +166,16 @@ export interface ToneSnapshot {
     count: number;
     total_minutes: number;
   } | null;
+  // Iter R68: last-7-day aggregate — summed across DAILY_BLOCK_HISTORY
+  // entries in [today-6 .. today]. null when window has no entries (fresh
+  // install / quiet week). `days` = distinct days with at least one
+  // stretch in the window; total_count = stretches summed; total_minutes
+  // = peak minutes summed.
+  weekly_block_stats: {
+    days: number;
+    total_count: number;
+    total_minutes: number;
+  } | null;
 }
 
 /**

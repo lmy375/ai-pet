@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R68：本周 deep-focus 聚合 + PanelStatsCard 新列
+- 现状缺口：R66 的 cap=7 future-proof "剩 5 槽位预留'本周专注总分钟' 等扩展"。R67 持久化让数据真存活，但 panel 还是只显今日列，本周聚合没 surface。R68 兑现 promise。
+- 改动：
+  - `proactive/active_app.rs`：
+    - 新 struct `WeeklyBlockSummary { days, total_count, total_minutes }` + serde::Serialize。
+    - 纯函数 `compute_weekly_block_summary(history, today) -> Option<WeeklyBlockSummary>`：filter date >= today-6 && <= today（双闭区间 = "最近 7 天"），sum count + minutes (saturating)。total_count==0 → None（沿 R65 stat-as-confirmation UX 原则）。
+    - 生产 wrapper `current_weekly_block_summary()` 读 DAILY_BLOCK_HISTORY + Local 今日。
+    - 6 单测覆盖 empty / 7 天内聚合 / older-than-7-days exclusion / boundary inclusive / zero-count → None / saturating overflow。
+  - `proactive.rs`：ToneSnapshot 加 `weekly_block_stats: Option<WeeklyBlockSummary>` 字段；build_tone_snapshot 用新 wrapper 填。
+  - `panelTypes.ts`：TS 类型加同字段。
+  - `PanelStatsCard.tsx`：新列 "🛑 N 本周/Xm/Y天"，色 #9f1239（比 R65 的 #7f1d1d deep-red 略浅，区分今日 vs 本周）。total_count > 0 才渲染。tooltip 解释聚合 + 数据源 + cap=7。位置紧贴今日列之前，让 UX 自然"本周 → 今日"递近。
+  - **562 tests pass**（556 → 562, +6 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **R66 cap=7 future-proof 真正被使用**：affordance 兑现而非空话。
+  - **panel "本周整体 → 今日聚焦" 双层**：用户 retrospective 视野扩到周。
+  - **window 用 date filter 而非 last-N-entries**：cap 是 storage bound，date filter 是 semantic 真值，不混淆。
+
 ## 2026-05-04 — Iter R67：deep-focus history 持久化到磁盘
 - 现状缺口：R66 IDEA 显式标"R67+ 候选"——`Mutex<Vec<DailyBlockStats>>` 全 in-memory，process 重启后 history 全失。"昨日深度专注 recap" 是 first-of-day hint，重启后 hint 无源就没了。
 - 改动：

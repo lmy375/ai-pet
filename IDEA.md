@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R68 设计要点（已实现）
+- **R66 的 cap=7 future-proof 立刻被 R68 用上**：R66 写"剩 5 个槽位预留'本周专注总分钟' 等扩展"，R68 就把这预留兑现。**前 iter 留的 affordance 是 promise**，下个 iter 用得上 promise 才合理；不用就是过度设计。
+- **window filter 用 today - 6 days 而非 simple last-7-entries**：cap=7 的 vec 同样可能含 8 天前的 stale entry（如果某天 cap drain 之后又有新 entry 插入更早 date）。**date filter 是 semantic 真值**，cap 是 storage bound；二者不该混淆。helper 这样设计也让"future cap 升级到 14" 时 weekly window 不会自动变成 last-14。
+- **boundary inclusive (today 以及 today-6)**：测试显式 cover 7 天前的 boundary 仍 included、8 天前的 excluded。**range 用 `>=` `<=` 双闭比 strict less 更符合自然语言"最近 7 天"语义**。文档措辞跟实现严格对齐。
+- **none 而非 zero stat**：R65 codify "stat as confirmation, not zero-state"。R68 weekly summary 同理 — 全空 / total_count==0 都返回 None，PanelStatsCard 不渲染。**新 iter 复用 codified UX 原则**，不重复决策。
+- **stat-card 横排放在 daily 之前**：UX 阅读顺序"本周 → 今日"自左向右递近，符合 expected mental flow（"我这周咋样, 今天到目前为止呢"）。tooltip 解释聚合源 + cap 边界给 power user 自检。
+- **saturating math 一致性**：compute_weekly_block_summary 用 fold + saturating_add；跟 compute_history_after_finalize 同 saturating 风格。**stat 系统全程 defensive saturation**，永不 panic on overflow。
+- **wrapper / pure 拆分继续**：current_weekly_block_summary 是非 pure（读 static + Local::now），compute_weekly_block_summary 是 pure。继续 R20 codify 的"pure helper 不知 settings/clock, wrapper 知"。
+- **R68 cluster status**：R62 → R67 是"deep-focus pipeline"（gate / recovery / mode / today / yesterday / persist）。R68 是 cluster 第 7 iter，开始向"汇总 / trend" 方向延展。继续 cluster 的话候选：(a) PanelDebug 多日 sparkline；(b) butler_tasks deadline；(c) "本周比上周变化" trend 指示。
+
 ## Iter R67 设计要点（已实现）
 - **R66 IDEA 标的"未来 R67+ 候选"立刻还**：R66 写"memory-only OK，先 ship 内存版；持久化留 R67+ 候选"。R67 立刻补上。**TODO 标"未来候选"是 promise，不是逃避；下一个 cluster slot 就还**。这种节奏类似 R29/R30 codified 之后立即在 R30 audit-and-backfill。
 - **save 在 finalize 之外** 而非 inside DAILY_BLOCK_HISTORY 锁内：finalize_stretch 释放锁后才 save_block_history。**减少 mutex 持有时间**，IO 是慢操作，不该卡住其他读 / 写。代价是窗口内可能有 race —— 但 history 是 append-only 性质，race 顶多让"刚 finalize 没写完"，下次 finalize 会再写，无数据丢失。
