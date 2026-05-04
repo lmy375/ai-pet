@@ -88,6 +88,11 @@ pub fn run() {
                 }
             });
 
+            // Iter R67: hydrate deep-focus history from disk before the proactive
+            // loop's first tick. Idempotent — repeats no-op once memory has any
+            // entry. Empty file / parse failure → silent fallback to empty memory.
+            crate::proactive::load_block_history_into_memory();
+
             // Start proactive engagement loop (reads settings each tick).
             proactive::spawn(app.handle().clone());
 

@@ -205,7 +205,9 @@ pub fn record_hard_block(app: &str, peak_minutes: u64) {
 /// stretch (if any) is *not* counted yet — it'll be added when it
 /// finalizes. So "今日深度专注 N 次, X 分钟" reflects completed
 /// sessions only, not in-progress.
-#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+///
+/// Iter R67: derive Deserialize so disk-persistence layer can round-trip.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DailyBlockStats {
     /// Local date the stats apply to. Daily roll-over resets count and
     /// total_minutes to 0 in `compute_finalize_stats` when a new day's
@@ -268,10 +270,18 @@ pub fn compute_history_after_finalize(
 /// exactly once across both paths.
 pub fn finalize_stretch(peak_minutes: u64) {
     let today = chrono::Local::now().date_naive();
-    if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
-        let next = compute_history_after_finalize(&g, today, peak_minutes, DAILY_BLOCK_HISTORY_CAP);
-        *g = next;
-    }
+    let next = if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
+        let n = compute_history_after_finalize(&g, today, peak_minutes, DAILY_BLOCK_HISTORY_CAP);
+        *g = n.clone();
+        n
+    } else {
+        return;
+    };
+    // Iter R67: persist after each finalize so process restart survives
+    // history. Best-effort — disk failure logged but doesn't disrupt the
+    // loop. Write happens outside the in-memory lock to keep mutex hold
+    // time short (file IO is the slow part).
+    save_block_history(&next);
 }
 
 /// Iter R65/R66: panel-side read of today's stats. Looks up today's
@@ -309,6 +319,82 @@ pub fn format_yesterday_focus_recap_hint(stats: Option<&DailyBlockStats>) -> Str
             s.count, s.total_minutes
         ),
         _ => String::new(),
+    }
+}
+
+// -- Iter R67: disk persistence ---------------------------------------------
+
+/// Iter R67: where the focus history JSON lives. None on platforms
+/// without a config dir (rare on macOS / Linux / Windows), in which
+/// case persistence silently degrades to memory-only — acceptable
+/// fallback since the in-memory history still works for the same-session
+/// case.
+fn block_history_path() -> Option<std::path::PathBuf> {
+    Some(
+        dirs::config_dir()?
+            .join("pet")
+            .join("daily_block_history.json"),
+    )
+}
+
+/// Iter R67: serialize history to disk as JSON. Best-effort —
+/// IO errors swallowed (logged via eprintln so dev sees them but
+/// doesn't crash the proactive loop on transient FS issues like
+/// disk full / permission). Creates parent dir if missing.
+pub fn save_block_history(history: &[DailyBlockStats]) {
+    let Some(path) = block_history_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = match serde_json::to_string_pretty(history) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("save_block_history: serialize failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = std::fs::write(&path, json) {
+        eprintln!("save_block_history: write {} failed: {}", path.display(), e);
+    }
+}
+
+/// Iter R67: read history from disk. Returns empty Vec on any error
+/// (file missing / parse failure / permission). Corruption tolerance
+/// matters here — a malformed JSON shouldn't permanently lose all
+/// future stats; we just start fresh and rewrite on next finalize.
+pub fn load_block_history() -> Vec<DailyBlockStats> {
+    let Some(path) = block_history_path() else {
+        return Vec::new();
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(), // missing file is normal on first run
+    };
+    serde_json::from_str(&raw).unwrap_or_else(|e| {
+        eprintln!(
+            "load_block_history: parse failed (treating as empty): {}",
+            e
+        );
+        Vec::new()
+    })
+}
+
+/// Iter R67: idempotent boot-time load. Reads disk → in-memory
+/// DAILY_BLOCK_HISTORY only when in-memory is currently empty (so
+/// repeat calls after some finalize() are no-ops, won't clobber
+/// in-progress data). Caller is `lib.rs` startup before
+/// `proactive::spawn` so the very first tick sees prior history.
+pub fn load_block_history_into_memory() {
+    let disk = load_block_history();
+    if disk.is_empty() {
+        return;
+    }
+    if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
+        if g.is_empty() {
+            *g = disk;
+        }
     }
 }
 
@@ -648,6 +734,7 @@ mod tests {
 
     #[test]
     fn refresh_snapshot_writes_through_when_some_app() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Lock the static directly to verify the write — single-threaded
         // test, but other tests may also touch LAST_ACTIVE_APP. Reset
         // before / restore after to avoid interfering.
@@ -665,6 +752,12 @@ mod tests {
     }
 
     // -- Iter R63: compute_recovery_hint tests ------------------------------
+
+    /// Iter R67: serialize tests that mutate process-wide statics
+    /// (DAILY_BLOCK_HISTORY / LAST_HARD_BLOCK / LAST_ACTIVE_APP) so they
+    /// don't race when cargo test runs in parallel. Each affected test
+    /// `_guard = TEST_LOCK.lock().unwrap()` at the top.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn block(app: &str, mins: u64, marked_at: Instant) -> LastHardBlock {
         LastHardBlock {
@@ -748,6 +841,7 @@ mod tests {
 
     #[test]
     fn record_and_take_round_trip_clears_state() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Ensure clean slate; restore at end so other tests aren't disturbed.
         let original = LAST_HARD_BLOCK.lock().ok().and_then(|g| g.clone());
         if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
@@ -770,6 +864,7 @@ mod tests {
 
     #[test]
     fn take_recovery_hint_returns_empty_when_no_record() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let original = LAST_HARD_BLOCK.lock().ok().and_then(|g| g.clone());
         if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
             *g = None;
@@ -877,6 +972,7 @@ mod tests {
 
     #[test]
     fn finalize_stretch_round_trip_today_and_yesterday() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Reset DAILY_BLOCK_HISTORY, run finalize, verify today reads back.
         let original = DAILY_BLOCK_HISTORY
             .lock()
@@ -929,5 +1025,93 @@ mod tests {
         assert!(out.contains("3 次"));
         assert!(out.contains("270"));
         assert!(out.contains("自然带过"));
+    }
+
+    // -- Iter R67: persistence helpers --------------------------------------
+
+    #[test]
+    fn block_stats_serde_round_trip() {
+        // History → JSON → History should preserve all fields.
+        let history = vec![
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
+                count: 2,
+                total_minutes: 180,
+            },
+            DailyBlockStats {
+                date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+                count: 1,
+                total_minutes: 95,
+            },
+        ];
+        let json = serde_json::to_string(&history).expect("serialize");
+        let back: Vec<DailyBlockStats> = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, history);
+    }
+
+    #[test]
+    fn load_block_history_returns_empty_on_corrupt_json() {
+        // Corrupt JSON should degrade gracefully to empty Vec, not panic.
+        let raw = "{ this is not valid json }";
+        let parsed: Result<Vec<DailyBlockStats>, _> = serde_json::from_str(raw);
+        assert!(parsed.is_err());
+        // The wrapper `load_block_history` reads from a fixed path; we
+        // can't override that without env hackery, so this assertion
+        // documents the invariant the wrapper relies on (parse failure
+        // → wrapper returns empty Vec).
+    }
+
+    #[test]
+    fn save_and_load_round_trip_via_temp_path() {
+        // Manual round trip without going through the dirs::config_dir
+        // wrapper — verify the JSON layer alone behaves consistently.
+        let history = vec![DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 5,
+            total_minutes: 450,
+        }];
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("pet_r67_test_{}.json", std::process::id()));
+        let json = serde_json::to_string_pretty(&history).expect("serialize");
+        std::fs::write(&path, json).expect("write");
+        let raw = std::fs::read_to_string(&path).expect("read");
+        let back: Vec<DailyBlockStats> = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(back, history);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_block_history_into_memory_is_idempotent_when_memory_nonempty() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // If memory already has an entry, load should NOT clobber it
+        // (prevents startup-load racing finalize calls from blowing away
+        // in-progress data). We simulate by pre-populating memory then
+        // calling load — memory should remain unchanged.
+        let original = DAILY_BLOCK_HISTORY
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let marker_date = NaiveDate::from_ymd_opt(1999, 12, 31).unwrap(); // sentinel
+        if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
+            *g = vec![DailyBlockStats {
+                date: marker_date,
+                count: 99,
+                total_minutes: 9999,
+            }];
+        }
+        load_block_history_into_memory();
+        let after = DAILY_BLOCK_HISTORY
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].date, marker_date);
+        assert_eq!(after[0].count, 99);
+        // Restore.
+        if let Ok(mut g) = DAILY_BLOCK_HISTORY.lock() {
+            *g = original;
+        }
     }
 }

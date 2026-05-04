@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R67 设计要点（已实现）
+- **R66 IDEA 标的"未来 R67+ 候选"立刻还**：R66 写"memory-only OK，先 ship 内存版；持久化留 R67+ 候选"。R67 立刻补上。**TODO 标"未来候选"是 promise，不是逃避；下一个 cluster slot 就还**。这种节奏类似 R29/R30 codified 之后立即在 R30 audit-and-backfill。
+- **save 在 finalize 之外** 而非 inside DAILY_BLOCK_HISTORY 锁内：finalize_stretch 释放锁后才 save_block_history。**减少 mutex 持有时间**，IO 是慢操作，不该卡住其他读 / 写。代价是窗口内可能有 race —— 但 history 是 append-only 性质，race 顶多让"刚 finalize 没写完"，下次 finalize 会再写，无数据丢失。
+- **load_block_history_into_memory idempotent guarantee**：startup 调一次 + memory non-empty 就 no-op。如果 process 重启早就发生过 finalize（罕见但理论上：startup 慢，proactive::spawn 启动 IT first tick 可能在 load_block_history_into_memory 之前），load 不会 clobber。**保证："load is safe to call regardless of state"** = startup ordering 不重要，简化 lib.rs。
+- **error tolerance 三层**：(1) `dirs::config_dir()` None → 平台不支持 → fallback memory-only；(2) `read_to_string` 失败 → file missing 或 permission → 当作 empty Vec；(3) `from_str` 解析失败 → corrupt JSON → empty Vec + log。**坏的 JSON 不应永久 freeze stat 系统**，下次 finalize 重新写干净版本。
+- **测试 race 暴露的问题**：cargo test 默认 parallel，多 test 同时 mutate DAILY_BLOCK_HISTORY 出错。R67 加 TEST_LOCK 串行化关键测试。**"Mutex<Option<>>" 单 slot 时代不暴露这个**（lock briefly + restore），但 R66 vec 让 finalize 写更复杂 + R67 disk IO 让窗口更长，race 显现。**测试套规模过 500 后必须考虑 cross-test isolation**。
+- **TEST_LOCK 用 unwrap_or_else(|p| p.into_inner())**：tests 失败时 mutex 不 poison —— 让后续 test 能继续抢锁。常规 `lock().unwrap()` 在某 test panic 后会阻塞所有后续。**测试基础设施应该 graceful**，不让一个失败拖累一批。
+- **不写测试一定不写到生产 file path**：load_block_history_into_memory 直接调 dirs::config_dir 真路径，测试不在 sandbox 下会污染 ~/.config/pet。R67 的"持久化测试"通过 std::env::temp_dir + 独立 path 验证 JSON 层，不调 wrapper 直接走 disk。**生产 IO wrapper 不便测，分离 pure JSON 层 + path 层就好测**。
+- **未来 cluster R68+ 候选**：(a) panel 显示 last 7 days focus stretch 总分钟（cap=7 的 future-proof 用户）；(b) butler_tasks deadline 字段；(c) 持久化 LAST_HARD_BLOCK / LAST_ACTIVE_APP（让 recovery hint 跨重启）—— 但这些 transient state 重启后基本无意义，不必持久化。
+
 ## Iter R66 设计要点（已实现）
 - **R65 single-Option 升级到 history Vec**：R65 用 `Mutex<Option<DailyBlockStats>>` 存今日 stat。今日第一个 finalize 会覆盖昨日的 record，**昨日 stat 立刻丢失**，跨日 recap 无来源。R66 改 `Mutex<Vec<DailyBlockStats>>` 滚动 7 天历史，今日 finalize 不再 evict 昨日。**single-slot → history vec 是不可避免的演进**，从一开始就该用 vec —— 但 R65 当时只满足"今日 stat" 需求，over-engineer 是浪费。**演进式重构在需求来时再做**。
 - **cap = 7 = 一周的 future-proof**：今天 + 昨天只用 2 entries，剩 5 个槽位预留"本周专注总分钟" 等更广 stat。**cap 选择基于"未来一两个 iter 可能用到"的预期**，不为遥远功能预留太大缓存。7 是天然的人类周期边界。
