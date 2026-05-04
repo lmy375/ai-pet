@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R75 设计要点（已实现）
+- **R74 IDEA 标的"cross modality"立刻执行**：R74 personal-record 只 inject proactive prompt。R75 把 record 信息也嵌进 reactive chat / telegram 共享的 focus_context layer。**modality parity 是 cross-domain bridge 的标准 follow-up**——R70-R71 已建立 layer 机制，R75 让 record 数据穿过去。
+- **同 strict-> 阈值在 chat 和 proactive 共享**：R74 compute_personal_record_hint 用 strict > 0 双条件；R75 format_focus_context_layer 内部也是同 logic。**两路径不能 drift**——单 source DAILY_BLOCK_HISTORY，单语义 strict-> only。
+- **chat layer 文案 vs proactive 文案差异**：proactive R74 写 "可以温和肯定一下 / 替他高兴"（directive 给 LLM 表达建议）。R75 chat layer 写 "可以为他高兴一下，不必夸张"（context primer 不是 directive）。**reactive chat AI 是被叫起来回答，proactive AI 是主动开口** —— 二者文案 register 不同。
+- **wrapper 在 chat.rs 直接读 DAILY_BLOCK_HISTORY static**：跟 R74 wrapper 在 active_app.rs 形成对称。chat.rs 是消费者，access pattern 跟 R72 chat.rs 引用 DailyBlockStats 一样（through glob re-export）。**static access 不必 always 走 helper wrapper**——多 caller 不同语义时直接 inline 计算更直接。
+- **测试 fixture 4-arg 升级用 5-line python 自动加 None**：R72/R73 codified pattern 第三次复用（DailyBlockStats / WeeklyBlockSummary / format_focus_context_layer）。**function signature evolution 的 batch fixup 已成模式**——签名增项→sed 加默认值→测试通过。
+- **layer 行序：current → today → week → record → guidance**：reading order 时效与 narrative 强度递进。in-progress 是"现在"，today 是"今天"，week 是"本周"，record 是"特别"——celebration 该在 retrospect 信息之后才有上下文支撑。**信息架构有逻辑序，不是 dump-list**。
+- **record 单独 fire 也渲染整个 layer**：测试 case `focus_context_record_alone_renders_layer` 显式让 only-record signal 也产出 layer。**信号触发 layer 的策略是 inclusive**——任何一个分支有 data 就 render，反映 has_record 进 has_anything 检查。
+- **chat / telegram 共享 inject 函数 = 单点改动**：R71 已让 telegram 共享 inject_focus_context_layer。R75 改 wrapper 一处，telegram 自动得到 record 信息。**cross-modality consistency 通过共享 helper 而非 duplicate code**——R70-R71 投入的 layer abstraction 这次回报。
+
 ## Iter R74 设计要点（已实现）
 - **R72 IDEA "先 surface 后 inject" 节奏到第三阶**：R72 加 day-level peak 字段（data） → R73 weekly peak（surface） → R74 prompt nudge（inject）。**三阶递进让 user 先 retrospect 看 stat，再让 LLM weave 进对话**。如果 R72 直接做 prompt nudge，user 还没建立 stat 信任就被宠物提醒"今天最长 X 分钟"——感觉算计；先 panel 让用户 retrospect 后注入是 conviction-building 顺序。
 - **strict > 阈值的选择**：tied 不算 record（"break" 字面意思就是超过）。也避免 user 重复触发 — 同一个 peak 多次 finalize（理论不发生但防御）不会重复 fire。第一次有 peak（prior=0）也不算 record（无 baseline）。**stat-celebration 的标准要 strict**，否则贬值快。

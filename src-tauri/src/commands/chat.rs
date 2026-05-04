@@ -218,10 +218,11 @@ pub fn format_recent_speech_layer(lines: &[String]) -> String {
 /// fires so the AI can adjust tone (be brief if user is deep in flow).
 pub const IN_PROGRESS_FOCUS_MIN_MINUTES: u64 = 30;
 
-/// Iter R70/R71: format a "what the user has been doing focus-wise today /
-/// this week + currently" system note for reactive chat. Lets the AI answer
-/// "我今天怎么样" coherently without the user re-explaining, and stay brief
-/// if the user is mid-focus.
+/// Iter R70/R71/R75: format a "what the user has been doing focus-wise today /
+/// this week + currently + record-status" system note for reactive chat.
+/// Lets the AI answer "我今天怎么样" coherently without the user re-explaining,
+/// stay brief if the user is mid-focus, and acknowledge a record when one is
+/// fresh.
 ///
 /// Pure — caller passes already-fetched stats so the formatter is unit-testable
 /// without static / clock access. Empty when no signal at all (no today / no
@@ -229,18 +230,23 @@ pub const IN_PROGRESS_FOCUS_MIN_MINUTES: u64 = 30;
 /// just the lines that have data.
 ///
 /// `in_progress` is `(app_name, minutes)` for the active focus session, or None
-/// when below `IN_PROGRESS_FOCUS_MIN_MINUTES` / no app tracked. Caller (R71
-/// wrapper) does the threshold gating; pure helper just renders whatever
-/// it's given.
+/// when below `IN_PROGRESS_FOCUS_MIN_MINUTES` / no app tracked.
+///
+/// Iter R75: `record` is `(today_peak, prior_week_peak)` for the depth-record
+/// detection — internal strict-> check fires only when today_peak > prior > 0
+/// (matches R74 compute_personal_record_hint semantics so chat + proactive
+/// can't drift). Caller passes raw stats; helper decides whether to render.
 pub fn format_focus_context_layer(
     today: Option<&crate::proactive::DailyBlockStats>,
     weekly: Option<&crate::proactive::WeeklyBlockSummary>,
     in_progress: Option<(&str, u64)>,
+    record: Option<(u64, u64)>,
 ) -> String {
     let has_today = today.map(|s| s.count > 0).unwrap_or(false);
     let has_weekly = weekly.map(|s| s.total_count > 0).unwrap_or(false);
     let has_in_progress = in_progress.is_some();
-    if !has_today && !has_weekly && !has_in_progress {
+    let has_record = matches!(record, Some((t, p)) if t > p && p > 0);
+    if !has_today && !has_weekly && !has_in_progress && !has_record {
         return String::new();
     }
     let mut lines: Vec<String> = Vec::new();
@@ -269,6 +275,15 @@ pub fn format_focus_context_layer(
             ));
         }
     }
+    // Iter R75: record line — strict > check matches R74 logic.
+    if let Some((today_peak, prior_peak)) = record {
+        if today_peak > prior_peak && prior_peak > 0 {
+            lines.push(format!(
+                "今天最长一次专注 {} 分钟，超过最近 7 天此前最长 {} 分钟（破纪录，可以为他高兴一下，不必夸张）。",
+                today_peak, prior_peak
+            ));
+        }
+    }
     lines.push(
         "如果用户问起「今天怎么样」之类，可以自然提及；如果用户刚结束一段专注或正在专注中，回答简洁，不长篇大论。"
             .to_string(),
@@ -291,7 +306,32 @@ pub fn inject_focus_context_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMes
         .as_ref()
         .filter(|s| s.minutes >= IN_PROGRESS_FOCUS_MIN_MINUTES)
         .map(|s| (s.app.as_str(), s.minutes));
-    let body = format_focus_context_layer(today.as_ref(), weekly.as_ref(), in_progress);
+    // Iter R75: surface today's peak vs prior 7-day best so chat layer
+    // mirrors R74's proactive personal-record nudge. Same DAILY_BLOCK_HISTORY
+    // single-source-of-truth — chat + proactive can't drift on what counts
+    // as a record. Always pass the pair; format_focus_context_layer's
+    // strict-> internal gate decides whether to render.
+    let today_peak = today
+        .as_ref()
+        .map(|s| s.max_single_stretch_minutes)
+        .unwrap_or(0);
+    let prior_week_peak = {
+        let local_today = chrono::Local::now().date_naive();
+        let week_start = local_today - chrono::Duration::days(6);
+        let history = crate::proactive::DAILY_BLOCK_HISTORY
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        history
+            .iter()
+            .filter(|s| s.date >= week_start && s.date < local_today)
+            .map(|s| s.max_single_stretch_minutes)
+            .max()
+            .unwrap_or(0)
+    };
+    let record = Some((today_peak, prior_week_peak));
+    let body = format_focus_context_layer(today.as_ref(), weekly.as_ref(), in_progress, record);
     if body.is_empty() {
         return messages;
     }
@@ -1264,7 +1304,7 @@ mod trim_tests {
 
     #[test]
     fn focus_context_returns_empty_when_no_stats() {
-        assert_eq!(format_focus_context_layer(None, None, None), "");
+        assert_eq!(format_focus_context_layer(None, None, None, None), "");
     }
 
     #[test]
@@ -1276,7 +1316,10 @@ mod trim_tests {
             max_single_stretch_minutes: 0,
         };
         // Defensive: today entry exists with zero count, weekly + in_progress None.
-        assert_eq!(format_focus_context_layer(Some(&today), None, None), "");
+        assert_eq!(
+            format_focus_context_layer(Some(&today), None, None, None),
+            ""
+        );
     }
 
     #[test]
@@ -1287,7 +1330,7 @@ mod trim_tests {
             total_minutes: 270,
             max_single_stretch_minutes: 0,
         };
-        let out = format_focus_context_layer(Some(&today), None, None);
+        let out = format_focus_context_layer(Some(&today), None, None, None);
         assert!(out.contains("[今日专注状态]"));
         assert!(out.contains("3 次"));
         assert!(out.contains("270"));
@@ -1302,7 +1345,7 @@ mod trim_tests {
             total_minutes: 810,
             peak_single_stretch_minutes: 0,
         };
-        let out = format_focus_context_layer(None, Some(&weekly), None);
+        let out = format_focus_context_layer(None, Some(&weekly), None, None);
         assert!(out.contains("[今日专注状态]"));
         assert!(out.contains("9 次"));
         assert!(out.contains("810"));
@@ -1323,7 +1366,7 @@ mod trim_tests {
             total_minutes: 450,
             peak_single_stretch_minutes: 0,
         };
-        let out = format_focus_context_layer(Some(&today), Some(&weekly), None);
+        let out = format_focus_context_layer(Some(&today), Some(&weekly), None, None);
         // Both stats appear; tail guidance always present.
         assert!(out.contains("今天已完成 2 次"));
         assert!(out.contains("本周（最近 7 天）累计 5 次"));
@@ -1346,7 +1389,7 @@ mod trim_tests {
             total_minutes: 270,
             peak_single_stretch_minutes: 0,
         };
-        let out = format_focus_context_layer(Some(&today), Some(&weekly), None);
+        let out = format_focus_context_layer(Some(&today), Some(&weekly), None, None);
         assert!(out.contains("[今日专注状态]"));
         assert!(!out.contains("今天已完成 0"));
         assert!(out.contains("本周（最近 7 天）累计 3 次"));
@@ -1359,7 +1402,7 @@ mod trim_tests {
         // Only in-progress signal present (no today, no weekly stats yet —
         // user just opened the app mid-focus on a fresh day). Should still
         // surface the in-progress line.
-        let out = format_focus_context_layer(None, None, Some(("Cursor", 45)));
+        let out = format_focus_context_layer(None, None, Some(("Cursor", 45)), None);
         assert!(out.contains("[今日专注状态]"));
         assert!(out.contains("Cursor"));
         assert!(out.contains("45 分钟"));
@@ -1377,7 +1420,7 @@ mod trim_tests {
             total_minutes: 95,
             max_single_stretch_minutes: 0,
         };
-        let out = format_focus_context_layer(Some(&today), None, Some(("Slack", 60)));
+        let out = format_focus_context_layer(Some(&today), None, Some(("Slack", 60)), None);
         let in_progress_idx = out.find("Slack").expect("in-progress line present");
         let today_idx = out.find("今天已完成").expect("today line present");
         assert!(
@@ -1390,12 +1433,66 @@ mod trim_tests {
     fn focus_context_skips_in_progress_when_app_blank() {
         // Defensive: empty / whitespace app name shouldn't leak as
         // "用户当前正在「  」专注 N 分钟"
-        let out = format_focus_context_layer(None, None, Some(("   ", 60)));
+        let out = format_focus_context_layer(None, None, Some(("   ", 60)), None);
         // No today / no weekly / blank in-progress = no stat lines, only
         // headers + tail guidance — but those lines mean has_in_progress=true
         // so empty check passes. Just ensure no garbage app name leaked.
         assert!(!out.contains("「   」"));
         assert!(!out.contains("「」"));
+    }
+
+    // -- Iter R75: record line tests ----------------------------------------
+
+    #[test]
+    fn focus_context_renders_record_line_when_strict_higher() {
+        // today_peak 150 > prior_week_peak 100, fires.
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 1,
+            total_minutes: 150,
+            max_single_stretch_minutes: 150,
+        };
+        let out = format_focus_context_layer(Some(&today), None, None, Some((150, 100)));
+        assert!(out.contains("[今日专注状态]"));
+        assert!(out.contains("超过最近 7 天此前最长 100 分钟"));
+        assert!(out.contains("破纪录"));
+    }
+
+    #[test]
+    fn focus_context_skips_record_line_when_tied() {
+        // tied != record (matches R74 strict semantics).
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 1,
+            total_minutes: 100,
+            max_single_stretch_minutes: 100,
+        };
+        let out = format_focus_context_layer(Some(&today), None, None, Some((100, 100)));
+        assert!(!out.contains("破纪录"));
+    }
+
+    #[test]
+    fn focus_context_skips_record_line_when_no_baseline() {
+        // prior_week_peak == 0 → no baseline to "break".
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 1,
+            total_minutes: 95,
+            max_single_stretch_minutes: 95,
+        };
+        let out = format_focus_context_layer(Some(&today), None, None, Some((95, 0)));
+        assert!(!out.contains("破纪录"));
+    }
+
+    #[test]
+    fn focus_context_record_alone_renders_layer() {
+        // No today / no weekly / no in-progress, but a record fires:
+        // layer should still appear (defensive for the case where the
+        // wrapper paths through stale stats but the record pair still
+        // resolves cleanly).
+        let out = format_focus_context_layer(None, None, None, Some((150, 100)));
+        assert!(out.contains("[今日专注状态]"));
+        assert!(out.contains("破纪录"));
     }
 
     #[test]
