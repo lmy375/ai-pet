@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R82：R81 deadline-shrunk cadence 在 panel chip + decision_log 可见化
+- 现状缺口：R81 把 cooldown × 0.5 wired 进 gate，但 chip 自身没有任何视觉变化——用户必须 hover cooldown chip 才能看到 derivation 中的 `× 0.5 (deadline 紧迫)`。decision_log 也只显示原 cooldown 数字，看不出 "R81 试图加速但 cooldown 仍然 win" 的痕迹。R82 补两层 surface。
+- 改动：
+  - `src/components/panel/PanelToneStrip.tsx`：
+    - cooldown chip text 当 `bd.deadline_factor < 1.0` 时加 ⚡ 红色角标（独立 span，不染 chip 主色）。
+    - hover titleText 末尾加一行 "cadence ×N 加速：deadline 紧迫，pet 正以 X% 的冷却时长跑——更快开口。"，N 是 `1 / deadline_factor` 倒推（0.5 → ×2，未来若改 0.33 → ×3 自适配）。
+  - `src-tauri/src/proactive/gate.rs`：
+    - 新 pure helper `annotate_skip_with_deadline_factor(action: LoopAction, deadline_factor: f64) -> LoopAction`：当 `deadline_factor < 1.0` AND skip 是 cooldown 变种时，message 末尾追加 `[deadline-shrunk × 0.5]`。其他 skip kind / Silent / 非 shrunk 路径全 pass-through。
+    - `evaluate_loop_tick` 在 evaluate_pre_input_idle 返回 Err 后调此 helper 再 return。
+    - 4 新单测覆盖 4 路径（factor=1.0 直通 / cooldown 加后缀 / awaiting 不动 / Silent 不动）。
+- 验证：
+  - `cargo test`：619 passed（前 615 + 4 新）。
+  - `cargo clippy --tests --all-features`：clean。
+  - `cargo fmt --check`：clean（修了 helper 签名 single-line 格式）。
+  - `pnpm tsc --noEmit`：clean。
+- 用户体感（once shipped）：deadline 紧迫时 panel cooldown chip 立刻显 ⚡ 标记（不需 hover）；hover 看到 "cadence ×2 加速" 高层概括 + 完整 derivation math；decision_log 在 cooldown skip 行末看到 "[deadline-shrunk × 0.5]"，可以分辨"R81 介入但 cooldown 还在生效" vs "R81 完全没碰这次 skip"。
+
 ## 2026-05-04 — Iter R81：deadline 紧迫度驱动 cooldown 缩半（cluster R77-R80 真正 closure）
 - 现状缺口：R77-R80 把 deadline 数据 → prompt hint → 教学 → chat layer → panel chip 全做齐了，但 deadline 信号 **没有 actually 改变 pet 的 cadence** —— chip 红了、prompt 提到了，但 cooldown gate 还是按 R7 feedback + R13 mode 走，pet 仍按"之前的"节奏说话。Real partner 在 user 有 deadline 时不会保持 quiet rhythm。
 - 改动：

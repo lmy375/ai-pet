@@ -392,10 +392,34 @@ pub async fn evaluate_loop_tick(
         wake_seconds_ago,
         effective_cooldown,
     ) {
-        return action;
+        // Iter R82: when R81's deadline shrink was active but cooldown
+        // still won, surface that in the decision_log so the timeline
+        // shows "cooldown stuck even with deadline accelerating things".
+        // Otherwise the log reads identically with/without R81 and the
+        // panel can't tell whether deadline urgency was even considered.
+        return annotate_skip_with_deadline_factor(action, deadline_factor);
     }
     let input_idle = user_input_idle_seconds().await;
     evaluate_input_idle_gate(cfg, &snap, input_idle)
+}
+
+/// Iter R82: pure helper. When `deadline_factor < 1.0` (R81's urgent
+/// shrink was active) and the gate Skip is the cooldown variant, suffix
+/// the message with `[deadline-shrunk × N]` so the decision_log shows
+/// that R81 *was* trying to help but the user-side cooldown still
+/// hadn't elapsed. Other skip reasons + non-shrunk paths pass through
+/// untouched. Testable without Tauri / async.
+pub fn annotate_skip_with_deadline_factor(action: LoopAction, deadline_factor: f64) -> LoopAction {
+    if deadline_factor >= 1.0 {
+        return action;
+    }
+    match action {
+        LoopAction::Skip(msg) if msg.contains("cooldown") => LoopAction::Skip(format!(
+            "{} [deadline-shrunk × {:.1}]",
+            msg, deadline_factor
+        )),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -1074,5 +1098,58 @@ mod tests {
         let now = now_at(2026, 5, 4, 10, 0);
         let note = compute_new_transient_note("hi", 60, now).unwrap();
         assert_eq!((note.until - now).num_minutes(), 60);
+    }
+
+    // -- Iter R82: annotate_skip_with_deadline_factor tests -----------------
+
+    #[test]
+    fn annotate_skip_passes_through_when_deadline_factor_one() {
+        // Steady-state: no urgent deadline → factor 1.0 → no change.
+        let action = LoopAction::Skip("Proactive: skip — cooldown (10s < 30s)".into());
+        let out = annotate_skip_with_deadline_factor(action, 1.0);
+        match out {
+            LoopAction::Skip(msg) => assert_eq!(msg, "Proactive: skip — cooldown (10s < 30s)"),
+            _ => panic!("expected Skip"),
+        }
+    }
+
+    #[test]
+    fn annotate_skip_appends_suffix_when_cooldown_and_shrunk() {
+        // R81 shrunk cooldown but it still won — surface that in the log.
+        let action = LoopAction::Skip("Proactive: skip — cooldown (10s < 30s)".into());
+        let out = annotate_skip_with_deadline_factor(action, 0.5);
+        match out {
+            LoopAction::Skip(msg) => {
+                assert!(msg.contains("cooldown (10s < 30s)"));
+                assert!(msg.contains("[deadline-shrunk × 0.5]"));
+            }
+            _ => panic!("expected Skip"),
+        }
+    }
+
+    #[test]
+    fn annotate_skip_leaves_non_cooldown_skip_alone() {
+        // Awaiting / focus / quiet skips don't need the suffix — R81's
+        // shrink only relates to cooldown gate.
+        let action = LoopAction::Skip(
+            "Proactive: skip — awaiting user reply to previous proactive message".into(),
+        );
+        let out = annotate_skip_with_deadline_factor(action, 0.5);
+        match out {
+            LoopAction::Skip(msg) => assert!(!msg.contains("deadline-shrunk")),
+            _ => panic!("expected Skip"),
+        }
+    }
+
+    #[test]
+    fn annotate_skip_leaves_silent_alone() {
+        // Silent variants (disabled / quiet hours) don't carry user-meaningful
+        // cooldown info. Pass through unchanged.
+        let action = LoopAction::Silent { reason: "disabled" };
+        let out = annotate_skip_with_deadline_factor(action, 0.5);
+        match out {
+            LoopAction::Silent { reason } => assert_eq!(reason, "disabled"),
+            _ => panic!("expected Silent"),
+        }
     }
 }

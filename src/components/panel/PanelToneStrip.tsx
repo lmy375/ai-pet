@@ -329,13 +329,22 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           bd && bd.urgent_deadline_count > 0
             ? ` × ${bd.deadline_factor.toFixed(1)} (deadline 紧迫 ${bd.urgent_deadline_count})`
             : "";
+        // R82: surface deadline-driven cadence shift on the chip itself,
+        // not only in hover. ⚡ marker + summary hover line make it obvious
+        // that the pet is currently in "accelerated" mode without forcing
+        // the user to mouse-over and parse the multiplier math.
+        const cadenceShifted = !!bd && bd.deadline_factor < 1.0;
+        const cadenceSummary = cadenceShifted
+          ? `\n\ncadence ×${(1 / bd.deadline_factor).toFixed(0)} 加速：deadline 紧迫，pet 正以 ${Math.round(bd.deadline_factor * 100)}% 的冷却时长跑——更快开口。`
+          : "";
         const titleText = bd
           ? `cooldown gate 还有 ${remaining}s。\n` +
             `derivation: configured ${bd.configured_seconds}s × ` +
             `${bd.mode_factor.toFixed(1)} (${bd.mode}) × ` +
             `${bd.feedback_factor.toFixed(1)} (${bd.feedback_band})` +
             `${deadlineSegment} = ` +
-            `effective ${bd.effective_seconds}s。`
+            `effective ${bd.effective_seconds}s。` +
+            `${cadenceSummary}`
           : `cooldown gate 还有 ${remaining}s 才会放过这一轮 proactive 评估。`;
         const band = bd?.feedback_band;
         const color =
@@ -347,6 +356,7 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
             ⏳ 冷却 {remaining < 60
               ? `${remaining}s`
               : `${Math.floor(remaining / 60)}m${remaining % 60 > 0 ? `${remaining % 60}s` : ""}`}
+            {cadenceShifted && <span style={{ marginLeft: 2, color: "#dc2626" }}>⚡</span>}
           </span>
         );
       })()}
