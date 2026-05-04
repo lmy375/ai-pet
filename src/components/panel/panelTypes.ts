@@ -122,6 +122,9 @@ export interface ToneSnapshot {
   // hover show "configured × mode_factor (mode) × feedback_factor
   // (feedback_band) = effective" math. Null when proactive disabled or
   // configured cooldown is 0 (gate effectively off).
+  // Iter R81: extended with deadline_factor + urgent_deadline_count so
+  // the hover can show the deadline-driven 0.5× shrink alongside
+  // mode/feedback factors.
   cooldown_breakdown: {
     configured_seconds: number;
     mode: string;
@@ -129,6 +132,8 @@ export interface ToneSnapshot {
     after_mode_seconds: number;
     feedback_band: string;
     feedback_factor: number;
+    urgent_deadline_count: number;
+    deadline_factor: number;
     effective_seconds: number;
   } | null;
   // Iter R31: char count of the last proactive prompt (chars().count(),

@@ -391,6 +391,11 @@ pub struct ToneSnapshot {
 /// `cooldown_remaining_seconds` ends up at its current value. Both
 /// factors are exact (mode is 0.5/1.0/2.0; feedback is 0.7/1.0/2.0)
 /// so f64 is safe — no precision drift over the small space.
+///
+/// Iter R81: extended with `deadline_factor` + `urgent_deadline_count` so a
+/// pending Imminent/Overdue butler deadline halves the effective cooldown
+/// (real-partner intuition: don't keep your normal quiet rhythm when something
+/// urgent is bearing down on the user).
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct CooldownBreakdown {
     /// Raw `settings.proactive.cooldown_seconds` (before any multipliers).
@@ -409,9 +414,17 @@ pub struct CooldownBreakdown {
     pub feedback_band: String,
     /// 2.0× / 0.7× / 1.0× depending on band. `insufficient_samples` is 1.0×.
     pub feedback_factor: f64,
-    /// `after_mode_seconds * feedback_factor`, rounded down. This is what
-    /// the gate actually enforces — `cooldown_remaining_seconds` is
-    /// computed against this, not against `configured_seconds`.
+    /// Iter R81: count of Imminent (<1h) + Overdue butler deadlines. Drives
+    /// `deadline_factor`. Surfaced separately so the panel hover can show
+    /// "N urgent deadline(s)" alongside the multiplier.
+    pub urgent_deadline_count: u64,
+    /// Iter R81: 0.5× when `urgent_deadline_count ≥ 1`, else 1.0×. Pure
+    /// switch — `deadline_urgency_factor` in butler_schedule.
+    pub deadline_factor: f64,
+    /// `after_mode_seconds * feedback_factor * deadline_factor`, rounded
+    /// down. This is what the gate actually enforces —
+    /// `cooldown_remaining_seconds` is computed against this, not against
+    /// `configured_seconds`.
     pub effective_seconds: u64,
 }
 
@@ -514,12 +527,16 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
 
 /// Iter R23: derive the cooldown breakdown for the panel chip hover.
 /// Mirrors `gate.rs`'s effective-cooldown computation exactly so the
-/// chip's "configured × mode × feedback = effective" math matches the
-/// number the gate is actually enforcing. Returns `None` when proactive
-/// is disabled or configured cooldown is 0 (gate effectively off in
-/// either case — no breakdown to show).
+/// chip's "configured × mode × feedback × deadline = effective" math
+/// matches the number the gate is actually enforcing. Returns `None`
+/// when proactive is disabled or configured cooldown is 0 (gate
+/// effectively off in either case — no breakdown to show).
+///
+/// Iter R81: `urgent_deadline_count` (Imminent + Overdue butler tasks)
+/// drives a discrete 0.5× shrink on top of the R7 feedback factor.
 pub fn build_cooldown_breakdown(
     recent_fb: &[crate::feedback_history::FeedbackEntry],
+    urgent_deadline_count: u64,
 ) -> Option<CooldownBreakdown> {
     let settings = get_settings().ok()?;
     if !settings.proactive.enabled {
@@ -544,7 +561,8 @@ pub fn build_cooldown_breakdown(
     // it can be unit-tested without get_settings() / Tauri state.
     let (feedback_band, feedback_factor) =
         crate::feedback_history::classify_feedback_band(recent_fb);
-    let effective = ((after_mode as f64) * feedback_factor) as u64;
+    let deadline_factor = deadline_urgency_factor(urgent_deadline_count);
+    let effective = ((after_mode as f64) * feedback_factor * deadline_factor) as u64;
     Some(CooldownBreakdown {
         configured_seconds: configured,
         mode,
@@ -552,6 +570,8 @@ pub fn build_cooldown_breakdown(
         after_mode_seconds: after_mode,
         feedback_band: feedback_band.to_string(),
         feedback_factor,
+        urgent_deadline_count,
+        deadline_factor,
         effective_seconds: effective,
     })
 }
@@ -726,7 +746,26 @@ pub async fn build_tone_snapshot(
     // cooldown_breakdown both consume it. Single fetch + multiple derived
     // signals = same pattern as recent_for_signals above.
     let recent_feedback_for_signals = crate::feedback_history::recent_feedback(20).await;
-    let cooldown_breakdown = build_cooldown_breakdown(&recent_feedback_for_signals);
+    // Iter R78 / R81: shared urgent-deadline count. R78 surfaces it via the
+    // ⏳ chip; R81 also folds it into cooldown_breakdown so the same value
+    // drives chip + cooldown shrink (single source of truth).
+    let urgent_deadline_count: u64 = {
+        let now = chrono::Local::now().naive_local();
+        let items: Vec<(chrono::NaiveDateTime, String)> =
+            crate::commands::memory::memory_list(Some("butler_tasks".to_string()))
+                .ok()
+                .and_then(|idx| idx.categories.get("butler_tasks").cloned())
+                .map(|cat| {
+                    cat.items
+                        .iter()
+                        .filter_map(|i| parse_butler_deadline_prefix(&i.description))
+                        .collect()
+                })
+                .unwrap_or_default();
+        count_urgent_butler_deadlines(&items, now)
+    };
+    let cooldown_breakdown =
+        build_cooldown_breakdown(&recent_feedback_for_signals, urgent_deadline_count);
     Ok(ToneSnapshot {
         period: period_of_day(hour).to_string(),
         cadence,
@@ -880,24 +919,10 @@ pub async fn build_tone_snapshot(
         // proactive prompt, and chat layer all agree on what's a record.
         is_personal_record_today: !crate::proactive::active_app::current_personal_record_hint()
             .is_empty(),
-        // Iter R78: read butler_tasks once, parse [deadline:] prefixes, count
-        // urgent items. Same memory category as build_butler_deadlines_hint;
-        // panel reads cheaply (no IO inside the hot path on tone-snapshot ticks).
-        urgent_deadline_count: {
-            let now = chrono::Local::now().naive_local();
-            let items: Vec<(chrono::NaiveDateTime, String)> =
-                crate::commands::memory::memory_list(Some("butler_tasks".to_string()))
-                    .ok()
-                    .and_then(|idx| idx.categories.get("butler_tasks").cloned())
-                    .map(|cat| {
-                        cat.items
-                            .iter()
-                            .filter_map(|i| parse_butler_deadline_prefix(&i.description))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            count_urgent_butler_deadlines(&items, now)
-        },
+        // Iter R78: surface the urgent-deadline count via the ⏳ chip.
+        // Iter R81: same value also flows into cooldown_breakdown above so
+        // the chip and the cooldown shrink stay in lockstep.
+        urgent_deadline_count,
         // Iter R68: weekly deep-focus summary — aggregated across last 7
         // calendar days. Same DAILY_BLOCK_HISTORY source as daily_block_stats.
         weekly_block_stats: crate::proactive::active_app::current_weekly_block_summary(),

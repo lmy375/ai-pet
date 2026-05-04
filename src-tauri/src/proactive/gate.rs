@@ -353,12 +353,36 @@ pub async fn evaluate_loop_tick(
     // matters — mode is user intent, R7 is observed-feedback fine-tune.
     let mode_cooldown = cfg.effective_cooldown_base();
     let recent_fb = crate::feedback_history::recent_feedback(20).await;
-    let effective_cooldown = match crate::feedback_history::negative_signal_ratio(&recent_fb) {
+    let after_feedback = match crate::feedback_history::negative_signal_ratio(&recent_fb) {
         Some((ratio, n)) => {
             crate::feedback_history::adapted_cooldown_seconds(mode_cooldown, ratio, n)
         }
         None => mode_cooldown,
     };
+    // Iter R81: a real partner doesn't keep its quiet rhythm when the user
+    // has an Imminent or Overdue butler deadline. Halve the effective
+    // cooldown while urgent deadlines exist so the proactive loop fires
+    // ~2× more often. Pure switch via `deadline_urgency_factor`; same
+    // count the panel ⏳ deadline chip uses, so chip + gate stay aligned.
+    let urgent_deadline_count: u64 = {
+        let now = chrono::Local::now().naive_local();
+        let items: Vec<(chrono::NaiveDateTime, String)> =
+            crate::commands::memory::memory_list(Some("butler_tasks".to_string()))
+                .ok()
+                .and_then(|idx| idx.categories.get("butler_tasks").cloned())
+                .map(|cat| {
+                    cat.items
+                        .iter()
+                        .filter_map(|i| {
+                            super::butler_schedule::parse_butler_deadline_prefix(&i.description)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        super::butler_schedule::count_urgent_butler_deadlines(&items, now)
+    };
+    let deadline_factor = super::butler_schedule::deadline_urgency_factor(urgent_deadline_count);
+    let effective_cooldown = ((after_feedback as f64) * deadline_factor) as u64;
 
     if let Err(action) = evaluate_pre_input_idle(
         cfg,

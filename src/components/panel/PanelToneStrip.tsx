@@ -321,11 +321,20 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
         //   mid / insufficient → cyan: neutral / not enough data
         const remaining = tone.cooldown_remaining_seconds;
         const bd = tone.cooldown_breakdown;
+        // R81: include the deadline factor in the derivation when there's
+        // an urgent (Imminent / Overdue) butler deadline. 0.5× shrink
+        // shows up as "× 0.5 (deadline 紧迫 N)" so the user sees why the
+        // pet is suddenly speaking up more often.
+        const deadlineSegment =
+          bd && bd.urgent_deadline_count > 0
+            ? ` × ${bd.deadline_factor.toFixed(1)} (deadline 紧迫 ${bd.urgent_deadline_count})`
+            : "";
         const titleText = bd
           ? `cooldown gate 还有 ${remaining}s。\n` +
             `derivation: configured ${bd.configured_seconds}s × ` +
             `${bd.mode_factor.toFixed(1)} (${bd.mode}) × ` +
-            `${bd.feedback_factor.toFixed(1)} (${bd.feedback_band}) = ` +
+            `${bd.feedback_factor.toFixed(1)} (${bd.feedback_band})` +
+            `${deadlineSegment} = ` +
             `effective ${bd.effective_seconds}s。`
           : `cooldown gate 还有 ${remaining}s 才会放过这一轮 proactive 评估。`;
         const band = bd?.feedback_band;
