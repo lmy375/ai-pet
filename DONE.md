@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R65：今日深度专注 stretch 累计 + PanelStatsCard 显示
+- 现状缺口：R62/R63/R64 完整闭环了 hard-block 行为，但 hard-block 事件本身**没沉淀成 stat** —— 用户做完 deep work 后想看"今天我专注了几次 / 多少 min" 没办法。R65 把 finalize 后的 stretches 累计到今日 stat，PanelStatsCard surface 出来。
+- 改动：
+  - `proactive/active_app.rs`：
+    - 新 struct `DailyBlockStats { date: NaiveDate, count: u64, total_minutes: u64 }` + serde::Serialize 给 panel 用。
+    - 新 static `DAILY_BLOCK_STATS: Mutex<Option<DailyBlockStats>>`。
+    - 纯函数 `compute_finalize_stats(prev, today, peak_minutes) -> DailyBlockStats`：same date → increment, different date / None → reset to fresh-day。
+    - 生产 wrapper `finalize_stretch(peak_minutes)` 读 static + Local::now()，delegate to compute_finalize_stats 写回。
+    - 读取 wrapper `current_daily_block_stats()` filter date == today，避免昨日 stale 数据 bleed。
+    - `record_hard_block` 加 transition-finalize：prev.marked_at > 120s ago 视为 stretch 中断，先 finalize_stretch(prev.peak_minutes) 再 record 新 stretch。120s = 2× 60s nominal interval，留冗余应对调度抖动。
+    - `take_recovery_hint` 加 clean-end finalize：take 成功时 finalize_stretch(mins) 再清 LAST_HARD_BLOCK。两条 finalize 路径互斥（take 后立刻 None，下次 record 看 None → 不会再 finalize）。
+  - `proactive.rs`：ToneSnapshot 加 `daily_block_stats: Option<DailyBlockStats>` 字段；build_tone_snapshot 用 `current_daily_block_stats()` 填。
+  - `panelTypes.ts`：TS 类型加同字段（date 是 ISO 字符串）。
+  - `PanelStatsCard.tsx`：新列 "🛑 N 次/Xm"，count > 0 才渲染（避免空态显 0 给"专注时间不长" 用户负面暗示）。深红色 #7f1d1d 跟 R62 deep-red chip 同色 family。hover tooltip 显当前 mode 阈值 + 进行中不计 + finalize 二分路径解释。
+  - 5 新单测覆盖 compute_finalize_stats（fresh / increment / date rollover / saturating overflow） + finalize_stretch round-trip。**547 tests pass**（542 → 547, +5 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **Pet 给用户 retrospective confirmation**：deep work 之后看到 "🛑 3 次/270m" 是"我今天确实专注了" 的肯定。
+  - **transition vs clean-end 二分**：所有 stretch 必有 finalize 路径，count 准确。
+  - **不实时计算 in-progress**：count 是 finalized 总数，stat 不跳。要看进行中看 active_app chip。
+
 ## 2026-05-04 — Iter R64：companion_mode-aware hard-block threshold
 - 现状缺口：R62 引入 HARD_FOCUS_BLOCK_MINUTES = 90 const 全局固定。R29 让用户在 PanelSettings 选 companion_mode (chatty/balanced/quiet)，但只调 cooldown 跟 chatty_threshold。**R62 这个 magic number 跟 user dial 脱节** —— quiet 用户希望 60min 就被尊重，chatty 用户希望 2h 还在 engage。
 - 改动：

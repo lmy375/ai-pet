@@ -357,6 +357,12 @@ pub struct ToneSnapshot {
     /// the active-app duration the same way the gate does — keeps
     /// chip color and gate behavior aligned for non-balanced users.
     pub effective_hard_block_minutes: u64,
+    /// Iter R65: today's deep-focus stretch summary — finalized stretches
+    /// only (in-progress not counted). None when nothing finalized today
+    /// yet (or yesterday's data already filtered out by date check).
+    /// Surfaced so PanelStatsCard can show "今日深度专注 N 次, X 分钟"
+    /// as a self-report stat distinct from the speech-count column.
+    pub daily_block_stats: Option<crate::proactive::active_app::DailyBlockStats>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -842,6 +848,11 @@ pub async fn build_tone_snapshot(
                     .effective_hard_block_minutes(HARD_FOCUS_BLOCK_MINUTES)
             })
             .unwrap_or(HARD_FOCUS_BLOCK_MINUTES),
+        // Iter R65: today's deep-focus stretch summary. Same accessor the
+        // gate / take_recovery_hint write through — single source of
+        // truth. None on fresh process / before any stretch finalizes
+        // today (or yesterday's record filtered out by date check).
+        daily_block_stats: crate::proactive::active_app::current_daily_block_stats(),
     })
 }
 
