@@ -224,6 +224,12 @@ pub struct PromptInputs<'a> {
     /// no-baseline. Pet uses to gently affirm without overdoing it.
     /// Built from `active_app::current_personal_record_hint`.
     pub personal_record_hint: &'a str,
+    /// Iter R77: imminent-deadline nudge — "[逼近的 deadline] · {topic}（仅剩
+    /// N 分钟到 deadline）..." Fires when butler_tasks contains items with
+    /// `[deadline: YYYY-MM-DD HH:MM]` prefix that are Approaching / Imminent
+    /// / Overdue. Empty when no deadlines or all Distant. Built by
+    /// run_proactive_turn from `format_butler_deadlines_hint`.
+    pub deadline_hint: &'a str,
 }
 
 /// The "约束" rules block of the proactive prompt — extracted into its own builder so
@@ -411,6 +417,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);
+    push_if_nonempty(&mut s, inputs.deadline_hint);
     s.push(String::new());
     s.push(
         "请判断：作为陪伴用户的 AI 宠物，此时此刻你想主动跟用户说点什么吗？可以是关心、闲聊、提醒、分享想法都行。".into()

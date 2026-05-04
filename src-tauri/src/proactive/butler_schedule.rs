@@ -167,6 +167,105 @@ pub fn parse_butler_schedule_prefix(desc: &str) -> Option<(ButlerSchedule, Strin
     None
 }
 
+// -- Iter R77: deadline prefix ------------------------------------------------
+
+/// Iter R77: deadline-bound butler task. Distinct from `[once:]` which means
+/// "execute at this time" — a deadline means "user must complete this BEFORE
+/// this time". Pet doesn't auto-execute a deadline task; pet *reminds* the user
+/// as it approaches. Format: `[deadline: YYYY-MM-DD HH:MM] description`.
+pub fn parse_butler_deadline_prefix(desc: &str) -> Option<(chrono::NaiveDateTime, String)> {
+    let trimmed = desc.trim_start();
+    let after_open = trimmed.strip_prefix("[deadline:")?;
+    let close_idx = after_open.find(']')?;
+    let inside = after_open[..close_idx].trim();
+    let topic = after_open[close_idx + 1..].trim().to_string();
+    if topic.is_empty() {
+        return None;
+    }
+    let (date_str, time_str) = inside.split_once(' ')?;
+    let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d").ok()?;
+    let time = chrono::NaiveTime::parse_from_str(time_str.trim(), "%H:%M").ok()?;
+    Some((date.and_time(time), topic))
+}
+
+/// Iter R77: deadline urgency tier. Drives whether to surface the deadline in
+/// the prompt and what tone to use. Distant tasks shouldn't crowd the prompt;
+/// imminent / overdue ones earn a directive nudge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeadlineUrgency {
+    /// > 6 hours away. Don't surface — too far to be actionable in this turn.
+    Distant,
+    /// 1-6 hours away. Surface gently — "deadline 在 N 小时后".
+    Approaching,
+    /// 0-1 hours (inclusive). Surface urgently — "deadline 还有 N 分钟".
+    Imminent,
+    /// Past the deadline. Surface as overdue.
+    Overdue,
+}
+
+/// Iter R77: pure classifier. `now < deadline by ≤ 1h` → Imminent; `1-6h ahead`
+/// → Approaching; `> 6h ahead` → Distant; `now ≥ deadline` → Overdue. Pure /
+/// testable — caller passes both args.
+pub fn compute_deadline_urgency(
+    deadline: chrono::NaiveDateTime,
+    now: chrono::NaiveDateTime,
+) -> DeadlineUrgency {
+    if now >= deadline {
+        return DeadlineUrgency::Overdue;
+    }
+    let delta = deadline - now;
+    let hours = delta.num_hours();
+    if hours >= 6 {
+        DeadlineUrgency::Distant
+    } else if hours >= 1 {
+        DeadlineUrgency::Approaching
+    } else {
+        DeadlineUrgency::Imminent
+    }
+}
+
+/// Iter R77: format the deadline-hint section of the proactive prompt. Filters
+/// to non-Distant items only (Approaching / Imminent / Overdue), then renders
+/// them as bullet lines. Empty when nothing actionable is on the horizon.
+/// Pure — caller passes the prefiltered (deadline, topic) pairs + now.
+pub fn format_butler_deadlines_hint(
+    items: &[(chrono::NaiveDateTime, String)],
+    now: chrono::NaiveDateTime,
+) -> String {
+    let mut bullets: Vec<String> = Vec::new();
+    for (deadline, topic) in items {
+        let urgency = compute_deadline_urgency(*deadline, now);
+        let bullet = match urgency {
+            DeadlineUrgency::Distant => continue,
+            DeadlineUrgency::Approaching => {
+                let hours = (*deadline - now).num_hours().max(1);
+                format!("· {}（约 {} 小时后到 deadline）", topic, hours)
+            }
+            DeadlineUrgency::Imminent => {
+                let mins = (*deadline - now).num_minutes().max(0);
+                format!("· {}（仅剩 {} 分钟到 deadline）", topic, mins)
+            }
+            DeadlineUrgency::Overdue => {
+                let mins = (now - *deadline).num_minutes();
+                if mins < 60 {
+                    format!("· {}（deadline 已过 {} 分钟）", topic, mins)
+                } else {
+                    let hours = mins / 60;
+                    format!("· {}（deadline 已过 {} 小时）", topic, hours)
+                }
+            }
+        };
+        bullets.push(bullet);
+    }
+    if bullets.is_empty() {
+        return String::new();
+    }
+    format!(
+        "[逼近的 deadline]\n{}\n如果用户当前没在专注其他事，可以提一下；如果在专注中，仅在 imminent / overdue 时才打断。",
+        bullets.join("\n")
+    )
+}
+
 /// Parse a stored `updated_at` string ("YYYY-MM-DDTHH:MM:SS+HH:MM") to a local
 /// `NaiveDateTime`. Returns `None` on malformed input — caller decides what that
 /// means (typically "treat as never updated").
@@ -624,5 +723,140 @@ mod tests {
             "not-a-timestamp"
         ));
         assert!(is_butler_due(&ButlerSchedule::Every(9, 0), now, ""));
+    }
+
+    // -- Iter R77: deadline parsing + urgency + format ----------------------
+
+    fn dt(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn parse_deadline_clean() {
+        let (when, topic) =
+            parse_butler_deadline_prefix("[deadline: 2026-05-10 14:00] reply to email").unwrap();
+        assert_eq!(when, dt(2026, 5, 10, 14, 0));
+        assert_eq!(topic, "reply to email");
+    }
+
+    #[test]
+    fn parse_deadline_rejects_malformed() {
+        assert!(parse_butler_deadline_prefix("no prefix").is_none());
+        assert!(parse_butler_deadline_prefix("[deadline: not-a-date 14:00] x").is_none());
+        assert!(parse_butler_deadline_prefix("[deadline: 2026-05-10 25:00] x").is_none());
+        assert!(parse_butler_deadline_prefix("[deadline: 2026-05-10 14:00]").is_none());
+        // Wrong prefix kind shouldn't match.
+        assert!(parse_butler_deadline_prefix("[once: 2026-05-10 14:00] x").is_none());
+        assert!(parse_butler_deadline_prefix("[every: 09:00] x").is_none());
+    }
+
+    #[test]
+    fn urgency_overdue_when_now_at_or_past_deadline() {
+        let dl = dt(2026, 5, 10, 14, 0);
+        assert_eq!(compute_deadline_urgency(dl, dl), DeadlineUrgency::Overdue);
+        assert_eq!(
+            compute_deadline_urgency(dl, dt(2026, 5, 10, 15, 0)),
+            DeadlineUrgency::Overdue
+        );
+    }
+
+    #[test]
+    fn urgency_imminent_within_one_hour() {
+        let dl = dt(2026, 5, 10, 14, 0);
+        // 30 min away.
+        assert_eq!(
+            compute_deadline_urgency(dl, dt(2026, 5, 10, 13, 30)),
+            DeadlineUrgency::Imminent
+        );
+        // 59 min away — still Imminent (< 1h boundary).
+        assert_eq!(
+            compute_deadline_urgency(dl, dt(2026, 5, 10, 13, 1)),
+            DeadlineUrgency::Imminent
+        );
+    }
+
+    #[test]
+    fn urgency_approaching_between_1_and_6_hours() {
+        let dl = dt(2026, 5, 10, 14, 0);
+        // 1h 30min away.
+        assert_eq!(
+            compute_deadline_urgency(dl, dt(2026, 5, 10, 12, 30)),
+            DeadlineUrgency::Approaching
+        );
+        // Exactly 6h away — boundary case (≥ 6 → Distant per impl).
+        assert_eq!(
+            compute_deadline_urgency(dl, dt(2026, 5, 10, 8, 0)),
+            DeadlineUrgency::Distant
+        );
+        // 5h 30min away — Approaching.
+        assert_eq!(
+            compute_deadline_urgency(dl, dt(2026, 5, 10, 8, 30)),
+            DeadlineUrgency::Approaching
+        );
+    }
+
+    #[test]
+    fn urgency_distant_when_far_away() {
+        let dl = dt(2026, 5, 10, 14, 0);
+        assert_eq!(
+            compute_deadline_urgency(dl, dt(2026, 5, 9, 14, 0)),
+            DeadlineUrgency::Distant
+        );
+    }
+
+    #[test]
+    fn format_deadlines_hint_skips_distant_only() {
+        let now = dt(2026, 5, 10, 8, 0);
+        let items = vec![(dt(2026, 5, 12, 14, 0), "tomorrow's report".to_string())];
+        assert_eq!(format_butler_deadlines_hint(&items, now), "");
+    }
+
+    #[test]
+    fn format_deadlines_hint_renders_imminent_with_minutes() {
+        let now = dt(2026, 5, 10, 13, 30);
+        let items = vec![(dt(2026, 5, 10, 14, 0), "send draft".to_string())];
+        let out = format_butler_deadlines_hint(&items, now);
+        assert!(out.contains("[逼近的 deadline]"));
+        assert!(out.contains("send draft"));
+        assert!(out.contains("仅剩 30 分钟"));
+    }
+
+    #[test]
+    fn format_deadlines_hint_renders_approaching_with_hours() {
+        let now = dt(2026, 5, 10, 11, 0);
+        let items = vec![(dt(2026, 5, 10, 14, 0), "review PR".to_string())];
+        let out = format_butler_deadlines_hint(&items, now);
+        assert!(out.contains("review PR"));
+        assert!(out.contains("约 3 小时后"));
+    }
+
+    #[test]
+    fn format_deadlines_hint_renders_overdue_minutes_then_hours() {
+        let now = dt(2026, 5, 10, 14, 30);
+        let items = vec![(dt(2026, 5, 10, 14, 0), "overdue thing".to_string())];
+        let out = format_butler_deadlines_hint(&items, now);
+        assert!(out.contains("已过 30 分钟"));
+        // Overdue > 1 hour → format in hours.
+        let now2 = dt(2026, 5, 10, 17, 0);
+        let out2 = format_butler_deadlines_hint(&items, now2);
+        assert!(out2.contains("已过 3 小时"));
+    }
+
+    #[test]
+    fn format_deadlines_hint_handles_mixed_items() {
+        // Mix of distant + approaching + overdue. Distant skipped, others rendered.
+        let now = dt(2026, 5, 10, 12, 0);
+        let items = vec![
+            (dt(2026, 5, 15, 14, 0), "future task".to_string()), // Distant
+            (dt(2026, 5, 10, 14, 0), "soon thing".to_string()),  // Approaching
+            (dt(2026, 5, 10, 11, 0), "missed thing".to_string()), // Overdue
+        ];
+        let out = format_butler_deadlines_hint(&items, now);
+        assert!(!out.contains("future task")); // distant filtered
+        assert!(out.contains("soon thing"));
+        assert!(out.contains("missed thing"));
     }
 }

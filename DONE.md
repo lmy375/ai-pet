@@ -2,6 +2,23 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R77：butler_tasks `[deadline:]` 前缀 + 紧迫度分级 prompt nudge
+- 现状缺口：butler_tasks 已支持 `[every:]`/`[once:]` 调度（pet 自动执行），但**缺"截止时间"语义**——user 委托"周五 14:00 前回邮件"，pet 不能自动执行（user 自己回），但应该**临近截止时提醒**。R76 IDEA 标的"换方向" iter，远离 deep-focus cluster。
+- 改动：
+  - `proactive/butler_schedule.rs`：
+    - 新纯函数 `parse_butler_deadline_prefix(desc) -> Option<(NaiveDateTime, String)>`：解析 `[deadline: YYYY-MM-DD HH:MM] topic` 格式。语义跟 `[once:]` 区分：once = pet 执行，deadline = user 完成。
+    - 新 enum `DeadlineUrgency { Distant(>6h), Approaching(1-6h), Imminent(<1h), Overdue }`。
+    - 纯函数 `compute_deadline_urgency(deadline, now) -> DeadlineUrgency`：基于时间差分级。
+    - 纯函数 `format_butler_deadlines_hint(items, now) -> String`：filter Distant，渲染其他三档为 "[逼近的 deadline] · {topic}（仅剩 N 分钟到 deadline）"。tail 文案 "如果用户当前没在专注其他事可以提一下；专注中仅 imminent/overdue 才打断"。
+    - 11 新单测覆盖 parse 4 case + urgency 4 tier 边界 + format 4 渲染场景。
+  - `proactive/prompt_assembler.rs`：PromptInputs 加 `deadline_hint: &'a str` 字段，assembler push 在 butler_tasks_hint 之后。
+  - `proactive.rs`：新 `build_butler_deadlines_hint(now)` IO wrapper（读 memory butler_tasks + filter `[deadline:]` 前缀 + redact），run_proactive_turn 调用并传入 PromptInputs。base_inputs() 默认 ""。
+  - **606 tests pass**（595 → 606, +11 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **butler_tasks 第三种语义**：every (循环执行) / once (一次性执行) / deadline (截止前提醒)。语义正交。
+  - **urgency-aware 打扰策略**：deadline imminent / overdue 才 override deep-focus 静默原则——尊重 user flow + 紧急任务双兼顾。
+  - **R76 deep-focus cluster 闭合后 first cross-domain iter 实现 user → pet 委托方向**（之前都是 pet → user 观察方向）。
+
 ## 2026-05-04 — Iter R76：PanelStatsCard 加 ⭐ 破纪录视觉指示
 - 现状缺口：R74 proactive + R75 chat 两路径都有 record 信号，但 panel 看不到。Panel 用户 retrospect 看 "今天 N 次/Xm/峰 Ym" 不知道这是不是破了纪录。
 - 改动：
