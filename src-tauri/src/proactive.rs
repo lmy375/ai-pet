@@ -368,6 +368,11 @@ pub struct ToneSnapshot {
     /// the window (fresh install / 7+ days quiet). Surfaced so the user
     /// sees "本周专注 N 次/Xm/Y 天" trend distinct from today's row.
     pub weekly_block_stats: Option<crate::proactive::active_app::WeeklyBlockSummary>,
+    /// Iter R69: week-over-week trend for deep-focus minutes — direction
+    /// (up / flat / down) + signed % delta vs prior week. None until
+    /// both this week and prior week have data (8+ days of history).
+    /// Surfaced as inline ↑/=/↓ icon on the panel weekly column.
+    pub week_trend: Option<crate::proactive::active_app::WeekOverWeekTrend>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -861,6 +866,9 @@ pub async fn build_tone_snapshot(
         // Iter R68: weekly deep-focus summary — aggregated across last 7
         // calendar days. Same DAILY_BLOCK_HISTORY source as daily_block_stats.
         weekly_block_stats: crate::proactive::active_app::current_weekly_block_summary(),
+        // Iter R69: week-over-week trend (this week vs prior week). None
+        // until both windows have data; needs 8+ days of history.
+        week_trend: crate::proactive::active_app::current_week_over_week_trend(),
     })
 }
 

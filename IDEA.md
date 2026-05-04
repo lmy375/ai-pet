@@ -1,5 +1,16 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R69 设计要点（已实现）
+- **R68 IDEA 候选三选一直接执行 trend 指示**：R68 IDEA 列了 (a) sparkline (b) butler deadline (c) trend。trend 是 cluster 内最自然延展（数据已有 + 视觉极小 + 用户单点 hover 能看完整 math），R69 选这条。**candidate list 选 highest cohesion-with-current-cluster 的执行**，避免每 iter 切方向。
+- **cap 7 → 14 是必然要求**：trend 需要 prior week 数据 = 8-14 天前的 entry，cap=7 全 evict。**前 iter 的设计 affordance 不够 long-term 时**，下个 iter 必然要扩；这种 progressive widen 比一上来 cap=30 更安全（用过才知道要多大）。
+- **direction = 三态而非二态**：up / flat / down。±15% 之内 flat 防止 user 看见 ↑↓ 频繁震荡（自然 day-to-day variation 就有 ±10%）。**threshold 是 reduce-noise 工具**，不是 strict equality。
+- **down 用 muted gray 而非 red**：down 不是 negative judgment（"专注少了，不应该"）。是 informative ("你这周比上周少专注 X%")，**color 不传达 should/shouldn't**。green up 是肯定（成就感），gray down 是中性（信息）。
+- **delta_percent 用 i128 中间值再 clamp i64**：防止 (a - b) * 100 在 u64::MAX 边缘下 overflow。**整数 percent math 必先 promote 再 clamp**。clamp ±999 是 display sanity，> 1000% 在 panel chip 显得 absurd，clamp 后 tooltip 仍清楚展示 raw。
+- **prior week 用 today-13..=today-7 区间**：与 this_week today-6..=today 严格无重叠。**两窗口拼接覆盖 today-13..=today 共 14 天**，正好等 cap=14。窗口对齐 cap 是巧合 also nice — 任何时刻 history 都恰好覆盖 trend 计算。
+- **None vs flat 的区分**：prior 全 0 → None（不能做除法 / 没基线），prior > 0 但 this == 0 → 也 None（这周完全无专注，trend 无意义）。flat 仅当两周都有 ±15% 内变化。**None / flat 语义不同**：None = "没法比较"，flat = "比较过且基本一致"。
+- **panel 倾向 inline 而非新 chip**：可以单独加个 "📊 +20%" chip 但太抢焦点。inline ↑ next to weekly column 是低噪声 + 信息明确。**辅助信息靠近主信息更易 grok**。
+- **R69 closes deep-focus cluster 第一阶段**：R62-R69 = 8 iter 把 deep-focus 从纯 backend (R62) 一路推到 weekly trend visual (R69)。下 iter 该换方向了 —— butler / reactive chat / user_profile 等待开发。**cluster 有自然 closure 信号 = "下一 iter 不在同一概念域"**。
+
 ## Iter R68 设计要点（已实现）
 - **R66 的 cap=7 future-proof 立刻被 R68 用上**：R66 写"剩 5 个槽位预留'本周专注总分钟' 等扩展"，R68 就把这预留兑现。**前 iter 留的 affordance 是 promise**，下个 iter 用得上 promise 才合理；不用就是过度设计。
 - **window filter 用 today - 6 days 而非 simple last-7-entries**：cap=7 的 vec 同样可能含 8 天前的 stale entry（如果某天 cap drain 之后又有新 entry 插入更早 date）。**date filter 是 semantic 真值**，cap 是 storage bound；二者不该混淆。helper 这样设计也让"future cap 升级到 14" 时 weekly window 不会自动变成 last-14。
