@@ -2,6 +2,22 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R72：今日单次最长 deep-focus 跟踪 + panel surface
+- 现状缺口：DailyBlockStats 只有 count（频次） + total_minutes（量），缺 "depth" 维度。5 次 30m 累计 150m 跟 1 次 150m 在 count + total 看不出差异，但深度差很多。
+- 改动：
+  - `proactive/active_app.rs`：
+    - DailyBlockStats 加 `max_single_stretch_minutes: u64` 字段，`#[serde(default)]` 让 R67 写盘的旧 JSON 自动 fill 0，**schema 演进不破历史**。
+    - `compute_history_after_finalize` 增量分支用 `today_entry.max.max(peak_minutes)`；append 分支用 `peak_minutes` 初值（第一次即峰值）。
+    - 4 新单测：max 升级 / 降级保留 / fresh-day 初值 / serde back-compat (旧 JSON 缺字段) parse 0 不失败。
+    - 已有 ~20 处 test fixtures 用 5-line python 脚本批量补字段（schema 演进的工程化做法）。
+  - `panelTypes.ts`：daily_block_stats TS 类型加同字段。
+  - `PanelStatsCard.tsx`：daily column 显示 `count > 1 && peak > 0` 才追加 "/峰 Xm"（单 stretch 时 peak = total，冗余不显）。tooltip 拼接 "最长一次 Xm" 详细信息。
+  - **582 tests pass**（578 → 582, +4 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **三维度 count / total / peak 各不替代**：频度 / 量 / 深度。**stat 视角更立体**。
+  - **schema migration pattern**：未来加字段都可沿 `#[serde(default)]`，老 JSON 自动 graceful。
+  - **panel "今日 N 次/Xm/峰 Ym"**：用户看到具体最长哪次，比单 total 更激励。
+
 ## 2026-05-04 — Iter R71：focus context 加"正在专注"信号 + telegram parity
 - 现状缺口：R70 layer 给反应式 chat 注入了 today/week 聚合，但没说"用户当前正在「X」专注 N 分钟" —— mid-focus chat 不知用户在专注里。telegram bot 也只 inject mood + persona，没有 R70 的 focus_context。两个口子要补。
 - 改动：

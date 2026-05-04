@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R72 设计要点（已实现）
+- **schema migration with `#[serde(default)]`**：DailyBlockStats 加新字段 `max_single_stretch_minutes`。R67 写盘的 JSON 没有此字段，原本会让 from_str 失败 → load_block_history 返回空 Vec → 用户丢历史。`#[serde(default)]` 让旧 JSON 自动用 0 fill，**演进式 schema 不破历史**。这是 R67 持久化写在 IDEA 里的 trade-off "坏数据不会永久 freeze" 的具体兑现。
+- **三个数据维度的语义区分**：`count` = 次数（频次 / 频度），`total_minutes` = 累计时长（量），`max_single_stretch_minutes` = 单次峰值（深度）。**三个维度互不替代**：5 次 30m 各 vs 1 次 150m 在 count + total 看似差不多，但深度差很多。R72 把"深度"维度也 surface。
+- **`max(prev, current_peak)` 而非 just last peak**：用户某天可能先做 90m 然后做 60m。最长一次仍是 90m，不是最后那次。**保 max 而非 latest** 是 stat 性质决定的。同 R65 codified "stat as confirmation" UX 原则——不让晚的小数字盖住早的大数字。
+- **fresh-day 用 `peak_minutes` 而非 0 初值**：第一次 finalize 时 max = peak。如果用 0 初值 + `max(0, peak)`，结果一样。但**显式写 `peak_minutes` 更易读**——读者一眼看出"第一次就是最大值"，不用想 max(0, x) = x 的代数。
+- **panel chip 显示 conditional**：`stats.count > 1 && peak > 0` 才显"/峰 Xm"。**单 stretch 的"峰" = "总" = 一回事**，重复显示是冗余。多 stretch 时"峰 vs 总" 区分才有意义。**信息密度 = 区别度**，没区别就不显。
+- **批量改 test fixtures 的 sed-based 自动化**：R72 加字段后 20+ 处 test 构造 fail。手改 20 次太烦；写 5-line python 自动找 `DailyBlockStats {` block 后插入 `max_single_stretch_minutes: 0,` 一次解决。**测试 fixture 的 schema 演进可批量自动化**——用 Default impl 也行，但 NaiveDate 没 Default 方便（虽然能用 1970-01-01）。
+- **R72 没改 weekly summary**：只 day-level。R73+ 候选：weekly 也加 `peak_single_stretch_minutes` 字段，用于"本周最长一次专注 X min" panel chip / "今天破纪录"prompt nudge。**保持单 iter 单 concern**，不一并扩散。
+- **没加 prompt nudge**：data 已有但暂不 inject prompt。R73 可以加 "[今日破纪录]" hint —— 先 ship data 让用户在 panel 看到，pattern 验证再注入 LLM。**先 surface 后 inject**，让 user UX 主导 LLM 行为设计。
+
 ## Iter R71 设计要点（已实现）
 - **R70 layer 缺 in-progress 状态**：R70 把今日 + 本周聚合放进反应式 chat，但没说"用户当前正在专注 X 分钟"。如果 user mid-focus 开 chat 问 "现在能聊一会儿吗"，AI 不知用户其实正卡 45 分钟连续工作。R71 补这层。
 - **30min threshold 选择**：R15=15min（informational），R27=60min（directive），R71=30min。**30 是 "yes user is focused, but not deeply yet"** 的中点。低于 30 是 casual browsing。这种"分级阈值各服一目的" 模式跟 R62-R69 cluster 的多 threshold 同源。

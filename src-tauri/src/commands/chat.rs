@@ -1273,6 +1273,7 @@ mod trim_tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
             count: 0,
             total_minutes: 0,
+            max_single_stretch_minutes: 0,
         };
         // Defensive: today entry exists with zero count, weekly + in_progress None.
         assert_eq!(format_focus_context_layer(Some(&today), None, None), "");
@@ -1284,6 +1285,7 @@ mod trim_tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
             count: 3,
             total_minutes: 270,
+            max_single_stretch_minutes: 0,
         };
         let out = format_focus_context_layer(Some(&today), None, None);
         assert!(out.contains("[今日专注状态]"));
@@ -1312,6 +1314,7 @@ mod trim_tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
             count: 2,
             total_minutes: 180,
+            max_single_stretch_minutes: 0,
         };
         let weekly = WeeklyBlockSummary {
             days: 3,
@@ -1333,6 +1336,7 @@ mod trim_tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
             count: 0,
             total_minutes: 0,
+            max_single_stretch_minutes: 0,
         };
         let weekly = WeeklyBlockSummary {
             days: 2,
@@ -1368,6 +1372,7 @@ mod trim_tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
             count: 1,
             total_minutes: 95,
+            max_single_stretch_minutes: 0,
         };
         let out = format_focus_context_layer(Some(&today), None, Some(("Slack", 60)));
         let in_progress_idx = out.find("Slack").expect("in-progress line present");

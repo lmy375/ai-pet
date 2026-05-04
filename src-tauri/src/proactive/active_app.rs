@@ -207,6 +207,8 @@ pub fn record_hard_block(app: &str, peak_minutes: u64) {
 /// sessions only, not in-progress.
 ///
 /// Iter R67: derive Deserialize so disk-persistence layer can round-trip.
+/// Iter R72: max_single_stretch_minutes added with #[serde(default)] so old
+/// JSON files (R67-R71 schema, no max field) parse cleanly as 0.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DailyBlockStats {
     /// Local date the stats apply to. Daily roll-over resets count and
@@ -215,6 +217,13 @@ pub struct DailyBlockStats {
     pub date: chrono::NaiveDate,
     pub count: u64,
     pub total_minutes: u64,
+    /// Iter R72: longest single stretch's peak minutes within this date's
+    /// finalized stretches. Distinct from `total_minutes` (sum across
+    /// stretches) — surfaces "你今天最长一次专注 95m" stat that's about
+    /// depth, not breadth. Field has #[serde(default)] so JSON files
+    /// written before R72 parse cleanly (default 0).
+    #[serde(default)]
+    pub max_single_stretch_minutes: u64,
 }
 
 /// Iter R66: rolling history of daily deep-focus stats. Replaces R65's
@@ -250,11 +259,17 @@ pub fn compute_history_after_finalize(
     if let Some(today_entry) = out.iter_mut().find(|s| s.date == today) {
         today_entry.count += 1;
         today_entry.total_minutes = today_entry.total_minutes.saturating_add(peak_minutes);
+        // Iter R72: track longest single stretch; pure max so first stretch
+        // also seeds it correctly (initial 0 -> peak_minutes via max).
+        today_entry.max_single_stretch_minutes =
+            today_entry.max_single_stretch_minutes.max(peak_minutes);
     } else {
         out.push(DailyBlockStats {
             date: today,
             count: 1,
             total_minutes: peak_minutes,
+            // Iter R72: first stretch of the day = the max so far.
+            max_single_stretch_minutes: peak_minutes,
         });
     }
     out.sort_by_key(|s| s.date);
@@ -1016,6 +1031,17 @@ mod tests {
 
     use chrono::NaiveDate;
 
+    fn fresh_stats(date: NaiveDate, count: u64, total: u64) -> DailyBlockStats {
+        DailyBlockStats {
+            date,
+            count,
+            total_minutes: total,
+            // Iter R72: tests that don't care about max_single_stretch use 0;
+            // R72-specific tests construct explicitly.
+            max_single_stretch_minutes: 0,
+        }
+    }
+
     #[test]
     fn history_finalize_creates_fresh_when_empty() {
         let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
@@ -1024,6 +1050,8 @@ mod tests {
         assert_eq!(next[0].date, today);
         assert_eq!(next[0].count, 1);
         assert_eq!(next[0].total_minutes, 95);
+        // Iter R72: first stretch seeds max_single = peak.
+        assert_eq!(next[0].max_single_stretch_minutes, 95);
     }
 
     #[test]
@@ -1033,22 +1061,21 @@ mod tests {
             date: today,
             count: 2,
             total_minutes: 180,
+            max_single_stretch_minutes: 100,
         }];
         let next = compute_history_after_finalize(&history, today, 95, 7);
         assert_eq!(next.len(), 1);
         assert_eq!(next[0].count, 3);
         assert_eq!(next[0].total_minutes, 275);
+        // Iter R72: 100 (existing max) > 95 (new peak), max stays 100.
+        assert_eq!(next[0].max_single_stretch_minutes, 100);
     }
 
     #[test]
     fn history_finalize_appends_when_new_date() {
         let yesterday = NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
         let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
-        let history = vec![DailyBlockStats {
-            date: yesterday,
-            count: 5,
-            total_minutes: 600,
-        }];
+        let history = vec![fresh_stats(yesterday, 5, 600)];
         let next = compute_history_after_finalize(&history, today, 95, 7);
         // Yesterday preserved + today's first entry appended.
         assert_eq!(next.len(), 2);
@@ -1057,6 +1084,8 @@ mod tests {
         assert_eq!(next[1].date, today);
         assert_eq!(next[1].count, 1);
         assert_eq!(next[1].total_minutes, 95);
+        // Iter R72: today is fresh, max = peak.
+        assert_eq!(next[1].max_single_stretch_minutes, 95);
     }
 
     #[test]
@@ -1064,11 +1093,11 @@ mod tests {
         // 7-day cap; insert 8 entries, oldest should drop.
         let mut history = Vec::new();
         for d in 1..=7u32 {
-            history.push(DailyBlockStats {
-                date: NaiveDate::from_ymd_opt(2026, 5, d).unwrap(),
-                count: 1,
-                total_minutes: 90,
-            });
+            history.push(fresh_stats(
+                NaiveDate::from_ymd_opt(2026, 5, d).unwrap(),
+                1,
+                90,
+            ));
         }
         let new_day = NaiveDate::from_ymd_opt(2026, 5, 8).unwrap();
         let next = compute_history_after_finalize(&history, new_day, 95, 7);
@@ -1085,6 +1114,7 @@ mod tests {
             date: today,
             count: 1,
             total_minutes: u64::MAX - 50,
+            max_single_stretch_minutes: 0,
         }];
         let next = compute_history_after_finalize(&history, today, 100, 7);
         assert_eq!(next[0].total_minutes, u64::MAX);
@@ -1095,16 +1125,64 @@ mod tests {
         // Verify sort: append "earlier" date should not break ordering.
         let earlier = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
         let later = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
-        let history = vec![DailyBlockStats {
-            date: later,
-            count: 1,
-            total_minutes: 90,
-        }];
+        let history = vec![fresh_stats(later, 1, 90)];
         // Append entry for earlier date (out-of-order arrival).
         let next = compute_history_after_finalize(&history, earlier, 95, 7);
         assert_eq!(next.len(), 2);
         assert_eq!(next[0].date, earlier);
         assert_eq!(next[1].date, later);
+    }
+
+    // -- Iter R72: max_single_stretch tracking ------------------------------
+
+    #[test]
+    fn history_finalize_updates_max_when_new_peak_higher() {
+        // Existing max 100, new peak 150 → max becomes 150.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![DailyBlockStats {
+            date: today,
+            count: 1,
+            total_minutes: 100,
+            max_single_stretch_minutes: 100,
+        }];
+        let next = compute_history_after_finalize(&history, today, 150, 7);
+        assert_eq!(next[0].count, 2);
+        assert_eq!(next[0].total_minutes, 250);
+        assert_eq!(next[0].max_single_stretch_minutes, 150);
+    }
+
+    #[test]
+    fn history_finalize_keeps_max_when_new_peak_lower() {
+        // Existing max 200, new peak 95 → max stays 200.
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let history = vec![DailyBlockStats {
+            date: today,
+            count: 1,
+            total_minutes: 200,
+            max_single_stretch_minutes: 200,
+        }];
+        let next = compute_history_after_finalize(&history, today, 95, 7);
+        assert_eq!(next[0].max_single_stretch_minutes, 200);
+        assert_eq!(next[0].total_minutes, 295);
+    }
+
+    #[test]
+    fn history_finalize_seeds_max_from_peak_on_fresh_day() {
+        // First stretch of fresh day: max = peak (not 0 / not 1.5x peak).
+        let today = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let next = compute_history_after_finalize(&[], today, 120, 7);
+        assert_eq!(next[0].max_single_stretch_minutes, 120);
+    }
+
+    #[test]
+    fn block_stats_serde_back_compat_omitted_max_field() {
+        // Old JSON files (pre-R72) lack max_single_stretch_minutes.
+        // #[serde(default)] should fill 0 transparently — no parse failure.
+        let raw = r#"{"date":"2026-05-04","count":2,"total_minutes":180}"#;
+        let parsed: DailyBlockStats = serde_json::from_str(raw).expect("back-compat parse");
+        assert_eq!(parsed.count, 2);
+        assert_eq!(parsed.total_minutes, 180);
+        assert_eq!(parsed.max_single_stretch_minutes, 0);
     }
 
     #[test]
@@ -1146,6 +1224,7 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
             count: 0,
             total_minutes: 0,
+            max_single_stretch_minutes: 0,
         };
         assert_eq!(format_yesterday_focus_recap_hint(Some(&s)), "");
     }
@@ -1156,6 +1235,7 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
             count: 3,
             total_minutes: 270,
+            max_single_stretch_minutes: 0,
         };
         let out = format_yesterday_focus_recap_hint(Some(&s));
         assert!(out.contains("昨日深度专注"));
@@ -1174,11 +1254,13 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
                 count: 2,
                 total_minutes: 180,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
                 count: 1,
                 total_minutes: 95,
+                max_single_stretch_minutes: 0,
             },
         ];
         let json = serde_json::to_string(&history).expect("serialize");
@@ -1206,6 +1288,7 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
             count: 5,
             total_minutes: 450,
+            max_single_stretch_minutes: 0,
         }];
         let dir = std::env::temp_dir();
         let path = dir.join(format!("pet_r67_test_{}.json", std::process::id()));
@@ -1233,16 +1316,19 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), // 3 days ago
                 count: 2,
                 total_minutes: 200,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
                 count: 1,
                 total_minutes: 100,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: today,
                 count: 3,
                 total_minutes: 300,
+                max_single_stretch_minutes: 0,
             },
         ];
         let summary = compute_weekly_block_summary(&history, today).expect("entries match");
@@ -1259,16 +1345,19 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), // 7 days ago — included (boundary)
                 count: 1,
                 total_minutes: 90,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: NaiveDate::from_ymd_opt(2026, 4, 30).unwrap(), // 8 days ago — excluded
                 count: 5,
                 total_minutes: 500,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: today,
                 count: 2,
                 total_minutes: 200,
+                max_single_stretch_minutes: 0,
             },
         ];
         // Window is today - 6..=today = 5/2..=5/8. So 5/1 is OUT (older than window).
@@ -1287,6 +1376,7 @@ mod tests {
             date: oldest,
             count: 1,
             total_minutes: 95,
+            max_single_stretch_minutes: 0,
         }];
         let summary = compute_weekly_block_summary(&history, today).expect("boundary inclusive");
         assert_eq!(summary.days, 1);
@@ -1302,6 +1392,7 @@ mod tests {
             date: today,
             count: 0,
             total_minutes: 0,
+            max_single_stretch_minutes: 0,
         }];
         assert_eq!(compute_weekly_block_summary(&history, today), None);
     }
@@ -1316,6 +1407,7 @@ mod tests {
             date: today,
             count: 3,
             total_minutes: 200,
+            max_single_stretch_minutes: 0,
         }];
         assert_eq!(compute_week_over_week_trend(&history, today), None);
     }
@@ -1328,6 +1420,7 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(), // 9 days ago
             count: 5,
             total_minutes: 500,
+            max_single_stretch_minutes: 0,
         }];
         assert_eq!(compute_week_over_week_trend(&history, today), None);
     }
@@ -1340,11 +1433,13 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(), // prior week
                 count: 2,
                 total_minutes: 200,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: today,
                 count: 3,
                 total_minutes: 300, // +50% vs prior
+                max_single_stretch_minutes: 0,
             },
         ];
         let trend = compute_week_over_week_trend(&history, today).expect("both weeks present");
@@ -1362,11 +1457,13 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(),
                 count: 5,
                 total_minutes: 500,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: today,
                 count: 2,
                 total_minutes: 200, // -60% vs prior
+                max_single_stretch_minutes: 0,
             },
         ];
         let trend = compute_week_over_week_trend(&history, today).unwrap();
@@ -1383,11 +1480,13 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(),
                 count: 2,
                 total_minutes: 200,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: today,
                 count: 2,
                 total_minutes: 220, // +10%
+                max_single_stretch_minutes: 0,
             },
         ];
         let trend = compute_week_over_week_trend(&history, today).unwrap();
@@ -1404,11 +1503,13 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 5).unwrap(),
                 count: 1,
                 total_minutes: 1, // tiny prior baseline
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: today,
                 count: 1,
                 total_minutes: 1000, // 99,900% raw
+                max_single_stretch_minutes: 0,
             },
         ];
         let trend = compute_week_over_week_trend(&history, today).unwrap();
@@ -1425,6 +1526,7 @@ mod tests {
             date: today,
             count: 5,
             total_minutes: 999, // huge today; prior should still be 0 → None.
+            max_single_stretch_minutes: 0,
         }];
         assert_eq!(compute_week_over_week_trend(&history, today), None);
     }
@@ -1437,11 +1539,13 @@ mod tests {
                 date: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
                 count: 1,
                 total_minutes: u64::MAX,
+                max_single_stretch_minutes: 0,
             },
             DailyBlockStats {
                 date: today,
                 count: 1,
                 total_minutes: 100,
+                max_single_stretch_minutes: 0,
             },
         ];
         let summary = compute_weekly_block_summary(&history, today).expect("aggregates");
@@ -1466,6 +1570,7 @@ mod tests {
                 date: marker_date,
                 count: 99,
                 total_minutes: 9999,
+                max_single_stretch_minutes: 0,
             }];
         }
         load_block_history_into_memory();

@@ -158,13 +158,16 @@ export interface ToneSnapshot {
   // of the const default — non-balanced users see chip color match gate
   // behavior.
   effective_hard_block_minutes: number;
-  // Iter R65: today's deep-focus stretch summary — finalized stretches
+  // Iter R65 + R72: today's deep-focus stretch summary — finalized stretches
   // only (currently-active stretch not counted yet). null when nothing
   // finalized today (fresh process or new day rolled over).
+  // R72 adds max_single_stretch_minutes (longest single stretch's peak)
+  // to surface depth distinct from total_minutes (sum across stretches).
   daily_block_stats: {
     date: string; // YYYY-MM-DD ISO
     count: number;
     total_minutes: number;
+    max_single_stretch_minutes: number;
   } | null;
   // Iter R68: last-7-day aggregate — summed across DAILY_BLOCK_HISTORY
   // entries in [today-6 .. today]. null when window has no entries (fresh
