@@ -29,6 +29,16 @@ pub const MIN_DURATION_MINUTES: u64 = 15;
 /// stronger nudge.
 pub const DEEP_FOCUS_MINUTES: u64 = 60;
 
+/// Iter R62: hard-block threshold. At ≥90min same-app, the gate stops
+/// asking the LLM to choose silence (R27 soft directive at 60+) and
+/// just skips the proactive turn entirely. Rationale: at 90min+ the
+/// false-positive cost of interrupting deep work clearly dominates the
+/// missed-engagement cost; LLM-decides path is too risky and burns a
+/// call. 90 = 60 (R27 trigger) + 30 (one full nominal interval), so
+/// the hard band only kicks in *after* one full cycle of soft directive
+/// has had its chance.
+pub const HARD_FOCUS_BLOCK_MINUTES: u64 = 90;
+
 /// In-memory snapshot of the foreground app at the time we first observed
 /// it. `since` is monotonic, so the elapsed minutes survive system clock
 /// adjustments. App-name string is raw (un-redacted) — redaction happens
@@ -103,6 +113,51 @@ pub fn format_active_app_hint(app: &str, minutes: u64) -> String {
         )
     } else {
         format!("用户在「{}」里已经待了 {} 分钟。", app, minutes)
+    }
+}
+
+/// Iter R62: pure helper. Returns Some(minutes) when the user has been
+/// in the same app for ≥ `threshold_minutes`, signaling the gate should
+/// hard-skip proactive turns. None when there's no prior snapshot or
+/// the duration is below threshold. Pure — caller passes the snapshot
+/// (from LAST_ACTIVE_APP) plus `now` so unit tests can drive every
+/// branch without touching the static or system clock.
+pub fn compute_deep_focus_block(
+    prev: Option<&ActiveAppSnapshot>,
+    threshold_minutes: u64,
+    now: Instant,
+) -> Option<u64> {
+    let p = prev?;
+    let mins = now.saturating_duration_since(p.since).as_secs() / 60;
+    if mins >= threshold_minutes {
+        Some(mins)
+    } else {
+        None
+    }
+}
+
+/// Iter R62: production wrapper. Reads LAST_ACTIVE_APP + Instant::now(),
+/// delegates to `compute_deep_focus_block`. Gate calls this; ToneSnapshot
+/// can read same wrapper to keep panel chip aligned with gate behavior.
+pub fn deep_focus_block_minutes() -> Option<u64> {
+    let prev = LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone());
+    compute_deep_focus_block(prev.as_ref(), HARD_FOCUS_BLOCK_MINUTES, Instant::now())
+}
+
+/// Iter R62: refresh just the snapshot without producing the prompt
+/// hint. Gate calls this on every tick so deep-focus block sees fresh
+/// state — `update_and_format_active_app_hint` only fires inside
+/// `run_proactive_turn`, which doesn't run when the gate skips, leaving
+/// the snapshot stale and the block stuck on. Idempotent: running it
+/// twice in quick succession (gate + run_proactive_turn) carries the
+/// same `since` forward when the app hasn't changed.
+pub fn refresh_active_app_snapshot(current_app: Option<&str>) {
+    let Some(app) = current_app else { return };
+    let now = Instant::now();
+    let prev = LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone());
+    let (new_snapshot, _duration) = compute_active_duration(prev.as_ref(), app, now);
+    if let Ok(mut g) = LAST_ACTIVE_APP.lock() {
+        *g = Some(new_snapshot);
     }
 }
 
@@ -279,5 +334,104 @@ mod tests {
         let out = format_active_app_hint("Terminal", DEEP_FOCUS_MINUTES - 1);
         assert!(!out.contains("深度专注期"));
         assert!(out.contains("已经待了"));
+    }
+
+    // -- Iter R62: compute_deep_focus_block tests ---------------------------
+
+    #[test]
+    fn deep_focus_block_returns_none_without_snapshot() {
+        let now = Instant::now();
+        assert_eq!(
+            compute_deep_focus_block(None, HARD_FOCUS_BLOCK_MINUTES, now),
+            None
+        );
+    }
+
+    #[test]
+    fn deep_focus_block_returns_none_below_threshold() {
+        // 89 min in same app = R27 soft directive territory, NOT hard block.
+        let then = Instant::now() - std::time::Duration::from_secs(89 * 60);
+        let prev = snap("Cursor", then);
+        let now = Instant::now();
+        assert_eq!(
+            compute_deep_focus_block(Some(&prev), HARD_FOCUS_BLOCK_MINUTES, now),
+            None
+        );
+    }
+
+    #[test]
+    fn deep_focus_block_fires_at_threshold() {
+        // Exactly 90 min — boundary uses `>=`, should fire.
+        let then = Instant::now() - std::time::Duration::from_secs(90 * 60);
+        let prev = snap("Cursor", then);
+        let now = Instant::now();
+        let mins = compute_deep_focus_block(Some(&prev), HARD_FOCUS_BLOCK_MINUTES, now)
+            .expect("should fire at threshold");
+        // Test-runtime slop tolerated: 89-90.
+        assert!((89..=90).contains(&mins), "expected ~90 min, got {}", mins);
+    }
+
+    #[test]
+    fn deep_focus_block_fires_above_threshold() {
+        // 3 hours in same app — clear hard-block territory.
+        let then = Instant::now() - std::time::Duration::from_secs(180 * 60);
+        let prev = snap("IntelliJ", then);
+        let now = Instant::now();
+        let mins = compute_deep_focus_block(Some(&prev), HARD_FOCUS_BLOCK_MINUTES, now)
+            .expect("should fire at 180 min");
+        assert!(mins >= 179);
+    }
+
+    #[test]
+    fn deep_focus_block_returns_none_just_below_threshold() {
+        // 89:30 = below the 90-min boundary. Even with second-level
+        // precision, integer minutes math returns 89.
+        let then = Instant::now() - std::time::Duration::from_secs(89 * 60 + 30);
+        let prev = snap("Slack", then);
+        let now = Instant::now();
+        assert_eq!(
+            compute_deep_focus_block(Some(&prev), HARD_FOCUS_BLOCK_MINUTES, now),
+            None
+        );
+    }
+
+    #[test]
+    fn deep_focus_block_respects_custom_threshold() {
+        // Pure helper takes threshold as arg so callers can tune. Verify
+        // a different threshold (e.g. 30) fires earlier than the default.
+        let then = Instant::now() - std::time::Duration::from_secs(35 * 60);
+        let prev = snap("Cursor", then);
+        let now = Instant::now();
+        let mins = compute_deep_focus_block(Some(&prev), 30, now)
+            .expect("custom 30-min threshold should fire at 35 min");
+        assert!(mins >= 34);
+    }
+
+    // -- Iter R62: refresh_active_app_snapshot tests ------------------------
+
+    #[test]
+    fn refresh_snapshot_handles_none_app() {
+        // Non-macOS / failed osascript → noop, no panic.
+        // We can't assert on the static (test isolation), but verify the
+        // call returns without crashing.
+        refresh_active_app_snapshot(None);
+    }
+
+    #[test]
+    fn refresh_snapshot_writes_through_when_some_app() {
+        // Lock the static directly to verify the write — single-threaded
+        // test, but other tests may also touch LAST_ACTIVE_APP. Reset
+        // before / restore after to avoid interfering.
+        let original = LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone());
+        if let Ok(mut g) = LAST_ACTIVE_APP.lock() {
+            *g = None;
+        }
+        refresh_active_app_snapshot(Some("R62TestApp"));
+        let after = LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone());
+        assert_eq!(after.as_ref().map(|s| s.app.as_str()), Some("R62TestApp"));
+        // Restore.
+        if let Ok(mut g) = LAST_ACTIVE_APP.lock() {
+            *g = original;
+        }
     }
 }
