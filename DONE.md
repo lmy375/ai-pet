@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R79：deadline 信息 cross-modality 到 reactive chat + telegram
+- 现状缺口：R77/R78 让 deadline 信号进 proactive prompt + panel chip + LLM 教学。但 reactive chat / telegram path 看不到 deadline 数据——user 通过 chat 问 "我有什么 deadline" AI 没法回答。
+- 改动：
+  - `commands/chat.rs`：
+    - 新纯函数 `format_deadline_chat_layer(items, now) -> String`：chat-specific framing（"user 可能问起，这是 ground truth"，对比 R77 proactive 的 "你 might bring it up"）。包含 Approaching 因为 user 反应式询问可能问 4h 后的 deadline。
+    - 新 wrapper `inject_deadline_context_layer(messages)`：读 butler_tasks，filter `[deadline:]` 前缀，redact，按 R9 idiom 插入第一个 non-system 之前。
+    - chat() pipeline 加 `let augmented = inject_deadline_context_layer(augmented);` 在 focus_context 之后。
+  - `telegram/bot.rs`：import + handle_message 调用 inject_deadline_context_layer，跟 R71 focus_context 同 pattern 实现 telegram parity。
+  - 3 单测覆盖 empty/all-distant 空 / Approaching 渲染 + chat-specific tail 文案 / Overdue minutes→hours 切换。
+  - **612 tests pass**（609 → 612, +3 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **deadline cluster 三 surface 完成**：proactive prompt (R77) + panel chip + LLM 教学 (R78) + chat layer (R79)。
+  - **三 surface 三 fidelity**：chat = 可问（含 Approaching），proactive = 可提（含 Approaching），chip = 必须看（仅 imminent + overdue）。
+  - **R-series 第二同类 cluster 加速**：deep-focus cluster 14 iter 到 cross-surface 完整，deadline cluster 3 iter 同水平——第二个同类 cluster 学习效率更高。
+
 ## 2026-05-04 — Iter R78：教 LLM 用 `[deadline:]` + PanelToneStrip ⏳ deadline chip
 - 现状缺口：R77 加了 parser + classifier + prompt nudge，但 (a) LLM 不知道 `[deadline:]` 跟 `[once:]` 的区别 — 自然对话里"周五前发出去" phrasing 会创建 `[once:]`（错——pet 不能自己发出去）；(b) panel 没 visual 显示有 urgent deadline。
 - 改动：
