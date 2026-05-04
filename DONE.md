@@ -2,6 +2,20 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R75：focus_context layer 也注入 record 信息（chat + telegram parity）
+- 现状缺口：R74 personal-record 只 inject proactive prompt。reactive chat / telegram 用 focus_context layer，里头没 record 信息——user 通过 chat 问"我今天最长一次专注多久"AI 不知道破不破纪录。
+- 改动：
+  - `commands/chat.rs`：
+    - format_focus_context_layer 第 4 参数 `record: Option<(u64, u64)>`（今日 peak + prior 7-day peak）。内部 strict-> 检查与 R74 compute_personal_record_hint 一致。fire 时 append 一行 "今天最长一次专注 X 分钟，超过最近 7 天此前最长 Y 分钟（破纪录...）"。
+    - inject_focus_context_layer wrapper 直接读 DAILY_BLOCK_HISTORY 计算 today_peak + prior_week_peak，永远 pass `Some((t, p))`，让 helper 决定 render。
+    - 9 处已有测试加 `None` 第 4 arg，4 新测试覆盖 record 分支：strict_higher / tied / no_baseline / record_alone。
+  - 通过 R71 已经投入的 inject_focus_context_layer 共享 helper，**telegram bot 自动得到 record 信息无额外改动**。
+  - **595 tests pass**（591 → 595, +4 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **R74 跨 modality 完整**：record 信号通过 chat / telegram / proactive 三路径都可见。
+  - **single-source-of-truth**：DAILY_BLOCK_HISTORY 是唯一来源，chat 和 proactive 不会 drift。
+  - **R71 layer abstraction 这次兑现复用价值**：改 wrapper 一处，telegram 自动同步。
+
 ## 2026-05-04 — Iter R74：personal-record prompt nudge "[今日破纪录]"
 - 现状缺口：R72/R73 把 peak 维度加到 day + week，panel 都能看，但 LLM 主动开口时不知道今天有没有破纪录。data 沉淀够了，inject 时机到。R72 IDEA "先 surface 后 inject" 节奏第三阶。
 - 改动：
