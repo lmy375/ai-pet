@@ -307,6 +307,13 @@ pub async fn evaluate_loop_tick(
         .map(|(app, _win)| app);
     super::refresh_active_app_snapshot(current_app.as_deref());
     if let Some(mins) = super::deep_focus_block_minutes() {
+        // Iter R63: record the block so the next non-blocked proactive
+        // turn (within RECOVERY_HINT_GRACE_SECS) can inject a recovery
+        // hint. Reads the snapshot we just refreshed for the app name —
+        // raw / un-redacted, redaction happens at hint-format time.
+        if let Some(snap) = super::LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone()) {
+            super::record_hard_block(&snap.app, mins);
+        }
         return LoopAction::Skip(format!("deep focus hard-block: {} min in same app", mins));
     }
     let cfg = &settings.proactive;

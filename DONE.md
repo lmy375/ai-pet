@@ -2,6 +2,26 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R63：deep-focus recovery hint
+- 现状缺口：R62 让 gate 在 90min+ 同 app 直接 skip proactive turn，但 skip 不留 trace —— 用户真切出 deep focus 时 pet 像"什么都没发生"一样开口。**block + recovery 配对缺失**，少了"伙伴注意到了"那层。
+- 改动：
+  - `proactive/active_app.rs`：
+    - 新 struct `LastHardBlock { app, peak_minutes, marked_at: Instant }`。
+    - 新 static `LAST_HARD_BLOCK: Mutex<Option<LastHardBlock>>`。
+    - 新 const `RECOVERY_HINT_GRACE_SECS: u64 = 600`（10 min）—— 允许 cooldown/awaiting 残留秒数 + 用户切出来 reaction 时间。
+    - `record_hard_block(app, mins)` writer：每个 block tick 写入，覆盖 prior 值（peak_minutes 永远是最新 / 也是最后 block tick 前的值）。
+    - 纯函数 `compute_recovery_hint(last_block, now, grace_window) -> Option<(String, u64)>`：返回 (app, minutes) 当 block 在 grace window 内，否则 None。
+    - 纯函数 `format_deep_focus_recovery_hint(app, peak_minutes) -> String`：empty 防御 + "[刚结束深度专注] 用户刚从「X」的 N 分钟连续专注里切出来，可以温和打个招呼或建议歇会儿，不要追问任务进度"。
+    - 生产 wrapper `take_recovery_hint() -> String`：read static + Instant::now()，take-on-use（写完即清，single-shot per block stretch），redact app name 后 format。
+  - `proactive/gate.rs`：R62 hard-block branch 加 `record_hard_block(&snap.app, mins)` 调用，从刚 refresh 的 snapshot 拿 app name。
+  - `proactive/prompt_assembler.rs`：`PromptInputs` 加 `deep_focus_recovery_hint: &'a str` 字段；`build_proactive_prompt` 在 active_app_hint 之后 push_if_nonempty。
+  - `proactive.rs` `run_proactive_turn`：在 active_app_hint 后取 `take_recovery_hint()`，传入 PromptInputs。`base_inputs()` test fixture 加默认 `deep_focus_recovery_hint: ""`。
+  - 10 单测覆盖：compute_recovery_hint 5 个边界（None / fresh 30s / stale 11m / boundary 600s / past 601s）+ format_deep_focus_recovery_hint 3 个（valid / empty app / zero mins）+ record_and_take round trip + 二次 take 返回空。**537 tests pass**（527 → 537, +10 新）。
+- 影响：
+  - **Pet 注意到了 block-end 转折**：用户从 deep focus 切出来时 pet 第一句不再 generic，而是"你刚专注了 N 分钟，喝杯水？"那种 attentive 反馈。
+  - **Single-shot 自动节奏**：take-on-use 后清空，下次 block stretch 后 next-run 又会拿到独立 hint。不重复打扰。
+  - **redaction 边界对齐**：app 名 raw 写入 static，redact 在 wrapper 的 format 前。沿 R20 codified 的"pure helper 不读 settings, wrapper 读"模式。
+
 ## 2026-05-04 — Iter R62：deep-focus 90min+ 硬阻塞 gate
 - 现状缺口：R27 在 60m 同 app 时升级 prompt hint 为 directive "极简或选择沉默"，但**全靠 LLM 自觉**。模型偶尔忽略 directive 或被其他 hint 反向 weight，仍可能打扰用户长时间深度工作。**没有任何 gate-level hard skip**，pet 在 long deep-work session 中可能反复发起 turn。
 - 改动：

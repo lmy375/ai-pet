@@ -1426,6 +1426,12 @@ async fn run_proactive_turn(
         .map(|(app, _)| app);
     let active_app_hint = update_and_format_active_app_hint(current_app.as_deref());
 
+    // Iter R63: take-and-clear the deep-focus recovery hint if a hard-block
+    // ended within the last 10 minutes. Single-shot per block stretch — once
+    // taken, won't re-fire on subsequent runs in the same window. Empty when
+    // no recent hard-block or already consumed.
+    let deep_focus_recovery_hint = take_recovery_hint();
+
     // Iter R14: at the first proactive turn of a new day, surface yesterday's
     // last 2 utterances so the pet can pick up a thread instead of starting
     // cold every morning. Empty when (a) not first-of-day or (b) yesterday
@@ -1527,6 +1533,7 @@ async fn run_proactive_turn(
         active_app_hint: &active_app_hint,
         yesterday_recap_hint: &yesterday_recap_hint,
         length_register_hint: &length_register_hint,
+        deep_focus_recovery_hint: &deep_focus_recovery_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -2040,6 +2047,8 @@ mod prompt_tests {
             length_register_hint: "",
             // Default empty — pre-Iter R15 state, no active-app duration tracker.
             active_app_hint: "",
+            // Default empty — pre-Iter R63 state, no recent deep-focus block.
+            deep_focus_recovery_hint: "",
         }
     }
 

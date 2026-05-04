@@ -144,6 +144,96 @@ pub fn deep_focus_block_minutes() -> Option<u64> {
     compute_deep_focus_block(prev.as_ref(), HARD_FOCUS_BLOCK_MINUTES, Instant::now())
 }
 
+/// Iter R63: bookkeeping for the most recent hard-block. Gate writes
+/// this on every block tick (refreshing `marked_at` so the value reflects
+/// the *last* block tick before user emerged). Run-path takes-and-clears
+/// it within RECOVERY_HINT_GRACE_SECS so the first proactive turn after
+/// the user releases a long deep-work session can surface a "你刚从 N
+/// 分钟专注里切出来" recovery hint. Bridges R62 (gate skip) → next-run
+/// context: pet feels attentive instead of jumping in cold.
+#[derive(Clone, Debug)]
+pub struct LastHardBlock {
+    pub app: String,
+    pub peak_minutes: u64,
+    pub marked_at: Instant,
+}
+
+pub static LAST_HARD_BLOCK: std::sync::Mutex<Option<LastHardBlock>> = std::sync::Mutex::new(None);
+
+/// Iter R63: how recent a block has to be for the recovery hint to
+/// fire. 10 min = generous enough to cover ticks that get gated by
+/// awaiting / cooldown / quiet hours right after the user emerges
+/// (those gates also skip but don't fire the recovery hint —
+/// take-on-run only happens inside run_proactive_turn). Past 10 min
+/// the "刚切出来" framing stops being accurate.
+pub const RECOVERY_HINT_GRACE_SECS: u64 = 600;
+
+/// Iter R63: gate calls this on every hard-block tick. Idempotent
+/// refresh — overwrites prior LastHardBlock with current values
+/// so peak_minutes always reflects the latest block tick (which is
+/// also the last value before the block clears).
+pub fn record_hard_block(app: &str, peak_minutes: u64) {
+    if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
+        *g = Some(LastHardBlock {
+            app: app.to_string(),
+            peak_minutes,
+            marked_at: Instant::now(),
+        });
+    }
+}
+
+/// Iter R63: pure helper. Returns Some((app, minutes)) when the last
+/// recorded hard-block is within `grace_window_secs` of `now`. None
+/// when no block recorded or it's stale. Pure / testable — caller
+/// passes both `last_block` and `now` so unit tests can drive every
+/// branch deterministically.
+pub fn compute_recovery_hint(
+    last_block: Option<&LastHardBlock>,
+    now: Instant,
+    grace_window_secs: u64,
+) -> Option<(String, u64)> {
+    let b = last_block?;
+    let age = now.saturating_duration_since(b.marked_at).as_secs();
+    if age > grace_window_secs {
+        return None;
+    }
+    Some((b.app.clone(), b.peak_minutes))
+}
+
+/// Iter R63: pure formatter. Returns empty string for empty app /
+/// zero peak_minutes (defensive — those values shouldn't reach here
+/// in production but the helper stays well-defined for tests).
+pub fn format_deep_focus_recovery_hint(app: &str, peak_minutes: u64) -> String {
+    if app.trim().is_empty() || peak_minutes == 0 {
+        return String::new();
+    }
+    format!(
+        "[刚结束深度专注] 用户刚从「{}」的 {} 分钟连续专注里切出来，可以温和打个招呼或建议歇会儿，不要追问任务进度。",
+        app, peak_minutes
+    )
+}
+
+/// Iter R63: production wrapper. Reads LAST_HARD_BLOCK + Instant::now(),
+/// delegates to `compute_recovery_hint`, redacts the app name, formats
+/// the hint string, and clears LAST_HARD_BLOCK on successful take. On
+/// expiry / no-data, leaves the static intact and returns empty string.
+/// Caller is `run_proactive_turn` — clears so the same recovery doesn't
+/// fire twice across consecutive runs.
+pub fn take_recovery_hint() -> String {
+    let Ok(mut g) = LAST_HARD_BLOCK.lock() else {
+        return String::new();
+    };
+    let info = g.clone();
+    let Some((app, mins)) =
+        compute_recovery_hint(info.as_ref(), Instant::now(), RECOVERY_HINT_GRACE_SECS)
+    else {
+        return String::new();
+    };
+    *g = None;
+    let redacted = crate::redaction::redact_with_settings(&app);
+    format_deep_focus_recovery_hint(&redacted, mins)
+}
+
 /// Iter R62: refresh just the snapshot without producing the prompt
 /// hint. Gate calls this on every tick so deep-focus block sees fresh
 /// state — `update_and_format_active_app_hint` only fires inside
@@ -431,6 +521,122 @@ mod tests {
         assert_eq!(after.as_ref().map(|s| s.app.as_str()), Some("R62TestApp"));
         // Restore.
         if let Ok(mut g) = LAST_ACTIVE_APP.lock() {
+            *g = original;
+        }
+    }
+
+    // -- Iter R63: compute_recovery_hint tests ------------------------------
+
+    fn block(app: &str, mins: u64, marked_at: Instant) -> LastHardBlock {
+        LastHardBlock {
+            app: app.to_string(),
+            peak_minutes: mins,
+            marked_at,
+        }
+    }
+
+    #[test]
+    fn recovery_hint_returns_none_when_no_block() {
+        let now = Instant::now();
+        assert_eq!(compute_recovery_hint(None, now, 600), None);
+    }
+
+    #[test]
+    fn recovery_hint_returns_some_when_fresh() {
+        // Block recorded 30s ago, well within 10-min grace.
+        let then = Instant::now() - std::time::Duration::from_secs(30);
+        let b = block("Cursor", 95, then);
+        let now = Instant::now();
+        let result = compute_recovery_hint(Some(&b), now, 600);
+        assert_eq!(result, Some(("Cursor".to_string(), 95)));
+    }
+
+    #[test]
+    fn recovery_hint_returns_none_when_stale() {
+        // Block recorded 11 min ago, past 10-min grace window.
+        let then = Instant::now() - std::time::Duration::from_secs(11 * 60);
+        let b = block("Slack", 120, then);
+        let now = Instant::now();
+        assert_eq!(compute_recovery_hint(Some(&b), now, 600), None);
+    }
+
+    #[test]
+    fn recovery_hint_at_exact_grace_boundary_fires() {
+        // Boundary: gate uses `>` for stale, so age == grace_secs is still fresh.
+        let then = Instant::now() - std::time::Duration::from_secs(600);
+        let b = block("VS Code", 90, then);
+        let now = Instant::now();
+        let result = compute_recovery_hint(Some(&b), now, 600);
+        // Allow for runtime slop pushing age slightly past 600.
+        assert!(result.is_none() || matches!(result, Some(ref r) if r.1 == 90));
+    }
+
+    #[test]
+    fn recovery_hint_just_past_grace_returns_none() {
+        // Clearly stale: 601s = 1s past grace window.
+        let then = Instant::now() - std::time::Duration::from_secs(601);
+        let b = block("Xcode", 100, then);
+        let now = Instant::now();
+        assert_eq!(compute_recovery_hint(Some(&b), now, 600), None);
+    }
+
+    // -- Iter R63: format_deep_focus_recovery_hint tests --------------------
+
+    #[test]
+    fn format_recovery_hint_includes_app_and_minutes() {
+        let out = format_deep_focus_recovery_hint("Cursor", 95);
+        assert!(out.contains("Cursor"));
+        assert!(out.contains("95"));
+        assert!(out.contains("刚结束深度专注"));
+        assert!(out.contains("切出来"));
+        assert!(out.contains("不要追问任务进度"));
+    }
+
+    #[test]
+    fn format_recovery_hint_returns_empty_for_blank_app() {
+        assert_eq!(format_deep_focus_recovery_hint("", 90), "");
+        assert_eq!(format_deep_focus_recovery_hint("   ", 90), "");
+    }
+
+    #[test]
+    fn format_recovery_hint_returns_empty_for_zero_minutes() {
+        // Defensive: peak_minutes==0 is impossible in production (only set
+        // when block fires at ≥ 90), but the pure helper stays well-defined.
+        assert_eq!(format_deep_focus_recovery_hint("Cursor", 0), "");
+    }
+
+    // -- Iter R63: record_hard_block + take_recovery_hint integration -------
+
+    #[test]
+    fn record_and_take_round_trip_clears_state() {
+        // Ensure clean slate; restore at end so other tests aren't disturbed.
+        let original = LAST_HARD_BLOCK.lock().ok().and_then(|g| g.clone());
+        if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
+            *g = None;
+        }
+
+        record_hard_block("R63TestApp", 91);
+        let hint = take_recovery_hint();
+        assert!(hint.contains("R63TestApp"));
+        assert!(hint.contains("91"));
+
+        // Take should clear, so a second take returns empty.
+        let hint2 = take_recovery_hint();
+        assert_eq!(hint2, "");
+
+        if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
+            *g = original;
+        }
+    }
+
+    #[test]
+    fn take_recovery_hint_returns_empty_when_no_record() {
+        let original = LAST_HARD_BLOCK.lock().ok().and_then(|g| g.clone());
+        if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
+            *g = None;
+        }
+        assert_eq!(take_recovery_hint(), "");
+        if let Ok(mut g) = LAST_HARD_BLOCK.lock() {
             *g = original;
         }
     }

@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R63 设计要点（已实现）
+- **R62 → R63 是 "gate skip + recovery context" 一对**：R62 让 gate 在 90min+ 直接 skip，但 skip 一直 skip 不留 trace —— 用户真切出来后 pet 像"什么都没发生"一样开口。R63 补上 recovery hint：第一个 non-blocked turn injection "[刚结束深度专注] 用户刚从「X」N 分钟专注里切出来"。**block + recovery 是配对的，缺一就少了"伙伴注意到了" 那层**。
+- **take-on-use single-shot 模式**：take_recovery_hint 写完即清，所以同一个 block stretch 不会反复注入 hint。如果用户切到另一个 app 又快速回去深度专注，下一次 block 又被独立记录、下一次 recovery 又会触发。**state 设计跟着 user behavior 自动节奏**。
+- **gate 写 / run-path 取 的耦合点**：gate.rs 在 R62 block 触发处写 LAST_HARD_BLOCK；run_proactive_turn 在 hint 注入处 take-and-clear。**两个不同 module 共享一个 static 是耦合**，但比 plumbing through 函数参数干净 —— Rust 模块系统下 `super::record_hard_block` 是 explicit 的，不像 React Context 那样 implicit。`pub use` re-export 让 super:: 路径短。
+- **redaction 在 wrapper 而非 pure helper 内**：format_deep_focus_recovery_hint 是 pure formatter（不读 settings）。take_recovery_hint wrapper 在 format 前 redact。**遵循 R20 codified 的 "pure helper 不知道 settings, wrapper 知道" 边界**，避免 active_app_hint 那条已经 follow 的 pattern。
+- **grace window = 10 min** 选 **取舍**：太长（>15min）会让 pet 在用户已经做了别的事 10 分钟后还说"刚切出来"，体验脱节。太短（<5min）会让其他 gate（cooldown/awaiting）的 skip 把 recovery 错过。10 是经验中点，cover 大部分 cooldown 残留秒数 + 给 user 切出来后的 reaction 时间。**没有不可调的常量**，未来观察到 miss/false-fire 再 retune。
+- **prompt 中位置紧挨 active_app_hint**：assembler 把 deep_focus_recovery_hint push 在 active_app_hint 之后。两个 hint 可能同时 fire（block 刚解除 → user 仍在该 app 但分钟数 reset → active_app_hint 描述当前 < 15m 不 fire）。如果 user 切到不同 app，active_app 描述新 app，recovery 描述旧 app。**两 hint 语义互补不重复**：active_app = 当下，recovery = 刚才。
+- **没改 PanelToneStrip**：R62 已加 deep-red 🛑 chip 显示 hard-block 状态。recovery 是 transient（只在一个 turn 中存在），surface 到 panel chip 会闪现一次没意义。如果 user 想知道 "刚才有没有 block"，看 PanelDebug timeline 的 Skip 记录就够了。**transient prompt-only 信号不必 panel surface**（self-correct R34 IDEA 的反例：streak 是 between-turns stable 才上 panel，recovery hint 是单 turn 的不上）。
+
 ## Iter R62 设计要点（已实现）
 - **soft directive → hard block 的 escalation 第二台阶**：R15 (15m hint) → R27 (60m soft "极简或沉默") → R62 (90m gate skip) 三段。**每次升级都给上一台阶 30 分钟纠偏机会**——R27 在 60m 提示 LLM 自觉沉默，到 90m 还没切 app 说明用户**确实**在深度专注，硬阻塞是合理的。这种"先软后硬 + 阶梯化时长"避免了"60m 直接屏蔽"的过度反应。
 - **gate-side osascript 的成本权衡**：R62 在 evaluate_loop_tick 加了一次 `current_active_window` 调用 —— osascript ~50-200ms / 60s tick = ≤0.3% overhead。**显式付出 IO cost 换取 snapshot 不 stale**。alternative 是让 snapshot 只在 run_proactive_turn 更新，但**那样硬阻塞一旦触发就永久卡住**（gate 跳过 → 不进 run → 不更新 snapshot → 持续跳过）。staleness 自我维持的 trap。多花 200ms / tick 换 gate 永远见 fresh state，well worth it。
