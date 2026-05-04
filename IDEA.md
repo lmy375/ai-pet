@@ -1,5 +1,15 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R80 设计要点（已实现）
+- **PanelMemory butler_tasks 列表是 user-author 主入口**：user 手动加 / 改 butler_tasks 主要在 PanelMemory 列表里。R77/R78 让 prompt + chip + LLM 教学全 cover 了，但用户翻 PanelMemory 添加任务时 placeholder 还没教 `[deadline:]`，列表里 deadline-prefixed item 也没特殊视觉。**user-author 入口不教 = 死循环**——LLM 自己创建 deadline 但 user 看不到示范。
+- **解析器扩展 vs 新写一个**：parseButlerSchedule 已经处理 every/once。R80 选择扩展同函数加 deadline 第三 kind，因为 once + deadline 共享 YYYY-MM-DD HH:MM body shape，正则一处复用 `(every|once|deadline)`。**新功能跟旧 share grammar 时 extend 而非 fork**——避免重复 parse 逻辑。
+- **TS 镜像 Rust 4 段 urgency**：computeDeadlineUrgency 完全镜像 R77 compute_deadline_urgency 的 `≥6h distant / ≥1h approaching / >0 imminent / <=0 overdue` tier。**前后端 urgency 阈值同步**——避免 panel 显 Approaching 但 prompt 已 Imminent 之类不一致。
+- **chip 4-way styling**：every (#dbeafe 蓝循环) / once (#fef3c7 amber 一次性) / deadline 按 urgency 4 段（distant 灰, approaching amber, imminent 红, overdue 深红）。**视觉密度反映 urgency 密度**——同 chip family 但深度递进。
+- **deadline 不参与 isButlerDue check**：每 / 一次性 schedule 的 due 语义是 "pet 应该执行了吗"——deadline 不是 pet 执行，所以 due check skip。`due = parsed.kind !== "deadline" && isButlerDue(...)`。**语义过滤在使用点而非 helper 内部**——清晰分离 "schedule" 与 "deadline" 概念。
+- **placeholder 教 user 用 [deadline:]**：R78 教了 LLM；R80 教 user。两层教学不冗余——user 直接编辑 / LLM auto-create 是两路径。**input affordance 跟 LLM prompt 平行覆盖**。
+- **R80 完整闭合 deadline cluster**：data (R77) + prompt nudge (R77) + LLM 教学 (R78) + panel chip (R78) + chat layer (R79) + telegram (R79) + PanelMemory chip + placeholder (R80)。**4 iter 8 surface**——每个 surface 都让 user 在不同 affordance 看到 deadline 概念。
+- **下一 iter 该换方向**：deadline cluster 完整，跟之前 deep-focus cluster 收官时同样的 closure 信号——下一 surface 不在同一概念域。
+
 ## Iter R79 设计要点（已实现）
 - **chat layer 跟 proactive prompt 文案 framing 不同**：proactive 是 "你 might bring it up" (pet initiates)，chat 是 "user 可能问起，这是 ground truth" (pet responds)。R79 写独立 format_deadline_chat_layer 而非 reuse format_butler_deadlines_hint。**modality 决定 framing**——shared data, separate prose。
 - **chat 层包含 Approaching 而 proactive 不也包**：proactive R77 format 已含 Approaching（"约 N 小时后"）。chat R79 跟它保持一致——user 可能问起 4 小时后的 deadline。但 panel chip R78 仅 imminent + overdue（"act now" 焦点）。**三个 surface 三个 fidelity 阈值**：chat = "可问"（包含 Approaching），proactive = "可提"（包含 Approaching），chip = "必须看"（仅 imminent + overdue）。

@@ -28,7 +28,7 @@ const CATEGORY_ORDER = ["butler_tasks", "todo", "ai_insights", "user_profile", "
 // allowed but unusual.
 const CATEGORY_PLACEHOLDERS: Record<string, string> = {
   butler_tasks:
-    "比如：[every: 09:00] 把今日日历汇总写到 ~/today.md\n或：[once: 2026-05-10 14:00] 周末整理 ~/Downloads\n或：直接写「整理 ~/Downloads，把 30 天旧文件挪到 ~/Archive」（不带前缀就由宠物自己判断时机）。\n（描述里说清楚做什么、多久做一次、写到哪里。）",
+    "比如：[every: 09:00] 把今日日历汇总写到 ~/today.md\n或：[once: 2026-05-10 14:00] 周末整理 ~/Downloads（pet 在该时间点自动执行）\n或：[deadline: 2026-05-10 14:00] 把文档发出去（user 必须在那之前自己完成，pet 临近时提醒）\n或：直接写「整理 ~/Downloads，把 30 天旧文件挪到 ~/Archive」（不带前缀就由宠物自己判断时机）。\n（描述里说清楚做什么、多久做一次、写到哪里。）",
   todo: "用户提醒自己的事项。建议加前缀：\n[remind: 17:00] 喝水\n[remind: 2026-05-10 09:00] 看医生",
   user_profile: "关于用户习惯 / 偏好的稳定事实。\n比如：起床时间 通常 8:30 起床\n或：偏好 dark theme 编辑器",
   ai_insights: "宠物自己的反思 / 心情 / 长期画像，通常由 LLM 自己写。手动编辑可以，但注意 current_mood / persona_summary 是受保护的。",
@@ -99,17 +99,20 @@ export function PanelMemory() {
     return () => clearInterval(t);
   }, []);
 
-  // ---- Iter Cθ: schedule-aware rendering for butler_tasks items ---------------
-  // Pure TS mirror of proactive.rs::parse_butler_schedule_prefix + is_butler_due.
-  // Lets the panel render `[every: HH:MM]` / `[once: ...]` as a chip and flag due
-  // tasks in real time, instead of users needing to do the math themselves.
+  // ---- Iter Cθ + R80: schedule-aware rendering for butler_tasks items ---------
+  // Pure TS mirror of proactive.rs::parse_butler_schedule_prefix +
+  // parse_butler_deadline_prefix + is_butler_due. Lets the panel render
+  // `[every: HH:MM]` / `[once: ...]` / `[deadline: ...]` (R80) as chips
+  // and flag due / urgent tasks in real time, instead of users needing
+  // to do the math themselves.
   type ButlerSchedule =
     | { kind: "every"; hour: number; minute: number }
-    | { kind: "once"; year: number; month: number; day: number; hour: number; minute: number };
+    | { kind: "once"; year: number; month: number; day: number; hour: number; minute: number }
+    | { kind: "deadline"; year: number; month: number; day: number; hour: number; minute: number };
 
   const parseButlerSchedule = (desc: string): { schedule: ButlerSchedule; topic: string } | null => {
     const trimmed = desc.replace(/^\s+/, "");
-    const m = trimmed.match(/^\[(every|once):\s*([^\]]+)\]\s*(.*)$/);
+    const m = trimmed.match(/^\[(every|once|deadline):\s*([^\]]+)\]\s*(.*)$/);
     if (!m) return null;
     const [, kind, body, topic] = m;
     if (!topic.trim()) return null;
@@ -121,12 +124,12 @@ export function PanelMemory() {
       if (hour > 23 || minute > 59) return null;
       return { schedule: { kind: "every", hour, minute }, topic: topic.trim() };
     }
-    // once
+    // once / deadline share the same YYYY-MM-DD HH:MM body shape.
     const dt = body.trim().match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{1,2})$/);
     if (!dt) return null;
     return {
       schedule: {
-        kind: "once",
+        kind: kind as "once" | "deadline",
         year: Number(dt[1]),
         month: Number(dt[2]),
         day: Number(dt[3]),
@@ -137,8 +140,33 @@ export function PanelMemory() {
     };
   };
 
+  // Iter R80: TS mirror of compute_deadline_urgency. Returns urgency tier
+  // for [deadline:] tasks so panel can color-code by tier (matches R77/R78
+  // semantics: > 6h = distant, 1-6h = approaching, < 1h = imminent, past = overdue).
+  type DeadlineUrgency = "distant" | "approaching" | "imminent" | "overdue";
+  const computeDeadlineUrgency = (
+    schedule: Extract<ButlerSchedule, { kind: "deadline" }>,
+    now: Date,
+  ): DeadlineUrgency => {
+    const target = new Date(
+      schedule.year,
+      schedule.month - 1,
+      schedule.day,
+      schedule.hour,
+      schedule.minute,
+    );
+    if (now >= target) return "overdue";
+    const diffHours = (target.getTime() - now.getTime()) / 3_600_000;
+    if (diffHours >= 6) return "distant";
+    if (diffHours >= 1) return "approaching";
+    return "imminent";
+  };
+
   const mostRecentFire = (schedule: ButlerSchedule, now: Date): Date | null => {
-    if (schedule.kind === "once") {
+    if (schedule.kind === "once" || schedule.kind === "deadline") {
+      // deadline shares the same "fire at this absolute moment" date shape
+      // as once for scheduling purposes; due-ness/urgency come from urgency
+      // computer for deadline (we don't gate it via mostRecentFire / isButlerDue).
       const target = new Date(
         schedule.year,
         schedule.month - 1,
@@ -665,10 +693,17 @@ export function PanelMemory() {
                 // skip the work entirely. parsed === null when no schedule prefix.
                 const parsed =
                   catKey === "butler_tasks" ? parseButlerSchedule(item.description) : null;
+                // Iter R80: deadline tasks aren't "due" the way every/once are
+                // (pet doesn't auto-execute deadlines). Skip due check for those.
                 const due =
-                  parsed && item.updated_at
+                  parsed && parsed.schedule.kind !== "deadline" && item.updated_at
                     ? isButlerDue(parsed.schedule, item.updated_at, new Date())
                     : false;
+                // Iter R80: urgency tier (only meaningful for deadline kind).
+                const deadlineUrgency: DeadlineUrgency | null =
+                  parsed && parsed.schedule.kind === "deadline"
+                    ? computeDeadlineUrgency(parsed.schedule, new Date())
+                    : null;
                 const errInfo =
                   catKey === "butler_tasks"
                     ? parseButlerError(item.description)
@@ -705,25 +740,66 @@ export function PanelMemory() {
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <div style={s.itemTitle}>{item.title}</div>
-                        {scheduleLabel && (
-                          <span
-                            style={{
-                              fontSize: 10,
-                              padding: "1px 6px",
-                              borderRadius: 4,
-                              background: parsed!.schedule.kind === "every" ? "#dbeafe" : "#fef3c7",
-                              color: parsed!.schedule.kind === "every" ? "#1e40af" : "#92400e",
-                              fontFamily: "'SF Mono', monospace",
-                            }}
-                            title={
-                              parsed!.schedule.kind === "every"
-                                ? "每日定时触发，到期后下一轮 proactive 主动开口时执行"
-                                : "单次定时触发"
+                        {scheduleLabel && (() => {
+                          // Iter R80: 4-way chip styling. every (循环) blue;
+                          // once (一次性执行) amber; deadline (截止前提醒) by
+                          // urgency tier — distant gray, approaching amber,
+                          // imminent / overdue red so users see the urgency
+                          // at a glance without parsing the date.
+                          const kind = parsed!.schedule.kind;
+                          let bg: string, color: string, icon: string, hint: string;
+                          if (kind === "every") {
+                            bg = "#dbeafe";
+                            color = "#1e40af";
+                            icon = "🔁";
+                            hint = "每日定时触发，到期后下一轮 proactive 主动开口时执行";
+                          } else if (kind === "once") {
+                            bg = "#fef3c7";
+                            color = "#92400e";
+                            icon = "📅";
+                            hint = "单次定时触发：pet 在那个时间点自动执行";
+                          } else {
+                            // deadline — color by urgency
+                            switch (deadlineUrgency) {
+                              case "overdue":
+                                bg = "#fee2e2";
+                                color = "#991b1b";
+                                hint = "deadline 已过 — user 需自己完成（pet 不自动执行此类）";
+                                break;
+                              case "imminent":
+                                bg = "#fee2e2";
+                                color = "#b91c1c";
+                                hint = "deadline 不到 1 小时 — pet proactive 会 override 静默原则提醒";
+                                break;
+                              case "approaching":
+                                bg = "#fef3c7";
+                                color = "#92400e";
+                                hint = "deadline 1-6 小时 — pet 适时会提醒";
+                                break;
+                              default:
+                                // distant / null
+                                bg = "#e2e8f0";
+                                color = "#475569";
+                                hint = "deadline 远在 6 小时之后 — 暂不打扰";
                             }
-                          >
-                            {parsed!.schedule.kind === "every" ? "🔁" : "📅"} {scheduleLabel}
-                          </span>
-                        )}
+                            icon = "⏳";
+                          }
+                          return (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                background: bg,
+                                color,
+                                fontFamily: "'SF Mono', monospace",
+                              }}
+                              title={hint}
+                            >
+                              {icon} {scheduleLabel}
+                            </span>
+                          );
+                        })()}
                         {errInfo.hasError && (
                           <span style={{ display: "inline-flex", gap: 2, alignItems: "center" }}>
                             <span
