@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R71：focus context 加"正在专注"信号 + telegram parity
+- 现状缺口：R70 layer 给反应式 chat 注入了 today/week 聚合，但没说"用户当前正在「X」专注 N 分钟" —— mid-focus chat 不知用户在专注里。telegram bot 也只 inject mood + persona，没有 R70 的 focus_context。两个口子要补。
+- 改动：
+  - `commands/chat.rs`：
+    - 新 const `IN_PROGRESS_FOCUS_MIN_MINUTES: u64 = 30`（R15=15 描述 / R27=60 directive 之间中点，casual browsing 阈值之上）。
+    - `format_focus_context_layer` 加第三参数 `in_progress: Option<(&str, u64)>`。新增"用户当前正在「X」专注 N 分钟（进行中，未计入今日累计）"line，排在 today 之前（current → today → week 时效递减）。
+    - 已有 5 测试更新签名，新加 3 测试覆盖 in-progress 分支：alone（无 today/weekly 时仅 in-progress 也输出）、appears-before-today（assert index 顺序）、blank-app-skipped（防御 "  " 不漏出）。
+    - `inject_focus_context_layer` 用 `crate::proactive::snapshot_active_app()` 读 active app + 阈值 gating，组合成 in_progress 参数。
+  - `telegram/bot.rs`：import 加 `inject_focus_context_layer`；handle_message 在 persona inject 之后调用。modality-aware 注释：recent_speech (R9) 不 inject telegram —— bubbles 是 desktop-only，telegram user 没见过，引用反而 confusing。
+  - **578 tests pass**（575 → 578, +3 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **mid-focus chat AI 自动调整 tone**：user 现在专注中，AI 看到信号知道 reply 要 brief / 不要长篇。
+  - **telegram parity**：远程聊天也能读到 today/week stats。
+  - **layer chain 4.5 层**：mood / persona / recent_speech (reactive only) / focus_context (with in-progress)。modality 决定哪些 layer 该 inject。
+
 ## 2026-05-04 — Iter R70：reactive chat 注入今日/本周 deep-focus 上下文
 - 现状缺口：R62-R69 deep-focus 数据全在 proactive prompt + panel 用。**反应式聊天完全不知道**，user 问"我今天怎么样"得不到准确回答；user 刚结束一段长专注开聊，pet 不知道要简短回答。**modality 间数据隔离**，需要 cross-domain bridge。
 - 改动：

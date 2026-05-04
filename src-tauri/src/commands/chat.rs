@@ -211,29 +211,52 @@ pub fn format_recent_speech_layer(lines: &[String]) -> String {
     )
 }
 
-/// Iter R70: format a "what the user has been doing focus-wise today / this week"
-/// system note for reactive chat. Lets the AI answer "我今天怎么样" coherently
-/// without the user re-explaining, and stay brief if the user is mid-focus.
+/// Iter R71: in-progress focus signal threshold (minutes). Below this,
+/// active-app duration counts as casual browsing — not worth priming
+/// the chat with. 30 = midpoint between R15's 15min descriptive band
+/// and R27's 60min directive band. Above 30, "正在专注 X 分钟" line
+/// fires so the AI can adjust tone (be brief if user is deep in flow).
+pub const IN_PROGRESS_FOCUS_MIN_MINUTES: u64 = 30;
+
+/// Iter R70/R71: format a "what the user has been doing focus-wise today /
+/// this week + currently" system note for reactive chat. Lets the AI answer
+/// "我今天怎么样" coherently without the user re-explaining, and stay brief
+/// if the user is mid-focus.
+///
 /// Pure — caller passes already-fetched stats so the formatter is unit-testable
-/// without static / clock access. Empty when all three sources are None
-/// (fresh install / quiet day → no useful context to inject).
+/// without static / clock access. Empty when no signal at all (no today / no
+/// weekly / no in-progress); otherwise builds the "[今日专注状态]" block with
+/// just the lines that have data.
+///
+/// `in_progress` is `(app_name, minutes)` for the active focus session, or None
+/// when below `IN_PROGRESS_FOCUS_MIN_MINUTES` / no app tracked. Caller (R71
+/// wrapper) does the threshold gating; pure helper just renders whatever
+/// it's given.
 pub fn format_focus_context_layer(
     today: Option<&crate::proactive::DailyBlockStats>,
     weekly: Option<&crate::proactive::WeeklyBlockSummary>,
+    in_progress: Option<(&str, u64)>,
 ) -> String {
-    // Skip the layer entirely when neither source has signal — no point
-    // priming the model with "用户没专注过" trivia.
     let has_today = today.map(|s| s.count > 0).unwrap_or(false);
     let has_weekly = weekly.map(|s| s.total_count > 0).unwrap_or(false);
-    if !has_today && !has_weekly {
+    let has_in_progress = in_progress.is_some();
+    if !has_today && !has_weekly && !has_in_progress {
         return String::new();
     }
     let mut lines: Vec<String> = Vec::new();
     lines.push("[今日专注状态]".to_string());
+    if let Some((app, mins)) = in_progress {
+        if !app.trim().is_empty() {
+            lines.push(format!(
+                "用户当前正在「{}」专注 {} 分钟（进行中，未计入今日累计）。",
+                app, mins
+            ));
+        }
+    }
     if let Some(s) = today {
         if s.count > 0 {
             lines.push(format!(
-                "今天完成 {} 次深度专注，合计 {} 分钟。",
+                "今天已完成 {} 次深度专注，合计 {} 分钟。",
                 s.count, s.total_minutes
             ));
         }
@@ -253,14 +276,22 @@ pub fn format_focus_context_layer(
     lines.join("\n")
 }
 
-/// Iter R70: inject the focus-context system note into reactive chat.
-/// Reads current_daily_block_stats + current_weekly_block_summary, formats,
-/// inserts before the first non-system message (same idiom as the other
-/// injectors). No-op when format_focus_context_layer returns empty.
+/// Iter R70/R71: inject the focus-context system note into reactive chat (or
+/// telegram). Reads current_daily_block_stats + current_weekly_block_summary +
+/// snapshot_active_app, gates in-progress on `IN_PROGRESS_FOCUS_MIN_MINUTES`,
+/// formats, inserts before the first non-system message (same idiom as the
+/// other injectors). No-op when format_focus_context_layer returns empty.
 pub fn inject_focus_context_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let today = crate::proactive::current_daily_block_stats();
     let weekly = crate::proactive::current_weekly_block_summary();
-    let body = format_focus_context_layer(today.as_ref(), weekly.as_ref());
+    // Iter R71: pick up the currently-active app's duration when ≥ threshold.
+    // snapshot_active_app already redacts the app name (R22 helper).
+    let active = crate::proactive::snapshot_active_app();
+    let in_progress = active
+        .as_ref()
+        .filter(|s| s.minutes >= IN_PROGRESS_FOCUS_MIN_MINUTES)
+        .map(|s| (s.app.as_str(), s.minutes));
+    let body = format_focus_context_layer(today.as_ref(), weekly.as_ref(), in_progress);
     if body.is_empty() {
         return messages;
     }
@@ -1233,7 +1264,7 @@ mod trim_tests {
 
     #[test]
     fn focus_context_returns_empty_when_no_stats() {
-        assert_eq!(format_focus_context_layer(None, None), "");
+        assert_eq!(format_focus_context_layer(None, None, None), "");
     }
 
     #[test]
@@ -1243,8 +1274,8 @@ mod trim_tests {
             count: 0,
             total_minutes: 0,
         };
-        // Defensive: today entry exists with zero count, weekly None.
-        assert_eq!(format_focus_context_layer(Some(&today), None), "");
+        // Defensive: today entry exists with zero count, weekly + in_progress None.
+        assert_eq!(format_focus_context_layer(Some(&today), None, None), "");
     }
 
     #[test]
@@ -1254,7 +1285,7 @@ mod trim_tests {
             count: 3,
             total_minutes: 270,
         };
-        let out = format_focus_context_layer(Some(&today), None);
+        let out = format_focus_context_layer(Some(&today), None, None);
         assert!(out.contains("[今日专注状态]"));
         assert!(out.contains("3 次"));
         assert!(out.contains("270"));
@@ -1268,7 +1299,7 @@ mod trim_tests {
             total_count: 9,
             total_minutes: 810,
         };
-        let out = format_focus_context_layer(None, Some(&weekly));
+        let out = format_focus_context_layer(None, Some(&weekly), None);
         assert!(out.contains("[今日专注状态]"));
         assert!(out.contains("9 次"));
         assert!(out.contains("810"));
@@ -1287,9 +1318,9 @@ mod trim_tests {
             total_count: 5,
             total_minutes: 450,
         };
-        let out = format_focus_context_layer(Some(&today), Some(&weekly));
+        let out = format_focus_context_layer(Some(&today), Some(&weekly), None);
         // Both stats appear; tail guidance always present.
-        assert!(out.contains("今天完成 2 次"));
+        assert!(out.contains("今天已完成 2 次"));
         assert!(out.contains("本周（最近 7 天）累计 5 次"));
         assert!(out.contains("简洁"));
     }
@@ -1308,10 +1339,55 @@ mod trim_tests {
             total_count: 3,
             total_minutes: 270,
         };
-        let out = format_focus_context_layer(Some(&today), Some(&weekly));
+        let out = format_focus_context_layer(Some(&today), Some(&weekly), None);
         assert!(out.contains("[今日专注状态]"));
-        assert!(!out.contains("今天完成 0"));
+        assert!(!out.contains("今天已完成 0"));
         assert!(out.contains("本周（最近 7 天）累计 3 次"));
+    }
+
+    // -- Iter R71: in_progress branch tests ---------------------------------
+
+    #[test]
+    fn focus_context_renders_in_progress_alone() {
+        // Only in-progress signal present (no today, no weekly stats yet —
+        // user just opened the app mid-focus on a fresh day). Should still
+        // surface the in-progress line.
+        let out = format_focus_context_layer(None, None, Some(("Cursor", 45)));
+        assert!(out.contains("[今日专注状态]"));
+        assert!(out.contains("Cursor"));
+        assert!(out.contains("45 分钟"));
+        assert!(out.contains("进行中"));
+        assert!(out.contains("未计入今日累计"));
+    }
+
+    #[test]
+    fn focus_context_in_progress_appears_before_today_line() {
+        // Reading order: current → today → week. In-progress is "right
+        // now" so it leads.
+        let today = DailyBlockStats {
+            date: NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+            count: 1,
+            total_minutes: 95,
+        };
+        let out = format_focus_context_layer(Some(&today), None, Some(("Slack", 60)));
+        let in_progress_idx = out.find("Slack").expect("in-progress line present");
+        let today_idx = out.find("今天已完成").expect("today line present");
+        assert!(
+            in_progress_idx < today_idx,
+            "in-progress line should appear before today line"
+        );
+    }
+
+    #[test]
+    fn focus_context_skips_in_progress_when_app_blank() {
+        // Defensive: empty / whitespace app name shouldn't leak as
+        // "用户当前正在「  」专注 N 分钟"
+        let out = format_focus_context_layer(None, None, Some(("   ", 60)));
+        // No today / no weekly / blank in-progress = no stat lines, only
+        // headers + tail guidance — but those lines mean has_in_progress=true
+        // so empty check passes. Just ensure no garbage app name leaked.
+        assert!(!out.contains("「   」"));
+        assert!(!out.contains("「」"));
     }
 
     #[test]

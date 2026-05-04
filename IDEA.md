@@ -1,5 +1,16 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R71 设计要点（已实现）
+- **R70 layer 缺 in-progress 状态**：R70 把今日 + 本周聚合放进反应式 chat，但没说"用户当前正在专注 X 分钟"。如果 user mid-focus 开 chat 问 "现在能聊一会儿吗"，AI 不知用户其实正卡 45 分钟连续工作。R71 补这层。
+- **30min threshold 选择**：R15=15min（informational），R27=60min（directive），R71=30min。**30 是 "yes user is focused, but not deeply yet"** 的中点。低于 30 是 casual browsing。这种"分级阈值各服一目的" 模式跟 R62-R69 cluster 的多 threshold 同源。
+- **gate 在 wrapper 而非 pure helper**：format_focus_context_layer 接 in_progress: Option<(&str, u64)>。**不在 pure 内部判断 ≥30**，让 caller 决定阈值（test 可注入任意值）。**gate 决策属于"业务规则"**，pure formatter 只该做 rendering。
+- **layer 内部行序：current → today → week**：阅读顺序"现在 → 今天 → 本周"递减时间近度。in-progress 是"right now"，最优先；today 是"已完成"，retrospective；week 是 broader retrospective。**信息架构倒序：从最高时效→低时效**。
+- **新加 1 个测试 fn 测 in-progress order**：明确 assert in-progress.find_index < today.find_index。**顺序保证不只是注释，是测试**。如果未来有人把 today 写在前面，测试 fail。
+- **空 app trim 防御**：R71 测试加 "空白 app name 不应在 layer 里出现「  」"。**defense 在 pure helper 内部**——caller 可能传任何怪东西，pure 自己 trim+skip 比要求 caller 传干净数据更稳。
+- **telegram parity 是 cluster 闭合的扫尾**：R70 把 reactive chat 加上，R71 既补 R70 (in-progress) 又把 telegram 拉齐。**单 iter 闭合两个口子是可以的**，前提是它们逻辑互相 reinforce。recent_speech 不 inject 到 telegram 是 modality-aware 决策——telegram user 没看 desktop bubbles，引用反而 confusing。
+- **import path 复习**：crate::proactive::snapshot_active_app（glob re-export），不是 crate::proactive::active_app::snapshot_active_app（private mod）。R70 已踩过这坑，R71 直接用对的。
+- **layer 链长到 4.5 层**：mood / persona / recent_speech (reactive only) / focus_context (with in-progress)。telegram 跳过 recent_speech 但拿到其他三层。**modality 决定哪些 layer 该 inject**，不是 one-size-fits-all。
+
 ## Iter R70 设计要点（已实现）
 - **R69 IDEA 标的"换方向"立刻执行**：R69 闭合 deep-focus cluster 后写 "下 iter 该换方向了 —— butler / reactive chat / user_profile"。R70 选 reactive chat 方向，让 deep-focus 数据**穿过 modality 边界**到反应式聊天。**cluster 闭合后第一 iter 应该 explicit cross-domain**，verify 解耦了。
 - **inject_focus_context_layer 紧跟 R9 inject_recent_speech_layer pattern**：注入位置（before first non-system msg）+ JSON 构造 + no-op when empty body 完全沿用 R9 的 idiom。**新 layer 加 reactive chat 已是 codified pattern**，第四个 layer 不发明新模式。
