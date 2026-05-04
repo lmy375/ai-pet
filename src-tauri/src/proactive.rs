@@ -351,6 +351,12 @@ pub struct ToneSnapshot {
     /// `mute_remaining_seconds` (R52). Lets panel chip and button hover
     /// show countdown so user sees how long until note auto-expires.
     pub transient_note_remaining_seconds: Option<i64>,
+    /// Iter R64: effective hard-block threshold (minutes) after applying
+    /// `companion_mode` to `HARD_FOCUS_BLOCK_MINUTES`. balanced=90,
+    /// chatty=135, quiet=60. Surfaced so the panel chip can color-band
+    /// the active-app duration the same way the gate does — keeps
+    /// chip color and gate behavior aligned for non-balanced users.
+    pub effective_hard_block_minutes: u64,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -823,6 +829,19 @@ pub async fn build_tone_snapshot(
         transient_note: transient_note_active(),
         // Iter R56: transient note remaining seconds for chip/hover countdown.
         transient_note_remaining_seconds: transient_note_remaining_seconds(),
+        // Iter R64: effective hard-block threshold (minutes) after companion_mode
+        // applies. Same value gate uses, so chip color band stays aligned with
+        // gate behavior even when user picks chatty (135) or quiet (60). Reads
+        // settings here (separate from `build_cooldown_breakdown`'s read) — fine,
+        // settings reads are cheap, and keeps this field's derivation co-located
+        // with its definition.
+        effective_hard_block_minutes: get_settings()
+            .ok()
+            .map(|s| {
+                s.proactive
+                    .effective_hard_block_minutes(HARD_FOCUS_BLOCK_MINUTES)
+            })
+            .unwrap_or(HARD_FOCUS_BLOCK_MINUTES),
     })
 }
 

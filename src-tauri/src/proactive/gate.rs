@@ -296,17 +296,31 @@ pub async fn evaluate_loop_tick(
         let mins = remaining / 60;
         return LoopAction::Skip(format!("muted, {} min remaining", mins));
     }
+    let cfg = &settings.proactive;
     // Iter R62: deep-focus hard-block gate. Refresh the active-app
     // snapshot first so we see fresh state on every tick (the existing
     // refresh inside `run_proactive_turn` only fires on actually-run
     // ticks; a stuck block would otherwise persist indefinitely after
     // the user switched apps). One osascript call per tick — same cost
     // as inside run_proactive_turn, additive but small (≤200ms / 60s).
+    //
+    // Iter R64: threshold honors companion_mode (chatty=135 / balanced=90 /
+    // quiet=60), so chatty users keep getting engaged past 90min while
+    // quiet users back off sooner. base = HARD_FOCUS_BLOCK_MINUTES const.
     let current_app = crate::tools::system_tools::current_active_window()
         .await
         .map(|(app, _win)| app);
     super::refresh_active_app_snapshot(current_app.as_deref());
-    if let Some(mins) = super::deep_focus_block_minutes() {
+    let hard_block_threshold = cfg.effective_hard_block_minutes(super::HARD_FOCUS_BLOCK_MINUTES);
+    let block_minutes = {
+        let prev = super::LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone());
+        super::compute_deep_focus_block(
+            prev.as_ref(),
+            hard_block_threshold,
+            std::time::Instant::now(),
+        )
+    };
+    if let Some(mins) = block_minutes {
         // Iter R63: record the block so the next non-blocked proactive
         // turn (within RECOVERY_HINT_GRACE_SECS) can inject a recovery
         // hint. Reads the snapshot we just refreshed for the app name —
@@ -314,9 +328,11 @@ pub async fn evaluate_loop_tick(
         if let Some(snap) = super::LAST_ACTIVE_APP.lock().ok().and_then(|g| g.clone()) {
             super::record_hard_block(&snap.app, mins);
         }
-        return LoopAction::Skip(format!("deep focus hard-block: {} min in same app", mins));
+        return LoopAction::Skip(format!(
+            "deep focus hard-block: {} min in same app (threshold {}m, mode {})",
+            mins, hard_block_threshold, cfg.companion_mode
+        ));
     }
-    let cfg = &settings.proactive;
     let clock = app.state::<InteractionClockStore>().inner().clone();
     let snap = clock.snapshot().await;
     let hour = chrono::Local::now().hour() as u8;

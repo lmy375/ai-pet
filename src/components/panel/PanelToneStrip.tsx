@@ -120,23 +120,25 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
       )}
       {tone.active_app && (() => {
         const { app, minutes } = tone.active_app;
-        // R22 + R27 + R62: four bands matching the prompt-side / gate-side gates —
+        // R22 + R27 + R62 + R64: four bands matching the prompt-side / gate-side gates —
         //   < 15m: gray (panel only, no prompt)
-        //   15-59m: orange (R15 informational hint fires)
-        //   60-89m: red (R27 deep-focus directive fires — "极简或选择沉默")
-        //   ≥90m: deep red (R62 HARD-BLOCK — gate skips proactive turn entirely)
-        // Color escalation maps directly to escalating intervention so user
-        // can see at a glance which regime the pet is currently playing under.
+        //   15m to soft: orange (R15 informational hint fires)
+        //   soft to hard: red (R27 deep-focus directive fires — "极简或选择沉默")
+        //   ≥ hard: deep red (R62 HARD-BLOCK — gate skips proactive turn entirely)
+        // R64: hard threshold = tone.effective_hard_block_minutes (companion_mode
+        // adjusted: chatty 135 / balanced 90 / quiet 60). soft = R27 const 60.
+        const hardThreshold = tone.effective_hard_block_minutes ?? 90;
+        const softThreshold = 60; // R27 directive boundary, mode-invariant
         let bg: string;
         let titleText: string;
         let suffix = "";
-        if (minutes >= 90) {
+        if (minutes >= hardThreshold) {
           bg = "#7f1d1d"; // deep red — hard block, gate skips entirely
-          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（≥90m 硬阻塞）— R62 gate 直接 skip 这次 proactive turn，不发 LLM 调用。下次开口要等 app 切换或 mute / awaiting 等其他 gate 状态变化。`;
+          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（≥${hardThreshold}m 硬阻塞）— R62 gate 直接 skip 这次 proactive turn，不发 LLM 调用。下次开口要等 app 切换或 mute / awaiting 等其他 gate 状态变化。R64 阈值随 companion_mode 调整：chatty=135 / balanced=90 / quiet=60。`;
           suffix = " 🔒🛑";
-        } else if (minutes >= 60) {
+        } else if (minutes >= softThreshold) {
           bg = "#b91c1c"; // red — deep focus, explicit silence directive
-          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（深度专注期 ≥60m）— R27 directive 已 fire，prompt 显式要求 LLM 极简或沉默。再过 ${90 - minutes} 分钟 R62 会升级为硬阻塞。`;
+          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（深度专注期 ≥${softThreshold}m）— R27 directive 已 fire，prompt 显式要求 LLM 极简或沉默。再过 ${hardThreshold - minutes} 分钟 R62 会升级为硬阻塞（当前 mode 阈值 ${hardThreshold}m）。`;
           suffix = " 🔒";
         } else if (minutes >= 15) {
           bg = "#d97706"; // orange — R15 informational hint fired

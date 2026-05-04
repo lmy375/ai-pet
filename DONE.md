@@ -2,6 +2,21 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R64：companion_mode-aware hard-block threshold
+- 现状缺口：R62 引入 HARD_FOCUS_BLOCK_MINUTES = 90 const 全局固定。R29 让用户在 PanelSettings 选 companion_mode (chatty/balanced/quiet)，但只调 cooldown 跟 chatty_threshold。**R62 这个 magic number 跟 user dial 脱节** —— quiet 用户希望 60min 就被尊重，chatty 用户希望 2h 还在 engage。
+- 改动：
+  - `commands/settings.rs`：新纯函数 `apply_companion_mode_hard_block(mode, base) -> u64`：chatty=base×3/2, quiet=base×2/3, balanced/unknown=base。saturating_mul 保 0 base = opt-out 路径。新 ProactiveConfig 方法 `effective_hard_block_minutes(&self, base)` 注入 base 让 settings 不依赖 active_app const。+ 5 单测覆盖 4 模式 + 0 base。
+  - `proactive/gate.rs`：移 `cfg = &settings.proactive` 到 hard-block 检查前；threshold = `cfg.effective_hard_block_minutes(HARD_FOCUS_BLOCK_MINUTES)`；gate 直接调 `compute_deep_focus_block(prev, threshold, Instant::now())` 而非 const-hardcoded wrapper。Skip 消息加 `(threshold {}m, mode {})` 让 decision_log 看见生效阈值。
+  - `proactive/active_app.rs`：删除 `deep_focus_block_minutes()` wrapper（R64 后零 caller，dead code）。pure helper `compute_deep_focus_block` 仍是 single source of truth。
+  - `proactive.rs`：ToneSnapshot 新字段 `effective_hard_block_minutes: u64`；build_tone_snapshot 用 `get_settings().ok().map(...).unwrap_or(HARD_FOCUS_BLOCK_MINUTES)` 读出。
+  - `panelTypes.ts`：TS 类型加同名字段。
+  - `PanelToneStrip.tsx`：chip 4 段色 hardThreshold 从 `tone.effective_hard_block_minutes` 取（fallback 90），hover tooltip 解释三档值 + 当前 mode 阈值。chip 现在跟 gate 行为完全 aligned，chatty 用户 90-134min 不再误显 deep-red。
+  - **542 tests pass**（537 → 542, +5 新）；clippy/fmt/tsc clean。
+- 影响：
+  - **chatty / quiet 用户体验对齐**：R62 hard-block 不再无视 mode 选择。chatty 多 45min 缓冲，quiet 早 30min 退让。
+  - **chip ↔ gate 阈值同步**：之前 chip 阈值 hardcoded 90 跟 mode 调整后的 gate 行为可能脱节。R64 让 chip 跟 gate 共享 effective threshold，色彩段就是 gate 真实状态。
+  - **wrapper 单 caller 即 inline**：删除 deep_focus_block_minutes() 是 helper-design pattern 的 codify —— pure helper 必留，wrapper 仅当多处调用时存在。
+
 ## 2026-05-04 — Iter R63：deep-focus recovery hint
 - 现状缺口：R62 让 gate 在 90min+ 同 app 直接 skip proactive turn，但 skip 不留 trace —— 用户真切出 deep focus 时 pet 像"什么都没发生"一样开口。**block + recovery 配对缺失**，少了"伙伴注意到了"那层。
 - 改动：
