@@ -2,6 +2,27 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R83：extreme-absence-reunion (≥24h) 升级 register，mutually exclusive 替换 long-absence
+- 现状缺口：Cν 的 long-absence-reunion 在 user idle ≥ 4h 时 fire，prompt 文案是 "重逢感"+"刚回来呀"+"下午顺利吗"——适合"出去吃午饭 / 开会回来"。但当用户消失 ≥24h（出差 / 病了 / 周末没开机），同样的 casual welcome 语气感觉飘。Real partner 这时是 gentle check-in concern 而非热络欢迎。
+- 改动：
+  - `src-tauri/src/proactive/prompt_rules.rs`：
+    - 新 `EXTREME_ABSENCE_MINUTES = 1440` 常量（24h）。
+    - `active_composite_rule_labels` 改为：当 idle ≥ EXTREME 时 push "extreme-absence-reunion" 并**抑制** long-absence-reunion（mutually exclusive）；24h 以下保持 long-absence 行为。
+    - 文档加 long-absence-reunion + extreme-absence-reunion 两条 list entry，明确互斥。
+  - `src-tauri/src/proactive/prompt_assembler.rs`：
+    - 新 directive case "extreme-absence-reunion"：教 LLM 用 gentle check-in concern（"好久没见到你了，还好吗" / "这一天你都去哪儿啦"），不抛工作 / 日程，只关心人本身。文案 register 跟 long-absence 故意拉开距离。
+    - 引入 `EXTREME_ABSENCE_MINUTES` 常量。
+  - `src-tauri/src/proactive.rs` 测试模块加 4 新 tests：
+    - 刚到 24h fires extreme（不 fire long）。
+    - 24h × 3 仍只 fire extreme（不 duplicate）。
+    - 24h - 1m 仍 fire long 不 extreme（boundary）。
+    - extreme 仍受 chatty gate 抑制（gating reuse）。
+- 验证：
+  - `cargo test`：623 passed（前 619 + 4 新）。
+  - `cargo clippy --tests --all-features`：clean。
+  - `cargo fmt --check`：clean。
+- 用户体感（once shipped）：当用户消失 ≥24h 后回来，pet 不再用 "下午顺利吗" 这种轻飘语气，而是 "好久没见到你了，还好吗" 的轻轻惦记 + concern check-in，一句话搞定，给空间。
+
 ## 2026-05-04 — Iter R82：R81 deadline-shrunk cadence 在 panel chip + decision_log 可见化
 - 现状缺口：R81 把 cooldown × 0.5 wired 进 gate，但 chip 自身没有任何视觉变化——用户必须 hover cooldown chip 才能看到 derivation 中的 `× 0.5 (deadline 紧迫)`。decision_log 也只显示原 cooldown 数字，看不出 "R81 试图加速但 cooldown 仍然 win" 的痕迹。R82 补两层 surface。
 - 改动：
