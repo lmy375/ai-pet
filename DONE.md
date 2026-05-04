@@ -2,6 +2,24 @@
 
 记录每次迭代完成的实质性变化（按时间倒序）。
 
+## 2026-05-04 — Iter R66：deep-focus history vec + 昨日深度专注 first-of-day recap hint
+- 现状缺口：R65 用 `Mutex<Option<DailyBlockStats>>` 单 slot 存今日 stat。今日第一次 finalize 会覆盖昨日的 record，**昨日 stat 立刻丢失**，无法做"昨日深度专注"recap。
+- 改动：
+  - `proactive/active_app.rs`：
+    - 将 `DAILY_BLOCK_STATS: Mutex<Option<DailyBlockStats>>` 替换为 `DAILY_BLOCK_HISTORY: Mutex<Vec<DailyBlockStats>>` + `DAILY_BLOCK_HISTORY_CAP: usize = 7`（一周的 future-proof）。
+    - 删除 R65 `compute_finalize_stats`（单 slot 版），新加 `compute_history_after_finalize(history, today, peak_minutes, cap)` 纯函数：找今日 entry → increment, 没有 → append, sort_by_key(date), cap drain oldest if 越界。
+    - `finalize_stretch` 改用新 helper + DAILY_BLOCK_HISTORY 静态。
+    - `current_daily_block_stats()` 改 find by date == today。
+    - 新 `yesterday_block_stats()` find by date == today - 1 day。
+    - 新纯函数 `format_yesterday_focus_recap_hint(stats: Option<&DailyBlockStats>) -> String`：None / count==0 → ""，否则 "[昨日深度专注] 你昨天完成 N 次..., 自然带过即可，不必非提"。
+  - `proactive/prompt_assembler.rs`：PromptInputs 加 `yesterday_focus_hint: &'a str`；assembler push_if_nonempty 在 deep_focus_recovery_hint 之后。
+  - `proactive.rs` `run_proactive_turn`：在 today_speech_count == 0 时调 `format_yesterday_focus_recap_hint(yesterday_block_stats().as_ref())`，pass through PromptInputs。base_inputs() test fixture 加默认值。
+  - 测试迁移：删 R65 `compute_finalize_stats` 4 单测，新加 9 单测覆盖 compute_history_after_finalize（empty / increment / append / cap eviction / saturating overflow / out-of-order sort）+ finalize_stretch round-trip + format helper 3 case（None / count=0 / count>0）。**552 tests pass**（547 → 552, 净增 5 = +9 新 - 4 删除）；clippy/fmt/tsc clean。
+- 影响：
+  - **first-of-day 三 hint 互补**：cross_day = continuity (last 2 utterances), yesterday_recap = high-level review summary, yesterday_focus = activity intensity。三层从 narrative → summary → behavioral。
+  - **history vec future-proof**：cap=7 留 5 槽位给"本周专注总分钟" 等扩展。out-of-order insert 也支持（sort 兜底）。
+  - **memory-only OK**：daemon-style app 通常不重启，先 ship 内存版；持久化留 R67+ 候选。
+
 ## 2026-05-04 — Iter R65：今日深度专注 stretch 累计 + PanelStatsCard 显示
 - 现状缺口：R62/R63/R64 完整闭环了 hard-block 行为，但 hard-block 事件本身**没沉淀成 stat** —— 用户做完 deep work 后想看"今天我专注了几次 / 多少 min" 没办法。R65 把 finalize 后的 stretches 累计到今日 stat，PanelStatsCard surface 出来。
 - 改动：

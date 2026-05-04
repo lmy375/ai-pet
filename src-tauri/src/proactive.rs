@@ -1462,6 +1462,15 @@ async fn run_proactive_turn(
     // no recent hard-block or already consumed.
     let deep_focus_recovery_hint = take_recovery_hint();
 
+    // Iter R66: yesterday's deep-focus recap, gated to first-of-day like
+    // cross_day_hint / yesterday_recap_hint. Empty when no yesterday data
+    // (process restarted today / fresh install / quiet day yesterday).
+    let yesterday_focus_hint = if today_speech_count == 0 {
+        format_yesterday_focus_recap_hint(yesterday_block_stats().as_ref())
+    } else {
+        String::new()
+    };
+
     // Iter R14: at the first proactive turn of a new day, surface yesterday's
     // last 2 utterances so the pet can pick up a thread instead of starting
     // cold every morning. Empty when (a) not first-of-day or (b) yesterday
@@ -1564,6 +1573,7 @@ async fn run_proactive_turn(
         yesterday_recap_hint: &yesterday_recap_hint,
         length_register_hint: &length_register_hint,
         deep_focus_recovery_hint: &deep_focus_recovery_hint,
+        yesterday_focus_hint: &yesterday_focus_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
     // turn?" — useful for prompt tuning without instrumenting log scraping.
@@ -2079,6 +2089,8 @@ mod prompt_tests {
             active_app_hint: "",
             // Default empty — pre-Iter R63 state, no recent deep-focus block.
             deep_focus_recovery_hint: "",
+            // Default empty — pre-Iter R66 state, no yesterday focus history.
+            yesterday_focus_hint: "",
         }
     }
 
