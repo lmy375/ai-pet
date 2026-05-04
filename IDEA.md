@@ -1,5 +1,14 @@
 # IDEA — 实时陪伴型 AI 桌面宠物的设计思考
 
+## Iter R82 设计要点（已实现）
+- **R81 行为透明度审计**：R81 让 deadline 紧迫时 cooldown × 0.5，但是用户从 panel 怎么看出来"现在 pet 在加速模式"？答案：只有 hover cooldown chip 才能看到 derivation 含 `× 0.5 (deadline 紧迫)` 段——**chip 自身没有任何视觉变化**。R82 补这个 gap。两层surface：(1) chip 加 ⚡ 角标（被动可见，不需 hover），(2) hover 增加 "cadence ×2 加速" 高层概括（人类语义而非 derivation math）。
+- **不染 chip 颜色**：feedback band (R28) 已经占用了 chip color channel——high_negative amber / low_negative green / mid cyan。再加 deadline 颜色会形成"哪个 reason 主导"的混乱。⚡ 红色独立小图标占用 trailing 空间，跟 chip 主色独立，**多信号 stacking via spatial separation rather than color override**。
+- **半透明 inverse 算法 1/factor**：hover summary 用 `(1 / bd.deadline_factor).toFixed(0)` 倒推 "× 2 加速"——shrink 0.5× 的 user-friendly 表述是 "速度 × 2"。倒推算法保证若以后 R81 改成 0.33×（× 3 加速）面板自动适配，**不 hard-code "×2" 字面值**。
+- **gate Skip reason enrichment 是另一面**：chip 在用户主动看 panel 时被动呈现，decision_log timeline 是事后回顾"这次 tick 为什么没开口"。R82 加 `annotate_skip_with_deadline_factor` 让 cooldown skip 在 deadline_factor < 1.0 时附 `[deadline-shrunk × 0.5]` 后缀。**两个 surface（panel 实时 + log 历史）都看到 R81 介入痕迹**——R81 不再是"看不见的内部缩短"。
+- **post-process 而非 signature change**：原本想在 evaluate_pre_input_idle 加 `deadline_factor: f64` 参数让 it 自己 format message。但这会 break 30+ test callsites。改用 post-process pure helper：evaluate_pre_input_idle 返回原 LoopAction，evaluate_loop_tick 在拿到 Err 后调 annotate_skip_with_deadline_factor 包装。**preserve test contract** + **layered concerns**（gate 算 cooldown，annotate 加 metadata）。
+- **annotate 的 pure 性**：annotate_skip_with_deadline_factor 接 LoopAction + f64 出 LoopAction，无 IO 无 async。4 单测覆盖 4 路径：factor=1.0 直通 / factor<1.0 cooldown 加后缀 / factor<1.0 awaiting 不动 / factor<1.0 Silent 不动。**enriching helpers 分层 testing**——主 path 不变 + 增强 path 单独验证。
+- **下一 iter 候选**：(1) annotate 也对 evaluate_input_idle_gate 应用——目前只覆盖 evaluate_pre_input_idle 路径；(2) cluster 真正切换方向到 morning/evening ritual / sleep-pattern 检测；(3) decision_log timeline 在 PanelDebug 加 R82 enriched message 的 visual emphasis（红色或图标 trailing）。
+
 ## Iter R81 设计要点（已实现）
 - **deadline cluster (R77-R80) 闭合后的"下一 surface 不在同一概念域"判断回头自检**：R80 IDEA 写的"下一 iter 该换方向"在执行时被反思——R77-R80 把 deadline 数据 → prompt hint → 教学 → chat → panel surface 全 wired，但有一道 missing link：**deadline 信号没有 actually 改变 pet 的 cadence**。chip 红了 / prompt 提到了，但 cooldown gate 还是按 R7 feedback band + R13 mode 走，pet 还是按"之前的"节奏说话。Real partner 在 user 有 deadline 时不会保持 quiet rhythm——所以 R81 是 deadline cluster 的真正 closure，不是新 cluster。
 - **discrete 0.5× switch 而非 continuous 函数**：`deadline_urgency_factor(count)` 仅返回 1.0 或 0.5，count >= 1 即 fire。原本想做 piecewise（1 urgent → 0.7, 2 → 0.5, 3+ → 0.3），但拒绝。理由：(1) magnitude 已经在 prompt-side hint reflected (R77 format_butler_deadlines_hint 列每个 deadline 的具体倒计时)，gate 是 cadence 调整不需要 redundant magnitude encoding。(2) chip hover "× 0.5 (deadline 紧迫 N)" 离散因子比 "× 0.73 (deadline 紧迫 N)" 易读。**discrete 信号 vs continuous 信号**——chip / hover 这种 user-facing 数学希望少 magic number。
