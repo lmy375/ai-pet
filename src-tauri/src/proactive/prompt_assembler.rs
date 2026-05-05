@@ -125,6 +125,13 @@ pub struct PromptInputs<'a> {
     /// direction: the pet's "to-do FOR you" list, distinct from `reminders_hint`
     /// (the user's own due nudges).
     pub butler_tasks_hint: &'a str,
+    /// 长任务心跳：pending 的 butler_tasks 中"被动过手却停滞超过阈值"
+    /// 的条目列表，已经过 redaction 与单 / 复数措辞处理。空字符串表示
+    /// 没有命中（队列为空 / 都未触碰 / 都还在阈值内）。与
+    /// `butler_tasks_hint` 互补：前者展示完整队列，本字段点名"必须这一
+    /// 轮要么写进展、要么 close"的子集，避免任务静默淤积。Built by
+    /// `build_task_heartbeat_hint(now, settings.proactive.task_heartbeat_minutes)`.
+    pub task_heartbeat_hint: &'a str,
     /// Iter Cυ: owner's display name from settings.user_name. Empty when not set —
     /// builder skips the line and the LLM keeps using 「你」. Non-empty: a short
     /// "你的主人是「X」" line is pushed near the top of the prompt so the LLM
@@ -421,6 +428,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);
+    push_if_nonempty(&mut s, inputs.task_heartbeat_hint);
     push_if_nonempty(&mut s, inputs.deadline_hint);
     s.push(String::new());
     s.push(

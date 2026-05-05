@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 /**
@@ -67,13 +67,25 @@ interface ChatDonePayload {
   timestamp: string;
 }
 
+/// 用户自定义映射：把语义键（Tap / Flick / Flick3 / Idle）翻译成当前 model
+/// 实际的 motion group 名。空字符串 / 缺键 → 用语义键本身（沿用既有 miku 行为）。
+function resolveGroupName(
+  semantic: MotionGroup,
+  mapping: Record<string, string> | undefined,
+): string {
+  const mapped = mapping?.[semantic]?.trim();
+  return mapped && mapped.length > 0 ? mapped : semantic;
+}
+
 function triggerMotion(
   model: any,
   motion: string | null | undefined,
   mood: string | null | undefined,
+  mapping: Record<string, string> | undefined,
 ) {
   if (!model) return;
-  const group = pickMotionGroup(motion, mood);
+  const semantic = pickMotionGroup(motion, mood);
+  const group = resolveGroupName(semantic, mapping);
   try {
     // pixi-live2d-display: model.motion(group, index?, priority?). Priority 2 = NORMAL,
     // letting the motion play through but not interrupting a higher-priority one.
@@ -84,16 +96,36 @@ function triggerMotion(
   }
 }
 
-export function useMoodAnimation(modelRef: React.MutableRefObject<any>) {
+export function useMoodAnimation(
+  modelRef: React.MutableRefObject<any>,
+  /// 可选自定义映射；不传 / 空 map 时所有语义键直接走语义名（向前兼容）。
+  /// 用 ref 模式让 mapping 变化即时生效，无需重订阅 Tauri listen。
+  motionMapping?: Record<string, string>,
+) {
+  const mappingRef = useRef<Record<string, string> | undefined>(motionMapping);
+  useEffect(() => {
+    mappingRef.current = motionMapping;
+  }, [motionMapping]);
+
   useEffect(() => {
     let unlistenProactive: (() => void) | undefined;
     let unlistenChatDone: (() => void) | undefined;
     (async () => {
       unlistenProactive = await listen<ProactivePayload>("proactive-message", (event) => {
-        triggerMotion(modelRef.current, event.payload.motion, event.payload.mood);
+        triggerMotion(
+          modelRef.current,
+          event.payload.motion,
+          event.payload.mood,
+          mappingRef.current,
+        );
       });
       unlistenChatDone = await listen<ChatDonePayload>("chat-done", (event) => {
-        triggerMotion(modelRef.current, event.payload.motion, event.payload.mood);
+        triggerMotion(
+          modelRef.current,
+          event.payload.motion,
+          event.payload.mood,
+          mappingRef.current,
+        );
       });
     })();
     return () => {

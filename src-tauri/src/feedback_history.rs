@@ -44,6 +44,11 @@ pub enum FeedbackKind {
     /// (no interaction at all). Counted as negative in `negative_signal_ratio`
     /// alongside `Ignored`.
     Dismissed,
+    /// 用户在桌面气泡上点了 👍 —— 显式正向反馈。比 Replied 更高质量的"喜欢"
+    /// 信号（Replied 可能只是单字"嗯"，Liked 是用户专门腾出动作表示赞同），
+    /// 所以聚合层会和 Replied 同样计入正向，但单独在 aggregate hint 里展示
+    /// 计数，让 LLM 能感知"主动点赞" vs "顺手回个字" 的区别。
+    Liked,
 }
 
 impl FeedbackKind {
@@ -52,6 +57,7 @@ impl FeedbackKind {
             FeedbackKind::Replied => "replied",
             FeedbackKind::Ignored => "ignored",
             FeedbackKind::Dismissed => "dismissed",
+            FeedbackKind::Liked => "liked",
         }
     }
 }
@@ -98,6 +104,7 @@ pub fn parse_line(line: &str) -> Option<FeedbackEntry> {
         "replied" => FeedbackKind::Replied,
         "ignored" => FeedbackKind::Ignored,
         "dismissed" => FeedbackKind::Dismissed,
+        "liked" => FeedbackKind::Liked,
         _ => return None,
     };
     Some(FeedbackEntry {
@@ -173,6 +180,15 @@ pub async fn get_recent_feedback() -> Vec<FeedbackEntry> {
 #[tauri::command]
 pub async fn record_bubble_dismissed(excerpt: String) {
     record_event(FeedbackKind::Dismissed, &excerpt).await;
+}
+
+/// 桌面气泡 👍 按钮的 IO 入口。前端在用户点 👍 时调，写一条 `Liked` 进
+/// feedback_history。与 `record_bubble_dismissed` 完全对偶（一个收正向，
+/// 一个收负向）；二者**不应同时**触发同一条气泡 —— 前端的 onLike handler
+/// 负责跳过 record_bubble_dismissed 的调用以避免双写。
+#[tauri::command]
+pub async fn record_bubble_liked(excerpt: String) {
+    record_event(FeedbackKind::Liked, &excerpt).await;
 }
 
 /// Iter R7 / R1b: compute the share of *negative-signal* outcomes in
@@ -311,33 +327,33 @@ pub fn format_feedback_aggregate_hint(entries: &[FeedbackEntry]) -> String {
         return String::new();
     }
     let mut replied = 0;
+    let mut liked = 0;
     let mut ignored = 0;
     let mut dismissed = 0;
     for e in entries {
         match e.kind {
             FeedbackKind::Replied => replied += 1,
+            FeedbackKind::Liked => liked += 1,
             FeedbackKind::Ignored => ignored += 1,
             FeedbackKind::Dismissed => dismissed += 1,
         }
     }
-    // Suppress the dismissed count when zero — keeps the line tight on the
-    // common case (most users won't actively click-to-dismiss often).
-    if dismissed > 0 {
-        format!(
-            "你最近 {} 次主动开口里，{} 回复 / {} 静默忽略 / {} 主动点掉。这是你当前被接受度的整体画面，结合上一句反馈一起判断 register。",
-            entries.len(),
-            replied,
-            ignored,
-            dismissed
-        )
-    } else {
-        format!(
-            "你最近 {} 次主动开口里，{} 回复 / {} 静默忽略。这是你当前被接受度的整体画面，结合上一句反馈一起判断 register。",
-            entries.len(),
-            replied,
-            ignored
-        )
+    // 始终展示 replied / ignored（核心二元对照）；liked / dismissed 仅在 > 0 时
+    // 列出，保持文案紧凑。Liked 紧跟在 replied 之后展示，让"两类正向"在视觉
+    // 上聚集；dismissed 放最后，与 ignored 都属负向但更主动。
+    let mut parts: Vec<String> = vec![format!("{} 回复", replied)];
+    if liked > 0 {
+        parts.push(format!("{} 主动点赞", liked));
     }
+    parts.push(format!("{} 静默忽略", ignored));
+    if dismissed > 0 {
+        parts.push(format!("{} 主动点掉", dismissed));
+    }
+    format!(
+        "你最近 {} 次主动开口里，{}。这是你当前被接受度的整体画面，结合上一句反馈一起判断 register。",
+        entries.len(),
+        parts.join(" / "),
+    )
 }
 
 /// Format a feedback hint for the proactive prompt from the most recent
@@ -365,6 +381,10 @@ pub fn format_feedback_hint(entries: &[FeedbackEntry], redact: &dyn Fn(&str) -> 
         ),
         FeedbackKind::Dismissed => format!(
             "上次你说「{}」，用户**主动点掉了**气泡 — 比单纯没回应更明显的不感兴趣信号。这次开口要么换完全不同的话题，要么干脆沉默。",
+            redacted
+        ),
+        FeedbackKind::Liked => format!(
+            "上次你说「{}」，用户**主动点了赞** — 这条说到了 ta 心里去，这次可以延续这种语气 / 角度，也可以换个话题但保持同档松弛度。",
             redacted
         ),
     }
@@ -759,5 +779,87 @@ mod tests {
         let h = format_feedback_hint(&entries, &id_redact);
         assert!(h.contains("NEW utterance"));
         assert!(!h.contains("OLD utterance"));
+    }
+
+    // ---------------- Liked variant ----------------
+
+    #[test]
+    fn liked_round_trips_through_format_and_parse() {
+        let line = format_line("2026-05-04T12:00:00+08:00", FeedbackKind::Liked, "想出去走走");
+        let parsed = parse_line(&line).unwrap();
+        assert_eq!(parsed.kind, FeedbackKind::Liked);
+        assert_eq!(parsed.excerpt, "想出去走走");
+        // serde 序列化形态对前端 panel 渲染重要
+        assert_eq!(
+            serde_json::to_string(&FeedbackKind::Liked).unwrap(),
+            "\"liked\""
+        );
+    }
+
+    #[test]
+    fn negative_signal_ratio_excludes_liked_from_numerator() {
+        // 2 liked + 2 ignored + 1 replied = 2/5 negative
+        let entries = vec![
+            entry(FeedbackKind::Liked, "a"),
+            entry(FeedbackKind::Liked, "b"),
+            entry(FeedbackKind::Ignored, "c"),
+            entry(FeedbackKind::Ignored, "d"),
+            entry(FeedbackKind::Replied, "e"),
+        ];
+        let (ratio, n) = negative_signal_ratio(&entries).unwrap();
+        assert_eq!(n, 5);
+        assert!((ratio - 0.4).abs() < 1e-9, "expected 0.4, got {}", ratio);
+    }
+
+    #[test]
+    fn trailing_negative_resets_on_liked() {
+        // ignored-ignored-liked-ignored-ignored → trailing = 2 (liked breaks)
+        let e = vec![
+            entry(FeedbackKind::Ignored, "a"),
+            entry(FeedbackKind::Ignored, "b"),
+            entry(FeedbackKind::Liked, "c"),
+            entry(FeedbackKind::Ignored, "d"),
+            entry(FeedbackKind::Ignored, "e"),
+        ];
+        assert_eq!(count_trailing_negative(&e), 2);
+    }
+
+    #[test]
+    fn aggregate_hint_includes_liked_segment_when_nonzero() {
+        // 2 replied + 2 liked + 1 ignored → 主动点赞段应出现
+        let entries = vec![
+            entry(FeedbackKind::Replied, "a"),
+            entry(FeedbackKind::Replied, "b"),
+            entry(FeedbackKind::Liked, "c"),
+            entry(FeedbackKind::Liked, "d"),
+            entry(FeedbackKind::Ignored, "e"),
+        ];
+        let hint = format_feedback_aggregate_hint(&entries);
+        assert!(hint.contains("5 次"));
+        assert!(hint.contains("2 回复"));
+        assert!(hint.contains("2 主动点赞"));
+        assert!(hint.contains("1 静默忽略"));
+    }
+
+    #[test]
+    fn aggregate_hint_omits_liked_when_zero() {
+        // R1b 测试已验证 dismissed 段在 0 时省略；这里验证 liked 同样省略
+        let entries = vec![
+            entry(FeedbackKind::Replied, "a"),
+            entry(FeedbackKind::Replied, "b"),
+            entry(FeedbackKind::Replied, "c"),
+            entry(FeedbackKind::Ignored, "d"),
+            entry(FeedbackKind::Ignored, "e"),
+        ];
+        let hint = format_feedback_aggregate_hint(&entries);
+        assert!(!hint.contains("主动点赞"));
+    }
+
+    #[test]
+    fn format_feedback_hint_handles_liked_with_continuation_phrasing() {
+        let h = format_feedback_hint(&[entry(FeedbackKind::Liked, "晚饭吃啥")], &id_redact);
+        assert!(h.contains("晚饭吃啥"));
+        // 提示语义应该是"延续 / 保持"而非"调整"
+        assert!(h.contains("点了赞") || h.contains("延续"));
     }
 }

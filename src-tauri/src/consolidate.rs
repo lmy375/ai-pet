@@ -20,6 +20,12 @@ use crate::mcp::McpManagerStore;
 use crate::mood::{read_current_mood, read_mood_for_event};
 use crate::proactive::{is_stale_reminder, parse_reminder_prefix};
 use crate::tools::ToolContext;
+use crate::weekly_summary::{
+    aggregate_butler_events, aggregate_mood_top, aggregate_speech_count,
+    format_weekly_summary_description, format_weekly_summary_detail, iso_week_bounds,
+    should_trigger_weekly_summary, weekly_summary_title, WeeklyStats,
+    LAST_WEEKLY_SUMMARY_WEEK,
+};
 
 /// Spawn the memory consolidation loop. Reads settings each tick so the user can toggle
 /// at runtime. Sleeps for `interval_hours` between attempts.
@@ -39,6 +45,11 @@ pub fn spawn(app: AppHandle) {
 
             let cfg = &settings.memory_consolidate;
             let interval_secs = cfg.interval_hours.max(1) * 3600;
+
+            // 周报合成：与 LLM consolidate 解耦 —— 即便 cfg.enabled 为 false
+            // 也要按时跑（用户可能完全不需要 LLM 整理但想要每周报告）。门控
+            // 内部检查"周日 20:00 后 + 该周还没合成"，确定性逻辑，无 token 成本。
+            maybe_run_weekly_summary(&app, chrono::Local::now(), cfg.weekly_summary_closing_hour).await;
 
             if !cfg.enabled {
                 tokio::time::sleep(Duration::from_secs(interval_secs)).await;
@@ -463,4 +474,66 @@ fn focus_history_hint() -> String {
 ",
         path = path_str
     )
+}
+
+/// 周报合成的 IO 包装。门控内部决定要不要跑；命中后读三个 .log + companionship
+/// 天数 + 调 aggregator → 写入 `ai_insights/weekly_summary_YYYY-Www`。
+///
+/// 跨进程幂等：先看进程内 `LAST_WEEKLY_SUMMARY_WEEK`，再读 ai_insights 里
+/// 标题是否已存在；只有两道关都"未写过"才会真正落盘。任何 IO 失败均
+/// 静默退化 —— best-effort，不影响 consolidate 主流程。
+async fn maybe_run_weekly_summary(
+    _app: &AppHandle,
+    now_local: chrono::DateTime<chrono::Local>,
+    closing_hour: u8,
+) {
+    let now_naive = now_local.naive_local();
+    let last = LAST_WEEKLY_SUMMARY_WEEK.lock().ok().and_then(|g| *g);
+    let Some(week) = should_trigger_weekly_summary(now_naive, last, closing_hour) else {
+        return;
+    };
+    let title = weekly_summary_title(week);
+    if memory::read_ai_insights_item(&title).is_some() {
+        // 已写过（前一进程合成的）—— 标记进程内缓存避免接下来的 tick 反复读盘
+        if let Ok(mut g) = LAST_WEEKLY_SUMMARY_WEEK.lock() {
+            *g = Some(week);
+        }
+        return;
+    }
+
+    let (week_start, week_end) = iso_week_bounds(week);
+    let speech_log = crate::speech_history::read_history_content().await;
+    let butler_log = crate::butler_history::read_history_content().await;
+    let mood_log = crate::mood_history::read_history_content().await;
+    let speech_count = aggregate_speech_count(&speech_log, week_start, week_end);
+    let butler = aggregate_butler_events(&butler_log, week_start, week_end);
+    let mood_top = aggregate_mood_top(&mood_log, week_start, week_end, 3);
+    let companionship_days = crate::companionship::companionship_days().await;
+
+    let stats = WeeklyStats {
+        week,
+        week_start,
+        week_end,
+        speech_count,
+        butler_create: butler.create,
+        butler_update: butler.update,
+        butler_delete: butler.delete,
+        completed_titles: butler.completed_titles,
+        mood_top,
+        companionship_days,
+        completed_with_results: butler.completed_with_results,
+        tag_top: butler.tag_top,
+    };
+    let detail = format_weekly_summary_detail(&stats);
+    let description = format_weekly_summary_description(&stats);
+    let _ = memory::memory_edit(
+        "create".to_string(),
+        "ai_insights".to_string(),
+        title,
+        Some(description),
+        Some(detail),
+    );
+    if let Ok(mut g) = LAST_WEEKLY_SUMMARY_WEEK.lock() {
+        *g = Some(week);
+    }
 }

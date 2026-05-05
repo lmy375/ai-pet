@@ -99,6 +99,8 @@ pub fn format_butler_tasks_block(
 看到「⏰ 到期」就该这一轮优先处理它。\n\
 **记得在你这一轮的开口里简短提一下**：「我帮你写好 today.md 了」「Downloads 整理完了」之类——\
 不必描述细节、一句话即可。让用户从 bubble 里直接看到管家工作的反馈，而不是必须打开 panel 才发现你做了事。\n\
+**完成时建议补一行 `[result: 你具体做了什么]`**——这条会在面板和周报里被独立展示，让主人能直接看到产物，不必翻 detail.md。例：`[result: 把 30 天前的 38 个文件归档到 ~/Archive/2026-04/]` / `[result: 找到 3 篇相关论文已写入 detail.md]` / `[result: 提醒过了]`。「信息收集」类任务写结论；「文件操作」类写「挪了多少 / 改了哪个文件」；「提醒」类写「提醒过了」。\n\
+**任务可以打 #tag**（如 `#organize` `#weekly`），description 里出现的 `#xxx` 词会被周报自动按主题聚合，让用户能看到「本周往哪个主题投入最多」。\n\
 **执行失败处理**：如果你这一轮调用 read_file / write_file / edit_file / bash 时失败（文件不存在、权限不够、命令报错等），\
 用 `memory_edit update` 在 description 里加一段 `[error: 简短原因]`（保留原有 `[every:]` / `[once:]` 前缀，error 段贴在它后面）。\
 下次重试成功时记得移除这段 error 标记。看到「❌ 错误」标记的任务说明上次失败了，请检查描述里的失败原因再决定要不要重试。"
@@ -305,7 +307,7 @@ pub fn format_butler_deadlines_hint(
 /// Parse a stored `updated_at` string ("YYYY-MM-DDTHH:MM:SS+HH:MM") to a local
 /// `NaiveDateTime`. Returns `None` on malformed input — caller decides what that
 /// means (typically "treat as never updated").
-fn parse_updated_at_local(s: &str) -> Option<chrono::NaiveDateTime> {
+pub fn parse_updated_at_local(s: &str) -> Option<chrono::NaiveDateTime> {
     chrono::DateTime::parse_from_rfc3339(s.trim())
         .ok()
         .map(|dt| dt.with_timezone(&chrono::Local).naive_local())

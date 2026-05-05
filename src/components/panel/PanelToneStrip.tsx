@@ -58,7 +58,7 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
         const ignored = total - replied - dismissed;
         return (
           <span
-            title={`过去 ${total} 次主动开口：用户回复 ${replied}，被动忽略 ${ignored}，主动点掉 ${dismissed}。R7 cooldown 调整阈值：负反馈率（忽略+点掉）> 60% → cooldown × 2，< 20% → cooldown × 0.7。`}
+            title={`过去 ${total} 次主动开口：正向 ${replied}（含回复 + 主动点赞 👍），被动忽略 ${ignored}，主动点掉 ${dismissed}。R7 cooldown 调整阈值：负反馈率（忽略+点掉）> 60% → cooldown × 2，< 20% → cooldown × 0.7。`}
             style={{
               color: "#fff",
               background: bg,

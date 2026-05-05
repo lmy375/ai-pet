@@ -24,6 +24,7 @@ mod active_app;
 mod butler_schedule;
 mod daily_review;
 mod gate;
+mod morning_briefing;
 mod prompt_assembler;
 mod prompt_rules;
 mod reminders;
@@ -33,6 +34,7 @@ pub use self::active_app::*;
 pub use self::butler_schedule::*;
 pub use self::daily_review::*;
 pub use self::gate::*;
+pub use self::morning_briefing::*;
 pub use self::prompt_assembler::*;
 pub use self::prompt_rules::*;
 pub use self::reminders::*;
@@ -835,9 +837,18 @@ pub async fn build_tone_snapshot(
             if recent_feedback_for_signals.is_empty() {
                 None
             } else {
+                // 把 Liked 与 Replied 一起计入"正向反馈"——chip 的健康度核
+                // 心是"被听到 / 被认可"，二者语义相同（一个隐式发消息回应，
+                // 一个显式 👍）。tooltip 在 panel 侧分别展示两个计数。
                 let replied = recent_feedback_for_signals
                     .iter()
-                    .filter(|e| matches!(e.kind, crate::feedback_history::FeedbackKind::Replied))
+                    .filter(|e| {
+                        matches!(
+                            e.kind,
+                            crate::feedback_history::FeedbackKind::Replied
+                                | crate::feedback_history::FeedbackKind::Liked
+                        )
+                    })
                     .count() as u64;
                 let dismissed = recent_feedback_for_signals
                     .iter()
@@ -1057,6 +1068,12 @@ pub fn spawn(app: AppHandle) {
                 );
             }
 
+            // 早安简报：与常规 proactive 节奏并列，但绕过 cooldown / chatty
+            // 等数值化门控（自带"每日 1 次"语义）。先于 evaluate_loop_tick 跑，
+            // 这样如果今天还没说早安，门控时刻一到就立刻触发；触发后通过
+            // mark_proactive_spoken 让本 tick 之后的常规 cooldown 重新生效。
+            let _ = maybe_run_morning_briefing(&app, &settings, chrono::Local::now()).await;
+
             let action = evaluate_loop_tick(&app, &settings).await;
             // Record before dispatching so even paths that immediately sleep are visible
             // in the panel — the entire point of this log is "why didn't anything happen".
@@ -1268,6 +1285,12 @@ async fn run_proactive_turn(
 
     let tools_used: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // 调试器：收 LLM 在本 turn 中的全部工具调用（name+args+result），按调用
+    // 顺序。run_chat_pipeline 在 ctx.tool_calls.is_some() 时会推到这里。
+    // 处理路径外的 chat 流（reactive / telegram / consolidate）不带这个
+    // collector → 零开销。
+    let tool_calls: std::sync::Arc<std::sync::Mutex<Vec<crate::proactive::ToolCallEntry>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     // Iter TR3: proactive turns also flow through the human-review gate. The
     // panel modal can resolve a parked tool call regardless of which entry
     // point initiated it.
@@ -1283,6 +1306,7 @@ async fn run_proactive_turn(
         .clone();
     let ctx = ToolContext::new(log_store, shell_store, process_counters)
         .with_tools_used_collector(tools_used.clone())
+        .with_tool_calls_collector(tool_calls.clone())
         .with_tool_review(tool_review)
         .with_decision_log(decision_log_for_ctx);
 
@@ -1508,6 +1532,15 @@ async fn run_proactive_turn(
     // (`[every: HH:MM]` / `[once: ...]` prefixes); `now` is passed so due tasks
     // bubble to the top with a "⏰ 到期" marker.
     let butler_tasks_hint = build_butler_tasks_hint(now_local.naive_local());
+    // 长任务心跳：把"被动过手却停滞过久"的 pending 任务点名出来，让 LLM
+    // 这一轮要么写一句进展、要么改 done / error。读 settings 决定阈值
+    // (0 = 关闭)，IO 层在 build_task_heartbeat_hint 里已做空串短路。
+    let task_heartbeat_hint = {
+        let threshold = get_settings()
+            .map(|s| s.proactive.task_heartbeat_minutes)
+            .unwrap_or(0);
+        build_task_heartbeat_hint(now_local.naive_local(), threshold)
+    };
 
     // Iter R77: pull butler_tasks with `[deadline:]` prefix and format the
     // urgency-aware hint. Reads same memory category as butler_tasks_hint
@@ -1649,6 +1682,7 @@ async fn run_proactive_turn(
         mood_trend_hint: &mood_trend_hint,
         user_profile_hint: &user_profile_hint,
         butler_tasks_hint: &butler_tasks_hint,
+        task_heartbeat_hint: &task_heartbeat_hint,
         user_name: &user_name,
         feedback_hint: &feedback_hint,
         feedback_aggregate_hint: &feedback_aggregate_hint,
@@ -1713,6 +1747,9 @@ async fn run_proactive_turn(
     if let Ok(mut g) = LAST_PROACTIVE_TOOLS.lock() {
         *g = tools_dedup.clone();
     }
+    // 调试器：拿出本 turn 累积的完整 tool 调用记录（name+args+result，按
+    // LLM 调用顺序），随 TurnRecord 一起进 ring buffer 给 modal 展示。
+    let tool_calls_collected = tool_calls.lock().map(|g| g.clone()).unwrap_or_default();
     // Iter E4: also append the full turn record to the ring buffer so the
     // panel can navigate prev/next across the last N turns. Cap at
     // PROACTIVE_TURN_HISTORY_CAP via pop_front.
@@ -1735,6 +1772,7 @@ async fn run_proactive_turn(
             prompt: prompt.clone(),
             reply: reply.clone(),
             tools_used: tools_dedup,
+            tool_calls: tool_calls_collected,
             outcome: outcome.to_string(),
         });
         while g.len() > PROACTIVE_TURN_HISTORY_CAP {
@@ -1835,6 +1873,50 @@ pub fn build_butler_deadlines_hint(now: chrono::NaiveDateTime) -> String {
         .filter_map(|i| parse_butler_deadline_prefix(&i.description))
         .collect();
     let block = format_butler_deadlines_hint(&items, now);
+    if block.is_empty() {
+        return String::new();
+    }
+    crate::redaction::redact_with_settings(&block)
+}
+
+/// 长任务心跳的 IO 层封装：读 `butler_tasks` → 过滤心跳候选 → 把命中
+/// 的标题列表交给 `format_heartbeat_hint`，最后过 redaction。
+///
+/// 与 `build_butler_tasks_hint` 互补 —— butler_tasks_hint 是"队列里还有
+/// 什么待办"的全景，task_heartbeat_hint 是"哪几条已经动过手却卡住了"的
+/// 局部追踪。两个 hint 都注入到 prompt 时，LLM 既能看到完整队列又能看
+/// 到必须本轮处理的"心跳点名"。
+///
+/// `threshold_minutes == 0` 时不做任何 IO，直接返回空串 — 让禁用路径几乎
+/// 零成本。失败模式（memory_list 失败 / 类目缺失）静默退化为空串。
+pub fn build_task_heartbeat_hint(
+    now: chrono::NaiveDateTime,
+    threshold_minutes: u32,
+) -> String {
+    if threshold_minutes == 0 {
+        return String::new();
+    }
+    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("butler_tasks") else {
+        return String::new();
+    };
+    let titles: Vec<String> = cat
+        .items
+        .iter()
+        .filter(|i| {
+            crate::task_heartbeat::is_heartbeat_candidate(
+                &i.description,
+                &i.created_at,
+                &i.updated_at,
+                now,
+                threshold_minutes,
+            )
+        })
+        .map(|i| i.title.clone())
+        .collect();
+    let block = crate::task_heartbeat::format_heartbeat_hint(&titles, threshold_minutes);
     if block.is_empty() {
         return String::new();
     }
@@ -2028,6 +2110,193 @@ fn daily_review_exists(title: &str) -> bool {
     crate::commands::memory::read_ai_insights_item(title).is_some()
 }
 
+/// 早安简报：和 daily_review 的 ai_insights 标题同形（`morning_briefing_
+/// YYYY-MM-DD`），用于跨进程重启时判定"今天是否已经发过早安"。
+fn morning_briefing_exists(title: &str) -> bool {
+    crate::commands::memory::read_ai_insights_item(title).is_some()
+}
+
+/// 早安简报触发器。门控通过后调用 LLM 生成一段早安播报，写入 speech_history、
+/// 当前 session、ai_insights 标记，并通过 `proactive-message` 事件推送到前端
+/// 气泡。与 daily_review 的等价：本函数承担所有 IO，纯门控 + 文本拼装在
+/// `proactive/morning_briefing.rs`。
+///
+/// 与现有节奏控制层的关系（与文档 docs/20260504-1150-morning-briefing.md
+/// 的「与 mute / 专注模式 / 主动发言冷却」节对齐）：
+/// - 尊重 mute（用户主动按下"安静一会儿"时早安也跟着安静，免得打破期待）；
+/// - 尊重 macOS Focus / 勿扰（仅当 settings.proactive.respect_focus_mode 开启时）；
+/// - **绕过**主动发言冷却 — 早安自带"每日 1 次"语义，不参与一般 cooldown 节流；
+///   触发后通过 `mark_proactive_spoken` 让常规 proactive 循环之后照常 cooldown。
+///
+/// 任何 IO 失败都不冒泡 — 早安是 best-effort 信号，失败时静默返回，下一 tick
+/// 仍可重试（如未越过 grace 窗口）。
+async fn maybe_run_morning_briefing(
+    app: &AppHandle,
+    settings: &crate::commands::settings::AppSettings,
+    now_local: chrono::DateTime<chrono::Local>,
+) -> Option<String> {
+    let cfg = &settings.morning_briefing;
+    let muted = mute_remaining_seconds().is_some();
+    let focus_active = if settings.proactive.respect_focus_mode {
+        crate::focus_mode::focus_status()
+            .await
+            .map(|s| s.active)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if morning_briefing_block_reason(
+        cfg.enabled,
+        muted,
+        focus_active,
+        settings.proactive.respect_focus_mode,
+    )
+    .is_some()
+    {
+        return None;
+    }
+    let now_naive = now_local.naive_local();
+    let today = now_local.date_naive();
+    let last = LAST_MORNING_BRIEFING_DATE.lock().ok().and_then(|g| *g);
+    if !should_trigger_morning_briefing(
+        now_naive,
+        cfg.hour,
+        cfg.minute,
+        MORNING_BRIEFING_DEFAULT_GRACE_MINUTES,
+        last,
+    ) {
+        return None;
+    }
+    let title = format!("morning_briefing_{}", today);
+    if morning_briefing_exists(&title) {
+        if let Ok(mut g) = LAST_MORNING_BRIEFING_DATE.lock() {
+            *g = Some(today);
+        }
+        return None;
+    }
+
+    let log_store = app.state::<LogStore>().inner().clone();
+
+    // 拼装 intent
+    let yesterday = today.pred_opt().unwrap_or(today);
+    let yesterday_excerpt = read_daily_review_description(yesterday);
+    let mood_hint = read_current_mood_parsed()
+        .map(|(t, _)| t)
+        .filter(|t| !t.trim().is_empty());
+    let intent = format_morning_briefing_intent(
+        settings.user_name.trim(),
+        yesterday_excerpt.as_deref(),
+        mood_hint.as_deref(),
+        today,
+    );
+
+    let config = match AiConfig::from_settings() {
+        Ok(c) => c,
+        Err(e) => {
+            write_log(
+                &log_store.0,
+                &format!("MorningBriefing: AiConfig error: {}", e),
+            );
+            return None;
+        }
+    };
+    let mcp_store = app.state::<McpManagerStore>().inner().clone();
+    let shell_store = app.state::<ShellStore>().inner().clone();
+    let process_counters = app
+        .state::<crate::commands::debug::ProcessCountersStore>()
+        .inner()
+        .clone();
+    let tool_review = app
+        .state::<crate::tool_review::ToolReviewRegistryStore>()
+        .inner()
+        .clone();
+    let decisions = app
+        .state::<crate::decision_log::DecisionLogStore>()
+        .inner()
+        .clone();
+    let ctx = ToolContext::new(log_store.clone(), shell_store, process_counters)
+        .with_tool_review(tool_review)
+        .with_decision_log(decisions.clone());
+
+    let soul = get_soul().unwrap_or_default();
+    let messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: serde_json::Value::String(soul),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: serde_json::Value::String(intent),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ];
+    let sink = CollectingSink::new();
+    let reply = match run_chat_pipeline(messages, &sink, &config, &mcp_store, &ctx).await {
+        Ok(r) => r,
+        Err(e) => {
+            write_log(
+                &log_store.0,
+                &format!("MorningBriefing: chat pipeline error: {}", e),
+            );
+            return None;
+        }
+    };
+    let reply_trimmed = reply.trim();
+    if reply_trimmed.is_empty() || reply_trimmed.contains(SILENT_MARKER) {
+        // 模型主动选择沉默时仍占用今天的"额度"，否则会在 grace 窗口内反复重试。
+        write_log(&log_store.0, "MorningBriefing: pet returned empty / silent");
+        if let Ok(mut g) = LAST_MORNING_BRIEFING_DATE.lock() {
+            *g = Some(today);
+        }
+        return None;
+    }
+
+    // 持久化 + 推送给前端：与 run_proactive_turn 末段保持平行。session 落盘失败
+    // 不致命（气泡仍会显示）— 仅对它做静默忽略。
+    if let Some(id) = load_active_session().0 {
+        let _ = persist_assistant_message(&id, reply_trimmed);
+    }
+    let clock = app.state::<InteractionClockStore>().inner().clone();
+    clock.mark_proactive_spoken().await;
+    crate::speech_history::record_speech(reply_trimmed).await;
+
+    let description = format_morning_briefing_description(reply_trimmed);
+    let _ = crate::commands::memory::memory_edit(
+        "create".to_string(),
+        "ai_insights".to_string(),
+        title,
+        Some(description),
+        Some(reply_trimmed.to_string()),
+    );
+
+    let (mood_after, motion_after) = read_mood_for_event(&ctx, "MorningBriefing");
+    if let Some(text) = &mood_after {
+        crate::mood_history::record_mood(text, &motion_after).await;
+    }
+    let payload = ProactiveMessage {
+        text: reply_trimmed.to_string(),
+        timestamp: now_local.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
+        mood: mood_after,
+        motion: motion_after,
+    };
+    let _ = app.emit("proactive-message", payload);
+
+    if let Ok(mut g) = LAST_MORNING_BRIEFING_DATE.lock() {
+        *g = Some(today);
+    }
+    decisions.push(
+        "MorningBriefing",
+        format!("{} chars", reply_trimmed.chars().count()),
+    );
+
+    Some(reply_trimmed.to_string())
+}
+
 /// Iter R12: gate + write the end-of-day review. Idempotent per day via
 /// `LAST_DAILY_REVIEW_DATE` (in-process) + `daily_review_exists` (cross
 /// restart). Speech lines are redacted + timestamp-stripped before writing.
@@ -2175,6 +2444,8 @@ mod prompt_tests {
             // Default empty — pre-Iter Cγ state, no owner-assigned butler tasks yet.
             // Tests for the butler_tasks hint set this explicitly.
             butler_tasks_hint: "",
+            // 默认空：心跳测试需要时显式覆盖。
+            task_heartbeat_hint: "",
             // Default empty — pre-Iter Cυ state, no owner name set in settings.
             // Tests for the user_name line set this explicitly.
             user_name: "",

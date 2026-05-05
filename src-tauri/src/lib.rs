@@ -15,12 +15,16 @@ mod mood_history;
 mod proactive;
 mod redaction;
 mod speech_history;
+mod task_heartbeat;
+mod task_queue;
 mod telegram;
 mod tool_call_history;
 mod tool_review;
+mod tool_review_policy;
 mod tool_risk;
 mod tools;
 mod wake_detector;
+mod weekly_summary;
 
 use commands::debug::{log_dir, new_process_counters, LogStore};
 use commands::shell::ShellStore;
@@ -43,11 +47,16 @@ pub fn run() {
         .manage(wake_detector::new_wake_detector())
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
+        .manage(telegram::warnings::new_store())
         .manage(proactive::new_interaction_clock())
         .setup(|app| {
             // Initialize MCP servers from config on app start
             let mcp_store = app.state::<mcp::McpManagerStore>().inner().clone();
             let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
+            let tg_warnings = app
+                .state::<telegram::warnings::TgStartupWarningStore>()
+                .inner()
+                .clone();
             let log_store = app.state::<LogStore>().inner().clone();
             let shell_store = app.state::<ShellStore>().inner().clone();
             let process_counters = app
@@ -76,6 +85,7 @@ pub fn run() {
                         shell_store,
                         process_counters,
                         app_handle_for_tg,
+                        tg_warnings.clone(),
                     )
                     .await
                     {
@@ -83,7 +93,10 @@ pub fn run() {
                             *telegram_store.lock().await = Some(bot);
                             eprintln!("Telegram bot started");
                         }
-                        Err(e) => eprintln!("Failed to start Telegram bot: {}", e),
+                        Err(e) => {
+                            eprintln!("Failed to start Telegram bot: {}", e);
+                            telegram::warnings::push(&tg_warnings, "bot_start", e);
+                        }
                     }
                 }
             });
@@ -132,12 +145,15 @@ pub fn run() {
             commands::debug::get_debug_snapshot,
             tool_review::submit_tool_review,
             tool_review::list_pending_tool_reviews,
+            tool_review_policy::get_tool_risk_overview,
             tool_call_history::get_recent_tool_calls,
             feedback_history::get_recent_feedback,
             feedback_history::record_bubble_dismissed,
+            feedback_history::record_bubble_liked,
             redaction::get_redaction_stats,
             redaction::reset_redaction_stats,
             decision_log::get_proactive_decisions,
+            decision_log::clear_proactive_decisions,
             butler_history::get_butler_history,
             butler_history::get_butler_daily_summaries,
             speech_history::get_recent_speeches,
@@ -153,6 +169,10 @@ pub fn run() {
             proactive::get_recent_proactive_turns,
             mood::get_current_mood,
             mood_history::get_mood_trend_hint,
+            mood_history::get_mood_daily_motions,
+            mood_history::get_mood_half_day_motions,
+            mood_history::clear_mood_history,
+            mood_history::get_mood_entries_for_date,
             proactive::get_tone_snapshot,
             proactive::set_mute_minutes,
             proactive::get_mute_until,
@@ -169,11 +189,24 @@ pub fn run() {
             commands::session::save_session,
             commands::session::create_session,
             commands::session::delete_session,
+            commands::session::search_sessions,
             commands::telegram::get_telegram_status,
             commands::telegram::reconnect_telegram,
+            commands::telegram::get_tg_startup_warnings,
+            commands::telegram::reset_tg_commands,
             commands::memory::memory_list,
             commands::memory::memory_search,
             commands::memory::memory_edit,
+            commands::task::task_create,
+            commands::task::task_list,
+            commands::task::task_retry,
+            commands::task::task_cancel,
+            commands::task::task_get_detail,
+            commands::task::task_set_priority,
+            commands::task::task_set_due,
+            commands::task::task_set_tags,
+            commands::task::task_save_detail,
+            commands::task::task_overdue_count,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

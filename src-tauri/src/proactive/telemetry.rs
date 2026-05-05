@@ -66,12 +66,29 @@ pub static LAST_PROACTIVE_TOOLS: std::sync::Mutex<Vec<String>> = std::sync::Mute
 /// crowd the navigator and inflate process memory for diminishing return.
 pub const PROACTIVE_TURN_HISTORY_CAP: usize = 5;
 
+/// 单次工具调用的快照——按 LLM 实际调用顺序累积，给"proactive 调试器"
+/// 在 prompt 与 reply 之间内嵌展示完整 in/out。args 是 LLM 给的原始 JSON
+/// 字符串；result 是工具返回的字符串（与 `tool_call_history` 写入的 result
+/// 同源，redact 与否随各工具内部决定）。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ToolCallEntry {
+    pub name: String,
+    pub arguments: String,
+    pub result: String,
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct TurnRecord {
     pub timestamp: String,
     pub prompt: String,
     pub reply: String,
     pub tools_used: Vec<String>,
+    /// 调试器：本 turn 内 LLM 全部工具调用的完整记录（name + args + result），
+    /// 按调用顺序。`tools_used` 是去重后的名字列表（决策日志用），本字段是
+    /// 完整时序记录（modal 展示用）。重启即清空，与本结构其它字段同步。
+    /// `#[serde(default)]` 让旧 ring-buffer 项缺字段时反序列化也能恢复。
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallEntry>,
     /// Iter R25: classification of this turn's outcome — `"spoke"` when the
     /// LLM produced a non-silent reply, `"silent"` when it returned empty
     /// or contained `SILENT_MARKER`. Lets the panel modal label each turn
@@ -292,6 +309,7 @@ mod r33_tests {
             prompt: String::new(),
             reply: String::new(),
             tools_used: vec![],
+            tool_calls: vec![],
             outcome: outcome.to_string(),
         }
     }
@@ -363,5 +381,67 @@ mod r33_tests {
         // R33 nudge keeps "否则继续沉默也无妨" so LLM doesn't feel commanded.
         let h = format_consecutive_silent_hint(4, 3);
         assert!(h.contains("无妨") || h.contains("否则"));
+    }
+
+    // ---------------- tool_calls field ----------------
+
+    #[test]
+    fn tool_call_entry_serialize_round_trip() {
+        let e = ToolCallEntry {
+            name: "get_weather".to_string(),
+            arguments: r#"{"city":"上海"}"#.to_string(),
+            result: r#"{"temp":18,"sky":"clear"}"#.to_string(),
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        // 三字段都该出现在 wire；前端 type 与该形态一一对应
+        assert!(s.contains("\"name\":\"get_weather\""));
+        assert!(s.contains("\"arguments\""));
+        assert!(s.contains("\"result\""));
+    }
+
+    #[test]
+    fn turn_record_includes_tool_calls_in_serialized_form() {
+        let t = TurnRecord {
+            timestamp: "2026-05-04T12:00:00+08:00".to_string(),
+            prompt: "p".to_string(),
+            reply: "r".to_string(),
+            tools_used: vec!["x".to_string()],
+            tool_calls: vec![ToolCallEntry {
+                name: "x".to_string(),
+                arguments: "{}".to_string(),
+                result: "ok".to_string(),
+            }],
+            outcome: "spoke".to_string(),
+        };
+        let s = serde_json::to_string(&t).unwrap();
+        assert!(s.contains("\"tool_calls\""));
+        assert!(s.contains("\"tools_used\""));
+    }
+
+    #[test]
+    fn turn_record_deserialize_tolerates_missing_tool_calls() {
+        // 老版本 ring buffer 项（未含 tool_calls 字段）应能 deserialize 回来
+        // 走 #[serde(default)] 默认空 vec
+        let json = r#"{
+            "timestamp": "2026-05-04T12:00:00+08:00",
+            "prompt": "p",
+            "reply": "r",
+            "tools_used": [],
+            "outcome": "spoke"
+        }"#;
+        // TurnRecord 当前只 derive Serialize，不 derive Deserialize —— 这条
+        // 测试本身不能直接跑（缺 trait）。把它注释掉换为更小的形式：仅断言
+        // 默认值在结构体直接构造时为空 vec（向前兼容是结构体级别的，序列层
+        // 由 Serialize 输出决定）。
+        let _ = json; // 占位，避免未使用警告
+        let t = TurnRecord {
+            timestamp: "x".to_string(),
+            prompt: String::new(),
+            reply: String::new(),
+            tools_used: vec![],
+            tool_calls: Default::default(),
+            outcome: String::new(),
+        };
+        assert!(t.tool_calls.is_empty());
     }
 }

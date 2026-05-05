@@ -971,7 +971,23 @@ pub async fn run_chat_pipeline(
                     // human approval. Default-deny on timeout. No registry
                     // (telegram / consolidate path) → execute as before so
                     // autonomous flows aren't accidentally muted.
-                    let review_outcome: Option<String> = if assessment.requires_human_review {
+                    //
+                    // 工具风险设置面板：在分类器的 `requires_human_review`
+                    // 之上叠用户偏好。默认 auto 透传；用户可以为单个工具
+                    // 选 always_review（强制审核）或 always_approve（强制
+                    // 放行）。读 settings 失败时退回纯分类器结果。
+                    let needs_review = {
+                        let user_mode = crate::commands::settings::get_settings()
+                            .ok()
+                            .and_then(|s| s.tool_review_overrides.get(tc_name).cloned())
+                            .map(|v| crate::tool_review_policy::parse_mode(&v))
+                            .unwrap_or(crate::tool_review_policy::ToolReviewMode::Auto);
+                        crate::tool_review_policy::effective_requires_review(
+                            assessment.requires_human_review,
+                            user_mode,
+                        )
+                    };
+                    let review_outcome: Option<String> = if needs_review {
                         if let Some(reg) = ctx.tool_review.clone() {
                             let (review_id, rx) = reg.register(
                                 tc_name,
@@ -1115,6 +1131,19 @@ pub async fn run_chat_pipeline(
             );
 
             sink.send_tool_result(tc_name, &result);
+
+            // 调试器收集：proactive 路径如果开了 collector，把完整 in/out
+            // (name + args + result) 推到调用方的 Arc<Mutex<Vec<...>>>。其它
+            // 路径（reactive chat / telegram / consolidate）通常不开 → 零开销。
+            if let Some(collector) = &ctx.tool_calls {
+                if let Ok(mut g) = collector.lock() {
+                    g.push(crate::proactive::ToolCallEntry {
+                        name: tc_name.to_string(),
+                        arguments: tc_args.to_string(),
+                        result: result.clone(),
+                    });
+                }
+            }
 
             conv_messages.push(serde_json::json!({
                 "role": "tool",

@@ -113,6 +113,16 @@ pub fn assess_tool_risk(tool_name: &str, args_json: &str, _purpose: &str) -> Too
         | "memory_list"
         | "memory_search"
         | "memory_get" => ToolRiskLevel::Low,
+        "propose_task" => {
+            // 仅 emits proposal，前端渲染卡片，不持久化
+            ToolRiskLevel::Low
+        }
+        "task_create" => {
+            // 直接写 butler_tasks（无确认卡）。给 TG 等无 UI 入口用 —— 比
+            // memory_edit create 更窄（限定 butler_tasks），仍是 Medium。
+            reasons.push("直接写入任务队列（butler_tasks，无确认卡）".to_string());
+            ToolRiskLevel::Medium
+        }
         _ => {
             // 未注册的 / MCP 工具默认 Medium。一旦定义清楚单独 case。
             reasons.push(format!("未分类工具 '{}'，默认 Medium", tool_name));

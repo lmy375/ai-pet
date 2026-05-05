@@ -30,6 +30,16 @@ fn history_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("speech_history.log"))
 }
 
+/// 周报 / consolidate 用的"读全文"快捷：返回 speech_history.log 的原始内容
+/// （含全部时间戳）。文件不存在 / 读失败均返回空串 — 与 daily / consolidate
+/// 各 sweep 的"best-effort"语义一致。调用方按行 split + 自己解析。
+pub async fn read_history_content() -> String {
+    let Some(path) = history_path() else {
+        return String::new();
+    };
+    tokio::fs::read_to_string(&path).await.unwrap_or_default()
+}
+
 /// Tiny sidecar that holds the lifetime count of proactive utterances as a single
 /// integer. We need this because `speech_history.log` is trimmed at SPEECH_HISTORY_CAP
 /// and so its line count saturates; this file just keeps incrementing forever.

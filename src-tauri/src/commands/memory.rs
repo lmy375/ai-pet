@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-fn memories_dir() -> Result<PathBuf, String> {
+/// `~/.config/pet/memories`. Pub(crate) so sibling commands（如 task 详情页读
+/// detail.md）能拼出绝对路径而不必 hard-code 路径模板。
+pub(crate) fn memories_dir() -> Result<PathBuf, String> {
     let dir = dirs::config_dir()
         .ok_or_else(|| "Cannot determine config directory".to_string())?
         .join("pet")
