@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface MemoryItem {
@@ -26,6 +26,15 @@ const CATEGORY_ORDER = ["butler_tasks", "todo", "ai_insights", "user_profile", "
 // example because it's the newest user-author category and the convention isn't yet
 // learned. ai_insights warns the user it's pet-author territory — manual edits are
 // allowed but unusual.
+/// R118: butler_tasks schedule 语法模板。emoji 与 R80 schedule chip 配色
+/// 习惯一致：每日 = 🔁 / 一次 = 📅 / 截止 = ⏳。text 末尾保留空格让用户
+/// 直接写正文不需先打空格。
+const SCHEDULE_TEMPLATES: Array<{ label: string; text: string }> = [
+  { label: "🔁 every", text: "[every: 09:00] " },
+  { label: "📅 once", text: "[once: 2026-05-10 14:00] " },
+  { label: "⏳ deadline", text: "[deadline: 2026-05-10 14:00] " },
+];
+
 const CATEGORY_PLACEHOLDERS: Record<string, string> = {
   butler_tasks:
     "比如：[every: 09:00] 把今日日历汇总写到 ~/today.md\n或：[once: 2026-05-10 14:00] 周末整理 ~/Downloads（pet 在该时间点自动执行）\n或：[deadline: 2026-05-10 14:00] 把文档发出去（user 必须在那之前自己完成，pet 临近时提醒）\n或：直接写「整理 ~/Downloads，把 30 天旧文件挪到 ~/Archive」（不带前缀就由宠物自己判断时机）。\n（描述里说清楚做什么、多久做一次、写到哪里。）",
@@ -53,6 +62,35 @@ export function PanelMemory() {
   const [butlerHistory, setButlerHistory] = useState<string[]>([]);
   const [butlerDaily, setButlerDaily] = useState<string[]>([]);
   const [firingProactive, setFiringProactive] = useState(false);
+  // R137: "立即处理" 二次确认 armed 态（与 R125 PanelDebug 立即开口同模式）。
+  // 首点 armed 3s 自动 revert；再点真触发。firingProactive 是请求 in-flight
+  // flag，与 armed 各管一半（armed 在 click 前 / firing 在 invoke 期间）。
+  const [fireArmed, setFireArmed] = useState(false);
+  // R95: butler 最近执行折叠状态。> 5 条时默认折叠到前 5（最新），用户点
+  // "展开全部 N 条"切到 unbounded。session 内有效，关面板复位（与 R91
+  // 长描述折叠同语义）。
+  const [butlerHistoryExpanded, setButlerHistoryExpanded] = useState(false);
+  // R143: butler 每日小结折叠状态（与 butlerHistoryExpanded 同模式独立）。
+  // 长跑用户多日累积，不折叠时挤压下方任务列表。
+  const [butlerDailyExpanded, setButlerDailyExpanded] = useState(false);
+  // R102: 哪些 category 已被用户展开。默认 empty —— 所有 cat 走"自动折叠
+  // 规则"（> 10 条时折叠到前 5）。手动 toggle 进入 set 即始终展开。
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
+    new Set(),
+  );
+  // R118: butler_tasks schedule 模板插入用 ref 拿 textarea 光标位置。仅
+  // butler_tasks category 模板按钮可见时使用。
+  const descTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // R140: 全局记忆总数。搜索结果 badge 显 N/M，让用户感知搜词命中率。
+  // 复用 R98 导出 helper 同款 reduce sum 模式；依赖 index，index 切换时
+  // 自动重算。
+  const totalMemoryCount = useMemo(() => {
+    if (!index) return 0;
+    return Object.values(index.categories).reduce(
+      (sum, c) => sum + c.items.length,
+      0,
+    );
+  }, [index]);
 
   const loadIndex = async () => {
     try {
@@ -82,6 +120,21 @@ export function PanelMemory() {
       console.error("Failed to load butler daily summaries:", e);
     }
   };
+
+  // R110: 编辑 modal 打开时全局 Esc 关闭。挂 window 而非 modal 内 —— 让无
+  // 论 focus 在 textarea / input / select / modal 空白处都能捕获。!editingItem
+  // 短路返回让 modal 关时不挂 listener，cleanup 自动清。
+  useEffect(() => {
+    if (!editingItem) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setEditingItem(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [editingItem]);
 
   useEffect(() => {
     loadIndex();
@@ -320,6 +373,53 @@ export function PanelMemory() {
     }
   };
 
+  // R98: 把整个 index 序列化成 markdown 复制到剪贴板。结构按 CATEGORY_ORDER
+  // 分 H2 段落，每个 item 一个 H3 + blockquote ts + 描述。空 category 跳过。
+  // 后端将来新增 category（不在 ORDER 里）会追加到末尾，不丢数据。
+  // R118: 在 description textarea 当前光标位置插入 schedule 模板字符串。
+  // 选中段被替换；setTimeout 0 等 React commit 完后把光标移到插入末尾 +
+  // focus，让用户继续填具体值。
+  const insertTemplate = (template: string) => {
+    if (!editingItem) return;
+    const ta = descTextareaRef.current;
+    const cur = editingItem.description;
+    let next: string;
+    let newCursor: number;
+    if (ta) {
+      const start = ta.selectionStart ?? cur.length;
+      const end = ta.selectionEnd ?? cur.length;
+      next = cur.slice(0, start) + template + cur.slice(end);
+      newCursor = start + template.length;
+    } else {
+      next = cur + template;
+      newCursor = next.length;
+    }
+    setEditingItem({ ...editingItem, description: next });
+    setTimeout(() => {
+      const t = descTextareaRef.current;
+      if (t) {
+        t.focus();
+        t.setSelectionRange(newCursor, newCursor);
+      }
+    }, 0);
+  };
+
+  const handleExportAll = async () => {
+    if (!index) return;
+    const md = exportMemoriesAsMarkdown(index);
+    const totalItems = Object.values(index.categories).reduce(
+      (sum, c) => sum + c.items.length,
+      0,
+    );
+    try {
+      await navigator.clipboard.writeText(md);
+      setMessage(`已复制 ${totalItems} 条记忆 (${md.length} 字符) 到剪贴板`);
+      setTimeout(() => setMessage(""), 4000);
+    } catch (e: any) {
+      setMessage(`导出失败: ${e}`);
+    }
+  };
+
   const handleDelete = async (category: string, title: string) => {
     if (!confirm(`确认删除 "${title}"？`)) return;
     try {
@@ -335,12 +435,21 @@ export function PanelMemory() {
 
   const handleSaveEdit = async () => {
     if (!editingItem) return;
+    // R112: trim title 防止首尾不可见空白引发的"看着相同实则不同" entry。
+    // 空白唯一 → 视为空标题前端 reject（后端虽也校验，前端早 reject 体验更好）。
+    // update 路径下 title input 是 disabled，trim 与源值一致几乎等价；保守
+    // 起见两路径都 trim 一致。
+    const title = editingItem.title.trim();
+    if (!title) {
+      setMessage("标题不能为空");
+      return;
+    }
     try {
       if (editingItem.isNew) {
         await invoke("memory_edit", {
           action: "create",
           category: editingItem.category,
-          title: editingItem.title,
+          title,
           description: editingItem.description,
         });
         setMessage("已创建");
@@ -348,7 +457,7 @@ export function PanelMemory() {
         await invoke("memory_edit", {
           action: "update",
           category: editingItem.category,
-          title: editingItem.title,
+          title,
           description: editingItem.description,
         });
         setMessage("已更新");
@@ -363,29 +472,42 @@ export function PanelMemory() {
   };
 
   if (loading) {
-    return <div style={{ padding: 20, color: "#64748b" }}>加载中...</div>;
+    return <div style={{ padding: 20, color: "var(--pet-color-muted)" }}>加载中...</div>;
   }
 
   const s = {
     container: { padding: 16, overflowY: "auto" as const, height: "100%", fontFamily: "system-ui, sans-serif" },
     section: { marginBottom: 20 },
-    sectionTitle: { fontSize: 14, fontWeight: 600, color: "#334155", marginBottom: 8, display: "flex", alignItems: "center", gap: 8 },
-    badge: { fontSize: 11, background: "#e2e8f0", color: "#64748b", borderRadius: 10, padding: "1px 8px" },
-    item: { padding: "8px 12px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, marginBottom: 6, fontSize: 13 },
-    itemTitle: { fontWeight: 600, color: "#1e293b", marginBottom: 2 },
-    itemDesc: { color: "#64748b", fontSize: 12, lineHeight: 1.4 },
-    itemMeta: { color: "#94a3b8", fontSize: 11, marginTop: 4 },
-    btn: { padding: "4px 10px", border: "1px solid #e2e8f0", borderRadius: 4, background: "#fff", color: "#64748b", cursor: "pointer", fontSize: 12 },
-    btnDanger: { padding: "4px 10px", border: "1px solid #fecaca", borderRadius: 4, background: "#fff", color: "#ef4444", cursor: "pointer", fontSize: 12 },
-    btnPrimary: { padding: "6px 16px", border: "none", borderRadius: 4, background: "#0ea5e9", color: "#fff", cursor: "pointer", fontSize: 13 },
-    input: { width: "100%", padding: "6px 10px", border: "1px solid #e2e8f0", borderRadius: 4, fontSize: 13, boxSizing: "border-box" as const },
-    textarea: { width: "100%", padding: "6px 10px", border: "1px solid #e2e8f0", borderRadius: 4, fontSize: 13, resize: "vertical" as const, minHeight: 60, boxSizing: "border-box" as const },
+    sectionTitle: { fontSize: 14, fontWeight: 600, color: "var(--pet-color-fg)", marginBottom: 8, display: "flex", alignItems: "center", gap: 8 },
+    badge: { fontSize: 11, background: "var(--pet-color-border)", color: "var(--pet-color-muted)", borderRadius: 10, padding: "1px 8px" },
+    item: { padding: "8px 12px", background: "var(--pet-color-card)", border: "1px solid var(--pet-color-border)", borderRadius: 6, marginBottom: 6, fontSize: 13 },
+    itemTitle: { fontWeight: 600, color: "var(--pet-color-fg)", marginBottom: 2 },
+    itemDesc: { color: "var(--pet-color-muted)", fontSize: 12, lineHeight: 1.4 },
+    itemMeta: { color: "var(--pet-color-muted)", fontSize: 11, marginTop: 4 },
+    btn: { padding: "4px 10px", border: "1px solid var(--pet-color-border)", borderRadius: 4, background: "var(--pet-color-card)", color: "var(--pet-color-muted)", cursor: "pointer", fontSize: 12 },
+    btnDanger: { padding: "4px 10px", border: "1px solid #fecaca", borderRadius: 4, background: "var(--pet-color-card)", color: "#ef4444", cursor: "pointer", fontSize: 12 },
+    btnPrimary: { padding: "6px 16px", border: "none", borderRadius: 4, background: "var(--pet-color-accent)", color: "#fff", cursor: "pointer", fontSize: 13 },
+    input: { width: "100%", padding: "6px 10px", border: "1px solid var(--pet-color-border)", borderRadius: 4, fontSize: 13, boxSizing: "border-box" as const, background: "var(--pet-color-card)", color: "var(--pet-color-fg)" },
+    textarea: { width: "100%", padding: "6px 10px", border: "1px solid var(--pet-color-border)", borderRadius: 4, fontSize: 13, resize: "vertical" as const, minHeight: 60, boxSizing: "border-box" as const, background: "var(--pet-color-card)", color: "var(--pet-color-fg)" },
     searchRow: { display: "flex", gap: 8, marginBottom: 16 },
     msg: { padding: "6px 12px", background: "#f0fdf4", color: "#166534", borderRadius: 4, fontSize: 12, marginBottom: 12 },
   };
 
   return (
     <div style={s.container}>
+      {/* R122: items 列表 hover 高亮。inline style 不支持 :hover 伪类，
+          走 className + 全局 <style> block + !important 反压 inline 优先级。
+          配色用 var(--pet-color-bg) 与 card 反差一档，跨主题自动切。 */}
+      <style>
+        {`
+          .pet-memory-item {
+            transition: background-color 0.12s ease;
+          }
+          .pet-memory-item:hover {
+            background: var(--pet-color-bg) !important;
+          }
+        `}
+      </style>
       {message && (
         <div style={s.msg} onClick={() => setMessage("")}>
           {message}
@@ -418,7 +540,7 @@ export function PanelMemory() {
         <button
           style={{
             ...s.btn,
-            background: "#0ea5e9",
+            background: "var(--pet-color-accent)",
             color: "#fff",
             fontWeight: 600,
           }}
@@ -441,24 +563,40 @@ export function PanelMemory() {
         >
           {consolidating ? "整理中…" : "立即整理"}
         </button>
+        {/* R98: 全部记忆导出为 markdown，复制到剪贴板。辅助操作，配色与
+            + 委托任务 / 立即整理 等 primary action 区分（走默认 btn 样式）。 */}
+        <button
+          style={s.btn}
+          onClick={handleExportAll}
+          disabled={!index}
+          title="把全部记忆（按 category 分组）拼成单 markdown 文本复制到剪贴板。可贴到 issue / 备份 / 跨设备移植。"
+        >
+          📋 导出
+        </button>
       </div>
 
       {/* Search results */}
       {searchResults !== null && (
         <div style={s.section}>
           <div style={s.sectionTitle}>
-            搜索结果 <span style={s.badge}>{searchResults.length}</span>
+            搜索结果 <span style={s.badge}>
+              {searchResults.length} / {totalMemoryCount}
+            </span>
           </div>
           {searchResults.length === 0 && (
-            <div style={{ color: "#94a3b8", fontSize: 13 }}>未找到匹配项</div>
+            <div style={{ color: "var(--pet-color-muted)", fontSize: 13 }}>未找到匹配项</div>
           )}
           {searchResults.map((r, i) => (
-            <div key={i} style={s.item}>
+            <div key={i} className="pet-memory-item" style={s.item}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={s.itemTitle}>{r.title}</div>
+                <div style={s.itemTitle}>
+                  <HighlightedText text={r.title} query={searchKeyword} />
+                </div>
                 <span style={s.badge}>{r.category}</span>
               </div>
-              <div style={s.itemDesc}>{r.description}</div>
+              <div style={s.itemDesc}>
+                <HighlightedText text={r.description} query={searchKeyword} />
+              </div>
             </div>
           ))}
         </div>
@@ -479,14 +617,14 @@ export function PanelMemory() {
           onClick={() => setEditingItem(null)}
         >
           <div
-            style={{ background: "#fff", borderRadius: 8, padding: 20, width: 400, maxWidth: "90%" }}
+            style={{ background: "var(--pet-color-card)", borderRadius: 8, padding: 20, width: 400, maxWidth: "90%" }}
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>
               {editingItem.isNew ? "新建记忆" : "编辑记忆"}
             </div>
             <div style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 12, color: "#64748b" }}>分类</label>
+              <label style={{ fontSize: 12, color: "var(--pet-color-muted)" }}>分类</label>
               <select
                 style={s.input}
                 value={editingItem.category}
@@ -501,7 +639,7 @@ export function PanelMemory() {
               </select>
             </div>
             <div style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 12, color: "#64748b" }}>标题</label>
+              <label style={{ fontSize: 12, color: "var(--pet-color-muted)" }}>标题</label>
               <input
                 style={s.input}
                 maxLength={20}
@@ -509,22 +647,120 @@ export function PanelMemory() {
                 onChange={(e) => setEditingItem({ ...editingItem, title: e.target.value })}
                 disabled={!editingItem.isNew}
               />
+              {/* R119: 标题字数 counter。仅 isNew 模式显（edit 模式 input
+                  disabled，counter 误导用户"还能改"）。三档颜色与 R113 描述
+                  counter 同款（< 90% muted / 90-99% amber / 100% red）。 */}
+              {editingItem.isNew && (() => {
+                const len = editingItem.title.length;
+                const MAX = 20;
+                const WARN = 18;
+                const color =
+                  len >= MAX
+                    ? "#dc2626"
+                    : len >= WARN
+                      ? "#a16207"
+                      : "var(--pet-color-muted)";
+                const tip =
+                  len >= MAX
+                    ? "已达 maxLength=20；继续输入会被浏览器拒绝"
+                    : len >= WARN
+                      ? "接近 20 字上限"
+                      : "标题长度限制 20 字";
+                return (
+                  <div
+                    style={{ fontSize: 10, textAlign: "right", color, marginTop: 2 }}
+                    title={tip}
+                  >
+                    {len} / {MAX}
+                  </div>
+                );
+              })()}
             </div>
             <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 12, color: "#64748b" }}>描述</label>
+              <label style={{ fontSize: 12, color: "var(--pet-color-muted)" }}>描述</label>
+              {/* R118: butler_tasks schedule 模板按钮。仅 butler_tasks
+                  category 显；点击在光标位置插入 [every: ...] / [once: ...] /
+                  [deadline: ...] 模板，新用户写 schedule 不再要记忆语法。 */}
+              {editingItem.category === "butler_tasks" && (
+                <div
+                  style={{ display: "flex", gap: 4, marginTop: 4, marginBottom: 4 }}
+                >
+                  {SCHEDULE_TEMPLATES.map(({ label, text }) => (
+                    <button
+                      key={text}
+                      type="button"
+                      onClick={() => insertTemplate(text)}
+                      title={`在光标位置插入 \`${text.trim()}\` 模板（butler_tasks schedule 语法）`}
+                      style={{
+                        padding: "2px 8px",
+                        fontSize: 11,
+                        border: "1px solid var(--pet-color-border)",
+                        borderRadius: 4,
+                        background: "var(--pet-color-card)",
+                        color: "var(--pet-color-fg)",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <textarea
+                ref={descTextareaRef}
                 style={{ ...s.textarea, minHeight: editingItem.category === "butler_tasks" ? 100 : 60 }}
                 maxLength={300}
                 placeholder={CATEGORY_PLACEHOLDERS[editingItem.category] || ""}
                 value={editingItem.description}
                 onChange={(e) => setEditingItem({ ...editingItem, description: e.target.value })}
+                onKeyDown={(e) => {
+                  // R105: ⌘S/Ctrl+S 触发保存。preventDefault 吃掉 webview
+                  // "另存为页面"默认行为；handleSaveEdit 内部已有 try/catch
+                  // 防 race。仿 PanelTasks 详情 detail.md 编辑同款 pattern。
+                  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+                    e.preventDefault();
+                    void handleSaveEdit();
+                  }
+                }}
               />
+              {/* R113: description 字数计数器。三档颜色：< 90% muted / 90-99%
+                  amber / 100% red，让用户提前感知 maxLength=300 上限。 */}
+              {(() => {
+                const len = editingItem.description.length;
+                const MAX = 300;
+                const WARN = 270;
+                const color =
+                  len >= MAX
+                    ? "#dc2626"
+                    : len >= WARN
+                      ? "#a16207"
+                      : "var(--pet-color-muted)";
+                const tip =
+                  len >= MAX
+                    ? "已达 maxLength；继续输入会被浏览器拒绝"
+                    : len >= WARN
+                      ? "接近 300 字上限，建议提前收笔"
+                      : "描述长度限制 300 字";
+                return (
+                  <div
+                    style={{ fontSize: 10, textAlign: "right", color, marginTop: 2 }}
+                    title={tip}
+                  >
+                    {len} / {MAX}
+                  </div>
+                );
+              })()}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button style={s.btn} onClick={() => setEditingItem(null)}>
                 取消
               </button>
-              <button style={s.btnPrimary} onClick={handleSaveEdit}>
+              <button
+                style={s.btnPrimary}
+                onClick={handleSaveEdit}
+                title="保存到 memory index（⌘S/Ctrl+S 等价）"
+              >
                 保存
               </button>
             </div>
@@ -552,25 +788,68 @@ export function PanelMemory() {
                   return mins !== null && mins >= OVERDUE_THRESHOLD_MIN;
                 }).length
               : 0;
+          // R92: 最新更新相对时间。inline 计算（cat.items ≤ 10 廉价；useMemo
+          // 在 .map 里不能用 —— hooks 规则要求每帧同序调用）。空 cat 时
+          // latestTs===null → header 不渲染该 span。
+          let latestTs: number | null = null;
+          for (const item of cat.items) {
+            const ts = Date.parse(item.updated_at);
+            if (Number.isNaN(ts)) continue;
+            if (latestTs === null || ts > latestTs) latestTs = ts;
+          }
           return (
             <div key={catKey} style={s.section}>
               <div style={s.sectionTitle}>
                 {cat.label}
                 <span style={s.badge}>{cat.items.length}</span>
+                {latestTs !== null && (
+                  <span
+                    style={{ fontSize: 11, color: "var(--pet-color-muted)", fontWeight: 400 }}
+                    title={`最新一条 item 的 updated_at = ${new Date(latestTs).toLocaleString()}`}
+                  >
+                    最近 {formatLastUpdated(latestTs, now.getTime())}
+                  </span>
+                )}
                 {catKey === "butler_tasks" && overdueCount > 0 && (
                   <button
                     style={{
                       ...s.btn,
-                      background: firingProactive ? "#94a3b8" : "#ef4444",
-                      color: "#fff",
+                      background: firingProactive
+                        ? "#94a3b8"
+                        : fireArmed
+                          ? "#fef2f2"
+                          : "#ef4444",
+                      color: firingProactive
+                        ? "#fff"
+                        : fireArmed
+                          ? "#b91c1c"
+                          : "#fff",
                       borderColor: "transparent",
+                      fontWeight: fireArmed ? 600 : undefined,
                       marginLeft: 8,
                     }}
-                    onClick={handleFireProactive}
+                    onClick={() => {
+                      if (firingProactive) return;
+                      if (!fireArmed) {
+                        setFireArmed(true);
+                        window.setTimeout(() => setFireArmed(false), 3000);
+                        return;
+                      }
+                      setFireArmed(false);
+                      void handleFireProactive();
+                    }}
                     disabled={firingProactive}
-                    title={`${overdueCount} 个任务已过期超过 ${OVERDUE_THRESHOLD_MIN} 分钟。点击立即触发一次主动开口（绕过 cooldown / quiet hours），让宠物现在去看任务列表并选一项处理。`}
+                    title={
+                      fireArmed
+                        ? "再次点击立即触发主动开口（3s 内有效）"
+                        : `${overdueCount} 个任务已过期超过 ${OVERDUE_THRESHOLD_MIN} 分钟。点击立即触发一次主动开口（绕过 cooldown / quiet hours），让宠物现在去看任务列表并选一项处理。点击后 3s 内需再点确认，防误触。`
+                    }
                   >
-                    {firingProactive ? "处理中…" : `立即处理 (${overdueCount})`}
+                    {firingProactive
+                      ? "处理中…"
+                      : fireArmed
+                        ? "再点确认 (3s)"
+                        : `立即处理 (${overdueCount})`}
                   </button>
                 )}
                 <button
@@ -588,42 +867,81 @@ export function PanelMemory() {
               {catKey === "butler_tasks" && butlerDaily.length > 0 && (
                 <div
                   style={{
-                    background: "#fefce8",
+                    background: "var(--pet-tint-yellow-bg)",
                     border: "1px solid #fde68a",
                     borderRadius: 6,
                     padding: "8px 10px",
                     marginBottom: 8,
                   }}
                 >
-                  <div style={{ fontSize: 11, color: "#a16207", marginBottom: 4, fontWeight: 600 }}>
+                  <div style={{ fontSize: 11, color: "var(--pet-tint-yellow-fg)", marginBottom: 4, fontWeight: 600 }}>
                     每日小结 ({butlerDaily.length})
                   </div>
-                  {butlerDaily
-                    .slice()
-                    .reverse()
-                    .map((line, i) => {
-                      const firstSpace = line.indexOf(" ");
-                      const date = firstSpace > 0 ? line.slice(0, firstSpace) : "";
-                      const text = firstSpace > 0 ? line.slice(firstSpace + 1) : line;
-                      return (
-                        <div
-                          key={i}
-                          style={{
-                            fontSize: 12,
-                            color: "#374151",
-                            marginTop: 2,
-                            display: "flex",
-                            gap: 6,
-                            alignItems: "baseline",
-                          }}
-                        >
-                          <span style={{ color: "#a16207", fontFamily: "'SF Mono', monospace", fontSize: 11 }}>
-                            {date}
-                          </span>
-                          <span style={{ flex: 1 }}>{text}</span>
-                        </div>
-                      );
-                    })}
+                  {/* R143: > 5 条时默认折叠到最新 5 条，加 "展开全部" 按钮。
+                      reversed 在外面切片让"前 5"对应最新 5 天小结。 */}
+                  {(() => {
+                    const HISTORY_FOLD_THRESHOLD = 5;
+                    const reversed = butlerDaily.slice().reverse();
+                    const isLong = butlerDaily.length > HISTORY_FOLD_THRESHOLD;
+                    const shown =
+                      isLong && !butlerDailyExpanded
+                        ? reversed.slice(0, HISTORY_FOLD_THRESHOLD)
+                        : reversed;
+                    return (
+                      <>
+                        {shown.map((line, i) => {
+                          const firstSpace = line.indexOf(" ");
+                          const date = firstSpace > 0 ? line.slice(0, firstSpace) : "";
+                          const text = firstSpace > 0 ? line.slice(firstSpace + 1) : line;
+                          return (
+                            <div
+                              key={i}
+                              style={{
+                                fontSize: 12,
+                                color: "var(--pet-color-fg)",
+                                marginTop: 2,
+                                display: "flex",
+                                gap: 6,
+                                alignItems: "baseline",
+                              }}
+                            >
+                              <span style={{ color: "var(--pet-tint-yellow-fg)", fontFamily: "'SF Mono', monospace", fontSize: 11 }}>
+                                {date}
+                              </span>
+                              <span style={{ flex: 1 }}>{text}</span>
+                            </div>
+                          );
+                        })}
+                        {isLong && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setButlerDailyExpanded((v) => !v)
+                            }
+                            title={
+                              butlerDailyExpanded
+                                ? "折叠回最新 5 条"
+                                : `展开后显示全部 ${butlerDaily.length} 条历史小结`
+                            }
+                            style={{
+                              marginTop: 4,
+                              fontSize: 11,
+                              padding: 0,
+                              border: "none",
+                              background: "transparent",
+                              color: "var(--pet-tint-yellow-fg)",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            {butlerDailyExpanded
+                              ? `收起 (${butlerDaily.length})`
+                              : `… 展开全部 ${butlerDaily.length} 条`}
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
               {/* Iter Cε: butler_tasks gets a "最近执行" mini-timeline showing the
@@ -632,20 +950,29 @@ export function PanelMemory() {
               {catKey === "butler_tasks" && butlerHistory.length > 0 && (
                 <div
                   style={{
-                    background: "#f0f9ff",
+                    background: "var(--pet-tint-blue-bg)",
                     border: "1px solid #bae6fd",
                     borderRadius: 6,
                     padding: "8px 10px",
                     marginBottom: 8,
                   }}
                 >
-                  <div style={{ fontSize: 11, color: "#0369a1", marginBottom: 4, fontWeight: 600 }}>
+                  <div style={{ fontSize: 11, color: "var(--pet-tint-blue-fg)", marginBottom: 4, fontWeight: 600 }}>
                     最近执行 ({butlerHistory.length})
                   </div>
-                  {butlerHistory
-                    .slice()
-                    .reverse()
-                    .map((line, i) => {
+                  {/* R95: > 5 条时默认折叠到最新 5 条，加 "展开全部" 按钮。
+                      reversed 在外面切片让"前 5"对应最新 5 次执行。 */}
+                  {(() => {
+                    const HISTORY_FOLD_THRESHOLD = 5;
+                    const reversed = butlerHistory.slice().reverse();
+                    const isLong = butlerHistory.length > HISTORY_FOLD_THRESHOLD;
+                    const shown =
+                      isLong && !butlerHistoryExpanded
+                        ? reversed.slice(0, HISTORY_FOLD_THRESHOLD)
+                        : reversed;
+                    return (
+                      <>
+                        {shown.map((line, i) => {
                       const p = parseButlerLine(line);
                       const when = p.ts.slice(5, 16).replace("T", " ");
                       const actionColor = p.action === "delete" ? "#dc2626" : "#0d9488";
@@ -654,14 +981,14 @@ export function PanelMemory() {
                           key={i}
                           style={{
                             fontSize: 11,
-                            color: "#475569",
+                            color: "var(--pet-color-fg)",
                             marginTop: 2,
                             display: "flex",
                             gap: 6,
                             alignItems: "baseline",
                           }}
                         >
-                          <span style={{ color: "#94a3b8", fontFamily: "'SF Mono', monospace" }}>
+                          <span style={{ color: "var(--pet-color-muted)", fontFamily: "'SF Mono', monospace" }}>
                             {when}
                           </span>
                           <span style={{ color: actionColor, fontWeight: 600 }}>{p.action}</span>
@@ -669,7 +996,7 @@ export function PanelMemory() {
                           {p.desc && (
                             <span
                               style={{
-                                color: "#64748b",
+                                color: "var(--pet-color-muted)",
                                 whiteSpace: "nowrap",
                                 overflow: "hidden",
                                 textOverflow: "ellipsis",
@@ -682,13 +1009,57 @@ export function PanelMemory() {
                           )}
                         </div>
                       );
-                    })}
+                        })}
+                        {isLong && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setButlerHistoryExpanded((v) => !v)
+                            }
+                            title={
+                              butlerHistoryExpanded
+                                ? "折叠回最新 5 条"
+                                : `展开后显示全部 ${butlerHistory.length} 条历史执行`
+                            }
+                            style={{
+                              marginTop: 4,
+                              fontSize: 11,
+                              padding: 0,
+                              border: "none",
+                              background: "transparent",
+                              color: "var(--pet-tint-blue-fg)",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            {butlerHistoryExpanded
+                              ? `收起 (${butlerHistory.length})`
+                              : `… 展开全部 ${butlerHistory.length} 条`}
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
               {cat.items.length === 0 && (
-                <div style={{ color: "#94a3b8", fontSize: 12, paddingLeft: 4 }}>暂无记忆</div>
+                <div style={{ color: "var(--pet-color-muted)", fontSize: 12, paddingLeft: 4 }}>暂无记忆</div>
               )}
-              {cat.items.map((item, i) => {
+              {/* R102: > 10 条时默认折叠到前 5；用户点"展开全部"切到 unbounded。
+                  ≤ 10 条不折叠（避免引入无用交互）。本段用 IIFE 包裹，让计数 /
+                  按钮共享同一份 shownItems / isLong 状态。 */}
+              {(() => {
+                const CATEGORY_FOLD_THRESHOLD = 10;
+                const CATEGORY_FOLD_PREVIEW = 5;
+                const isLong = cat.items.length > CATEGORY_FOLD_THRESHOLD;
+                const expanded = expandedCategories.has(catKey);
+                const shownItems =
+                  isLong && !expanded
+                    ? cat.items.slice(0, CATEGORY_FOLD_PREVIEW)
+                    : cat.items;
+                return (
+                  <>
+                    {shownItems.map((item, i) => {
                 // Iter Cθ: only butler_tasks pays the parse cost; other categories
                 // skip the work entirely. parsed === null when no schedule prefix.
                 const parsed =
@@ -730,7 +1101,7 @@ export function PanelMemory() {
                   return errInfo.hasError ? stripErrorBlock(base).trim() : base;
                 })();
                 return (
-                  <div key={i} style={s.item}>
+                  <div key={i} className="pet-memory-item" style={s.item}>
                     <div
                       style={{
                         display: "flex",
@@ -902,10 +1273,118 @@ export function PanelMemory() {
                     </div>
                   </div>
                 );
-              })}
+                    })}
+                    {isLong && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedCategories((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(catKey)) next.delete(catKey);
+                            else next.add(catKey);
+                            return next;
+                          })
+                        }
+                        title={
+                          expanded
+                            ? `折叠回前 ${CATEGORY_FOLD_PREVIEW} 条`
+                            : `展开后显示全部 ${cat.items.length} 条`
+                        }
+                        style={{
+                          marginTop: 4,
+                          fontSize: 11,
+                          padding: "2px 8px",
+                          border: "none",
+                          background: "transparent",
+                          color: "var(--pet-color-accent)",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        {expanded
+                          ? `收起 (${cat.items.length})`
+                          : `… 展开全部 ${cat.items.length} 条`}
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           );
         })}
     </div>
+  );
+}
+
+/// R98: index → markdown 导出。H1 标题 + ts/总数 摘要；H2 = category（cat.label
+/// 中文名）；H3 = item title + blockquote 更新时间 + 描述正文（保留 schedule
+/// 前缀如 [every: 09:00]）。空 category 跳过避免占行。先按 CATEGORY_ORDER 列
+/// 出，再追加任何 ORDER 外的 category（后端将来新增时不丢数据）。
+function exportMemoriesAsMarkdown(idx: MemoryIndex): string {
+  const lines: string[] = [];
+  const now = new Date();
+  const totalItems = Object.values(idx.categories).reduce(
+    (sum, c) => sum + c.items.length,
+    0,
+  );
+  lines.push("# 宠物记忆全部导出");
+  lines.push(`> 导出时间: ${now.toLocaleString()} · 共 ${totalItems} 条`);
+  lines.push("");
+  const orderedKeys = [
+    ...CATEGORY_ORDER,
+    ...Object.keys(idx.categories).filter((k) => !CATEGORY_ORDER.includes(k)),
+  ];
+  for (const catKey of orderedKeys) {
+    const cat = idx.categories[catKey];
+    if (!cat || cat.items.length === 0) continue;
+    lines.push(`## ${cat.label} (${cat.items.length} 条)`);
+    lines.push("");
+    for (const item of cat.items) {
+      lines.push(`### ${item.title}`);
+      if (item.updated_at) {
+        lines.push(
+          `> 更新于 ${item.updated_at.slice(0, 16).replace("T", " ")}`,
+        );
+      }
+      lines.push("");
+      lines.push(item.description);
+      lines.push("");
+    }
+  }
+  return lines.join("\n");
+}
+
+/// R92: cat 最新更新相对时间文案。与 PanelTasks `formatRelativeAge` 同款
+/// 分级（minute / hour / day），后缀 "更新" 贴 category 语义（vs Tasks
+/// "前创建"）。调用前已保证 latestTs 非 null（空 cat 时 header 不渲染）。
+function formatLastUpdated(latestTs: number, now: number): string {
+  const age = now - latestTs;
+  if (age < 60_000) return "刚刚更新";
+  if (age < 3_600_000) return `${Math.floor(age / 60_000)} 分钟前更新`;
+  if (age < 86_400_000) return `${Math.floor(age / 3_600_000)} 小时前更新`;
+  return `${Math.floor(age / 86_400_000)} 天前更新`;
+}
+
+/// R88: 搜索结果黄底高亮。与 PanelTasks / PanelSettings 同款（黄底深棕字），
+/// 让"panel 内搜索高亮"风格统一。仅命中第一处子串；query 用当前 input 值
+/// （结果 stale 时 idx<0 自然降级为原文）。
+const HIGHLIGHT_MARK_STYLE: React.CSSProperties = {
+  background: "#fef3c7",
+  color: "#92400e",
+  padding: "0 1px",
+  borderRadius: 2,
+};
+
+function HighlightedText({ text, query }: { text: string; query: string }) {
+  const q = query.trim();
+  if (q.length === 0) return <>{text}</>;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark style={HIGHLIGHT_MARK_STYLE}>{text.slice(idx, idx + q.length)}</mark>
+      {text.slice(idx + q.length)}
+    </>
   );
 }

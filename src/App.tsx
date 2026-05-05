@@ -9,13 +9,17 @@ import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
 import { useMoodAnimation } from "./hooks/useMoodAnimation";
+import { useBubbleHistory } from "./hooks/useBubbleHistory";
 
 function App() {
   const { settings, soul, loaded } = useSettings();
   const { isLoading, sendMessage, displayMessage, showBubble } = useChat(soul);
   const modelRef = useRef<any>(null);
   const { hidden, handleMouseEnter } = useAutoHide();
-  useMoodAnimation(modelRef);
+  // 把 settings.motion_mapping 传给动画 hook，让用户在「设置」改了映射立即
+  // 生效（hook 内部用 ref 跟随，无需重订阅 listen）。
+  useMoodAnimation(modelRef, settings.motion_mapping);
+  const bubbleHistory = useBubbleHistory();
 
   // Iter F1: bubble auto-dismiss after 60s of being visible. Without this the
   // desktop bubble stays showing the last assistant message forever — proactive
@@ -30,6 +34,10 @@ function App() {
   const QUICK_DISMISS_MS = 5000;
   const [bubbleDismissed, setBubbleDismissed] = useState(false);
   const bubbleShownAt = useRef<number | null>(null);
+  // Reset the 60s auto-dismiss whenever the rendered text changes — including
+  // history navigation (`bubbleHistory.displayed` flips), so翻历史时不会被
+  // dismiss 中断。`displayed === null` 表示 live 模式，effect 仍按
+  // `displayMessage` 走原逻辑。
   useEffect(() => {
     setBubbleDismissed(false);
     if (!showBubble || !displayMessage || isLoading) {
@@ -39,7 +47,7 @@ function App() {
     bubbleShownAt.current = Date.now();
     const t = setTimeout(() => setBubbleDismissed(true), 60_000);
     return () => clearTimeout(t);
-  }, [displayMessage, showBubble, isLoading]);
+  }, [displayMessage, showBubble, isLoading, bubbleHistory.displayed]);
 
   // Iter R45: count proactive messages that arrived while pet is auto-hidden
   // (bubble suppressed via `visible={... && !hidden && ...}`). Tab indicator
@@ -55,6 +63,12 @@ function App() {
     hiddenRef.current = hidden;
   }, [hidden]);
   const [unreadWhileHidden, setUnreadWhileHidden] = useState(0);
+  // Capture bubbleHistory.reset via ref so the proactive-message listener can
+  // call it without re-subscribing on every render. 与 hiddenRef 同模式。
+  const bubbleHistoryResetRef = useRef(bubbleHistory.reset);
+  useEffect(() => {
+    bubbleHistoryResetRef.current = bubbleHistory.reset;
+  }, [bubbleHistory.reset]);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
@@ -62,6 +76,9 @@ function App() {
         if (hiddenRef.current) {
           setUnreadWhileHidden((n) => n + 1);
         }
+        // 新 proactive 到来 → 把用户从历史模式拉回 live，让最新一条接管。
+        // 缓存清空让下次进历史能拉到含本条的最新窗口。
+        bubbleHistoryResetRef.current();
       });
     })();
     return () => {
@@ -76,8 +93,28 @@ function App() {
   const handleBubbleClick = useCallback(() => {
     const shownAt = bubbleShownAt.current;
     setBubbleDismissed(true);
-    if (shownAt && Date.now() - shownAt < QUICK_DISMISS_MS && displayMessage) {
+    // R1b 反馈的语义是"主人对**这一句**主动开口的即时拒绝"。在历史模式
+    // 下用户看的是过往快照（自己主动翻出来的），即便点掉也不该被记成
+    // 对当前 live 一句的拒绝 —— 跳过 record。
+    if (
+      !bubbleHistory.isHistoryMode &&
+      shownAt &&
+      Date.now() - shownAt < QUICK_DISMISS_MS &&
+      displayMessage
+    ) {
       invoke("record_bubble_dismissed", { excerpt: displayMessage }).catch(
+        console.error,
+      );
+    }
+  }, [displayMessage, bubbleHistory.isHistoryMode]);
+
+  // 👍 按钮：写 Liked 信号 + 让气泡消失（与 dismiss 同效果，但语义相反）。
+  // 不调 record_bubble_dismissed —— 否则同一条 utterance 会同时录入正负两条
+  // 反馈，破坏 ratio。历史模式下按钮不渲染（无入口），不必再防御。
+  const handleBubbleLike = useCallback(() => {
+    setBubbleDismissed(true);
+    if (displayMessage) {
+      invoke("record_bubble_liked", { excerpt: displayMessage }).catch(
         console.error,
       );
     }
@@ -211,9 +248,27 @@ function App() {
       )}
 
       <ChatBubble
-        message={displayMessage}
+        message={bubbleHistory.displayed ?? displayMessage}
         visible={showBubble && !hidden && !bubbleDismissed}
         onClick={handleBubbleClick}
+        // 👍 仅在 live 模式 & 非 streaming 时渲染：历史快照不应再写新反馈
+        // （与 R1b dismissed 同语义）；流式中点赞容易误触没读完的内容。
+        onLike={
+          !bubbleHistory.isHistoryMode && !isLoading ? handleBubbleLike : undefined
+        }
+        // 流式输出期间不挂导航控件 —— 半截内容里翻历史会让人困惑。
+        // live 模式下若历史尚未加载，仍允许点 ◀（hook 自己负责首点加载）。
+        historyControls={
+          isLoading
+            ? undefined
+            : {
+                canPrev: bubbleHistory.canPrev,
+                canNext: bubbleHistory.canNext,
+                onPrev: bubbleHistory.enterPrev,
+                onNext: bubbleHistory.next,
+                indicator: bubbleHistory.indicator,
+              }
+        }
       />
       <Live2DCharacter
         key={settings.live_2d_model_path}

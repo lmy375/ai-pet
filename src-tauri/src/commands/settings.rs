@@ -51,6 +51,29 @@ pub struct TelegramConfig {
     /// minimal — the pet still answers, just without the long-term identity layer.
     #[serde(default = "default_telegram_persona_layer_enabled")]
     pub persona_layer_enabled: bool,
+    /// 用户自定义的 TG 命令名 + 描述。bot 启动时与硬编码 5 条合并后调
+    /// `set_my_commands`，让用户在 TG 客户端打 `/` 时看到。调用时不走
+    /// command dispatch，**直接 fall through 到 chat pipeline** —— LLM
+    /// 把 `/name <args>` 当文本看待 + 自由选 tool；不绑定具体 tool 映射。
+    #[serde(default)]
+    pub custom_commands: Vec<TgCustomCommand>,
+    /// TG 客户端补全表里 hardcoded 命令的描述语种：`"zh"`（默认） / `"en"`。
+    /// 自定义命令的描述用户自填，**不**翻译。其它运行时反馈（成功 /
+    /// 失败 / 未知命令文案）当前都还中文，未走本字段。
+    #[serde(default = "default_telegram_command_lang")]
+    pub command_lang: String,
+}
+
+fn default_telegram_command_lang() -> String {
+    "zh".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TgCustomCommand {
+    /// 命令名（不带 `/`）。lowercase ASCII / 数字 / `_`，与 TG API 约束一致。
+    pub name: String,
+    /// TG 客户端补全弹窗显示的描述。≤ 256 字。
+    pub description: String,
 }
 
 fn default_telegram_persona_layer_enabled() -> bool {
@@ -64,6 +87,8 @@ impl Default for TelegramConfig {
             allowed_username: String::new(),
             enabled: false,
             persona_layer_enabled: default_telegram_persona_layer_enabled(),
+            custom_commands: Vec::new(),
+            command_lang: default_telegram_command_lang(),
         }
     }
 }
@@ -112,6 +137,12 @@ pub struct ProactiveConfig {
     /// Unknown values are treated as `"balanced"`.
     #[serde(default = "default_companion_mode")]
     pub companion_mode: String,
+    /// 长任务心跳阈值（分钟）。pending 的 `butler_tasks` 条目若被宠物
+    /// 触碰过（updated_at > created_at + 5s）且距离上次更新 ≥ 该阈值，
+    /// 在下次 proactive prompt 里以「[心跳]」段提醒 LLM 写进展或
+    /// 标 done / error。0 = 关闭心跳。默认 30。
+    #[serde(default = "default_task_heartbeat_minutes")]
+    pub task_heartbeat_minutes: u32,
 }
 
 fn default_proactive_interval() -> u64 {
@@ -148,6 +179,10 @@ fn default_chatty_day_threshold() -> u64 {
 
 fn default_companion_mode() -> String {
     "balanced".to_string()
+}
+
+fn default_task_heartbeat_minutes() -> u32 {
+    30
 }
 
 /// Iter R13: high-level companion-mode coefficients. Pure helper — given a
@@ -221,6 +256,44 @@ impl ProactiveConfig {
     }
 }
 
+/// 早安简报：由 `proactive::morning_briefing` 在每日固定时刻触发的"主动开
+/// 口"。开关 + 触发时刻独立于 `proactive` 的常规节奏 — 用户可能关闭常规
+/// 主动发言但仍想保留每日早安，所以两个 enabled 字段必须能各自取舍。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MorningBriefingConfig {
+    /// 默认打开 — 这是产品亮点，理想路径就是用户能感知到。
+    #[serde(default = "default_morning_briefing_enabled")]
+    pub enabled: bool,
+    /// 24h 制小时，0..=23。无效值（≥24）由门控函数静默拒绝，不 panic。
+    #[serde(default = "default_morning_briefing_hour")]
+    pub hour: u8,
+    /// 0..=59。同上，越界静默拒绝。
+    #[serde(default = "default_morning_briefing_minute")]
+    pub minute: u8,
+}
+
+fn default_morning_briefing_enabled() -> bool {
+    true
+}
+
+fn default_morning_briefing_hour() -> u8 {
+    crate::proactive::MORNING_BRIEFING_DEFAULT_HOUR
+}
+
+fn default_morning_briefing_minute() -> u8 {
+    crate::proactive::MORNING_BRIEFING_DEFAULT_MINUTE
+}
+
+impl Default for MorningBriefingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_morning_briefing_enabled(),
+            hour: default_morning_briefing_hour(),
+            minute: default_morning_briefing_minute(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConsolidateConfig {
     #[serde(default)]
@@ -255,6 +328,12 @@ pub struct MemoryConsolidateConfig {
     /// higher (90, 365) if you want to scroll back further; 0 disables pruning.
     #[serde(default = "default_stale_daily_review_days")]
     pub stale_daily_review_days: u32,
+    /// 周报合成的"周日 closing 时刻"（本地时间小时 0-23）。在该时刻之后
+    /// （含整点）的下一次 consolidate loop 唤醒会触发周报合成 → 写入
+    /// `ai_insights/weekly_summary_YYYY-Www`。0 = 关闭周报。默认 20。
+    /// 与 `enabled` 解耦：周报独立运行，即便 LLM 整理被禁用仍按时合成。
+    #[serde(default = "default_weekly_summary_closing_hour")]
+    pub weekly_summary_closing_hour: u8,
 }
 
 fn default_consolidate_interval() -> u64 {
@@ -281,6 +360,10 @@ fn default_stale_daily_review_days() -> u32 {
     30
 }
 
+fn default_weekly_summary_closing_hour() -> u8 {
+    crate::weekly_summary::DEFAULT_CLOSING_HOUR
+}
+
 impl Default for MemoryConsolidateConfig {
     fn default() -> Self {
         Self {
@@ -291,6 +374,7 @@ impl Default for MemoryConsolidateConfig {
             stale_plan_hours: default_stale_plan_hours(),
             stale_once_butler_hours: default_stale_once_butler_hours(),
             stale_daily_review_days: default_stale_daily_review_days(),
+            weekly_summary_closing_hour: default_weekly_summary_closing_hour(),
         }
     }
 }
@@ -329,6 +413,7 @@ impl Default for ProactiveConfig {
             respect_focus_mode: default_respect_focus_mode(),
             chatty_day_threshold: default_chatty_day_threshold(),
             companion_mode: default_companion_mode(),
+            task_heartbeat_minutes: default_task_heartbeat_minutes(),
         }
     }
 }
@@ -368,6 +453,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub proactive: ProactiveConfig,
     #[serde(default)]
+    pub morning_briefing: MorningBriefingConfig,
+    #[serde(default)]
     pub memory_consolidate: MemoryConsolidateConfig,
     #[serde(default)]
     pub chat: ChatConfig,
@@ -380,6 +467,17 @@ pub struct AppSettings {
     /// users put weird values they'll see them echoed.
     #[serde(default)]
     pub user_name: String,
+    /// 工具审核覆盖：键是工具名，值是 `auto` / `always_review` / `always_approve`。
+    /// 未列出的工具按 `auto`（跟分类器走）。值字符串而非 enum，让前向兼容
+    /// 自然成立 — 见 `tool_review_policy::parse_mode`，不识别值默认退回 `auto`。
+    #[serde(default)]
+    pub tool_review_overrides: HashMap<String, String>,
+    /// Live2D motion 自定义映射：把语义键（Tap / Flick / Flick3 / Idle）映射
+    /// 到当前模型的实际 motion group 名。空 / 缺省 = 用语义键当 group 名
+    /// （与内置 miku 模型行为一致）。键不在此 map 里时也走 fallback。
+    /// 仅前端读 —— LLM 协议仍 emit Tap/Flick/Flick3/Idle 这 4 个语义键。
+    #[serde(default)]
+    pub motion_mapping: HashMap<String, String>,
 }
 
 fn default_model_path() -> String {
@@ -404,10 +502,13 @@ impl Default for AppSettings {
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),
             proactive: ProactiveConfig::default(),
+            morning_briefing: MorningBriefingConfig::default(),
             memory_consolidate: MemoryConsolidateConfig::default(),
             chat: ChatConfig::default(),
             privacy: PrivacyConfig::default(),
             user_name: String::new(),
+            tool_review_overrides: HashMap::new(),
+            motion_mapping: HashMap::new(),
         }
     }
 }

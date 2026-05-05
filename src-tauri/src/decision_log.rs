@@ -59,6 +59,14 @@ impl DecisionLog {
     pub fn snapshot(&self) -> Vec<ProactiveDecision> {
         self.buf.lock().unwrap().iter().cloned().collect()
     }
+
+    /// 清空 ring buffer。给调试面板"清空"按钮用 —— 调 prompt 时把无关历史
+    /// 抹掉，让用户后续 push 的几条从顶部展示，定位新条目省心。
+    pub fn clear(&self) {
+        if let Ok(mut g) = self.buf.lock() {
+            g.clear();
+        }
+    }
 }
 
 pub type DecisionLogStore = Arc<DecisionLog>;
@@ -72,6 +80,13 @@ pub fn get_proactive_decisions(
     store: tauri::State<'_, DecisionLogStore>,
 ) -> Vec<ProactiveDecision> {
     store.snapshot()
+}
+
+/// 清空 in-memory 决策 ring buffer。调试面板「清空」按钮调用入口。
+/// 失误清空只丢 16 条 debug 痕迹，零风险，不需二次确认。
+#[tauri::command]
+pub fn clear_proactive_decisions(store: tauri::State<'_, DecisionLogStore>) {
+    store.clear();
 }
 
 #[cfg(test)]
@@ -107,5 +122,18 @@ mod tests {
         // The first 5 should have been dropped; oldest in window = entry_5.
         assert_eq!(snap[0].reason, "entry_5");
         assert_eq!(snap[CAPACITY - 1].reason, format!("entry_{}", CAPACITY + 4));
+    }
+
+    #[test]
+    fn clear_drains_the_buffer() {
+        let log = DecisionLog::new();
+        log.push("Silent", "a".into());
+        log.push("Run", "b".into());
+        assert_eq!(log.snapshot().len(), 2);
+        log.clear();
+        assert!(log.snapshot().is_empty());
+        // 清空后仍可继续 push（mutex 没坏）
+        log.push("Skip", "c".into());
+        assert_eq!(log.snapshot().len(), 1);
     }
 }

@@ -9,6 +9,8 @@ use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
 use super::memory_tools::{MemoryEditTool, MemoryListTool, MemorySearchTool};
 use super::shell_tools::{BashTool, CheckShellStatusTool};
 use super::system_tools::GetActiveWindowTool;
+use super::task_create_tool::TaskCreateTool;
+use super::task_tool::ProposeTaskTool;
 use super::tool::Tool;
 use super::weather_tool::GetWeatherTool;
 
@@ -19,6 +21,26 @@ use super::weather_tool::GetWeatherTool;
 /// (memory_edit, write_file, edit_file, bash...) or MCP tools whose semantics we don't
 /// own — their freshness contract is theirs to define.
 const CACHEABLE_TOOLS: &[&str] = &["get_active_window", "get_weather", "get_upcoming_events"];
+
+/// 内置工具名稳定列表 —— 与 `ToolRegistry::new` 里 `Box::new(...)` 的顺序
+/// 严格对齐。前端「工具风险设置」面板枚举这一份名单展示。MCP 工具不在
+/// 这里（动态注册，名字按 server config 而异）。新增 / 删除内置工具时记
+/// 得同步更新本表与 registry 构造函数。
+pub const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "bash",
+    "check_shell_status",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "memory_list",
+    "memory_search",
+    "memory_edit",
+    "get_active_window",
+    "get_weather",
+    "get_upcoming_events",
+    "propose_task",
+    "task_create",
+];
 
 /// Registry holding all available tools (built-in + MCP)
 pub struct ToolRegistry {
@@ -58,6 +80,8 @@ impl ToolRegistry {
             Box::new(GetActiveWindowTool),
             Box::new(GetWeatherTool),
             Box::new(GetUpcomingEventsTool),
+            Box::new(ProposeTaskTool),
+            Box::new(TaskCreateTool),
         ];
         Self::with_tools(tools, mcp_definitions)
     }

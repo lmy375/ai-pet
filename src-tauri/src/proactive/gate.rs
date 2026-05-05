@@ -443,6 +443,8 @@ mod tests {
             // Iter R13: tests run in balanced mode so companion-mode multipliers
             // don't fold into existing gate-test expectations.
             companion_mode: "balanced".to_string(),
+            // 心跳与 gate 逻辑无关：默认 0（禁用）保持 gate 单测纯净。
+            task_heartbeat_minutes: 0,
         }
     }
 

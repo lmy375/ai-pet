@@ -1,4 +1,6 @@
 pub mod bot;
+pub mod commands;
+pub mod warnings;
 
 use bot::TelegramBot;
 use std::sync::Arc;

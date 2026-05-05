@@ -18,6 +18,11 @@ pub struct ToolContext {
     /// pipeline's `Result<String, _>` return type. Stays `None` for callers that don't
     /// care (consolidate, telegram, generic chat command).
     pub tools_used: Option<Arc<Mutex<Vec<String>>>>,
+    /// 调试器收集器：每次 tool 执行结果计算完后追加一条
+    /// `(name, arguments, result)` 完整记录，给 proactive 调试器在 modal 里
+    /// 把 in/out 链路一并展示。与 `tools_used` 完全对称（一个收 names，一个
+    /// 收 full records）。`None` 时 chat pipeline 完全跳过，零开销。
+    pub tool_calls: Option<Arc<Mutex<Vec<crate::proactive::ToolCallEntry>>>>,
     /// Iter TR3: optional registry for human-review of high-risk tool calls.
     /// `Some` for the desktop chat path (where the panel can render the modal);
     /// `None` for telegram / consolidate / autonomous flows that have no UX
@@ -41,6 +46,7 @@ impl ToolContext {
             log_store,
             process_counters,
             tools_used: None,
+            tool_calls: None,
             tool_review: None,
             decision_log: None,
         }
@@ -56,6 +62,7 @@ impl ToolContext {
             log_store: LogStore(log_store.0.clone()),
             process_counters: process_counters.inner().clone(),
             tools_used: None,
+            tool_calls: None,
             tool_review: None,
             decision_log: None,
         }
@@ -91,6 +98,18 @@ impl ToolContext {
     /// so it can read the populated names after the pipeline returns.
     pub fn with_tools_used_collector(mut self, collector: Arc<Mutex<Vec<String>>>) -> Self {
         self.tools_used = Some(collector);
+        self
+    }
+
+    /// Builder method — attach a `tool_calls` collector. Caller keeps a clone of
+    /// the Arc 以便管线跑完后读出完整记录（name/args/result）。pure parallel
+    /// 与 `with_tools_used_collector`，只对开了调试器的调用方（proactive
+    /// 路径）有意义；其它路径不调即零开销。
+    pub fn with_tool_calls_collector(
+        mut self,
+        collector: Arc<Mutex<Vec<crate::proactive::ToolCallEntry>>>,
+    ) -> Self {
+        self.tool_calls = Some(collector);
         self
     }
 

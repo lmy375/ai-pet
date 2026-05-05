@@ -31,6 +31,31 @@ fn history_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("butler_history.log"))
 }
 
+/// 周报 / consolidate 用的"读全文"快捷：返回 butler_history.log 的原始内容。
+/// 文件不存在 / 读失败均返回空串。调用方按行 split + 自己解析。
+pub async fn read_history_content() -> String {
+    let Some(path) = history_path() else {
+        return String::new();
+    };
+    tokio::fs::read_to_string(&path).await.unwrap_or_default()
+}
+
+/// 严格版本：区分"文件不存在 / 路径解析失败"（视作"还没攒到数据"，回 Ok("")）
+/// 与"其它 IO 错误"（permission denied / interrupted 等，回 Err）。给"任务详情
+/// 页"等需要让用户区分"真没数据"vs"读失败"的场景用。`read_history_content`
+/// 保留 silent best-effort 路径供 consolidate / 周报 / proactive prompt 注入
+/// 等不关心错误的 caller。
+pub async fn read_history_content_strict() -> std::io::Result<String> {
+    let Some(path) = history_path() else {
+        return Ok(String::new());
+    };
+    match tokio::fs::read_to_string(&path).await {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e),
+    }
+}
+
 fn daily_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("butler_daily.log"))
 }
@@ -226,6 +251,41 @@ pub async fn get_butler_daily_summaries(n: Option<usize>) -> Vec<String> {
     recent_summaries(n.unwrap_or(7)).await
 }
 
+/// 解析后的 butler_history 单行：`(timestamp, action, title, snippet)`。
+/// 只在 line 形式正确时返回 Some —— 形如 `<ts> <action> <title> :: <snippet>`：
+/// - ts 一个空格 token
+/// - action 一个空格 token（create / update / delete 等，由 `record_event` 决定）
+/// - title 中间任意（可含空格）
+/// - " :: " 分隔 head 与 snippet
+///
+/// 不识别的行（缺 ` :: ` / 缺 ts / 缺 action token）→ None，由调用方丢弃。
+pub fn parse_butler_history_line(line: &str) -> Option<(&str, &str, &str, &str)> {
+    let (head, snippet) = line.split_once(" :: ")?;
+    // head: "<ts> <action> <title>"
+    let (ts, after_ts) = head.split_once(' ')?;
+    let (action, title) = after_ts.split_once(' ')?;
+    Some((ts, action, title.trim(), snippet))
+}
+
+/// 给「任务详情」页用：从 butler_history 全文中过滤出 `target_title` 精确
+/// 匹配的事件行。返回 `(ts, action, snippet)` 三元组列表，**时间倒序**
+/// （最新在前，给前端时间线展示）。
+///
+/// 精确匹配（trim 后相等）—— 子串匹配会让相似名（"整理 Downloads" 命中
+/// "整理 Downloads (备份)"）误回溯，违背"单条任务级别复盘"语义。
+pub fn filter_history_for_task(content: &str, target_title: &str) -> Vec<(String, String, String)> {
+    let target = target_title.trim();
+    let mut events: Vec<(String, String, String)> = content
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(parse_butler_history_line)
+        .filter(|(_, _, title, _)| *title == target)
+        .map(|(ts, action, _, snippet)| (ts.to_string(), action.to_string(), snippet.to_string()))
+        .collect();
+    events.reverse(); // parse 出来本是时间升序；倒序让最新在前
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +415,110 @@ mod tests {
                 .to_string(),
         ];
         assert_eq!(summarize_events_for_date(&events, date(2026, 5, 3)), None);
+    }
+
+    // ---------------- parse_butler_history_line ----------------
+
+    #[test]
+    fn parse_line_normal_case() {
+        let line =
+            "2026-05-04T13:00:00+08:00 update 整理 Downloads :: 已挪 30 天前文件";
+        assert_eq!(
+            parse_butler_history_line(line),
+            Some((
+                "2026-05-04T13:00:00+08:00",
+                "update",
+                "整理 Downloads",
+                "已挪 30 天前文件"
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_line_handles_title_with_spaces() {
+        let line = "2026-05-04T13:00:00+08:00 create 整理 Downloads 备份 :: 创建任务";
+        let parsed = parse_butler_history_line(line).unwrap();
+        assert_eq!(parsed.2, "整理 Downloads 备份");
+        assert_eq!(parsed.3, "创建任务");
+    }
+
+    #[test]
+    fn parse_line_returns_none_when_separator_missing() {
+        // 没有 ` :: ` 分隔 → 拒绝
+        assert!(parse_butler_history_line("2026-05-04T13:00:00+08:00 update 整理").is_none());
+    }
+
+    #[test]
+    fn parse_line_returns_none_when_missing_action() {
+        // 只有 ts，没 action → 拒绝（缺 head 第二个 space）
+        assert!(parse_butler_history_line("2026-05-04T13:00:00+08:00 :: only-snippet").is_none());
+    }
+
+    #[test]
+    fn parse_line_allows_empty_snippet() {
+        // " :: " 后面什么都没 → snippet 是空串，但仍是合法行
+        let parsed = parse_butler_history_line("2026-05-04T13:00:00+08:00 delete x :: ");
+        assert_eq!(parsed.unwrap().3, "");
+    }
+
+    // ---------------- filter_history_for_task ----------------
+
+    fn sample_history() -> &'static str {
+        "\
+2026-05-04T10:00:00+08:00 create 整理 Downloads :: 创建任务
+2026-05-04T11:00:00+08:00 update 整理 Downloads :: 已扫描完目录
+2026-05-04T11:30:00+08:00 update 整理 Downloads 备份 :: 这是另一条
+2026-05-04T12:00:00+08:00 update 整理 Downloads :: 标 [done]
+2026-05-04T13:00:00+08:00 delete 跑步 :: 任务结束
+"
+    }
+
+    #[test]
+    fn filter_keeps_only_exact_title_matches_in_reverse_chronological_order() {
+        let events = filter_history_for_task(sample_history(), "整理 Downloads");
+        // 三条匹配：create、update、update（中间那条 "整理 Downloads 备份" 不算）
+        assert_eq!(events.len(), 3);
+        // 时间倒序：最新（标 done）在最前
+        assert_eq!(events[0].2, "标 [done]");
+        assert_eq!(events[1].2, "已扫描完目录");
+        assert_eq!(events[2].2, "创建任务");
+    }
+
+    #[test]
+    fn filter_does_not_match_substring_overlap() {
+        // "Downloads" 是 "整理 Downloads" 的子串 — 但只查"Downloads"应该一条都不返回
+        let events = filter_history_for_task(sample_history(), "Downloads");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn filter_returns_empty_when_no_match() {
+        let events = filter_history_for_task(sample_history(), "不存在");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn filter_handles_empty_content() {
+        let events = filter_history_for_task("", "any");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn filter_trims_target_title() {
+        // 调用方传带空白的 title 不该让匹配失败
+        let events = filter_history_for_task(sample_history(), "  整理 Downloads  ");
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn filter_skips_malformed_lines() {
+        let dirty = "\
+malformed line without separator
+2026-05-04T10:00:00+08:00 update target :: 命中
+also-bad
+";
+        let events = filter_history_for_task(dirty, "target");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].2, "命中");
     }
 }
