@@ -5,6 +5,7 @@ import { PanelChat } from "./components/panel/PanelChat";
 import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelPersona } from "./components/panel/PanelPersona";
 import { PanelTasks } from "./components/panel/PanelTasks";
+import { KeyboardHelpOverlay } from "./components/panel/KeyboardHelpOverlay";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./theme";
 
 /**
@@ -105,6 +106,7 @@ export function PanelApp() {
   // 会在自己的处理器里覆盖这个初值。
   const [activeTab, setActiveTab] = useState<Tab>("聊天");
   const [overdueCount, setOverdueCount] = useState<number>(0);
+  const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   // 主题：迭代 1 仅框架级 surface 切换（顶层 bg / tab bar）。组件内部
   // inline color 留给后续迭代按 panel 逐步迁移到 CSS var。启动时从
   // localStorage 读偏好并 apply，避免 light flash。
@@ -144,6 +146,22 @@ export function PanelApp() {
   useEffect(() => {
     if (activeTab === "任务") fetchOverdue();
   }, [activeTab, fetchOverdue]);
+
+  // 全局 `?` 唤起键盘快捷键帮助层。tagName 守卫挡掉输入控件 focus 时的
+  // ?（用户可能在搜索框里输入 ?）；Shift+/ 也命中（中英键盘 ? 实际是
+  // Shift+/）。Esc 由 KeyboardHelpOverlay 自己处理。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "?") return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      e.preventDefault();
+      setShowKeyboardHelp((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div style={{ width: "100%", height: "100vh", display: "flex", flexDirection: "column", background: "var(--pet-color-bg)" }}>
@@ -199,6 +217,22 @@ export function PanelApp() {
           );
         })}
         <button
+          onClick={() => setShowKeyboardHelp(true)}
+          style={{
+            padding: "12px 10px",
+            border: "none",
+            borderBottom: "2px solid transparent",
+            background: "transparent",
+            color: "var(--pet-color-muted)",
+            fontSize: "14px",
+            cursor: "pointer",
+            transition: "all 0.2s",
+          }}
+          title="键盘快捷键速查（也可按 ?）"
+        >
+          ?
+        </button>
+        <button
           onClick={toggleTheme}
           style={{
             padding: "12px 12px",
@@ -247,6 +281,10 @@ export function PanelApp() {
           {activeTab === "人格" && <PanelPersona />}
         </TabErrorBoundary>
       </div>
+      <KeyboardHelpOverlay
+        visible={showKeyboardHelp}
+        onClose={() => setShowKeyboardHelp(false)}
+      />
     </div>
   );
 }

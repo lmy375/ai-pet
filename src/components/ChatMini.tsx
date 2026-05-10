@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { bubbleStyle } from "./panel/panelChatBits";
 import { parseMarkdown } from "../utils/inlineMarkdown";
 
@@ -92,6 +92,10 @@ const MINI_CHAT_STYLES = `
 }
 `;
 
+/// 容器底部 8px 内视为"贴底"，用于决定 follow-tail 是否成立。给浮点偏差一
+/// 点缓冲，避免微小量误判。
+const FOLLOW_BOTTOM_THRESHOLD_PX = 8;
+
 export function ChatMini({
   messages,
   currentResponse,
@@ -102,6 +106,11 @@ export function ChatMini({
   historyControls,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // followTail：用户是否处于"自动跟随最新"状态。挂载时默认 true（贴底）。
+  // 用 ref 让 auto-scroll effect 拿到最新值而不必加进 deps；同名 state
+  // 仅供「跳到底浮标」按钮可见态用。两者由 onScroll 同步更新。
+  const followTailRef = useRef(true);
+  const [notAtBottom, setNotAtBottom] = useState(false);
 
   // 截到最近 N 条 + 只留 user / assistant。useMemo 防 messages 引用稳定时
   // 不必重算（useChat 在每次 setMessages 时返回新数组所以会变，但中间
@@ -114,12 +123,13 @@ export function ChatMini({
     return items.slice(items.length - MINI_CHAT_MAX_ITEMS);
   }, [messages]);
 
-  // 新消息或 streaming chunk 到达时滚到底。判定条件包含 isLoading：
-  // streaming 全程 currentResponse 持续变，effect 反复触发自然实现「跟随
-  // 最新输出」。`requestAnimationFrame` 让滚动等到 DOM 已挂上新节点
-  // 再设 scrollTop —— 否则 scrollHeight 还是旧值。
+  // 新消息或 streaming chunk 到达时滚到底 —— 仅在 followTail 成立时。否则
+  // 用户在向上翻历史，强行滚到底会破坏阅读位置；浮标按钮承担"我要回到底"
+  // 的显式选项。`requestAnimationFrame` 让滚动等到 DOM 已挂上新节点再设
+  // scrollTop —— 否则 scrollHeight 还是旧值。
   useEffect(() => {
     if (!visible) return;
+    if (!followTailRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const id = requestAnimationFrame(() => {
@@ -143,12 +153,36 @@ export function ChatMini({
 
   const showStreamingBubble = isLoading && currentResponse.trim().length > 0;
 
+  // 跳到底浮标的点击：滚到底 + 重置 followTail。鼠标点会 bubble 到容器
+  // onClick 触发 onDismiss，所以 stopPropagation。
+  const handleJumpToBottom = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    followTailRef.current = true;
+    setNotAtBottom(false);
+  };
+
+  // 滚动监听：判断是否贴底，同步 followTailRef + notAtBottom。程序设
+  // scrollTop=scrollHeight 也会触发本回调，distFromBottom=0 → 贴底，与
+  // handleJumpToBottom 设的状态一致。
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distFromBottom <= FOLLOW_BOTTOM_THRESHOLD_PX;
+    followTailRef.current = atBottom;
+    setNotAtBottom((prev) => (prev === !atBottom ? prev : !atBottom));
+  };
+
   return (
     <>
       <style>{MINI_CHAT_STYLES}</style>
       <div
         className="pet-mini-chat"
         ref={scrollRef}
+        onScroll={handleScroll}
         // 主体可点 → 触发 onDismiss（与原 ChatBubble click-to-dismiss
         // 同入口）。点子按钮各自 stopPropagation。
         onClick={() => {
@@ -313,6 +347,42 @@ export function ChatMini({
           </div>
         )}
       </div>
+      {/* 跳到底浮标：仅当用户向上滚翻历史时显（notAtBottom=true）。位置贴
+          chat 容器右下角再往下偏一点，避开 list 内容。点击滚到底 + 重启
+          follow-tail。流式中如果用户向上读旧内容也保留这个出口。 */}
+      {notAtBottom && (
+        <button
+          type="button"
+          onClick={handleJumpToBottom}
+          title="跳到最新（点后新消息会自动跟随）"
+          aria-label="jump to bottom"
+          style={{
+            position: "absolute",
+            // 容器 top:12 + maxHeight:55%；按钮浮在容器右下角内侧。
+            // right 与容器一致 + 一点 inset；bottom 走 chat panel 之上。
+            right: "20px",
+            top: "calc(55% + 4px)",
+            width: "28px",
+            height: "28px",
+            borderRadius: "50%",
+            border: "1px solid #7dd3fc",
+            background: "rgba(255,255,255,0.95)",
+            color: "#0ea5e9",
+            fontSize: "14px",
+            lineHeight: 1,
+            cursor: "pointer",
+            zIndex: 11,
+            boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            animation: "pet-mini-chat-fade-in 180ms ease-out",
+          }}
+        >
+          ↓
+        </button>
+      )}
     </>
   );
 }
