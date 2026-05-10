@@ -8,6 +8,24 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。并提交一个 git commit。
 >
 
-- PanelTasks 任务页依然渲染出错，修复（待用户提供 ErrorBoundary 红框里的 error.message + stack；本轮已二次审阅，未在源码层发现可重现的 throw 点，不做盲目防御式覆盖，等错误文本后定点修）。
+- PanelTasks 任务页依然渲染出错，修复。
+```
+「任务」页渲染出错
+Rendered more hooks than during the previous render.
+updateWorkInProgressHook@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:5792:24
+updateMemo@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:6540:44
+useMemo@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:18969:30
+PanelTasks@http://localhost:1420/src/components/panel/PanelTasks.tsx:794:53
+react_stack_bottom_frame@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:18509:29
+renderWithHooks@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:5654:42
+updateFunctionComponent@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:7475:36
+runWithFiberInDEV@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:999:23
+performUnitOfWork@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:12561:115
+workLoopSync@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:12424:60
+renderRootSync@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:12408:25
+performWorkOnRoot@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:11827:51
+performWorkOnRootViaSchedulerTask@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:13505:26
+performWorkUntilDeadline@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:36:58
+```
 
 
