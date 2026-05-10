@@ -118,50 +118,6 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
           🔁 {tone.repeated_topic}
         </span>
       )}
-      {tone.active_app && (() => {
-        const { app, minutes } = tone.active_app;
-        // R22 + R27 + R62 + R64: four bands matching the prompt-side / gate-side gates —
-        //   < 15m: gray (panel only, no prompt)
-        //   15m to soft: orange (R15 informational hint fires)
-        //   soft to hard: red (R27 deep-focus directive fires — "极简或选择沉默")
-        //   ≥ hard: deep red (R62 HARD-BLOCK — gate skips proactive turn entirely)
-        // R64: hard threshold = tone.effective_hard_block_minutes (companion_mode
-        // adjusted: chatty 135 / balanced 90 / quiet 60). soft = R27 const 60.
-        const hardThreshold = tone.effective_hard_block_minutes ?? 90;
-        const softThreshold = 60; // R27 directive boundary, mode-invariant
-        let bg: string;
-        let titleText: string;
-        let suffix = "";
-        if (minutes >= hardThreshold) {
-          bg = "#7f1d1d"; // deep red — hard block, gate skips entirely
-          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（≥${hardThreshold}m 硬阻塞）— R62 gate 直接 skip 这次 proactive turn，不发 LLM 调用。下次开口要等 app 切换或 mute / awaiting 等其他 gate 状态变化。R64 阈值随 companion_mode 调整：chatty=135 / balanced=90 / quiet=60。`;
-          suffix = " 🔒🛑";
-        } else if (minutes >= softThreshold) {
-          bg = "#b91c1c"; // red — deep focus, explicit silence directive
-          titleText = `用户已经在「${app}」里专注 ${minutes} 分钟（深度专注期 ≥${softThreshold}m）— R27 directive 已 fire，prompt 显式要求 LLM 极简或沉默。再过 ${hardThreshold - minutes} 分钟 R62 会升级为硬阻塞（当前 mode 阈值 ${hardThreshold}m）。`;
-          suffix = " 🔒";
-        } else if (minutes >= 15) {
-          bg = "#d97706"; // orange — R15 informational hint fired
-          titleText = `用户已经在「${app}」里待了 ${minutes} 分钟 — R15 prompt hint 已 fire（≥15m 阈值，描述性）。`;
-        } else {
-          bg = "#94a3b8"; // gray — panel only
-          titleText = `当前前台 app 是「${app}」，停留 ${minutes} 分钟（< 15m，prompt 未 nudge）。`;
-        }
-        return (
-          <span
-            title={titleText}
-            style={{
-              color: "#fff",
-              background: bg,
-              padding: "1px 8px",
-              borderRadius: "10px",
-              fontWeight: 600,
-            }}
-          >
-            🪟 {app}（{minutes}m{suffix}）
-          </span>
-        );
-      })()}
       {tone.consecutive_silent_streak >= 3 && (
         <span
           title={`pet 已经连续 ${tone.consecutive_silent_streak} 次选择沉默（trailing-silent streak ≥ 3）— R33 prompt nudge 已 fire 提醒它考虑开口。spoke 一次自动清零。`}
@@ -371,14 +327,6 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
       {tone.wake_seconds_ago !== null && tone.wake_seconds_ago <= 600 && (
         <span title="刚检测到 wake-from-sleep" style={{ color: "#0891b2" }}>
           ☀ wake {tone.wake_seconds_ago}s
-        </span>
-      )}
-      {tone.focus_mode && (
-        <span
-          title={`用户开着 macOS Focus 模式: ${tone.focus_mode}。proactive engine 默认会 gate（看 settings.respect_focus_mode），所以宠物可能会更安静。`}
-          style={{ color: "#7c3aed", fontWeight: 600 }}
-        >
-          🎯 focus: {tone.focus_mode}
         </span>
       )}
       {tone.pre_quiet_minutes !== null && (

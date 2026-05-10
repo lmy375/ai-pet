@@ -52,9 +52,6 @@ pub struct PromptInputs<'a> {
     pub input_hint: &'a str,
     pub cadence_hint: &'a str,
     pub mood_hint: &'a str,
-    /// Empty string when the gate isn't applicable (no focus active, no recent wake,
-    /// no prior speeches). Builder skips empty optional sections automatically.
-    pub focus_hint: &'a str,
     pub wake_hint: &'a str,
     pub speech_hint: &'a str,
     /// True when the pet has never recorded a mood entry yet. Lets the rules block add a
@@ -191,12 +188,6 @@ pub struct PromptInputs<'a> {
     /// has no recorded speeches. Built by run_proactive_turn from
     /// `speech_history::speeches_for_date_async`.
     pub cross_day_hint: &'a str,
-    /// Iter R15: active-app duration hint — "用户在「Cursor」里已经待了 N 分钟"
-    /// when the user has been on the same foreground app for ≥
-    /// `MIN_DURATION_MINUTES`. Empty when below threshold, app unchanged
-    /// less than that, or active-window read failed. Built from
-    /// `active_app::update_and_format_active_app_hint`.
-    pub active_app_hint: &'a str,
     /// Iter R16: yesterday-recap hint — "[昨日总览] 我们昨天主动开口 N 次，
     /// 计划 X/Y。" Sourced from yesterday's `daily_review_YYYY-MM-DD`
     /// memory description (written by R12 the previous evening) and
@@ -210,27 +201,6 @@ pub struct PromptInputs<'a> {
     /// register is mixed (already varying). Built from
     /// `speech_history::format_speech_length_hint`.
     pub length_register_hint: &'a str,
-    /// Iter R63: deep-focus recovery hint — "[刚结束深度专注] 用户刚从
-    /// 「X」的 N 分钟连续专注里切出来..." Fires on the first proactive
-    /// turn that runs within RECOVERY_HINT_GRACE_SECS (10 min) after a
-    /// hard-block stretch ends. Empty when no recent block or already
-    /// taken (single-shot per block stretch). Built from
-    /// `active_app::take_recovery_hint`.
-    pub deep_focus_recovery_hint: &'a str,
-    /// Iter R66: yesterday's deep-focus stretch recap — "[昨日深度专注]
-    /// 你昨天完成 N 次深度专注，合计 X 分钟..." Fires only at first-of-day
-    /// (`today_speech_count == 0`) alongside cross_day_hint and
-    /// yesterday_recap_hint, giving the LLM a sense of how hard the user
-    /// worked yesterday. Built from `active_app::yesterday_block_stats` +
-    /// `format_yesterday_focus_recap_hint`. Empty when no yesterday
-    /// stats / process restarted today.
-    pub yesterday_focus_hint: &'a str,
-    /// Iter R74: personal-record celebration — "[今日破纪录] 用户今天最长
-    /// 一次专注 N 分钟..." Fires only when today's peak strictly exceeds
-    /// prior 7-day best (excludes today). Empty when tied / lower /
-    /// no-baseline. Pet uses to gently affirm without overdoing it.
-    /// Built from `active_app::current_personal_record_hint`.
-    pub personal_record_hint: &'a str,
     /// Iter R77: imminent-deadline nudge — "[逼近的 deadline] · {topic}（仅剩
     /// N 分钟到 deadline）..." Fires when butler_tasks contains items with
     /// `[deadline: YYYY-MM-DD HH:MM]` prefix that are Approaching / Imminent
@@ -409,7 +379,6 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.persona_hint);
     push_if_nonempty(&mut s, inputs.mood_trend_hint);
     push_if_nonempty(&mut s, inputs.user_profile_hint);
-    push_if_nonempty(&mut s, inputs.focus_hint);
     push_if_nonempty(&mut s, inputs.wake_hint);
     push_if_nonempty(&mut s, inputs.speech_hint);
     push_if_nonempty(&mut s, inputs.feedback_hint);
@@ -420,10 +389,6 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.repeated_topic_hint);
     push_if_nonempty(&mut s, inputs.yesterday_recap_hint);
     push_if_nonempty(&mut s, inputs.cross_day_hint);
-    push_if_nonempty(&mut s, inputs.active_app_hint);
-    push_if_nonempty(&mut s, inputs.deep_focus_recovery_hint);
-    push_if_nonempty(&mut s, inputs.yesterday_focus_hint);
-    push_if_nonempty(&mut s, inputs.personal_record_hint);
     push_if_nonempty(&mut s, inputs.length_register_hint);
     push_if_nonempty(&mut s, inputs.reminders_hint);
     push_if_nonempty(&mut s, inputs.plan_hint);

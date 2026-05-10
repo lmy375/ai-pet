@@ -10,9 +10,8 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 
 use crate::commands::chat::{
-    inject_deadline_context_layer, inject_focus_context_layer, inject_mood_note,
-    inject_persona_layer, run_chat_pipeline, trim_to_context, ChatDonePayload, ChatMessage,
-    CollectingSink,
+    inject_deadline_context_layer, inject_mood_note, inject_persona_layer, run_chat_pipeline,
+    trim_to_context, ChatDonePayload, ChatMessage, CollectingSink,
 };
 use crate::commands::debug::{LogStore, ProcessCountersStore};
 use crate::commands::session;
@@ -324,13 +323,6 @@ async fn handle_message(
     } else {
         chat_messages
     };
-    // Iter R71: focus-context parity with reactive chat — telegram users
-    // can also ask "我今天怎么样" and the AI now has stats to answer
-    // coherently. Modality-agnostic data (today/week aggregates) so cross-
-    // device makes sense; recent_speech (R9) deliberately *not* injected
-    // because those bubbles were desktop-only — telegram user didn't see
-    // them and citing would be confusing.
-    let chat_messages = inject_focus_context_layer(chat_messages);
     // Iter R79: deadline parity — telegram user can also ask "我有什么
     // deadline" and AI now has the data. butler_tasks is modality-agnostic
     // (lives in user's persistent memory, not surface-bound).
