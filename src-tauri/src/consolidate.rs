@@ -17,7 +17,7 @@ use crate::commands::settings::get_settings;
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
-use crate::mood::{read_current_mood, read_mood_for_event};
+use crate::mood::read_mood_for_event;
 use crate::proactive::{is_stale_reminder, parse_reminder_prefix};
 use crate::tools::ToolContext;
 
@@ -253,7 +253,7 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
 4. **可以扩写有价值的条目**：`user_profile` / 学到的技能 / 用户长期偏好类型的条目，description 太短可用 `memory_edit update` 补充更完整的 detail_content。\n\
 5. **从主动发言里挖用户偏好**：如果最近的对话里出现了用户陈述事实/偏好（\"我喜欢吃苹果\"、\"我下班时间是 19 点\"、\"我不爱喝可乐\"），且 user_profile 还没记 → `memory_edit create` 到 user_profile。一句话偏好就值得记，不要等\"看出长期模式\"。\n\
 6. **维护 `ai_insights/persona_summary`**：基于上面「你最近主动开口」的句子 + `user_profile` 条目，简要总结你观察到的自己的语气特点和与用户的互动模式。description ~100 字内、第一人称。已存在 update，没有 create，最近开口 < 5 句信号不足 → 跳过。\n\n\
-**特殊保护**：`ai_insights/current_mood` 是宠物当前心情状态，绝对不要 delete；可 update 但 description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头。`ai_insights/persona_summary` 也是 protected，可 update 不可 delete。`user_profile` 类下条目优先保留（这是记忆的核心价值）。\n\n\
+**特殊保护**：`ai_insights/persona_summary` 是 protected，可 update 不可 delete。`user_profile` 类下条目优先保留（这是记忆的核心价值）。心情已经移到 memory 之外的独立文件，不会出现在本索引里——你看不到 current_mood 条目是正常的，要更新心情仍然按既往用 `memory_edit update ai_insights/current_mood`，由系统自动转写到心情文件。\n\n\
 {focus_log_hint}\
 原则：**记忆是技能 + 偏好 + 长期事实，不是日记**。事件型条目就该删。如果索引已经只剩 user_profile / persona_summary / current_mood / butler_tasks / todo 这种结构性条目，输出 `<noop>` 收工。\n\n\
 工作完成后，简短总结：删了几条事件 / 新建了几条用户偏好 / persona_summary 状态 / 其它改动。",
@@ -276,8 +276,6 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         .unwrap(),
     ];
 
-    let mood_before = read_current_mood();
-
     let sink = CollectingSink::new();
     let summary = run_chat_pipeline(messages, &sink, &config, &mcp_store, &ctx).await?;
 
@@ -292,17 +290,9 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         ),
     );
 
-    // Re-read mood for the post-consolidation snapshot. If consolidation merged or refined
-    // the mood entry, we want the desktop pet's Live2D motion to reflect it.
+    // 心情已搬到 memory 外的独立文件，consolidate 只读不写；这里抓 post-
+    // turn snapshot 推给前端 Live2D 用。
     let (mood, motion) = read_mood_for_event(&ctx, "Consolidate");
-    if mood_before.is_some() && mood.is_none() {
-        // Despite the explicit prompt protection, the LLM removed the mood entry. Worth
-        // surfacing — repeated occurrences mean the protection text needs hardening.
-        write_log(
-            &log_store.0,
-            "Consolidate: WARNING — current_mood entry was removed despite protection rule",
-        );
-    }
     let payload = ChatDonePayload {
         mood,
         motion,
