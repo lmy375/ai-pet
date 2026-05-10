@@ -1218,7 +1218,6 @@ const SETTINGS_SECTION_INDEX: ReadonlyArray<readonly [string, readonly string[]]
   ["工具风险", ["tool", "risk", "审核", "review", "approve", "deny", "风险"]],
   ["记忆整理", ["consolidate", "memory", "整理", "记忆", "stale", "weekly"]],
   ["对话上下文", ["chat", "context", "message", "上下文"]],
-  ["隐私过滤", ["privacy", "redaction", "regex", "pattern", "私人", "隐私"]],
   ["系统提示词 (SOUL.md)", ["soul", "prompt", "persona", "人格", "设定", "系统提示词"]],
 ];
 

@@ -129,6 +129,12 @@ pub struct PromptInputs<'a> {
     /// 轮要么写进展、要么 close"的子集，避免任务静默淤积。Built by
     /// `build_task_heartbeat_hint(now, settings.proactive.task_heartbeat_minutes)`.
     pub task_heartbeat_hint: &'a str,
+    /// 「刚完成」点名提醒：上一次 proactive tick → 这次之间从 pending 转
+    /// done 的 `butler_tasks` 标题列表，已经过 `format_task_completion_hint`
+    /// 截断与产物截 80 字。空 = 没有新转 done（常态）。让 LLM 在合适场景
+    /// 简短报喜 / 确认产物，避免任务执行落 done 后用户那边毫无反馈。
+    /// Built by `build_task_completion_hint`.
+    pub task_completion_hint: &'a str,
     /// Iter Cυ: owner's display name from settings.user_name. Empty when not set —
     /// builder skips the line and the LLM keeps using 「你」. Non-empty: a short
     /// "你的主人是「X」" line is pushed near the top of the prompt so the LLM
@@ -394,6 +400,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.plan_hint);
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);
     push_if_nonempty(&mut s, inputs.task_heartbeat_hint);
+    push_if_nonempty(&mut s, inputs.task_completion_hint);
     push_if_nonempty(&mut s, inputs.deadline_hint);
     s.push(String::new());
     s.push(

@@ -1445,6 +1445,10 @@ async fn run_proactive_turn(
             .unwrap_or(0);
         build_task_heartbeat_hint(now_local.naive_local(), threshold)
     };
+    // 「刚完成」点名：和心跳互补——心跳让 LLM 推进卡住的任务，本 hint
+    // 让 LLM 在用户那边收尾确认。每次 tick 自维护 LAST_SEEN_BUTLER_DONE_TITLES
+    // 静态实现"只 fire 一次"语义。
+    let task_completion_hint = build_task_completion_hint();
 
     // Iter R77: pull butler_tasks with `[deadline:]` prefix and format the
     // urgency-aware hint. Reads same memory category as butler_tasks_hint
@@ -1555,6 +1559,7 @@ async fn run_proactive_turn(
         user_profile_hint: &user_profile_hint,
         butler_tasks_hint: &butler_tasks_hint,
         task_heartbeat_hint: &task_heartbeat_hint,
+        task_completion_hint: &task_completion_hint,
         user_name: &user_name,
         feedback_hint: &feedback_hint,
         feedback_aggregate_hint: &feedback_aggregate_hint,
@@ -1804,6 +1809,111 @@ pub fn build_butler_tasks_hint(now: chrono::NaiveDateTime) -> String {
         BUTLER_TASKS_HINT_DESC_CHARS,
         now,
     )
+}
+
+/// 进程内已观察到的「butler_task 处于 done 状态」的标题集合。每次 proactive
+/// tick 把当前 done 集合与本静态比对，新增的算「刚转 done」候选；之后用本
+/// 次 done 集合**整体替换**静态值（pending → done 是新增；done → pending
+/// 是 LLM 罕见地"复活"任务，差集对端不报）。
+///
+/// 进程重启后默认空 → 第一次 tick 把所有现存 done 都视作 new。这是有意设
+/// 计：重启后用户已经看过这些 done（panel 一直可见），但这次的 prompt 提
+/// 醒重述一遍并无显著噪音，且能让"启动后第一句"自然带出最近完成情况。
+pub static LAST_SEEN_BUTLER_DONE_TITLES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// 单条「刚完成」记录给纯格式化函数用。`result` 来自 description 里的
+/// `[result: ...]`（None = LLM 没写产物）。
+pub struct CompletedTaskBrief {
+    pub title: String,
+    pub result: Option<String>,
+}
+
+/// 从 `(title, description)` 列表里挑出当前处于 done 但不在 `prev_seen`
+/// 集合里的条目。返回 (新完成项, 当前所有 done 的标题集合)；caller 拿
+/// 后者整体覆盖静态。Pure，单测覆盖各转换分支。
+pub fn compute_recent_task_completions(
+    items: &[(String, String)],
+    prev_seen: &std::collections::HashSet<String>,
+) -> (Vec<CompletedTaskBrief>, std::collections::HashSet<String>) {
+    let mut new_completions: Vec<CompletedTaskBrief> = Vec::new();
+    let mut current_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (title, desc) in items {
+        let (status, _) = crate::task_queue::classify_status(desc);
+        if !matches!(status, crate::task_queue::TaskStatus::Done) {
+            continue;
+        }
+        current_done.insert(title.clone());
+        if !prev_seen.contains(title) {
+            new_completions.push(CompletedTaskBrief {
+                title: title.clone(),
+                result: crate::task_queue::parse_task_result(desc),
+            });
+        }
+    }
+    (new_completions, current_done)
+}
+
+/// 「刚完成」hint 单行 / 多行格式化。空列表 → 空串（push_if_nonempty 会
+/// 跳过）。> N 条时截断到前 N + "…还有 K 条" 保护 prompt 长度不爆。
+pub const TASK_COMPLETION_HINT_MAX_ITEMS: usize = 5;
+pub const TASK_COMPLETION_RESULT_CHARS: usize = 80;
+
+pub fn format_task_completion_hint(items: &[CompletedTaskBrief]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut lines: Vec<String> = Vec::with_capacity(items.len() + 2);
+    lines.push("[任务刚完成] 你之前接手的下面这些 butler_task 现在已标 done，可以挑一个挑一句话向用户简短报喜或确认产物（也可以不提，只是给你一个抓手）：".to_string());
+    let take = items.len().min(TASK_COMPLETION_HINT_MAX_ITEMS);
+    for brief in items.iter().take(take) {
+        let line = match brief.result.as_deref() {
+            Some(r) => {
+                let r = r.trim();
+                let truncated: String = if r.chars().count() <= TASK_COMPLETION_RESULT_CHARS {
+                    r.to_string()
+                } else {
+                    let head: String =
+                        r.chars().take(TASK_COMPLETION_RESULT_CHARS).collect();
+                    format!("{}…", head)
+                };
+                format!("· {}（产物：{}）", brief.title.trim(), truncated)
+            }
+            None => format!("· {}（无产物记录）", brief.title.trim()),
+        };
+        lines.push(line);
+    }
+    if items.len() > take {
+        lines.push(format!("· …还有 {} 条", items.len() - take));
+    }
+    lines.join("\n")
+}
+
+/// IO 包装：读 `butler_tasks` → 找 done 转换 → 更新静态 → 走纯 formatter。
+/// 失败模式（memory_list 失败 / 类目缺失 / 无 done）静默退化为空串，与其
+/// 它 hint 一致。
+pub fn build_task_completion_hint() -> String {
+    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
+        return String::new();
+    };
+    let Some(cat) = index.categories.get("butler_tasks") else {
+        return String::new();
+    };
+    let pairs: Vec<(String, String)> = cat
+        .items
+        .iter()
+        .map(|i| (i.title.clone(), i.description.clone()))
+        .collect();
+    let prev_seen = match LAST_SEEN_BUTLER_DONE_TITLES.lock() {
+        Ok(g) => g.clone(),
+        Err(_) => std::collections::HashSet::new(),
+    };
+    let (new_completions, current_done) = compute_recent_task_completions(&pairs, &prev_seen);
+    if let Ok(mut g) = LAST_SEEN_BUTLER_DONE_TITLES.lock() {
+        *g = current_done;
+    }
+    format_task_completion_hint(&new_completions)
 }
 
 /// Iter D5: serializable shape for `get_persona_summary` — text + last-updated
@@ -2274,6 +2384,8 @@ mod prompt_tests {
             butler_tasks_hint: "",
             // 默认空：心跳测试需要时显式覆盖。
             task_heartbeat_hint: "",
+            // 默认空：报喜测试需要时显式覆盖。
+            task_completion_hint: "",
             // Default empty — pre-Iter Cυ state, no owner name set in settings.
             // Tests for the user_name line set this explicitly.
             user_name: "",
@@ -3832,6 +3944,108 @@ mod prompt_tests {
         let out = format_proactive_mood_hint("", &passthrough);
         assert!(out.contains("还没有记录过"));
         assert!(out.contains("第一次"));
+    }
+
+    // -- task-completion hint --------------------------------------------------
+
+    #[test]
+    fn task_completion_first_tick_treats_all_done_as_new() {
+        let prev = std::collections::HashSet::new();
+        let items = vec![
+            (
+                "整理 downloads".to_string(),
+                "[task pri=2] 把 30 天前的文件挪到 ~/Archive [done] [result: 38 个文件]".to_string(),
+            ),
+            (
+                "提醒喝水".to_string(),
+                "[task pri=1] [done]".to_string(),
+            ),
+        ];
+        let (new, current) = compute_recent_task_completions(&items, &prev);
+        assert_eq!(new.len(), 2, "首次见到的 done 都算新转 done");
+        assert_eq!(current.len(), 2);
+        assert!(current.contains("整理 downloads"));
+    }
+
+    #[test]
+    fn task_completion_repeated_done_fires_only_once() {
+        let mut prev = std::collections::HashSet::new();
+        prev.insert("整理 downloads".to_string());
+        let items = vec![(
+            "整理 downloads".to_string(),
+            "[task pri=2] [done] [result: 完成]".to_string(),
+        )];
+        let (new, current) = compute_recent_task_completions(&items, &prev);
+        assert!(new.is_empty(), "已见过的 done 不再算新");
+        assert!(current.contains("整理 downloads"));
+    }
+
+    #[test]
+    fn task_completion_pending_excluded_even_if_in_prev() {
+        // LLM 把 done 又改回 pending（罕见，但允许）。本轮不出现在 new；
+        // current_done 也不应再含此条，下次它再转 done 时会被重新视作新。
+        let mut prev = std::collections::HashSet::new();
+        prev.insert("整理 downloads".to_string());
+        let items = vec![(
+            "整理 downloads".to_string(),
+            "[task pri=2] 重新进行中".to_string(),
+        )];
+        let (new, current) = compute_recent_task_completions(&items, &prev);
+        assert!(new.is_empty());
+        assert!(!current.contains("整理 downloads"));
+    }
+
+    #[test]
+    fn task_completion_format_skips_when_empty() {
+        assert_eq!(format_task_completion_hint(&[]), "");
+    }
+
+    #[test]
+    fn task_completion_format_includes_title_and_result() {
+        let items = vec![CompletedTaskBrief {
+            title: "整理 downloads".to_string(),
+            result: Some("把 38 个文件归档到 ~/Archive/".to_string()),
+        }];
+        let out = format_task_completion_hint(&items);
+        assert!(out.contains("[任务刚完成]"));
+        assert!(out.contains("整理 downloads"));
+        assert!(out.contains("产物：把 38 个文件归档"));
+    }
+
+    #[test]
+    fn task_completion_format_marks_missing_result() {
+        let items = vec![CompletedTaskBrief {
+            title: "整理 downloads".to_string(),
+            result: None,
+        }];
+        let out = format_task_completion_hint(&items);
+        assert!(out.contains("无产物记录"));
+    }
+
+    #[test]
+    fn task_completion_format_truncates_long_result() {
+        let long: String = "X".repeat(TASK_COMPLETION_RESULT_CHARS + 30);
+        let items = vec![CompletedTaskBrief {
+            title: "t".to_string(),
+            result: Some(long),
+        }];
+        let out = format_task_completion_hint(&items);
+        assert!(out.ends_with("…）"));
+    }
+
+    #[test]
+    fn task_completion_format_caps_list_with_overflow_line() {
+        let items: Vec<CompletedTaskBrief> = (0..(TASK_COMPLETION_HINT_MAX_ITEMS + 3))
+            .map(|i| CompletedTaskBrief {
+                title: format!("t{}", i),
+                result: None,
+            })
+            .collect();
+        let out = format_task_completion_hint(&items);
+        let bullets = out.matches("· ").count();
+        // 5 listed bullets + 1 "…还有 N 条" overflow bullet。
+        assert_eq!(bullets, TASK_COMPLETION_HINT_MAX_ITEMS + 1);
+        assert!(out.contains("…还有 3 条"));
     }
 
     #[test]
