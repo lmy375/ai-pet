@@ -12,6 +12,10 @@ const PANEL_STYLES = `
 }
 `;
 
+/// 桌面宠物输入框。作为 flex column 里的第三段、永远紧贴底部。**不再使用
+/// position:absolute** —— 既往多次出现 absolute-bottom 与 ChatMini 重叠的
+/// bug，本组件保持普通 flex item，由 App 容器通过 flex column 自然堆叠
+/// (Live2D / ChatMini / ChatPanel) 即可。
 export function ChatPanel({ onSend, isLoading }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -39,14 +43,11 @@ export function ChatPanel({ onSend, isLoading }: Props) {
       <div
         onMouseDown={(e) => e.stopPropagation()}
         style={{
-          position: "absolute",
-          bottom: "12px",
-          left: "12px",
-          right: "12px",
+          padding: "8px 12px 12px",
+          flexShrink: 0,
           display: "flex",
           alignItems: "center",
           gap: "8px",
-          zIndex: 10,
         }}
       >
         <textarea

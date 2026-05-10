@@ -21,7 +21,6 @@ mod tool_review_policy;
 mod tool_risk;
 mod tools;
 mod wake_detector;
-mod weekly_summary;
 
 use commands::debug::{log_dir, new_process_counters, LogStore};
 use commands::shell::ShellStore;
