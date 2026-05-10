@@ -2068,10 +2068,35 @@ fn daily_review_exists(title: &str) -> bool {
     crate::commands::memory::read_ai_insights_item(title).is_some()
 }
 
-/// 早安简报：和 daily_review 的 ai_insights 标题同形（`morning_briefing_
-/// YYYY-MM-DD`），用于跨进程重启时判定"今天是否已经发过早安"。
-fn morning_briefing_exists(title: &str) -> bool {
-    crate::commands::memory::read_ai_insights_item(title).is_some()
+/// 早安简报跨进程幂等：把"最后一次成功播报的本地日期"写到 config_dir 的
+/// `morning_briefing_last.txt`（单行 `YYYY-MM-DD`）。重启后 LAST_MORNING_
+/// BRIEFING_DATE 静态值为 None，但本文件仍在 → exists 检查命中，不会重发。
+///
+/// 之前用 ai_insights/morning_briefing_YYYY-MM-DD memory 条目做幂等。但
+/// 用户反馈记忆系统应当只存技能 / 偏好，不存事件日志，所以剥离到独立的
+/// 状态文件，让 memory 视图不再被一堆每日早安条目灌污染。
+fn briefing_flag_path() -> Option<std::path::PathBuf> {
+    Some(dirs::config_dir()?.join("pet").join("morning_briefing_last.txt"))
+}
+
+fn morning_briefing_exists(today_iso: &str) -> bool {
+    let Some(p) = briefing_flag_path() else {
+        return false;
+    };
+    match std::fs::read_to_string(&p) {
+        Ok(content) => content.trim() == today_iso,
+        Err(_) => false,
+    }
+}
+
+fn record_morning_briefing_done(today_iso: &str) {
+    let Some(p) = briefing_flag_path() else {
+        return;
+    };
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&p, today_iso);
 }
 
 /// 早安简报触发器。门控通过后调用 LLM 生成一段早安播报，写入 speech_history、
@@ -2109,8 +2134,8 @@ async fn maybe_run_morning_briefing(
     ) {
         return None;
     }
-    let title = format!("morning_briefing_{}", today);
-    if morning_briefing_exists(&title) {
+    let today_iso = today.format("%Y-%m-%d").to_string();
+    if morning_briefing_exists(&today_iso) {
         if let Ok(mut g) = LAST_MORNING_BRIEFING_DATE.lock() {
             *g = Some(today);
         }
@@ -2207,14 +2232,9 @@ async fn maybe_run_morning_briefing(
     clock.mark_proactive_spoken().await;
     crate::speech_history::record_speech(reply_trimmed).await;
 
-    let description = format_morning_briefing_description(reply_trimmed);
-    let _ = crate::commands::memory::memory_edit(
-        "create".to_string(),
-        "ai_insights".to_string(),
-        title,
-        Some(description),
-        Some(reply_trimmed.to_string()),
-    );
+    // 把"今天的早安已发"写入 morning_briefing_last.txt 而不是 memory ——
+    // 早安是事件，不是技能 / 偏好；剥出 memory 让记忆视图保持纯净。
+    record_morning_briefing_done(&today_iso);
 
     let (mood_after, motion_after) = read_mood_for_event(&ctx, "MorningBriefing");
     if let Some(text) = &mood_after {

@@ -140,71 +140,64 @@ export function ChatMini({
   return (
     <>
       <style>{MINI_CHAT_STYLES}</style>
-      {/* 「最大化」按钮：固定在 mini chat 容器右上角内侧。点击调用
-          onOpenPanel —— 替代过去 ChatPanel 底栏的 💬 按钮，让用户从聊天
-          列表顶角直接跳到 Panel chat 页。stopPropagation 防止冒泡。 */}
-      {onOpenPanel && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenPanel();
-          }}
-          title="在面板中打开聊天（看完整历史 / 多会话切换）"
-          aria-label="open panel chat"
+      {/* 容器是相对定位 wrapper，让 ⛶ / ↓ 浮标按钮可以基于它绝对定位
+          而不会跑出 chat 列表区。flex: 1 让它占 Live2D 与输入框之间的全部
+          剩余空间，与三段堆叠布局对齐。 */}
+      <div style={{ flex: 1, position: "relative", padding: "8px 12px 0", minHeight: 0 }}>
+        {/* 「最大化」按钮：固定在 mini chat 容器右上角内侧。点击调用
+            onOpenPanel —— 替代过去 ChatPanel 底栏的 💬 按钮。 */}
+        {onOpenPanel && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenPanel();
+            }}
+            title="在面板中打开聊天（看完整历史 / 多会话切换）"
+            aria-label="open panel chat"
+            style={{
+              position: "absolute",
+              top: "14px",
+              right: "20px",
+              width: "20px",
+              height: "20px",
+              borderRadius: "50%",
+              border: "1px solid rgba(148,163,184,0.4)",
+              background: "rgba(255,255,255,0.95)",
+              color: "#475569",
+              fontSize: "11px",
+              lineHeight: 1,
+              cursor: "pointer",
+              zIndex: 12,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+            }}
+          >
+            ⛶
+          </button>
+        )}
+        <div
+          className="pet-mini-chat"
+          ref={scrollRef}
+          onScroll={handleScroll}
           style={{
-            position: "absolute",
-            // 容器 bottom:60 + maxHeight:35%；按钮浮在容器右上角内侧。
-            // 视觉上像 macOS 窗口的「全屏 / 最大化」三色钮里的绿色那枚。
-            right: "20px",
-            bottom: "calc(60px + 35% - 26px)",
-            width: "20px",
-            height: "20px",
-            borderRadius: "50%",
-            border: "1px solid rgba(148,163,184,0.4)",
-            background: "rgba(255,255,255,0.95)",
-            color: "#475569",
-            fontSize: "11px",
-            lineHeight: 1,
-            cursor: "pointer",
-            zIndex: 12,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 0,
-            boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+            height: "100%",
+            overflowY: "auto",
+            padding: "8px 10px",
+            background: "rgba(255,255,255,0.92)",
+            borderRadius: "12px",
+            border: "1px solid #bae6fd",
+            fontSize: "12px",
+            lineHeight: "1.5",
+            color: "#333",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+            animation: "pet-mini-chat-fade-in 220ms ease-out",
+            boxSizing: "border-box",
           }}
         >
-          ⛶
-        </button>
-      )}
-      <div
-        className="pet-mini-chat"
-        ref={scrollRef}
-        onScroll={handleScroll}
-        style={{
-          position: "absolute",
-          // 锚到底部、贴在 ChatPanel 输入框上方 —— 让 Live2D 形象在窗口
-          // 上半部分自然展示，聊天列表压在人像脚边以下，避免覆盖身体。
-          // bottom 60px 给底部输入框留位（输入框 bottom: 12px + 高度 36px ≈
-          // 48px，再补一点 gap）。
-          bottom: "60px",
-          left: "12px",
-          right: "12px",
-          maxHeight: "35%",
-          overflowY: "auto",
-          padding: "8px 10px",
-          background: "rgba(255,255,255,0.92)",
-          borderRadius: "12px",
-          border: "1px solid #bae6fd",
-          fontSize: "12px",
-          lineHeight: "1.5",
-          color: "#333",
-          zIndex: 10,
-          boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-          animation: "pet-mini-chat-fade-in 220ms ease-out",
-        }}
-      >
         {visibleItems.map((m, idx) => {
           const isLast = idx === lastIdx;
           const isAssistant = m.role === "assistant";
@@ -279,43 +272,41 @@ export function ChatMini({
             </div>
           </div>
         )}
+        </div>
+        {/* 跳到底浮标：用户向上滚翻历史时显。绝对定位在 wrapper 内的右
+            下角，点击滚到底 + 重启 follow-tail。 */}
+        {notAtBottom && (
+          <button
+            type="button"
+            onClick={handleJumpToBottom}
+            title="跳到最新（点后新消息会自动跟随）"
+            aria-label="jump to bottom"
+            style={{
+              position: "absolute",
+              right: "20px",
+              bottom: "12px",
+              width: "28px",
+              height: "28px",
+              borderRadius: "50%",
+              border: "1px solid #7dd3fc",
+              background: "rgba(255,255,255,0.95)",
+              color: "#0ea5e9",
+              fontSize: "14px",
+              lineHeight: 1,
+              cursor: "pointer",
+              zIndex: 11,
+              boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              animation: "pet-mini-chat-fade-in 180ms ease-out",
+            }}
+          >
+            ↓
+          </button>
+        )}
       </div>
-      {/* 跳到底浮标：仅当用户向上滚翻历史时显（notAtBottom=true）。位置贴
-          chat 容器右下角再往下偏一点，避开 list 内容。点击滚到底 + 重启
-          follow-tail。流式中如果用户向上读旧内容也保留这个出口。 */}
-      {notAtBottom && (
-        <button
-          type="button"
-          onClick={handleJumpToBottom}
-          title="跳到最新（点后新消息会自动跟随）"
-          aria-label="jump to bottom"
-          style={{
-            position: "absolute",
-            // 浮在 chat list 容器右下角内侧；容器 bottom:60 + maxHeight:35%
-            // 之内贴底，所以按钮 bottom 就稍高于 60，让它正好贴 list 底缘。
-            right: "20px",
-            bottom: "68px",
-            width: "28px",
-            height: "28px",
-            borderRadius: "50%",
-            border: "1px solid #7dd3fc",
-            background: "rgba(255,255,255,0.95)",
-            color: "#0ea5e9",
-            fontSize: "14px",
-            lineHeight: 1,
-            cursor: "pointer",
-            zIndex: 11,
-            boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 0,
-            animation: "pet-mini-chat-fade-in 180ms ease-out",
-          }}
-        >
-          ↓
-        </button>
-      )}
     </>
   );
 }
