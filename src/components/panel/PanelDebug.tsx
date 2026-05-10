@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelChipStrip } from "./PanelChipStrip";
 import { PanelStatsCard } from "./PanelStatsCard";
 import { PanelToolsTopK } from "./PanelToolsTopK";
@@ -474,20 +473,15 @@ export function PanelDebug() {
   };
 
   const handleOpenDevTools = async () => {
+    // 由 Rust 端 open_devtools 命令直接调 webview.open_devtools() —— 旧
+    // 前端 fallback 链（plugin:webview|internal_toggle_devtools / 或
+    // win.openDevtools 走 webview）在 Tauri 2 里都不稳定，命令式后端调
+    // 用是当前可靠路径。Release 构建无 devtools 特性时返回 Err，banner 显信息。
     try {
-      // Open devtools for the current webview
-      const win = getCurrentWindow();
-      await (win as any).emit("open-devtools");
-      // Use internal API
-      await invoke("plugin:webview|internal_toggle_devtools", {});
-    } catch {
-      // Fallback: try the webview API directly
-      try {
-        await (getCurrentWindow() as any).openDevtools();
-      } catch (e) {
-        console.error("Cannot open devtools:", e);
-        alert("无法打开 DevTools。请使用右键菜单 → Inspect Element。");
-      }
+      await invoke("open_devtools");
+    } catch (e) {
+      console.error("open_devtools failed:", e);
+      alert(`无法打开 DevTools：${e}`);
     }
   };
 

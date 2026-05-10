@@ -83,10 +83,10 @@ pub fn refresh_leading_soul(
 pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let mood_section = match read_current_mood_parsed() {
         Some((text, _)) if !text.trim().is_empty() => format!(
-            "[宠物当前心情/状态] {}\n\n如果这次对话让你心情有变化，可以用 `memory_edit` 更新 `ai_insights/current_mood`，description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头（Tap=开心活泼，Flick=想分享有兴致，Flick3=焦虑烦躁，Idle=平静低落沉静）。心情没变就不用更新。",
+            "[宠物当前心情/状态] {}\n\n如果这次对话让你心情有变化，可以用 `memory_edit update ai_insights/current_mood`（系统会自动写入心情专用文件，不会真的进 memory index），description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头（Tap=开心活泼，Flick=想分享有兴致，Flick3=焦虑烦躁，Idle=平静低落沉静）。心情没变就不用更新。",
             text.trim()
         ),
-        _ => "[宠物当前心情/状态] 还没记录过。如果对话让你产生了某种心情，可以用 `memory_edit create` 新建 `ai_insights/current_mood`，description 以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头。没特别感受就先不写。".to_string(),
+        _ => "[宠物当前心情/状态] 还没记录过。如果对话让你产生了某种心情，用 `memory_edit create ai_insights/current_mood`，description 以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头。系统会自动转写到心情专用文件，不污染 memory 索引。没特别感受就先不写。".to_string(),
     };
 
     // Tell the model how to record a user-set reminder so the proactive loop can later

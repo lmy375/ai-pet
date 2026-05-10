@@ -209,6 +209,26 @@ pub fn memory_edit(
     description: Option<String>,
     detail_content: Option<String>,
 ) -> Result<String, String> {
+    // 拦截 ai_insights/current_mood：心情已迁出 memory，由 mood_state_path()
+    // 单独存。LLM 仍习惯通过 memory_edit 写心情，所以本拦截把 LLM 的
+    // create / update / delete 透明转写到文件，而不真的进 memory index。
+    // 这样 PanelMemory 列表里不会出现 current_mood 条目（不可编辑/删除），
+    // 但 LLM 端的 prompt 不需要改。
+    if category == crate::mood::MOOD_CATEGORY && title == crate::mood::MOOD_TITLE {
+        match action.as_str() {
+            "create" | "update" => {
+                let desc = description.unwrap_or_default();
+                crate::mood::record_current_mood(&desc);
+                return Ok("Mood updated.".to_string());
+            }
+            "delete" => {
+                crate::mood::clear_current_mood();
+                return Ok("Mood cleared.".to_string());
+            }
+            _ => {}
+        }
+    }
+
     let mut index = read_index();
     let now = now_iso();
     let mem_dir = memories_dir()?;

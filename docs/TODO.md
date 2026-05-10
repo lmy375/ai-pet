@@ -9,7 +9,7 @@
 >
 
 - 图片支持（多模态）：聊天页允许粘贴图片、走多模态大模型识别；同样支持图片生成。后端从 .env / settings 中检测当前 model 是否多模态（看模型名 + 探测一次 API 能力），用户配置的非多模态模型下粘贴图片时报错说明不支持。前端需要 paste handler、图片在 ChatMini / PanelChat 中的渲染、以及生图入口。
-- 删除遗留的 weekly_summary 模块：本轮已 noop 周报触发但 weekly_summary.rs / MemoryConsolidateConfig.weekly_summary_closing_hour / 前端对应配置仍在，下一轮把 dead code 整体扫掉。
+- 持久化分层重构（SQLite）：memory 只承担"大模型记忆/回想"职责；butler_tasks / todo / task_archive / 计划进度 / mood 等业务态搬出 memory，另建 sqlite 表（复用 memory 字段：title / description / created_at / updated_at / detail_path / tags / status）。LLM 通过专用工具读写各域，不再共用 memory_edit。本轮 mood 已先行迁到独立文件作为这条路径的小规模验证。
 
 
 

@@ -118,6 +118,7 @@ pub fn run() {
             commands::settings::open_pet_data_dir,
             commands::window::open_panel,
             commands::window::open_debug,
+            commands::window::open_devtools,
             commands::debug::get_logs,
             commands::debug::append_log,
             commands::debug::clear_logs,

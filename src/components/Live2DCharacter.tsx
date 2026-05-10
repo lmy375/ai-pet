@@ -94,7 +94,10 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
   const displayStatus = isError ? status : status ? "正在唤醒…" : "";
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "350px" }}>
+    // 高度由父级控制（App.tsx 给 Live2D 区显式 height），让父级布局能根据
+    // 窗口高度调控 Live2D / ChatMini / ChatPanel 三段比例。Live2DCharacter
+    // 自己只负责把 canvas 撑满父级宽高。
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <style>{`
         @keyframes pet-live2d-status-fade-in {
           from { opacity: 0; transform: translate(-50%, calc(-50% + 4px)); }

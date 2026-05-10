@@ -1,23 +1,85 @@
 //! Pet mood/state — the LLM-managed feeling that persists across turns.
 //!
-//! Lives as a single memory entry at `ai_insights/current_mood`, written by the model
-//! itself via the `memory_edit` tool with a `[motion: X] free text` description. Rust
-//! never bootstraps or rewrites the entry — it only reads, parses, and reports back.
+//! 心情存储位置：`~/.config/pet/current_mood.txt`，单文件、纯文本（`[motion: X]
+//! free text`）。**不再放在 memory index 里** —— 用户明确说心情不属于"记忆"，
+//! 而且 PanelMemory 的删除/编辑入口对系统态心情是误导。LLM 通过 `memory_edit`
+//! 在 `ai_insights/current_mood` 写入时，由 `commands::memory` 拦截转写到本
+//! 文件（首次拦截会顺带把旧 memory 条目移走，迁移幂等）。
 //!
-//! All four LLM entry points (proactive, chat, telegram, consolidate) consume mood
-//! through these helpers so behavior stays symmetric.
+//! 读取从文件来；如果文件不存在但旧 memory 条目还在（从未触发过迁移），
+//! `read_current_mood` 会做一次 lazy migrate。所有 LLM entry point（proactive /
+//! chat / telegram / consolidate）共用这套读 helper，行为对称。
+//!
+//! `MOOD_CATEGORY` / `MOOD_TITLE` 仍保留：拦截层用它们识别 LLM 的写入意图。
 
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use crate::commands::debug::write_log;
 use crate::commands::memory;
 use crate::tools::ToolContext;
 
-/// Memory category + title where the pet's evolving mood/state is stored. Read on every
-/// LLM turn for context, and the model is instructed to update it via `memory_edit` so
-/// personality state persists across iterations.
+/// 拦截识别用：当 LLM 调 `memory_edit` 写到 ai_insights/current_mood 时，
+/// 由 commands::memory 转写到 mood_state_path。
 pub const MOOD_CATEGORY: &str = "ai_insights";
 pub const MOOD_TITLE: &str = "current_mood";
+
+/// 心情文件路径：`~/.config/pet/current_mood.txt`。失败时返回 None，调用方
+/// 静默退化（不同于 memory_edit，心情写失败没有阻塞性影响）。
+pub fn mood_state_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("pet").join("current_mood.txt"))
+}
+
+/// 把 raw 心情串（含可选 `[motion: X]` 前缀）写到文件。空串视为清空。
+/// 自动 mkdir 父目录；写盘失败静默吞掉错误（调用方仍能通过 read 拿到旧值）。
+pub fn record_current_mood(raw: &str) {
+    let Some(p) = mood_state_path() else { return };
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&p, raw.trim());
+}
+
+/// 删除心情文件。LLM 极少需要清空心情；保留接口仅给拦截层（memory_edit
+/// delete 走过来）+ 单测使用。
+pub fn clear_current_mood() {
+    let Some(p) = mood_state_path() else { return };
+    let _ = std::fs::remove_file(&p);
+}
+
+/// 从文件读心情。文件不存在返回 None；存在但内容空字符串也返回 None
+/// （视作"心情未记录"）。
+fn read_mood_file() -> Option<String> {
+    let p = mood_state_path()?;
+    let s = std::fs::read_to_string(&p).ok()?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// 一次性迁移：如果旧 memory 索引里还有 ai_insights/current_mood 条目，把
+/// description 写到新文件 + 从 memory 里删除。已经在文件里则 noop。
+fn migrate_mood_from_memory_if_needed() -> Option<String> {
+    let index = memory::memory_list(Some(MOOD_CATEGORY.to_string())).ok()?;
+    let cat = index.categories.get(MOOD_CATEGORY)?;
+    let entry_desc = cat
+        .items
+        .iter()
+        .find(|i| i.title == MOOD_TITLE)
+        .map(|i| i.description.clone())?;
+    record_current_mood(&entry_desc);
+    let _ = memory::memory_edit(
+        "delete".to_string(),
+        MOOD_CATEGORY.to_string(),
+        MOOD_TITLE.to_string(),
+        None,
+        None,
+    );
+    Some(entry_desc)
+}
 
 /// Iter Cο: serializable shape exposed to the panel via `get_current_mood`. Carries
 /// both the parsed (text + motion) and the raw description for inspection. Empty
@@ -48,17 +110,14 @@ pub fn get_current_mood() -> CurrentMood {
     }
 }
 
-/// Read the pet's current mood/state from memory (`ai_insights/current_mood`). Returns the
-/// item's description if present, otherwise `None`. The LLM bootstraps this on first
-/// proactive turn via `memory_edit` — we never write it from Rust to keep the source of
-/// truth in the model's hands.
+/// Read the pet's current mood/state. 主路径：`mood_state_path()` 文件。
+/// 文件缺失但旧版本写过 `ai_insights/current_mood` memory 条目时一次性迁
+/// 移到文件并删除旧条目。两处都没有则返回 None。
 pub fn read_current_mood() -> Option<String> {
-    let index = memory::memory_list(Some(MOOD_CATEGORY.to_string())).ok()?;
-    let cat = index.categories.get(MOOD_CATEGORY)?;
-    cat.items
-        .iter()
-        .find(|i| i.title == MOOD_TITLE)
-        .map(|i| i.description.clone())
+    if let Some(s) = read_mood_file() {
+        return Some(s);
+    }
+    migrate_mood_from_memory_if_needed()
 }
 
 /// Parse `current_mood` into (mood_text, motion_group). The LLM is instructed to write

@@ -18,6 +18,75 @@ import { applyTheme, getStoredTheme } from "./theme";
 // useState initializer 同模式）。
 applyTheme(getStoredTheme());
 
+interface CurrentMood {
+  text: string;
+  motion: string | null;
+  raw: string;
+}
+
+const MOOD_GLYPH: Record<string, string> = {
+  Tap: "😊",
+  Flick: "✨",
+  Flick3: "💢",
+  Idle: "💤",
+};
+
+/// 桌面 Live2D 区右下角的心情展示位。轮询 get_current_mood 每 5s（与
+/// PanelPersona 同节奏），有心情才渲染（空 / 未记录直接 null）。
+function MoodWidget() {
+  const [mood, setMood] = useState<CurrentMood | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchMood = async () => {
+      try {
+        const m = await invoke<CurrentMood>("get_current_mood");
+        if (!cancelled) setMood(m);
+      } catch (e) {
+        console.error("get_current_mood failed:", e);
+      }
+    };
+    void fetchMood();
+    const id = window.setInterval(fetchMood, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+  if (!mood || (!mood.text.trim() && !mood.motion)) return null;
+  const glyph = mood.motion ? MOOD_GLYPH[mood.motion] ?? "🐾" : "🐾";
+  const text = mood.text.length > 24 ? mood.text.slice(0, 24) + "…" : mood.text;
+  return (
+    <div
+      title={`当前心情：${mood.text}${mood.motion ? `（${mood.motion}）` : ""}`}
+      style={{
+        position: "absolute",
+        bottom: "8px",
+        left: "8px",
+        maxWidth: "calc(100% - 16px)",
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 10px",
+        borderRadius: 16,
+        background: "rgba(255,255,255,0.85)",
+        border: "1px solid rgba(148,163,184,0.4)",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+        fontSize: 11,
+        color: "#475569",
+        userSelect: "none",
+        zIndex: 5,
+      }}
+    >
+      <span style={{ fontSize: 14, lineHeight: 1 }}>{glyph}</span>
+      {text && (
+        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {text}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const { settings, soul, loaded } = useSettings();
   const { messages, currentResponse, isLoading, sendMessage } = useChat(soul);
@@ -192,12 +261,19 @@ function App() {
           `hidden`（窗口收到桌边）时整体不渲染主体，只剩左侧召回 tab。 */}
       {!hidden && (
         <>
-          <div style={{ position: "relative", flexShrink: 0, height: "350px" }}>
+          {/* Live2D 区 220px：窗口默认 450px 高，给 ChatMini 留 ≥ 150px 显
+              4 行左右对话；输入框 ~ 60px。260 / 150 / 60 = 470 不够，220
+              / 170 / 60 = 450 平衡。 */}
+          <div style={{ position: "relative", flexShrink: 0, height: "220px" }}>
             <Live2DCharacter
               key={settings.live_2d_model_path}
               modelPath={settings.live_2d_model_path}
               onModelReady={handleModelReady}
             />
+            {/* 心情展示位：钉在 Live2D 区右下角，让用户随时看到宠物当前心情。
+                空心情 → 不渲染（避免占视觉位）。motion → emoji 取自 PanelPersona
+                的 MOTION_META 简化版；心情文字 trunc 到 ~24 字符。 */}
+            <MoodWidget />
             {/* 收起按钮：钉在 Live2D 区右上角；调 useAutoHide.collapse 把窗口
                 滑到桌边只露 tab。 */}
             <div
