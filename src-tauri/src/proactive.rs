@@ -821,8 +821,7 @@ pub async fn build_tone_snapshot(
         // run_proactive_turn's speech_hint / repeated_topic_hint /
         // length_register_hint triple-from-one-fetch pattern.
         speech_register: crate::speech_history::classify_speech_register(&recent_for_signals),
-        repeated_topic: crate::speech_history::detect_repeated_topic(&recent_for_signals, 4, 3)
-            .map(|t| crate::redaction::redact_with_settings(&t)),
+        repeated_topic: crate::speech_history::detect_repeated_topic(&recent_for_signals, 4, 3),
         cooldown_breakdown,
         // Iter R31: count chars of the last constructed prompt. chars().count()
         // not len() so 30 char CJK doesn't read as 90 byte budget.
@@ -1250,7 +1249,7 @@ async fn run_proactive_turn(
     let is_first_mood = !matches!(&mood_parsed, Some((text, _)) if !text.trim().is_empty());
     let mood_hint = format_proactive_mood_hint(
         mood_parsed.as_ref().map(|(t, _)| t.as_str()).unwrap_or(""),
-        &|s| crate::redaction::redact_with_settings(s),
+        &|s| s.to_string(),
     );
 
     // Distance since the pet last spoke proactively — different from idle_seconds (which
@@ -1303,9 +1302,8 @@ async fn run_proactive_turn(
     let recent_feedback = crate::feedback_history::recent_feedback(20).await;
     // R60: pass redact closure so excerpt gets the same privacy filter
     // as other prompt hints (speech_hint / repeated_topic_hint etc).
-    let feedback_hint = crate::feedback_history::format_feedback_hint(&recent_feedback, &|s| {
-        crate::redaction::redact_with_settings(s)
-    });
+    let feedback_hint =
+        crate::feedback_history::format_feedback_hint(&recent_feedback, &|s| s.to_string());
     let feedback_aggregate_hint =
         crate::feedback_history::format_feedback_aggregate_hint(&recent_feedback);
     // Iter R33: trailing silence streak detection. Reads the ring buffer
@@ -1339,7 +1337,7 @@ async fn run_proactive_turn(
     let transient_note_hint = match transient_note_active() {
         Some(text) => format!(
             "[临时指示] 用户当前留下的状态/指令：「{}」。这是用户主动告知 pet 的当前状态，开口时请直接尊重 / 配合，不要怀疑或追问。",
-            crate::redaction::redact_with_settings(&text)
+            text
         ),
         None => String::new(),
     };
@@ -1382,7 +1380,7 @@ async fn run_proactive_turn(
             .iter()
             .map(|line| {
                 let stripped = crate::speech_history::strip_timestamp(line);
-                format!("· {}", crate::redaction::redact_with_settings(stripped))
+                format!("· {}", stripped)
             })
             .collect();
         format!(
@@ -1397,10 +1395,10 @@ async fn run_proactive_turn(
     // its own redaction pass — defense in depth.
     let repeated_topic_hint =
         match crate::speech_history::detect_repeated_topic(&recent_speeches, 4, 3) {
-            Some(topic) => crate::redaction::redact_with_settings(&format!(
+            Some(topic) => format!(
                 "你最近多次提到「{}」——这次开口请换个角度或换个话题，避免让用户觉得在重复。",
                 topic
-            )),
+            ),
             None => String::new(),
         };
     // Iter R19: length-register variance nudge. Reuses the same recent_speeches
@@ -1487,7 +1485,7 @@ async fn run_proactive_turn(
                 .iter()
                 .map(|line| {
                     let stripped = crate::speech_history::strip_timestamp(line);
-                    format!("· {}", crate::redaction::redact_with_settings(stripped))
+                    format!("· {}", stripped)
                 })
                 .collect();
             format!(
@@ -1716,7 +1714,7 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
             }
         }
     }
-    format_reminders_hint(&items, &|s| crate::redaction::redact_with_settings(s))
+    format_reminders_hint(&items, &|s| s.to_string())
 }
 
 // Iter QG5b: butler-tasks pure helpers (ButlerSchedule, parse / due /
@@ -1742,15 +1740,11 @@ pub fn build_butler_deadlines_hint(now: chrono::NaiveDateTime) -> String {
         .iter()
         .filter_map(|i| parse_butler_deadline_prefix(&i.description))
         .collect();
-    let block = format_butler_deadlines_hint(&items, now);
-    if block.is_empty() {
-        return String::new();
-    }
-    crate::redaction::redact_with_settings(&block)
+    format_butler_deadlines_hint(&items, now)
 }
 
 /// 长任务心跳的 IO 层封装：读 `butler_tasks` → 过滤心跳候选 → 把命中
-/// 的标题列表交给 `format_heartbeat_hint`，最后过 redaction。
+/// 的标题列表交给 `format_heartbeat_hint`。
 ///
 /// 与 `build_butler_tasks_hint` 互补 —— butler_tasks_hint 是"队列里还有
 /// 什么待办"的全景，task_heartbeat_hint 是"哪几条已经动过手却卡住了"的
@@ -1786,17 +1780,12 @@ pub fn build_task_heartbeat_hint(
         })
         .map(|i| i.title.clone())
         .collect();
-    let block = crate::task_heartbeat::format_heartbeat_hint(&titles, threshold_minutes);
-    if block.is_empty() {
-        return String::new();
-    }
-    crate::redaction::redact_with_settings(&block)
+    crate::task_heartbeat::format_heartbeat_hint(&titles, threshold_minutes)
 }
 
 /// Read butler_tasks memory entries and format the prompt-side digest. `now` is
 /// injected so the call site (run_proactive_turn) shares one clock anchor with the
-/// rest of the prompt build. Returns "" when the category is empty. Output is redacted
-/// via `redact_with_settings` for the same reason as `build_user_profile_hint`.
+/// rest of the prompt build. Returns "" when the category is empty.
 pub fn build_butler_tasks_hint(now: chrono::NaiveDateTime) -> String {
     let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
         return String::new();
@@ -1809,16 +1798,12 @@ pub fn build_butler_tasks_hint(now: chrono::NaiveDateTime) -> String {
         .iter()
         .map(|i| (i.title.clone(), i.description.clone(), i.updated_at.clone()))
         .collect();
-    let block = format_butler_tasks_block(
+    format_butler_tasks_block(
         &tuples,
         BUTLER_TASKS_HINT_MAX_ITEMS,
         BUTLER_TASKS_HINT_DESC_CHARS,
         now,
-    );
-    if block.is_empty() {
-        return String::new();
-    }
-    crate::redaction::redact_with_settings(&block)
+    )
 }
 
 /// Iter D5: serializable shape for `get_persona_summary` — text + last-updated
@@ -1870,10 +1855,9 @@ pub fn build_persona_hint() -> String {
     // user-configured patterns cover this self-loop input too. The on-disk
     // memory file stays pristine — the panel's `get_persona_summary` command
     // intentionally returns the unredacted text since that view is local.
-    let redacted = crate::redaction::redact_with_settings(item.description.trim());
     format!(
         "你最近一次自我反思的画像（来自 consolidate）：\n{}",
-        redacted
+        item.description.trim()
     )
 }
 
@@ -1926,9 +1910,7 @@ pub fn format_user_profile_block(
 
 /// Read `user_profile` memory entries and format a compact digest block for the
 /// proactive prompt (Iter Cα). Returns empty when the category has no entries —
-/// `push_if_nonempty` then skips it cleanly. Output is redacted via
-/// `redact_with_settings` so any private terms the LLM stored in habit
-/// descriptions don't leak back into a fresh proactive prompt.
+/// `push_if_nonempty` then skips it cleanly.
 pub fn build_user_profile_hint() -> String {
     let Ok(index) = crate::commands::memory::memory_list(Some("user_profile".to_string())) else {
         return String::new();
@@ -1941,15 +1923,11 @@ pub fn build_user_profile_hint() -> String {
         .iter()
         .map(|i| (i.title.clone(), i.description.clone(), i.updated_at.clone()))
         .collect();
-    let block = format_user_profile_block(
+    format_user_profile_block(
         &tuples,
         USER_PROFILE_HINT_MAX_ITEMS,
         USER_PROFILE_HINT_DESC_CHARS,
-    );
-    if block.is_empty() {
-        return String::new();
-    }
-    crate::redaction::redact_with_settings(&block)
+    )
 }
 
 /// Iter R12: bare description read of `ai_insights/daily_plan`. Used by the
@@ -2177,10 +2155,7 @@ async fn maybe_run_daily_review(now_local: chrono::DateTime<chrono::Local>) {
     let raw = crate::speech_history::speeches_for_date_async(today, 100).await;
     let lines: Vec<String> = raw
         .iter()
-        .map(|line| {
-            let stripped = crate::speech_history::strip_timestamp(line);
-            crate::redaction::redact_with_settings(stripped)
-        })
+        .map(|line| crate::speech_history::strip_timestamp(line).to_string())
         .collect();
     let plan_raw = read_daily_plan_description();
     let detail = format_daily_review_detail(&lines, &plan_raw, today);
@@ -2209,7 +2184,7 @@ fn build_plan_hint() -> String {
     let description = crate::commands::memory::read_ai_insights_item("daily_plan")
         .map(|i| i.description)
         .unwrap_or_default();
-    format_plan_hint(&description, &|s| crate::redaction::redact_with_settings(s))
+    format_plan_hint(&description, &|s| s.to_string())
 }
 
 /// Load the most recent session's messages (without the proactive prompt). Returns
@@ -3836,69 +3811,25 @@ mod prompt_tests {
         assert!(snap[0].reason.contains("source=manual"));
     }
 
-    // -- Iter QG4: redact-on-reinjection coverage ---------------------------------
-
-    /// Test-side redact closure that emulates `redact_with_settings` with a fixed
-    /// substring list — case-insensitive, single pass. Avoids touching real settings
-    /// state so these tests can run in any order.
-    fn test_redactor(patterns: &'static [&'static str]) -> impl Fn(&str) -> String {
-        move |text: &str| {
-            let owned: Vec<String> = patterns.iter().map(|s| (*s).to_string()).collect();
-            crate::redaction::redact_text(text, &owned)
-        }
-    }
-
-    #[test]
-    fn format_reminders_hint_redacts_topic_and_title() {
-        let items = vec![(
-            "23:00".to_string(),
-            "跟 SecretCorp 同事喝咖啡".to_string(),
-            "secretcorp_coffee".to_string(),
-        )];
-        let out = format_reminders_hint(&items, &test_redactor(&["SecretCorp"]));
-        // Both topic and title must contain the marker; original term must not survive.
-        assert!(out.contains("(私人)"));
-        assert!(!out.to_lowercase().contains("secretcorp"));
-        // Header survives unredacted (no patterns match).
-        assert!(out.contains("到期的用户提醒"));
+    fn passthrough(s: &str) -> String {
+        s.to_string()
     }
 
     #[test]
     fn format_reminders_hint_empty_returns_empty_string() {
-        let out = format_reminders_hint(&[], &test_redactor(&["irrelevant"]));
+        let out = format_reminders_hint(&[], &passthrough);
         assert_eq!(out, "");
     }
 
     #[test]
-    fn format_plan_hint_redacts_description() {
-        let desc = "· 关心 SecretCorp 项目进展 [0/2]";
-        let out = format_plan_hint(desc, &test_redactor(&["SecretCorp"]));
-        assert!(out.contains("(私人)"));
-        assert!(!out.to_lowercase().contains("secretcorp"));
-        assert!(out.contains("你今天的小目标"));
-    }
-
-    #[test]
     fn format_plan_hint_empty_or_whitespace_returns_empty() {
-        let r = test_redactor(&["x"]);
-        assert_eq!(format_plan_hint("", &r), "");
-        assert_eq!(format_plan_hint("   \n  ", &r), "");
-    }
-
-    #[test]
-    fn format_proactive_mood_hint_redacts_text() {
-        let out = format_proactive_mood_hint(
-            "和 SecretCorp 同事开会有点累",
-            &test_redactor(&["SecretCorp"]),
-        );
-        assert!(out.contains("(私人)"));
-        assert!(!out.to_lowercase().contains("secretcorp"));
-        assert!(out.contains("你上次记录的心情/状态"));
+        assert_eq!(format_plan_hint("", &passthrough), "");
+        assert_eq!(format_plan_hint("   \n  ", &passthrough), "");
     }
 
     #[test]
     fn format_proactive_mood_hint_empty_returns_first_time_message() {
-        let out = format_proactive_mood_hint("", &test_redactor(&["x"]));
+        let out = format_proactive_mood_hint("", &passthrough);
         assert!(out.contains("还没有记录过"));
         assert!(out.contains("第一次"));
     }

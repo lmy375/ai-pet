@@ -385,24 +385,6 @@ impl Default for ProactiveConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PrivacyConfig {
-    /// Substring patterns redacted (case-insensitive) from environment-aware tool
-    /// output before the LLM sees it. Keep terms personal / specific (names, project
-    /// codenames, sensitive client substrings) — the marker `(私人)` replaces each
-    /// match. Empty list disables redaction. Backed by `crate::redaction`.
-    #[serde(default)]
-    pub redaction_patterns: Vec<String>,
-    /// Regular-expression patterns redacted from the same prompt-injection channels
-    /// (Iter Cz). Lets users catch structured sensitive data — credit-card-shaped
-    /// digit groups, email addresses, phone numbers — that fixed-substring patterns
-    /// can't express. Backed by the `regex` crate (RE2-style: linear time, no
-    /// catastrophic backtracking, ReDoS-safe by construction). Invalid patterns are
-    /// silently ignored at runtime so a typo doesn't disable the whole filter.
-    #[serde(default)]
-    pub regex_patterns: Vec<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_model_path")]
@@ -425,8 +407,6 @@ pub struct AppSettings {
     pub memory_consolidate: MemoryConsolidateConfig,
     #[serde(default)]
     pub chat: ChatConfig,
-    #[serde(default)]
-    pub privacy: PrivacyConfig,
     /// Iter Cτ: how the pet should address its owner. Empty = no name known
     /// (persona layer omits the line, LLM uses 「你」 default). Non-empty:
     /// injected as「你的主人是「X」」into the persona layer so the LLM can
@@ -472,7 +452,6 @@ impl Default for AppSettings {
             morning_briefing: MorningBriefingConfig::default(),
             memory_consolidate: MemoryConsolidateConfig::default(),
             chat: ChatConfig::default(),
-            privacy: PrivacyConfig::default(),
             user_name: String::new(),
             tool_review_overrides: HashMap::new(),
             motion_mapping: HashMap::new(),

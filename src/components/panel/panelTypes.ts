@@ -50,11 +50,6 @@ export interface PromptTiltStats {
   neutral: number;
 }
 
-export interface RedactionStats {
-  calls: number;
-  hits: number;
-}
-
 export interface PendingReminder {
   time: string;
   topic: string;

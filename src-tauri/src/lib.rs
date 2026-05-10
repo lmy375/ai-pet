@@ -11,7 +11,6 @@ mod mcp;
 mod mood;
 mod mood_history;
 mod proactive;
-mod redaction;
 mod speech_history;
 mod task_heartbeat;
 mod task_queue;
@@ -140,8 +139,6 @@ pub fn run() {
             feedback_history::get_recent_feedback,
             feedback_history::record_bubble_dismissed,
             feedback_history::record_bubble_liked,
-            redaction::get_redaction_stats,
-            redaction::reset_redaction_stats,
             decision_log::get_proactive_decisions,
             decision_log::clear_proactive_decisions,
             butler_history::get_butler_history,

@@ -80,11 +80,6 @@ export interface ChatConfig {
   max_context_messages: number;
 }
 
-export interface PrivacyConfig {
-  redaction_patterns: string[];
-  regex_patterns: string[];
-}
-
 export interface AppSettings {
   live_2d_model_path: string;
   api_base: string;
@@ -96,7 +91,6 @@ export interface AppSettings {
   morning_briefing: MorningBriefingConfig;
   memory_consolidate: MemoryConsolidateConfig;
   chat: ChatConfig;
-  privacy: PrivacyConfig;
   user_name: string;
   /** 工具审核覆盖：键是工具名，值是 "auto" / "always_review" /
    * "always_approve"。未列出的工具按 auto。值字符串而非联合类型，
@@ -144,10 +138,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   chat: {
     max_context_messages: 50,
-  },
-  privacy: {
-    redaction_patterns: [],
-    regex_patterns: [],
   },
   user_name: "",
   tool_review_overrides: {},
