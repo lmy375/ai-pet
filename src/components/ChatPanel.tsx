@@ -3,24 +3,16 @@ import { useState, useRef, useEffect } from "react";
 interface Props {
   onSend: (message: string) => void;
   isLoading: boolean;
-  onOpenPanel?: () => void;
 }
 
 const PANEL_STYLES = `
-.pet-settings-btn {
-  opacity: 0.7;
-  transition: opacity 200ms ease-out;
-}
-.pet-settings-btn:hover {
-  opacity: 1;
-}
 .pet-chat-input:focus {
   border-color: #38bdf8;
   box-shadow: 0 0 0 2px rgba(56,189,248,0.18);
 }
 `;
 
-export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
+export function ChatPanel({ onSend, isLoading }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -83,30 +75,6 @@ export function ChatPanel({ onSend, isLoading, onOpenPanel }: Props) {
             transition: "border-color 150ms ease-out, box-shadow 150ms ease-out",
           }}
         />
-        {onOpenPanel && (
-          <div
-            className="pet-settings-btn"
-            onClick={onOpenPanel}
-            style={{
-              width: "36px",
-              height: "36px",
-              borderRadius: "50%",
-              background: "rgba(255,255,255,0.9)",
-              backdropFilter: "blur(8px)",
-              border: "1px solid rgba(200,200,200,0.5)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-              fontSize: "15px",
-              flexShrink: 0,
-              boxSizing: "border-box",
-            }}
-            title="打开聊天面板"
-          >
-            💬
-          </div>
-        )}
       </div>
     </>
   );

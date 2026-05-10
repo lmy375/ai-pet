@@ -7,15 +7,6 @@ interface ChatMessage {
   content: string;
 }
 
-interface HistoryControls {
-  canPrev: boolean;
-  canNext: boolean;
-  onPrev: () => void;
-  onNext: () => void;
-  /// 形如 "2/10"。live 模式 null。
-  indicator: string | null;
-}
-
 interface Props {
   /// 来自 useChat 的完整消息数组（含 system / tool）；本组件自己过滤展示。
   messages: ChatMessage[];
@@ -23,13 +14,13 @@ interface Props {
   currentResponse: string;
   isLoading: boolean;
   visible: boolean;
-  /// 仅最新 assistant 那条挂的反馈钩子（与之前 ChatBubble 同语义）：
-  /// `onDismiss` 在 5s 内点 ✕ → R1b dismissed 反馈；`onLike` 写 Liked。
-  /// 不传则不渲染对应按钮（如 history 模式）。
-  onDismiss?: () => void;
+  /// 最新 assistant 行 👍 按钮的回调。写 Liked 反馈。流式中或 history 模式
+  /// 不传，按钮不渲染（避免误触没读完的内容）。
   onLike?: () => void;
-  /// 历史导航：渲染在最底的 footer，与 chat list 共存（不替代列表）。
-  historyControls?: HistoryControls;
+  /// 「最大化」按钮 → 打开 Panel chat 页。点击调用此回调；不传则按钮
+  /// 不渲染。替代旧 ChatPanel 底栏的 💬 按钮，让用户从 mini chat 顶角直
+  /// 接进入 panel。
+  onOpenPanel?: () => void;
 }
 
 /// 最近 N 条的硬上限。窗口很小，DOM 太长既不好读也耗渲染。
@@ -66,30 +57,6 @@ const MINI_CHAT_STYLES = `
   color: #ec4899;
   transform: scale(1.15);
 }
-.pet-mini-nav-btn {
-  background: rgba(241, 245, 249, 0.9);
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  width: 18px;
-  height: 16px;
-  font-size: 10px;
-  line-height: 1;
-  color: #475569;
-  cursor: pointer;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 100ms ease-out, border-color 100ms ease-out;
-}
-.pet-mini-nav-btn:hover:not(:disabled) {
-  background: #e0f2fe;
-  border-color: #7dd3fc;
-}
-.pet-mini-nav-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
 `;
 
 /// 容器底部 8px 内视为"贴底"，用于决定 follow-tail 是否成立。给浮点偏差一
@@ -101,9 +68,8 @@ export function ChatMini({
   currentResponse,
   isLoading,
   visible,
-  onDismiss,
   onLike,
-  historyControls,
+  onOpenPanel,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // followTail：用户是否处于"自动跟随最新"状态。挂载时默认 true（贴底）。
@@ -140,21 +106,16 @@ export function ChatMini({
 
   if (!visible) return null;
 
-  // 反馈按钮挂在「最新那一条 assistant」上，沿用 ChatBubble 时代的
-  // R1b dismissed / Liked 语义。streaming 中不挂（避免误点未读完的内容
-  // 写反馈），history 模式 caller 不传 onDismiss / onLike 也不挂。
+  // 反馈按钮（👍）挂在「最新那一条 assistant」上。streaming 中或 caller 不
+  // 传 onLike 时不挂（避免误点未读完的内容写反馈）。
   const lastIdx = visibleItems.length - 1;
   const lastMsg = lastIdx >= 0 ? visibleItems[lastIdx] : null;
   const showFeedbackOnLast =
-    !!lastMsg &&
-    lastMsg.role === "assistant" &&
-    !isLoading &&
-    (!!onDismiss || !!onLike);
+    !!lastMsg && lastMsg.role === "assistant" && !isLoading && !!onLike;
 
   const showStreamingBubble = isLoading && currentResponse.trim().length > 0;
 
-  // 跳到底浮标的点击：滚到底 + 重置 followTail。鼠标点会 bubble 到容器
-  // onClick 触发 onDismiss，所以 stopPropagation。
+  // 跳到底浮标的点击：滚到底 + 重置 followTail。
   const handleJumpToBottom = (e: React.MouseEvent) => {
     e.stopPropagation();
     const el = scrollRef.current;
@@ -179,21 +140,58 @@ export function ChatMini({
   return (
     <>
       <style>{MINI_CHAT_STYLES}</style>
+      {/* 「最大化」按钮：固定在 mini chat 容器右上角内侧。点击调用
+          onOpenPanel —— 替代过去 ChatPanel 底栏的 💬 按钮，让用户从聊天
+          列表顶角直接跳到 Panel chat 页。stopPropagation 防止冒泡。 */}
+      {onOpenPanel && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenPanel();
+          }}
+          title="在面板中打开聊天（看完整历史 / 多会话切换）"
+          aria-label="open panel chat"
+          style={{
+            position: "absolute",
+            // 容器 bottom:60 + maxHeight:35%；按钮浮在容器右上角内侧。
+            // 视觉上像 macOS 窗口的「全屏 / 最大化」三色钮里的绿色那枚。
+            right: "20px",
+            bottom: "calc(60px + 35% - 26px)",
+            width: "20px",
+            height: "20px",
+            borderRadius: "50%",
+            border: "1px solid rgba(148,163,184,0.4)",
+            background: "rgba(255,255,255,0.95)",
+            color: "#475569",
+            fontSize: "11px",
+            lineHeight: 1,
+            cursor: "pointer",
+            zIndex: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+          }}
+        >
+          ⛶
+        </button>
+      )}
       <div
         className="pet-mini-chat"
         ref={scrollRef}
         onScroll={handleScroll}
-        // 主体可点 → 触发 onDismiss（与原 ChatBubble click-to-dismiss
-        // 同入口）。点子按钮各自 stopPropagation。
-        onClick={() => {
-          if (onDismiss) onDismiss();
-        }}
         style={{
           position: "absolute",
-          top: "12px",
+          // 锚到底部、贴在 ChatPanel 输入框上方 —— 让 Live2D 形象在窗口
+          // 上半部分自然展示，聊天列表压在人像脚边以下，避免覆盖身体。
+          // bottom 60px 给底部输入框留位（输入框 bottom: 12px + 高度 36px ≈
+          // 48px，再补一点 gap）。
+          bottom: "60px",
           left: "12px",
           right: "12px",
-          maxHeight: "55%",
+          maxHeight: "35%",
           overflowY: "auto",
           padding: "8px 10px",
           background: "rgba(255,255,255,0.92)",
@@ -205,7 +203,6 @@ export function ChatMini({
           zIndex: 10,
           boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
           animation: "pet-mini-chat-fade-in 220ms ease-out",
-          cursor: onDismiss ? "pointer" : "default",
         }}
       >
         {visibleItems.map((m, idx) => {
@@ -226,7 +223,6 @@ export function ChatMini({
               </div>
               {isLast && isAssistant && showFeedbackOnLast && (
                 <div
-                  // 阻止冒泡：点按钮不该触发容器的 onDismiss。
                   onClick={(e) => e.stopPropagation()}
                   style={{
                     position: "absolute",
@@ -253,20 +249,6 @@ export function ChatMini({
                       }}
                     >
                       👍
-                    </button>
-                  )}
-                  {onDismiss && (
-                    <button
-                      type="button"
-                      className="pet-mini-bubble-like-btn"
-                      aria-label="dismiss bubble"
-                      title="点掉（5 秒内点 = 「别这条」信号；R1b dismissed feedback）"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDismiss();
-                      }}
-                    >
-                      ✕
                     </button>
                   )}
                 </div>
@@ -297,55 +279,6 @@ export function ChatMini({
             </div>
           </div>
         )}
-        {historyControls && (
-          <div
-            // 阻止冒泡：点 nav 按钮不该触发主体 onDismiss。
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              gap: "4px",
-              fontSize: "10px",
-              color: "#64748b",
-              userSelect: "none",
-              marginTop: 4,
-              paddingTop: 4,
-              borderTop: "1px dashed #e2e8f0",
-            }}
-          >
-            <button
-              type="button"
-              className="pet-mini-nav-btn"
-              aria-label="previous bubble"
-              title="上一句（往更早的主动开口翻）"
-              disabled={!historyControls.canPrev}
-              onClick={(e) => {
-                e.stopPropagation();
-                historyControls.onPrev();
-              }}
-            >
-              ◀
-            </button>
-            {historyControls.indicator && (
-              <span title="第几条 / 共几条最近主动开口">{historyControls.indicator}</span>
-            )}
-            {historyControls.canNext && (
-              <button
-                type="button"
-                className="pet-mini-nav-btn"
-                aria-label="next bubble"
-                title="下一句（更新或回到最新）"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  historyControls.onNext();
-                }}
-              >
-                ▶
-              </button>
-            )}
-          </div>
-        )}
       </div>
       {/* 跳到底浮标：仅当用户向上滚翻历史时显（notAtBottom=true）。位置贴
           chat 容器右下角再往下偏一点，避开 list 内容。点击滚到底 + 重启
@@ -358,10 +291,10 @@ export function ChatMini({
           aria-label="jump to bottom"
           style={{
             position: "absolute",
-            // 容器 top:12 + maxHeight:55%；按钮浮在容器右下角内侧。
-            // right 与容器一致 + 一点 inset；bottom 走 chat panel 之上。
+            // 浮在 chat list 容器右下角内侧；容器 bottom:60 + maxHeight:35%
+            // 之内贴底，所以按钮 bottom 就稍高于 60，让它正好贴 list 底缘。
             right: "20px",
-            top: "calc(55% + 4px)",
+            bottom: "68px",
             width: "28px",
             height: "28px",
             borderRadius: "50%",
