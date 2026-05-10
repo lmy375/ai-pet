@@ -19,7 +19,19 @@ interface MemoryIndex {
   categories: Record<string, CategoryData>;
 }
 
-const CATEGORY_ORDER = ["butler_tasks", "todo", "ai_insights", "user_profile", "general"];
+/// 类目展示顺序：活跃类目（butler_tasks / todo / ai_insights）压在最上首屏可见，
+/// 长尾 / 归档（task_archive / general / user_profile）压后。task_archive 是只
+/// 读归档，user_profile 是慢变档案，general 是兜底分类，三者放下面让用户先看
+/// 到有动态的内容。CATEGORY_ORDER 之外的 category 由 PanelMemory 自身的
+/// fallback 逻辑接到末尾。
+const CATEGORY_ORDER = [
+  "butler_tasks",
+  "todo",
+  "ai_insights",
+  "task_archive",
+  "general",
+  "user_profile",
+];
 
 // Per-category description placeholder shown in the new/edit modal so the user knows
 // what shape of entry each category expects. butler_tasks gets the most concrete

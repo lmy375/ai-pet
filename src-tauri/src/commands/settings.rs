@@ -560,6 +560,36 @@ pub fn save_soul(content: String) -> Result<(), String> {
     fs::write(&path, content).map_err(|e| format!("Failed to write SOUL.md: {}", e))
 }
 
+/// 返回宠物本地数据根目录（`config.yaml` / `SOUL.md` / `memories/` / `sessions/`
+/// 都在它下面）。前端在「设置」面板里直接展示这个绝对路径，方便用户备份 / 排查。
+/// 不存在时由调用方负责，但 `config_dir()` 内部已会 ensure 父目录路径合法。
+#[tauri::command]
+pub fn get_pet_data_dir() -> Result<String, String> {
+    let dir = config_dir()?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 在系统文件管理器里打开宠物数据目录。macOS 用 `open <path>`，其它平台
+/// 退化到 `xdg-open` / `explorer`。失败时返回错误字符串让前端 banner 显示。
+#[tauri::command]
+pub fn open_pet_data_dir() -> Result<(), String> {
+    let dir = config_dir()?;
+    // 不存在时先创建 —— 用户首次启动还没写过盘的话，open 一个不存在的路径
+    // 在 macOS 上会被 Finder 拒绝。
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
+    #[cfg(target_os = "macos")]
+    let cmd_name = "open";
+    #[cfg(target_os = "windows")]
+    let cmd_name = "explorer";
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let cmd_name = "xdg-open";
+    std::process::Command::new(cmd_name)
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open data dir via `{}`: {}", cmd_name, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

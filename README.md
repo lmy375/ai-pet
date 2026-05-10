@@ -51,7 +51,8 @@
 - **Telegram 派单**：在 TG 里直接说「帮我整理 Downloads」/「记得明天提醒我交报告」，宠物自动调 `task_create` 入队（无需面板确认卡）。任务执行完毕（成功 / 失败 / 取消）由后台 watcher 主动把结果回传到原 TG 会话，桌面与 TG 之间形成派单 → 执行 → 回传的闭环。
 - **任务-记忆联动**：任务描述支持 `#tag` 标签和 `[result: 产物]` 标记。完成的任务在面板上独立显示「✓ 产物：…」一行；周报按 tag 聚合（`#organize × 3、#weekly × 1`）+ 完成清单带产物，让"本周往哪个主题投入最多"和"具体做了什么"一目了然。
 - **任务复盘视图**：队列标题下显"今日完成 X · 近 7 天 Y" 完成率统计；每条任务卡片附"X 天前创建"相对时间，分辨"新积压 vs 老欠债"；showFinished 视图把 done/cancelled 按"今天 / 昨天 / 本周 / 更早"分组渲染，配合完成率形成立体复盘视图。
-- **任务自动归档**：consolidate 循环把 done / cancelled 且 `updated_at` 超过 30 天（可在「记忆整理」面板调，0 = 关闭）的 butler_tasks 自动挪到 `task_archive` 类目，让活跃队列长期保持轻量；归档条目带 `[archived: YYYY-MM-DD]` 头，title 加日期前缀防重名碰撞，需要回溯时仍能在 task_archive 里翻档。
+- **任务自动归档**：consolidate 循环把 done / cancelled 且 `updated_at` 超过 30 天（可在「记忆整理」面板调，0 = 关闭）的 butler_tasks 自动挪到 `task_archive` 类目，让活跃队列长期保持轻量；归档条目带 `[archived: YYYY-MM-DD]` 头，title 加日期前缀防重名碰撞。「任务」面板底部「📦 归档」折叠区一键回看老任务（lazy load + 刷新按钮），不必去 PanelMemory 手动翻类目。
+- **本地数据目录可见**：「设置」面板新增「本地数据目录」section，显示绝对路径（如 `~/.config/pet/`）+「在 Finder 中打开」+「复制路径」按钮，下面解释 `config.yaml` / `SOUL.md` / `memories/` / `sessions/` 各自存什么；备份 / 迁移 / 排查时不必再翻 docs。
 - **视觉占用控制**：单任务长描述（> 200 字）默认折叠到前 120 字 + "展开 (N 字)"按钮（搜索命中时强制展开避免高亮被遮蔽）；butler_tasks 的"最近执行"section > 5 条时显前 5 + "展开全部 N 条"按钮 — 长 session 下面板不再被冗长内容压扁。
 
 ### 5. 多端接入
