@@ -20,12 +20,9 @@ use crate::mcp::McpManagerStore;
 use crate::mood::{read_current_mood, read_mood_for_event};
 use crate::proactive::{is_stale_reminder, parse_reminder_prefix};
 use crate::tools::ToolContext;
-use crate::weekly_summary::{
-    aggregate_butler_events, aggregate_mood_top, aggregate_speech_count,
-    format_weekly_summary_description, format_weekly_summary_detail, iso_week_bounds,
-    should_trigger_weekly_summary, weekly_summary_title, WeeklyStats,
-    LAST_WEEKLY_SUMMARY_WEEK,
-};
+// 周报合成已 noop（GOAL.md 禁周报 + 不写记忆），weekly_summary 模块整体
+// dead；consolidate 内还需要 `maybe_run_weekly_summary` 占位接口，故未删模
+// 块本身，只切断 import。下一轮可一并删 weekly_summary.rs。
 
 /// Spawn the memory consolidation loop. Reads settings each tick so the user can toggle
 /// at runtime. Sleeps for `interval_hours` between attempts.
@@ -256,16 +253,18 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
 作为 AI 桌面宠物，你正在做后台记忆维护——这次没有用户互动，只是回顾一下你存的记忆。\n\n\
 当前记忆索引（共 {total} 条）：\n\n```yaml\n{index}\n```\n\n\
 {recent_speeches}\n\n\
+**记忆系统的目的**：增强未来与主人互动的能力。该存的是技能、用户偏好、与主人长期相关的事实；**不是**事件日志。下面列了\"该删\"和\"该补\"两类。\n\n\
 请扫一遍这些条目，判断：\n\
-1. **重复/同主题**：把内容相近的合并成一条更精炼的——保留信息量大的，用 `memory_edit update` 更新；用 `memory_edit delete` 删掉冗余的。\n\
-2. **过期/失效**：明显过时（已完成的 todo、不再相关的临时上下文），用 `memory_edit delete`。`butler_tasks` 类别下如果某条任务用户已经撤回 / 已经完成且不再 recurring，也归这一类。\n\
-3. **太琐碎**：完全没有保留价值的（例如随口一句话被记下），删除。\n\
-4. **可以补充细节**：如果某条记忆 description 太短、可以扩展但需要查更多上下文，可以用 `memory_edit update` 加入更完整的 detail_content。\n\
-5. **维护 `ai_insights/persona_summary`**：基于上面「你最近主动开口」的句子 + `user_profile` 类下的条目，简要总结你观察到的自己的语气特点和与用户的互动模式。description 控制在 ~100 字以内、写第一人称（如「我倾向...」、「我注意到...」）。如果该条目不存在，用 `memory_edit create` 创建到 `ai_insights/persona_summary`；如果已存在并且这次有新观察，用 `update` 更新。如果最近开口少于 5 句、信号不足，跳过这一项。\n\n\
-**特殊保护**：`ai_insights/current_mood` 是宠物当前的心情状态，绝对不要删除——可以适当 update 让 description 更准确，但务必保留这条记录、且 description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头格式。`ai_insights/persona_summary` 同样保护——是你长期人格画像，可 update 不要 delete。\n\n\
+1. **删除事件型条目**：每日早安、每日复盘、周报、会话片段、宠物自言自语等\"事件记录\"类不要留。这类条目对未来互动没增值。直接 `memory_edit delete`。\n\
+2. **删除琐碎 / 重复**：内容相近的合并成一条更精炼的（`memory_edit update` 一条 + `delete` 冗余）；完全没有保留价值的（例如宠物随口一句话被记下、用户闲聊语气词）直接删。\n\
+3. **过期/失效**：明显过时（已完成的 todo、不再相关的临时上下文），`memory_edit delete`。`butler_tasks` 类下用户已撤回 / 已完成不 recurring 的任务也归这一类。\n\
+4. **可以扩写有价值的条目**：`user_profile` / 学到的技能 / 用户长期偏好类型的条目，description 太短可用 `memory_edit update` 补充更完整的 detail_content。\n\
+5. **从主动发言里挖用户偏好**：如果最近的对话里出现了用户陈述事实/偏好（\"我喜欢吃苹果\"、\"我下班时间是 19 点\"、\"我不爱喝可乐\"），且 user_profile 还没记 → `memory_edit create` 到 user_profile。一句话偏好就值得记，不要等\"看出长期模式\"。\n\
+6. **维护 `ai_insights/persona_summary`**：基于上面「你最近主动开口」的句子 + `user_profile` 条目，简要总结你观察到的自己的语气特点和与用户的互动模式。description ~100 字内、第一人称。已存在 update，没有 create，最近开口 < 5 句信号不足 → 跳过。\n\n\
+**特殊保护**：`ai_insights/current_mood` 是宠物当前心情状态，绝对不要 delete；可 update 但 description 必须以 `[motion: Tap|Flick|Flick3|Idle] 心情文字` 开头。`ai_insights/persona_summary` 也是 protected，可 update 不可 delete。`user_profile` 类下条目优先保留（这是记忆的核心价值）。\n\n\
 {focus_log_hint}\
-原则：**保守**。如果不确定一条记忆是否还有价值，就保留。**不要为了整理而整理**——如果索引看起来已经清爽，就什么都不做并输出 `<noop>`。\n\n\
-工作完成后，简短总结你做了什么（合并了几条 / 删了几条 / persona_summary 是创建/更新/跳过 / 没改动）。不需要客气，只要事实。",
+原则：**记忆是技能 + 偏好 + 长期事实，不是日记**。事件型条目就该删。如果索引已经只剩 user_profile / persona_summary / current_mood / butler_tasks / todo 这种结构性条目，输出 `<noop>` 收工。\n\n\
+工作完成后，简短总结：删了几条事件 / 新建了几条用户偏好 / persona_summary 状态 / 其它改动。",
         total = total_before,
         index = index_json,
         recent_speeches = recent_speech_block,
@@ -560,64 +559,13 @@ fn focus_history_hint() -> String {
     )
 }
 
-/// 周报合成的 IO 包装。门控内部决定要不要跑；命中后读三个 .log + companionship
-/// 天数 + 调 aggregator → 写入 `ai_insights/weekly_summary_YYYY-Www`。
-///
-/// 跨进程幂等：先看进程内 `LAST_WEEKLY_SUMMARY_WEEK`，再读 ai_insights 里
-/// 标题是否已存在；只有两道关都"未写过"才会真正落盘。任何 IO 失败均
-/// 静默退化 —— best-effort，不影响 consolidate 主流程。
+/// 周报合成已停用。GOAL.md「不要周报日报相关的需求」+ 用户明确说"事件型
+/// 条目不要保存在记忆里"，旧实现把整段周报塞进 ai_insights，正好两条都
+/// 违反。本 noop 让 consolidate spawn 调用免改、上层语义"不再产生周报"
+/// 立刻成立。下一轮可以彻底删 weekly_summary 模块 + closing_hour 配置。
 async fn maybe_run_weekly_summary(
     _app: &AppHandle,
-    now_local: chrono::DateTime<chrono::Local>,
-    closing_hour: u8,
+    _now_local: chrono::DateTime<chrono::Local>,
+    _closing_hour: u8,
 ) {
-    let now_naive = now_local.naive_local();
-    let last = LAST_WEEKLY_SUMMARY_WEEK.lock().ok().and_then(|g| *g);
-    let Some(week) = should_trigger_weekly_summary(now_naive, last, closing_hour) else {
-        return;
-    };
-    let title = weekly_summary_title(week);
-    if memory::read_ai_insights_item(&title).is_some() {
-        // 已写过（前一进程合成的）—— 标记进程内缓存避免接下来的 tick 反复读盘
-        if let Ok(mut g) = LAST_WEEKLY_SUMMARY_WEEK.lock() {
-            *g = Some(week);
-        }
-        return;
-    }
-
-    let (week_start, week_end) = iso_week_bounds(week);
-    let speech_log = crate::speech_history::read_history_content().await;
-    let butler_log = crate::butler_history::read_history_content().await;
-    let mood_log = crate::mood_history::read_history_content().await;
-    let speech_count = aggregate_speech_count(&speech_log, week_start, week_end);
-    let butler = aggregate_butler_events(&butler_log, week_start, week_end);
-    let mood_top = aggregate_mood_top(&mood_log, week_start, week_end, 3);
-    let companionship_days = crate::companionship::companionship_days().await;
-
-    let stats = WeeklyStats {
-        week,
-        week_start,
-        week_end,
-        speech_count,
-        butler_create: butler.create,
-        butler_update: butler.update,
-        butler_delete: butler.delete,
-        completed_titles: butler.completed_titles,
-        mood_top,
-        companionship_days,
-        completed_with_results: butler.completed_with_results,
-        tag_top: butler.tag_top,
-    };
-    let detail = format_weekly_summary_detail(&stats);
-    let description = format_weekly_summary_description(&stats);
-    let _ = memory::memory_edit(
-        "create".to_string(),
-        "ai_insights".to_string(),
-        title,
-        Some(description),
-        Some(detail),
-    );
-    if let Ok(mut g) = LAST_WEEKLY_SUMMARY_WEEK.lock() {
-        *g = Some(week);
-    }
 }
