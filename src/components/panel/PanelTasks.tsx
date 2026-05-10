@@ -773,6 +773,22 @@ export function PanelTasks() {
     }
   };
 
+  // 键盘 d / mouse 行内未来的「标 done」按钮共用：仅 pending / error 行
+  // 该入口能 fire（hook 已守卫，命令也会拒绝终态行）。成功后 reload 让
+  // 行变成 done 状态 + 默认从队列收起。
+  const handleMarkDone = async (taskTitle: string) => {
+    setActionErr("");
+    setBusyTitle(taskTitle);
+    try {
+      await invoke<void>("task_mark_done", { title: taskTitle });
+      await reload();
+    } catch (e) {
+      setActionErr(`标 done 失败：${e}`);
+    } finally {
+      setBusyTitle(null);
+    }
+  };
+
   const handleCancelOpen = (taskTitle: string) => {
     setActionErr("");
     setCancelReason("");
@@ -1165,6 +1181,8 @@ export function PanelTasks() {
     toggleSelect,
     handleToggleExpand,
     handleCancelOpen,
+    handleMarkDone,
+    handleRetry,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,

@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 use crate::commands::memory;
 use crate::decision_log::DecisionLogStore;
 use crate::task_queue::{
-    append_cancelled_marker, classify_status, compare_for_queue, format_task_description,
-    parse_task_header, parse_task_result, parse_task_tags, strip_error_markers,
-    strip_origin_marker, strip_result_marker, TaskHeader, TaskStatus, TaskView,
-    TASK_PRIORITY_MAX,
+    append_cancelled_marker, append_done_marker, classify_status, compare_for_queue,
+    format_task_description, parse_task_header, parse_task_result, parse_task_tags,
+    strip_error_markers, strip_origin_marker, strip_result_marker, TaskHeader, TaskStatus,
+    TaskView, TASK_PRIORITY_MAX,
 };
 
 /// `task_create` 的入参集合。Tauri 要求顶级字段为可序列化的简单类型，
@@ -198,6 +198,47 @@ pub fn task_cancel_inner(
         format!("{} — {}", item.title, reason_trim)
     };
     decisions.push("TaskCancel", log_msg);
+    Ok(())
+}
+
+/// `task_mark_done`：在 description 末尾追加 `[done]` 标记，与 LLM 路径
+/// 等价但不写 `[result: ...]`（用户从面板按 d 通常没产物可填；想要产物
+/// 让 LLM 自己写或在 detail.md 编辑里补）。已是 done / cancelled 的任务
+/// 拒绝，避免重复追加 marker 污染 description。
+#[tauri::command]
+pub fn task_mark_done(
+    title: String,
+    decisions: tauri::State<'_, DecisionLogStore>,
+) -> Result<(), String> {
+    task_mark_done_inner(title, decisions.inner().clone())
+}
+
+pub fn task_mark_done_inner(
+    title: String,
+    decisions: DecisionLogStore,
+) -> Result<(), String> {
+    let title_trimmed = title.trim();
+    if title_trimmed.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trimmed)
+        .ok_or_else(|| format!("task not found: {}", title_trimmed))?;
+    let (status, _) = classify_status(&item.description);
+    if matches!(status, TaskStatus::Done | TaskStatus::Cancelled) {
+        return Err(format!(
+            "task already finished (status: {:?})",
+            status
+        ));
+    }
+    let new_desc = append_done_marker(&item.description);
+    memory::memory_edit(
+        "update".to_string(),
+        "butler_tasks".to_string(),
+        item.title.clone(),
+        Some(new_desc),
+        None,
+    )?;
+    decisions.push("TaskMarkDone", item.title.clone());
     Ok(())
 }
 

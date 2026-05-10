@@ -412,6 +412,25 @@ export function PanelDebug() {
     }
   };
 
+  // Esc = 拒绝最上面那条待审核：和 60s 默认拒绝同语义，但用户能立刻按
+  // 一下抢在超时前否决，省去把鼠标移到 modal 按按钮的来回。仅在
+  // pendingReviews 非空时挂监听，避免无业务时占全局快捷键位。处理后
+  // pendingReviews 数组缩短，下一次 Esc 自动作用到新的"最上面那条"，
+  // 形成「连按 Esc 全部拒绝」的快捷路径。
+  useEffect(() => {
+    if (pendingReviews.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      void handleToolReviewDecision(pendingReviews[0].review_id, "deny");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // handleToolReviewDecision 依赖闭包外 invoke / setState（稳定）；列表
+    // 引用变化才需要重订阅，这是预期行为。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingReviews]);
+
   useEffect(() => {
     fetchLogs();
     intervalRef.current = setInterval(fetchLogs, 1000);
@@ -639,7 +658,7 @@ export function PanelDebug() {
               </div>
             )}
             <div style={{ fontSize: "10px", color: "var(--pet-color-muted)", marginTop: "4px" }}>
-              超过 60 秒未响应将按默认安全策略拒绝。
+              超过 60 秒未响应将按默认安全策略拒绝；按 Esc 立刻拒绝最上面这条。
             </div>
           </div>
         </div>
