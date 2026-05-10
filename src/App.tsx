@@ -9,6 +9,14 @@ import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
 import { useMoodAnimation } from "./hooks/useMoodAnimation";
+import { applyTheme, getStoredTheme } from "./theme";
+
+// 应用 CSS 变量到桌面宠物窗口的 document.documentElement。PanelApp 在
+// 它自己的 window 已 applyTheme，但桌面宠物窗口是独立 webview，没人替
+// 它落 token —— 导致 ChatMini 用 var(--pet-color-accent) 渲染 user 气泡
+// 时拿到空字符串 + 白字看不清。模块加载时一次性 apply（与 PanelApp
+// useState initializer 同模式）。
+applyTheme(getStoredTheme());
 
 function App() {
   const { settings, soul, loaded } = useSettings();
@@ -91,6 +99,8 @@ function App() {
         userSelect: "none",
         position: "relative",
         overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
       }}
     >
       {/* Tab indicator：hidden 时左侧露出的 12px 召回条。slide-in 入场动画
@@ -176,68 +186,72 @@ function App() {
         </>
       )}
 
-      {/* 桌面迷你聊天列表：常驻显示，位于 Live2D 形象下方、输入框上方。
-          流式中追加 ghost bubble；最新 assistant 行带 👍。右上角「⛶」最大化
-          进 Panel chat。`hidden`（窗口收到桌边）时整体不渲染，省 paint。 */}
-      <ChatMini
-        messages={messages}
-        currentResponse={currentResponse}
-        isLoading={isLoading}
-        visible={!hidden}
-        onLike={!isLoading ? handleBubbleLike : undefined}
-        onOpenPanel={openPanel}
-      />
-      <Live2DCharacter
-        key={settings.live_2d_model_path}
-        modelPath={settings.live_2d_model_path}
-        onModelReady={handleModelReady}
-      />
-      {/* 收起按钮：右上角小圆，调 useAutoHide.collapse 把窗口滑到桌边只露
-          tab。hidden 时不渲染（已收起，再点无意义；mouse-enter 左侧 tab
-          才是召回入口）。 */}
+      {/* Layout: Live2D 形象 / 聊天列表 / 输入框 三段竖直堆叠，互不重叠。
+          整窗 flex column；Live2D 自身 350px 高度的 wrapper 顺势占顶部；
+          ChatMini 用 flex: 1 占剩余空间；ChatPanel 自身高度紧贴底部。
+          `hidden`（窗口收到桌边）时整体不渲染主体，只剩左侧召回 tab。 */}
       {!hidden && (
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            collapse();
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-          title="收起到桌边（mouse-enter 左侧 tab 召回）"
-          style={{
-            position: "absolute",
-            top: "8px",
-            right: "8px",
-            width: "22px",
-            height: "22px",
-            borderRadius: "50%",
-            background: "rgba(255,255,255,0.85)",
-            border: "1px solid rgba(148,163,184,0.4)",
-            color: "#475569",
-            fontSize: "13px",
-            lineHeight: 1,
-            cursor: "pointer",
-            zIndex: 60,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
-            opacity: 0.6,
-            transition: "opacity 120ms ease-out, background 120ms ease-out",
-            userSelect: "none",
-          }}
-          onMouseOver={(e) => {
-            (e.currentTarget as HTMLDivElement).style.opacity = "1";
-            (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.98)";
-          }}
-          onMouseOut={(e) => {
-            (e.currentTarget as HTMLDivElement).style.opacity = "0.6";
-            (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.85)";
-          }}
-        >
-          ▶|
-        </div>
+        <>
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <Live2DCharacter
+              key={settings.live_2d_model_path}
+              modelPath={settings.live_2d_model_path}
+              onModelReady={handleModelReady}
+            />
+            {/* 收起按钮：钉在 Live2D 区右上角；调 useAutoHide.collapse 把窗口
+                滑到桌边只露 tab。 */}
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                collapse();
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              title="收起到桌边（mouse-enter 左侧 tab 召回）"
+              style={{
+                position: "absolute",
+                top: "8px",
+                right: "8px",
+                width: "22px",
+                height: "22px",
+                borderRadius: "50%",
+                background: "rgba(255,255,255,0.85)",
+                border: "1px solid rgba(148,163,184,0.4)",
+                color: "#475569",
+                fontSize: "13px",
+                lineHeight: 1,
+                cursor: "pointer",
+                zIndex: 60,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
+                opacity: 0.6,
+                transition: "opacity 120ms ease-out, background 120ms ease-out",
+                userSelect: "none",
+              }}
+              onMouseOver={(e) => {
+                (e.currentTarget as HTMLDivElement).style.opacity = "1";
+                (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.98)";
+              }}
+              onMouseOut={(e) => {
+                (e.currentTarget as HTMLDivElement).style.opacity = "0.6";
+                (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.85)";
+              }}
+            >
+              ▶|
+            </div>
+          </div>
+          <ChatMini
+            messages={messages}
+            currentResponse={currentResponse}
+            isLoading={isLoading}
+            visible
+            onLike={!isLoading ? handleBubbleLike : undefined}
+            onOpenPanel={openPanel}
+          />
+          <ChatPanel onSend={handleSend} isLoading={isLoading} />
+        </>
       )}
-      {!hidden && <ChatPanel onSend={handleSend} isLoading={isLoading} />}
     </div>
   );
 }
