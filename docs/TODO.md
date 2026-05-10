@@ -8,24 +8,8 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。并提交一个 git commit。
 >
 
-- PanelTasks 任务页依然渲染出错，修复。
-```
-「任务」页渲染出错
-Rendered more hooks than during the previous render.
-updateWorkInProgressHook@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:5792:24
-updateMemo@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:6540:44
-useMemo@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:18969:30
-PanelTasks@http://localhost:1420/src/components/panel/PanelTasks.tsx:794:53
-react_stack_bottom_frame@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:18509:29
-renderWithHooks@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:5654:42
-updateFunctionComponent@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:7475:36
-runWithFiberInDEV@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:999:23
-performUnitOfWork@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:12561:115
-workLoopSync@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:12424:60
-renderRootSync@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:12408:25
-performWorkOnRoot@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:11827:51
-performWorkOnRootViaSchedulerTask@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:13505:26
-performWorkUntilDeadline@http://localhost:1420/node_modules/.vite/deps/react-dom_client.js:36:58
-```
+- 图片支持（多模态）：聊天页允许粘贴图片、走多模态大模型识别；同样支持图片生成。后端从 .env / settings 中检测当前 model 是否多模态（看模型名 + 探测一次 API 能力），用户配置的非多模态模型下粘贴图片时报错说明不支持。前端需要 paste handler、图片在 ChatMini / PanelChat 中的渲染、以及生图入口。
+- 删除遗留的 weekly_summary 模块：本轮已 noop 周报触发但 weekly_summary.rs / MemoryConsolidateConfig.weekly_summary_closing_hour / 前端对应配置仍在，下一轮把 dead code 整体扫掉。
+
 
 
