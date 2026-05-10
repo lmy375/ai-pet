@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Live2DCharacter } from "./components/Live2DCharacter";
-import { ChatBubble } from "./components/ChatBubble";
+import { ChatMini } from "./components/ChatMini";
 import { ChatPanel } from "./components/ChatPanel";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
@@ -13,7 +13,7 @@ import { useBubbleHistory } from "./hooks/useBubbleHistory";
 
 function App() {
   const { settings, soul, loaded } = useSettings();
-  const { isLoading, sendMessage, displayMessage, showBubble } = useChat(soul);
+  const { messages, currentResponse, isLoading, sendMessage, displayMessage, showBubble } = useChat(soul);
   const modelRef = useRef<any>(null);
   const { hidden, handleMouseEnter } = useAutoHide();
   // 把 settings.motion_mapping 传给动画 hook，让用户在「设置」改了映射立即
@@ -247,17 +247,19 @@ function App() {
         </>
       )}
 
-      <ChatBubble
-        message={bubbleHistory.displayed ?? displayMessage}
+      {/* 桌面迷你聊天列表：替代单气泡，把最近 user / assistant 消息以
+          PanelChat 同款气泡样式列出，右侧滚动条，新消息自动滚到底。
+          R1b dismissed / Liked 反馈仍只挂在最新一条 assistant 上，与
+          ChatBubble 时代同语义；流式中跳过反馈按钮。 */}
+      <ChatMini
+        messages={messages}
+        currentResponse={currentResponse}
+        isLoading={isLoading}
         visible={showBubble && !hidden && !bubbleDismissed}
-        onClick={handleBubbleClick}
-        // 👍 仅在 live 模式 & 非 streaming 时渲染：历史快照不应再写新反馈
-        // （与 R1b dismissed 同语义）；流式中点赞容易误触没读完的内容。
+        onDismiss={handleBubbleClick}
         onLike={
           !bubbleHistory.isHistoryMode && !isLoading ? handleBubbleLike : undefined
         }
-        // 流式输出期间不挂导航控件 —— 半截内容里翻历史会让人困惑。
-        // live 模式下若历史尚未加载，仍允许点 ◀（hook 自己负责首点加载）。
         historyControls={
           isLoading
             ? undefined
