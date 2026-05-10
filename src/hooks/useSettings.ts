@@ -70,6 +70,10 @@ export interface MemoryConsolidateConfig {
    * lingers in `ai_insights` before consolidate prunes it. 0 disables
    * pruning (entries kept indefinitely). Default 30. */
   stale_daily_review_days: number;
+  /** 终态（done / cancelled）butler_tasks 归档保留天数。consolidate 把
+   * updated_at 早于该阈值的终态任务移到 `task_archive` 类目，让活跃任务
+   * 队列长期保持轻量。0 关闭归档。默认 30。 */
+  stale_butler_archive_days: number;
   /** 周报合成的"周日 closing 时刻"（小时 0-23）。该时刻之后下次
    * consolidate loop 唤醒触发周报合成。0 = 关闭。默认 20。与 enabled
    * 解耦 — 即便 consolidate 整体被禁用仍按时合成周报。 */
@@ -134,6 +138,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     stale_plan_hours: 24,
     stale_once_butler_hours: 48,
     stale_daily_review_days: 30,
+    stale_butler_archive_days: 30,
     weekly_summary_closing_hour: 20,
   },
   chat: {

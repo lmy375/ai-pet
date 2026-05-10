@@ -116,6 +116,13 @@ impl Default for MemoryIndex {
             },
         );
         categories.insert(
+            "task_archive".to_string(),
+            CategoryData {
+                label: "任务归档".to_string(),
+                items: vec![],
+            },
+        );
+        categories.insert(
             "general".to_string(),
             CategoryData {
                 label: "其他".to_string(),
@@ -134,10 +141,20 @@ fn read_index() -> MemoryIndex {
         Ok(p) => p,
         Err(_) => return MemoryIndex::default(),
     };
-    match fs::read_to_string(&path) {
+    let mut index: MemoryIndex = match fs::read_to_string(&path) {
         Ok(content) => serde_yaml::from_str(&content).unwrap_or_default(),
         Err(_) => MemoryIndex::default(),
+    };
+    // 老 index 文件可能缺少新引入的默认 category（例如 task_archive 是
+    // 后加入的归档类目）。每次读盘时把 default 里有但本地没有的 category
+    // 补回来，保证 memory_edit("create", "task_archive", ...) 不会被
+    // "Unknown category" 拒绝。已存在的同名 category 不动，避免覆盖用户
+    // 手动改过的 label / items。
+    let defaults = MemoryIndex::default();
+    for (key, data) in defaults.categories {
+        index.categories.entry(key).or_insert(data);
     }
+    index
 }
 
 fn write_index(index: &MemoryIndex) -> Result<(), String> {

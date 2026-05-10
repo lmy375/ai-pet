@@ -188,6 +188,24 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         );
     }
 
+    // 归档老 butler_tasks（done / cancelled 且 updated_at 早于阈值），把它
+    // 们挪到 task_archive 类目。和上面 sweep_* 同模式：log 只在归档了至少
+    // 一条时记录，避免每个 tick 噪音。
+    let archive_retention = cfg_settings
+        .as_ref()
+        .map(|s| s.memory_consolidate.stale_butler_archive_days)
+        .unwrap_or(30);
+    let archived = archive_old_butler_tasks(today_for_sweep, archive_retention).await;
+    if archived > 0 {
+        write_log(
+            &log_store.0,
+            &format!(
+                "Consolidate: archived {} butler_task(s) older than {} days into task_archive",
+                archived, archive_retention
+            ),
+        );
+    }
+
     // Iter Cη: derive today's butler-task summary from butler_history.log and
     // upsert into butler_daily.log so the user has a per-day "今天我帮你 ..."
     // trail surfaced in the panel. Pre-LLM and deterministic — survives even if
@@ -402,6 +420,72 @@ pub async fn sweep_completed_once_butler_tasks(
             // through commands::memory directly so we log manually here, marking
             // the action source so it's clear in the log.
             crate::butler_history::record_event("delete", &title, &desc).await;
+            count += 1;
+        }
+    }
+    count
+}
+
+/// 把 30 天前已结束（done / cancelled）的 butler_tasks 移到 task_archive
+/// 类目，保持活跃队列轻量。每条单独转移，title 加上 `YYYY-MM-DD_` 前缀
+/// 避免归档同名任务相撞；description 加 `[archived: YYYY-MM-DD]` 头便于
+/// 后续翻档分辨。返回成功归档的条数。
+///
+/// 失败模式：原索引读不到 / 类目不存在 → 0；create 任意一条失败 → 该条
+/// 跳过不删原条目（避免数据丢失）；delete 失败 → 计数不增。
+pub async fn archive_old_butler_tasks(
+    today: chrono::NaiveDate,
+    retention_days: u32,
+) -> usize {
+    if retention_days == 0 {
+        return 0;
+    }
+    let Ok(index) = memory::memory_list(Some("butler_tasks".to_string())) else {
+        return 0;
+    };
+    let Some(cat) = index.categories.get("butler_tasks") else {
+        return 0;
+    };
+    let candidates: Vec<(String, String, String)> = cat
+        .items
+        .iter()
+        .filter(|it| {
+            crate::proactive::is_archive_candidate(
+                &it.description,
+                &it.updated_at,
+                today,
+                retention_days,
+            )
+        })
+        .map(|it| (it.title.clone(), it.description.clone(), it.updated_at.clone()))
+        .collect();
+    let mut count = 0;
+    for (title, desc, updated_at) in candidates {
+        // YYYY-MM-DD 前 10 字符；解析失败兜底成 unknown 让归档仍能继续。
+        let date_prefix = updated_at.get(..10).unwrap_or("unknown");
+        let archive_title = format!("{}_{}", date_prefix, title);
+        let archive_desc = format!("[archived: {}] {}", date_prefix, desc);
+        if memory::memory_edit(
+            "create".to_string(),
+            "task_archive".to_string(),
+            archive_title,
+            Some(archive_desc),
+            None,
+        )
+        .is_err()
+        {
+            continue;
+        }
+        if memory::memory_edit(
+            "delete".to_string(),
+            "butler_tasks".to_string(),
+            title.clone(),
+            None,
+            None,
+        )
+        .is_ok()
+        {
+            crate::butler_history::record_event("archive", &title, &desc).await;
             count += 1;
         }
     }
