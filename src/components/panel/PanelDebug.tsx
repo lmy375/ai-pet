@@ -38,13 +38,7 @@ const multiSelectChipStyle = (
   fontFamily: "inherit",
 });
 
-type LogLevel = "ERROR" | "WARN" | "INFO";
-
 export function PanelDebug() {
-  const [logs, setLogs] = useState<string[]>([]);
-  // R99: 日志区按 level 多选过滤。Set 空 = "全部"（与决策日志 R83 多选语义
-  // 一致）；勾选 ERROR / WARN 让 INFO 噪音不淹没问题信号。
-  const [logLevels, setLogLevels] = useState<Set<LogLevel>>(() => new Set());
   const [cacheStats, setCacheStats] = useState<CacheStats>({
     turns: 0,
     total_hits: 0,
@@ -241,32 +235,7 @@ export function PanelDebug() {
     return count;
   }, [feedbackHistory]);
 
-  // R99: 日志 level 计数 + 过滤。`includes("ERROR")` 是简化的检测：rust
-  // env_logger 输出格式 `[YYYY-... ERROR pet::xxx]`，"ERROR" 在每行 level
-  // 段唯一出现，substring 命中无歧义。WARN 同理；其它 → INFO（含 DEBUG /
-  // TRACE 等更低 level）。
-  const logLevelCounts = useMemo(() => {
-    let err = 0;
-    let warn = 0;
-    let info = 0;
-    for (const line of logs) {
-      if (line.includes("ERROR")) err++;
-      else if (line.includes("WARN")) warn++;
-      else info++;
-    }
-    return { ERROR: err, WARN: warn, INFO: info };
-  }, [logs]);
-  const filteredLogs = useMemo(() => {
-    if (logLevels.size === 0) return logs;
-    return logs.filter((line) => {
-      const lvl: LogLevel = line.includes("ERROR")
-        ? "ERROR"
-        : line.includes("WARN")
-          ? "WARN"
-          : "INFO";
-      return logLevels.has(lvl);
-    });
-  }, [logs, logLevels]);
+  // 日志 level 计数 / 过滤 / followTail 都已搬到 PanelDebugLogs。
   // Iter R39: third application of the filter pattern — tool_call history
   // risk_level filter. Triggers PanelFilterButtonRow extraction (R32 IDEA's
   // "wait until use-3+ before extraction" threshold).
@@ -326,11 +295,6 @@ export function PanelDebug() {
     timestamp: currentTurn?.timestamp ?? "",
     tools_used: currentTurn?.tools_used ?? [],
   };
-  const scrollRef = useRef<HTMLDivElement>(null);
-  // R139: 日志区"跟随最新"模式。默认 true（与原行为一致）；用户向上滚
-  // → onScroll 自动设 false；点回 true 立即滚到底；脱离时 useEffect 不
-  // 再 scroll 让阅读旧 log 不被新 log 拽下。
-  const [followTail, setFollowTail] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Iter QG6: collapsed 15 independent invokes-per-second into one bundled
@@ -365,7 +329,7 @@ export function PanelDebug() {
         recent_tool_calls: ToolCallRecord[];
         recent_feedback: FeedbackEntry[];
       }>("get_debug_snapshot");
-      setLogs(snap.logs);
+      // logs 已搬到「日志」tab (PanelDebugLogs) 自轮询；本 tab 不再消费。
       setCacheStats(snap.cache_stats);
       setDecisions(snap.decisions);
       setMoodTagStats(snap.mood_tag_stats);
@@ -439,18 +403,8 @@ export function PanelDebug() {
     };
   }, []);
 
-  // Auto-scroll. R139: 仅 followTail=true 时自动滚到底；用户向上滚阅读
-  // 旧 log 时 (followTail=false) 不动视口。deps 加 followTail 让用户
-  // 切回 true 时立即跳到底（无需等下次 logs 更新）。
-  useEffect(() => {
-    if (followTail && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [logs, followTail]);
-
   const handleClear = async () => {
     await invoke("clear_logs");
-    setLogs([]);
   };
 
   // R128: 工具调用 args / result 块复制到剪贴板。key 唯一标识每个按钮 ——
@@ -1165,7 +1119,6 @@ export function PanelDebug() {
         onResetLlmOutcome={handleResetLlmOutcomeStats}
         onResetEnvTool={handleResetEnvToolStats}
         onResetPromptTilt={handleResetPromptTiltStats}
-        logsCount={logs.length}
       />
 
       {/* Toolbar */}
@@ -2364,141 +2317,9 @@ export function PanelDebug() {
         </div>
       )}
 
-      {/* R99: 日志 level chip 行。accent 配色与日志体内 ERROR 红 / WARN 黄 /
-          INFO 灰对应，让"chip 颜色 ↔ 日志正文颜色"形成视觉锚定。 */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "6px 16px",
-          borderBottom: "1px solid var(--pet-color-border)",
-          background: "var(--pet-color-bg)",
-          flexWrap: "wrap",
-        }}
-      >
-        <span style={{ fontSize: 10, color: "var(--pet-color-muted)" }}>
-          level:
-        </span>
-        <button
-          type="button"
-          onClick={() => setLogLevels(new Set())}
-          style={multiSelectChipStyle(logLevels.size === 0, "#475569")}
-          title="显示全部级别。点击清空多选过滤。"
-        >
-          全部 {logs.length}
-        </button>
-        {(["ERROR", "WARN", "INFO"] as const).map((lvl) => {
-          const accent =
-            lvl === "ERROR" ? "#dc2626" : lvl === "WARN" ? "#f59e0b" : "#475569";
-          const active = logLevels.has(lvl);
-          return (
-            <button
-              key={lvl}
-              type="button"
-              onClick={() => {
-                setLogLevels((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(lvl)) next.delete(lvl);
-                  else next.add(lvl);
-                  return next;
-                });
-              }}
-              style={multiSelectChipStyle(active, accent)}
-              title={
-                active
-                  ? `再次点击移出过滤集合（当前: ${lvl}）`
-                  : `加入到只看的 level 集合（多选）：${lvl}`
-              }
-            >
-              {lvl} {logLevelCounts[lvl]}
-            </button>
-          );
-        })}
-        {logLevels.size > 0 && (
-          <span
-            style={{
-              fontSize: 10,
-              color: "var(--pet-color-muted)",
-              marginLeft: "auto",
-              fontFamily: "'SF Mono', 'Menlo', monospace",
-            }}
-          >
-            显示 {filteredLogs.length} / {logs.length}
-          </span>
-        )}
-        {/* R139: follow-tail toggle。always 显（off 时让用户清楚当前不
-            follow，不会被新 log 拽下视口）。点击 → 立即滚到底 + setFollowTail(true)。
-            marginLeft 在 stats 显示时是 8（紧贴 stats 右），stats 不显时是
-            auto（自己推到行末）。 */}
-        <button
-          type="button"
-          onClick={() => {
-            setFollowTail(true);
-            const el = scrollRef.current;
-            if (el) el.scrollTop = el.scrollHeight;
-          }}
-          title={
-            followTail
-              ? "当前跟随最新日志。向上滚读旧 log 时自动脱离。"
-              : "已脱离最新（向上滚读旧 log 触发）。点击重新跟随 + 滚到底。"
-          }
-          style={{
-            fontSize: "10px",
-            padding: "1px 6px",
-            border: "1px solid var(--pet-color-border)",
-            borderRadius: 4,
-            background: followTail ? "var(--pet-color-card)" : "var(--pet-color-bg)",
-            color: followTail ? "var(--pet-color-fg)" : "var(--pet-color-muted)",
-            cursor: "pointer",
-            marginLeft: logLevels.size > 0 ? 8 : "auto",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {followTail ? "📌 跟随最新" : "📌 已脱离"}
-        </button>
-      </div>
-
-      {/* Log output */}
-      <div
-        ref={scrollRef}
-        onScroll={() => {
-          // R139: 检测用户离底是否 > 阈值；阈值 8px 给浮点偏差 buffer。
-          // 程序设 scrollTop=scrollHeight 时也会触发本回调，distFromBottom=0
-          // → setFollowTail(true) 与目标一致。
-          const el = scrollRef.current;
-          if (!el) return;
-          const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-          setFollowTail(distFromBottom <= 8);
-        }}
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "12px 16px",
-          fontFamily: "'SF Mono', 'Menlo', 'Monaco', monospace",
-          fontSize: "12px",
-          lineHeight: "1.7",
-          background: "#0f172a",
-          color: "#e2e8f0",
-        }}
-      >
-        {filteredLogs.length === 0 ? (
-          <div style={{ color: "#64748b", textAlign: "center", marginTop: "40px" }}>
-            {logs.length === 0
-              ? "暂无日志。聊天和操作会产生日志。"
-              : "当前 level 过滤无匹配日志"}
-          </div>
-        ) : (
-          filteredLogs.map((line, i) => (
-            <div key={i} style={{ wordBreak: "break-all" }}>
-              <span style={{ color: "#94a3b8" }}>{line.slice(0, 14)}</span>
-              <span style={{ color: line.includes("ERROR") ? "#f87171" : line.includes("WARN") ? "#fbbf24" : "#e2e8f0" }}>
-                {line.slice(14)}
-              </span>
-            </div>
-          ))
-        )}
-      </div>
+      {/* 日志窗已抽到独立「日志」tab（PanelDebugLogs）。这里只留 stats /
+          chips / 模态层 / 工具栏，让"应用"tab 不再既显状态又显大段黑底
+          日志，分流后两个 tab 各司其职。 */}
     </div>
   );
 }
