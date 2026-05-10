@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { PanelDebug } from "./components/panel/PanelDebug";
 import { LlmLogView } from "./components/panel/LlmLogView";
+import { PanelDebugStats } from "./components/panel/PanelDebugStats";
 
-const TABS = ["应用日志", "LLM 日志"] as const;
+const TABS = ["应用日志", "LLM 日志", "统计"] as const;
 type Tab = (typeof TABS)[number];
 
 export function DebugApp() {
@@ -37,6 +38,7 @@ export function DebugApp() {
       <div style={{ flex: 1, overflow: "hidden" }}>
         {activeTab === "应用日志" && <PanelDebug />}
         {activeTab === "LLM 日志" && <LlmLogView />}
+        {activeTab === "统计" && <PanelDebugStats />}
       </div>
     </div>
   );
