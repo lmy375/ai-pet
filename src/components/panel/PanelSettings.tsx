@@ -112,6 +112,13 @@ export function PanelSettings() {
   // 工具风险面板：name + level + note 是后端静态 metadata（一次性加载）；
   // mode 反映 form.tool_review_overrides 当前编辑状态（不存盘也即时生效）。
   const [toolRiskRows, setToolRiskRows] = useState<{ name: string; level: string; note: string }[]>([]);
+  // 本地数据目录绝对路径。挂载时一次性 fetch；后端 `config_dir()` 内部
+  // 已 ensure dir 存在，前端拿到的路径即真实可见目录。空串表示后端报错
+  // —— 对应 section 显错误 banner，避免 dump undefined 让 UI 看起来像没加载完。
+  const [petDataDir, setPetDataDir] = useState<string>("");
+  const [petDataDirError, setPetDataDirError] = useState<string>("");
+  const [openingDataDir, setOpeningDataDir] = useState<boolean>(false);
+  const [pathCopied, setPathCopied] = useState<boolean>(false);
 
   useEffect(() => {
     Promise.all([
@@ -131,6 +138,10 @@ export function PanelSettings() {
       console.error("Failed to load settings:", e);
       setLoaded(true);
     });
+    // 本地数据目录单独拉一次（与上面 batch 解耦：失败也不该挡住主设置加载）。
+    invoke<string>("get_pet_data_dir")
+      .then(setPetDataDir)
+      .catch((e) => setPetDataDirError(String(e)));
   }, []);
 
   const handleSave = async () => {
@@ -370,6 +381,100 @@ export function PanelSettings() {
           </button>
         )}
       </div>
+      {/* 本地数据目录：让用户一眼看到宠物把 config / memory / sessions 落到哪儿，
+          一键打开 Finder 备份 / 排查；路径下 ~/.config/pet/ 起。 */}
+      <SearchableSection
+        title="本地数据目录"
+        keywords={["data", "dir", "path", "本地", "目录", "memory", "session", "config", "finder"]}
+        query={searchQuery}
+      >
+      <div style={sectionStyle}>
+        <h4 style={sectionTitle}><HighlightedText text="本地数据目录" query={searchQuery} /></h4>
+        {petDataDirError ? (
+          <div style={{ fontSize: "12px", color: "#dc2626", padding: "6px 0" }}>
+            读取失败：{petDataDirError}
+          </div>
+        ) : (
+          <>
+            <code
+              style={{
+                display: "block",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                fontSize: "12px",
+                background: "var(--pet-color-bg)",
+                color: "var(--pet-color-fg)",
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--pet-color-border)",
+                wordBreak: "break-all",
+                userSelect: "all",
+              }}
+            >
+              {petDataDir || "（加载中…）"}
+            </code>
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button
+                onClick={async () => {
+                  setOpeningDataDir(true);
+                  try {
+                    await invoke("open_pet_data_dir");
+                  } catch (e) {
+                    setPetDataDirError(String(e));
+                  } finally {
+                    setOpeningDataDir(false);
+                  }
+                }}
+                disabled={openingDataDir || !petDataDir}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid var(--pet-color-accent)",
+                  background: openingDataDir ? "#94a3b8" : "var(--pet-color-accent)",
+                  color: "#fff",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: openingDataDir || !petDataDir ? "default" : "pointer",
+                }}
+                title="在系统文件管理器（macOS Finder）里打开此目录，方便 inspect / 备份"
+              >
+                {openingDataDir ? "打开中…" : "在 Finder 中打开"}
+              </button>
+              <button
+                onClick={async () => {
+                  if (!petDataDir) return;
+                  try {
+                    await navigator.clipboard.writeText(petDataDir);
+                    setPathCopied(true);
+                    setTimeout(() => setPathCopied(false), 1500);
+                  } catch (e) {
+                    setPetDataDirError(String(e));
+                  }
+                }}
+                disabled={!petDataDir}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid var(--pet-color-border)",
+                  background: "var(--pet-color-card)",
+                  color: pathCopied ? "#16a34a" : "var(--pet-color-fg)",
+                  fontSize: 13,
+                  cursor: petDataDir ? "pointer" : "default",
+                }}
+                title="把绝对路径复制到剪贴板"
+              >
+                {pathCopied ? "已复制" : "复制路径"}
+              </button>
+            </div>
+            <div style={{ fontSize: "11px", color: "var(--pet-color-muted)", marginTop: 6, lineHeight: 1.6 }}>
+              此目录下：<code>config.yaml</code> 设置、<code>SOUL.md</code> 系统提示词、
+              <code>memories/</code> 记忆库（含 task_archive 归档）、<code>sessions/</code> 对话存档。
+              复制 / 备份整个目录即可迁移到新机器。
+            </div>
+          </>
+        )}
+      </div>
+      </SearchableSection>
+
       {/* Live2D */}
       <SearchableSection
         title="Live2D 模型"
@@ -1224,6 +1329,7 @@ export function PanelSettings() {
 /// 用一份内存又没好办法。新增 section 时同步加一行即可（漏加只影响 empty-
 /// state 表现，不影响主流程渲染）。
 const SETTINGS_SECTION_INDEX: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["本地数据目录", ["data", "dir", "path", "本地", "目录", "memory", "session", "config", "finder"]],
   ["Live2D 模型", ["live2d", "model", "motion", "miku", "映射", "动作"]],
   ["LLM 配置", ["llm", "api", "key", "model", "openai", "base", "url", "gpt"]],
   ["MCP Servers", ["mcp", "server", "tool", "工具", "服务器"]],

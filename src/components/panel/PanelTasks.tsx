@@ -369,6 +369,19 @@ export function PanelTasks() {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [loading, setLoading] = useState(true);
   const [showFinished, setShowFinished] = useState(false);
+  // 归档查看：default 折叠；点开 + lazy fetch task_archive 类目下的条目。
+  // 归档是只读视图（不展示 checkbox / action 按钮），用户回看老完成 / 取消
+  // 任务用。fetch 一次后保留在内存，再次展开不重 fetch（避免来回开关闪烁）；
+  // 用户主动「刷新」按钮强制重拉。
+  const [archiveExpanded, setArchiveExpanded] = useState(false);
+  const [archiveLoaded, setArchiveLoaded] = useState(false);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveItems, setArchiveItems] = useState<{
+    title: string;
+    description: string;
+    updated_at: string;
+  }[]>([]);
+  const [archiveError, setArchiveError] = useState("");
   // R91: 哪些任务的长描述已被用户展开。key = `${title}-${created_at}` 与
   // list <div key> 同款。session 内有效，关面板丢失（与 search / sort 等
   // 临时态同语义，不持久化）。
@@ -582,6 +595,27 @@ export function PanelTasks() {
       setErrMsg(`加载失败：${e}`);
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  // 拉取 task_archive 类目下的条目。`memory_list` 返回 categories.task_archive.items
+  // (title / description / updated_at)。失败时把错误信息显在 banner，不挡视图。
+  const reloadArchive = useCallback(async () => {
+    setArchiveLoading(true);
+    setArchiveError("");
+    try {
+      const idx = await invoke<{
+        categories: Record<string, { items: { title: string; description: string; updated_at: string }[] }>;
+      }>("memory_list", { category: "task_archive" });
+      const items = idx.categories?.task_archive?.items ?? [];
+      // updated_at 字典序倒排：相同格式 RFC3339 字符串与时序一致。
+      items.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      setArchiveItems(items);
+      setArchiveLoaded(true);
+    } catch (e) {
+      setArchiveError(`加载归档失败：${e}`);
+    } finally {
+      setArchiveLoading(false);
     }
   }, []);
 
@@ -2931,6 +2965,129 @@ export function PanelTasks() {
             );
           })
         )}
+        {/* 归档查看（只读）：折叠态默认；点开懒加载 task_archive 类目里的老条目，
+            带 [archived: YYYY-MM-DD] 头与 YYYY-MM-DD_ 文件名前缀。归档不参与
+            上面 visibleTasks 的过滤 / 排序 / 操作 —— 它是独立的回看视图。 */}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px dashed var(--pet-color-border)" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+            onClick={async () => {
+              const next = !archiveExpanded;
+              setArchiveExpanded(next);
+              if (next && !archiveLoaded) {
+                await reloadArchive();
+              }
+            }}
+            title={archiveExpanded ? "点击折叠归档列表" : "点击展开 task_archive（consolidate 自动归档的老任务）"}
+          >
+            <span style={{ width: 10, fontFamily: "monospace", color: "#475569" }}>
+              {archiveExpanded ? "▾" : "▸"}
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--pet-color-fg)" }}>
+              📦 归档
+            </span>
+            <span style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
+              {archiveLoaded ? `（${archiveItems.length} 条）` : "（点击加载）"}
+            </span>
+            {archiveLoaded && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void reloadArchive();
+                }}
+                disabled={archiveLoading}
+                style={{
+                  marginLeft: "auto",
+                  fontSize: 11,
+                  padding: "2px 8px",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: archiveLoading ? "default" : "pointer",
+                }}
+                title="重新拉取归档列表"
+              >
+                {archiveLoading ? "刷新中…" : "刷新"}
+              </button>
+            )}
+          </div>
+          {archiveError && (
+            <div style={{ ...s.err, marginTop: 8 }}>{archiveError}</div>
+          )}
+          {archiveExpanded && (
+            <div style={{ marginTop: 8 }}>
+              {archiveLoading && !archiveLoaded ? (
+                <div style={{ padding: "12px 0", color: "var(--pet-color-muted)", fontSize: 12 }}>
+                  正在加载归档…
+                </div>
+              ) : archiveItems.length === 0 ? (
+                <div style={s.empty}>
+                  归档为空。consolidate 会把 30 天前已结束的 butler_tasks 自动挪过来。
+                </div>
+              ) : (
+                archiveItems.map((it) => {
+                  // title 形如 "2026-04-01_整理 downloads"；display 把日期前缀
+                  // 单独亮出来。description 形如 "[archived: 2026-04-01] [task ...] 整理 [done] [result: 完成]"。
+                  const m = it.title.match(/^(\d{4}-\d{2}-\d{2})_(.*)$/);
+                  const archiveDate = m ? m[1] : "—";
+                  const displayTitle = m ? m[2] : it.title;
+                  return (
+                    <div
+                      key={it.title}
+                      style={{
+                        ...s.item,
+                        padding: "8px 10px",
+                        marginBottom: 6,
+                        background: "var(--pet-color-card)",
+                        opacity: 0.92,
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontFamily: "'SF Mono', 'Menlo', monospace",
+                            color: "var(--pet-color-muted)",
+                            background: "var(--pet-color-bg)",
+                            padding: "1px 5px",
+                            borderRadius: 3,
+                            flexShrink: 0,
+                          }}
+                          title="归档日期（来自 archive 时刻的 updated_at）"
+                        >
+                          {archiveDate}
+                        </span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--pet-color-fg)", wordBreak: "break-word" }}>
+                          {displayTitle}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "var(--pet-color-muted)",
+                          marginTop: 4,
+                          lineHeight: 1.5,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {it.description}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

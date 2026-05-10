@@ -115,6 +115,8 @@ pub fn run() {
             commands::settings::get_soul,
             commands::settings::get_user_name,
             commands::settings::save_soul,
+            commands::settings::get_pet_data_dir,
+            commands::settings::open_pet_data_dir,
             commands::window::open_panel,
             commands::window::open_debug,
             commands::debug::get_logs,
