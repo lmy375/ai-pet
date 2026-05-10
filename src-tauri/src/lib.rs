@@ -136,6 +136,7 @@ pub fn run() {
             tool_review::list_pending_tool_reviews,
             tool_review_policy::get_tool_risk_overview,
             tool_call_history::get_recent_tool_calls,
+            tool_call_history::get_top_tools_used,
             feedback_history::get_recent_feedback,
             feedback_history::record_bubble_dismissed,
             feedback_history::record_bubble_liked,

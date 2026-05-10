@@ -364,6 +364,38 @@ pub fn is_butler_due(
 /// consolidate loop can auto-clean finished one-shot tasks the way it already
 /// cleans stale reminders. Recurring `[every: ...]` tasks return false — they
 /// re-fire and shouldn't be deleted.
+/// 任务归档候选判定：`butler_tasks` 条目当前已是终态（done / cancelled）
+/// 且 `updated_at` 已超出 `retention_days` 时返回 true。pending / error
+/// 条目永远不归档（用户还在追踪 / pet 还可能重试）。`retention_days == 0`
+/// → 永远 false（关闭归档）。`updated_at` 解析失败也返回 false（保守）。
+///
+/// 与 `is_completed_once`（仅删除按时执行掉的 [once] 任务）互补：本判定
+/// 覆盖一般用户手填或 LLM 自然完成的任务，把老条目挪去 task_archive，
+/// 让活跃队列长期保持轻量。Pure，单测可覆盖每一分支。
+pub fn is_archive_candidate(
+    desc: &str,
+    last_updated: &str,
+    today: chrono::NaiveDate,
+    retention_days: u32,
+) -> bool {
+    if retention_days == 0 {
+        return false;
+    }
+    let (status, _) = crate::task_queue::classify_status(desc);
+    if !matches!(
+        status,
+        crate::task_queue::TaskStatus::Done | crate::task_queue::TaskStatus::Cancelled
+    ) {
+        return false;
+    }
+    let Some(last) = parse_updated_at_local(last_updated) else {
+        return false;
+    };
+    let last_date = last.date();
+    let days_old = (today - last_date).num_days();
+    days_old >= retention_days as i64
+}
+
 pub fn is_completed_once(
     desc: &str,
     last_updated: &str,
@@ -761,6 +793,118 @@ mod tests {
             "not-a-timestamp"
         ));
         assert!(is_butler_due(&ButlerSchedule::Every(9, 0), now, ""));
+    }
+
+    // -- is_archive_candidate -----------------------------------------------
+
+    fn day(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// 把本地日期 + 时分铸成 RFC3339 字符串，与 `now_iso()` 写盘格式一致：
+    /// `YYYY-MM-DDTHH:MM:SS+HH:MM`。
+    fn local_iso(y: i32, m: u32, d: u32, hour: u32, minute: u32) -> String {
+        use chrono::TimeZone;
+        let naive = day(y, m, d).and_hms_opt(hour, minute, 0).unwrap();
+        chrono::Local
+            .from_local_datetime(&naive)
+            .unwrap()
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string()
+    }
+
+    #[test]
+    fn is_archive_candidate_done_past_threshold_returns_true() {
+        let updated = local_iso(2026, 4, 1, 10, 0);
+        assert!(is_archive_candidate(
+            "[task pri=1] 整理 [done] [result: 完成]",
+            &updated,
+            day(2026, 5, 10),
+            30,
+        ));
+    }
+
+    #[test]
+    fn is_archive_candidate_cancelled_past_threshold_returns_true() {
+        let updated = local_iso(2026, 4, 1, 10, 0);
+        assert!(is_archive_candidate(
+            "[task pri=1] 整理 [cancelled: 不需要了]",
+            &updated,
+            day(2026, 5, 10),
+            30,
+        ));
+    }
+
+    #[test]
+    fn is_archive_candidate_pending_never_archived() {
+        let updated = local_iso(2026, 1, 1, 10, 0);
+        assert!(!is_archive_candidate(
+            "[task pri=1] 整理",
+            &updated,
+            day(2026, 5, 10),
+            30,
+        ));
+    }
+
+    #[test]
+    fn is_archive_candidate_error_never_archived() {
+        let updated = local_iso(2026, 1, 1, 10, 0);
+        assert!(!is_archive_candidate(
+            "[task pri=1] 整理 [error: 文件不存在]",
+            &updated,
+            day(2026, 5, 10),
+            30,
+        ));
+    }
+
+    #[test]
+    fn is_archive_candidate_within_threshold_returns_false() {
+        let updated = local_iso(2026, 5, 5, 10, 0);
+        assert!(!is_archive_candidate(
+            "[task pri=1] 整理 [done]",
+            &updated,
+            day(2026, 5, 10),
+            30,
+        ));
+    }
+
+    #[test]
+    fn is_archive_candidate_zero_retention_disables_archive() {
+        let updated = local_iso(2020, 1, 1, 10, 0);
+        assert!(!is_archive_candidate(
+            "[task pri=1] 整理 [done]",
+            &updated,
+            day(2026, 5, 10),
+            0,
+        ));
+    }
+
+    #[test]
+    fn is_archive_candidate_unparseable_updated_at_skipped() {
+        assert!(!is_archive_candidate(
+            "[task pri=1] 整理 [done]",
+            "garbage",
+            day(2026, 5, 10),
+            30,
+        ));
+        assert!(!is_archive_candidate(
+            "[task pri=1] 整理 [done]",
+            "",
+            day(2026, 5, 10),
+            30,
+        ));
+    }
+
+    #[test]
+    fn is_archive_candidate_exactly_at_threshold_archives() {
+        // updated_at 距 today 整 30 天 → 满足 >= 30 等号；归档。
+        let updated = local_iso(2026, 4, 10, 10, 0);
+        assert!(is_archive_candidate(
+            "[task pri=1] 整理 [done]",
+            &updated,
+            day(2026, 5, 10),
+            30,
+        ));
     }
 
     // -- Iter R77: deadline parsing + urgency + format ----------------------

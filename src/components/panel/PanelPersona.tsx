@@ -49,6 +49,10 @@ export function PanelPersona() {
   const [personaUpdatedAt, setPersonaUpdatedAt] = useState<string>("");
   const [moodTrend, setMoodTrend] = useState<string>("");
   const [moodDaily, setMoodDaily] = useState<DailyMotion[]>([]);
+  // 「最近常用的工具」section 的派生数据：来自最近 30 次 tool_call_history
+  // ring buffer 的 top 5 by count（同 count 时按最近调用先）。空 buffer →
+  // 空数组，section 走「还没动过手」empty state。
+  const [topTools, setTopTools] = useState<{ name: string; count: number; last_used_at: string }[]>([]);
   const [currentMood, setCurrentMood] = useState<CurrentMood>({
     text: "",
     motion: null,
@@ -78,7 +82,7 @@ export function PanelPersona() {
     let cancelled = false;
     const fetchAll = async () => {
       try {
-        const [date, days, summary, trend, mood, name, daily] = await Promise.all([
+        const [date, days, summary, trend, mood, name, daily, tools] = await Promise.all([
           invoke<string>("get_install_date"),
           invoke<number>("get_companionship_days"),
           invoke<{ text: string; updated_at: string }>("get_persona_summary"),
@@ -86,6 +90,7 @@ export function PanelPersona() {
           invoke<CurrentMood>("get_current_mood"),
           invoke<string>("get_user_name"),
           invoke<DailyMotion[]>("get_mood_daily_motions", { days: sparklineDays }),
+          invoke<{ name: string; count: number; last_used_at: string }[]>("get_top_tools_used"),
         ]);
         if (cancelled) return;
         setInstallDate(date);
@@ -96,6 +101,7 @@ export function PanelPersona() {
         setCurrentMood(mood);
         setUserName(name);
         setMoodDaily(daily);
+        setTopTools(tools);
       } catch (e) {
         console.error("PanelPersona fetch failed:", e);
       }
@@ -410,6 +416,76 @@ export function PanelPersona() {
                 </span>
               )}
             </div>
+          </div>
+        )}
+      </Section>
+
+      {/* 「最近常用的工具」：从 tool_call_history ring buffer (cap=30) 派生
+          top 5 by count + 最近调用时间。让用户感知宠物在练什么手艺，与
+          自我画像（自报）+ 当下心情（自报）三层「自我感」拼成完整面板：
+          说自己是谁 / 现在感觉如何 / 实际在做什么。 */}
+      <Section
+        title="最近常用的工具"
+        subtitle="tool_call_history 最近 30 次调用里 top 5：count 高优先 / 同 count 取最近一次"
+      >
+        {topTools.length === 0 ? (
+          <p style={{ fontSize: "13px", color: "var(--pet-color-muted)", margin: 0, fontStyle: "italic" }}>
+            还没动过手。等下次开口里 LLM 调工具就会出现在这。
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            {topTools.map((t) => {
+              // last_used_at 形如 "YYYY-MM-DD HH:MM:SS"。直接 Date.parse
+              // 在某些 locale 下不稳，换成手动 split 拼一个 Date —— 不过
+              // 这里只为了渲染相对时间，简单用 Date.parse + finite 检查
+              // 兜底（解析失败就只显示原文，不挡视图）。
+              const ts = Date.parse(t.last_used_at.replace(" ", "T"));
+              const ageStr = (() => {
+                if (!Number.isFinite(ts)) return t.last_used_at;
+                const ageMs = Date.now() - ts;
+                const ageMin = Math.floor(ageMs / 60000);
+                if (ageMin < 1) return "刚刚";
+                if (ageMin < 60) return `${ageMin} 分钟前`;
+                const ageHr = Math.floor(ageMin / 60);
+                if (ageHr < 24) return `${ageHr} 小时前`;
+                const ageDay = Math.floor(ageHr / 24);
+                return `${ageDay} 天前`;
+              })();
+              return (
+                <div
+                  key={t.name}
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: "10px",
+                    fontSize: "13px",
+                    color: "var(--pet-color-fg)",
+                  }}
+                >
+                  <code
+                    style={{
+                      fontFamily: "'SF Mono', 'Menlo', monospace",
+                      fontSize: "12px",
+                      padding: "1px 6px",
+                      background: "var(--pet-color-bg)",
+                      borderRadius: 4,
+                      color: "var(--pet-color-fg)",
+                    }}
+                  >
+                    {t.name}
+                  </code>
+                  <span style={{ color: "var(--pet-color-muted)", fontSize: 12 }}>
+                    × {t.count}
+                  </span>
+                  <span
+                    style={{ color: "var(--pet-color-muted)", fontSize: 11, marginLeft: "auto" }}
+                    title={`最近一次：${t.last_used_at}`}
+                  >
+                    {ageStr}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </Section>

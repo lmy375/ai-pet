@@ -296,6 +296,12 @@ pub struct MemoryConsolidateConfig {
     /// higher (90, 365) if you want to scroll back further; 0 disables pruning.
     #[serde(default = "default_stale_daily_review_days")]
     pub stale_daily_review_days: u32,
+    /// 终态（done / cancelled）butler_tasks 的归档保留天数。consolidate 把
+    /// updated_at 早于该阈值的终态任务移到 `task_archive` 类目，让活跃任务
+    /// 队列长期保持轻量。设为 0 关闭归档（旧任务永久留在 butler_tasks）；
+    /// 设为更短让队列更轻、更长让最近完成在面板里多停一段时间。
+    #[serde(default = "default_stale_butler_archive_days")]
+    pub stale_butler_archive_days: u32,
     /// 周报合成的"周日 closing 时刻"（本地时间小时 0-23）。在该时刻之后
     /// （含整点）的下一次 consolidate loop 唤醒会触发周报合成 → 写入
     /// `ai_insights/weekly_summary_YYYY-Www`。0 = 关闭周报。默认 20。
@@ -328,6 +334,10 @@ fn default_stale_daily_review_days() -> u32 {
     30
 }
 
+fn default_stale_butler_archive_days() -> u32 {
+    30
+}
+
 fn default_weekly_summary_closing_hour() -> u8 {
     crate::weekly_summary::DEFAULT_CLOSING_HOUR
 }
@@ -342,6 +352,7 @@ impl Default for MemoryConsolidateConfig {
             stale_plan_hours: default_stale_plan_hours(),
             stale_once_butler_hours: default_stale_once_butler_hours(),
             stale_daily_review_days: default_stale_daily_review_days(),
+            stale_butler_archive_days: default_stale_butler_archive_days(),
             weekly_summary_closing_hour: default_weekly_summary_closing_hour(),
         }
     }

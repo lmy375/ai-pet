@@ -83,6 +83,7 @@ export function PanelSettings() {
       stale_plan_hours: 24,
       stale_once_butler_hours: 48,
       stale_daily_review_days: 30,
+      stale_butler_archive_days: 30,
       weekly_summary_closing_hour: 20,
     },
     chat: {
@@ -1127,9 +1128,23 @@ export function PanelSettings() {
               })
             }
           />
+          <PanelNumberField
+            label="butler 任务归档 (天，0=关闭)"
+            value={form.memory_consolidate.stale_butler_archive_days}
+            min={0}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                memory_consolidate: {
+                  ...form.memory_consolidate,
+                  stale_butler_archive_days: Math.max(0, v),
+                },
+              })
+            }
+          />
         </div>
         <div style={{ fontSize: "11px", color: "var(--pet-color-muted)", marginTop: "4px" }}>
-          reminder：consolidate 跑时删超过该时长的过期 [remind: YYYY-MM-DD HH:MM]。plan：daily_plan 条目 updated_at 超过该时长就清空。butler：完成的 [once] 任务过该时长后被自动清掉。daily_review：保留最近 N 天的 22:00 写入的 ai_insights/daily_review_YYYY-MM-DD 条目；0 = 永不清理。
+          reminder：consolidate 跑时删超过该时长的过期 [remind: YYYY-MM-DD HH:MM]。plan：daily_plan 条目 updated_at 超过该时长就清空。butler：完成的 [once] 任务过该时长后被自动清掉。daily_review：保留最近 N 天的 22:00 写入的 ai_insights/daily_review_YYYY-MM-DD 条目；0 = 永不清理。归档：终态（done / cancelled）butler_tasks 超过该天数后自动挪到 task_archive 类目，活跃队列长期保持轻量；0 = 永不归档。
         </div>
       </div>
       </SearchableSection>

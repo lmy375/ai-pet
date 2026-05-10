@@ -138,6 +138,61 @@ pub fn get_recent_tool_calls() -> Vec<ToolCallRecord> {
     recent_tool_calls()
 }
 
+/// 「宠物常用工具」面板视图给前端用。`name` 是工具名，`count` 是其在
+/// 当前 ring buffer 里出现次数，`last_used_at` 是最近一次调用 timestamp
+/// （格式与 `record_tool_call` 写入一致：`YYYY-MM-DD HH:MM:SS`）。按
+/// count 降序、count 相同时 last_used_at 字典序降序（更近优先），稳定可
+/// 测。
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct ToolUsageStat {
+    pub name: String,
+    pub count: u64,
+    pub last_used_at: String,
+}
+
+/// 从一组记录里派生 top N 工具。Pure，单测友好；调用方传 records
+/// （任意来源 / 顺序），结果按上面文档的两层排序排好。`top_n == 0` →
+/// 空 Vec。
+pub fn derive_top_tools(records: &[ToolCallRecord], top_n: usize) -> Vec<ToolUsageStat> {
+    if top_n == 0 {
+        return Vec::new();
+    }
+    use std::collections::HashMap;
+    // (count, latest_ts) 的中间累加：每条记录递增 count、刷新 latest_ts。
+    let mut acc: HashMap<String, (u64, String)> = HashMap::new();
+    for r in records {
+        let entry = acc.entry(r.name.clone()).or_insert((0, String::new()));
+        entry.0 += 1;
+        // timestamp 字符串可比 — 同格式 `YYYY-MM-DD HH:MM:SS` 字典序与时序一致。
+        if r.timestamp > entry.1 {
+            entry.1 = r.timestamp.clone();
+        }
+    }
+    let mut stats: Vec<ToolUsageStat> = acc
+        .into_iter()
+        .map(|(name, (count, last_used_at))| ToolUsageStat {
+            name,
+            count,
+            last_used_at,
+        })
+        .collect();
+    stats.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    stats.truncate(top_n);
+    stats
+}
+
+/// Tauri command 形：从当前 ring buffer 派生 top 5。前端在 PanelPersona
+/// 「最近常用的工具」一节展示。空 buffer → 空 Vec。
+#[tauri::command]
+pub fn get_top_tools_used() -> Vec<ToolUsageStat> {
+    derive_top_tools(&recent_tool_calls(), 5)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +309,95 @@ mod tests {
             ToolCallReviewStatus::MissingPurpose.as_str(),
             "missing_purpose"
         );
+    }
+
+    fn rec(name: &str, ts: &str) -> ToolCallRecord {
+        ToolCallRecord {
+            timestamp: ts.to_string(),
+            name: name.to_string(),
+            args_excerpt: String::new(),
+            purpose: String::new(),
+            risk_level: "low".to_string(),
+            reasons: Vec::new(),
+            safe_alternative: None,
+            review_status: ToolCallReviewStatus::NotRequired,
+            result_excerpt: String::new(),
+        }
+    }
+
+    #[test]
+    fn derive_top_tools_empty_input_returns_empty() {
+        assert!(derive_top_tools(&[], 5).is_empty());
+    }
+
+    #[test]
+    fn derive_top_tools_zero_top_n_returns_empty() {
+        let recs = vec![rec("a", "2026-05-01 10:00:00")];
+        assert!(derive_top_tools(&recs, 0).is_empty());
+    }
+
+    #[test]
+    fn derive_top_tools_orders_by_count_desc() {
+        let recs = vec![
+            rec("read_file", "2026-05-01 10:00:00"),
+            rec("read_file", "2026-05-02 10:00:00"),
+            rec("read_file", "2026-05-03 10:00:00"),
+            rec("write_file", "2026-05-04 10:00:00"),
+        ];
+        let out = derive_top_tools(&recs, 5);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "read_file");
+        assert_eq!(out[0].count, 3);
+        assert_eq!(out[1].name, "write_file");
+        assert_eq!(out[1].count, 1);
+    }
+
+    #[test]
+    fn derive_top_tools_picks_latest_timestamp_per_tool() {
+        let recs = vec![
+            rec("memory_search", "2026-05-01 09:00:00"),
+            rec("memory_search", "2026-05-03 12:00:00"),
+            rec("memory_search", "2026-05-02 15:00:00"),
+        ];
+        let out = derive_top_tools(&recs, 5);
+        assert_eq!(out[0].name, "memory_search");
+        assert_eq!(out[0].last_used_at, "2026-05-03 12:00:00");
+    }
+
+    #[test]
+    fn derive_top_tools_truncates_to_top_n() {
+        let recs = vec![
+            rec("a", "2026-05-01 10:00:00"),
+            rec("b", "2026-05-01 10:00:00"),
+            rec("c", "2026-05-01 10:00:00"),
+            rec("d", "2026-05-01 10:00:00"),
+            rec("e", "2026-05-01 10:00:00"),
+            rec("f", "2026-05-01 10:00:00"),
+        ];
+        let out = derive_top_tools(&recs, 3);
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn derive_top_tools_breaks_count_ties_by_recency() {
+        // a 和 b 各 1 次；b 更新更近 → 排前。
+        let recs = vec![
+            rec("a", "2026-05-01 10:00:00"),
+            rec("b", "2026-05-02 10:00:00"),
+        ];
+        let out = derive_top_tools(&recs, 5);
+        assert_eq!(out[0].name, "b");
+        assert_eq!(out[1].name, "a");
+    }
+
+    #[test]
+    fn derive_top_tools_breaks_full_tie_alphabetically() {
+        let recs = vec![
+            rec("zeta", "2026-05-01 10:00:00"),
+            rec("alpha", "2026-05-01 10:00:00"),
+        ];
+        let out = derive_top_tools(&recs, 5);
+        assert_eq!(out[0].name, "alpha");
+        assert_eq!(out[1].name, "zeta");
     }
 }
