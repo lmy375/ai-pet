@@ -29,7 +29,6 @@ interface PanelChipStripProps {
   onResetLlmOutcome: () => void;
   onResetEnvTool: () => void;
   onResetPromptTilt: () => void;
-  logsCount: number;
 }
 
 const resetBtnStyle: React.CSSProperties = {
@@ -57,7 +56,6 @@ export function PanelChipStrip(props: PanelChipStripProps) {
     onResetLlmOutcome,
     onResetEnvTool,
     onResetPromptTilt,
-    logsCount,
   } = props;
 
   return (
@@ -273,10 +271,6 @@ export function PanelChipStrip(props: PanelChipStripProps) {
             </button>
           );
         })()}
-      <span style={{ flex: 1 }} />
-      <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>
-        {logsCount} 条日志
-      </span>
     </div>
   );
 }
