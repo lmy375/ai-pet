@@ -5,8 +5,9 @@
 >   - 不要周报日报相关的需求。
 > 2. 每个需求要是一个具体、有价值的、工作量适中的任务。任务要为了实现 `GOAL.md` 中的目标而制定。任务不能过度复杂，如果某个任务过于宏大，可以考虑放到 `GOAL.md` 中。
 > 3. 每一条需求，在实现时，在 docs 中创建一个 `yyyymmdd-hhmm-title.md` 的文件。编写开发计划，记录开发结果。
-> 4. 开发完成后，将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。
+> 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。并提交一个 git commit。
 > 
 
-- PanelTasks STATUS_BADGE 其余三档 + dueColor("soon") 配色迁 token：line 61 pending `#e0f2fe`/`#075985` → tint-blue；line 63 done `#dcfce7`/`#166534` → tint-green；line 64 cancelled `#f1f5f9`/`#64748b` → bg + muted；line 144 soon `#ea580c` → tint-orange-fg。status semantics 收尾。
-- PanelToneStrip / PanelChipStrip / PanelPersona 红字提示迁 token：PanelToneStrip line 359/385、PanelChipStrip line 153/196、PanelPersona line 283 跨三个 panel 仍 hardcoded `#dc2626`，迁到 `tint-orange-fg` 与 R147~R153 全局警示一致。
+- 删除关于隐私内容过滤的代码。注意要清理干净，同时保持代码规范。
+- Panel 的任务页现在打开是白屏，排查问题并修复。
+- Debug 页目前做的太乱了，首先将应用日志与LLM 日志用单独的 Tab 分好。剩余的关于各种统计信息的页，优化展示 UI，现在没法看。但这块不要花太多时间反复弄，差不多就行，毕竟只是调试用的。

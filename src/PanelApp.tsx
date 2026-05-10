@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { Component, ErrorInfo, ReactNode, useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelSettings } from "./components/panel/PanelSettings";
 import { PanelChat } from "./components/panel/PanelChat";
@@ -6,6 +6,91 @@ import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelPersona } from "./components/panel/PanelPersona";
 import { PanelTasks } from "./components/panel/PanelTasks";
 import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./theme";
+
+/**
+ * Tab-level error boundary so一个 tab 渲染异常时不会让整个 panel 变白屏 ——
+ * 报错文本直接显示在内容区，便于用户截图反馈 + 开发期定位。reset 把 key
+ * 改一下让 React 卸载/重挂错的子树。
+ */
+class TabErrorBoundary extends Component<
+  { children: ReactNode; tabKey: string },
+  { error: Error | null; info: ErrorInfo | null }
+> {
+  state: { error: Error | null; info: ErrorInfo | null } = { error: null, info: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("PanelApp tab boundary caught:", error, info);
+    this.setState({ error, info });
+  }
+
+  componentDidUpdate(prev: { tabKey: string }) {
+    if (prev.tabKey !== this.props.tabKey && this.state.error) {
+      this.setState({ error: null, info: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div
+          style={{
+            padding: 24,
+            color: "var(--pet-tint-orange-fg)",
+            background: "var(--pet-tint-orange-bg)",
+            margin: 16,
+            borderRadius: 8,
+            fontFamily: "system-ui, sans-serif",
+            fontSize: 13,
+            lineHeight: 1.6,
+            overflow: "auto",
+            maxHeight: "100%",
+            boxSizing: "border-box",
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>
+            「{this.props.tabKey}」页渲染出错
+          </div>
+          <div style={{ marginBottom: 8 }}>{String(this.state.error.message ?? this.state.error)}</div>
+          {this.state.error.stack && (
+            <pre
+              style={{
+                fontSize: 11,
+                whiteSpace: "pre-wrap",
+                background: "rgba(0,0,0,0.05)",
+                padding: 8,
+                borderRadius: 4,
+                overflowX: "auto",
+              }}
+            >
+              {this.state.error.stack}
+            </pre>
+          )}
+          <button
+            type="button"
+            onClick={() => this.setState({ error: null, info: null })}
+            style={{
+              marginTop: 12,
+              padding: "6px 12px",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 4,
+              background: "var(--pet-color-card)",
+              color: "var(--pet-color-fg)",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            重试渲染
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const TABS = ["设置", "聊天", "任务", "记忆", "人格"] as const;
 type Tab = (typeof TABS)[number];
@@ -15,7 +100,10 @@ type Tab = (typeof TABS)[number];
 const OVERDUE_POLL_MS = 30_000;
 
 export function PanelApp() {
-  const [activeTab, setActiveTab] = useState<Tab>("设置");
+  // 从桌面宠物的聊天按钮进面板时直接停在「聊天」tab —— 主入口语义和
+  // 按钮 title「打开聊天面板」对齐。其它入口（调试 ↗ / 任务标签外链）
+  // 会在自己的处理器里覆盖这个初值。
+  const [activeTab, setActiveTab] = useState<Tab>("聊天");
   const [overdueCount, setOverdueCount] = useState<number>(0);
   // 主题：迭代 1 仅框架级 surface 切换（顶层 bg / tab bar）。组件内部
   // inline color 留给后续迭代按 panel 逐步迁移到 CSS var。启动时从
@@ -149,13 +237,15 @@ export function PanelApp() {
         </button>
       </div>
 
-      {/* Tab content */}
+      {/* Tab content. ErrorBoundary 包一层，渲染异常不会让整个 panel 白屏。 */}
       <div style={{ flex: 1, overflow: "hidden" }}>
-        {activeTab === "设置" && <PanelSettings />}
-        {activeTab === "聊天" && <PanelChat onRequestTab={setActiveTab} />}
-        {activeTab === "任务" && <PanelTasks />}
-        {activeTab === "记忆" && <PanelMemory />}
-        {activeTab === "人格" && <PanelPersona />}
+        <TabErrorBoundary tabKey={activeTab}>
+          {activeTab === "设置" && <PanelSettings />}
+          {activeTab === "聊天" && <PanelChat onRequestTab={setActiveTab} />}
+          {activeTab === "任务" && <PanelTasks />}
+          {activeTab === "记忆" && <PanelMemory />}
+          {activeTab === "人格" && <PanelPersona />}
+        </TabErrorBoundary>
       </div>
     </div>
   );

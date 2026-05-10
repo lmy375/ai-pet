@@ -20,7 +20,6 @@ use tokio::sync::Mutex as TokioMutex;
 // glob `pub use` re-exports the public API so external callers
 // (`consolidate.rs`, panel commands) keep reaching items via the historical
 // `crate::proactive::ReminderTarget` / `parse_reminder_prefix` paths.
-mod active_app;
 mod butler_schedule;
 mod daily_review;
 mod gate;
@@ -30,7 +29,6 @@ mod prompt_rules;
 mod reminders;
 mod telemetry;
 mod time_helpers;
-pub use self::active_app::*;
 pub use self::butler_schedule::*;
 pub use self::daily_review::*;
 pub use self::gate::*;
@@ -263,11 +261,6 @@ pub struct ToneSnapshot {
     /// via a separate Tauri command, but bundling it here lets the strip render
     /// the milestone cue without a second IPC.
     pub companionship_days: u64,
-    /// Iter D3: macOS Focus mode label when active, None otherwise. Same signal
-    /// the proactive engine reads via `focus_mode::focus_status` to decide
-    /// whether to gate. Surfaced so the panel can show 🎯 「work」 chip and
-    /// the user can immediately see why the pet may be especially quiet.
-    pub focus_mode: Option<String>,
     /// Iter D4: true when the current hour is inside the configured quiet
     /// window (settings.proactive.quiet_hours_start/end). Distinct from
     /// `pre_quiet_minutes`: pre_quiet fires within 15 min *before* the window
@@ -311,11 +304,6 @@ pub struct ToneSnapshot {
     /// hint; R21 redacts here for the panel chip). None when no ngram
     /// recurs across enough distinct lines (the common "healthy" case).
     pub repeated_topic: Option<String>,
-    /// Iter R22: active-app snapshot (R15's data, panel-visible). Read-only
-    /// inspection of the LAST_ACTIVE_APP static — panel polling does NOT
-    /// reset the "since" clock. None on fresh process / non-macOS / when
-    /// no proactive turn has yet observed the foreground app.
-    pub active_app: Option<crate::proactive::active_app::ActiveAppSummary>,
     /// Iter R23: cooldown breakdown showing how the effective cooldown is
     /// derived: configured × companion_mode × R7-feedback-band. Lets the
     /// panel hover render "1800s × 1.0 (balanced) × 2.0 (high_negative)
@@ -353,39 +341,11 @@ pub struct ToneSnapshot {
     /// `mute_remaining_seconds` (R52). Lets panel chip and button hover
     /// show countdown so user sees how long until note auto-expires.
     pub transient_note_remaining_seconds: Option<i64>,
-    /// Iter R64: effective hard-block threshold (minutes) after applying
-    /// `companion_mode` to `HARD_FOCUS_BLOCK_MINUTES`. balanced=90,
-    /// chatty=135, quiet=60. Surfaced so the panel chip can color-band
-    /// the active-app duration the same way the gate does — keeps
-    /// chip color and gate behavior aligned for non-balanced users.
-    pub effective_hard_block_minutes: u64,
-    /// Iter R65: today's deep-focus stretch summary — finalized stretches
-    /// only (in-progress not counted). None when nothing finalized today
-    /// yet (or yesterday's data already filtered out by date check).
-    /// Surfaced so PanelStatsCard can show "今日深度专注 N 次, X 分钟"
-    /// as a self-report stat distinct from the speech-count column.
-    pub daily_block_stats: Option<crate::proactive::active_app::DailyBlockStats>,
-    /// Iter R76: panel-side flag for "today's peak is a personal record"
-    /// (R74 strict-> semantic). True when today's max_single_stretch
-    /// strictly exceeds the prior 7-day best. Surfaced so PanelStatsCard
-    /// can render a ⭐ icon for at-a-glance celebration without re-running
-    /// the comparison logic in TS.
-    pub is_personal_record_today: bool,
     /// Iter R78: count of butler_tasks with `[deadline:]` prefix whose
     /// urgency is Imminent (<1h) or Overdue. Approaching (1-6h) and Distant
     /// don't contribute — chip is for "act now", not awareness. 0 when
     /// no deadline-prefixed tasks or all still distant.
     pub urgent_deadline_count: u64,
-    /// Iter R68: weekly deep-focus summary — aggregated across last 7
-    /// calendar days from DAILY_BLOCK_HISTORY. None when no entries in
-    /// the window (fresh install / 7+ days quiet). Surfaced so the user
-    /// sees "本周专注 N 次/Xm/Y 天" trend distinct from today's row.
-    pub weekly_block_stats: Option<crate::proactive::active_app::WeeklyBlockSummary>,
-    /// Iter R69: week-over-week trend for deep-focus minutes — direction
-    /// (up / flat / down) + signed % delta vs prior week. None until
-    /// both this week and prior week have data (8+ days of history).
-    /// Surfaced as inline ↑/=/↓ icon on the panel weekly column.
-    pub week_trend: Option<crate::proactive::active_app::WeekOverWeekTrend>,
 }
 
 /// Iter R23: structured breakdown of effective cooldown derivation.
@@ -788,12 +748,6 @@ pub async fn build_tone_snapshot(
         companionship_milestone: companionship_milestone(companionship_days_for_rules)
             .map(|s| s.to_string()),
         companionship_days: companionship_days_for_rules,
-        // Iter D3: macOS Focus state — same source as the gate path uses.
-        // Returns None on non-macOS or when no Focus is active.
-        focus_mode: match crate::focus_mode::focus_status().await {
-            Some(s) if s.active => s.name.or_else(|| Some("active".to_string())),
-            _ => None,
-        },
         // Iter D4: same in_quiet_hours predicate the gate uses, so the panel
         // can flag "the pet is currently dormant".
         in_quiet_hours: get_settings()
@@ -869,10 +823,6 @@ pub async fn build_tone_snapshot(
         speech_register: crate::speech_history::classify_speech_register(&recent_for_signals),
         repeated_topic: crate::speech_history::detect_repeated_topic(&recent_for_signals, 4, 3)
             .map(|t| crate::redaction::redact_with_settings(&t)),
-        // Iter R22: read-only inspect of LAST_ACTIVE_APP — does NOT update
-        // the static's `since` clock the way run_proactive_turn does, so
-        // panel polling is safe.
-        active_app: snapshot_active_app(),
         cooldown_breakdown,
         // Iter R31: count chars of the last constructed prompt. chars().count()
         // not len() so 30 char CJK doesn't read as 90 byte budget.
@@ -906,40 +856,10 @@ pub async fn build_tone_snapshot(
         transient_note: transient_note_active(),
         // Iter R56: transient note remaining seconds for chip/hover countdown.
         transient_note_remaining_seconds: transient_note_remaining_seconds(),
-        // Iter R64: effective hard-block threshold (minutes) after companion_mode
-        // applies. Same value gate uses, so chip color band stays aligned with
-        // gate behavior even when user picks chatty (135) or quiet (60). Reads
-        // settings here (separate from `build_cooldown_breakdown`'s read) — fine,
-        // settings reads are cheap, and keeps this field's derivation co-located
-        // with its definition.
-        effective_hard_block_minutes: get_settings()
-            .ok()
-            .map(|s| {
-                s.proactive
-                    .effective_hard_block_minutes(HARD_FOCUS_BLOCK_MINUTES)
-            })
-            .unwrap_or(HARD_FOCUS_BLOCK_MINUTES),
-        // Iter R65: today's deep-focus stretch summary. Same accessor the
-        // gate / take_recovery_hint write through — single source of
-        // truth. None on fresh process / before any stretch finalizes
-        // today (or yesterday's record filtered out by date check).
-        daily_block_stats: crate::proactive::active_app::current_daily_block_stats(),
-        // Iter R76: panel-side record flag. Reuses the R74 wrapper's
-        // signal — non-empty hint string == record fired. Avoids a
-        // second history walk; same source as R74 / R75 so panel,
-        // proactive prompt, and chat layer all agree on what's a record.
-        is_personal_record_today: !crate::proactive::active_app::current_personal_record_hint()
-            .is_empty(),
         // Iter R78: surface the urgent-deadline count via the ⏳ chip.
         // Iter R81: same value also flows into cooldown_breakdown above so
         // the chip and the cooldown shrink stay in lockstep.
         urgent_deadline_count,
-        // Iter R68: weekly deep-focus summary — aggregated across last 7
-        // calendar days. Same DAILY_BLOCK_HISTORY source as daily_block_stats.
-        weekly_block_stats: crate::proactive::active_app::current_weekly_block_summary(),
-        // Iter R69: week-over-week trend (this week vs prior week). None
-        // until both windows have data; needs 8+ days of history.
-        week_trend: crate::proactive::active_app::current_week_over_week_trend(),
     })
 }
 
@@ -1488,20 +1408,6 @@ async fn run_proactive_turn(
     // (bullet list / topic ngram / length distribution) from one fetch.
     let length_register_hint = crate::speech_history::format_speech_length_hint(&recent_speeches);
 
-    // Surface the user's active Focus mode (if any) so the pet can speak around it. This
-    // path normally only runs when the user has unset `respect_focus_mode` — otherwise the
-    // gate would have skipped before we got here.
-    let focus_hint = match crate::focus_mode::focus_status().await {
-        Some(s) if s.active => match &s.name {
-            Some(n) => format!(
-                "用户当前开着 macOS Focus 模式：「{}」（说明 ta 想专注，开口要克制）。",
-                n
-            ),
-            None => "用户当前开着某个 macOS Focus 模式（说明 ta 想专注，开口要克制）。".to_string(),
-        },
-        _ => String::new(),
-    };
-
     let period = period_of_day(now_local.hour() as u8);
     let time_str = now_local.format("%Y-%m-%d %H:%M").to_string();
     // Iter Cβ: weekday/weekend label, e.g. "周日 · 周末". Joins with period in the
@@ -1563,37 +1469,6 @@ async fn run_proactive_turn(
         .ok()
         .map(|s| s.proactive.effective_chatty_threshold())
         .unwrap_or(5);
-    // Iter R15: snapshot the foreground app + update the duration tracker.
-    // Hint fires when the user has been in the same app ≥ MIN_DURATION_MINUTES;
-    // empty otherwise. Reads via the same osascript path as get_active_window
-    // tool — non-macOS / failure → None → empty hint, no panic.
-    let current_app = crate::tools::system_tools::current_active_window()
-        .await
-        .map(|(app, _)| app);
-    let active_app_hint = update_and_format_active_app_hint(current_app.as_deref());
-
-    // Iter R63: take-and-clear the deep-focus recovery hint if a hard-block
-    // ended within the last 10 minutes. Single-shot per block stretch — once
-    // taken, won't re-fire on subsequent runs in the same window. Empty when
-    // no recent hard-block or already consumed.
-    let deep_focus_recovery_hint = take_recovery_hint();
-
-    // Iter R66: yesterday's deep-focus recap, gated to first-of-day like
-    // cross_day_hint / yesterday_recap_hint. Empty when no yesterday data
-    // (process restarted today / fresh install / quiet day yesterday).
-    let yesterday_focus_hint = if today_speech_count == 0 {
-        format_yesterday_focus_recap_hint(yesterday_block_stats().as_ref())
-    } else {
-        String::new()
-    };
-
-    // Iter R74: personal-record celebration. Fires only when today's peak
-    // strictly exceeds the prior 7-day best (no tied / first-ever). Empty
-    // string when no record. Not first-of-day gated — celebrate as soon
-    // as the new peak finalizes (could be multiple turns after a long
-    // stretch wraps).
-    let personal_record_hint = current_personal_record_hint();
-
     // Iter R14: at the first proactive turn of a new day, surface yesterday's
     // last 2 utterances so the pet can pick up a thread instead of starting
     // cold every morning. Empty when (a) not first-of-day or (b) yesterday
@@ -1664,7 +1539,6 @@ async fn run_proactive_turn(
         input_hint: &input_hint,
         cadence_hint: &cadence_hint,
         mood_hint: &mood_hint,
-        focus_hint: &focus_hint,
         wake_hint: &wake_hint,
         speech_hint: &speech_hint,
         is_first_mood,
@@ -1693,12 +1567,8 @@ async fn run_proactive_turn(
         recently_fired_wellness: late_night_wellness_in_cooldown(),
         repeated_topic_hint: &repeated_topic_hint,
         cross_day_hint: &cross_day_hint,
-        active_app_hint: &active_app_hint,
         yesterday_recap_hint: &yesterday_recap_hint,
         length_register_hint: &length_register_hint,
-        deep_focus_recovery_hint: &deep_focus_recovery_hint,
-        yesterday_focus_hint: &yesterday_focus_hint,
-        personal_record_hint: &personal_record_hint,
         deadline_hint: &deadline_hint,
     });
     // Iter E1: stash the prompt so the panel can show "what did the LLM see this
@@ -2122,9 +1992,8 @@ fn morning_briefing_exists(title: &str) -> bool {
 /// `proactive/morning_briefing.rs`。
 ///
 /// 与现有节奏控制层的关系（与文档 docs/20260504-1150-morning-briefing.md
-/// 的「与 mute / 专注模式 / 主动发言冷却」节对齐）：
+/// 的「与 mute / 主动发言冷却」节对齐）：
 /// - 尊重 mute（用户主动按下"安静一会儿"时早安也跟着安静，免得打破期待）；
-/// - 尊重 macOS Focus / 勿扰（仅当 settings.proactive.respect_focus_mode 开启时）；
 /// - **绕过**主动发言冷却 — 早安自带"每日 1 次"语义，不参与一般 cooldown 节流；
 ///   触发后通过 `mark_proactive_spoken` 让常规 proactive 循环之后照常 cooldown。
 ///
@@ -2137,22 +2006,7 @@ async fn maybe_run_morning_briefing(
 ) -> Option<String> {
     let cfg = &settings.morning_briefing;
     let muted = mute_remaining_seconds().is_some();
-    let focus_active = if settings.proactive.respect_focus_mode {
-        crate::focus_mode::focus_status()
-            .await
-            .map(|s| s.active)
-            .unwrap_or(false)
-    } else {
-        false
-    };
-    if morning_briefing_block_reason(
-        cfg.enabled,
-        muted,
-        focus_active,
-        settings.proactive.respect_focus_mode,
-    )
-    .is_some()
-    {
+    if morning_briefing_block_reason(cfg.enabled, muted).is_some() {
         return None;
     }
     let now_naive = now_local.naive_local();
@@ -2401,7 +2255,6 @@ mod prompt_tests {
             input_hint: "用户键鼠空闲约 60 秒。",
             cadence_hint: "距上次你主动开口约 8 分钟（刚说过话，话题还热）。",
             mood_hint: "你上次记录的心情/状态：「平静」。",
-            focus_hint: "",
             wake_hint: "",
             speech_hint: "",
             is_first_mood: false,
@@ -2471,14 +2324,6 @@ mod prompt_tests {
             cross_day_hint: "",
             yesterday_recap_hint: "",
             length_register_hint: "",
-            // Default empty — pre-Iter R15 state, no active-app duration tracker.
-            active_app_hint: "",
-            // Default empty — pre-Iter R63 state, no recent deep-focus block.
-            deep_focus_recovery_hint: "",
-            // Default empty — pre-Iter R66 state, no yesterday focus history.
-            yesterday_focus_hint: "",
-            // Default empty — pre-Iter R74 state, no personal record beaten today.
-            personal_record_hint: "",
             // Default empty — pre-Iter R77 state, no deadline-prefixed butler tasks.
             deadline_hint: "",
         }
@@ -2508,14 +2353,6 @@ mod prompt_tests {
         // And no leading/trailing/double blank from skipped sections — the focus point
         // is that join("\n") doesn't produce stray empty lines for skipped optionals.
         assert!(!p.contains("\n\n\n"));
-    }
-
-    #[test]
-    fn focus_hint_renders_when_provided() {
-        let mut inputs = base_inputs();
-        inputs.focus_hint = "用户当前开着 macOS Focus 模式：「work」。";
-        let p = build_proactive_prompt(&inputs);
-        assert!(p.contains("「work」"));
     }
 
     #[test]

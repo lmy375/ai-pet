@@ -80,8 +80,6 @@ export interface ToneSnapshot {
   // Iter D2
   companionship_milestone: string | null;
   companionship_days: number;
-  // Iter D3
-  focus_mode: string | null;
   // Iter D4
   in_quiet_hours: boolean;
   // Iter D9
@@ -113,11 +111,6 @@ export interface ToneSnapshot {
   // here. Null when no ngram recurs across enough distinct lines —
   // healthy / varying default.
   repeated_topic: string | null;
-  // Iter R22: active app snapshot (R15's data, read-only panel inspection).
-  // App name is already redacted; minutes is wall-clock since the static
-  // first observed this app. Null on fresh process / non-macOS / when
-  // proactive loop hasn't run yet.
-  active_app: { app: string; minutes: number } | null;
   // Iter R23: cooldown derivation breakdown — lets the cooldown chip
   // hover show "configured × mode_factor (mode) × feedback_factor
   // (feedback_band) = effective" math. Null when proactive disabled or
@@ -157,53 +150,9 @@ export interface ToneSnapshot {
   // Iter R56: remaining seconds for transient note — symmetric with
   // mute_remaining_seconds. Used for chip / button countdown display.
   transient_note_remaining_seconds: number | null;
-  // Iter R64: effective hard-block threshold (minutes) after companion_mode
-  // applies (chatty=135 / balanced=90 / quiet=60). Same value the gate
-  // enforces, so the active_app chip can color-band against this instead
-  // of the const default — non-balanced users see chip color match gate
-  // behavior.
-  effective_hard_block_minutes: number;
-  // Iter R65 + R72: today's deep-focus stretch summary — finalized stretches
-  // only (currently-active stretch not counted yet). null when nothing
-  // finalized today (fresh process or new day rolled over).
-  // R72 adds max_single_stretch_minutes (longest single stretch's peak)
-  // to surface depth distinct from total_minutes (sum across stretches).
-  daily_block_stats: {
-    date: string; // YYYY-MM-DD ISO
-    count: number;
-    total_minutes: number;
-    max_single_stretch_minutes: number;
-  } | null;
-  // Iter R76: true when today's max_single_stretch_minutes strictly exceeds
-  // the prior 7-day best (R74 semantics). PanelStatsCard renders a ⭐
-  // icon next to the daily column when set so the user sees record at-a-
-  // glance without reading the tooltip.
-  is_personal_record_today: boolean;
   // Iter R78: count of butler_tasks with [deadline:] prefix that are
   // Imminent (<1h) or Overdue. PanelToneStrip renders a ⏳ chip when > 0.
   urgent_deadline_count: number;
-  // Iter R68 + R73: last-7-day aggregate — summed across DAILY_BLOCK_HISTORY
-  // entries in [today-6 .. today]. null when window has no entries (fresh
-  // install / quiet week). `days` = distinct days with at least one
-  // stretch in the window; total_count = stretches summed; total_minutes
-  // = peak minutes summed; peak_single_stretch_minutes (R73) = max of
-  // entries' day-level peak across the window.
-  weekly_block_stats: {
-    days: number;
-    total_count: number;
-    total_minutes: number;
-    peak_single_stretch_minutes: number;
-  } | null;
-  // Iter R69: week-over-week trend for deep-focus minutes. null until 8+
-  // days of history give both windows data. direction ∈ "up" / "flat" /
-  // "down" (±15% threshold separates flat from change). delta_percent
-  // signed and clamped to ±999 for sane display.
-  week_trend: {
-    this_week_minutes: number;
-    prior_week_minutes: number;
-    direction: "up" | "flat" | "down";
-    delta_percent: number;
-  } | null;
 }
 
 /**

@@ -37,7 +37,6 @@ export interface ProactiveConfig {
   cooldown_seconds: number;
   quiet_hours_start: number;
   quiet_hours_end: number;
-  respect_focus_mode: boolean;
   chatty_day_threshold: number;
   /** Iter R13 / R29: high-level dial layered over cooldown_seconds and
    * chatty_day_threshold. "balanced" = no change, "chatty" = ×0.5 cooldown
@@ -124,7 +123,6 @@ const DEFAULT_SETTINGS: AppSettings = {
     cooldown_seconds: 1800,
     quiet_hours_start: 23,
     quiet_hours_end: 7,
-    respect_focus_mode: true,
     chatty_day_threshold: 5,
     companion_mode: "balanced",
     task_heartbeat_minutes: 30,

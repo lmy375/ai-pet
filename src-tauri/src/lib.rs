@@ -5,8 +5,6 @@ mod config;
 mod consolidate;
 mod decision_log;
 mod feedback_history;
-mod focus_mode;
-mod focus_tracker;
 mod input_idle;
 mod log_rotation;
 mod mcp;
@@ -101,19 +99,11 @@ pub fn run() {
                 }
             });
 
-            // Iter R67: hydrate deep-focus history from disk before the proactive
-            // loop's first tick. Idempotent — repeats no-op once memory has any
-            // entry. Empty file / parse failure → silent fallback to empty memory.
-            crate::proactive::load_block_history_into_memory();
-
             // Start proactive engagement loop (reads settings each tick).
             proactive::spawn(app.handle().clone());
 
             // Start memory consolidation loop (long-period, opt-in).
             consolidate::spawn(app.handle().clone());
-
-            // Track Focus mode transitions to disk for long-term insights.
-            focus_tracker::spawn(app.handle().clone());
 
             Ok(())
         })

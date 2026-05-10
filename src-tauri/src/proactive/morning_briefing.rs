@@ -124,20 +124,12 @@ pub fn format_morning_briefing_intent(
 ///
 /// 故意不在这里处理 cooldown — 早安自带"每日 1 次"语义，应**绕过**普通
 /// proactive cooldown（参见 docs/20260504-1150-morning-briefing.md）。
-pub fn morning_briefing_block_reason(
-    enabled: bool,
-    muted: bool,
-    focus_active: bool,
-    respect_focus: bool,
-) -> Option<&'static str> {
+pub fn morning_briefing_block_reason(enabled: bool, muted: bool) -> Option<&'static str> {
     if !enabled {
         return Some("disabled");
     }
     if muted {
         return Some("muted");
-    }
-    if respect_focus && focus_active {
-        return Some("focus");
     }
     None
 }
@@ -304,48 +296,28 @@ mod tests {
 
     #[test]
     fn block_reason_passes_when_all_clear() {
-        assert_eq!(morning_briefing_block_reason(true, false, false, true), None);
-        // respect_focus=false 时 focus_active 应被忽略
-        assert_eq!(morning_briefing_block_reason(true, false, true, false), None);
+        assert_eq!(morning_briefing_block_reason(true, false), None);
     }
 
     #[test]
     fn block_reason_disabled_takes_precedence() {
-        // 即便 mute / focus 都成立，disabled 仍然是它给出的拒绝原因 —
+        // 即便 mute 也成立，disabled 仍然是它给出的拒绝原因 —
         // 顺序保证 disabled 一旦设置，下游不会拿到混淆的 "muted" 告警。
         assert_eq!(
-            morning_briefing_block_reason(false, true, true, true),
+            morning_briefing_block_reason(false, true),
             Some("disabled")
         );
         assert_eq!(
-            morning_briefing_block_reason(false, false, false, true),
+            morning_briefing_block_reason(false, false),
             Some("disabled")
         );
     }
 
     #[test]
-    fn block_reason_muted_takes_precedence_over_focus() {
-        // 用户按了 mute，焦点状态就不需要再追究。
+    fn block_reason_muted_blocks() {
         assert_eq!(
-            morning_briefing_block_reason(true, true, true, true),
+            morning_briefing_block_reason(true, true),
             Some("muted")
-        );
-        assert_eq!(
-            morning_briefing_block_reason(true, true, false, true),
-            Some("muted")
-        );
-    }
-
-    #[test]
-    fn block_reason_focus_only_blocks_when_respected() {
-        assert_eq!(
-            morning_briefing_block_reason(true, false, true, true),
-            Some("focus")
-        );
-        // 用户在设置里关掉「尊重 Focus」时，focus_active 不再阻塞早安。
-        assert_eq!(
-            morning_briefing_block_reason(true, false, true, false),
-            None
         );
     }
 

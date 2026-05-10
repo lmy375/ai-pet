@@ -66,7 +66,6 @@ export function PanelSettings() {
       cooldown_seconds: 1800,
       quiet_hours_start: 23,
       quiet_hours_end: 7,
-      respect_focus_mode: true,
       chatty_day_threshold: 5,
       companion_mode: "balanced",
       task_heartbeat_minutes: 30,
@@ -862,16 +861,6 @@ export function PanelSettings() {
             }
           />
         </div>
-        <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: "6px", marginTop: "8px" }}>
-          <input
-            type="checkbox"
-            checked={form.proactive.respect_focus_mode}
-            onChange={(e) =>
-              setForm({ ...form, proactive: { ...form.proactive, respect_focus_mode: e.target.checked } })
-            }
-          />
-          开启 macOS 勿扰/Focus 时不打扰
-        </label>
         <div style={{ marginTop: "8px" }}>
           <PanelNumberField
             label="今天主动开口达到此数后变克制（0 = 关闭）"
