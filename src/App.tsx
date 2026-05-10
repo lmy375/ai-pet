@@ -9,66 +9,24 @@ import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
 import { useMoodAnimation } from "./hooks/useMoodAnimation";
-import { useBubbleHistory } from "./hooks/useBubbleHistory";
 
 function App() {
   const { settings, soul, loaded } = useSettings();
-  const { messages, currentResponse, isLoading, sendMessage, displayMessage, showBubble } = useChat(soul);
+  const { messages, currentResponse, isLoading, sendMessage } = useChat(soul);
   const modelRef = useRef<any>(null);
-  const { hidden, handleMouseEnter } = useAutoHide();
+  const { hidden, handleMouseEnter, collapse } = useAutoHide();
   // 把 settings.motion_mapping 传给动画 hook，让用户在「设置」改了映射立即
   // 生效（hook 内部用 ref 跟随，无需重订阅 listen）。
   useMoodAnimation(modelRef, settings.motion_mapping);
-  const bubbleHistory = useBubbleHistory();
 
-  // Iter F1: bubble auto-dismiss after 60s of being visible. Without this the
-  // desktop bubble stays showing the last assistant message forever — proactive
-  // utterances at 9am stuck on screen all day. 60s is enough to read; if the
-  // user wants the message back they can open the chat panel for full history.
-  // Loading bubbles (mid-stream) and the message arrival reset the timer.
-  //
-  // Iter R1b: track when the current bubble first appeared so a click within
-  // the QUICK_DISMISS_MS window records an active-rejection feedback signal
-  // (distinct from passive ignore). Click after the window still hides the
-  // bubble but doesn't pollute feedback history with late hides.
-  const QUICK_DISMISS_MS = 5000;
-  const [bubbleDismissed, setBubbleDismissed] = useState(false);
-  const bubbleShownAt = useRef<number | null>(null);
-  // Reset the 60s auto-dismiss whenever the rendered text changes — including
-  // history navigation (`bubbleHistory.displayed` flips), so翻历史时不会被
-  // dismiss 中断。`displayed === null` 表示 live 模式，effect 仍按
-  // `displayMessage` 走原逻辑。
-  useEffect(() => {
-    setBubbleDismissed(false);
-    if (!showBubble || !displayMessage || isLoading) {
-      bubbleShownAt.current = null;
-      return;
-    }
-    bubbleShownAt.current = Date.now();
-    const t = setTimeout(() => setBubbleDismissed(true), 60_000);
-    return () => clearTimeout(t);
-  }, [displayMessage, showBubble, isLoading, bubbleHistory.displayed]);
-
-  // Iter R45: count proactive messages that arrived while pet is auto-hidden
-  // (bubble suppressed via `visible={... && !hidden && ...}`). Tab indicator
-  // renders a badge when count > 0 so user sees "pet has unread things to
-  // say". Resets when hidden flips false (user mouse-entered → pet returned
-  // → bubble can now show next message normally).
-  //
-  // Why a ref + setState pair: the listener inside useEffect captures
-  // `hidden` only at mount; using a ref lets the listener always read the
-  // latest value without re-subscribing on every hidden flip.
+  // hidden 期间的 proactive 消息计数：用于左侧 tab indicator 角标。
+  // 用 ref + setState 同步：listener 在 useEffect 里挂一次，需要拿到最新
+  // hidden 值而不要每次重订阅。Clear 在 hidden→false 时（用户已经回到桌面）。
   const hiddenRef = useRef(hidden);
   useEffect(() => {
     hiddenRef.current = hidden;
   }, [hidden]);
   const [unreadWhileHidden, setUnreadWhileHidden] = useState(0);
-  // Capture bubbleHistory.reset via ref so the proactive-message listener can
-  // call it without re-subscribing on every render. 与 hiddenRef 同模式。
-  const bubbleHistoryResetRef = useRef(bubbleHistory.reset);
-  useEffect(() => {
-    bubbleHistoryResetRef.current = bubbleHistory.reset;
-  }, [bubbleHistory.reset]);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
@@ -76,49 +34,27 @@ function App() {
         if (hiddenRef.current) {
           setUnreadWhileHidden((n) => n + 1);
         }
-        // 新 proactive 到来 → 把用户从历史模式拉回 live，让最新一条接管。
-        // 缓存清空让下次进历史能拉到含本条的最新窗口。
-        bubbleHistoryResetRef.current();
       });
     })();
     return () => {
       if (unlisten) unlisten();
     };
   }, []);
-  // Clear badge when pet un-hides (user is now seeing pet again).
   useEffect(() => {
     if (!hidden) setUnreadWhileHidden(0);
   }, [hidden]);
 
-  const handleBubbleClick = useCallback(() => {
-    const shownAt = bubbleShownAt.current;
-    setBubbleDismissed(true);
-    // R1b 反馈的语义是"主人对**这一句**主动开口的即时拒绝"。在历史模式
-    // 下用户看的是过往快照（自己主动翻出来的），即便点掉也不该被记成
-    // 对当前 live 一句的拒绝 —— 跳过 record。
-    if (
-      !bubbleHistory.isHistoryMode &&
-      shownAt &&
-      Date.now() - shownAt < QUICK_DISMISS_MS &&
-      displayMessage
-    ) {
-      invoke("record_bubble_dismissed", { excerpt: displayMessage }).catch(
-        console.error,
-      );
-    }
-  }, [displayMessage, bubbleHistory.isHistoryMode]);
-
-  // 👍 按钮：写 Liked 信号 + 让气泡消失（与 dismiss 同效果，但语义相反）。
-  // 不调 record_bubble_dismissed —— 否则同一条 utterance 会同时录入正负两条
-  // 反馈，破坏 ratio。历史模式下按钮不渲染（无入口），不必再防御。
+  // 👍 反馈：写 Liked 信号到 feedback_history。excerpt 取消息列表里最近一
+  // 条 assistant 内容（来自 useChat.messages，含 proactive 推过来的）。
+  // mini chat 里的 👍 按钮挂在最新 assistant 行，所以这里就用 messages
+  // 末尾的 assistant 即可。
   const handleBubbleLike = useCallback(() => {
-    setBubbleDismissed(true);
-    if (displayMessage) {
-      invoke("record_bubble_liked", { excerpt: displayMessage }).catch(
-        console.error,
-      );
-    }
-  }, [displayMessage]);
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    if (!lastAssistant) return;
+    invoke("record_bubble_liked", { excerpt: lastAssistant.content }).catch(
+      console.error,
+    );
+  }, [messages]);
 
   const handleModelReady = useCallback((model: any) => {
     modelRef.current = model;
@@ -157,11 +93,8 @@ function App() {
         overflow: "hidden",
       }}
     >
-      {/* Tab indicator — visible strip when hidden.
-          Iter R43: slide-in animation when transitioning to hidden state +
-          hover widen affordance. Mirrors ChatBubble's interaction state
-          machine (R40+R41+R42) — entrance animation + hover state for
-          "I am here, click me to bring pet back". */}
+      {/* Tab indicator：hidden 时左侧露出的 12px 召回条。slide-in 入场动画
+          + hover widen + 箭头脉冲 + 未读角标，与既有视觉一致。 */}
       {hidden && (
         <>
           <style>{`
@@ -214,10 +147,6 @@ function App() {
                 borderRight: "6px solid rgba(255,255,255,0.8)",
               }}
             />
-            {/* Iter R45: unread badge — appears when pet spoke ≥1 time while
-                auto-hidden. Position top-right of tab so it doesn't fight
-                with the centered arrow. Number capped at 9+ so single
-                badge stays small at very chatty days. */}
             {unreadWhileHidden > 0 && (
               <div
                 style={{
@@ -247,37 +176,68 @@ function App() {
         </>
       )}
 
-      {/* 桌面迷你聊天列表：替代单气泡，把最近 user / assistant 消息以
-          PanelChat 同款气泡样式列出，右侧滚动条，新消息自动滚到底。
-          R1b dismissed / Liked 反馈仍只挂在最新一条 assistant 上，与
-          ChatBubble 时代同语义；流式中跳过反馈按钮。 */}
+      {/* 桌面迷你聊天列表：常驻显示，位于 Live2D 形象下方、输入框上方。
+          流式中追加 ghost bubble；最新 assistant 行带 👍。右上角「⛶」最大化
+          进 Panel chat。`hidden`（窗口收到桌边）时整体不渲染，省 paint。 */}
       <ChatMini
         messages={messages}
         currentResponse={currentResponse}
         isLoading={isLoading}
-        visible={showBubble && !hidden && !bubbleDismissed}
-        onDismiss={handleBubbleClick}
-        onLike={
-          !bubbleHistory.isHistoryMode && !isLoading ? handleBubbleLike : undefined
-        }
-        historyControls={
-          isLoading
-            ? undefined
-            : {
-                canPrev: bubbleHistory.canPrev,
-                canNext: bubbleHistory.canNext,
-                onPrev: bubbleHistory.enterPrev,
-                onNext: bubbleHistory.next,
-                indicator: bubbleHistory.indicator,
-              }
-        }
+        visible={!hidden}
+        onLike={!isLoading ? handleBubbleLike : undefined}
+        onOpenPanel={openPanel}
       />
       <Live2DCharacter
         key={settings.live_2d_model_path}
         modelPath={settings.live_2d_model_path}
         onModelReady={handleModelReady}
       />
-      {!hidden && <ChatPanel onSend={handleSend} isLoading={isLoading} onOpenPanel={openPanel} />}
+      {/* 收起按钮：右上角小圆，调 useAutoHide.collapse 把窗口滑到桌边只露
+          tab。hidden 时不渲染（已收起，再点无意义；mouse-enter 左侧 tab
+          才是召回入口）。 */}
+      {!hidden && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            collapse();
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          title="收起到桌边（mouse-enter 左侧 tab 召回）"
+          style={{
+            position: "absolute",
+            top: "8px",
+            right: "8px",
+            width: "22px",
+            height: "22px",
+            borderRadius: "50%",
+            background: "rgba(255,255,255,0.85)",
+            border: "1px solid rgba(148,163,184,0.4)",
+            color: "#475569",
+            fontSize: "13px",
+            lineHeight: 1,
+            cursor: "pointer",
+            zIndex: 60,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
+            opacity: 0.6,
+            transition: "opacity 120ms ease-out, background 120ms ease-out",
+            userSelect: "none",
+          }}
+          onMouseOver={(e) => {
+            (e.currentTarget as HTMLDivElement).style.opacity = "1";
+            (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.98)";
+          }}
+          onMouseOut={(e) => {
+            (e.currentTarget as HTMLDivElement).style.opacity = "0.6";
+            (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.85)";
+          }}
+        >
+          ▶|
+        </div>
+      )}
+      {!hidden && <ChatPanel onSend={handleSend} isLoading={isLoading} />}
     </div>
   );
 }
