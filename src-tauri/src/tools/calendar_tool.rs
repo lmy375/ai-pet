@@ -126,22 +126,12 @@ end run
         if parts.len() < 4 {
             continue;
         }
-        // Iter Cx: redact title / location based on user-configured privacy patterns
-        // before passing to the LLM. Calendar event titles often contain client names
-        // or sensitive subjects.
-        //
-        // Iter R61: switched from `redact_text` (substring-only) to
-        // `redact_with_settings` (substring + regex). Calendar titles
-        // can contain emails / structured patterns that regex catches
-        // but substring misses.
-        let title = crate::redaction::redact_with_settings(parts[0]);
-        let location = crate::redaction::redact_with_settings(parts.get(4).copied().unwrap_or(""));
         events.push(serde_json::json!({
-            "title": title,
+            "title": parts[0],
             "start": parts[1],
             "end": parts[2],
             "calendar": parts[3],
-            "location": location,
+            "location": parts.get(4).copied().unwrap_or(""),
         }));
         if events.len() >= MAX_EVENTS_RETURNED {
             break;

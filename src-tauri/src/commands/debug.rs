@@ -533,7 +533,6 @@ pub struct DebugSnapshot {
     pub env_tool_stats: EnvToolStats,
     pub prompt_tilt_stats: PromptTiltStats,
     pub companionship_days: u64,
-    pub redaction_stats: crate::redaction::RedactionStats,
     /// Iter TR3: pending high-risk tool calls awaiting human approve / deny.
     /// Frontend renders a modal when this is non-empty.
     pub pending_tool_reviews: Vec<crate::tool_review::PendingToolReview>,
@@ -575,7 +574,6 @@ pub async fn get_debug_snapshot(
     let today_speech_count = crate::speech_history::today_speech_count().await;
     let week_speech_count = crate::speech_history::week_speech_count().await;
     let companionship_days = crate::companionship::companionship_days().await;
-    let redaction_stats = crate::redaction::get_redaction_stats();
     let pending_tool_reviews = tool_review.snapshot();
     let recent_tool_calls = crate::tool_call_history::recent_tool_calls();
     // Iter R6: feedback history (oldest-first internally → reverse for panel).
@@ -596,7 +594,6 @@ pub async fn get_debug_snapshot(
         env_tool_stats,
         prompt_tilt_stats,
         companionship_days,
-        redaction_stats,
         pending_tool_reviews,
         recent_tool_calls,
         recent_feedback,

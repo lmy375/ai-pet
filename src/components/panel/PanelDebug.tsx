@@ -17,7 +17,6 @@ import {
   ProactiveDecision,
   PromptRuleNature,
   PromptTiltStats,
-  RedactionStats,
   ToneSnapshot,
 } from "./panelTypes";
 
@@ -81,7 +80,6 @@ export function PanelDebug() {
   const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
   const [weekSpeechCount, setWeekSpeechCount] = useState<number>(0);
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
-  const [redactionStats, setRedactionStats] = useState<RedactionStats>({ calls: 0, hits: 0 });
   // TG bot 启动期非 fatal 失败列表（set_my_commands / bot_start 等）。
   // 进程内 in-memory，重启清空；用于让用户知道为啥 bot 自动补全 / 整体
   // 没起来。空 Vec 时 banner 不渲染。
@@ -355,7 +353,6 @@ export function PanelDebug() {
         env_tool_stats: EnvToolStats;
         prompt_tilt_stats: PromptTiltStats;
         companionship_days: number;
-        redaction_stats: RedactionStats;
         pending_tool_reviews: {
           review_id: string;
           tool_name: string;
@@ -382,7 +379,6 @@ export function PanelDebug() {
       setEnvToolStats(snap.env_tool_stats);
       setPromptTiltStats(snap.prompt_tilt_stats);
       setCompanionshipDays(snap.companionship_days);
-      setRedactionStats(snap.redaction_stats);
       setPendingReviews(snap.pending_tool_reviews ?? []);
       setToolCallHistory(snap.recent_tool_calls ?? []);
       setFeedbackHistory(snap.recent_feedback ?? []);
@@ -476,11 +472,6 @@ export function PanelDebug() {
       upcoming_events: 0,
       memory_search: 0,
     });
-  };
-
-  const handleResetRedactionStats = async () => {
-    await invoke("reset_redaction_stats");
-    setRedactionStats({ calls: 0, hits: 0 });
   };
 
   const handleResetPromptTiltStats = async () => {
@@ -1147,7 +1138,6 @@ export function PanelDebug() {
         llmOutcomeStats={llmOutcomeStats}
         envToolStats={envToolStats}
         promptTiltStats={promptTiltStats}
-        redactionStats={redactionStats}
         tone={tone}
         showPromptHints={showPromptHints}
         setShowPromptHints={setShowPromptHints}
@@ -1156,7 +1146,6 @@ export function PanelDebug() {
         onResetLlmOutcome={handleResetLlmOutcomeStats}
         onResetEnvTool={handleResetEnvToolStats}
         onResetPromptTilt={handleResetPromptTiltStats}
-        onResetRedaction={handleResetRedactionStats}
         logsCount={logs.length}
       />
 

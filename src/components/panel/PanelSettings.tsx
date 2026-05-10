@@ -88,10 +88,6 @@ export function PanelSettings() {
     chat: {
       max_context_messages: 50,
     },
-    privacy: {
-      redaction_patterns: [],
-      regex_patterns: [],
-    },
     user_name: "",
     tool_review_overrides: {},
     motion_mapping: {},
@@ -1159,65 +1155,6 @@ export function PanelSettings() {
         </div>
         <div style={{ fontSize: "11px", color: "var(--pet-color-muted)", marginTop: "4px" }}>
           桌面 chat 和 Telegram 都按此上限裁剪。前端仍展示全部消息，仅发给 LLM 时裁。
-        </div>
-      </div>
-      </SearchableSection>
-
-      {/* Privacy redaction */}
-      <SearchableSection
-        title="隐私过滤"
-        keywords={["privacy", "redaction", "regex", "pattern", "私人", "隐私"]}
-        query={searchQuery}
-      >
-      <div style={sectionStyle}>
-        <h4 style={sectionTitle}><HighlightedText text="隐私过滤" query={searchQuery} /></h4>
-        <label style={labelStyle}>
-          子串关键词（一行一个，大小写不敏感；匹配位置替换为 `(私人)`）
-        </label>
-        <textarea
-          value={(form.privacy?.redaction_patterns ?? []).join("\n")}
-          onChange={(e) =>
-            setForm({
-              ...form,
-              privacy: {
-                redaction_patterns: e.target.value
-                  .split("\n")
-                  .map((s) => s.trim())
-                  .filter((s) => s.length > 0),
-                regex_patterns: form.privacy?.regex_patterns ?? [],
-              },
-            })
-          }
-          rows={4}
-          style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px" }}
-          placeholder={"Slack\n某客户公司名\n项目代号"}
-        />
-
-        <label style={{ ...labelStyle, marginTop: "10px" }}>
-          正则模式（一行一个；匹配命中也替换为 `(私人)`；非法语法自动跳过）
-        </label>
-        <textarea
-          value={(form.privacy?.regex_patterns ?? []).join("\n")}
-          onChange={(e) =>
-            setForm({
-              ...form,
-              privacy: {
-                redaction_patterns: form.privacy?.redaction_patterns ?? [],
-                regex_patterns: e.target.value
-                  .split("\n")
-                  .map((s) => s.trim())
-                  .filter((s) => s.length > 0),
-              },
-            })
-          }
-          rows={3}
-          style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px" }}
-          placeholder={String.raw`\b\d{4}-\d{4}-\d{4}-\d{4}\b
-[\w.+-]+@[\w-]+\.[\w.-]+`}
-        />
-        <div style={{ fontSize: "11px", color: "var(--pet-color-muted)", marginTop: "4px" }}>
-          覆盖 5 个 prompt 注入通道：active_window 工具、calendar 工具、mood note、speech_history 反哺、persona_summary 反哺。
-          子串先于正则应用。Rust regex 引擎线性时间，不支持反向引用——天然 ReDoS 安全。修改即时生效。
         </div>
       </div>
       </SearchableSection>
