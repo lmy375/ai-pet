@@ -147,5 +147,13 @@ export function useAutoHide() {
     };
   }, []);
 
-  return { hidden, handleMouseEnter, pauseTimer, resumeTimer };
+  // 显式收起入口：与 BLUR_TIMEOUT 触发的 slideToEdge 同语义，但走用户主
+  // 动点击。对外用 `collapse` 名更易表述意图（"把宠物收起到桌边"），内部
+  // 仍委托给已经 idempotent 的 slideToEdge（hidden/paused/animating 守卫
+  // 防止重复触发）。
+  const collapse = () => {
+    void slideToEdge();
+  };
+
+  return { hidden, handleMouseEnter, pauseTimer, resumeTimer, collapse };
 }

@@ -1020,9 +1020,11 @@ export function PanelTasks() {
     }
   };
 
-  if (loading) {
-    return <div style={{ padding: 20, color: "#64748b" }}>加载中...</div>;
-  }
+  // loading early return 故意**不**放这里 —— 下面还有许多 useMemo /
+  // useTaskKeyboardNav / useEffect。提前 return 会让首次 loading=true
+  // 时这些 hook 不跑、loading=false 时它们出现 → React 抛
+  // "Rendered more hooks than during the previous render"。把 guard
+  // 推到主 return 的 JSX 里就避开了 hook 调用次数随状态变化的问题。
 
   // 四段过滤：status → dueToday → search → tag。每段都尽量早退零成本。
   // - search：case-insensitive 子串，命中 title 或 body 任一即通过
@@ -1562,6 +1564,10 @@ export function PanelTasks() {
       };
     },
   };
+
+  if (loading) {
+    return <div style={{ padding: 20, color: "#64748b" }}>加载中...</div>;
+  }
 
   return (
     <div style={s.container}>
