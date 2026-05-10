@@ -192,7 +192,7 @@ function App() {
           `hidden`（窗口收到桌边）时整体不渲染主体，只剩左侧召回 tab。 */}
       {!hidden && (
         <>
-          <div style={{ position: "relative", flexShrink: 0 }}>
+          <div style={{ position: "relative", flexShrink: 0, height: "350px" }}>
             <Live2DCharacter
               key={settings.live_2d_model_path}
               modelPath={settings.live_2d_model_path}

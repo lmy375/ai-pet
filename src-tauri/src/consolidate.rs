@@ -20,9 +20,6 @@ use crate::mcp::McpManagerStore;
 use crate::mood::{read_current_mood, read_mood_for_event};
 use crate::proactive::{is_stale_reminder, parse_reminder_prefix};
 use crate::tools::ToolContext;
-// 周报合成已 noop（GOAL.md 禁周报 + 不写记忆），weekly_summary 模块整体
-// dead；consolidate 内还需要 `maybe_run_weekly_summary` 占位接口，故未删模
-// 块本身，只切断 import。下一轮可一并删 weekly_summary.rs。
 
 /// Spawn the memory consolidation loop. Reads settings each tick so the user can toggle
 /// at runtime. Sleeps for `interval_hours` between attempts.
@@ -42,11 +39,6 @@ pub fn spawn(app: AppHandle) {
 
             let cfg = &settings.memory_consolidate;
             let interval_secs = cfg.interval_hours.max(1) * 3600;
-
-            // 周报合成：与 LLM consolidate 解耦 —— 即便 cfg.enabled 为 false
-            // 也要按时跑（用户可能完全不需要 LLM 整理但想要每周报告）。门控
-            // 内部检查"周日 20:00 后 + 该周还没合成"，确定性逻辑，无 token 成本。
-            maybe_run_weekly_summary(&app, chrono::Local::now(), cfg.weekly_summary_closing_hour).await;
 
             if !cfg.enabled {
                 tokio::time::sleep(Duration::from_secs(interval_secs)).await;
@@ -559,13 +551,3 @@ fn focus_history_hint() -> String {
     )
 }
 
-/// 周报合成已停用。GOAL.md「不要周报日报相关的需求」+ 用户明确说"事件型
-/// 条目不要保存在记忆里"，旧实现把整段周报塞进 ai_insights，正好两条都
-/// 违反。本 noop 让 consolidate spawn 调用免改、上层语义"不再产生周报"
-/// 立刻成立。下一轮可以彻底删 weekly_summary 模块 + closing_hour 配置。
-async fn maybe_run_weekly_summary(
-    _app: &AppHandle,
-    _now_local: chrono::DateTime<chrono::Local>,
-    _closing_hour: u8,
-) {
-}

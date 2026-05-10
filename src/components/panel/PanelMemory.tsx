@@ -432,8 +432,23 @@ export function PanelMemory() {
     }
   };
 
+  // 删除按钮的"二次确认"状态：避免误删，且不依赖 window.confirm（Tauri 2
+  // webview 在某些版本里把 confirm() 默认变成异步 / 直接禁掉，旧实现
+  // `if (!confirm(...)) return` 会因为 confirm 返回 undefined 直接 early
+  // return → 删除按钮永远不生效。改成"按一下变红 + 文案，3s 内再按确认"
+  // 的 armed 模式，与 PanelDebug "立即开口" 按钮同模式。
+  const [armedDeleteKey, setArmedDeleteKey] = useState<string | null>(null);
+  const armDeleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleDelete = async (category: string, title: string) => {
-    if (!confirm(`确认删除 "${title}"？`)) return;
+    const key = `${category}::${title}`;
+    if (armedDeleteKey !== key) {
+      setArmedDeleteKey(key);
+      if (armDeleteTimer.current) clearTimeout(armDeleteTimer.current);
+      armDeleteTimer.current = setTimeout(() => setArmedDeleteKey(null), 3000);
+      return;
+    }
+    if (armDeleteTimer.current) clearTimeout(armDeleteTimer.current);
+    setArmedDeleteKey(null);
     try {
       await invoke("memory_edit", { action: "delete", category, title });
       setMessage("已删除");
@@ -1271,12 +1286,35 @@ export function PanelMemory() {
                         >
                           编辑
                         </button>
-                        <button
-                          style={s.btnDanger}
-                          onClick={() => handleDelete(catKey, item.title)}
-                        >
-                          删除
-                        </button>
+                        {(() => {
+                          const armed =
+                            armedDeleteKey === `${catKey}::${item.title}`;
+                          return (
+                            <button
+                              style={
+                                armed
+                                  ? {
+                                      ...s.btnDanger,
+                                      background: "#ef4444",
+                                      color: "#fff",
+                                      borderColor: "#dc2626",
+                                      fontWeight: 600,
+                                    }
+                                  : s.btnDanger
+                              }
+                              onClick={() =>
+                                handleDelete(catKey, item.title)
+                              }
+                              title={
+                                armed
+                                  ? "再次点击确认删除（3s 后撤销）"
+                                  : "点击删除（再点一次确认）"
+                              }
+                            >
+                              {armed ? "确认删除" : "删除"}
+                            </button>
+                          );
+                        })()}
                       </div>
                     </div>
                     <div style={s.itemDesc}>{displayDesc}</div>
