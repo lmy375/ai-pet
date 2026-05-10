@@ -53,6 +53,13 @@ export function PanelPersona() {
   // ring buffer 的 top 5 by count（同 count 时按最近调用先）。空 buffer →
   // 空数组，section 走「还没动过手」empty state。
   const [topTools, setTopTools] = useState<{ name: string; count: number; last_used_at: string }[]>([]);
+  // 自我画像手动编辑：editingPersona = true 时把展示态切到 textarea + 保存
+  // / 取消按钮。draft 持暂存，与 personaSummary 解耦，让取消能不写盘恢复。
+  // savingPersona 防 race 重复点；personaError 显短暂错误（不阻断 UI）。
+  const [editingPersona, setEditingPersona] = useState(false);
+  const [personaDraft, setPersonaDraft] = useState("");
+  const [savingPersona, setSavingPersona] = useState(false);
+  const [personaError, setPersonaError] = useState("");
   const [currentMood, setCurrentMood] = useState<CurrentMood>({
     text: "",
     motion: null,
@@ -113,6 +120,57 @@ export function PanelPersona() {
       clearInterval(id);
     };
   }, [sparklineDays]);
+
+  // 自我画像编辑入口：把现读出来的 personaSummary 拷进 draft，进入编辑态。
+  const handleEnterEditPersona = () => {
+    setPersonaDraft(personaSummary);
+    setPersonaError("");
+    setEditingPersona(true);
+  };
+  const handleCancelEditPersona = () => {
+    setEditingPersona(false);
+    setPersonaDraft("");
+    setPersonaError("");
+  };
+  // 保存自我画像：先尝试 update（绝大多数场景，consolidate 已建过条目），
+  // 不存在则 fallback 到 create。两个调用都失败再把错误显在 banner，不
+  // 把用户的 draft 丢掉（仍留在 textarea 里）。成功后立即更新本地
+  // personaSummary / personaUpdatedAt，免得等 5s polling 才同步。
+  const handleSavePersona = async () => {
+    const text = personaDraft.trim();
+    if (text.length === 0) {
+      setPersonaError("画像不能为空。要清空请改用 memory_edit 或 consolidate。");
+      return;
+    }
+    setSavingPersona(true);
+    setPersonaError("");
+    try {
+      try {
+        await invoke("memory_edit", {
+          action: "update",
+          category: "ai_insights",
+          title: "persona_summary",
+          description: text,
+        });
+      } catch {
+        // 不存在则创建。某些边缘场景（用户刚启动还没 consolidate）走这条。
+        await invoke("memory_edit", {
+          action: "create",
+          category: "ai_insights",
+          title: "persona_summary",
+          description: text,
+        });
+      }
+      setPersonaSummary(text);
+      setPersonaUpdatedAt(new Date().toISOString());
+      setEditingPersona(false);
+      setPersonaDraft("");
+    } catch (e) {
+      setPersonaError(`保存失败：${e}`);
+    } finally {
+      setSavingPersona(false);
+    }
+  };
 
   // Iter Cφ: handler exposed inside the empty-state of "自我画像". Triggers
   // an immediate consolidate run; on completion the 5s poll will see the
@@ -329,9 +387,70 @@ export function PanelPersona() {
       {/* Persona summary — self-authored mid-term identity */}
       <Section
         title="自我画像"
-        subtitle="consolidate 时由宠物自己反思生成（ai_insights/persona_summary）"
+        subtitle="consolidate 时由宠物自己反思生成（ai_insights/persona_summary）；用户也可手动编辑纠正"
       >
-        {personaSummary ? (
+        {editingPersona ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <textarea
+              value={personaDraft}
+              onChange={(e) => setPersonaDraft(e.target.value)}
+              rows={8}
+              style={{
+                width: "100%",
+                fontSize: "13px",
+                lineHeight: 1.7,
+                padding: "10px 12px",
+                borderRadius: 6,
+                border: "1px solid var(--pet-color-border)",
+                background: "var(--pet-color-card)",
+                color: "var(--pet-color-fg)",
+                resize: "vertical",
+                fontFamily: "inherit",
+                boxSizing: "border-box",
+                outline: "none",
+              }}
+              placeholder="一段自我描述，例如：「我倾向短句，关心用户工作节奏…」。consolidate 下次跑会读这段，作为下次自反思的起点。"
+              autoFocus
+            />
+            {personaError && (
+              <span style={{ fontSize: 12, color: "#dc2626" }}>{personaError}</span>
+            )}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={handleSavePersona}
+                disabled={savingPersona}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: savingPersona ? "#94a3b8" : "#8b5cf6",
+                  color: "#fff",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: savingPersona ? "default" : "pointer",
+                }}
+                title="把上面的文字写回 ai_insights/persona_summary"
+              >
+                {savingPersona ? "保存中…" : "保存"}
+              </button>
+              <button
+                onClick={handleCancelEditPersona}
+                disabled={savingPersona}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid var(--pet-color-border)",
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-fg)",
+                  fontSize: 13,
+                  cursor: savingPersona ? "default" : "pointer",
+                }}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        ) : personaSummary ? (
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
             <p
               style={{
@@ -344,43 +463,56 @@ export function PanelPersona() {
             >
               {personaSummary}
             </p>
-            {/* Iter D5: show freshness so user knows how stale the self-reflection is.
-                Stale-warning kicks in past 7 days because consolidate default interval
-                is 6 hours — anything older than a week means consolidate hasn't been
-                running (likely disabled in settings). */}
-            {(() => {
-              if (!personaUpdatedAt) return null;
-              const updatedDate = new Date(personaUpdatedAt);
-              if (isNaN(updatedDate.getTime())) return null;
-              const ageMs = Date.now() - updatedDate.getTime();
-              const ageDays = Math.floor(ageMs / (24 * 3600 * 1000));
-              const ageHours = Math.floor(ageMs / (3600 * 1000));
-              const stale = ageDays >= 7;
-              const label =
-                ageDays >= 1
-                  ? `${ageDays} 天前更新`
-                  : ageHours >= 1
-                  ? `${ageHours} 小时前更新`
-                  : "刚刚更新";
-              return (
-                <span
-                  style={{
-                    fontSize: "11px",
-                    color: stale ? "#dc2626" : "var(--pet-color-muted)",
-                    fontStyle: stale ? "normal" : "italic",
-                    fontWeight: stale ? 600 : 400,
-                  }}
-                  title={
-                    stale
-                      ? `consolidate 已经超过 7 天没运行了——画像可能已经跟不上你和宠物的相处节奏。开 设置 → 启用 consolidate 或在 Memory tab 点立即整理。`
-                      : `从 ai_insights/persona_summary.updated_at 计算：${updatedDate.toLocaleString()}`
-                  }
-                >
-                  {stale ? "⚠ " : ""}
-                  {label}
-                </span>
-              );
-            })()}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {(() => {
+                if (!personaUpdatedAt) return null;
+                const updatedDate = new Date(personaUpdatedAt);
+                if (isNaN(updatedDate.getTime())) return null;
+                const ageMs = Date.now() - updatedDate.getTime();
+                const ageDays = Math.floor(ageMs / (24 * 3600 * 1000));
+                const ageHours = Math.floor(ageMs / (3600 * 1000));
+                const stale = ageDays >= 7;
+                const label =
+                  ageDays >= 1
+                    ? `${ageDays} 天前更新`
+                    : ageHours >= 1
+                      ? `${ageHours} 小时前更新`
+                      : "刚刚更新";
+                return (
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      color: stale ? "#dc2626" : "var(--pet-color-muted)",
+                      fontStyle: stale ? "normal" : "italic",
+                      fontWeight: stale ? 600 : 400,
+                    }}
+                    title={
+                      stale
+                        ? `consolidate 已经超过 7 天没运行了——画像可能已经跟不上你和宠物的相处节奏。开 设置 → 启用 consolidate 或在 Memory tab 点立即整理。`
+                        : `从 ai_insights/persona_summary.updated_at 计算：${updatedDate.toLocaleString()}`
+                    }
+                  >
+                    {stale ? "⚠ " : ""}
+                    {label}
+                  </span>
+                );
+              })()}
+              <button
+                onClick={handleEnterEditPersona}
+                style={{
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  borderRadius: 4,
+                  border: "1px solid var(--pet-color-border)",
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: "pointer",
+                }}
+                title="纠正 LLM 写歪的画像；保存后下次 consolidate 会以此为起点继续演化"
+              >
+                ✏️ 编辑
+              </button>
+            </div>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>

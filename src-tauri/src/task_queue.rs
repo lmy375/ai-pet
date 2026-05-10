@@ -458,6 +458,21 @@ pub fn append_cancelled_marker(description: &str, reason: &str) -> String {
     }
 }
 
+/// 在 description 末尾追加 `[done]`，幂等：如果已经含 done 标记就原样返
+/// 回。不附 `[result: ...]` —— 用户从面板键盘快捷键标 done 通常没有产物
+/// 输入；LLM 走 memory_edit 路径自带产物，与本路径互不干扰。
+pub fn append_done_marker(description: &str) -> String {
+    if has_done_marker(description) {
+        return description.to_string();
+    }
+    let trimmed = description.trim_end();
+    if trimmed.is_empty() {
+        "[done]".to_string()
+    } else {
+        format!("{} [done]", trimmed)
+    }
+}
+
 /// 单遍扫 input：每个位置检查是否以 `prefixes` 中任一开头；命中且能找
 /// 到 `]` → 整段（包含 `]`）跳过；否则原样复制一个字符。结果里所有
 /// 命中的 bracketed 段都被剥掉，未命中的方括号段（如 `[task pri=...]`）
@@ -884,6 +899,35 @@ mod tests {
     fn append_cancelled_to_empty_description() {
         let appended = append_cancelled_marker("", "x");
         assert_eq!(appended, "[cancelled: x]");
+    }
+
+    // ---------------- append_done_marker ----------------
+
+    #[test]
+    fn append_done_basic_appends_marker() {
+        let appended = append_done_marker("[task pri=1] 整理");
+        assert_eq!(appended, "[task pri=1] 整理 [done]");
+        let (s, _) = classify_status(&appended);
+        assert_eq!(s, TaskStatus::Done);
+    }
+
+    #[test]
+    fn append_done_idempotent_when_already_done() {
+        let original = "[task pri=1] 整理 [done]";
+        assert_eq!(append_done_marker(original), original);
+    }
+
+    #[test]
+    fn append_done_idempotent_with_result_marker() {
+        // 含 [done] 即返回原串，不再追加；result 标记不影响判定。
+        let original = "[task pri=1] 整理 [done] [result: 完成]";
+        assert_eq!(append_done_marker(original), original);
+    }
+
+    #[test]
+    fn append_done_to_empty_description() {
+        assert_eq!(append_done_marker(""), "[done]");
+        assert_eq!(append_done_marker("   "), "[done]");
     }
 
     // ---------------- task origin ----------------

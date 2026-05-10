@@ -20,6 +20,10 @@ export interface UseTaskKeyboardNavArgs<T extends TaskItemLike> {
   toggleSelect: (title: string) => void;
   handleToggleExpand: (title: string) => Promise<void>;
   handleCancelOpen: (title: string) => void;
+  /** d 快捷键：在 pending / error 行触发标 done。其它状态跳过。 */
+  handleMarkDone: (title: string) => Promise<void>;
+  /** r 快捷键：仅 error 行触发 retry。其它状态跳过。 */
+  handleRetry: (title: string) => Promise<void>;
   searchInputRef: RefObject<HTMLInputElement | null>;
   titleInputRef: RefObject<HTMLInputElement | null>;
   setCreateFormExpanded: (v: boolean) => void;
@@ -34,6 +38,8 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
     toggleSelect,
     handleToggleExpand,
     handleCancelOpen,
+    handleMarkDone,
+    handleRetry,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -56,6 +62,14 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
   useEffect(() => {
     handleCancelOpenRef.current = handleCancelOpen;
   }, [handleCancelOpen]);
+  const handleMarkDoneRef = useRef(handleMarkDone);
+  useEffect(() => {
+    handleMarkDoneRef.current = handleMarkDone;
+  }, [handleMarkDone]);
+  const handleRetryRef = useRef(handleRetry);
+  useEffect(() => {
+    handleRetryRef.current = handleRetry;
+  }, [handleRetry]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -170,6 +184,42 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
           if (item.status !== "pending" && item.status !== "error") return prev;
           e.preventDefault();
           handleCancelOpenRef.current(item.title);
+          return prev;
+        });
+      } else if (
+        e.key === "d" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        // d = 标 done，无需鼠标定位。pending / error 行响应；终态行不动
+        // （后端命令也会拒绝，前端守卫一致让快捷键反馈即时）。
+        setFocusedIdx((prev) => {
+          if (prev === null) return null;
+          const item = list[prev];
+          if (!item) return prev;
+          if (item.status !== "pending" && item.status !== "error") return prev;
+          e.preventDefault();
+          void handleMarkDoneRef.current(item.title);
+          return prev;
+        });
+      } else if (
+        e.key === "r" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        // r = 触发 retry。仅 error 行响应（pending 不需要重试，retry
+        // 后端也会拒）。与既有 Delete=取消 reason 同模式 fire-and-forget。
+        setFocusedIdx((prev) => {
+          if (prev === null) return null;
+          const item = list[prev];
+          if (!item) return prev;
+          if (item.status !== "error") return prev;
+          e.preventDefault();
+          void handleRetryRef.current(item.title);
           return prev;
         });
       }
