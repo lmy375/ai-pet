@@ -35,9 +35,9 @@ const resetBtnStyle: React.CSSProperties = {
   fontSize: "10px",
   padding: "2px 6px",
   borderRadius: "4px",
-  border: "1px solid #cbd5e1",
-  background: "#fff",
-  color: "#64748b",
+  border: "1px solid var(--pet-color-border)",
+  background: "var(--pet-color-card)",
+  color: "var(--pet-color-muted)",
   cursor: "pointer",
 };
 
@@ -66,7 +66,7 @@ export function PanelChipStrip(props: PanelChipStripProps) {
         gap: "12px",
         padding: "8px 16px",
         borderBottom: "1px solid #e2e8f0",
-        background: "#f8fafc",
+        background: "var(--pet-color-bg)",
         alignItems: "center",
       }}
     >
@@ -75,7 +75,7 @@ export function PanelChipStrip(props: PanelChipStripProps) {
           <span
             style={{
               fontSize: "12px",
-              color: "#0ea5e9",
+              color: "var(--pet-color-accent)",
               alignSelf: "center",
               fontFamily: "'SF Mono', 'Menlo', monospace",
             }}
@@ -95,7 +95,7 @@ export function PanelChipStrip(props: PanelChipStripProps) {
           <span
             style={{
               fontSize: "12px",
-              color: "#a855f7",
+              color: "var(--pet-tint-purple-fg)",
               alignSelf: "center",
               fontFamily: "'SF Mono', 'Menlo', monospace",
             }}
@@ -131,7 +131,7 @@ export function PanelChipStrip(props: PanelChipStripProps) {
             <span
               style={{
                 fontSize: "12px",
-                color: restrictive ? "#ea580c" : "#7c3aed",
+                color: restrictive ? "var(--pet-tint-orange-fg)" : "var(--pet-tint-purple-fg)",
                 alignSelf: "center",
                 fontFamily: "'SF Mono', 'Menlo', monospace",
               }}
@@ -143,7 +143,7 @@ export function PanelChipStrip(props: PanelChipStripProps) {
               <span
                 style={{
                   fontSize: "12px",
-                  color: "#dc2626",
+                  color: "var(--pet-tint-red-fg)",
                   fontWeight: 600,
                   fontFamily: "'SF Mono', 'Menlo', monospace",
                 }}
@@ -165,8 +165,8 @@ export function PanelChipStrip(props: PanelChipStripProps) {
               fontSize: "12px",
               color:
                 envToolStats.spoke_with_any * 2 < envToolStats.spoke_total
-                  ? "#ea580c"
-                  : "#0891b2",
+                  ? "var(--pet-tint-orange-fg)"
+                  : "var(--pet-tint-blue-fg)",
               alignSelf: "center",
               fontFamily: "'SF Mono', 'Menlo', monospace",
             }}
@@ -186,10 +186,10 @@ export function PanelChipStrip(props: PanelChipStripProps) {
         const total = t.restraint_dominant + t.engagement_dominant + t.balanced + t.neutral;
         if (total === 0) return null;
         const buckets: { key: keyof PromptTiltStats; label: string; color: string }[] = [
-          { key: "restraint_dominant", label: "克制", color: "#dc2626" },
-          { key: "engagement_dominant", label: "引导", color: "#16a34a" },
-          { key: "balanced", label: "平衡", color: "#7c3aed" },
-          { key: "neutral", label: "中性", color: "#94a3b8" },
+          { key: "restraint_dominant", label: "克制", color: "var(--pet-tint-red-fg)" },
+          { key: "engagement_dominant", label: "引导", color: "var(--pet-tint-green-fg)" },
+          { key: "balanced", label: "平衡", color: "var(--pet-tint-purple-fg)" },
+          { key: "neutral", label: "中性", color: "var(--pet-color-muted)" },
         ];
         const dominant = buckets.reduce((best, b) => (t[b.key] > t[best.key] ? b : best));
         const pct = Math.round((t[dominant.key] / total) * 100);
@@ -230,16 +230,16 @@ export function PanelChipStrip(props: PanelChipStripProps) {
           let bgOpen: string;
           let tilt: string;
           if (restraint > engagement) {
-            bg = "#dc2626";
-            bgOpen = "#991b1b";
+            bg = "var(--pet-tint-red-fg)";
+            bgOpen = "var(--pet-tint-red-fg)";
             tilt = `偏克制（克制 × ${restraint}、引导 × ${engagement}）`;
           } else if (engagement > restraint) {
-            bg = "#16a34a";
-            bgOpen = "#15803d";
+            bg = "var(--pet-tint-green-fg)";
+            bgOpen = "var(--pet-tint-green-fg)";
             tilt = `偏引导（引导 × ${engagement}、克制 × ${restraint}）`;
           } else {
-            bg = "#7c3aed";
-            bgOpen = "#5b21b6";
+            bg = "var(--pet-tint-purple-fg)";
+            bgOpen = "var(--pet-tint-purple-fg)";
             tilt =
               restraint + engagement === 0
                 ? "中性（仅 instructional/corrective 规则）"

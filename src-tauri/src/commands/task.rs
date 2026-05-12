@@ -87,18 +87,18 @@ pub fn task_create(args: TaskCreateArgs) -> Result<String, String> {
 
 #[tauri::command]
 pub fn task_list() -> Result<TaskListResponse, String> {
-    let index = memory::memory_list(Some("butler_tasks".to_string()))?;
-    let cat = match index.categories.get("butler_tasks") {
-        Some(c) => c,
-        None => {
-            return Ok(TaskListResponse { tasks: vec![] });
-        }
-    };
-
-    let mut views: Vec<TaskView> = cat
-        .items
+    // v5a：read path 切到 SQLite。v3 startup_backfill 在 setup hook 同步
+    // 跑过，调用此命令时 db 一定已与 yaml 对齐。description 文本完全一致，
+    // build_task_view 派生的 TaskView（status / priority / due / tags
+    // 等）与之前 yaml 路径产物相同。yaml 仍由 memory_edit / mirror 双写
+    // 保 source-of-truth 一致（v6 才删 yaml）。
+    let rows = crate::db::with_db(crate::db::butler_tasks_list)?;
+    let mut views: Vec<TaskView> = rows
         .iter()
-        .map(|item| build_task_view(item))
+        .map(|r| {
+            let item = r.to_memory_item();
+            build_task_view(&item)
+        })
         .collect();
 
     let now = chrono::Local::now().naive_local();
@@ -201,20 +201,22 @@ pub fn task_cancel_inner(
     Ok(())
 }
 
-/// `task_mark_done`：在 description 末尾追加 `[done]` 标记，与 LLM 路径
-/// 等价但不写 `[result: ...]`（用户从面板按 d 通常没产物可填；想要产物
-/// 让 LLM 自己写或在 detail.md 编辑里补）。已是 done / cancelled 的任务
-/// 拒绝，避免重复追加 marker 污染 description。
+/// `task_mark_done`：在 description 末尾追加 `[done]`（可选 `[result: ...]`）
+/// 标记。`result` 为 `None` / 空 / 仅空白 → 不附 result，与按 d 键盘快捷键
+/// 路径等价；非空 → 附 `[result: <trim>]`，与 LLM 自动 mark done 时形态
+/// 一致。已是 done / cancelled 的任务拒绝，避免重复追加 marker 污染 description。
 #[tauri::command]
 pub fn task_mark_done(
     title: String,
+    result: Option<String>,
     decisions: tauri::State<'_, DecisionLogStore>,
 ) -> Result<(), String> {
-    task_mark_done_inner(title, decisions.inner().clone())
+    task_mark_done_inner(title, result, decisions.inner().clone())
 }
 
 pub fn task_mark_done_inner(
     title: String,
+    result: Option<String>,
     decisions: DecisionLogStore,
 ) -> Result<(), String> {
     let title_trimmed = title.trim();
@@ -230,7 +232,10 @@ pub fn task_mark_done_inner(
             status
         ));
     }
-    let new_desc = append_done_marker(&item.description);
+    let new_desc = crate::task_queue::append_done_marker_with_result(
+        &item.description,
+        result.as_deref(),
+    );
     memory::memory_edit(
         "update".to_string(),
         "butler_tasks".to_string(),
@@ -252,14 +257,9 @@ pub fn task_mark_done_inner(
 /// 实现走 `count_overdue` 纯函数，IO 仅一次 memory_list。
 #[tauri::command]
 pub fn task_overdue_count() -> u64 {
-    let Ok(index) = memory::memory_list(Some("butler_tasks".to_string())) else {
-        return 0;
-    };
-    let Some(cat) = index.categories.get("butler_tasks") else {
-        return 0;
-    };
+    let items = crate::db::butler_tasks_as_memory_items();
     let now = chrono::Local::now().naive_local();
-    count_overdue(&cat.items, now)
+    count_overdue(&items, now)
 }
 
 /// Pure：从 butler_tasks `MemoryItem` 列表中数 pending / error 且 due 已到
@@ -447,13 +447,20 @@ pub fn task_set_tags(title: String, ops_input: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 在 butler_tasks 类目里按 title 匹配返回最早一条。命中失败返回 None；
-/// 历史上 memory_edit 对重名标题有 `_1` 后缀机制，所以理论上重名是 detail
-/// 文件层的差异化，title 字段本身仍可重复。这里取首条与"最早创建"对齐。
+/// 在 butler_tasks 表里按 title 匹配返回一条。v5b：read 路径切到 SQLite —
+/// title 在表里是 UNIQUE 索引，O(1) 查询比 yaml 全扫快。失败 / 不存在
+/// 返 None。caller 拿 MemoryItem 形态（status / tags 由 caller 重新从
+/// description 解析，与 yaml 路径同算法）。
+///
+/// 历史背景：yaml 路径下 memory_edit 对重名标题有 `_1` 后缀机制，
+/// 所以 title 字段本身仍可重复 —— SQLite 切了 UNIQUE 索引后这种重复
+/// 会被 backfill 时 INSERT 冲突拒绝。当前用户数据若已含重名，backfill
+/// 会跳过第二条（v2 的 idempotent skip 逻辑），不会因此 panic。
 fn find_butler_task(title: &str) -> Option<memory::MemoryItem> {
-    let index = memory::memory_list(Some("butler_tasks".to_string())).ok()?;
-    let cat = index.categories.get("butler_tasks")?;
-    cat.items.iter().find(|i| i.title == title).cloned()
+    crate::db::with_db(|conn| crate::db::butler_task_get(conn, title))
+        .ok()
+        .flatten()
+        .map(|row| row.to_memory_item())
 }
 
 /// 任务详情页的 payload。`raw_description` 故意保留 `[task pri=...]` 等所有
@@ -570,6 +577,7 @@ pub(crate) fn build_task_view(item: &memory::MemoryItem) -> TaskView {
     TaskView {
         title: item.title.clone(),
         body,
+        raw_description: raw.to_string(),
         priority,
         due: due_str,
         status,
@@ -578,6 +586,7 @@ pub(crate) fn build_task_view(item: &memory::MemoryItem) -> TaskView {
         result,
         created_at: item.created_at.clone(),
         updated_at: item.updated_at.clone(),
+        detail_path: item.detail_path.clone(),
     }
 }
 

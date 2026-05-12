@@ -6,9 +6,52 @@
 //! never modifies memories directly. Default disabled and gated behind a minimum item count
 //! so we don't spend tokens consolidating an empty index.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+
+/// 用户取消 consolidate 的全局 flag。trigger_consolidate 启动时清零，
+/// 用户点"✕ 取消"时设 true；pipeline 在 sweep 之间 / LLM 调用之前的多个
+/// checkpoint 检查它。已进入 LLM stream 内的 token 流不能被打断（pipeline
+/// 没暴露 cancel handle），但落地写盘 / 后续 sweep 都会跳过。
+static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+
+/// 进度事件 payload。phase 是用户可读短语；progress / total 给前端进度条
+/// 用（不必严格精确，approximate steps）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConsolidateProgress {
+    pub phase: &'static str,
+    pub progress: u32,
+    pub total: u32,
+}
+
+fn emit_progress(app: &AppHandle, phase: &'static str, progress: u32, total: u32) {
+    let _ = app.emit(
+        "consolidate-progress",
+        ConsolidateProgress {
+            phase,
+            progress,
+            total,
+        },
+    );
+}
+
+/// Tauri 命令：让前端"✕ 取消"按钮设 cancel flag。pipeline 每次走到
+/// checkpoint 会看到，跳过后续步骤直接 Err 返回让前端 toast"已取消"。
+#[tauri::command]
+pub fn cancel_consolidate() {
+    CANCEL_FLAG.store(true, Ordering::SeqCst);
+}
+
+fn check_cancel() -> Result<(), String> {
+    if CANCEL_FLAG.load(Ordering::SeqCst) {
+        Err("用户取消".to_string())
+    } else {
+        Ok(())
+    }
+}
 
 use crate::commands::chat::{run_chat_pipeline, ChatDonePayload, ChatMessage, CollectingSink};
 use crate::commands::debug::{write_log, LogStore};
@@ -71,6 +114,8 @@ pub fn spawn(app: AppHandle) {
 /// adding many memories or to verify a prompt tweak without waiting hours.
 #[tauri::command]
 pub async fn trigger_consolidate(app: tauri::AppHandle) -> Result<String, String> {
+    // 每次手动触发都从干净 flag 开始（防上一次 cancel 残留导致这次立即 abort）
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
     let total = total_memory_items();
     let started = std::time::Instant::now();
     let summary = run_consolidation(&app, total).await?;
@@ -96,6 +141,12 @@ pub async fn trigger_consolidate(app: tauri::AppHandle) -> Result<String, String
 /// summary so the panel banner can show it; empty string when the LLM produced no
 /// summary text (rare — the prompt asks for one explicitly).
 async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<String, String> {
+    // 总步骤数：粗略 8（reminders / plan / butler one-shot / daily reviews /
+    // archive / butler daily / persona index 准备 / LLM call）。给前端进度
+    // 条用，不必严格精确 —— "现在到第几步"就够直观。
+    const TOTAL_STEPS: u32 = 8;
+    emit_progress(app, "starting", 0, TOTAL_STEPS);
+    check_cancel()?;
     let config = AiConfig::from_settings()?;
     let mcp_store = app.state::<McpManagerStore>().inner().clone();
     let log_store = app.state::<LogStore>().inner().clone();
@@ -113,6 +164,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
     let cfg_settings = get_settings();
     let now_naive = chrono::Local::now().naive_local();
 
+    emit_progress(app, "sweep reminders", 1, TOTAL_STEPS);
+    check_cancel()?;
     let stale_cutoff = cfg_settings
         .as_ref()
         .map(|s| s.memory_consolidate.stale_reminder_hours)
@@ -128,6 +181,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         );
     }
 
+    emit_progress(app, "sweep plan", 2, TOTAL_STEPS);
+    check_cancel()?;
     let plan_cutoff = cfg_settings
         .as_ref()
         .map(|s| s.memory_consolidate.stale_plan_hours)
@@ -142,6 +197,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
     // Iter Cλ: also sweep completed [once: ...] butler tasks past their grace period.
     // Mirrors the reminder/plan sweeps — keeps the queue from accumulating finished
     // one-shots that the LLM would otherwise have to triage every consolidate.
+    emit_progress(app, "sweep one-shot butler", 3, TOTAL_STEPS);
+    check_cancel()?;
     let once_butler_cutoff = cfg_settings
         .as_ref()
         .map(|s| s.memory_consolidate.stale_once_butler_hours)
@@ -161,6 +218,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
     // Mirrors the reminder/plan/butler sweeps. Quiet success — only logs when
     // something was actually pruned, to avoid every consolidate spamming
     // "swept 0 reviews".
+    emit_progress(app, "prune daily reviews", 4, TOTAL_STEPS);
+    check_cancel()?;
     let review_retention = cfg_settings
         .as_ref()
         .map(|s| s.memory_consolidate.stale_daily_review_days)
@@ -180,6 +239,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
     // 归档老 butler_tasks（done / cancelled 且 updated_at 早于阈值），把它
     // 们挪到 task_archive 类目。和上面 sweep_* 同模式：log 只在归档了至少
     // 一条时记录，避免每个 tick 噪音。
+    emit_progress(app, "archive old tasks", 5, TOTAL_STEPS);
+    check_cancel()?;
     let archive_retention = cfg_settings
         .as_ref()
         .map(|s| s.memory_consolidate.stale_butler_archive_days)
@@ -199,6 +260,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
     // upsert into butler_daily.log so the user has a per-day "今天我帮你 ..."
     // trail surfaced in the panel. Pre-LLM and deterministic — survives even if
     // the LLM phase fails. Quiet days (no butler events) leave the file alone.
+    emit_progress(app, "butler daily summary", 6, TOTAL_STEPS);
+    check_cancel()?;
     let today = chrono::Local::now().date_naive();
     let events =
         crate::butler_history::recent_events(crate::butler_history::BUTLER_HISTORY_CAP).await;
@@ -210,6 +273,8 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         );
     }
 
+    emit_progress(app, "prepare LLM prompt", 7, TOTAL_STEPS);
+    check_cancel()?;
     let index = memory::memory_list(None).map_err(|e| format!("memory_list failed: {e}"))?;
     let index_json =
         serde_json::to_string_pretty(&index).map_err(|e| format!("serialize index: {e}"))?;
@@ -276,8 +341,13 @@ async fn run_consolidation(app: &AppHandle, total_before: usize) -> Result<Strin
         .unwrap(),
     ];
 
+    emit_progress(app, "LLM thinking", 8, TOTAL_STEPS);
+    // LLM 调用是最大 time slice，进入后无法 fine-grained 中断；最后一道
+    // checkpoint 让用户在 LLM 还没启动前还能取消。
+    check_cancel()?;
     let sink = CollectingSink::new();
     let summary = run_chat_pipeline(messages, &sink, &config, &mcp_store, &ctx).await?;
+    emit_progress(app, "done", TOTAL_STEPS, TOTAL_STEPS);
 
     let total_after = total_memory_items();
     write_log(
@@ -335,15 +405,11 @@ pub fn sweep_stale_plan(now: chrono::NaiveDateTime, cutoff_hours: u64) -> bool {
 /// number deleted. Non-reminder todos and TodayHour reminders are left alone — only
 /// stale one-shot Absolute reminders are swept.
 pub fn sweep_stale_reminders(now: chrono::NaiveDateTime, cutoff_hours: u64) -> usize {
-    let Ok(index) = memory::memory_list(Some("todo".to_string())) else {
-        return 0;
-    };
-    let Some(cat) = index.categories.get("todo") else {
-        return 0;
-    };
+    // v7: read 切 SQLite。items 是 yaml-shape MemoryItem 投影。
+    let items = crate::db::todos_as_memory_items();
     // Collect titles to delete first (don't mutate while iterating the index snapshot).
     let mut to_delete = Vec::new();
-    for item in &cat.items {
+    for item in &items {
         if let Some((target, _)) = parse_reminder_prefix(&item.description) {
             if is_stale_reminder(&target, now, cutoff_hours) {
                 to_delete.push(item.title.clone());
@@ -371,15 +437,9 @@ pub async fn sweep_completed_once_butler_tasks(
     now: chrono::NaiveDateTime,
     grace_hours: u64,
 ) -> usize {
-    let Ok(index) = memory::memory_list(Some("butler_tasks".to_string())) else {
-        return 0;
-    };
-    let Some(cat) = index.categories.get("butler_tasks") else {
-        return 0;
-    };
-    // Snapshot first so iter / mutation don't race.
-    let to_delete: Vec<(String, String)> = cat
-        .items
+    // v5d：read 切 SQLite。原 yaml index 解构换成单行 helper。snapshot 之后
+    // 才循环 delete，让 iter / mutation 不冲。
+    let to_delete: Vec<(String, String)> = crate::db::butler_tasks_as_memory_items()
         .iter()
         .filter(|it| {
             crate::proactive::is_completed_once(&it.description, &it.updated_at, now, grace_hours)
@@ -421,14 +481,8 @@ pub async fn archive_old_butler_tasks(
     if retention_days == 0 {
         return 0;
     }
-    let Ok(index) = memory::memory_list(Some("butler_tasks".to_string())) else {
-        return 0;
-    };
-    let Some(cat) = index.categories.get("butler_tasks") else {
-        return 0;
-    };
-    let candidates: Vec<(String, String, String)> = cat
-        .items
+    // v5d：read 切 SQLite。原 yaml index 解构换成单行 helper。
+    let candidates: Vec<(String, String, String)> = crate::db::butler_tasks_as_memory_items()
         .iter()
         .filter(|it| {
             crate::proactive::is_archive_candidate(

@@ -417,14 +417,9 @@ pub struct PendingReminder {
 #[tauri::command]
 pub fn get_pending_reminders() -> Vec<PendingReminder> {
     let now = chrono::Local::now().naive_local();
-    let Ok(index) = crate::commands::memory::memory_list(Some("todo".to_string())) else {
-        return vec![];
-    };
-    let Some(cat) = index.categories.get("todo") else {
-        return vec![];
-    };
+    let items = crate::db::todos_as_memory_items();
     let mut out = Vec::new();
-    for item in &cat.items {
+    for item in &items {
         if let Some((target, topic)) = parse_reminder_prefix(&item.description) {
             out.push(PendingReminder {
                 time: format_target(&target),
@@ -445,6 +440,83 @@ pub fn get_pending_reminders() -> Vec<PendingReminder> {
 /// Iter QG3: routes the same outcome through `record_proactive_outcome` so manual
 /// triggers update llm_outcome counters, env_tool stats and the decision-log just
 /// like the loop. `source="manual"` keeps the panel able to tell them apart.
+/// Per-task variant of `trigger_proactive_turn`. Panel "▶️ 现在跑一次"
+/// passes a specific butler_task title — we stash it in FORCED_TASK_FOCUS
+/// (consumed by the next `run_proactive_turn`) and call the regular path.
+///
+/// `RAII` defer-clear pattern: even if `trigger_proactive_turn` itself
+/// panics before `run_proactive_turn` is reached, the static gets cleared
+/// so a later natural tick doesn't inherit the stale focus.
+#[tauri::command]
+pub async fn trigger_proactive_turn_for_task(
+    app: tauri::AppHandle,
+    title: String,
+) -> Result<String, String> {
+    let title_trim = title.trim();
+    if title_trim.is_empty() {
+        return Err("title is required".to_string());
+    }
+    // Stash before delegating; defer clear via guard so panic safety holds.
+    if let Ok(mut g) = FORCED_TASK_FOCUS.lock() {
+        *g = Some(title_trim.to_string());
+    }
+    struct ClearOnDrop;
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            if let Ok(mut g) = FORCED_TASK_FOCUS.lock() {
+                // 兜底：run_proactive_turn 路径正常时已经 take 走，此处是 noop；
+                // panic / 早 return 路径下确保 static 不会泄漏 stale title。
+                *g = None;
+            }
+        }
+    }
+    let _guard = ClearOnDrop;
+    let result = trigger_proactive_turn(app).await;
+    // trigger_proactive_turn 写了一条 title=None 的 LAST_MANUAL_FIRE +
+    // history ring 末条。我们把两处的 title 都改成 Some(本次目标)，让 panel
+    // 能区分"全局 manual fire" vs "per-item fire"。Mutex 拿不到（panic 中
+    // 或被毒化）时静默忽略。
+    if let Ok(mut g) = LAST_MANUAL_FIRE.lock() {
+        if let Some(rec) = g.as_mut() {
+            rec.title = Some(title_trim.to_string());
+        }
+    }
+    if let Ok(mut g) = LAST_MANUAL_FIRE_HISTORY.lock() {
+        if let Some(rec) = g.back_mut() {
+            rec.title = Some(title_trim.to_string());
+        }
+    }
+    result
+}
+
+/// PanelDebug "立即开口 with prompt" 路径：用户在 modal 内改了 SOUL，
+/// 想用临时 prompt 跑一次而不写盘。塞 FORCED_PROMPT_OVERRIDE 后 delegate
+/// 给 `trigger_proactive_turn`；run_proactive_turn 起跑时 take 一次。
+/// RAII defer-clear 兜底防 panic 漏。
+#[tauri::command]
+pub async fn trigger_proactive_turn_with_prompt(
+    app: tauri::AppHandle,
+    soul_override: String,
+) -> Result<String, String> {
+    let trimmed = soul_override.trim();
+    if trimmed.is_empty() {
+        return Err("soul_override is required".to_string());
+    }
+    if let Ok(mut g) = FORCED_PROMPT_OVERRIDE.lock() {
+        *g = Some(trimmed.to_string());
+    }
+    struct ClearOnDrop;
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            if let Ok(mut g) = FORCED_PROMPT_OVERRIDE.lock() {
+                *g = None;
+            }
+        }
+    }
+    let _guard = ClearOnDrop;
+    trigger_proactive_turn(app).await
+}
+
 #[tauri::command]
 pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, String> {
     let clock = app.state::<InteractionClockStore>().inner().clone();
@@ -473,18 +545,40 @@ pub async fn trigger_proactive_turn(app: tauri::AppHandle) -> Result<String, Str
         .clone();
     record_proactive_outcome(&counters, &decisions, "manual", &chatty_part, None, &result);
 
-    let outcome = result?;
+    // Compute the user-facing response string once: same shape for success / silent /
+    // 触发失败 paths. Stashes into LAST_MANUAL_FIRE for PanelDebug audit before
+    // unwrapping the Result so error fires also show up in the panel.
     let elapsed_ms = started.elapsed().as_millis();
-    Ok(match outcome.reply {
-        Some(text) => format!(
-            "开口完成 ({} ms, idle={}s): {}",
-            elapsed_ms, snap.idle_seconds, text
-        ),
-        None => format!(
-            "宠物选择沉默 ({} ms, idle={}s)",
-            elapsed_ms, snap.idle_seconds
-        ),
-    })
+    let response_string = match &result {
+        Ok(outcome) => match &outcome.reply {
+            Some(text) => format!(
+                "开口完成 ({} ms, idle={}s): {}",
+                elapsed_ms, snap.idle_seconds, text
+            ),
+            None => format!(
+                "宠物选择沉默 ({} ms, idle={}s)",
+                elapsed_ms, snap.idle_seconds
+            ),
+        },
+        Err(e) => format!("触发失败：{}", e),
+    };
+    let record = ManualFireRecord {
+        timestamp: chrono::Local::now()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        // Default to None (global manual fire); the per-task wrapper
+        // overwrites .title to Some(...) after this returns.
+        title: None,
+        result: response_string.clone(),
+    };
+    if let Ok(mut g) = LAST_MANUAL_FIRE.lock() {
+        *g = Some(record.clone());
+    }
+    // 同步推入历史 ring（cap 5）。per-task 路径在本函数 await 后会回过
+    // 头改 LAST_MANUAL_FIRE.title — 但 ring 已固化此条 title=None。改
+    // 进：让 per-task wrapper 同时改 ring 最后一条。下方 wrapper 处。
+    push_manual_fire_history(record);
+    result.map(|_| response_string)
 }
 
 /// Iter R23: derive the cooldown breakdown for the panel chip hover.
@@ -713,17 +807,10 @@ pub async fn build_tone_snapshot(
     // drives chip + cooldown shrink (single source of truth).
     let urgent_deadline_count: u64 = {
         let now = chrono::Local::now().naive_local();
-        let items: Vec<(chrono::NaiveDateTime, String)> =
-            crate::commands::memory::memory_list(Some("butler_tasks".to_string()))
-                .ok()
-                .and_then(|idx| idx.categories.get("butler_tasks").cloned())
-                .map(|cat| {
-                    cat.items
-                        .iter()
-                        .filter_map(|i| parse_butler_deadline_prefix(&i.description))
-                        .collect()
-                })
-                .unwrap_or_default();
+        let items: Vec<(chrono::NaiveDateTime, String)> = crate::db::butler_tasks_as_memory_items()
+            .iter()
+            .filter_map(|i| parse_butler_deadline_prefix(&i.description))
+            .collect();
         count_urgent_butler_deadlines(&items, now)
     };
     let cooldown_breakdown =
@@ -1233,7 +1320,13 @@ async fn run_proactive_turn(
     // exists yet, fall back to a system-only conversation.
     let (session_id, mut messages) = load_active_session();
 
-    let soul = get_soul().unwrap_or_default();
+    // PanelDebug "✏️ 编辑临时 prompt" 路径在 FORCED_PROMPT_OVERRIDE 塞值，
+    // 这里 take（消费式读）替代 get_soul()。take 防漏：下一次自然 tick
+    // 不会复用此 override。命中时不写盘（"临时"语义）。
+    let soul = match FORCED_PROMPT_OVERRIDE.lock().ok().and_then(|mut g| g.take()) {
+        Some(s) => s,
+        None => get_soul().unwrap_or_default(),
+    };
     let now_local = chrono::Local::now();
     // Iter R12: silent end-of-day review write. Idempotent per day (LAST_DAILY_REVIEW_DATE
     // + index existence check). Runs before the rest of the turn so the memory write
@@ -1435,7 +1528,21 @@ async fn run_proactive_turn(
     // it to "每天早上发日历" between turns. Iter Cζ adds schedule-awareness
     // (`[every: HH:MM]` / `[once: ...]` prefixes); `now` is passed so due tasks
     // bubble to the top with a "⏰ 到期" marker.
-    let butler_tasks_hint = build_butler_tasks_hint(now_local.naive_local());
+    let mut butler_tasks_hint = build_butler_tasks_hint(now_local.naive_local());
+    // Panel "▶️ 现在跑一次"：take（消费式读）已塞入的 forced focus title。
+    // 命中时把一条强势指令拼到 butler_tasks_hint 最前 —— LLM 看到队列前
+    // 还有一条"用户在面板上点击了 X 的现在跑一次，请把本轮重心放在这条
+    // 任务上"，自然不会偏。take 防止该 forced focus 在下一轮自然 tick
+    // 时再次生效，与命令侧 defer-clear 互为兜底。
+    if let Ok(mut g) = FORCED_TASK_FOCUS.lock() {
+        if let Some(forced_title) = g.take() {
+            let line = format!(
+                "⚡ 用户在面板上点击了「{}」的『现在跑一次』按钮，请把本轮重心放在这条任务上：要么推进它、要么写一句进展、要么标 done / error。如该任务不在下面的队列里说明已被归档 / 重命名，回一句简短确认即可。\n",
+                forced_title,
+            );
+            butler_tasks_hint = format!("{}{}", line, butler_tasks_hint);
+        }
+    }
     // 长任务心跳：把"被动过手却停滞过久"的 pending 任务点名出来，让 LLM
     // 这一轮要么写一句进展、要么改 done / error。读 settings 决定阈值
     // (0 = 关闭)，IO 层在 build_task_heartbeat_hint 里已做空串短路。
@@ -1705,14 +1812,9 @@ async fn run_proactive_turn(
 /// hint, or empty string when nothing is due. `now` is injected so tests / call sites
 /// share the same time anchor for parsed Absolute targets.
 fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
-    let Ok(index) = crate::commands::memory::memory_list(Some("todo".to_string())) else {
-        return String::new();
-    };
-    let Some(cat) = index.categories.get("todo") else {
-        return String::new();
-    };
+    let todos = crate::db::todos_as_memory_items();
     let mut items: Vec<(String, String, String)> = Vec::new();
-    for item in &cat.items {
+    for item in &todos {
         if let Some((target, topic)) = parse_reminder_prefix(&item.description) {
             if is_reminder_due(&target, now, 30) {
                 items.push((format_target(&target), topic, item.title.clone()));
@@ -1734,14 +1836,7 @@ fn build_reminders_hint(now: chrono::NaiveDateTime) -> String {
 /// which surfaces the full task list — this one is laser-focused on
 /// time-urgent deadline reminders. Empty when no deadlines / all Distant.
 pub fn build_butler_deadlines_hint(now: chrono::NaiveDateTime) -> String {
-    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
-        return String::new();
-    };
-    let Some(cat) = index.categories.get("butler_tasks") else {
-        return String::new();
-    };
-    let items: Vec<(chrono::NaiveDateTime, String)> = cat
-        .items
+    let items: Vec<(chrono::NaiveDateTime, String)> = crate::db::butler_tasks_as_memory_items()
         .iter()
         .filter_map(|i| parse_butler_deadline_prefix(&i.description))
         .collect();
@@ -1765,14 +1860,7 @@ pub fn build_task_heartbeat_hint(
     if threshold_minutes == 0 {
         return String::new();
     }
-    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
-        return String::new();
-    };
-    let Some(cat) = index.categories.get("butler_tasks") else {
-        return String::new();
-    };
-    let titles: Vec<String> = cat
-        .items
+    let titles: Vec<String> = crate::db::butler_tasks_as_memory_items()
         .iter()
         .filter(|i| {
             crate::task_heartbeat::is_heartbeat_candidate(
@@ -1792,16 +1880,9 @@ pub fn build_task_heartbeat_hint(
 /// injected so the call site (run_proactive_turn) shares one clock anchor with the
 /// rest of the prompt build. Returns "" when the category is empty.
 pub fn build_butler_tasks_hint(now: chrono::NaiveDateTime) -> String {
-    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
-        return String::new();
-    };
-    let Some(cat) = index.categories.get("butler_tasks") else {
-        return String::new();
-    };
-    let tuples: Vec<(String, String, String)> = cat
-        .items
-        .iter()
-        .map(|i| (i.title.clone(), i.description.clone(), i.updated_at.clone()))
+    let tuples: Vec<(String, String, String)> = crate::db::butler_tasks_as_memory_items()
+        .into_iter()
+        .map(|i| (i.title, i.description, i.updated_at))
         .collect();
     format_butler_tasks_block(
         &tuples,
@@ -1894,16 +1975,9 @@ pub fn format_task_completion_hint(items: &[CompletedTaskBrief]) -> String {
 /// 失败模式（memory_list 失败 / 类目缺失 / 无 done）静默退化为空串，与其
 /// 它 hint 一致。
 pub fn build_task_completion_hint() -> String {
-    let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
-        return String::new();
-    };
-    let Some(cat) = index.categories.get("butler_tasks") else {
-        return String::new();
-    };
-    let pairs: Vec<(String, String)> = cat
-        .items
-        .iter()
-        .map(|i| (i.title.clone(), i.description.clone()))
+    let pairs: Vec<(String, String)> = crate::db::butler_tasks_as_memory_items()
+        .into_iter()
+        .map(|i| (i.title, i.description))
         .collect();
     let prev_seen = match LAST_SEEN_BUTLER_DONE_TITLES.lock() {
         Ok(g) => g.clone(),
@@ -2569,7 +2643,8 @@ mod prompt_tests {
         inputs.reminders_hint = bullet_text;
         let rules = proactive_rules(&inputs);
         assert_eq!(rules.len(), 7, "base 6 + 1 reminders rule");
-        assert!(rules.iter().any(|r| r.contains("memory_edit delete")));
+        // v12: 提示已从 memory_edit delete 切到 todo_edit (action=delete)
+        assert!(rules.iter().any(|r| r.contains("todo_edit")));
     }
 
     #[test]

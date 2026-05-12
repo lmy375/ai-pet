@@ -1,12 +1,21 @@
 import { Component, ErrorInfo, ReactNode, useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import { PanelSettings } from "./components/panel/PanelSettings";
 import { PanelChat } from "./components/panel/PanelChat";
 import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelPersona } from "./components/panel/PanelPersona";
 import { PanelTasks } from "./components/panel/PanelTasks";
 import { KeyboardHelpOverlay } from "./components/panel/KeyboardHelpOverlay";
-import { applyTheme, getStoredTheme, setStoredTheme, type Theme } from "./theme";
+import {
+  applyTheme,
+  getStoredTheme,
+  setStoredTheme,
+  getStoredAccent,
+  setStoredAccent,
+  type Accent,
+  type Theme,
+} from "./theme";
 
 /**
  * Tab-level error boundary so一个 tab 渲染异常时不会让整个 panel 变白屏 ——
@@ -105,6 +114,15 @@ export function PanelApp() {
   // 按钮 title「打开聊天面板」对齐。其它入口（调试 ↗ / 任务标签外链）
   // 会在自己的处理器里覆盖这个初值。
   const [activeTab, setActiveTab] = useState<Tab>("聊天");
+  /// PanelChat 双击 `「title」` ref → 请求切到「任务」tab + 让 PanelTasks 把焦点
+  /// 落到该 title。state 提到这里是为了跨 tab-switch 的 mount 续传：
+  /// PanelTasks 在 activeTab 切换那一刻才挂载，挂载后 useEffect 读 prop 即消费。
+  /// 消费后 PanelTasks 调 onConsumeFocus 清空 → 用户再点别处不会被重复滚回。
+  const [pendingTaskFocusTitle, setPendingTaskFocusTitle] = useState<string | null>(null);
+  const requestFocusTask = (title: string) => {
+    setPendingTaskFocusTitle(title);
+    setActiveTab("任务");
+  };
   const [overdueCount, setOverdueCount] = useState<number>(0);
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   // 主题：迭代 1 仅框架级 surface 切换（顶层 bg / tab bar）。组件内部
@@ -112,15 +130,45 @@ export function PanelApp() {
   // localStorage 读偏好并 apply，避免 light flash。
   const [theme, setTheme] = useState<Theme>(() => {
     const t = getStoredTheme();
-    applyTheme(t);
+    applyTheme(t, getStoredAccent());
     return t;
   });
   const toggleTheme = () => {
     const next: Theme = theme === "light" ? "dark" : "light";
-    applyTheme(next);
+    applyTheme(next, getStoredAccent());
     setStoredTheme(next);
     setTheme(next);
+    // 跨 webview 广播：让桌面宠物 / 调试窗口也立即切主题。各 window 的
+    // listener 自己 setStoredTheme + applyTheme 持久化。
+    void emit("theme-change", next);
   };
+
+  // 监听其它 window（如设置页内联 toggle 后续会有）发出的主题切换。本 window
+  // 已经是 emit 方时也会收到（Tauri emit 行为）—— 用 next !== theme 守护避
+  // 免 setTheme(next) 触发不必要的 re-apply。
+  useEffect(() => {
+    const pTheme = listen<string>("theme-change", (event) => {
+      const next = event.payload === "dark" ? "dark" : "light";
+      setTheme((cur) => {
+        if (cur === next) return cur;
+        applyTheme(next, getStoredAccent());
+        setStoredTheme(next);
+        return next;
+      });
+    });
+    const pAccent = listen<string>("accent-change", (event) => {
+      const valid: Accent[] = ["default", "green", "purple", "orange", "rose"];
+      const raw = event.payload as Accent;
+      const next = valid.includes(raw) ? raw : "default";
+      if (getStoredAccent() === next) return;
+      setStoredAccent(next);
+      applyTheme(getStoredTheme(), next);
+    });
+    return () => {
+      pTheme.then((un) => un());
+      pAccent.then((un) => un());
+    };
+  }, []);
 
   const openDebugWindow = () => {
     invoke("open_debug").catch(console.error);
@@ -165,25 +213,165 @@ export function PanelApp() {
 
   return (
     <div style={{ width: "100%", height: "100vh", display: "flex", flexDirection: "column", background: "var(--pet-color-bg)" }}>
+      {/* Panel-global 视觉抛光：注入一层 base CSS 给各 panel 页提供更精致
+          的默认（字体 smoothing、scrollbar、focus ring、tab bar hover 暖底、
+          按钮 hover 微浮、双层 focus halo、selection 高亮）。各页继续走自己
+          的 inline 样式 + 既有 .pet-* 局部规则；这里只补缺省。 */}
+      <style>{`
+        html, body, #root {
+          font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+            "PingFang SC", "Helvetica Neue", "Segoe UI Variable", system-ui, sans-serif;
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+          text-rendering: optimizeLegibility;
+        }
+        /* 文本选区与 accent 呼应。22% alpha 在 light / dark 都柔和（浏览器默
+           认蓝过饱和、暗黑下尤其刺眼）。 */
+        ::selection {
+          background: color-mix(in srgb, var(--pet-color-accent) 28%, transparent);
+        }
+        /* placeholder 用 muted token —— 部分浏览器默认偏深灰，跟整体 muted
+           节奏不一致。 */
+        input::placeholder, textarea::placeholder {
+          color: var(--pet-color-muted);
+          opacity: 0.85;
+        }
+        /* 共享 scrollbar：inactive 更淡，hover 加深；轨道两侧留 2px 空隙，
+           不顶到 panel 边缘看着更"贵气"。 */
+        .pet-panel-scroll::-webkit-scrollbar,
+        div::-webkit-scrollbar {
+          width: 10px;
+          height: 10px;
+        }
+        div::-webkit-scrollbar-thumb {
+          background: rgba(148, 163, 184, 0.22);
+          border: 2px solid transparent;
+          background-clip: padding-box;
+          border-radius: 8px;
+          transition: background 140ms ease-out;
+        }
+        div::-webkit-scrollbar-thumb:hover {
+          background: rgba(148, 163, 184, 0.55);
+          background-clip: padding-box;
+        }
+        div::-webkit-scrollbar-thumb:active {
+          background: rgba(100, 116, 139, 0.75);
+          background-clip: padding-box;
+        }
+        div::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        /* input / textarea / select focus：双层 halo（外柔 + 内强）让手感更
+           "软"。border 用 !important 覆盖 inline 默认 border 色。 */
+        input:focus, textarea:focus, select:focus {
+          outline: none;
+          border-color: var(--pet-color-accent) !important;
+          box-shadow:
+            0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 22%, transparent),
+            inset 0 0 0 1px color-mix(in srgb, var(--pet-color-accent) 45%, transparent);
+        }
+        /* Tab bar：active 走 accent 字 + accent 底纹（极浅 12% alpha 暖底）。
+           原 borderBottom 2px 仍由 inline 控制 active 指示；hover 用 tint
+           blue bg 而非纯 page bg，让"我在指向哪个 tab" 更明显。 */
+        .pet-panel-tab {
+          transition: color 140ms ease-out, background-color 140ms ease-out,
+            border-color 140ms ease-out;
+        }
+        .pet-panel-tab:hover:not([data-active="true"]) {
+          background: color-mix(in srgb, var(--pet-color-accent) 8%, transparent);
+          color: var(--pet-color-fg);
+        }
+        .pet-panel-tab:focus-visible {
+          outline: 2px solid var(--pet-color-accent);
+          outline-offset: -4px;
+        }
+        /* 迭代 7：active 指示器从"整条 2px 下边线"换成"居中圆角短条"。
+           inline borderBottom 仍占 2px transparent 保布局；::after 用
+           position:absolute 浮在底缘做视觉指示，accent halo 暖光呼应迭代
+           1 的 shadow token 语言。 */
+        .pet-panel-tab[data-active="true"]::after {
+          content: "";
+          position: absolute;
+          left: 50%;
+          bottom: -1px;
+          transform: translateX(-50%);
+          width: 28px;
+          height: 3px;
+          border-radius: 2px;
+          background: var(--pet-color-accent);
+          box-shadow: 0 0 8px color-mix(in srgb, var(--pet-color-accent) 50%, transparent);
+        }
+        /* hover inactive tab 时让 ::after 提前预告：浅短条 + 略短宽度，
+           click 后会涨成 active 全长。视觉连续提示"这里能成 active"。 */
+        .pet-panel-tab:hover:not([data-active="true"])::after {
+          content: "";
+          position: absolute;
+          left: 50%;
+          bottom: -1px;
+          transform: translateX(-50%);
+          width: 16px;
+          height: 3px;
+          border-radius: 2px;
+          background: color-mix(in srgb, var(--pet-color-accent) 50%, transparent);
+        }
+        /* 全局 button：平滑 transition + hover 时 -0.5px 微浮 + 轻投影，
+           active 按下回落。已有 transition / transform 的 inline style 优
+           先级更高自然覆盖，所以仅作用到"裸 inline button"。 */
+        button {
+          transition: background-color 120ms ease-out, color 120ms ease-out,
+            border-color 120ms ease-out, transform 80ms ease-out,
+            box-shadow 140ms ease-out, opacity 120ms ease-out;
+        }
+        button:not(:disabled):not(.pet-panel-tab):hover {
+          transform: translateY(-0.5px);
+          box-shadow: var(--pet-shadow-sm);
+        }
+        button:not(:disabled):not(.pet-panel-tab):active {
+          transform: translateY(0);
+          box-shadow: none;
+        }
+        button:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+        button:focus-visible {
+          outline: 2px solid var(--pet-color-accent);
+          outline-offset: 2px;
+        }
+        /* utility class：希望某个容器看起来像"卡片"时挂这个 class。inline
+           style 已用 background:card 的 div 加这条就立刻多一层精致感。border
+           +shadow 组合，不动既有 padding / radius —— 各调用方自己决定。 */
+        .pet-card {
+          background: var(--pet-color-card);
+          border: 1px solid var(--pet-color-border);
+          border-radius: 10px;
+          box-shadow: var(--pet-shadow-sm);
+        }
+      `}</style>
       {/* Tab bar */}
       <div style={{ display: "flex", borderBottom: "1px solid var(--pet-color-border)", background: "var(--pet-color-card)", flexShrink: 0 }}>
         {TABS.map((tab) => {
           const showOverdueBadge = tab === "任务" && overdueCount > 0;
+          const isActive = activeTab === tab;
           return (
             <button
               key={tab}
+              className="pet-panel-tab"
+              data-active={isActive}
               onClick={() => setActiveTab(tab)}
               style={{
                 flex: 1,
-                padding: "12px 0",
+                padding: "13px 0 11px",
                 border: "none",
-                borderBottom: activeTab === tab ? "2px solid var(--pet-color-accent)" : "2px solid transparent",
+                // 总是 2px transparent 留位，让 active / hover 切换时垂直布局不抖。
+                // 视觉指示器（圆角短条）由 CSS `[data-active="true"]::after` 渲染。
+                borderBottom: "2px solid transparent",
                 background: "transparent",
-                color: activeTab === tab ? "var(--pet-color-accent)" : "var(--pet-color-muted)",
-                fontWeight: activeTab === tab ? 600 : 400,
-                fontSize: "14px",
-                cursor: "pointer",
-                transition: "all 0.2s",
+                color: isActive ? "var(--pet-color-accent)" : "var(--pet-color-muted)",
+                fontWeight: isActive ? 600 : 500,
+                fontSize: "13.5px",
+                letterSpacing: 0.2,
+                cursor: isActive ? "default" : "pointer",
                 position: "relative",
               }}
             >
@@ -193,8 +381,8 @@ export function PanelApp() {
                   title={`已过期未完成 ${overdueCount} 条 — 切到「任务」标签查看（仅 pending / error 且 due 已过的计入；done / cancelled 不计）`}
                   style={{
                     position: "absolute",
-                    top: "4px",
-                    right: "calc(50% - 30px)",
+                    top: "6px",
+                    right: "calc(50% - 28px)",
                     minWidth: 16,
                     height: 16,
                     padding: "0 4px",
@@ -207,7 +395,7 @@ export function PanelApp() {
                     alignItems: "center",
                     justifyContent: "center",
                     lineHeight: 1,
-                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                    boxShadow: "0 1px 4px rgba(220, 38, 38, 0.35)",
                   }}
                 >
                   {overdueCount > 9 ? "9+" : overdueCount}
@@ -217,32 +405,32 @@ export function PanelApp() {
           );
         })}
         <button
+          className="pet-panel-tab"
           onClick={() => setShowKeyboardHelp(true)}
           style={{
-            padding: "12px 10px",
+            padding: "13px 12px 11px",
             border: "none",
             borderBottom: "2px solid transparent",
             background: "transparent",
             color: "var(--pet-color-muted)",
-            fontSize: "14px",
+            fontSize: "13.5px",
             cursor: "pointer",
-            transition: "all 0.2s",
           }}
           title="键盘快捷键速查（也可按 ?）"
         >
           ?
         </button>
         <button
+          className="pet-panel-tab"
           onClick={toggleTheme}
           style={{
-            padding: "12px 12px",
+            padding: "13px 12px 11px",
             border: "none",
             borderBottom: "2px solid transparent",
             background: "transparent",
             color: "var(--pet-color-muted)",
-            fontSize: "14px",
+            fontSize: "13.5px",
             cursor: "pointer",
-            transition: "all 0.2s",
           }}
           title={
             theme === "light"
@@ -253,17 +441,17 @@ export function PanelApp() {
           {theme === "light" ? "🌙" : "☀️"}
         </button>
         <button
+          className="pet-panel-tab"
           onClick={openDebugWindow}
           style={{
-            padding: "12px 16px",
+            padding: "13px 14px 11px",
             border: "none",
             borderBottom: "2px solid transparent",
             background: "transparent",
             color: "var(--pet-color-muted)",
-            fontWeight: 400,
-            fontSize: "14px",
+            fontWeight: 500,
+            fontSize: "13px",
             cursor: "pointer",
-            transition: "all 0.2s",
           }}
           title="在新窗口中打开调试日志"
         >
@@ -275,9 +463,21 @@ export function PanelApp() {
       <div style={{ flex: 1, overflow: "hidden" }}>
         <TabErrorBoundary tabKey={activeTab}>
           {activeTab === "设置" && <PanelSettings />}
-          {activeTab === "聊天" && <PanelChat onRequestTab={setActiveTab} />}
-          {activeTab === "任务" && <PanelTasks />}
-          {activeTab === "记忆" && <PanelMemory />}
+          {activeTab === "聊天" && (
+            <PanelChat
+              onRequestTab={setActiveTab}
+              onRequestFocusTask={requestFocusTask}
+            />
+          )}
+          {activeTab === "任务" && (
+            <PanelTasks
+              pendingFocusTitle={pendingTaskFocusTitle}
+              onConsumeFocus={() => setPendingTaskFocusTitle(null)}
+            />
+          )}
+          {activeTab === "记忆" && (
+            <PanelMemory onRequestFocusTask={requestFocusTask} />
+          )}
           {activeTab === "人格" && <PanelPersona />}
         </TabErrorBoundary>
       </div>

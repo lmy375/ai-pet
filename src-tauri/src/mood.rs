@@ -30,32 +30,51 @@ pub fn mood_state_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("current_mood.txt"))
 }
 
-/// 把 raw 心情串（含可选 `[motion: X]` 前缀）写到文件。空串视为清空。
-/// 自动 mkdir 父目录；写盘失败静默吞掉错误（调用方仍能通过 read 拿到旧值）。
+/// v9: kv_state 里 mood 用的固定 key。
+const MOOD_KV_KEY: &str = "current_mood";
+
+/// 把 raw 心情串（含可选 `[motion: X]` 前缀）双写到 SQLite kv_state +
+/// 旧 current_mood.txt 文件（保留文件为回滚保险 + 用户偶尔直接看文件）。
+/// 空串视为清空。文件写失败静默吞 —— SQLite 仍是新 source-of-truth。
 pub fn record_current_mood(raw: &str) {
-    let Some(p) = mood_state_path() else { return };
-    if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let trimmed = raw.trim();
+    // SQLite 优先写：未来的真相源。
+    crate::db::kv_set(MOOD_KV_KEY, trimmed);
+    // 文件继续双写：回滚 / 外部读保险。
+    if let Some(p) = mood_state_path() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&p, trimmed);
     }
-    let _ = std::fs::write(&p, raw.trim());
 }
 
-/// 删除心情文件。LLM 极少需要清空心情；保留接口仅给拦截层（memory_edit
-/// delete 走过来）+ 单测使用。
+/// 删除心情：SQLite kv_state + 旧文件。LLM 极少需要清空；保留接口仅给
+/// 拦截层（memory_edit delete 走过来）+ 单测使用。
 pub fn clear_current_mood() {
-    let Some(p) = mood_state_path() else { return };
-    let _ = std::fs::remove_file(&p);
+    crate::db::kv_delete(MOOD_KV_KEY);
+    if let Some(p) = mood_state_path() {
+        let _ = std::fs::remove_file(&p);
+    }
 }
 
-/// 从文件读心情。文件不存在返回 None；存在但内容空字符串也返回 None
-/// （视作"心情未记录"）。
+/// 读心情：v9 优先 SQLite kv_state；fallback 旧 current_mood.txt（让升级
+/// 用户首次启动 + backfill 之前仍能读到）。空串视作未记录。
 fn read_mood_file() -> Option<String> {
+    if let Some(v) = crate::db::kv_get(MOOD_KV_KEY) {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
     let p = mood_state_path()?;
     let s = std::fs::read_to_string(&p).ok()?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
         None
     } else {
+        // 一次性 backfill：文件有值但 kv 没有 → 写回 SQLite。
+        crate::db::kv_set(MOOD_KV_KEY, trimmed);
         Some(trimmed.to_string())
     }
 }

@@ -17,11 +17,13 @@
         "title": "Pet",
         "width": 300,
         "height": 450,
+        "minWidth": 220,
+        "minHeight": 350,
         "visible": true,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
-        "resizable": false,
+        "resizable": true,
         "skipTaskbar": true,
         "shadow": false
       }

@@ -120,7 +120,7 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
             top: "50%",
             left: "50%",
             transform: "translate(-50%, -50%)",
-            color: isError ? "#e53935" : "#888",
+            color: isError ? "var(--pet-tint-red-fg)" : "var(--pet-color-muted)",
             fontSize: "12px",
             textAlign: "center",
             padding: "12px",

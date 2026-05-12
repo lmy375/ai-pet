@@ -31,6 +31,10 @@ pub struct SessionMeta {
     /// 反序列化到 0；下次 save_session 自动填入实际值，迁移自然发生。
     #[serde(default)]
     pub item_count: usize,
+    /// 钉住的会话永远排在列表前；让长期项目的会话不被新建会话淹没。
+    /// 旧 index.json 没此字段 → false（默认）。
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +123,8 @@ pub fn save_session(mut session: Session) -> Result<(), String> {
     let mut index = read_index();
     index.active_id = session.id.clone();
     if let Some(meta) = index.sessions.iter_mut().find(|m| m.id == session.id) {
+        // 只覆写实际变化的字段；pinned 状态由 set_session_pinned 单独管，
+        // save_session 不可意外把它复位 false。
         meta.title = session.title.clone();
         meta.updated_at = session.updated_at.clone();
         meta.item_count = session.items.len();
@@ -129,8 +135,20 @@ pub fn save_session(mut session: Session) -> Result<(), String> {
             created_at: session.created_at.clone(),
             updated_at: session.updated_at.clone(),
             item_count: session.items.len(),
+            pinned: false,
         });
     }
+    write_index(&index)
+}
+
+/// 切换 session 的 pinned 状态。失败 → 找不到 id（边缘 race），返回 Err。
+#[tauri::command]
+pub fn set_session_pinned(id: String, pinned: bool) -> Result<(), String> {
+    let mut index = read_index();
+    let Some(meta) = index.sessions.iter_mut().find(|m| m.id == id) else {
+        return Err(format!("session {id} not found"));
+    };
+    meta.pinned = pinned;
     write_index(&index)
 }
 
@@ -317,6 +335,196 @@ pub(crate) fn find_match_snippet(
     }
     let match_start_in_snippet = (i - start) + if prefix_dots { 1 } else { 0 };
     Some((snippet, match_start_in_snippet))
+}
+
+/// 扫所有 session 文件，返回"items 里至少一条 tool item 含 propose_task /
+/// task_create 工具调用"的 session id 列表。与 list_sessions_with_images
+/// 对偶，让 PanelChat dropdown 的"📋 含派单"过滤标记"工作场景"的 session。
+#[tauri::command]
+pub fn list_sessions_with_task_calls() -> Vec<String> {
+    const TASK_TOOL_NAMES: &[&str] = &["propose_task", "task_create"];
+    let index = read_index();
+    let mut out = Vec::new();
+    for meta in &index.sessions {
+        let Ok(session) = load_session(meta.id.clone()) else {
+            continue;
+        };
+        let has_task_call = session.items.iter().any(|item| {
+            // 前端 ChatItem.toolCalls: ToolCall[]，每个有 name 字段。
+            // type==="tool" 的 item 才会有 toolCalls；其它 type 没有这个键。
+            item.get("toolCalls")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter().any(|tc| {
+                        tc.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|name| TASK_TOOL_NAMES.contains(&name))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        });
+        if has_task_call {
+            out.push(meta.id.clone());
+        }
+    }
+    out
+}
+
+/// 扫所有 session 文件，返回"items 里至少一条有非空 images 字段"的 session id
+/// 列表。给 PanelChat dropdown 的"📷 含图片"过滤用 —— 全量 list 太大时筛掉
+/// 纯文本 session。
+///
+/// 性能：load_session × N，JSON 解析在 session 通常 < 1KB 时单条 < 1ms；50
+/// session 用 < 100ms。每次 toggle 重新算（让用户刚生图的会话立刻命中）；不缓
+/// 存到 index.json 避免 schema migration 成本。
+#[tauri::command]
+pub fn list_sessions_with_images() -> Vec<String> {
+    let index = read_index();
+    let mut out = Vec::new();
+    for meta in &index.sessions {
+        let Ok(session) = load_session(meta.id.clone()) else {
+            continue;
+        };
+        let has_image = session.items.iter().any(|item| {
+            // items 是 Vec<serde_json::Value>，前端写的 ChatItem.images 是
+            // string[]。判定"非空 images"即 has_image。后端 give_image 工具
+            // 的 _attachments 不入 items —— 那条只在 tool 块里临时存活，不会
+            // 持久化到 session.items。所以这里只看 ChatItem.images。
+            item.get("images")
+                .and_then(|v| v.as_array())
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false)
+        });
+        if has_image {
+            out.push(meta.id.clone());
+        }
+    }
+    out
+}
+
+/// 全部 sessions 打包成 base64(JSON) 快照，让用户换机时不必手动 cp 一堆
+/// 文件。version 字段给 schema 演进留口子；import 路径会校验版本号。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionsSnapshot {
+    /// schema 版本，当前固定 1。
+    version: u32,
+    /// 完整 session 索引（含 pinned / item_count 等 meta）。
+    index: SessionIndex,
+    /// 索引里每条 session 的完整内容。
+    sessions: Vec<Session>,
+}
+
+#[tauri::command]
+pub fn export_sessions_snapshot() -> Result<String, String> {
+    use base64::Engine;
+    let index = read_index();
+    let mut sessions = Vec::with_capacity(index.sessions.len());
+    for meta in &index.sessions {
+        // load_session 失败时 skip 该条 session（snapshot 仍能复用其它）。
+        if let Ok(s) = load_session(meta.id.clone()) {
+            sessions.push(s);
+        }
+    }
+    let snapshot = SessionsSnapshot {
+        version: 1,
+        index,
+        sessions,
+    };
+    let json = serde_json::to_string(&snapshot)
+        .map_err(|e| format!("序列化 sessions 失败: {}", e))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(json.as_bytes()))
+}
+
+#[tauri::command]
+pub fn import_sessions_snapshot(
+    payload: String,
+    prune_orphans: Option<bool>,
+) -> Result<u32, String> {
+    use base64::Engine;
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return Err("剪贴板为空 / 没有 snapshot 字符串。".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .map_err(|e| format!("base64 解码失败：{}", e))?;
+    let json = std::str::from_utf8(&bytes)
+        .map_err(|e| format!("UTF-8 解析失败：{}", e))?;
+    let snapshot: SessionsSnapshot = serde_json::from_str(json)
+        .map_err(|e| format!("JSON 解析失败：{}", e))?;
+    if snapshot.version != 1 {
+        return Err(format!(
+            "快照版本 {} 不被支持（当前期望 1）。",
+            snapshot.version
+        ));
+    }
+    // Write each session file（同 id 直接覆盖）。
+    for s in &snapshot.sessions {
+        let path = session_path(&s.id)?;
+        let body = serde_json::to_string_pretty(s)
+            .map_err(|e| format!("Failed to serialize session {}: {e}", s.id))?;
+        fs::write(&path, body)
+            .map_err(|e| format!("Failed to write session {}: {e}", s.id))?;
+    }
+    write_index(&snapshot.index)?;
+    // prune_orphans = true 时遍历 sessions dir，删 disk 上 *.json 不在 snapshot
+    // 里的 session 文件 + index.json 之外的杂项。返回删的条数让前端反馈给用户。
+    // 失败的单条 rm 计入 console；不阻塞 import 主流程。
+    let mut pruned = 0u32;
+    if prune_orphans.unwrap_or(false) {
+        let snap_ids: std::collections::HashSet<&str> =
+            snapshot.sessions.iter().map(|s| s.id.as_str()).collect();
+        let dir = sessions_dir()?;
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                if stem == "index" {
+                    continue; // 索引文件刚被 write_index 覆写，不要删
+                }
+                if !snap_ids.contains(stem) {
+                    if fs::remove_file(&path).is_ok() {
+                        pruned += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(pruned)
+}
+
+/// 全量清空 sessions：删 disk 所有 *.json（含 index.json）→ create_session 起一
+/// 个新空 session 作 active，保证 PanelChat 总有一个可用会话。返回旧 session
+/// 数让前端反馈给用户。
+///
+/// 仅清 sessions 目录，不动 memory / SOUL.md / butler_history / config.yaml
+/// 等其它持久化数据（tooltip 也要说清楚）。
+#[tauri::command]
+pub fn clear_all_sessions() -> Result<u32, String> {
+    let dir = sessions_dir()?;
+    let mut deleted = 0u32;
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if fs::remove_file(&path).is_ok() {
+                deleted += 1;
+            }
+        }
+    }
+    // 起新空 session（reuse create_session，自动写 index.json + active_id）。
+    // deleted 计的是旧 session 文件数（含 index.json），create 后新文件不影响
+    // 这个数 —— 前端看到的是"清掉了几个"。
+    create_session()?;
+    Ok(deleted)
 }
 
 #[tauri::command]

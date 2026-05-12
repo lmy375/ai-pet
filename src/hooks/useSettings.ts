@@ -89,6 +89,11 @@ export interface AppSettings {
   api_base: string;
   api_key: string;
   model: string;
+  /** 图片生成 model（OpenAI compatible images endpoint）。与 chat model 解耦；
+   * 空串 = 禁用 /image。默认 "dall-e-3"。 */
+  image_model: string;
+  /** 图片生成尺寸 `WxH` 串。空串 = 后端 fallback 1024x1024。 */
+  image_size: string;
   mcp_servers: Record<string, McpServerConfig>;
   telegram: TelegramConfig;
   proactive: ProactiveConfig;
@@ -96,6 +101,9 @@ export interface AppSettings {
   memory_consolidate: MemoryConsolidateConfig;
   chat: ChatConfig;
   user_name: string;
+  /** 复制对话历史时的角色前缀，默认 🧑 / 🐾。空串 = 前端 fallback 默认。 */
+  user_glyph: string;
+  assistant_glyph: string;
   /** 工具审核覆盖：键是工具名，值是 "auto" / "always_review" /
    * "always_approve"。未列出的工具按 auto。值字符串而非联合类型，
    * 让前向兼容自然成立 — 后端 parse_mode 不识别值会退回 auto。 */
@@ -111,6 +119,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_base: "https://api.openai.com/v1",
   api_key: "",
   model: "gpt-4o-mini",
+  image_model: "dall-e-3",
+  image_size: "1024x1024",
   mcp_servers: {},
   telegram: { bot_token: "", allowed_username: "", enabled: false, persona_layer_enabled: true, custom_commands: [], command_lang: "zh" },
   proactive: {
@@ -145,6 +155,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     max_context_messages: 50,
   },
   user_name: "",
+  user_glyph: "🧑",
+  assistant_glyph: "🐾",
   tool_review_overrides: {},
   motion_mapping: {},
 };

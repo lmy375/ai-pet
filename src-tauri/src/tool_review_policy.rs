@@ -11,7 +11,7 @@
 
 use serde::Serialize;
 
-use crate::commands::settings::get_settings;
+use crate::commands::settings::{get_settings, save_settings};
 use crate::tools::BUILTIN_TOOL_NAMES;
 
 /// 用户对单个工具的审核偏好。
@@ -140,6 +140,35 @@ pub struct ToolRiskOverviewRow {
     pub note: &'static str,
     /// "auto" / "always_review" / "always_approve"
     pub mode: &'static str,
+}
+
+/// Tauri 命令：把单个工具的审核偏好写回 settings 并落盘。给 PanelDebug
+/// inline chip toggle 用，让用户改完立即生效（无需走 PanelSettings 整表
+/// 保存）。`mode` 接受 "auto" / "always_review" / "always_approve"；
+/// `parse_mode` 已经做了未知值兜底（退 Auto），但这里也显式校验防止把
+/// 错字进 settings YAML。
+///
+/// 写完后下次 chat 调 `get_settings()` 自动读到新值，不必重启 pet。
+#[tauri::command]
+pub fn set_tool_review_mode(name: String, mode: String) -> Result<(), String> {
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err("tool name must not be empty".to_string());
+    }
+    let normalized_mode = match mode.trim() {
+        "auto" | "always_review" | "always_approve" => mode.trim().to_string(),
+        _ => return Err(format!("invalid mode: {} (expect auto / always_review / always_approve)", mode)),
+    };
+    let mut settings = get_settings()?;
+    if normalized_mode == "auto" {
+        // Auto 是默认值；从 map 删除让 settings YAML 保持简洁
+        settings.tool_review_overrides.remove(trimmed_name);
+    } else {
+        settings
+            .tool_review_overrides
+            .insert(trimmed_name.to_string(), normalized_mode);
+    }
+    save_settings(settings)
 }
 
 /// Tauri 命令：返回内置工具的"风险 + 当前用户偏好"清单。读 settings
