@@ -55,6 +55,10 @@ pub enum TaskStatus {
 pub struct TaskView {
     pub title: String,
     pub body: String,
+    /// 原始 description 完整体（含 [task pri=...] / [done] / [error: ...] /
+    /// [origin:...] / [result:...] / #tag 等所有 marker）。给前端 hover tooltip
+    /// 用，让用户不展开详情就能看到 LLM 加的 status 标记。
+    pub raw_description: String,
     pub priority: u8,
     /// 形如 `2026-05-05T18:00`（无时区后缀，本地时区，与输入对称）。
     pub due: Option<String>,
@@ -74,6 +78,11 @@ pub struct TaskView {
     pub result: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// detail.md 在 memories_dir 下的相对路径（如 `butler_tasks/整理_downloads.md`）。
+    /// 给前端 hover preview 用，直接 invoke memory_read_detail 即可读取，不
+    /// 必再去 backend 用 title 反查。
+    #[serde(default)]
+    pub detail_path: String,
 }
 
 /// header 包装格式：`[task pri=N due=YYYY-MM-DDThh:mm]`。
@@ -459,17 +468,29 @@ pub fn append_cancelled_marker(description: &str, reason: &str) -> String {
 }
 
 /// 在 description 末尾追加 `[done]`，幂等：如果已经含 done 标记就原样返
-/// 回。不附 `[result: ...]` —— 用户从面板键盘快捷键标 done 通常没有产物
-/// 输入；LLM 走 memory_edit 路径自带产物，与本路径互不干扰。
+/// 回。不附 `[result: ...]` —— 键盘快捷键 / 旧路径调用方走这里。带 result
+/// 的版本走 `append_done_marker_with_result`。
 pub fn append_done_marker(description: &str) -> String {
+    append_done_marker_with_result(description, None)
+}
+
+/// 与 `append_done_marker` 同语义但可附 `[result: ...]` —— 面板"标 done"
+/// 弹 dialog 时用户填了产物会走这里。result 为 None / 空串 / 仅空白 → 等
+/// 同 `[done]` 不附 result；非空 trim 后追加 `[result: <trimmed>]`。
+pub fn append_done_marker_with_result(description: &str, result: Option<&str>) -> String {
     if has_done_marker(description) {
         return description.to_string();
     }
     let trimmed = description.trim_end();
+    let result_clean = result.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let done_marker = match result_clean {
+        Some(r) => format!("[done] [result: {}]", r),
+        None => "[done]".to_string(),
+    };
     if trimmed.is_empty() {
-        "[done]".to_string()
+        done_marker
     } else {
-        format!("{} [done]", trimmed)
+        format!("{} {}", trimmed, done_marker)
     }
 }
 
@@ -658,6 +679,7 @@ mod tests {
         TaskView {
             title: title.to_string(),
             body: String::new(),
+            raw_description: String::new(),
             priority,
             due: due.map(String::from),
             status,
@@ -666,6 +688,7 @@ mod tests {
             result: None,
             created_at: created_at.to_string(),
             updated_at: created_at.to_string(),
+            detail_path: String::new(),
         }
     }
 

@@ -38,7 +38,7 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
   const sinceLast = tone?.since_last_proactive_minutes ?? null;
   const threshold = tone?.chatty_day_threshold ?? 0;
   const restraining = threshold > 0 && todaySpeechCount >= threshold;
-  const todayColor = restraining ? "#ea580c" : "#0ea5e9";
+  const todayColor = restraining ? "var(--pet-tint-orange-fg)" : "var(--pet-color-accent)";
   const todayTitle = restraining
     ? `今日 ${todaySpeechCount} 次 ≥ 阈值 ${threshold}：宠物已进入克制模式（prompt 软规则建议保持安静，除非有新信号）`
     : "今天（本机时区）记录的主动开口次数。来自 ~/.config/pet/speech_daily.json";
@@ -66,7 +66,7 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
         >
           {todaySpeechCount}
         </span>
-        <span style={{ fontSize: "11px", color: "#64748b" }}>今日</span>
+        <span style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>今日</span>
       </div>
       <div
         style={{ display: "flex", alignItems: "baseline", gap: "6px" }}
@@ -76,14 +76,14 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           style={{
             fontSize: "16px",
             fontWeight: 600,
-            color: "#6366f1",
+            color: "var(--pet-tint-blue-fg)",
             lineHeight: 1,
             fontFamily: "'SF Mono', 'Menlo', monospace",
           }}
         >
           {weekSpeechCount}
         </span>
-        <span style={{ fontSize: "11px", color: "#64748b" }}>本周</span>
+        <span style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>本周</span>
       </div>
       <div
         style={{ display: "flex", alignItems: "baseline", gap: "6px" }}
@@ -93,16 +93,16 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           style={{
             fontSize: "28px",
             fontWeight: 600,
-            color: "#7c3aed",
+            color: "var(--pet-tint-purple-fg)",
             lineHeight: 1,
             fontFamily: "'SF Mono', 'Menlo', monospace",
           }}
         >
           {lifetimeSpeechCount}
         </span>
-        <span style={{ fontSize: "11px", color: "#64748b" }}>累计</span>
+        <span style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>累计</span>
       </div>
-      <span style={{ fontSize: "12px", color: "#64748b" }}>次主动开口</span>
+      <span style={{ fontSize: "12px", color: "var(--pet-color-muted)" }}>次主动开口</span>
       {/* Iter R50: average speeches per day — derived stat lifetime / max(1, companionshipDays).
           Indicates long-term engagement intensity ("是常聊还是少聊的伴侣关系"). Hidden
           on day 0 (no meaningful average from a single-day denominator). */}
@@ -122,7 +122,7 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
             style={{
               fontSize: "13px",
               fontWeight: 500,
-              color: "#0d9488",
+              color: "var(--pet-tint-green-fg)",
               lineHeight: 1,
               fontFamily: "'SF Mono', 'Menlo', monospace",
             }}
@@ -132,7 +132,7 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
               return avg < 10 ? avg.toFixed(1) : Math.round(avg).toString();
             })()}
           </span>
-          <span style={{ fontSize: "11px", color: "#94a3b8" }}>/日均</span>
+          <span style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>/日均</span>
         </span>
       )}
       {/* Iter R51: 7-day rolling average — distinct from lifetime avg (R50)
@@ -167,7 +167,7 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
             style={{
               fontSize: "13px",
               fontWeight: 500,
-              color: "#0d9488",
+              color: "var(--pet-tint-green-fg)",
               lineHeight: 1,
               fontFamily: "'SF Mono', 'Menlo', monospace",
             }}
@@ -178,7 +178,7 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
               return avg < 10 ? avg.toFixed(1) : Math.round(avg).toString();
             })()}
           </span>
-          <span style={{ fontSize: "11px", color: "#94a3b8" }}>/周日均</span>
+          <span style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>/周日均</span>
         </span>
       )}
       <span
@@ -200,14 +200,14 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           style={{
             fontSize: "13px",
             fontWeight: 500,
-            color: sinceLast !== null && sinceLast >= 60 ? "#94a3b8" : "#475569",
+            color: sinceLast !== null && sinceLast >= 60 ? "var(--pet-color-muted)" : "var(--pet-color-muted)",
             lineHeight: 1,
             fontFamily: "'SF Mono', 'Menlo', monospace",
           }}
         >
           {sinceLast !== null ? formatSinceLast(sinceLast) : "—"}
         </span>
-        <span style={{ fontSize: "11px", color: "#94a3b8" }}>前开口</span>
+        <span style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>前开口</span>
       </span>
       <span
         title={`你和宠物已经一起走过 ${companionshipDays} 天（自首次启动起算）。来自 ~/.config/pet/install_date.txt。`}
@@ -224,14 +224,14 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           style={{
             fontSize: "16px",
             fontWeight: 600,
-            color: "#0d9488",
+            color: "var(--pet-tint-green-fg)",
             lineHeight: 1,
             fontFamily: "'SF Mono', 'Menlo', monospace",
           }}
         >
           {companionshipDays}
         </span>
-        <span style={{ fontSize: "11px", color: "#64748b" }}>
+        <span style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>
           {companionshipDays === 0 ? "天（今天初识）" : "天陪伴"}
         </span>
       </span>
@@ -259,9 +259,9 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
           title={`已超过设置的 chatty_day_threshold (${threshold})，prompt 里加了"今天聊得不少了"的克制规则`}
           style={{
             fontSize: "11px",
-            color: "#ea580c",
+            color: "var(--pet-tint-orange-fg)",
             marginLeft: "auto",
-            background: "#fff7ed",
+            background: "var(--pet-tint-orange-bg)",
             border: "1px solid #fed7aa",
             padding: "2px 8px",
             borderRadius: "10px",
@@ -271,7 +271,7 @@ export function PanelStatsCard(props: PanelStatsCardProps) {
         </span>
       )}
       {!restraining && lifetimeSpeechCount < 3 && (
-        <span style={{ fontSize: "11px", color: "#d97706", marginLeft: "auto" }}>
+        <span style={{ fontSize: "11px", color: "var(--pet-tint-orange-fg)", marginLeft: "auto" }}>
           破冰阶段
         </span>
       )}

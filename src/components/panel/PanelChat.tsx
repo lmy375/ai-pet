@@ -1,13 +1,21 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { TaskProposalCard, parseTaskProposal } from "./TaskProposalCard";
 import { SlashCommandMenu } from "./SlashCommandMenu";
+import { ImagePromptHistoryMenu } from "./ImagePromptHistoryMenu";
 import {
   extractCommandPrefix,
   filterCommandsByPrefix,
   formatHelpText,
+  formatImageHelpText,
   parseSlashCommand,
+  readImagePrompts,
+  recordImagePrompt,
+  attachThumbToImagePrompt,
+  type ImagePromptEntry,
+  recordSlashCommandUsage,
   type SlashAction,
   type SlashCommand,
 } from "./slashCommands";
@@ -20,6 +28,8 @@ import {
   type SearchHit,
   type ToolCall,
 } from "./panelChatBits";
+import { ImageLightbox } from "../common/ImageLightbox";
+import { EmptyState } from "./EmptyState";
 
 type StreamEvent =
   | { event: "chunk"; data: { text: string } }
@@ -37,6 +47,8 @@ interface SessionMeta {
    *  含 system）。`?` 守卫覆盖：旧前端读到迁移前 index.json 时为 undefined，
    *  此时 dropdown 隐藏 "(N 条)"，避免误显 "(0 条)" 让用户以为是空会话。 */
   item_count?: number;
+  /** 钉住的会话永远排在列表前；后端 set_session_pinned 切换。 */
+  pinned?: boolean;
 }
 
 interface SessionIndex {
@@ -57,22 +69,535 @@ interface PanelChatProps {
   /// 让 panel chat 通过 `/tasks` 等 slash 命令请求父组件切 tab。父组件传入
   /// `setActiveTab` 即可。可选 —— 不传则 `/tasks` 走 Unknown 反馈路径。
   onRequestTab?: (tab: "设置" | "聊天" | "任务" | "记忆" | "人格") => void;
+  /// 双击消息正文里的 `「task title」` ref token → 请求父组件切到「任务」
+  /// tab 并把焦点落到该 title 的卡片上。可选 —— 不传则 ref token 仍可
+  /// hover 显 status，但双击 noop。
+  onRequestFocusTask?: (title: string) => void;
 }
 
-export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
+/// 把 data URL 图片用 canvas 缩到 maxSize 短边内、JPEG 0.7 质量重编码，
+/// 用作 /image 历史菜单缩略图（5 条 cap × ~6KB = ~30KB localStorage 占用）。
+/// 失败 reject 让调用者吞掉错误（缩略图缺失是 graceful degrade，不应阻塞
+/// 主流程）。
+function makeImagePromptThumb(dataUrl: string, maxSize = 64): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const ratio = Math.min(maxSize / img.width, maxSize / img.height, 1);
+        const w = Math.max(1, Math.round(img.width * ratio));
+        const h = Math.max(1, Math.round(img.height * ratio));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("no 2d ctx"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.7));
+      } catch (e) {
+        reject(e);
+      }
+    };
+    img.onerror = () => reject(new Error("image load failed"));
+    img.src = dataUrl;
+  });
+}
+
+/// ⇧+点击复制时拼在 payload 顶部的本地时间戳：YYYY-MM-DD HH:MM（分钟粒度
+/// 即可，归档 / share 场景看不到秒）。toISOString 走 UTC 会偏移，所以用
+/// 本地 getter 手拼。
+function formatLocalStamp(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/// `@` 提及触发判定：cursor 前方是否有"未被空白打断的 @<chars>"段。命中
+/// 返回 `{ start, query }`（start = `@` 在 input 中的索引，query = @ 后到
+/// cursor 之间的字符串），否则 null。
+/// 触发条件：
+///   1. `@` 前必须是 input 起始或空白 / 换行 / 全角中文标点（避免邮件地
+///      址等 inline `@` 误触）；
+///   2. `@` 与 cursor 之间不含空白 / 换行 / 角引号 `「」`（角引号是任务
+///      ref token 的边界，遇到说明上一段 ref 已完成）；
+///   3. `@` 后允许空 query（用户刚敲完 `@`，菜单仍开始过滤全集）。
+function extractMentionContext(
+  input: string,
+  cursorPos: number,
+): { start: number; query: string } | null {
+  if (cursorPos <= 0 || cursorPos > input.length) return null;
+  // 从 cursor 往前找最近的 `@`；遇到空白 / 角引号即放弃。
+  let i = cursorPos - 1;
+  while (i >= 0) {
+    const ch = input[i];
+    if (ch === "@") {
+      const before = i > 0 ? input[i - 1] : "";
+      // 前一字符必须是 boundary（起始 / ASCII 空白 / 换行 / 全角空格 / 中文标点）。
+      // 这里只放行最常见的几种：start of string、ASCII whitespace、全角空格。
+      if (
+        i === 0 ||
+        before === " " ||
+        before === "\n" ||
+        before === "\t" ||
+        before === "　"
+      ) {
+        return { start: i, query: input.slice(i + 1, cursorPos) };
+      }
+      return null;
+    }
+    if (
+      ch === " " ||
+      ch === "\n" ||
+      ch === "\t" ||
+      ch === "　" ||
+      ch === "「" ||
+      ch === "」"
+    ) {
+      return null;
+    }
+    i -= 1;
+  }
+  return null;
+}
+
+/// `@` picker / ⌘K picker 共享的 char-order 子序列 fuzzy 匹配。query 每
+/// 个字符按顺序在 target 里找下一处出现位置；找全 = 命中，返回 score
+/// （span × 100 + firstMatch，越紧凑 / 越靠前越优）；找不全 null。空
+/// query 返 0 让全集通过。
+function fuzzyMatchTaskTitle(query: string, target: string): number | null {
+  if (query.length === 0) return 0;
+  let qi = 0;
+  let firstMatch = -1;
+  let lastMatch = -1;
+  for (let ti = 0; ti < target.length && qi < query.length; ti++) {
+    if (target[ti] === query[qi]) {
+      if (firstMatch < 0) firstMatch = ti;
+      lastMatch = ti;
+      qi += 1;
+    }
+  }
+  if (qi !== query.length) return null;
+  return (lastMatch - firstMatch + 1) * 100 + firstMatch;
+}
+
+/// PanelChat 输入框 "📋 prompt 模板" 下拉的预填项。每条 = 一种常见
+/// chat 触发模板，引导用户写出 LLM 易理解的 form。label 是 dropdown 显
+/// 示文案，text 是 prefill 到 input 的字符串。与 PanelTasks 的
+/// TASK_TEMPLATES 平行，但目标是 chat prompt 而非 queue 任务。
+const CHAT_PROMPT_TEMPLATES: Array<{ label: string; text: string }> = [
+  {
+    label: "🪞 复盘",
+    text: "我刚做完 [事项]，能帮我复盘 3 点：\n1. 做得好的\n2. 可以更好的\n3. 下次怎么改",
+  },
+  {
+    label: "❓ 提问",
+    text: "我想问 [topic]。能不能从入门到核心要点 3-5 条讲清楚？",
+  },
+  {
+    label: "📝 写笔记",
+    text: "把我们刚才聊的 [topic] 要点提炼成 3-5 条 bullet，写到 memory 里（category: ai_insights）。",
+  },
+  {
+    label: "🛠 派任务",
+    text: "帮我派一条任务：标题 [简短动作]，描述 [明确产物 + 范围]，可选 priority / due / tags。",
+  },
+];
+
+/// "↩️ 快速 follow-up" 短回应模板：对话中接 assistant 后用。与 prompt
+/// templates 分开 —— 这些是简短回应，前提是 chat 已有交流（items.length > 0）。
+/// 不在空 chat 显，避免新会话首条就发这种空话。
+const CHAT_FOLLOWUP_TEMPLATES: Array<{ label: string; text: string }> = [
+  { label: "👌 明白了", text: "明白了，谢谢。" },
+  { label: "🔍 再细说", text: "能再细说一下吗？尤其是 [关键点]。" },
+  { label: "🔄 换个例子", text: "换个例子试试？这个还不太具体。" },
+];
+
+export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps = {}) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
+  /// 用户自定义 chat 模板（与 module-level CHAT_PROMPT_TEMPLATES 内置三段
+  /// 互补）。localStorage `pet-chat-custom-templates` → Array<{label, text}>。
+  /// cap 10 防 storage 膨胀；FIFO push 老的挤出。
+  const CUSTOM_TEMPLATES_CAP = 10;
+  const [customChatTemplates, setCustomChatTemplates] = useState<
+    Array<{ label: string; text: string }>
+  >(() => {
+    try {
+      const raw = window.localStorage.getItem("pet-chat-custom-templates");
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        return arr
+          .filter(
+            (v): v is { label: string; text: string } =>
+              typeof v === "object" &&
+              v !== null &&
+              typeof v.label === "string" &&
+              typeof v.text === "string",
+          )
+          .slice(0, CUSTOM_TEMPLATES_CAP);
+      }
+    } catch {
+      // 损坏 → 空数组
+    }
+    return [];
+  });
+  const saveCustomTemplate = (label: string, text: string) => {
+    setCustomChatTemplates((prev) => {
+      // 同 label 替换；新条尾插；cap 10 FIFO
+      const filtered = prev.filter((t) => t.label !== label);
+      const next = [...filtered, { label, text }].slice(-CUSTOM_TEMPLATES_CAP);
+      try {
+        window.localStorage.setItem(
+          "pet-chat-custom-templates",
+          JSON.stringify(next),
+        );
+      } catch {
+        // session 内仍生效
+      }
+      return next;
+    });
+  };
+  const persistCustomTemplates = (next: Array<{ label: string; text: string }>) => {
+    setCustomChatTemplates(next);
+    try {
+      window.localStorage.setItem(
+        "pet-chat-custom-templates",
+        JSON.stringify(next),
+      );
+    } catch {
+      // session 内仍生效
+    }
+  };
+  /// 自定义模板管理 modal 开关。
+  const [manageTemplatesOpen, setManageTemplatesOpen] = useState(false);
+  // compose 草稿持久化：key = `pet-chat-draft-${sessionId}`。3s debounce
+  // 防短间隔写盘；input 清空时（发送 / Esc）也清掉该 session 的 draft key
+  // 让 storage 不积陈旧条目。sessionId 切换时 effect 自动读新 key 填到
+  // textarea（见下一个 useEffect）。
+  const draftWriteTimerRef = useRef<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [currentResponse, setCurrentResponse] = useState("");
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCall[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<any[]>([]);
+  // 📎 隐藏 file input：点 📎 按钮 .click() 弹系统选择器，onChange 收文件
+  // 走与 paste / drop 同一条 ingestImageBlobs 路径。multiple + accept="image/*"
+  // 把限定下推给 OS 对话框。
+  const composeFileInputRef = useRef<HTMLInputElement>(null);
+  // 主 compose textarea DOM ref：⌘K task 引用选择器需读光标位置 + 插入
+  // ref 字符串后把光标恢复到插入末尾。其它路径（paste / drop / submit）
+  // 不依赖 DOM，所以之前没拉 ref —— 现在按需补一个。
+  const composeTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // ⌘K task 引用选择器：popup state。打开时一次性 invoke task_list 缓存
+  // 在 picker session 内，输入过滤是纯前端 includes() lowercase。
+  type TaskRefView = { title: string; status: string };
+  const [taskPickerOpen, setTaskPickerOpen] = useState(false);
+  const [taskPickerTasks, setTaskPickerTasks] = useState<TaskRefView[]>([]);
+  const [taskPickerQuery, setTaskPickerQuery] = useState("");
+  const [taskPickerSelectedIdx, setTaskPickerSelectedIdx] = useState(0);
+  const taskPickerInputRef = useRef<HTMLInputElement>(null);
+  // `@` inline ref picker：与 ⌘K 互补，IM 风格"@提到"直觉。@ 触发态由 input +
+  // 光标位置导出（extractMentionContext），renderable 时显浮窗在 input bar 上
+  // 方（同 SlashCommandMenu 锚点）。tasks 列表复用 chatTaskMap（已在挂载时刷新）。
+  const [composeCursorPos, setComposeCursorPos] = useState<number>(0);
+  const [mentionSelectedIdx, setMentionSelectedIdx] = useState(0);
+  /// 当前 task → status + updated_at 的本地缓存。让消息正文里的「title」
+  /// 引用 token 渲成 hover-able underline 显当前状态。打开 panel 时拉一
+  /// 次；⌘K picker 打开 → 顺路刷新（与最新 task_list 同源）。
+  const [chatTaskMap, setChatTaskMap] = useState<
+    Record<string, { status: string; updated_at: string }>
+  >({});
+  /// 消息 "📌 标记" 收藏集：localStorage `pet-chat-marked-messages` →
+  /// Map of `${sessionId}::${itemIdx}` → markedAt (epoch ms)。重 hash content
+  /// 太重；用 (session, idx) 已覆盖 95% —— 上游消息编辑 / 删除时索引漂移，
+  /// dangling 不要紧（用户重新点 📌 即更新）。
+  /// 存储兼容：旧版本是 Array<string> 仅含 key（无 ts）；read 时兼容两种
+  /// 形态，老 key 的 ts 退到 0（"时间未知"）。新 toggle 写 Record<key, ts>。
+  const [markedMessages, setMarkedMessages] = useState<Map<string, number>>(() => {
+    try {
+      const raw = window.localStorage.getItem("pet-chat-marked-messages");
+      if (!raw) return new Map();
+      const parsed = JSON.parse(raw);
+      const m = new Map<string, number>();
+      if (Array.isArray(parsed)) {
+        // 旧格式：Array<string>
+        for (const v of parsed) {
+          if (typeof v === "string") m.set(v, 0);
+        }
+      } else if (parsed && typeof parsed === "object") {
+        // 新格式：Record<key, ts>
+        for (const [k, ts] of Object.entries(parsed)) {
+          if (typeof k === "string" && typeof ts === "number") {
+            m.set(k, ts);
+          }
+        }
+      }
+      return m;
+    } catch {
+      return new Map();
+    }
+  });
+  /// 标记消息查看 modal 状态 + 拉来的条目。Open 时按 sessionId 分组、
+  /// batch load_session 后 walk items[idx] 收集 (sessionId/title/idx/role/
+  /// content) tuple。entries === null 表示 loading 中；空数组 = "全部
+  /// dangling"（用户标过的 session 都已删 / 改名）。
+  type MarkedEntry = {
+    sessionId: string;
+    sessionTitle: string;
+    itemIdx: number;
+    role: string;
+    content: string;
+    /// 标记时间 epoch ms。0 表示老格式无 ts。
+    markedAt: number;
+  };
+  const [marksModalOpen, setMarksModalOpen] = useState(false);
+  const [marksModalEntries, setMarksModalEntries] = useState<
+    MarkedEntry[] | null
+  >(null);
+  /// marks modal 内的过滤 query：按 session 标题 / content 子串匹配。
+  /// 仅在 modal 打开期间用；关闭时清空避免下次打开带 stale query。
+  const [marksModalQuery, setMarksModalQuery] = useState("");
+  /// "📋 复制"按钮成功后 1.5s "✓ 已复制"反馈态，与 chat 复制按钮同模式。
+  const [marksModalCopied, setMarksModalCopied] = useState(false);
+  const openMarksModal = useCallback(async () => {
+    setMarksModalOpen(true);
+    setMarksModalEntries(null);
+    setMarksModalQuery("");
+    // 按 sessionId 分组：保留每个 idx 的 markedAt ts 给 modal 展示
+    const bySession = new Map<string, Array<{ idx: number; markedAt: number }>>();
+    for (const [k, ts] of markedMessages) {
+      const sepIdx = k.indexOf("::");
+      if (sepIdx < 0) continue;
+      const sid = k.slice(0, sepIdx);
+      const idx = parseInt(k.slice(sepIdx + 2), 10);
+      if (!sid || Number.isNaN(idx)) continue;
+      const arr = bySession.get(sid) ?? [];
+      arr.push({ idx, markedAt: ts });
+      bySession.set(sid, arr);
+    }
+    const entries: MarkedEntry[] = [];
+    for (const [sid, idxList] of bySession) {
+      try {
+        const session = await invoke<Session>("load_session", { id: sid });
+        for (const { idx, markedAt } of idxList) {
+          const it = session.items?.[idx];
+          if (!it) continue;
+          // tool / error 行不在 mark 范围（onToggleMark 不传），但 dangling
+          // 防御性 skip 一遍
+          if (it.type !== "user" && it.type !== "assistant") continue;
+          entries.push({
+            sessionId: sid,
+            sessionTitle: session.title,
+            itemIdx: idx,
+            role: it.type,
+            content: it.content,
+            markedAt,
+          });
+        }
+      } catch {
+        // 单 session 拉失败容忍 —— 其它 session 仍能显
+      }
+    }
+    // 按标记时间倒序（最新标记在前；老格式 ts=0 自然落底）
+    entries.sort((a, b) => b.markedAt - a.markedAt);
+    setMarksModalEntries(entries);
+  }, [markedMessages]);
+  const toggleMessageMark = useCallback((key: string) => {
+    setMarkedMessages((prev) => {
+      const next = new Map(prev);
+      if (next.has(key)) next.delete(key);
+      else next.set(key, Date.now());
+      try {
+        window.localStorage.setItem(
+          "pet-chat-marked-messages",
+          JSON.stringify(Object.fromEntries(next)),
+        );
+      } catch {
+        // 私密 / quota 满 —— session 内仍生效
+      }
+      return next;
+    });
+  }, []);
+  const refreshChatTaskMap = useCallback(async () => {
+    try {
+      const resp = await invoke<{
+        tasks: Array<{ title: string; status: string; updated_at: string }>;
+      }>("task_list");
+      const m: Record<string, { status: string; updated_at: string }> = {};
+      for (const t of resp.tasks) {
+        m[t.title] = { status: t.status, updated_at: t.updated_at };
+      }
+      setChatTaskMap(m);
+    } catch {
+      // task_list 失败 → 保留旧 map（避免一次 IO 抖动把所有 ref 退化成
+      // muted "已归档"提示）；下次刷新有机会再补
+    }
+  }, []);
+  useEffect(() => {
+    void refreshChatTaskMap();
+  }, [refreshChatTaskMap]);
+  const openTaskPicker = useCallback(async () => {
+    setTaskPickerOpen(true);
+    setTaskPickerQuery("");
+    setTaskPickerSelectedIdx(0);
+    try {
+      const resp = await invoke<{
+        tasks: Array<{ title: string; status: string; updated_at: string }>;
+      }>("task_list");
+      // 只暴露 title + status —— popup 列表用，TaskView 其它字段（priority /
+      // due / detail_path 等）暂不在 picker 里露，让 UI 简洁。
+      setTaskPickerTasks(
+        resp.tasks.map((t) => ({ title: t.title, status: t.status })),
+      );
+      // 同时刷新 chatTaskMap：picker 打开本来就是用户在做 task 相关动作，
+      // 顺手保持消息正文里的 hover tooltip 最新。
+      const m: Record<string, { status: string; updated_at: string }> = {};
+      for (const t of resp.tasks) {
+        m[t.title] = { status: t.status, updated_at: t.updated_at };
+      }
+      setChatTaskMap(m);
+    } catch {
+      // task_list 失败（memory 目录权限 / 损坏）—— picker 显空列表 +
+      // 用户看到 "（没有任务）" 后用 Esc 关掉就好，不阻塞 chat 主流。
+      setTaskPickerTasks([]);
+    }
+  }, []);
+  const insertTaskRef = useCallback(
+    (title: string) => {
+      // 插入格式 `「title」` —— 全角直角引号，宠物侧 prompt 处理时易抓出
+      // ref token（不与 markdown 的反引号 / 直角括号冲突），且对人眼也是
+      // 视觉显眼的"特别引用"标记。后接一个空格让用户继续敲不必手 space。
+      const ref = `「${title}」 `;
+      const ta = composeTextareaRef.current;
+      if (!ta) {
+        setInput((prev) => prev + ref);
+        return;
+      }
+      const start = ta.selectionStart ?? ta.value.length;
+      const end = ta.selectionEnd ?? ta.value.length;
+      const cur = ta.value;
+      const next = cur.slice(0, start) + ref + cur.slice(end);
+      setInput(next);
+      const newCursor = start + ref.length;
+      // setTimeout 0 等 React 把 next 写入 textarea 再设光标，否则 selectionRange
+      // 写在旧 value 上偏位。
+      window.setTimeout(() => {
+        const t = composeTextareaRef.current;
+        if (t) {
+          t.focus();
+          t.setSelectionRange(newCursor, newCursor);
+        }
+      }, 0);
+    },
+    [setInput],
+  );
+  /// `@` picker 选中后：把 `@<query>` 段（从 mentionContext.start 到当前光标）
+  /// 替换为 `「title」 `。`@` 本身也被吞掉 —— 与 ⌘K picker 输出的 ref token
+  /// 字面量完全一致，下游 taskRefMap 解析 / 宠物侧 prompt 处理走同一条路径。
+  const pickMention = useCallback(
+    (title: string, ctx: { start: number; query: string }) => {
+      const ref = `「${title}」 `;
+      const ta = composeTextareaRef.current;
+      const cur = ta?.value ?? input;
+      const cursor = ta?.selectionStart ?? composeCursorPos;
+      const next = cur.slice(0, ctx.start) + ref + cur.slice(cursor);
+      setInput(next);
+      const newCursor = ctx.start + ref.length;
+      setComposeCursorPos(newCursor);
+      setMentionSelectedIdx(0);
+      window.setTimeout(() => {
+        const t = composeTextareaRef.current;
+        if (t) {
+          t.focus();
+          t.setSelectionRange(newCursor, newCursor);
+        }
+      }, 0);
+    },
+    [input, composeCursorPos, setInput],
+  );
 
   // Session state
   const [sessionId, setSessionId] = useState<string>("");
   const [sessionTitle, setSessionTitle] = useState("新会话");
   const [sessionList, setSessionList] = useState<SessionMeta[]>([]);
   const [showSessionList, setShowSessionList] = useState(false);
+  /// 非当前 session 的"已读时间戳"：sessionId → ISO timestamp（用户上次
+  /// 浏览此 session 时的时间）。session list 渲染时与 s.updated_at 比，
+  /// updated_at > lastSeen → 显蓝色小圆点 hint "有未读"。
+  /// 首次启动：lastSeen 空 map → 所有 session 默认"已读"（不打扰新用户）。
+  /// 仅当用户至少访问过一次某 session 后，该 session 才有可能再回头时显
+  /// badge —— 与"用户读到哪了"的真实语义匹配。
+  const [sessionLastSeen, setSessionLastSeen] = useState<Record<string, string>>(() => {
+    try {
+      const raw = window.localStorage.getItem("pet-chat-session-lastseen");
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+        return obj as Record<string, string>;
+      }
+    } catch {
+      // 解析失败 / localStorage 不可用：退到空 map（全部默认已读）
+    }
+    return {};
+  });
+  const markSessionSeen = useCallback((id: string) => {
+    if (!id) return;
+    const now = new Date().toISOString();
+    setSessionLastSeen((prev) => {
+      const next = { ...prev, [id]: now };
+      try {
+        window.localStorage.setItem(
+          "pet-chat-session-lastseen",
+          JSON.stringify(next),
+        );
+      } catch {
+        // 私密浏览 / 容量满 —— UI state 仍生效，下次 reload 才丢
+      }
+      return next;
+    });
+  }, []);
+  // session 下拉的内容过滤：互斥 enum，同时只能开一个 filter。null = 全显；
+  // "images" / "tasks" 各自走对应后端命令。filterSessionIds 是后端返回的 id
+  // set；loading 时 toggle pill 灰态防重复点。
+  type SessionFilter = null | "images" | "tasks";
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>(null);
+  const [filterSessionIds, setFilterSessionIds] = useState<Set<string> | null>(null);
+  const [filterLoading, setFilterLoading] = useState(false);
+  const toggleSessionFilter = useCallback(
+    async (next: Exclude<SessionFilter, null>) => {
+      if (sessionFilter === next) {
+        // 同一 chip 再点 → 关 filter。
+        setSessionFilter(null);
+        setFilterSessionIds(null);
+        return;
+      }
+      setSessionFilter(next);
+      setFilterSessionIds(null);
+      setFilterLoading(true);
+      try {
+        const cmd =
+          next === "images"
+            ? "list_sessions_with_images"
+            : "list_sessions_with_task_calls";
+        const ids = await invoke<string[]>(cmd);
+        // race 保护：用户切到另一个 filter 后才返回的 stale 结果不能覆盖当前
+        // —— 用 sessionFilter ref 不方便，简单方案：返回时再次读 setSessionFilter
+        // 当前值（通过 functional updater 形式）来对比。但 functional updater
+        // 不能 await 后访问，所以这里走最弱保护：直接 setFilterSessionIds，
+        // 用户切快导致的短暂闪烁可接受（filterSessionIds 在 sessionFilter 改
+        // 变时也会被显式清空）。
+        setFilterSessionIds(new Set(ids));
+      } catch (e) {
+        console.error("session filter fetch failed:", e);
+      } finally {
+        setFilterLoading(false);
+      }
+    },
+    [sessionFilter],
+  );
   const [loaded, setLoaded] = useState(false);
 
   // 跨会话搜索状态。searchMode 开启时盖掉 session 下拉；query 实时（无 debounce）
@@ -93,14 +618,248 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
   // R103: 长会话 scroll position > 200px 时浮 ↑ 按钮回顶。state 由 onScroll
   // 同步驱动；阈值 200 ≈ 2-3 条消息高度，少于此不显（用户接近顶部，没必要跳）。
   const [scrolledFromTop, setScrolledFromTop] = useState(false);
+  /// 滚动条距底 > 200px 时显"↓ 跳到最新"浮动按钮 —— 用户翻历史时一键
+  /// 回到当前。与既有 "↑ 跳到顶" 按钮垂直堆叠，↑ 在上方 ↓ 在下方贴合
+  /// "箭头方向 = 滚动方向"的直觉。两个按钮 visibility 互补但不互斥：
+  /// 中段滚动时可能同时浮（让用户两端都能跳）。
+  const [scrolledFromBottom, setScrolledFromBottom] = useState(false);
   // R106: 单 session 导出后的短反馈文案。显在 dropdown 顶部 3s 自清空；
   // 单状态串行（同时只显一条），多次点击末次覆盖。
   const [exportToast, setExportToast] = useState("");
+
+  /// 全量 sessions 快照导出：base64 写剪贴板，复用 exportToast 通道反馈。
+  /// 带安全提示（snapshot 含历史聊天明文，可能有敏感内容）。
+  const handleExportSessionsSnapshot = useCallback(async () => {
+    try {
+      const payload = await invoke<string>("export_sessions_snapshot");
+      await navigator.clipboard.writeText(payload);
+      setExportToast(
+        `已导出 ${payload.length} 字符到剪贴板 · ⚠ 含全部聊天明文，分享前请审`,
+      );
+      setTimeout(() => setExportToast(""), 6000);
+    } catch (e) {
+      setExportToast(`导出失败: ${e}`);
+      setTimeout(() => setExportToast(""), 4000);
+    }
+  }, []);
+
+  /// 全量清空 sessions：armed 二次确认。第一次点 → 显"再点确认清空 N 个 session"
+  /// + 5s 自动 disarm；二次点 → invoke clear_all_sessions + 刷 sessionList +
+  /// 切到新建的空 session。只清聊天历史，不动 memory / SOUL / config。
+  const [clearAllArmed, setClearAllArmed] = useState(false);
+  const clearAllArmTimerRef = useRef<number | null>(null);
+  const handleClearAllSessions = useCallback(async () => {
+    if (!clearAllArmed) {
+      setClearAllArmed(true);
+      if (clearAllArmTimerRef.current !== null) {
+        window.clearTimeout(clearAllArmTimerRef.current);
+      }
+      clearAllArmTimerRef.current = window.setTimeout(() => {
+        setClearAllArmed(false);
+        clearAllArmTimerRef.current = null;
+      }, 5000);
+      setExportToast(
+        `⚠ 再点一次确认清空全部 ${sessionList.length} 个 session（5 秒内）。仅清聊天历史，不动 memory / SOUL / config。`,
+      );
+      setTimeout(() => setExportToast(""), 5000);
+      return;
+    }
+    if (clearAllArmTimerRef.current !== null) {
+      window.clearTimeout(clearAllArmTimerRef.current);
+      clearAllArmTimerRef.current = null;
+    }
+    setClearAllArmed(false);
+    try {
+      const deleted = await invoke<number>("clear_all_sessions");
+      const index = await invoke<SessionIndex>("list_sessions");
+      setSessionList(index.sessions);
+      if (index.active_id) {
+        await loadSession(index.active_id);
+      }
+      setExportToast(`已清空 ${deleted} 个 session · 起了一个新空会话`);
+      setTimeout(() => setExportToast(""), 4000);
+    } catch (e) {
+      setExportToast(`清空失败: ${e}`);
+      setTimeout(() => setExportToast(""), 4000);
+    }
+  }, [clearAllArmed, sessionList.length]);
+
+  /// 全量 sessions 快照导入：armed 二次确认（覆盖 index + 重写每条 session 文件）。
+  /// pruneSessionsOnImport 勾选时 disk 上不在 snapshot 里的 session.json 一并
+  /// 删掉（让 import 是"新机器干净接收"而非两端混杂）。
+  const [importSessionsArmed, setImportSessionsArmed] = useState(false);
+  const [pruneSessionsOnImport, setPruneSessionsOnImport] = useState(false);
+  const importSessionsPayloadRef = useRef<string>("");
+  const importSessionsArmTimerRef = useRef<number | null>(null);
+  const handleImportSessionsSnapshot = useCallback(async () => {
+    if (!importSessionsArmed) {
+      let payload = "";
+      try {
+        payload = await navigator.clipboard.readText();
+      } catch (e) {
+        setExportToast(`读剪贴板失败: ${e}`);
+        setTimeout(() => setExportToast(""), 4000);
+        return;
+      }
+      if (!payload.trim()) {
+        setExportToast("剪贴板为空。先把 sessions snapshot 字符串复制过来再点导入。");
+        setTimeout(() => setExportToast(""), 4000);
+        return;
+      }
+      importSessionsPayloadRef.current = payload;
+      setImportSessionsArmed(true);
+      if (importSessionsArmTimerRef.current !== null) {
+        window.clearTimeout(importSessionsArmTimerRef.current);
+      }
+      importSessionsArmTimerRef.current = window.setTimeout(() => {
+        setImportSessionsArmed(false);
+        importSessionsPayloadRef.current = "";
+        importSessionsArmTimerRef.current = null;
+      }, 5000);
+      setExportToast(
+        `⚠ 检测到 ${payload.length} 字符 snapshot，再点一次确认覆盖当前 session 索引（5 秒内）`,
+      );
+      setTimeout(() => setExportToast(""), 5000);
+      return;
+    }
+    if (importSessionsArmTimerRef.current !== null) {
+      window.clearTimeout(importSessionsArmTimerRef.current);
+      importSessionsArmTimerRef.current = null;
+    }
+    setImportSessionsArmed(false);
+    const payload = importSessionsPayloadRef.current;
+    importSessionsPayloadRef.current = "";
+    try {
+      const prunedCount = await invoke<number>("import_sessions_snapshot", {
+        payload,
+        pruneOrphans: pruneSessionsOnImport,
+      });
+      // 刷新 session 列表；不自动切到某个 session（loadSession 在文件后段定义，
+      // 且强切让用户失位 —— 让用户从下拉自行点）。dropdown 会重渲显新列表。
+      const index = await invoke<SessionIndex>("list_sessions");
+      setSessionList(index.sessions);
+      const pruneNote =
+        pruneSessionsOnImport && prunedCount > 0
+          ? ` · 清理了 ${prunedCount} 个 orphan 文件`
+          : "";
+      setExportToast(
+        `已导入 ${index.sessions.length} 个 session${pruneNote} · 点下拉里的会话切过去`,
+      );
+      setTimeout(() => setExportToast(""), 6000);
+    } catch (e) {
+      setExportToast(`导入失败: ${e}`);
+      setTimeout(() => setExportToast(""), 4000);
+    }
+  }, [importSessionsArmed, pruneSessionsOnImport]);
   const [pendingScroll, setPendingScroll] = useState<number | null>(null);
+  /// session tab 右键菜单：把 dropdown 里散在两步路径上的操作（pin / 重命名
+  /// / 删除 / 复制标题）收敛到 tab 上一次右键即触发。x/y 是 viewport 坐标，
+  /// fixed 浮窗。renamingId / pendingDeleteId 的 inline 态仍在 dropdown 里
+  /// 显示，所以 rename / delete 触发时顺手 setShowSessionList(true) 让用户
+  /// 看到对应控件。
+  const [sessionTabCtxMenu, setSessionTabCtxMenu] = useState<
+    | { id: string; title: string; pinned: boolean; x: number; y: number }
+    | null
+  >(null);
+  // outside-click + Esc 关闭右键菜单。延迟一帧挂 mousedown 避免触发它的
+  // 点击同时 close。
+  useEffect(() => {
+    if (!sessionTabCtxMenu) return;
+    const close = () => setSessionTabCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSessionTabCtxMenu(null);
+    };
+    const id = window.setTimeout(() => {
+      window.addEventListener("mousedown", close);
+    }, 0);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [sessionTabCtxMenu]);
+
+  /// "刚从 mini chat 双击进 panel"过渡视觉：sessionBar 黄底 1.2s 脉冲，
+  /// 让用户进 panel 后立刻看到"我桌面聊的是这条 session"。两种触发路径：
+  /// 1. Tauri event 'pet-focus-from-mini'（panel 已开时即时）
+  /// 2. localStorage ts（panel 刚建首次时事件丢失，挂载 3s 内时戳算 fresh）
+  /// 1.2s 自动落回常态。
+  const [focusFromMiniPulse, setFocusFromMiniPulse] = useState(false);
+  useEffect(() => {
+    const trigger = () => {
+      setFocusFromMiniPulse(true);
+      window.setTimeout(() => setFocusFromMiniPulse(false), 1200);
+    };
+    // 挂载时读 localStorage 兜底：写入后 3s 内算 fresh，>3s 视为陈旧（
+    // 上次开 panel 没读到 / 没切回 chat tab 等场景，避免长 stale 时戳乱触发）。
+    try {
+      const raw = window.localStorage.getItem("pet-focus-from-mini-ts");
+      if (raw) {
+        const ts = Number.parseInt(raw, 10);
+        if (Number.isFinite(ts) && Date.now() - ts <= 3000) {
+          trigger();
+        }
+        window.localStorage.removeItem("pet-focus-from-mini-ts");
+      }
+    } catch {
+      // ignore: 私密浏览 / 容量满
+    }
+    let unlisten: (() => void) | null = null;
+    listen("pet-focus-from-mini", () => {
+      trigger();
+    })
+      .then((un) => {
+        unlisten = un;
+      })
+      .catch(() => {
+        // listener 注册失败不影响主流程，localStorage 路径仍可兜底
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
   const [highlightedItemIdx, setHighlightedItemIdx] = useState<number | null>(null);
+  // 跨会话搜索 hit 跳过去之后，让 matched item 的 bubble 内 keyword 段
+  // mark 高亮（与 SearchResultRow 同黄色）。比 highlightedItemIdx 的 1.5s
+  // 行级 background 高亮存活时间更长 —— 切到别的会话 / 再点别的 hit 才清，
+  // 让用户慢慢读时仍能一眼看到命中位置。
+  const [searchHit, setSearchHit] = useState<{ idx: number; keyword: string } | null>(null);
   // 复制按钮：刚被复制的 item idx（短暂展示"已复制"反馈），1.5s 自动清掉。
   // 用 idx 而非 boolean 让多条消息互不干扰（不会 A 复制后 B 也显示"已复制"）。
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  /// assistant 消息的反馈状态：idx → "liked" | "disliked" | "puzzled"。仅
+  /// session 内存活（切 session 清空）—— 用户在当前会话内做的标记看得见，
+  /// 切走再回来不再持续显示（feedback_history 已落盘留给 LLM 用，UI 不必
+  /// 持久化各条状态，否则反复浏览容易误点重复入库）。
+  const [reactionsByIdx, setReactionsByIdx] = useState<
+    Record<number, "liked" | "disliked" | "puzzled">
+  >({});
+  const handleReact = useCallback(
+    (idx: number, kind: "liked" | "disliked" | "puzzled", content: string) => {
+      // 同 kind 重复点 = 切换 off；不同 kind = 覆盖
+      setReactionsByIdx((prev) => {
+        const next = { ...prev };
+        if (next[idx] === kind) delete next[idx];
+        else next[idx] = kind;
+        return next;
+      });
+      // 仅在"新选 / 切换"路径下落盘；"切换 off"不写入（避免重复写无意义 entry）。
+      // 落盘是 fire-and-forget：失败 console 警告即可，UI 已显选中状态。
+      if (reactionsByIdx[idx] === kind) return;
+      const excerpt = content.length > 200 ? content.slice(0, 200) : content;
+      const cmd =
+        kind === "liked"
+          ? "record_bubble_liked"
+          : kind === "disliked"
+            ? "record_message_disliked"
+            : "record_bubble_puzzled";
+      invoke(cmd, { excerpt }).catch((e) =>
+        console.error(`record reaction ${kind} failed:`, e),
+      );
+    },
+    [reactionsByIdx],
+  );
 
   // Slash 命令菜单：当输入处于 slash 模式（首字符 `/` 且未敲到参数空格）时
   // 浮窗可见。selectedSlashIdx 由键盘上下 / Enter 控制；点击命令项也写它。
@@ -112,12 +871,77 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
   // ↓ 往后或退出。slash 命令不入历史（panel 控制流不算 chat content）。
   const [messageHistory, setMessageHistory] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
+
+  // 多模态：粘贴板里的图片缓存（base64 data URL），发送时与文本拼成 multipart。
+  // 数据全在前端 memory，用户点 ✕ 直接 splice 掉即可；非多模态模型下发送时
+  // 由 is_current_model_multimodal 守门并提示。
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
+  // 拖拽图片到 panel 时的高亮态。只在非零 dragenter 计数时为 true，避免
+  // 子元素 enter/leave 抖动让 overlay 闪烁。
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  // /clear 二次确认。首次 → armed + 5s 自动 disarm；armed 内再敲 /clear → 真清。
+  // 误触 /clear 后仍能等 5s 看见自己没确认，会话内容不丢。
+  const [clearArmed, setClearArmed] = useState(false);
+  const clearArmTimerRef = useRef<number | null>(null);
+
+  // compose 区缩略图条点击查看大图。CopyableMessage 自己管历史气泡的 lightbox；
+  // 这里独立状态服务"发前预览"路径，与 ✕ 删图按钮共存（不挤位置）。
+  const [composeLightboxSrc, setComposeLightboxSrc] = useState<string | null>(null);
+
+  /// 多个 image blob → 异步读为 data URL → 推到 pendingImages。paste / drop
+  /// 共用此路径，保持守门 + 缩略图条 + ✕ 移除 + 发送多模态化的行为完全一致。
+  const ingestImageBlobs = useCallback((blobs: Blob[]) => {
+    for (const blob of blobs) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = reader.result;
+        if (typeof url === "string") {
+          setPendingImages((prev) => [...prev, url]);
+        }
+      };
+      reader.readAsDataURL(blob);
+    }
+  }, []);
   const slashPrefix = extractCommandPrefix(input);
   const filteredCommands: SlashCommand[] = useMemo(
     () => (slashPrefix === null ? [] : filterCommandsByPrefix(slashPrefix)),
     [slashPrefix],
   );
   const slashMenuVisible = slashPrefix !== null;
+  // `@` inline picker：mentionContext 由 input + cursor 派生。slashMenuVisible
+  // 优先级更高（输入开头是 `/` 时不抢菜单，避免两个菜单重叠）。
+  const mentionContext = useMemo(
+    () =>
+      slashMenuVisible ? null : extractMentionContext(input, composeCursorPos),
+    [input, composeCursorPos, slashMenuVisible],
+  );
+  const mentionFilteredTasks = useMemo(() => {
+    if (!mentionContext) return [] as Array<{ title: string; status: string }>;
+    const q = mentionContext.query.toLowerCase();
+    const entries = Object.entries(chatTaskMap);
+    if (q.length === 0) {
+      return entries
+        .slice(0, 30)
+        .map(([title, v]) => ({ title, status: v.status }));
+    }
+    const scored: Array<{ title: string; status: string; score: number }> = [];
+    for (const [title, v] of entries) {
+      const s = fuzzyMatchTaskTitle(q, title.toLowerCase());
+      if (s !== null) scored.push({ title, status: v.status, score: s });
+    }
+    scored.sort((a, b) => a.score - b.score);
+    return scored.slice(0, 30).map(({ title, status }) => ({ title, status }));
+  }, [mentionContext, chatTaskMap]);
+  const mentionMenuVisible = mentionContext !== null;
+  // 候选集变化时 clamp 选中下标（与 slash menu 同模式，避免 stale idx 越界）
+  useEffect(() => {
+    setMentionSelectedIdx((idx) => {
+      if (mentionFilteredTasks.length === 0) return 0;
+      return Math.min(idx, mentionFilteredTasks.length - 1);
+    });
+  }, [mentionFilteredTasks.length]);
   // prefix 变化时把选中项 clamp 回 0（避免上次选第 5 条但现在只剩 2 条）
   useEffect(() => {
     setSelectedSlashIdx((idx) => {
@@ -125,6 +949,180 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
       return Math.min(idx, filteredCommands.length - 1);
     });
   }, [filteredCommands.length]);
+
+  /// `/image` 历史 prompt 召回：input 匹配 `/image` / `/image ` / `/image <arg>`
+  /// 时进入触发态。arg 部分（trim 后）用来对历史做 substring 模糊过滤；空 arg
+  /// 显全部 5 条。0 匹配时菜单自动隐藏（让用户 compose 新 prompt 不被打扰）。
+  const imagePromptMatch = input.match(/^\/image(?:\s+(.*))?$/i);
+  const imagePromptArg = imagePromptMatch?.[1]?.trim() ?? "";
+  const imagePromptTriggerActive = !!imagePromptMatch && !slashMenuVisible;
+  const [allImagePrompts, setAllImagePrompts] = useState<ImagePromptEntry[]>([]);
+  const [selectedImagePromptIdx, setSelectedImagePromptIdx] = useState(0);
+  // 触发态开 / 关时刷新一次历史（避免每次输入都读 localStorage）。
+  useEffect(() => {
+    if (imagePromptTriggerActive) {
+      setAllImagePrompts(readImagePrompts());
+      setSelectedImagePromptIdx(0);
+    }
+  }, [imagePromptTriggerActive]);
+  // arg 变化时把 idx clamp 回 0（用户敲新字符 → 候选集变 → 重新从顶选）
+  useEffect(() => {
+    setSelectedImagePromptIdx(0);
+  }, [imagePromptArg]);
+  const imagePromptHistory = useMemo(() => {
+    if (imagePromptArg.length === 0) return allImagePrompts;
+    const q = imagePromptArg.toLowerCase();
+    return allImagePrompts.filter((e) => e.prompt.toLowerCase().includes(q));
+  }, [allImagePrompts, imagePromptArg]);
+  const imagePromptMenuVisible =
+    imagePromptTriggerActive && imagePromptHistory.length > 0;
+
+  /// 当前 session 的 token 估算：累加 items[].content 字符数 / 4（OpenAI 通用
+  /// 经验比率，英文准、中文偏低估，但作为"会话长度感知"已够）。也把当前
+  /// streaming chunk 算进去，让用户看到正在生成的内容也吃 context。超阈值
+  /// 时角标变红 + 提示，让用户知道该开新会话或精简历史。
+  const TOKEN_WARN = 8000;
+  const TOKEN_CRIT = 24000;
+  /// 点 token badge 后弹出"压缩历史"小确认。三档剪取（1/2 / 2/3 / 仅近 4），
+  /// 选完调本地 trim helper 即时生效（不要求用户切 session）。outside-click
+  /// / Esc 关闭。
+  const [compactPromptOpen, setCompactPromptOpen] = useState(false);
+  useEffect(() => {
+    if (!compactPromptOpen) return;
+    const close = () => setCompactPromptOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCompactPromptOpen(false);
+    };
+    const id = window.setTimeout(() => {
+      window.addEventListener("mousedown", close);
+    }, 0);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [compactPromptOpen]);
+
+  const sessionTokensEstimate = useMemo(() => {
+    let chars = 0;
+    for (const it of items) {
+      if (typeof it.content === "string") chars += it.content.length;
+    }
+    if (currentResponse) chars += currentResponse.length;
+    // /4 是 OpenAI 文档常用粗估比；中文 1 char ≈ 1 token 偏高，但作为长度
+    // 指标 OK，与 cl100k_base / o200k_base 实测差 ~20% 内
+    return Math.round(chars / 4);
+  }, [items, currentResponse]);
+
+  /// 顶部 session 横排 tab 栏的展示集：pinned 永远前，剩余按最近活跃；最多
+  /// 8 个 + 当前 session 必显。比 dropdown 浏览成本低，"常用 + 当前"一眼可
+  /// 见；超出靠右侧 ⋯ 入下拉看全集。
+  const MAX_SESSION_TABS = 8;
+  const tabSessions = useMemo(() => {
+    if (sessionList.length === 0) return [] as SessionMeta[];
+    const reversed = [...sessionList].reverse();
+    const pinned = reversed.filter((s) => s.pinned);
+    const unpinned = reversed.filter((s) => !s.pinned);
+    const ordered = [...pinned, ...unpinned];
+    const top = ordered.slice(0, MAX_SESSION_TABS);
+    // 当前 session 不在 top 8 → 把它挤到首位（其余整体右移一格保 cap）
+    if (sessionId && !top.some((s) => s.id === sessionId)) {
+      const current = ordered.find((s) => s.id === sessionId);
+      if (current) return [current, ...top.slice(0, MAX_SESSION_TABS - 1)];
+    }
+    return top;
+  }, [sessionList, sessionId]);
+
+  /// 持久化 draft helper：纯函数包 localStorage 写读，try/catch 隔离 IO 错。
+  const writeDraft = (id: string, text: string) => {
+    try {
+      if (text.length === 0) {
+        window.localStorage.removeItem(`pet-chat-draft-${id}`);
+      } else {
+        window.localStorage.setItem(`pet-chat-draft-${id}`, text);
+      }
+    } catch {
+      // 私密浏览 / 配额满；session 内仍能用，下次启动丢
+    }
+  };
+  // input ref 让 sessionId 切换 effect 能拿到当前最新 input（state 是异步
+  // 的，session 切换 commit 时 input 还是旧值，正好对应"旧 session 的草稿"）。
+  const inputRef = useRef(input);
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
+  const prevSessionIdRef = useRef<string>("");
+  /// ⌘B 切回上一会话的目标：每次 sessionId 切换时记下"被切走的那个 session"，
+  /// 让 ⌘B 在两个 session 之间来回。与 prevSessionIdRef 区别：后者每次 switch
+  /// 都会被覆盖成新 current，而 swapTargetRef 保留 "切换前的 session id"，
+  /// 适合 keyboard swap 模式。empty string 表示"没有上一会话可切"。
+  const swapTargetRef = useRef<string>("");
+  /// 切 session 时若 prev session 有未发非空草稿，浮 5s toast 提示，让
+  /// 用户知道"我刚才写了 N 字没发"。点击 toast 切回去继续写。已经 inputRef
+  /// 拿了完整 prev 内容，title 从 sessionList 找；找不到（session 已删 /
+  /// 重命名）显空白 fallback。toast id 用 timer ref 防多次切换叠加。
+  const [draftReminder, setDraftReminder] = useState<{
+    sessionId: string;
+    title: string;
+    charCount: number;
+  } | null>(null);
+  const draftReminderTimerRef = useRef<number | null>(null);
+
+  // sessionId 切换：先把当前 input 立即写到 prev session 的 key（防 3s
+  // debounce 未触发就丢稿），然后读新 session 的 draft 填到 textarea。
+  useEffect(() => {
+    if (!sessionId) return;
+    const prevId = prevSessionIdRef.current;
+    if (prevId && prevId !== sessionId) {
+      // 记下被切走的会话 id，供 ⌘B 快速切回
+      swapTargetRef.current = prevId;
+      const prevDraft = inputRef.current;
+      writeDraft(prevId, prevDraft);
+      // 非空 trim 才 toast —— 仅有空白字符的"草稿"不打扰
+      if (prevDraft.trim().length > 0) {
+        const prevSession = sessionList.find((s) => s.id === prevId);
+        setDraftReminder({
+          sessionId: prevId,
+          title: prevSession?.title ?? "（未知会话）",
+          charCount: prevDraft.length,
+        });
+        if (draftReminderTimerRef.current !== null) {
+          window.clearTimeout(draftReminderTimerRef.current);
+        }
+        draftReminderTimerRef.current = window.setTimeout(() => {
+          setDraftReminder(null);
+          draftReminderTimerRef.current = null;
+        }, 5000);
+      }
+    }
+    prevSessionIdRef.current = sessionId;
+    try {
+      const raw = window.localStorage.getItem(`pet-chat-draft-${sessionId}`);
+      setInput(raw && raw.length > 0 ? raw : "");
+    } catch {
+      setInput("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
+  // 在 session 内打字时 3s debounce 写盘。组件 unmount 时清 timer。
+  useEffect(() => {
+    if (!sessionId) return;
+    if (draftWriteTimerRef.current !== null) {
+      window.clearTimeout(draftWriteTimerRef.current);
+    }
+    draftWriteTimerRef.current = window.setTimeout(() => {
+      writeDraft(sessionId, input);
+      draftWriteTimerRef.current = null;
+    }, 3000);
+    return () => {
+      if (draftWriteTimerRef.current !== null) {
+        window.clearTimeout(draftWriteTimerRef.current);
+        draftWriteTimerRef.current = null;
+      }
+    };
+  }, [input, sessionId]);
 
   // Load sessions on mount
   useEffect(() => {
@@ -219,10 +1217,22 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
       setSessionTitle(session.title);
       setItems(session.items || []);
       messagesRef.current = session.messages || [];
+      // 切 session 清掉 in-session 三键 reaction 高亮（feedback_history 已
+      // 落盘，不需要前端记忆）
+      setReactionsByIdx({});
+      // 标记此 session 已读到当前时间 —— session list 的 unread badge 基线
+      markSessionSeen(session.id);
     } catch (e) {
       console.error("Failed to load session:", e);
     }
   };
+
+  // 当前 session 的 items 变（用户在读时收到新消息 / 自己发了消息）→ 同步
+  // 推进 lastSeen，让 list badge 不会误标自己正在看的会话。sessionId 切换
+  // 时 loadSession 已经标记过；这里覆盖"持续观看时的增量"。
+  useEffect(() => {
+    if (sessionId) markSessionSeen(sessionId);
+  }, [sessionId, items, markSessionSeen]);
 
   const saveCurrentSession = useCallback(
     async (newItems: ChatItem[]) => {
@@ -260,6 +1270,63 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
     [sessionId, sessionTitle],
   );
 
+  /// 压缩历史：丢掉前 N 条 items + 同步丢同样数量的非 system messages。
+  /// 保留 system 让 SOUL.md / prompt 角色定义不丢。最少留 lastKeep 条让
+  /// 上下文有锚（不至于"清完后 LLM 一脸懵"）。session 文件原地覆盖。
+  ///
+  /// 压缩前自动调 export_sessions_snapshot 把所有 session 备份写到剪贴板，
+  /// 用户想反悔 → 点 📥 导入快照 即可恢复。备份失败仍会继续压缩（trim 是
+  /// 用户主诉，备份是保险），失败原因在 toast 里提示。
+  const compactHistory = useCallback(
+    async (lastKeep: number) => {
+      const remaining = Math.max(0, Math.min(items.length, lastKeep));
+      const trimCount = items.length - remaining;
+      if (trimCount <= 0) {
+        setCompactPromptOpen(false);
+        return;
+      }
+      // 1) 备份当前所有 sessions 到剪贴板（用 base64 snapshot 与既有"📥
+      //    导入快照"路径对偶）。fire-and-await：失败不阻塞 trim，仅在 toast
+      //    里提示用户。
+      let backupOk = false;
+      let backupErr = "";
+      try {
+        const payload = await invoke<string>("export_sessions_snapshot");
+        await navigator.clipboard.writeText(payload);
+        backupOk = true;
+      } catch (e) {
+        backupErr = String(e);
+      }
+
+      const nextItems = items.slice(trimCount);
+      // messagesRef：保留 system，再保留尾部 lastKeep 条非 system 消息。
+      // tool 调用对（assistant tool_calls + tool response）可能在尾部被
+      // 截断；接受这点不一致，让用户优先获得 token 削减。
+      const sysIdx = messagesRef.current.findIndex(
+        (m) => m && typeof m === "object" && m.role === "system",
+      );
+      let sys: any = null;
+      let rest: any[] = messagesRef.current;
+      if (sysIdx >= 0) {
+        sys = messagesRef.current[sysIdx];
+        rest = messagesRef.current.filter((_, i) => i !== sysIdx);
+      }
+      const restKept = rest.slice(Math.max(0, rest.length - lastKeep));
+      messagesRef.current = sys ? [sys, ...restKept] : restKept;
+      setItems(nextItems);
+      await saveCurrentSession(nextItems);
+      setCompactPromptOpen(false);
+      const backupNote = backupOk
+        ? " · 压缩前快照已复制到剪贴板（想反悔点 📥 导入快照）"
+        : ` · ⚠ 备份失败：${backupErr}`;
+      setExportToast(
+        `已压缩 ${trimCount} 条早期消息，保留近 ${nextItems.length} 条${backupNote}`,
+      );
+      window.setTimeout(() => setExportToast(""), 6000);
+    },
+    [items, saveCurrentSession],
+  );
+
   const handleNewSession = async () => {
     try {
       const session = await invoke<Session>("create_session");
@@ -282,6 +1349,82 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
     setShowSessionList(false);
   };
 
+  /// fork 当前 session：复制末尾 keepN 条 items + 对应 messages 到新 session。
+  /// keepN = Infinity → 整段复制（除了 sessionId / created_at / updated_at 由后端
+  /// 自动生成）。session title 加 " · fork" 后缀让用户能区分。
+  ///
+  /// messages 端：保留 system + 末尾 keepN 条非 system 消息（与压缩历史同算法）。
+  /// 让 LLM 在新 session 里能看到末尾对话语境，从这里"分叉"继续讨论。
+  const handleForkSession = useCallback(
+    async (keepN: number) => {
+      if (!sessionId) return;
+      try {
+        const newSession = await invoke<Session>("create_session");
+        const sourceItems = items.slice(
+          keepN === Infinity ? 0 : Math.max(0, items.length - keepN),
+        );
+        const sourceMessages = messagesRef.current;
+        const sysIdx = sourceMessages.findIndex(
+          (m) => m && typeof m === "object" && m.role === "system",
+        );
+        let sys: any = null;
+        let rest: any[] = sourceMessages;
+        if (sysIdx >= 0) {
+          sys = sourceMessages[sysIdx];
+          rest = sourceMessages.filter((_, i) => i !== sysIdx);
+        }
+        const messagesTail =
+          keepN === Infinity
+            ? rest
+            : rest.slice(Math.max(0, rest.length - keepN));
+        const forkedMessages = sys ? [sys, ...messagesTail] : messagesTail;
+        // 后端 newSession.title 默认是 "新会话"；用源 session title + " · fork"
+        // 让 dropdown / tab 一眼区分。空 sourceTitle 走 fallback。
+        const forkTitle =
+          (sessionTitle && sessionTitle !== "新会话"
+            ? `${sessionTitle} · fork`
+            : `Fork ${new Date().toLocaleTimeString().slice(0, 5)}`).slice(0, 60);
+        const forked: Session = {
+          ...newSession,
+          title: forkTitle,
+          items: sourceItems,
+          messages: forkedMessages,
+        };
+        await invoke("save_session", { session: forked });
+        // 刷 list + 切到新 fork session
+        const index = await invoke<SessionIndex>("list_sessions");
+        setSessionList(index.sessions);
+        await loadSession(forked.id);
+        setExportToast(
+          `已 fork ${sourceItems.length} 条到新 session「${forkTitle}」`,
+        );
+        window.setTimeout(() => setExportToast(""), 4000);
+      } catch (e) {
+        setExportToast(`fork 失败：${e}`);
+        window.setTimeout(() => setExportToast(""), 4000);
+      }
+    },
+    [sessionId, sessionTitle, items],
+  );
+  /// fork popover open 标志 + outside-click 关。
+  const [forkPopoverOpen, setForkPopoverOpen] = useState(false);
+  useEffect(() => {
+    if (!forkPopoverOpen) return;
+    const close = () => setForkPopoverOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setForkPopoverOpen(false);
+    };
+    const id = window.setTimeout(() => {
+      window.addEventListener("mousedown", close);
+    }, 0);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [forkPopoverOpen]);
+
   /// 把一条本地"系统反馈" message 推到 items（不持久化、不发给 LLM），用于
   /// `/help` / `/clear` 后的提示 / 未知命令的错误反馈。type 选 assistant 让它
   /// 视觉上像宠物自己说话，与命令的"对话内 hint"语义对齐。
@@ -289,12 +1432,143 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
     setItems((prev) => [...prev, { type: "assistant", content: text }]);
   }, []);
 
+  /// `/image` 通用执行：替换 `replaceAtIdx` 处的 item 为 pending 占位（idx<0
+  /// 则 append），调后端 image_generate；成功 → 渲染图片的 assistant 行；
+  /// 失败 → 错误说明 + `imageRetryPrompt` 让 UI 渲出重试按钮。pendingNote 用
+  /// 闭包引用 + content 比对双保险定位。
+  const runImageGenerate = useCallback(
+    (
+      prompt: string,
+      replaceAtIdx: number,
+      n: number = 1,
+      sizeOverride: string | null = null,
+    ) => {
+      const nLabel = n > 1 ? `（-n ${n}）` : "";
+      const sizeLabel = sizeOverride ? `（${sizeOverride}）` : "";
+      const pendingNote: ChatItem = {
+        type: "assistant",
+        content: `🎨 正在生成图片${nLabel}${sizeLabel}：${prompt} …`,
+      };
+      setItems((prev) => {
+        const next = [...prev];
+        if (replaceAtIdx >= 0 && replaceAtIdx < next.length) {
+          next[replaceAtIdx] = pendingNote;
+        } else {
+          next.push(pendingNote);
+        }
+        return next;
+      });
+      const finishWith = (replacement: ChatItem) => {
+        setItems((prev) => {
+          const idx = prev.findIndex(
+            (it) =>
+              it === pendingNote ||
+              (it.type === "assistant" && it.content === pendingNote.content),
+          );
+          if (idx < 0) return prev;
+          const next = [...prev];
+          next[idx] = replacement;
+          void saveCurrentSession(next);
+          return next;
+        });
+      };
+      (async () => {
+        try {
+          const result = await invoke<{ urls: string[]; errors: string[] }>(
+            "image_generate",
+            { prompt, n, size: sizeOverride ?? undefined },
+          );
+          // 三档结果：全成 / 部分成 / 全败。全败时走失败行 + 重试按钮，与原
+          // 错误路径一致；部分成走带图 + 错误段一起显，让用户看到画了几张
+          // 还有几条原因。
+          if (result.urls.length === 0) {
+            finishWith({
+              type: "assistant",
+              content: `🎨 图片生成失败${nLabel}${sizeLabel}：${result.errors.join("; ") || "未知"}`,
+              imageRetryPrompt: prompt,
+              imageRetryN: n > 1 ? n : undefined,
+              imageRetrySize: sizeOverride,
+            });
+          } else {
+            const partialNote =
+              result.errors.length > 0
+                ? `\n\n⚠ ${result.errors.length}/${n} 失败：${result.errors.join("; ")}`
+                : "";
+            const countLabel =
+              n > 1 ? `（${result.urls.length}/${n} 张）` : nLabel;
+            finishWith({
+              type: "assistant",
+              content: `🎨 ${prompt}${countLabel}${sizeLabel}${partialNote}`,
+              images: result.urls,
+            });
+            // 拿首图 canvas 压成 64px 缩略图后回填到 /image 历史菜单条目。
+            // fire-and-forget：失败仅 console；菜单下次打开会用 readImagePrompts
+            // 重读，所以这里也顺手 refresh in-memory 数据让正在打开的菜单立
+            // 即看到新缩略图（用户连续 /image 时切换 prompt 不必关菜单）。
+            const firstUrl = result.urls[0];
+            if (firstUrl) {
+              makeImagePromptThumb(firstUrl)
+                .then((thumb) => {
+                  attachThumbToImagePrompt(prompt, thumb);
+                  setAllImagePrompts(readImagePrompts());
+                })
+                .catch((e) =>
+                  console.error("attach image prompt thumb failed:", e),
+                );
+            }
+          }
+        } catch (e) {
+          finishWith({
+            type: "assistant",
+            content: `🎨 图片生成失败${nLabel}${sizeLabel}：${e}`,
+            imageRetryPrompt: prompt,
+            imageRetryN: n > 1 ? n : undefined,
+            imageRetrySize: sizeOverride,
+          });
+        }
+      })();
+    },
+    [saveCurrentSession],
+  );
+
   /// 执行已 parse 出的 slash action。命令在前端拦截，**不**走 LLM。`/clear`
   /// 与 `/sleep` 涉及后端持久化，其它纯 UI 切换。
   const executeSlash = useCallback(
     async (action: SlashAction) => {
+      // 记一次使用频次，让 slash menu 排序按用户偏好刷新。incomplete / unknown
+      // 不计 —— 只有"用户成功执行了某个真命令"才算偏好信号。
+      // clear 的二次确认首发也算"使用一次"，避免要点两次才能学到偏好；用户
+      // 反复用 /clear 时 score 自然累加。
+      if (
+        action.kind !== "incomplete" &&
+        action.kind !== "unknown" &&
+        action.kind !== "imageHelp"
+      ) {
+        // imageHelp 是 /image 的子模式，不在 SLASH_COMMANDS 里 —— 记了也没用
+        // 还会污染 history 排序 score map。
+        recordSlashCommandUsage(action.kind);
+      }
       switch (action.kind) {
         case "clear": {
+          // 二次确认：未 armed → 设 armed + 5s 计时 + 提示；armed → 真清。
+          if (!clearArmed) {
+            setClearArmed(true);
+            if (clearArmTimerRef.current !== null) {
+              window.clearTimeout(clearArmTimerRef.current);
+            }
+            clearArmTimerRef.current = window.setTimeout(() => {
+              setClearArmed(false);
+              clearArmTimerRef.current = null;
+            }, 5000);
+            pushLocalAssistantNote("⚠️ 再敲一次 /clear 确认清空当前会话（5 秒内）。");
+            break;
+          }
+          // 真执行清空：取消计时、disarm，再走原清空逻辑。
+          if (clearArmTimerRef.current !== null) {
+            window.clearTimeout(clearArmTimerRef.current);
+            clearArmTimerRef.current = null;
+          }
+          setClearArmed(false);
           // 清空当前 session 的 items / messages（保留 system soul），写盘。
           // 不删 session 文件，session id 不变；用户回看历史时该 session 会显示
           // 空内容。比"新建会话"少一次列表 churn。
@@ -352,6 +1626,46 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
           pushLocalAssistantNote(formatHelpText());
           break;
         }
+        case "image": {
+          // 用户回声 + 调起 runImageGenerate（idx=-1 → append pending）。
+          // 多张：在回声里把 -n N 显出来，与用户实际输入对齐。
+          // -r 标志：把最近一条 assistant 文本拼到 prompt 前作"参考语境"。
+          // 找不到 last assistant 时 fallback 到 pushLocalAssistantNote 提示。
+          let effectivePrompt = action.prompt;
+          if (action.referenceLastAssistant) {
+            const lastAssistant = [...items]
+              .reverse()
+              .find((it) => it.type === "assistant" && it.content.trim());
+            if (!lastAssistant) {
+              pushLocalAssistantNote(
+                "⚠ /image -r：当前会话还没有 assistant 回复可引用。直接走 /image <prompt> 即可。",
+              );
+              break;
+            }
+            // 拼接策略：assistant 文本作"上下文"前缀 + "\n\n" 分隔 + 用户的
+            // prompt 作主指令。prompt 为空时只用 assistant 文本（已在 parser
+            // 允许 -r 空 prompt）。imagen 端模型多数自己能从语境提炼细节。
+            const refText = lastAssistant.content.trim();
+            effectivePrompt = action.prompt
+              ? `${refText}\n\n${action.prompt}`
+              : refText;
+          }
+          recordImagePrompt(effectivePrompt);
+          const nFlag = action.n > 1 ? `-n ${action.n} ` : "";
+          const rFlag = action.referenceLastAssistant ? "-r " : "";
+          const sFlag = action.sizeOverride ? `-s ${action.sizeOverride} ` : "";
+          const userEcho: ChatItem = {
+            type: "user",
+            content: `/image ${nFlag}${rFlag}${sFlag}${action.prompt}`.trimEnd(),
+          };
+          setItems((prev) => [...prev, userEcho]);
+          runImageGenerate(effectivePrompt, -1, action.n, action.sizeOverride);
+          break;
+        }
+        case "imageHelp": {
+          pushLocalAssistantNote(formatImageHelpText());
+          break;
+        }
         case "incomplete":
           break; // 仅 `/` 还没敲完，菜单负责展示
         case "unknown": {
@@ -360,28 +1674,47 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
         }
       }
     },
-    [sessionId, sessionTitle, onRequestTab, pushLocalAssistantNote],
+    [sessionId, sessionTitle, onRequestTab, pushLocalAssistantNote, saveCurrentSession, runImageGenerate, clearArmed],
   );
 
   /// 复制单条消息到剪贴板。成功 → 闪 1.5s "已复制"反馈；失败 → console.error
   /// 不弹 alert（剪贴板权限错误极少，不值得打断用户）。
-  const handleCopy = useCallback(async (idx: number, text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedIdx(idx);
-      window.setTimeout(() => {
-        setCopiedIdx((prev) => (prev === idx ? null : prev));
-      }, 1500);
-    } catch (e) {
-      console.error("clipboard write failed:", e);
-    }
-  }, []);
+  ///
+  /// `asMarkdown=false`（普通点击）：把 `「title」` 引用 token 的全角直角
+  /// 引号剥掉，输出 `title` —— 用户复制到外部（Slack / 邮件 / IM）粘贴更干
+  /// 净，不携带宠物内部约定的 ref 语法标记。
+  /// `asMarkdown=true`（⌥/Alt+点击）：原样复制，含全部 `「」` —— 适合粘回
+  /// 别的 chat session 让 LLM 继续看到 ref 信号、或归档到 markdown 日志。
+  /// `withMeta=true`（⇧/Shift+点击）：在 payload 顶部加 `[<sessionTitle> ·
+  /// YYYY-MM-DD HH:MM]` 标题块。两修饰键可叠加：⇧+⌥ → markdown 原文 + meta
+  /// 前缀。用于外部归档 / share 上下文。
+  const handleCopy = useCallback(
+    async (idx: number, text: string, asMarkdown: boolean, withMeta: boolean) => {
+      const body = asMarkdown
+        ? text
+        : text.replace(/「([^「」]+)」/g, "$1");
+      const payload = withMeta
+        ? `[${sessionTitle} · ${formatLocalStamp(new Date())}]\n${body}`
+        : body;
+      try {
+        await navigator.clipboard.writeText(payload);
+        setCopiedIdx(idx);
+        window.setTimeout(() => {
+          setCopiedIdx((prev) => (prev === idx ? null : prev));
+        }, 1500);
+      } catch (e) {
+        console.error("clipboard write failed:", e);
+      }
+    },
+    [sessionTitle],
+  );
 
   /// 搜索结果点击 → 切到该会话 + 标记 pendingScroll，让下一帧 effect 滚到
   /// 命中 item 并高亮。如果当前已经在该 session，不重新 loadSession（避免
   /// 闪烁），直接触发 scroll。
   const handleSelectSearchHit = useCallback(
     async (hit: SearchHit) => {
+      const keyword = searchQuery.trim();
       setSearchMode(false);
       setSearchQuery("");
       setSearchResults([]);
@@ -391,8 +1724,9 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
         await loadSession(hit.session_id);
       }
       setPendingScroll(hit.item_index);
+      setSearchHit(keyword ? { idx: hit.item_index, keyword } : null);
     },
-    [sessionId],
+    [sessionId, searchQuery],
   );
 
   // R106: 单 session 导出 markdown 到剪贴板。load_session 拉完整 items，
@@ -443,6 +1777,18 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
   };
   const cancelRename = () => setRenamingId(null);
 
+  /// 切 session 的 pinned 状态。后端写完后重新拉 list_sessions —— 一致性以
+  /// 后端为准，不手动 mutate sessionList 防 race（多端 / 并发改写）。
+  const handleTogglePinned = async (id: string, pinned: boolean) => {
+    try {
+      await invoke("set_session_pinned", { id, pinned });
+      const index = await invoke<SessionIndex>("list_sessions");
+      setSessionList(index.sessions);
+    } catch (e) {
+      console.error("Failed to toggle session pinned:", e);
+    }
+  };
+
   const handleDeleteSession = async (id: string) => {
     try {
       await invoke("delete_session", { id });
@@ -489,10 +1835,26 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
   };
 
   const sendMessage = useCallback(
-    async (content: string) => {
-      const userMsg = { role: "user", content };
+    async (content: string, images?: string[]) => {
+      // 多模态消息：OpenAI compatible multipart 内容数组。无图时仍走纯字符串
+      // 路径，保持与未升级的后端 / 测试断言兼容。
+      const hasImages = !!images && images.length > 0;
+      const messageContent: any = hasImages
+        ? [
+            ...(content ? [{ type: "text", text: content }] : []),
+            ...images!.map((url) => ({ type: "image_url", image_url: { url } })),
+          ]
+        : content;
+      const userMsg = { role: "user", content: messageContent };
       messagesRef.current = [...messagesRef.current, userMsg];
-      const newItems = [...items, { type: "user" as const, content }];
+      const newItems = [
+        ...items,
+        {
+          type: "user" as const,
+          content,
+          ...(hasImages ? { images } : {}),
+        },
+      ];
       setItems(newItems);
       setIsLoading(true);
       setCurrentResponse("");
@@ -579,7 +1941,10 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
   // 共用。trim / slash 分支 / sendMessage / messageHistory 维护都在这里。
   const submitInput = useCallback(() => {
     const trimmed = input.trim();
-    if (!trimmed || isLoading) return;
+    const hasImages = pendingImages.length > 0;
+    // 没图时空白消息直接 noop；有图时允许空文本（"图说一切"）。
+    if (!hasImages && !trimmed) return;
+    if (isLoading) return;
     if (trimmed.startsWith("/")) {
       const action = parseSlashCommand(trimmed);
       if (action) {
@@ -588,6 +1953,35 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
         setSelectedSlashIdx(0);
         return;
       }
+    }
+    if (hasImages) {
+      // 非多模态模型 → 拒发，给本地 assistant 提示（不发给 LLM）。检查走
+      // 后端 settings 真值；前端不缓存 model 名让用户切换 settings 后立刻生效。
+      (async () => {
+        try {
+          const ok = await invoke<boolean>("is_current_model_multimodal");
+          if (!ok) {
+            const settings = await invoke<{ model: string }>("get_settings").catch(() => ({ model: "?" }));
+            pushLocalAssistantNote(
+              `当前模型 \`${settings.model || "?"}\` 不支持图片输入，已忽略 ${pendingImages.length} 张图。可在设置页换成 gpt-4o / claude-3 / gemini / qwen-vl 等多模态模型。`,
+            );
+            setPendingImages([]);
+            return;
+          }
+          sendMessage(trimmed, pendingImages);
+          setPendingImages([]);
+          setMessageHistory((prev) => {
+            const next = [...prev, trimmed];
+            return next.length > 20 ? next.slice(-20) : next;
+          });
+          setHistoryCursor(null);
+          setInput("");
+        } catch (e) {
+          console.error("multimodal gate failed:", e);
+          pushLocalAssistantNote(`检测多模态能力失败：${e}`);
+        }
+      })();
+      return;
     }
     sendMessage(trimmed);
     // R129: push 到 messageHistory，cap 20。不去重相邻同内容（让用户连发
@@ -599,7 +1993,7 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
     });
     setHistoryCursor(null);
     setInput("");
-  }, [input, isLoading, executeSlash, sendMessage]);
+  }, [input, isLoading, executeSlash, sendMessage, pendingImages, pushLocalAssistantNote]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -629,6 +2023,131 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
   /// - 否则按 Tab 等价处理：用选中候选自动补全（参数化命令保留 prefix 等用户
   ///   再敲）。这避免了 `/cl` + Enter 触发"未知命令 /cl"。
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // ⌘K / Ctrl+K → 打开 task 引用选择器。优先级高于 image 历史 / slash 菜单 /
+    // Enter 提交 —— 是独立的"召唤面板"快捷键，不应被其它分支抢走。e.preventDefault
+    // 吃掉浏览器 / Tauri 默认的 ⌘K（无）行为，安全。
+    if (
+      (e.metaKey || e.ctrlKey) &&
+      !e.shiftKey &&
+      !e.altKey &&
+      e.key.toLowerCase() === "k"
+    ) {
+      e.preventDefault();
+      void openTaskPicker();
+      return;
+    }
+    // ⌘B / Ctrl+B → 切到上一个 session（与 swapTargetRef 配合）。让 power
+    // user 在两个 session 间"乒乓"快速来回。无上一会话 / 上一会话 === 当
+    // 前会话时 noop。e.preventDefault 吃浏览器默认（编辑器粗体快捷键，
+    // 在 textarea 内浏览器不会渲染粗体，安全劫持）。
+    if (
+      (e.metaKey || e.ctrlKey) &&
+      !e.shiftKey &&
+      !e.altKey &&
+      e.key.toLowerCase() === "b"
+    ) {
+      e.preventDefault();
+      const target = swapTargetRef.current;
+      if (target && target !== sessionId) {
+        void loadSession(target);
+      }
+      return;
+    }
+    // `@` 提及菜单可见时：↑↓ 选 / Enter / Tab 填入 / Esc 关。优先级高于
+    // image / slash / Enter 提交 — `@<query>` 形态下用户的意图就是 mention，
+    // 让其它分支抢键会破坏体验。Esc 仅退出 picker（清掉 `@<query>` 段）。
+    if (mentionMenuVisible && mentionContext) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionSelectedIdx((i) =>
+          Math.min(i + 1, mentionFilteredTasks.length - 1),
+        );
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionSelectedIdx((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const picked = mentionFilteredTasks[mentionSelectedIdx];
+        if (picked) {
+          pickMention(picked.title, mentionContext);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        // 退出方式：把 `@<query>` 段从 input 中删掉，光标落回 `@` 之前。
+        // 与 ⌘K modal 的 Esc"关 modal 不动 input"语义不同 —— inline picker
+        // 里 `@` 还残留在 input 上会让用户下次 keystroke 又触发菜单。
+        const cur = input;
+        const next =
+          cur.slice(0, mentionContext.start) +
+          cur.slice(mentionContext.start + 1 + mentionContext.query.length);
+        setInput(next);
+        const newCursor = mentionContext.start;
+        setComposeCursorPos(newCursor);
+        window.setTimeout(() => {
+          const t = composeTextareaRef.current;
+          if (t) {
+            t.focus();
+            t.setSelectionRange(newCursor, newCursor);
+          }
+        }, 0);
+        return;
+      }
+      // 其它键透传 —— 用户继续敲字 query 实时变化，菜单跟着 filter。
+    }
+    // `/image` 历史菜单可见时：↑↓ 选 / Enter / Tab 填入 / Esc 关。这条分支
+    // 必须在 slashMenuVisible 检查之前 —— imagePromptMenuVisible 只在
+    // input === `/image` 或 `/image ` 时成立，此时 slashPrefix 已经走过空格
+    // → null，所以两个 menu 不会同时可见，但显式分支更清晰。
+    if (imagePromptMenuVisible) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedImagePromptIdx((i) =>
+          Math.min(i + 1, imagePromptHistory.length - 1),
+        );
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedImagePromptIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const picked = imagePromptHistory[selectedImagePromptIdx];
+        if (picked) {
+          // Enter 直接 fill + submit 一气呵成；Tab 仅 fill 让用户继续编辑
+          // （vim ci 风格，给"先 pick 历史再加几个字"的细调留口子）。
+          if (e.key === "Enter") {
+            setInput("");
+            executeSlash({
+              kind: "image",
+              prompt: picked.prompt,
+              n: 1,
+              referenceLastAssistant: false,
+              sizeOverride: null,
+            });
+          } else {
+            setInput(`/image ${picked.prompt}`);
+          }
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        // 关菜单：把 input 推进到 `/image cancel` 这种"非触发态" — 但用户没敲东西
+        // 我们不能凭空添加字。最自然的关法是清空 input。
+        setInput("");
+        return;
+      }
+      // 其它键透传给 input 让用户继续敲 prompt（敲一个字符就关菜单 —— 由
+      // imagePromptTriggerActive 的 regex 自动失效）
+    }
     if (!slashMenuVisible) {
       // R126: textarea Enter 默认换行；在非-slash 模式 + Enter（无 shift）
       // → 显式提交（preventDefault 防换行）；Shift+Enter → 让默认行为换行。
@@ -727,7 +2246,118 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
   }
 
   return (
-    <div className="pet-panelchat-root" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div
+      className="pet-panelchat-root"
+      style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }}
+      onDragEnter={(e) => {
+        // 仅当 dataTransfer 含 file 类型时才进入 drag 态 —— 普通文本 / DOM
+        // 拖拽不触发 overlay 干扰。dragenter 在子元素冒泡里也会触发，用计数防抖。
+        if (!Array.from(e.dataTransfer.types ?? []).includes("Files")) return;
+        e.preventDefault();
+        dragDepthRef.current += 1;
+        setDragActive(true);
+      }}
+      onDragOver={(e) => {
+        if (!Array.from(e.dataTransfer.types ?? []).includes("Files")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        if (!Array.from(e.dataTransfer.types ?? []).includes("Files")) return;
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) setDragActive(false);
+      }}
+      onDrop={(e) => {
+        if (!Array.from(e.dataTransfer.types ?? []).includes("Files")) return;
+        e.preventDefault();
+        dragDepthRef.current = 0;
+        setDragActive(false);
+        const files = e.dataTransfer.files;
+        if (!files || files.length === 0) return;
+        const imageBlobs: Blob[] = [];
+        const textFiles: File[] = [];
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          if (f.type.startsWith("image/")) {
+            imageBlobs.push(f);
+            continue;
+          }
+          // 文本文件：text/* MIME 或 .md / .txt / .json / .csv / .log / .yaml 后缀。
+          // 部分 OS 给 .md 报 application/octet-stream，所以两条判定都要走。
+          const lower = f.name.toLowerCase();
+          if (
+            f.type.startsWith("text/") ||
+            f.type === "application/json" ||
+            /\.(md|markdown|txt|json|jsonl|csv|tsv|log|ya?ml|toml|ini|conf|env|sh|rs|py|ts|tsx|js|jsx|html|css)$/i.test(
+              lower,
+            )
+          ) {
+            textFiles.push(f);
+          }
+        }
+        if (imageBlobs.length > 0) ingestImageBlobs(imageBlobs);
+        if (textFiles.length > 0) {
+          // 文本文件：FileReader.readAsText 读取后拼成 ```<filename>\n<content>\n```
+          // 块附加到 input。100KB 软上限 —— 大文件多半应该让用户主动 paste
+          // 抢救 token，不让 drop 不慎吞超长内容。多个文件按顺序拼接，每个
+          // 独立 code fence 段。
+          const MAX_TEXT_BYTES = 100_000;
+          const reads: Promise<string>[] = textFiles.map(
+            (f) =>
+              new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  let text = typeof reader.result === "string" ? reader.result : "";
+                  let truncated = false;
+                  if (text.length > MAX_TEXT_BYTES) {
+                    text = text.slice(0, MAX_TEXT_BYTES);
+                    truncated = true;
+                  }
+                  // 取文件扩展名作 fence 语言提示（让 LLM 知道这是什么类型）
+                  const ext = (f.name.match(/\.([a-zA-Z0-9]+)$/) || [])[1] ?? "";
+                  const lang = ext === "md" || ext === "markdown" ? "" : ext;
+                  const fence = "```" + lang;
+                  const note = truncated
+                    ? `\n（已截断到前 ${MAX_TEXT_BYTES} 字节）`
+                    : "";
+                  resolve(
+                    `\n\n📎 ${f.name}${note}\n${fence}\n${text}\n\`\`\``,
+                  );
+                };
+                reader.onerror = () => resolve(`\n\n⚠ 读取失败：${f.name}`);
+                reader.readAsText(f);
+              }),
+          );
+          Promise.all(reads).then((chunks) => {
+            setInput((prev) => prev + chunks.join(""));
+          });
+        }
+      }}
+    >
+      {/* 拖拽 image 文件时的 overlay：覆盖整个 panel 给视觉反馈，pointerEvents
+          none 让 onDragOver / onDrop 仍走 root（不被 overlay 接掉）。zIndex 高
+          于 search 下拉等浮层。 */}
+      {dragActive && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 100,
+            background: "color-mix(in srgb, var(--pet-color-accent) 18%, transparent)",
+            border: "2px dashed var(--pet-color-accent)",
+            borderRadius: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+            color: "var(--pet-color-accent)",
+            fontSize: 14,
+            fontWeight: 600,
+          }}
+        >
+          📎 松开把图片加到输入区
+        </div>
+      )}
       {/* Iter R47: focus ring audit — input had `outline: none` with no
           replacement (same accessibility issue R46 fixed in ChatPanel
           and R47 fixed in PanelSettings). Scoped descendant selector
@@ -735,8 +2365,8 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
       <style>{`
         .pet-panelchat-root input:focus,
         .pet-panelchat-root textarea:focus {
-          border-color: #38bdf8;
-          box-shadow: 0 0 0 2px rgba(56,189,248,0.18);
+          border-color: var(--pet-color-accent);
+          box-shadow: 0 0 0 2px color-mix(in srgb, var(--pet-color-accent) 22%, transparent);
           transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
         }
         /* 聊天消息复制按钮：默认隐藏，hover 整行时弱可见，hover 按钮自身时强化。
@@ -751,16 +2381,33 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
         .pet-chat-row .pet-copy-btn:hover {
           opacity: 1;
           color: var(--pet-color-accent);
-          border-color: #7dd3fc;
+          border-color: color-mix(in srgb, var(--pet-color-accent) 50%, transparent);
         }
+        /* 迭代 5：气泡 hover 阴影增强 —— 仅触发更强的 shadow，不动 transform
+           （气泡之间间距小，translate 易抖；shadow 渐变更稳）。user / assistant
+           各用对应色相的 hover-tier shadow，与 inline base shadow 同层级。 */
+        .pet-chat-row:hover .pet-chat-bubble[data-role="user"] {
+          box-shadow: 0 4px 14px color-mix(in srgb, var(--pet-color-accent) 40%, transparent);
+        }
+        .pet-chat-row:hover .pet-chat-bubble[data-role="assistant"] {
+          box-shadow: var(--pet-shadow-md);
+        }
+        /* 图片缩略图 hover-复制 CSS 由 ImageThumb 组件自己 inject 一次 head <style>，
+           PanelChat 这里不再重复维护。 */
         /* R131: 会话列表行 hover 高亮，与 R122/R123/R130 同模式。!important
            反压 inline selected 蓝色（hover 时短暂换浅灰，移开恢复 — 用户
-           操作流是"hover 看清 → 点击"，期间 selected 蓝退让可接受）。 */
+           操作流是"hover 看清 → 点击"，期间 selected 蓝退让可接受）。
+           迭代 7：换成 accent 8% alpha 暖底（与 tab bar hover 同节奏 / dark
+           友好），原 rgba(0,0,0,0.04) 在 dark 主题下不可见。加 border-left
+           accent 边条做"轨道感"，扫长 session 列表时定位更明确。 */
         .pet-session-row {
-          transition: background-color 0.12s ease;
+          transition: background-color 0.14s ease, box-shadow 0.18s ease,
+            border-color 0.18s ease;
+          border-left: 3px solid transparent;
         }
         .pet-session-row:hover {
-          background: rgba(0, 0, 0, 0.04) !important;
+          background: color-mix(in srgb, var(--pet-color-accent) 8%, transparent) !important;
+          border-left-color: color-mix(in srgb, var(--pet-color-accent) 55%, transparent);
         }
         /* R142: 发送按钮 hover 强化。filter brightness 跨色域生效（accent
            在 light/dark 不同色都自动加深）；scale 0.98 给 click 微触感；
@@ -772,9 +2419,26 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
           filter: brightness(0.92);
           transform: scale(0.98);
         }
+        /* "刚从 mini chat 进面板"黄底脉冲：仅在 focusFromMiniPulse 状态时
+           class 挂上，1.2s linear 单跑一次后被 React 卸掉。box-shadow 拉
+           出柔光圈让脉冲不抖动布局（不改 layout 维度）。 */
+        @keyframes pet-session-bar-focus-pulse {
+          0%   { background: var(--pet-tint-yellow-bg); box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.45); }
+          60%  { background: var(--pet-tint-yellow-bg); box-shadow: 0 0 0 6px rgba(250, 204, 21, 0); }
+          100% { background: transparent; box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); }
+        }
+        .pet-session-bar-pulse {
+          animation: pet-session-bar-focus-pulse 1.2s ease-out 1;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .pet-session-bar-pulse { animation: none; background: var(--pet-tint-yellow-bg); }
+        }
       `}</style>
       {/* Session header bar */}
-      <div style={sessionBarStyle}>
+      <div
+        style={sessionBarStyle}
+        className={focusFromMiniPulse ? "pet-session-bar-pulse" : undefined}
+      >
         <div
           style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, cursor: "pointer", minWidth: 0 }}
           onClick={() => {
@@ -786,6 +2450,148 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
           <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--pet-color-fg)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {sessionTitle}
           </span>
+          {/* token 估算角标：粗估 chars/4。> TOKEN_WARN 黄底；> TOKEN_CRIT
+              红底警示可能溢出 context window，提示用户开新会话或精简。
+              < 100 token 不显（新会话刚起 / 无意义）。 */}
+          {sessionTokensEstimate >= 100 && (() => {
+            const interactive = sessionTokensEstimate >= TOKEN_WARN;
+            return (
+              <span
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (interactive) setCompactPromptOpen((v) => !v);
+                }}
+                style={{
+                  position: "relative",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                  whiteSpace: "nowrap",
+                  fontVariantNumeric: "tabular-nums",
+                  background:
+                    sessionTokensEstimate >= TOKEN_CRIT
+                      ? "var(--pet-tint-red-bg)"
+                      : sessionTokensEstimate >= TOKEN_WARN
+                        ? "var(--pet-tint-yellow-bg)"
+                        : "var(--pet-color-bg)",
+                  color:
+                    sessionTokensEstimate >= TOKEN_CRIT
+                      ? "var(--pet-tint-red-fg)"
+                      : sessionTokensEstimate >= TOKEN_WARN
+                        ? "var(--pet-tint-yellow-fg)"
+                        : "var(--pet-color-muted)",
+                  border:
+                    sessionTokensEstimate >= TOKEN_CRIT
+                      ? "1px solid var(--pet-tint-red-fg)"
+                      : "1px solid var(--pet-color-border)",
+                  cursor: interactive ? "pointer" : "default",
+                }}
+                title={
+                  sessionTokensEstimate >= TOKEN_CRIT
+                    ? `估算约 ${sessionTokensEstimate} token —— 已接近常见模型 context 上限。点击压缩前面历史让 context 立刻轻量。`
+                    : sessionTokensEstimate >= TOKEN_WARN
+                      ? `估算约 ${sessionTokensEstimate} token —— 历史已较长，点击可压缩前面消息。`
+                      : `估算约 ${sessionTokensEstimate} token（粗估：累计字符数 / 4）`
+                }
+              >
+                ~{sessionTokensEstimate >= 1000 ? `${(sessionTokensEstimate / 1000).toFixed(1)}k` : sessionTokensEstimate} tok
+                {/* 压缩历史浮窗：仅 interactive 时 click 切换打开。three-level
+                    trim 选项让用户挑保留多少条；选完即时 trim + save + close。 */}
+                {compactPromptOpen && interactive && (
+                  <div
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      position: "absolute",
+                      top: "calc(100% + 6px)",
+                      left: 0,
+                      minWidth: 240,
+                      background: "var(--pet-color-card)",
+                      border: "1px solid var(--pet-color-border)",
+                      borderRadius: 8,
+                      boxShadow: "var(--pet-shadow-md)",
+                      padding: 8,
+                      zIndex: 30,
+                      whiteSpace: "normal",
+                      fontWeight: 400,
+                      fontSize: 12,
+                      color: "var(--pet-color-fg)",
+                      fontVariantNumeric: "normal",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--pet-color-muted)",
+                        marginBottom: 6,
+                      }}
+                    >
+                      压缩前面历史（保留 system / SOUL 提示）：
+                    </div>
+                    {(() => {
+                      const total = items.length;
+                      const opts = [
+                        { keep: Math.max(4, Math.ceil(total / 2)), label: "保留近 1/2" },
+                        { keep: Math.max(4, Math.ceil(total / 3)), label: "保留近 1/3" },
+                        { keep: Math.min(total, 4), label: "仅保留最近 4 条" },
+                      ];
+                      return opts.map((o) => {
+                        const drop = total - o.keep;
+                        return (
+                          <button
+                            key={o.label}
+                            type="button"
+                            disabled={drop <= 0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void compactHistory(o.keep);
+                            }}
+                            style={{
+                              display: "block",
+                              width: "100%",
+                              textAlign: "left",
+                              padding: "5px 8px",
+                              marginBottom: 3,
+                              fontSize: 12,
+                              border: "1px solid var(--pet-color-border)",
+                              borderRadius: 4,
+                              background: drop <= 0 ? "var(--pet-color-bg)" : "var(--pet-color-card)",
+                              color: drop <= 0 ? "var(--pet-color-muted)" : "var(--pet-color-fg)",
+                              cursor: drop <= 0 ? "default" : "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            {o.label}
+                            <span
+                              style={{
+                                fontSize: 10,
+                                marginLeft: 6,
+                                color: "var(--pet-color-muted)",
+                              }}
+                            >
+                              （丢 {drop} 条 / 保留 {o.keep} 条）
+                            </span>
+                          </button>
+                        );
+                      });
+                    })()}
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "var(--pet-color-muted)",
+                        marginTop: 4,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      💾 压缩前会自动把所有 session 备份到剪贴板，反悔时点 📥 导入快照即可恢复
+                    </div>
+                  </div>
+                )}
+              </span>
+            );
+          })()}
           <span style={{ fontSize: "10px", color: "var(--pet-color-muted)" }}>{showSessionList ? "▲" : "▼"}</span>
         </div>
         <button
@@ -797,21 +2603,254 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
             // R96: 关闭 search 时复位 scope，下次进默认全局
             setSearchScope("all");
           }}
-          style={{ ...newSessionBtnStyle, color: searchMode ? "#0369a1" : "var(--pet-color-fg)", background: searchMode ? "#e0f2fe" : "var(--pet-color-bg)" }}
+          style={{ ...newSessionBtnStyle, color: searchMode ? "var(--pet-tint-blue-fg)" : "var(--pet-color-fg)", background: searchMode ? "var(--pet-tint-blue-bg)" : "var(--pet-color-bg)" }}
           title="搜索消息（默认全部会话；进面板后可切换『本会话』）"
           aria-label="cross-session search"
         >
           🔍
         </button>
+        {/* "📌 查看全部标记消息"按钮：仅 markedMessages 非空时显，count
+            badge 显当前标记数量。点击 open marks modal 异步加载所有 mark
+            过的 session 内容并展示。 */}
+        {markedMessages.size > 0 && (
+          <button
+            onClick={() => {
+              setShowSessionList(false);
+              void openMarksModal();
+            }}
+            style={{
+              ...newSessionBtnStyle,
+              color: "var(--pet-tint-yellow-fg)",
+              background: "var(--pet-tint-yellow-bg)",
+            }}
+            title={`查看全部 📌 标记的消息（${markedMessages.size} 条）`}
+            aria-label="view all marked messages"
+          >
+            📌 {markedMessages.size}
+          </button>
+        )}
+        {/* ⑂ Fork 当前 session：弹三档选项（整段 / 近 20 / 近 10）。仅当
+            前 session 非空时显（空 session fork = 等同新建空 session）。 */}
+        {items.length > 0 && (
+          <div
+            style={{ position: "relative" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setForkPopoverOpen((v) => !v);
+              }}
+              style={newSessionBtnStyle}
+              title={`从当前 ${items.length} 条消息分叉一个新 session 接着讨论另一话题`}
+              aria-label="fork session"
+            >
+              ⑂ Fork
+            </button>
+            {forkPopoverOpen && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 6px)",
+                  right: 0,
+                  minWidth: 200,
+                  background: "var(--pet-color-card)",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  boxShadow: "var(--pet-shadow-md)",
+                  padding: 6,
+                  zIndex: 30,
+                  fontSize: 12,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--pet-color-muted)",
+                    padding: "2px 8px 6px",
+                    borderBottom: "1px solid var(--pet-color-border)",
+                    marginBottom: 4,
+                  }}
+                >
+                  从「{sessionTitle}」分叉
+                </div>
+                {(
+                  [
+                    { keep: Infinity, label: "整段复制", note: `${items.length} 条` },
+                    {
+                      keep: Math.min(20, items.length),
+                      label: "近 20 条",
+                      note: items.length < 20 ? "（不够，全部）" : "末段 20",
+                    },
+                    {
+                      keep: Math.min(10, items.length),
+                      label: "近 10 条",
+                      note: items.length < 10 ? "（不够，全部）" : "末段 10",
+                    },
+                  ]
+                ).map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => {
+                      setForkPopoverOpen(false);
+                      void handleForkSession(opt.keep);
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "5px 8px",
+                      marginBottom: 2,
+                      fontSize: 12,
+                      border: "1px solid var(--pet-color-border)",
+                      borderRadius: 4,
+                      background: "var(--pet-color-card)",
+                      color: "var(--pet-color-fg)",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {opt.label}
+                    <span
+                      style={{
+                        fontSize: 10,
+                        marginLeft: 6,
+                        color: "var(--pet-color-muted)",
+                      }}
+                    >
+                      {opt.note}
+                    </span>
+                  </button>
+                ))}
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "var(--pet-color-muted)",
+                    marginTop: 4,
+                    padding: "0 4px",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  fork 后自动切到新 session；原 session 不动
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <button onClick={handleNewSession} style={newSessionBtnStyle} title="新建会话">
           + 新会话
         </button>
       </div>
 
+      {/* Session tab 横排栏：pinned + 最近活跃 + 当前 session 必显 (cap 8)。
+          tab-like 视觉：active 突出 + 加底边 accent，非 active 浅灰底。溢出
+          时整行 overflowX auto 横滚（用户拖滚条 / 触控板横滚）。dropdown 入
+          口仍在 session header（▼），覆盖 8 个之外的旧会话。仅在 search
+          mode 关闭 + sessionList ≥ 2 条时显（单条 session 显 tab 无意义）。 */}
+      {!searchMode && tabSessions.length >= 2 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "stretch",
+            gap: 2,
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--pet-color-border)",
+            background: "var(--pet-color-bg)",
+            overflowX: "auto",
+            overflowY: "hidden",
+            flexShrink: 0,
+            scrollbarWidth: "thin",
+          }}
+          title="最常用 / 最近会话快速切换 · ▼ 看全部"
+        >
+          {tabSessions.map((s) => {
+            const active = s.id === sessionId;
+            const shownTitle =
+              s.title.length > 12 ? s.title.slice(0, 12) + "…" : s.title;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => {
+                  if (s.id === sessionId) return;
+                  setShowSessionList(false);
+                  void loadSession(s.id);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSessionTabCtxMenu({
+                    id: s.id,
+                    title: s.title,
+                    pinned: !!s.pinned,
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }}
+                title={`${s.pinned ? "📌 " : ""}${s.title}${
+                  s.item_count != null ? ` · ${s.item_count} 条` : ""
+                } · 右键改名 / pin / 删除`}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  border: "1px solid",
+                  borderColor: active
+                    ? "var(--pet-color-accent)"
+                    : "var(--pet-color-border)",
+                  borderRadius: "6px 6px 2px 2px",
+                  background: active
+                    ? "var(--pet-color-card)"
+                    : "var(--pet-color-card)",
+                  color: active
+                    ? "var(--pet-color-accent)"
+                    : "var(--pet-color-muted)",
+                  fontWeight: active ? 600 : 400,
+                  cursor: active ? "default" : "pointer",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
+                  fontFamily: "inherit",
+                  borderBottomWidth: active ? 0 : 1,
+                  borderBottom: active
+                    ? "2px solid var(--pet-color-accent)"
+                    : "1px solid var(--pet-color-border)",
+                  marginBottom: -1,
+                }}
+              >
+                {s.pinned && <span style={{ marginRight: 3 }}>📌</span>}
+                {shownTitle}
+              </button>
+            );
+          })}
+          {sessionList.length > tabSessions.length && (
+            <button
+              type="button"
+              onClick={() => setShowSessionList(true)}
+              title={`还有 ${sessionList.length - tabSessions.length} 个会话；点 ⋯ 展开全部下拉`}
+              style={{
+                padding: "4px 10px",
+                fontSize: 11,
+                border: "1px dashed var(--pet-color-border)",
+                borderRadius: 6,
+                background: "transparent",
+                color: "var(--pet-color-muted)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+                fontFamily: "inherit",
+              }}
+            >
+              ⋯ +{sessionList.length - tabSessions.length}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Search panel (取代 session dropdown 当 search mode 开启) */}
       {searchMode && (
         <div style={sessionDropdownStyle}>
-          <div style={{ padding: "8px 12px", borderBottom: "1px solid #f1f5f9", display: "flex", gap: 6 }}>
+          <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--pet-color-border)", display: "flex", gap: 6 }}>
             <input
               type="text"
               autoFocus
@@ -904,6 +2943,146 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
       {/* Session list dropdown */}
       {showSessionList && !searchMode && (
         <div style={sessionDropdownStyle}>
+          {/* 全量 snapshot 工具栏：导出 / 导入。armed-import 与 config 快照同模式
+              （5s 二次确认）。export 不需 confirm，但 toast 提示含敏感聊天明文。 */}
+          <div
+            style={{
+              padding: "6px 12px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => void handleExportSessionsSnapshot()}
+              style={{
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 4,
+                border: "1px solid var(--pet-color-border)",
+                background: "var(--pet-color-card)",
+                color: "var(--pet-color-muted)",
+                cursor: "pointer",
+              }}
+              title="把全部 session 打包成 base64 字符串复制到剪贴板（搬家用，不上云）。⚠ 含全部聊天明文。"
+            >
+              📦 导出全部 sessions
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleImportSessionsSnapshot()}
+              style={{
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 4,
+                border: `1px solid ${importSessionsArmed ? "var(--pet-tint-red-fg)" : "var(--pet-color-border)"}`,
+                background: importSessionsArmed ? "var(--pet-tint-red-fg)" : "var(--pet-color-card)",
+                color: importSessionsArmed ? "#fff" : "var(--pet-color-muted)",
+                cursor: "pointer",
+                fontWeight: importSessionsArmed ? 700 : 400,
+              }}
+              title="读剪贴板里的 sessions snapshot 覆盖当前 index 和所有 session 文件。第一次点弹确认；5 秒内再点真覆盖。"
+            >
+              {importSessionsArmed ? "⚠ 确认导入？" : "📥 导入快照"}
+            </button>
+            {/* 清理 orphan checkbox：勾后导入时一并 rm disk 上不在 snapshot
+                里的 session 文件。新机干净接收典型用法；老机想保留本地历史
+                则取消勾。 */}
+            <label
+              style={{
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              title="导入时同时删 disk 上不在 snapshot 里的 session.json（清理 orphan）。不勾则保留本地老 session 文件（但 index 不显，下拉看不见）。"
+            >
+              <input
+                type="checkbox"
+                checked={pruneSessionsOnImport}
+                onChange={(e) => setPruneSessionsOnImport(e.target.checked)}
+                style={{ margin: 0 }}
+              />
+              清 orphan
+            </label>
+            {/* 全清按钮：armed 红填充 + 二次确认。让用户彻底重置聊天历史
+                （不动 memory / SOUL / config）。marginLeft auto 推到行末与
+                上面 export/import 区分语义（清除性 vs 迁移性）。 */}
+            <button
+              type="button"
+              onClick={() => void handleClearAllSessions()}
+              style={{
+                marginLeft: "auto",
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 4,
+                border: `1px solid ${clearAllArmed ? "var(--pet-tint-red-fg)" : "var(--pet-color-border)"}`,
+                background: clearAllArmed ? "var(--pet-tint-red-fg)" : "var(--pet-color-card)",
+                color: clearAllArmed ? "#fff" : "var(--pet-color-muted)",
+                cursor: "pointer",
+                fontWeight: clearAllArmed ? 700 : 400,
+              }}
+              title="清空全部 session 历史（仅聊天，不动 memory / SOUL / config）。第一次点弹确认；5 秒内再点真清。"
+            >
+              {clearAllArmed ? "⚠ 确认全清？" : "🗑 全清"}
+            </button>
+          </div>
+          {/* 内容过滤 toggle 行：两个 chip 互斥，同时只能开一个；同一 chip
+              再点 → 关。imageSessionIds 模式由 sessionFilter+filterSessionIds 协调。 */}
+          <div
+            style={{
+              padding: "6px 12px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            {([
+              { kind: "images" as const, label: "📷 含图片", desc: "只显含图片消息的 session（粘贴 / 生图过的）" },
+              { kind: "tasks" as const, label: "📋 含派单", desc: "只显含 propose_task / task_create 工具调用的 session（工作场景）" },
+            ]).map(({ kind, label, desc }) => {
+              const active = sessionFilter === kind;
+              const isLoading = active && filterLoading;
+              const count = active && filterSessionIds ? filterSessionIds.size : null;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => void toggleSessionFilter(kind)}
+                  disabled={isLoading}
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: 10,
+                    border: `1px solid ${active ? "var(--pet-color-accent)" : "var(--pet-color-border)"}`,
+                    background: active ? "var(--pet-tint-blue-bg)" : "var(--pet-color-card)",
+                    color: active ? "var(--pet-tint-blue-fg)" : "var(--pet-color-muted)",
+                    cursor: isLoading ? "default" : "pointer",
+                    fontWeight: active ? 600 : 400,
+                  }}
+                  title={
+                    active
+                      ? `再点关闭过滤${count !== null ? `（命中 ${count} 个 session）` : ""}`
+                      : desc
+                  }
+                >
+                  {isLoading
+                    ? `${label.split(" ")[0]} 加载中…`
+                    : active && count !== null
+                      ? `✓ ${label} (${count})`
+                      : label}
+                </button>
+              );
+            })}
+          </div>
           {/* R106: 导出 toast。3s 自清空；非空时贴顶横幅，accent 色提示。 */}
           {exportToast && (
             <div
@@ -918,12 +3097,40 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
               {exportToast}
             </div>
           )}
-          {sessionList.length === 0 ? (
-            <div style={{ padding: "12px", textAlign: "center", color: "var(--pet-color-muted)", fontSize: "12px" }}>
-              暂无历史会话
-            </div>
-          ) : (
-            [...sessionList].reverse().map((s) => (
+          {(() => {
+            // pinned 永远排前；同组内按 backend index 倒序（最近创建在前）。
+            // 不动原 sessionList，复制再 stable-sort —— `[].reverse()` 后用
+            // pin 优先级再分组：pinned 整段在 unpinned 之前。
+            // 含图过滤命中 0 → 显单独的 empty message 提醒用户"过滤生效但无匹配"。
+            if (sessionList.length === 0) {
+              return (
+                <EmptyState icon="📂" title="暂无历史会话" hint="开始聊天就会自动新建会话" compact />
+              );
+            }
+            const reversed = [...sessionList].reverse();
+            const filtered =
+              sessionFilter !== null && filterSessionIds !== null
+                ? reversed.filter((s) => filterSessionIds.has(s.id))
+                : reversed;
+            if (filtered.length === 0 && sessionFilter !== null) {
+              const chipLabel = sessionFilter === "images" ? "📷" : "📋";
+              return (
+                <EmptyState
+                  icon="🔍"
+                  title="没有匹配的 session"
+                  hint={`点 ${chipLabel} 关闭过滤`}
+                  compact
+                />
+              );
+            }
+            if (filtered.length === 0) {
+              // sessionFilter null 但 list 空 —— 上面 sessionList.length===0
+              // 早 return 了，这里其实不可达；防御保留。
+              return null;
+            }
+            const pinned = filtered.filter((s) => s.pinned);
+            const unpinned = filtered.filter((s) => !s.pinned);
+            return [...pinned, ...unpinned].map((s) => (
               <div
                 key={s.id}
                 className="pet-session-row"
@@ -933,8 +3140,8 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
                   gap: "8px",
                   padding: "8px 12px",
                   cursor: "pointer",
-                  background: s.id === sessionId ? "#f0f9ff" : "transparent",
-                  borderBottom: "1px solid #f1f5f9",
+                  background: s.id === sessionId ? "var(--pet-tint-blue-bg)" : "transparent",
+                  borderBottom: "1px solid var(--pet-color-border)",
                 }}
               >
                 <div
@@ -976,6 +3183,30 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
                   ) : (
                     <>
                       <div style={{ fontSize: "13px", color: "var(--pet-color-fg)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: s.id === sessionId ? 600 : 400 }}>
+                        {/* 未读 badge：仅在非当前 session 且用户至少访问过一次
+                            (lastSeen 有记录) + s.updated_at 比 lastSeen 新时显。
+                            首次启动用户没访问过任何 session → 全部默认已读，
+                            不打扰新用户。 */}
+                        {(() => {
+                          if (s.id === sessionId) return null;
+                          const seen = sessionLastSeen[s.id];
+                          if (!seen) return null;
+                          if (s.updated_at <= seen) return null;
+                          return (
+                            <span
+                              style={{
+                                display: "inline-block",
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                background: "var(--pet-color-accent)",
+                                marginRight: 6,
+                                verticalAlign: "middle",
+                              }}
+                              title={`自上次访问（${seen.slice(0, 16).replace("T", " ")}）后此会话有更新`}
+                            />
+                          );
+                        })()}
                         {s.title}
                         {typeof s.item_count === "number" && (
                           <span
@@ -992,6 +3223,29 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
                     </>
                   )}
                 </div>
+                {renamingId !== s.id && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleTogglePinned(s.id, !s.pinned);
+                    }}
+                    style={{
+                      padding: "2px 6px",
+                      borderRadius: "4px",
+                      border: "none",
+                      background: s.pinned ? "var(--pet-tint-yellow-bg)" : "transparent",
+                      color: s.pinned ? "var(--pet-tint-yellow-fg)" : "var(--pet-color-muted)",
+                      fontSize: "12px",
+                      cursor: "pointer",
+                      opacity: s.pinned ? 1 : 0.7,
+                    }}
+                    title={s.pinned ? "取消钉住（恢复按时间排序）" : "钉住到列表顶部"}
+                    aria-label={s.pinned ? "unpin session" : "pin session"}
+                  >
+                    📌
+                  </button>
+                )}
                 {renamingId !== s.id && (
                   <button
                     type="button"
@@ -1046,8 +3300,8 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
                       padding: "2px 6px",
                       borderRadius: "4px",
                       border: "none",
-                      background: pendingDeleteId === s.id ? "#dc2626" : "#fee2e2",
-                      color: pendingDeleteId === s.id ? "#fff" : "#dc2626",
+                      background: pendingDeleteId === s.id ? "var(--pet-tint-red-fg)" : "var(--pet-tint-red-bg)",
+                      color: pendingDeleteId === s.id ? "#fff" : "var(--pet-tint-red-fg)",
                       fontSize: "11px",
                       cursor: "pointer",
                       fontWeight: pendingDeleteId === s.id ? 700 : 400,
@@ -1058,8 +3312,8 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
                   </button>
                 )}
               </div>
-            ))
-          )}
+            ));
+          })()}
         </div>
       )}
 
@@ -1073,6 +3327,11 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
           const el = scrollRef.current;
           if (!el) return;
           setScrolledFromTop(el.scrollTop > 200);
+          // 距底 = scrollHeight - scrollTop - clientHeight。> 200 时浮 ↓
+          // 按钮；按 (200, ∞) 阈值匹配 ↑ 的对称语义，让两条逻辑同形。
+          const distFromBottom =
+            el.scrollHeight - el.scrollTop - el.clientHeight;
+          setScrolledFromBottom(distFromBottom > 200);
         }}
         style={{ height: "100%", overflowY: "auto", padding: "16px" }}
       >
@@ -1085,6 +3344,9 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
         {items.map((item, i) => {
           // 给每条消息挂 data-item-idx，跨会话搜索点击结果后能定位 + 高亮。
           const isHighlighted = highlightedItemIdx === i;
+          // 命中行单独传 keyword 给 CopyableMessage，让 bubble 内文本 mark 高亮。
+          const hitKeyword =
+            searchHit && searchHit.idx === i ? searchHit.keyword : undefined;
           const wrapperBase = (justify: "flex-end" | "flex-start"): React.CSSProperties => ({
             marginBottom: "12px",
             display: "flex",
@@ -1095,6 +3357,7 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
             padding: isHighlighted ? "4px 0" : 0,
           });
           if (item.type === "user") {
+            const markKey = `${sessionId}::${i}`;
             return (
               <CopyableMessage
                 key={i}
@@ -1104,11 +3367,61 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
                 copied={copiedIdx === i}
                 onCopy={handleCopy}
                 wrapperStyle={wrapperBase("flex-end")}
+                images={item.images}
+                highlightKeyword={hitKeyword}
+                taskRefMap={chatTaskMap}
+                onRefDoubleClick={onRequestFocusTask}
+                marked={markedMessages.has(markKey)}
+                onToggleMark={() => toggleMessageMark(markKey)}
               />
             );
           }
           if (item.type === "assistant") {
-            if (!item.content.trim()) return null;
+            const hasImg = !!item.images && item.images.length > 0;
+            if (!item.content.trim() && !hasImg) return null;
+            // /image 失败行：在 bubble 旁挂🔄重试按钮，调 runImageGenerate
+            // 替换本行（idx=i）为新 pending → 走完整生图流程。点击后立刻禁
+            // 用按钮（替换为 pending 后 imageRetryPrompt 自然消失，按钮不再渲染）。
+            if (item.imageRetryPrompt) {
+              const retryPrompt = item.imageRetryPrompt;
+              const retryN = item.imageRetryN ?? 1;
+              const retrySize = item.imageRetrySize ?? null;
+              return (
+                <div
+                  key={i}
+                  data-item-idx={i}
+                  style={wrapperBase("flex-start")}
+                >
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+                    <div style={{ ...bubbleStyle("assistant"), background: "var(--pet-tint-orange-bg)", color: "var(--pet-tint-orange-fg)" }}>
+                      {item.content}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => runImageGenerate(retryPrompt, i, retryN, retrySize)}
+                      title={`用同一 prompt 重试：${retryPrompt}${retryN > 1 ? ` (-n ${retryN})` : ""}${retrySize ? ` (-s ${retrySize})` : ""}`}
+                      aria-label="retry image generation"
+                      style={{
+                        alignSelf: "flex-end",
+                        padding: "4px 10px",
+                        fontSize: 12,
+                        lineHeight: 1.2,
+                        border: "1px solid var(--pet-color-border)",
+                        borderRadius: 6,
+                        background: "var(--pet-color-card)",
+                        color: "var(--pet-color-accent)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                      }}
+                    >
+                      🔄 重试
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+            const markKey = `${sessionId}::${i}`;
             return (
               <CopyableMessage
                 key={i}
@@ -1118,6 +3431,14 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
                 copied={copiedIdx === i}
                 onCopy={handleCopy}
                 wrapperStyle={wrapperBase("flex-start")}
+                images={item.images}
+                highlightKeyword={hitKeyword}
+                reaction={reactionsByIdx[i] ?? null}
+                onReact={handleReact}
+                taskRefMap={chatTaskMap}
+                onRefDoubleClick={onRequestFocusTask}
+                marked={markedMessages.has(markKey)}
+                onToggleMark={() => toggleMessageMark(markKey)}
               />
             );
           }
@@ -1184,7 +3505,9 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
         )}
       </div>
       {/* R103: 浮动 ↑ 跳到顶按钮。仅在 scrollTop > 200 时显，accent 圆形按钮
-          锚定外层 relative 容器右下，不被卷入滚动。 */}
+          锚定外层 relative 容器右下，不被卷入滚动。
+          ↓ 跳到最新 加入后，两按钮垂直堆叠：↑ 在上 (bottom: 60)，↓ 在下
+          (bottom: 16)，"箭头方向 = 滚动方向" 让用户不必读字也能找对。 */}
       {scrolledFromTop && (
         <button
           type="button"
@@ -1193,6 +3516,36 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
           }
           title="回到会话开头"
           aria-label="scroll to top"
+          style={{
+            position: "absolute",
+            right: 16,
+            bottom: 60,
+            width: 36,
+            height: 36,
+            borderRadius: "50%",
+            border: "none",
+            background: "var(--pet-color-accent)",
+            color: "#fff",
+            fontSize: 18,
+            cursor: "pointer",
+            boxShadow: "var(--pet-shadow-md)",
+            opacity: 0.92,
+          }}
+        >
+          ↑
+        </button>
+      )}
+      {scrolledFromBottom && (
+        <button
+          type="button"
+          onClick={() =>
+            scrollRef.current?.scrollTo({
+              top: scrollRef.current.scrollHeight,
+              behavior: "smooth",
+            })
+          }
+          title="跳到最新消息"
+          aria-label="scroll to bottom"
           style={{
             position: "absolute",
             right: 16,
@@ -1205,14 +3558,554 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
             color: "#fff",
             fontSize: 18,
             cursor: "pointer",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+            boxShadow: "var(--pet-shadow-md)",
             opacity: 0.92,
           }}
         >
-          ↑
+          ↓
         </button>
       )}
+      {/* 切 session 后浮 5s toast 提示前一 session 有未发草稿。点击切回。
+          backdrop click / 5s 超时都自动关。固定 top-center 给会话切换路径
+          稳定的"最近动作反馈"位置。 */}
+      {draftReminder && (
+        <div
+          onClick={async () => {
+            // 切回 toast 中记录的 session，loadSession 路径会自动把 draft
+            // 填入 textarea
+            const target = draftReminder.sessionId;
+            setDraftReminder(null);
+            if (draftReminderTimerRef.current !== null) {
+              window.clearTimeout(draftReminderTimerRef.current);
+              draftReminderTimerRef.current = null;
+            }
+            await loadSession(target);
+          }}
+          style={{
+            position: "absolute",
+            top: 12,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "var(--pet-color-card)",
+            border: "1px solid var(--pet-color-accent)",
+            color: "var(--pet-color-fg)",
+            fontSize: 12,
+            padding: "8px 14px",
+            borderRadius: 8,
+            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.2)",
+            zIndex: 50,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            maxWidth: "85%",
+          }}
+          title="点击切回原会话继续写"
+        >
+          <span>📝</span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <span style={{ color: "var(--pet-color-muted)" }}>「{draftReminder.title}」</span>{" "}
+            <span style={{ color: "var(--pet-color-accent)", fontWeight: 600 }}>
+              有 {draftReminder.charCount} 字未发草稿
+            </span>
+            <span style={{ color: "var(--pet-color-muted)" }}> · 点此切回</span>
+          </span>
+        </div>
+      )}
       </div>
+
+      {/* "全部标记消息"modal：fixed overlay 居中，列表内每条点击跳源
+          session + 滚到该 itemIdx。backdrop click / Esc 关闭。 */}
+      {/* 🛠 自定义模板管理 modal：列全部 customChatTemplates，每条
+          可 rename（window.prompt）/ delete。clip 10 内不需要分页。 */}
+      {manageTemplatesOpen && (
+        <div
+          onClick={() => setManageTemplatesOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.55)",
+            zIndex: 200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              maxHeight: "70vh",
+              background: "var(--pet-color-card)",
+              borderRadius: 10,
+              boxShadow: "0 20px 60px rgba(0, 0, 0, 0.35)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "10px 14px",
+                borderBottom: "1px solid var(--pet-color-border)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--pet-color-fg)" }}>
+                🛠 管理自定义模板（{customChatTemplates.length}）
+              </span>
+              <span style={{ flex: 1 }} />
+              <button
+                onClick={() => setManageTemplatesOpen(false)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--pet-color-muted)",
+                  fontSize: 16,
+                  cursor: "pointer",
+                }}
+                aria-label="close manage templates"
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {customChatTemplates.length === 0 ? (
+                <div
+                  style={{
+                    padding: "24px 14px",
+                    textAlign: "center",
+                    color: "var(--pet-color-muted)",
+                    fontSize: 12,
+                  }}
+                >
+                  （还没保存自定义模板 — 在 input 写一段后点 💾 保存）
+                </div>
+              ) : (
+                customChatTemplates.map((tpl, i) => (
+                  <div
+                    key={`${tpl.label}-${i}`}
+                    style={{
+                      padding: "10px 14px",
+                      borderBottom: "1px solid var(--pet-color-border)",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        alignItems: "center",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: "var(--pet-color-fg)",
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {tpl.label}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextLabel = window.prompt("新 label：", tpl.label);
+                          if (nextLabel === null) return;
+                          const t = nextLabel.trim();
+                          if (!t || t === tpl.label) return;
+                          // 重命名：替换该条；同名碰撞按 saveCustomTemplate 同
+                          // 模式去重（保留新条 + 删旧条）
+                          const filtered = customChatTemplates.filter(
+                            (x, j) => j !== i && x.label !== t,
+                          );
+                          const next = [...filtered, { label: t, text: tpl.text }];
+                          persistCustomTemplates(next);
+                        }}
+                        title="重命名 label"
+                        style={{
+                          padding: "2px 8px",
+                          fontSize: 11,
+                          border: "1px solid var(--pet-color-border)",
+                          borderRadius: 4,
+                          background: "var(--pet-color-card)",
+                          color: "var(--pet-color-muted)",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          persistCustomTemplates(
+                            customChatTemplates.filter((_, j) => j !== i),
+                          );
+                        }}
+                        title="删除此模板（不可恢复）"
+                        style={{
+                          padding: "2px 8px",
+                          fontSize: 11,
+                          border: "1px solid var(--pet-color-border)",
+                          borderRadius: 4,
+                          background: "var(--pet-color-card)",
+                          color: "var(--pet-color-muted)",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                      >
+                        🗑
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--pet-color-muted)",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {tpl.text}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {marksModalOpen && (
+        <div
+          onClick={() => setMarksModalOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setMarksModalOpen(false);
+            }
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "color-mix(in srgb, var(--pet-color-fg) 50%, transparent)",
+            zIndex: 200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            animation: "pet-modal-fade-in 140ms ease-out",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 640,
+              maxHeight: "75vh",
+              background: "var(--pet-color-card)",
+              borderRadius: 12,
+              boxShadow: "var(--pet-shadow-lg)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              animation: "pet-modal-pop 180ms ease-out",
+            }}
+          >
+            <div
+              style={{
+                padding: "10px 14px",
+                borderBottom: "1px solid var(--pet-color-border)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--pet-color-fg)", flexShrink: 0 }}>
+                📌 全部标记消息 ({markedMessages.size})
+              </span>
+              <input
+                type="text"
+                value={marksModalQuery}
+                onChange={(e) => setMarksModalQuery(e.target.value)}
+                placeholder="按 session 标题 / 内容子串过滤…"
+                style={{
+                  flex: 1,
+                  padding: "4px 8px",
+                  fontSize: 12,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: "var(--pet-color-bg)",
+                  color: "var(--pet-color-fg)",
+                  outline: "none",
+                }}
+              />
+              {/* 📋 复制（当前过滤的）全部标记为 markdown：把列表中的 entries
+                  拼成 H1 + 各条 H2 段，复制到剪贴板。与 search 输入框同行
+                  让"先搜后复制"流程顺。无 entries / loading 时 disabled。 */}
+              {marksModalEntries !== null && marksModalEntries.length > 0 && (
+                <button
+                  onClick={async () => {
+                    const q = marksModalQuery.trim().toLowerCase();
+                    const list =
+                      q.length === 0
+                        ? marksModalEntries
+                        : marksModalEntries.filter(
+                            (e) =>
+                              e.sessionTitle.toLowerCase().includes(q) ||
+                              e.content.toLowerCase().includes(q),
+                          );
+                    if (list.length === 0) return;
+                    const ts = new Date().toLocaleString();
+                    const lines: string[] = [
+                      `# 📌 标记消息导出（${ts}）`,
+                      "",
+                      `共 ${list.length} 条${q.length > 0 ? `（过滤："${marksModalQuery.trim()}"）` : ""}`,
+                      "",
+                    ];
+                    for (const e of list) {
+                      const roleIcon = e.role === "user" ? "🧑" : "🐾";
+                      const markedStr =
+                        e.markedAt > 0
+                          ? ` · 标记于 ${new Date(e.markedAt).toLocaleString()}`
+                          : "";
+                      lines.push(
+                        `## ${roleIcon} ${e.sessionTitle} · #${e.itemIdx + 1}${markedStr}`,
+                        "",
+                        e.content || "（空）",
+                        "",
+                      );
+                    }
+                    try {
+                      await navigator.clipboard.writeText(lines.join("\n"));
+                      setMarksModalCopied(true);
+                      window.setTimeout(() => setMarksModalCopied(false), 1500);
+                    } catch (err) {
+                      console.error("clipboard write failed:", err);
+                    }
+                  }}
+                  title={
+                    marksModalQuery.trim().length > 0
+                      ? "把当前过滤后的标记列表拼成 markdown 复制到剪贴板"
+                      : "把全部标记列表拼成 markdown 复制到剪贴板"
+                  }
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    border: "1px solid var(--pet-color-border)",
+                    borderRadius: 4,
+                    background: "var(--pet-color-card)",
+                    color: marksModalCopied ? "#16a34a" : "var(--pet-color-fg)",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                    fontWeight: marksModalCopied ? 600 : 400,
+                  }}
+                >
+                  {marksModalCopied ? "✓ 已复制" : "📋 复制"}
+                </button>
+              )}
+              <button
+                onClick={() => setMarksModalOpen(false)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--pet-color-muted)",
+                  fontSize: 16,
+                  cursor: "pointer",
+                }}
+                aria-label="close marks modal"
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {marksModalEntries === null ? (
+                <div
+                  style={{
+                    padding: "24px 14px",
+                    textAlign: "center",
+                    color: "var(--pet-color-muted)",
+                    fontSize: 12,
+                  }}
+                >
+                  加载中…
+                </div>
+              ) : marksModalEntries.length === 0 ? (
+                <div
+                  style={{
+                    padding: "24px 14px",
+                    textAlign: "center",
+                    color: "var(--pet-color-muted)",
+                    fontSize: 12,
+                  }}
+                >
+                  （没有可显示的标记 — session 可能已删 / 消息可能已被改）
+                </div>
+              ) : (() => {
+                const q = marksModalQuery.trim().toLowerCase();
+                const filtered =
+                  q.length === 0
+                    ? marksModalEntries
+                    : marksModalEntries.filter(
+                        (e) =>
+                          e.sessionTitle.toLowerCase().includes(q) ||
+                          e.content.toLowerCase().includes(q),
+                      );
+                if (filtered.length === 0) {
+                  return (
+                    <div
+                      style={{
+                        padding: "24px 14px",
+                        textAlign: "center",
+                        color: "var(--pet-color-muted)",
+                        fontSize: 12,
+                      }}
+                    >
+                      没有匹配 "{marksModalQuery.trim()}" 的标记
+                    </div>
+                  );
+                }
+                return filtered.map((e) => (
+                  <div
+                    key={`${e.sessionId}::${e.itemIdx}`}
+                    onClick={async () => {
+                      setMarksModalOpen(false);
+                      if (e.sessionId !== sessionId) {
+                        await loadSession(e.sessionId);
+                      }
+                      // 顺手设 pendingScroll → useEffect 把 item 滚中 +
+                      // 1.5s 黄色高亮（与跨会话搜索同款 jump path）。
+                      setPendingScroll(e.itemIdx);
+                    }}
+                    style={{
+                      padding: "10px 14px",
+                      borderBottom: "1px solid var(--pet-color-border)",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                    }}
+                    title={`跳到「${e.sessionTitle}」#${e.itemIdx + 1}\n\n${e.content || "（空）"}`}
+                  >
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "var(--pet-color-muted)",
+                        display: "flex",
+                        gap: 6,
+                      }}
+                    >
+                      <span>{e.role === "user" ? "🧑 user" : "🐾 assistant"}</span>
+                      <span>·</span>
+                      <span
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          maxWidth: 280,
+                        }}
+                      >
+                        {e.sessionTitle}
+                      </span>
+                      <span>·</span>
+                      <span>#{e.itemIdx + 1}</span>
+                      {/* 标记时间：ts > 0 时显相对时间（< 60s "刚刚" / < 1h
+                          "X 分钟前" / < 1d "X 小时前" / else "X 天前"）。
+                          ts === 0 是老格式 dangling 跳过。 */}
+                      {e.markedAt > 0 && (() => {
+                        const age = Date.now() - e.markedAt;
+                        let rel: string;
+                        if (age < 60_000) rel = "刚刚";
+                        else if (age < 3_600_000)
+                          rel = `${Math.floor(age / 60_000)} 分钟前`;
+                        else if (age < 86_400_000)
+                          rel = `${Math.floor(age / 3_600_000)} 小时前`;
+                        else rel = `${Math.floor(age / 86_400_000)} 天前`;
+                        return (
+                          <>
+                            <span>·</span>
+                            <span
+                              title={`标记于 ${new Date(e.markedAt).toLocaleString()}`}
+                            >
+                              📌 {rel}
+                            </span>
+                          </>
+                        );
+                      })()}
+                      <span style={{ flex: 1 }} />
+                      {/* 🗑 取消标记：直接从 markedMessages map 移除 + 从
+                          marksModalEntries 立即过滤掉，省去"先跳源再去找
+                          📌 取消"的两步。stopPropagation 阻止行级 jump
+                          handler。 */}
+                      <button
+                        type="button"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          const k = `${e.sessionId}::${e.itemIdx}`;
+                          toggleMessageMark(k);
+                          setMarksModalEntries((prev) =>
+                            prev
+                              ? prev.filter(
+                                  (x) =>
+                                    !(
+                                      x.sessionId === e.sessionId &&
+                                      x.itemIdx === e.itemIdx
+                                    ),
+                                )
+                              : prev,
+                          );
+                        }}
+                        title="取消此消息的 📌 标记（从 localStorage 收藏集移除）"
+                        aria-label="unmark message"
+                        style={{
+                          padding: "1px 6px",
+                          fontSize: 10,
+                          border: "1px solid var(--pet-color-border)",
+                          borderRadius: 3,
+                          background: "var(--pet-color-card)",
+                          color: "var(--pet-color-muted)",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        🗑
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--pet-color-fg)",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        // 长内容截断到 200 字，hover 看完整 via title
+                        display: "-webkit-box",
+                        WebkitLineClamp: 4,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {e.content || "（空）"}
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Input bar */}
       <form
@@ -1231,6 +4124,83 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
             commands={filteredCommands}
             selectedIdx={selectedSlashIdx}
             onSelect={handleSelectSlashCommand}
+          />
+        )}
+        {/* `@` 提及浮窗：与 SlashCommandMenu 同锚位（form 的 relative 容器 +
+            bottom:100%）。无 task 命中 → 显空态提示 + 用户敲字 / Esc 自然退。 */}
+        {mentionMenuVisible && mentionContext && (
+          <div style={mentionMenuContainerStyle}>
+            {mentionFilteredTasks.length === 0 ? (
+              <div
+                style={{
+                  padding: "10px 12px",
+                  fontSize: "12px",
+                  color: "var(--pet-color-muted)",
+                }}
+              >
+                {Object.keys(chatTaskMap).length === 0
+                  ? "（没有任务可引用）"
+                  : `没有匹配「${mentionContext.query}」的任务；Esc 退出 / 继续敲改 query`}
+              </div>
+            ) : (
+              mentionFilteredTasks.map((t, i) => {
+                const selected = i === mentionSelectedIdx;
+                return (
+                  <div
+                    key={t.title}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pickMention(t.title, mentionContext);
+                    }}
+                    style={{
+                      padding: "6px 12px",
+                      cursor: "pointer",
+                      background: selected
+                        ? "var(--pet-tint-blue-bg)"
+                        : "transparent",
+                      borderLeft: selected
+                        ? "2px solid var(--pet-color-accent)"
+                        : "2px solid transparent",
+                      display: "flex",
+                      alignItems: "baseline",
+                      gap: "10px",
+                      fontSize: "13px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        color: selected
+                          ? "var(--pet-tint-blue-fg)"
+                          : "var(--pet-color-fg)",
+                        fontWeight: 500,
+                        flex: 1,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {t.title}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        color: "var(--pet-color-muted)",
+                        fontFamily: "'SF Mono', 'Menlo', monospace",
+                      }}
+                    >
+                      {t.status}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+        {imagePromptMenuVisible && (
+          <ImagePromptHistoryMenu
+            prompts={imagePromptHistory}
+            selectedIdx={selectedImagePromptIdx}
+            onSelect={(prompt) => setInput(`/image ${prompt}`)}
           />
         )}
         {/* R134: 输入框字数 counter。非空时浮 input bar 顶左（与 R132 历史
@@ -1276,14 +4246,237 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
             ↑ 历史 {historyCursor + 1} / {messageHistory.length}
           </div>
         )}
+        {/* 多模态：pendingImages 折叠成单 chip "📎 N 附件待发"；hover / focus
+            展开浮窗显完整缩略图条 + ✕ 移除按钮。原 always-expanded 视觉占空
+            间过多；折叠后 input bar 视觉干净，长 prompt 区域不被挤压。 */}
+        {pendingImages.length > 0 && (
+          <PendingAttachmentsChip
+            images={pendingImages}
+            onOpen={(src) => setComposeLightboxSrc(src)}
+            onRemove={(idx) =>
+              setPendingImages((prev) => prev.filter((_, j) => j !== idx))
+            }
+            onClearAll={() => setPendingImages([])}
+          />
+        )}
+        {/* 📎 文件选择：点按钮 → 触发 hidden input.click()，OS 弹系统对话框；
+            选中的 image/* 走 ingestImageBlobs 与 paste / drop 同一管道。multiple
+            支持一次选多图；accept 限定让对话框默认只显图，但 OS 仍会让用户
+            切到"全部文件"——所以 onChange 里再过滤一次 type.startsWith。
+            清空 value 让选完同一份文件后能再选一次（input file 默认只触发新
+            值的 change，不重置就再点 📎 选同名文件不会 fire）。 */}
+        <input
+          ref={composeFileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const files = e.target.files;
+            if (!files || files.length === 0) return;
+            const blobs: Blob[] = [];
+            for (let i = 0; i < files.length; i++) {
+              const f = files[i];
+              if (f.type.startsWith("image/")) blobs.push(f);
+            }
+            // reset 让同一张图能再次选；onChange 之后再走 ingest
+            e.target.value = "";
+            if (blobs.length === 0) {
+              pushLocalAssistantNote(
+                "⚠ 没选到图片（仅支持 image/* 格式）。",
+              );
+              return;
+            }
+            ingestImageBlobs(blobs);
+          }}
+        />
+        {/* 📋 prompt 模板下拉：选中 prefill input 字符串 + focus 让用户立
+            刻编辑占位。value="" sentinel + reset 让下次能再选同条。仅
+            input 当前为空时浮（已敲字时显得多余 + 易误触清掉用户输入）。 */}
+        {input.length === 0 && (
+          <select
+            value=""
+            onChange={(e) => {
+              // 用 "B:i" / "C:i" 区分内置 vs 自定义 entry
+              const v = e.target.value;
+              if (!v) return;
+              const [src, idxStr] = v.split(":");
+              const idx = parseInt(idxStr, 10);
+              if (Number.isNaN(idx)) return;
+              const tpl =
+                src === "B"
+                  ? CHAT_PROMPT_TEMPLATES[idx]
+                  : customChatTemplates[idx];
+              if (!tpl) return;
+              setInput(tpl.text);
+              e.currentTarget.value = "";
+              window.setTimeout(() => {
+                composeTextareaRef.current?.focus();
+              }, 0);
+            }}
+            disabled={isLoading}
+            title="选一个常见 prompt 模板预填到输入框（含内置 + 用户自定义）"
+            style={{
+              padding: "10px 6px",
+              borderRadius: "10px",
+              border: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-card)",
+              color: "var(--pet-color-muted)",
+              cursor: isLoading ? "default" : "pointer",
+              fontSize: 12,
+              flexShrink: 0,
+              fontFamily: "inherit",
+            }}
+          >
+            <option value="">📋 模板…</option>
+            <optgroup label="内置">
+              {CHAT_PROMPT_TEMPLATES.map((tpl, i) => (
+                <option key={tpl.label} value={`B:${i}`}>
+                  {tpl.label}
+                </option>
+              ))}
+            </optgroup>
+            {customChatTemplates.length > 0 && (
+              <optgroup label="自定义">
+                {customChatTemplates.map((tpl, i) => (
+                  <option key={`custom-${tpl.label}-${i}`} value={`C:${i}`}>
+                    {tpl.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        )}
+        {/* "🛠 管理自定义模板" 按钮：仅在 input 空 且有 custom 模板时浮。
+            打开 modal 让用户重命名 / 删除条目。不与 📋 dropdown 合并 —
+            select option 不能内嵌交互按钮。 */}
+        {input.length === 0 && customChatTemplates.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setManageTemplatesOpen(true)}
+            disabled={isLoading}
+            title={`管理自定义模板（${customChatTemplates.length} 条）：重命名 / 删除`}
+            aria-label="manage custom templates"
+            style={{
+              padding: "10px 8px",
+              borderRadius: "10px",
+              border: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-card)",
+              color: "var(--pet-color-muted)",
+              cursor: isLoading ? "default" : "pointer",
+              fontSize: 12,
+              flexShrink: 0,
+            }}
+          >
+            🛠
+          </button>
+        )}
+        {/* 💾 保存当前 input 为自定义模板：仅 input 非空时浮。点击 prompt
+            用户输 label（default 首 12 字 trim 作为 hint），保存到
+            localStorage 列表。cap 10 FIFO；同 label 替换。 */}
+        {input.trim().length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const hint = input.trim().slice(0, 12);
+              const label = window.prompt(
+                "给当前输入起个 label（保存到自定义模板，可在 📋 下拉里复用）：",
+                hint,
+              );
+              if (label === null) return;
+              const trimmed = label.trim();
+              if (trimmed.length === 0) return;
+              saveCustomTemplate(trimmed, input);
+            }}
+            disabled={isLoading}
+            title="把当前 input 内容保存为自定义模板（localStorage，跨重启），出现在 📋 下拉的'自定义'分组里。cap 10 条 FIFO；同 label 替换。"
+            aria-label="save as template"
+            style={{
+              padding: "10px 12px",
+              borderRadius: "10px",
+              border: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-card)",
+              color: "var(--pet-color-muted)",
+              cursor: isLoading ? "default" : "pointer",
+              fontSize: 14,
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >
+            💾
+          </button>
+        )}
+        {/* ↩️ 快速 follow-up：仅在 input 空 且 chat 已有交流（items 非空）
+            时浮。短回应模板，覆盖"对话中接 assistant"路径。与 prompt
+            模板共占 input 左侧 toolbar，select 与 file button 同列。 */}
+        {input.length === 0 && items.length > 0 && (
+          <select
+            value=""
+            onChange={(e) => {
+              const idx = parseInt(e.target.value, 10);
+              if (Number.isNaN(idx)) return;
+              const tpl = CHAT_FOLLOWUP_TEMPLATES[idx];
+              if (!tpl) return;
+              setInput(tpl.text);
+              e.currentTarget.value = "";
+              window.setTimeout(() => {
+                composeTextareaRef.current?.focus();
+              }, 0);
+            }}
+            disabled={isLoading}
+            title="选一个常见短回应预填到输入框"
+            style={{
+              padding: "10px 6px",
+              borderRadius: "10px",
+              border: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-card)",
+              color: "var(--pet-color-muted)",
+              cursor: isLoading ? "default" : "pointer",
+              fontSize: 12,
+              flexShrink: 0,
+              fontFamily: "inherit",
+            }}
+          >
+            <option value="">↩️ 回应…</option>
+            {CHAT_FOLLOWUP_TEMPLATES.map((tpl, i) => (
+              <option key={tpl.label} value={i}>
+                {tpl.label}
+              </option>
+            ))}
+          </select>
+        )}
+        <button
+          type="button"
+          onClick={() => composeFileInputRef.current?.click()}
+          title="选择本地图片附带发送（与粘贴 / 拖入同管道，需多模态模型）"
+          aria-label="upload image"
+          disabled={isLoading}
+          style={{
+            padding: "10px 12px",
+            borderRadius: "10px",
+            border: "1px solid var(--pet-color-border)",
+            background: "var(--pet-color-card)",
+            color: "var(--pet-color-muted)",
+            cursor: isLoading ? "default" : "pointer",
+            fontSize: "16px",
+            lineHeight: 1,
+            flexShrink: 0,
+          }}
+        >
+          📎
+        </button>
         {/* R126: 单行 input → auto-grow textarea。rows 用 \n 计数 + 1（cap 5），
             soft-wrap 不影响（用户主动换行才 grow）。Enter 提交 / Shift+Enter
             换行的语义在 handleInputKeyDown 里。 */}
         <textarea
+          ref={composeTextareaRef}
           value={input}
           onChange={(e) => {
             const v = e.target.value;
             setInput(v);
+            // 追踪 `@` 触发态需要光标位置 —— onChange 是最及时的 hook
+            // （比 onKeyUp 早；IME 多字符插入也覆盖到）。
+            setComposeCursorPos(e.target.selectionStart ?? v.length);
             // R129: 用户改写 history 召回内容 → 自动退出历史模式让 free editing。
             // 再 ↑ 时从最新一条（历史末）重新进入；不会跳到 cursor 之前残留的位置。
             if (
@@ -1293,8 +4486,33 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
               setHistoryCursor(null);
             }
           }}
+          onSelect={(e) => {
+            // 鼠标点击 / 键盘 ArrowLeft/Right 移动光标 → 重新评估 `@` 触发态。
+            // onSelect 在选区或 caret 位置变化时 fire，覆盖纯 caret-move。
+            setComposeCursorPos(
+              (e.target as HTMLTextAreaElement).selectionStart ?? 0,
+            );
+          }}
+          onPaste={(e) => {
+            // 多模态：扫 clipboardData.items，把 image/* 的 blob 转 base64 data
+            // URL 推到 pendingImages。preventDefault 阻止图片"路径文本"误粘到
+            // textarea；同帧多图（截图 + 应用复制）按时序异步推入。
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            const blobs: Blob[] = [];
+            for (let i = 0; i < items.length; i++) {
+              const it = items[i];
+              if (it.kind === "file" && it.type.startsWith("image/")) {
+                const f = it.getAsFile();
+                if (f) blobs.push(f);
+              }
+            }
+            if (blobs.length === 0) return;
+            e.preventDefault();
+            ingestImageBlobs(blobs);
+          }}
           onKeyDown={handleInputKeyDown}
-          placeholder='输入消息（Enter 发送 / Shift+Enter 换行；首字符 "/" 触发命令面板）'
+          placeholder='输入消息（Enter 发送 / Shift+Enter 换行；可粘贴图片；"/" 触发命令面板；"@" / ⌘K 召唤 task ref；⌘B 切上一会话）'
           rows={Math.max(
             1,
             Math.min(5, (input.match(/\n/g)?.length ?? 0) + 1),
@@ -1319,19 +4537,529 @@ export function PanelChat({ onRequestTab }: PanelChatProps = {}) {
           className="pet-chat-send"
           disabled={isLoading}
           style={{
-            padding: "10px 20px",
+            padding: "10px 22px",
             borderRadius: "10px",
             border: "none",
             background: isLoading ? "#cbd5e1" : "var(--pet-color-accent)",
             color: "#fff",
             fontSize: "14px",
-            fontWeight: 500,
+            fontWeight: 600,
+            letterSpacing: 0.4,
             cursor: isLoading ? "default" : "pointer",
+            // accent 色 30% alpha 拖一道柔光圈让发送按钮"立"在 input bar 上 ——
+            // 高频交互按钮应该有最显眼的视觉优先级。
+            boxShadow: isLoading
+              ? "none"
+              : "0 4px 14px color-mix(in srgb, var(--pet-color-accent) 35%, transparent)",
+            flexShrink: 0,
           }}
         >
           {isLoading ? "..." : "发送"}
         </button>
       </form>
+      <ImageLightbox
+        src={composeLightboxSrc}
+        onClose={() => setComposeLightboxSrc(null)}
+      />
+      {/* ⌘K task 引用选择器 modal：fixed overlay 居中，输入过滤 +
+          键盘 nav。选中 → 把「title」插入 textarea 光标位 + 关 popup。
+          backdrop click / Esc 关；空 query 列全部 task。 */}
+      {taskPickerOpen && (() => {
+        const q = taskPickerQuery.trim().toLowerCase();
+        // char-order 子序列 fuzzy 匹配：query 每个字符按顺序在 title 里
+        // 找下一处出现位置，找全 = 命中。"intDown" 能命中 "整理 Downloads"
+        // 因为 i/n/t/D/o/w/n 都按序出现在小写 title 里。score 用"匹配段长度
+        // + 首次匹配位置"组合，越紧凑越靠前 = 越优。空 query 直接列全集。
+        const fuzzyMatch = (query: string, target: string): number | null => {
+          if (query.length === 0) return 0;
+          let qi = 0;
+          let firstMatch = -1;
+          let lastMatch = -1;
+          for (let ti = 0; ti < target.length && qi < query.length; ti++) {
+            if (target[ti] === query[qi]) {
+              if (firstMatch < 0) firstMatch = ti;
+              lastMatch = ti;
+              qi += 1;
+            }
+          }
+          if (qi !== query.length) return null;
+          // 紧凑度（span 小）权重高于位置（first 小）；用 *100 让两个量级不冲突
+          return (lastMatch - firstMatch + 1) * 100 + firstMatch;
+        };
+        const filtered =
+          q.length === 0
+            ? taskPickerTasks
+            : (() => {
+                const scored: Array<{ t: TaskRefView; score: number }> = [];
+                for (const t of taskPickerTasks) {
+                  const s = fuzzyMatch(q, t.title.toLowerCase());
+                  if (s !== null) scored.push({ t, score: s });
+                }
+                scored.sort((a, b) => a.score - b.score);
+                return scored.map((x) => x.t);
+              })();
+        const safeIdx = Math.max(
+          0,
+          Math.min(taskPickerSelectedIdx, filtered.length - 1),
+        );
+        const close = () => {
+          setTaskPickerOpen(false);
+          setTaskPickerQuery("");
+          setTaskPickerSelectedIdx(0);
+          // 关闭后把焦点还给 chat textarea，让用户继续敲消息
+          window.setTimeout(() => {
+            composeTextareaRef.current?.focus();
+          }, 0);
+        };
+        const pick = (title: string) => {
+          insertTaskRef(title);
+          close();
+        };
+        return (
+          <div
+            onClick={close}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(15, 23, 42, 0.55)",
+              zIndex: 200,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: "100%",
+                maxWidth: 480,
+                maxHeight: "70vh",
+                background: "var(--pet-color-card)",
+                borderRadius: 10,
+                boxShadow: "0 20px 60px rgba(0, 0, 0, 0.35)",
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  padding: "10px 14px",
+                  borderBottom: "1px solid var(--pet-color-border)",
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--pet-color-fg)" }}>
+                  📎 引用任务
+                </span>
+                <input
+                  ref={taskPickerInputRef}
+                  autoFocus
+                  value={taskPickerQuery}
+                  placeholder="按标题模糊搜任务…（按字符顺序匹配；↑↓ 选 / Enter 插入 / Esc 关闭）"
+                  onChange={(e) => {
+                    setTaskPickerQuery(e.target.value);
+                    setTaskPickerSelectedIdx(0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setTaskPickerSelectedIdx((i) =>
+                        Math.min(i + 1, filtered.length - 1),
+                      );
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setTaskPickerSelectedIdx((i) => Math.max(0, i - 1));
+                    } else if (e.key === "Enter") {
+                      e.preventDefault();
+                      const picked = filtered[safeIdx];
+                      if (picked) pick(picked.title);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      close();
+                    }
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: "6px 10px",
+                    fontSize: 13,
+                    border: "1px solid var(--pet-color-border)",
+                    borderRadius: 4,
+                    background: "var(--pet-color-bg)",
+                    color: "var(--pet-color-fg)",
+                    outline: "none",
+                  }}
+                />
+              </div>
+              <div style={{ overflowY: "auto", flex: 1 }}>
+                {filtered.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "20px 14px",
+                      textAlign: "center",
+                      color: "var(--pet-color-muted)",
+                      fontSize: 12,
+                    }}
+                  >
+                    {taskPickerTasks.length === 0
+                      ? "（没有任务可引用）"
+                      : "没有匹配的任务"}
+                  </div>
+                ) : (
+                  filtered.map((t, i) => {
+                    const active = i === safeIdx;
+                    return (
+                      <div
+                        key={t.title}
+                        onClick={() => pick(t.title)}
+                        onMouseEnter={() => setTaskPickerSelectedIdx(i)}
+                        style={{
+                          padding: "8px 14px",
+                          cursor: "pointer",
+                          background: active ? "var(--pet-color-bg)" : "transparent",
+                          borderLeft: active
+                            ? "3px solid var(--pet-color-accent)"
+                            : "3px solid transparent",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          fontSize: 12,
+                          color: "var(--pet-color-fg)",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 10,
+                            padding: "1px 6px",
+                            borderRadius: 3,
+                            background: "var(--pet-color-bg)",
+                            color: "var(--pet-color-muted)",
+                            flexShrink: 0,
+                            fontFamily: "'SF Mono', 'Menlo', monospace",
+                          }}
+                        >
+                          {t.status}
+                        </span>
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {t.title}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              <div
+                style={{
+                  padding: "6px 14px",
+                  borderTop: "1px solid var(--pet-color-border)",
+                  fontSize: 10,
+                  color: "var(--pet-color-muted)",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                }}
+              >
+                {filtered.length} / {taskPickerTasks.length} · 插入格式：「任务标题」
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+      {sessionTabCtxMenu && (() => {
+        const m = sessionTabCtxMenu;
+        const W = 180;
+        const H = 200;
+        const left = Math.max(8, Math.min(m.x, window.innerWidth - W - 8));
+        const top = Math.max(8, Math.min(m.y, window.innerHeight - H - 8));
+        const itemBtn: React.CSSProperties = {
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          padding: "6px 10px",
+          fontSize: 12,
+          lineHeight: 1.3,
+          border: "none",
+          background: "transparent",
+          color: "var(--pet-color-fg)",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          borderRadius: 4,
+        };
+        const hoverIn = (e: React.MouseEvent<HTMLButtonElement>) => {
+          (e.currentTarget as HTMLButtonElement).style.background =
+            "var(--pet-color-bg)";
+        };
+        const hoverOut = (e: React.MouseEvent<HTMLButtonElement>) => {
+          (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+        };
+        return (
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            style={{
+              position: "fixed",
+              left,
+              top,
+              width: W,
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 6,
+              boxShadow: "var(--pet-shadow-md)",
+              padding: 4,
+              zIndex: 50,
+              fontFamily: "inherit",
+            }}
+          >
+            <div
+              style={{
+                padding: "4px 10px 6px",
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+                borderBottom: "1px solid var(--pet-color-border)",
+                marginBottom: 4,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={m.title}
+            >
+              {m.title}
+            </div>
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={hoverIn}
+              onMouseOut={hoverOut}
+              onClick={() => {
+                setSessionTabCtxMenu(null);
+                void handleTogglePinned(m.id, !m.pinned);
+              }}
+            >
+              {m.pinned ? "📍 取消 pin" : "📌 pin 置顶"}
+            </button>
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={hoverIn}
+              onMouseOut={hoverOut}
+              onClick={() => {
+                setSessionTabCtxMenu(null);
+                // 展开 dropdown 让用户看到 inline 编辑输入
+                setShowSessionList(true);
+                const s = sessionList.find((x) => x.id === m.id);
+                if (s) startRename(s);
+              }}
+            >
+              ✏ 改名…
+            </button>
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={hoverIn}
+              onMouseOut={hoverOut}
+              onClick={async () => {
+                setSessionTabCtxMenu(null);
+                try {
+                  await navigator.clipboard.writeText(m.title);
+                  setExportToast(`已复制标题：${m.title}`);
+                  setTimeout(() => setExportToast(""), 2500);
+                } catch (e) {
+                  setExportToast(`复制失败：${e}`);
+                  setTimeout(() => setExportToast(""), 3000);
+                }
+              }}
+            >
+              📋 复制标题
+            </button>
+            <div
+              style={{
+                height: 1,
+                background: "var(--pet-color-border)",
+                margin: "4px 0",
+              }}
+            />
+            <button
+              type="button"
+              style={{ ...itemBtn, color: "var(--pet-tint-red-fg)" }}
+              onMouseOver={hoverIn}
+              onMouseOut={hoverOut}
+              onClick={() => {
+                setSessionTabCtxMenu(null);
+                // 展开 dropdown 让用户看到"确定？"armed 红按钮状态
+                setShowSessionList(true);
+                handleDeleteClick(m.id);
+              }}
+            >
+              🗑 删除…
+            </button>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+/// `@` 提及浮窗的容器样式 —— 与 SlashCommandMenu 锚点一致（form relative +
+/// bottom:100%）。宽度可以比 slash 菜单稍窄，专注一段任务标题列表。
+const mentionMenuContainerStyle: React.CSSProperties = {
+  position: "absolute",
+  bottom: "100%",
+  left: 0,
+  right: 0,
+  marginBottom: "6px",
+  maxHeight: "200px",
+  overflowY: "auto",
+  background: "var(--pet-color-card)",
+  border: "1px solid var(--pet-color-border)",
+  borderRadius: "6px",
+  boxShadow: "var(--pet-shadow-md)",
+  zIndex: 20,
+};
+
+/// 折叠版 pending attachments：chip 显总数；hover chip 或 popover 任一时
+/// popover 保持展开（用 single hovered state 跟踪整个容器的 mouseEnter /
+/// Leave 避免缩略图与 chip 之间空隙翻车）。
+function PendingAttachmentsChip({
+  images,
+  onOpen,
+  onRemove,
+  onClearAll,
+}: {
+  images: string[];
+  onOpen: (src: string) => void;
+  onRemove: (idx: number) => void;
+  onClearAll: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        position: "absolute",
+        left: 16,
+        bottom: "calc(100% - 4px)",
+        zIndex: 5,
+      }}
+    >
+      {/* 折叠 chip */}
+      <div
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "4px 10px",
+          background: "var(--pet-color-card)",
+          border: "1px solid var(--pet-color-accent)",
+          borderRadius: 14,
+          boxShadow: "var(--pet-shadow-sm)",
+          fontSize: 12,
+          color: "var(--pet-color-accent)",
+          fontWeight: 600,
+          cursor: "default",
+          userSelect: "none",
+        }}
+        title="hover 查看 / 移除 / 清空附件"
+      >
+        📎 {images.length} 附件待发
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClearAll();
+          }}
+          aria-label="清空全部附件"
+          title="清空全部附件"
+          style={{
+            width: 16,
+            height: 16,
+            borderRadius: "50%",
+            border: "none",
+            background: "rgba(15,23,42,0.12)",
+            color: "var(--pet-color-fg)",
+            fontSize: 10,
+            lineHeight: 1,
+            cursor: "pointer",
+            padding: 0,
+            marginLeft: 2,
+          }}
+        >
+          ✕
+        </button>
+      </div>
+      {/* hover popover：完整缩略图条 + ✕ 移除按钮 */}
+      {hovered && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 6,
+            padding: "6px 8px",
+            background: "var(--pet-color-card)",
+            border: "1px solid var(--pet-color-border)",
+            borderRadius: 6,
+            boxShadow: "var(--pet-shadow-md)",
+            maxWidth: 380,
+            minWidth: 200,
+          }}
+        >
+          {images.map((src, i) => (
+            <div key={i} style={{ position: "relative" }}>
+              <img
+                src={src}
+                alt=""
+                onClick={() => onOpen(src)}
+                title="点击查看大图"
+                style={{
+                  width: 56,
+                  height: 56,
+                  objectFit: "cover",
+                  borderRadius: 4,
+                  display: "block",
+                  cursor: "zoom-in",
+                }}
+              />
+              <button
+                type="button"
+                title="移除这张图"
+                aria-label="remove image"
+                onClick={() => onRemove(i)}
+                style={{
+                  position: "absolute",
+                  top: -6,
+                  right: -6,
+                  width: 18,
+                  height: 18,
+                  borderRadius: "50%",
+                  border: "none",
+                  background: "rgba(15,23,42,0.78)",
+                  color: "#fff",
+                  fontSize: 11,
+                  lineHeight: 1,
+                  cursor: "pointer",
+                  padding: 0,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1342,14 +5070,15 @@ const sessionBarStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "8px",
-  padding: "8px 16px",
+  padding: "10px 16px",
   borderBottom: "1px solid var(--pet-color-border)",
   background: "var(--pet-color-card)",
   flexShrink: 0,
+  boxShadow: "0 1px 0 rgba(15, 23, 42, 0.02)",
 };
 
 const newSessionBtnStyle: React.CSSProperties = {
-  padding: "4px 12px",
+  padding: "5px 12px",
   borderRadius: "6px",
   border: "1px solid var(--pet-color-border)",
   background: "var(--pet-color-bg)",

@@ -1,6 +1,7 @@
 pub mod calendar_tool;
 mod context;
 pub mod file_tools;
+pub mod give_image_tool;
 pub mod memory_tools;
 mod registry;
 pub mod shell_tools;

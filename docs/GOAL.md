@@ -8,6 +8,7 @@
 - 自我进化：自己有独立的情绪、记忆、技能，随着交互过程加强对用户的了解
 - 通用任务：完成简单的定制化任务。
 - 多模态支持：要支持图片写入与图片生成
+- UI 要美观可爱
 
 约束条件：
 - 开发时要以生产级别的代码要求自己，不要写出 Demo 一样粗糙不可维护无法阅读的代码。
@@ -17,5 +18,6 @@
 - 不要考虑专注模式相关的需求。
 - 做深色 / 浅色主题
 
-# 待确认
+- 【已确认】持久化分层重构（SQLite）：memory 只承担"大模型记忆/回想"职责；butler_tasks / todo / task_archive / 计划进度 / mood 等业务态搬出 memory，另建 sqlite 表（复用 memory 字段：title / description / created_at / updated_at / detail_path / tags / status）。LLM 通过专用工具读写各域，不再共用 memory_edit。
 
+# 待确认

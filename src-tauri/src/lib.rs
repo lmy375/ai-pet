@@ -3,6 +3,7 @@ mod commands;
 mod companionship;
 mod config;
 mod consolidate;
+mod db;
 mod decision_log;
 mod feedback_history;
 mod input_idle;
@@ -103,21 +104,40 @@ pub fn run() {
             // Start memory consolidation loop (long-period, opt-in).
             consolidate::spawn(app.handle().clone());
 
+            // v3 SQLite backfill：把现有 yaml butler_tasks 段一次性同步到
+            // pet.db。后续启动是 noop（已存在 title 跳过）。失败不阻塞
+            // 启动 —— read path 仍走 yaml，下次再试。
+            db::startup_backfill_butler_tasks();
+            db::startup_backfill_todos();
+            db::startup_backfill_task_archive();
+            db::startup_backfill_ai_insights();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::chat::chat_test,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::get_config_raw,
             commands::settings::save_config_raw,
+            commands::settings::validate_config_raw,
+            commands::settings::reset_config_to_defaults,
+            commands::settings::export_settings_snapshot,
+            commands::settings::import_settings_snapshot,
+            commands::settings::trigger_motion,
             commands::settings::get_soul,
             commands::settings::get_user_name,
             commands::settings::save_soul,
+            commands::settings::reset_soul_to_default,
             commands::settings::get_pet_data_dir,
             commands::settings::open_pet_data_dir,
+            commands::settings::is_current_model_multimodal,
+            commands::settings::check_multimodal_model_name,
+            commands::image::image_generate,
             commands::window::open_panel,
             commands::window::open_debug,
+            commands::window::restart_pet_window,
             commands::window::open_devtools,
             commands::debug::get_logs,
             commands::debug::append_log,
@@ -137,11 +157,15 @@ pub fn run() {
             tool_review::submit_tool_review,
             tool_review::list_pending_tool_reviews,
             tool_review_policy::get_tool_risk_overview,
+            tool_review_policy::set_tool_review_mode,
             tool_call_history::get_recent_tool_calls,
             tool_call_history::get_top_tools_used,
+            tool_call_history::get_dedicated_tool_stats,
             feedback_history::get_recent_feedback,
             feedback_history::record_bubble_dismissed,
             feedback_history::record_bubble_liked,
+            feedback_history::record_bubble_puzzled,
+            feedback_history::record_message_disliked,
             decision_log::get_proactive_decisions,
             decision_log::clear_proactive_decisions,
             butler_history::get_butler_history,
@@ -150,12 +174,17 @@ pub fn run() {
             speech_history::get_lifetime_speech_count,
             speech_history::get_today_speech_count,
             speech_history::get_week_speech_count,
+            speech_history::get_speech_count_days,
+            speech_history::get_today_speech_hourly,
             companionship::get_companionship_days,
             companionship::get_install_date,
             proactive::get_persona_summary,
             proactive::get_last_proactive_prompt,
             proactive::get_last_proactive_reply,
             proactive::get_last_proactive_meta,
+            proactive::get_last_manual_fire,
+            proactive::get_manual_fire_history,
+            proactive::reset_proactive_stash,
             proactive::get_recent_proactive_turns,
             mood::get_current_mood,
             mood_history::get_mood_trend_hint,
@@ -170,7 +199,10 @@ pub fn run() {
             proactive::get_transient_note,
             proactive::get_pending_reminders,
             consolidate::trigger_consolidate,
+            consolidate::cancel_consolidate,
             proactive::trigger_proactive_turn,
+            proactive::trigger_proactive_turn_for_task,
+            proactive::trigger_proactive_turn_with_prompt,
             commands::shell::check_shell_status,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,
@@ -180,6 +212,12 @@ pub fn run() {
             commands::session::create_session,
             commands::session::delete_session,
             commands::session::search_sessions,
+            commands::session::set_session_pinned,
+            commands::session::list_sessions_with_images,
+            commands::session::list_sessions_with_task_calls,
+            commands::session::clear_all_sessions,
+            commands::session::export_sessions_snapshot,
+            commands::session::import_sessions_snapshot,
             commands::telegram::get_telegram_status,
             commands::telegram::reconnect_telegram,
             commands::telegram::get_tg_startup_warnings,
@@ -187,6 +225,12 @@ pub fn run() {
             commands::memory::memory_list,
             commands::memory::memory_search,
             commands::memory::memory_edit,
+            commands::memory::memory_rename,
+            commands::memory::memory_read_detail,
+            commands::memory::memory_read_detail_full,
+            commands::memory::memory_detail_sizes,
+            commands::memory::memory_disk_usage,
+            db::db_butler_tasks_list,
             commands::task::task_create,
             commands::task::task_list,
             commands::task::task_retry,

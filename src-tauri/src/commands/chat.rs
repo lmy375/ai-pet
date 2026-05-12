@@ -92,7 +92,7 @@ pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     // Tell the model how to record a user-set reminder so the proactive loop can later
     // surface it. The format must match `parse_reminder_prefix` in proactive.rs:
     // todo / description starting with "[remind: HH:MM] topic". 24-hour clock.
-    let reminder_section = "\n\n[设置提醒的约定] 如果用户说类似「N 点提醒我做 X」「下午 5 点喊我下班」「30 分钟后叫我休息」「明天早上 9 点开会」之类的话，请用 `memory_edit create` 在 `todo` 类别下新建一条 memory item：\n\
+    let reminder_section = "\n\n[设置提醒的约定] 如果用户说类似「N 点提醒我做 X」「下午 5 点喊我下班」「30 分钟后叫我休息」「明天早上 9 点开会」之类的话，请用 `todo_edit`（action=create）新建一条提醒：\n\
 - 今天内的提醒：description 以 `[remind: HH:MM] X` 开头（HH 是 24 小时制 0–23）。例：description=`[remind: 23:00] 吃药`、title=`take_meds`。\n\
 - 跨天或具体日期：description 以 `[remind: YYYY-MM-DD HH:MM] X` 开头。例：description=`[remind: 2026-05-04 09:00] 项目早会`。\n\
 - 相对时间（「30 分钟后」「2 小时后」等）：你需要根据当前时间换算成绝对的 HH:MM（或日期时间），不要原样写「+30m」。\n\
@@ -255,17 +255,10 @@ pub fn format_deadline_chat_layer(
 /// other injectors. No-op when no non-Distant deadlines.
 pub fn inject_deadline_context_layer(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let now = chrono::Local::now().naive_local();
-    let items: Vec<(chrono::NaiveDateTime, String)> =
-        crate::commands::memory::memory_list(Some("butler_tasks".to_string()))
-            .ok()
-            .and_then(|idx| idx.categories.get("butler_tasks").cloned())
-            .map(|cat| {
-                cat.items
-                    .iter()
-                    .filter_map(|i| crate::proactive::parse_butler_deadline_prefix(&i.description))
-                    .collect()
-            })
-            .unwrap_or_default();
+    let items: Vec<(chrono::NaiveDateTime, String)> = crate::db::butler_tasks_as_memory_items()
+        .iter()
+        .filter_map(|i| crate::proactive::parse_butler_deadline_prefix(&i.description))
+        .collect();
     let body = format_deadline_chat_layer(&items, now);
     if body.is_empty() {
         return messages;
@@ -341,13 +334,13 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 - purpose 不需要长——一句话讲清「现在要它做什么」即可。该字段会被记入 app.log，未来用于审计 / 高风险工具的人工审核。
 
 ## 任务委托判断（butler_tasks）
-你不只是聊天伙伴，也是用户的小管家。当用户在对话里**委托你做一件事**（不是问问题、不是聊天），不要只口头答应——用 `memory_edit create` 把任务写进 `butler_tasks` 类别，方便你之后真的去执行。
-- 「帮我每天 9 点写一份日报到 ~/today.md」→ `memory_edit create` 到 `butler_tasks`，title="日报"，description=`[every: 09:00] 写当日日报到 ~/today.md`
+你不只是聊天伙伴，也是用户的小管家。当用户在对话里**委托你做一件事**（不是问问题、不是聊天），不要只口头答应——用 `butler_task_edit`（action=create）把任务记下来，方便你之后真的去执行。
+- 「帮我每天 9 点写一份日报到 ~/today.md」→ `butler_task_edit` create，title="日报"，description=`[every: 09:00] 写当日日报到 ~/today.md`
 - 「这周末整理一下 ~/Downloads」→ `[once: 2026-XX-XX 10:00] 整理 ~/Downloads`（XX 是即将到来的周末日期）
 - 「能不能时不时帮我看下日程」→ 没有明确时间 → 不带前缀直接写 description
 - 「明天 14:00 之前要把那篇文档发出去」/ 「这事得在周五前搞定」→ 这是用户**自己**要在 deadline 前完成的事，不是让你去做——但你应该临近时提醒。用 `[deadline: YYYY-MM-DD HH:MM]` 前缀：description=`[deadline: 2026-XX-XX 14:00] 把文档发出去`。**关键区别**：`[once:]` 是 pet 在那个时间点自动执行，`[deadline:]` 是 user 必须在那之前自己完成（pet 只负责提醒）。
-- 区分 `todo`（用户提醒自己 `[remind:]`）vs `butler_tasks`（用户委托给你做的事）：「提醒我喝水」是 todo，「帮我整理文件夹」是 butler_tasks
-创建后回复用户时简短确认（"好的，记下了，每天 9 点我会..."）——不要长篇复述。已经在 `butler_tasks` 里的任务后面会自动出现在你的 proactive prompt 里，到时候你会看到 `⏰ 到期` 标注（`[every:]`/`[once:]`）或 `[逼近的 deadline]` 段（`[deadline:]`），那时再去执行或提醒。
+- 区分 `todo_edit`（用户提醒自己 `[remind:]`）vs `butler_task_edit`（用户委托给你做的事）：「提醒我喝水」用 todo_edit，「帮我整理文件夹」用 butler_task_edit
+创建后回复用户时简短确认（"好的，记下了，每天 9 点我会..."）——不要长篇复述。已经记下的任务后面会自动出现在你的 proactive prompt 里，到时候你会看到 `⏰ 到期` 标注（`[every:]`/`[once:]`）或 `[逼近的 deadline]` 段（`[deadline:]`），那时再去执行或提醒。
 
 ## 用户偏好捕捉（user_profile）
 **记忆系统的目的是增强未来互动的能力——只存技能、用户偏好、长期事实；事件型条目（每日总结、随口闲聊、宠物自言）严禁写入。**
@@ -1011,15 +1004,102 @@ pub async fn run_chat_pipeline(
                 }
             }
 
+            // Strip `_attachments` 字段后再写到下一轮 LLM 上下文：tool 结果可能
+            // 含 ~1MB/张的 base64 data URL（give_image），那种数据进上下文既费
+            // token 又对 LLM 没用 —— 模型已经在 send_tool_result 时把决策做完了。
+            // send_tool_result 给前端的 result 仍带完整 _attachments 让 UI 渲图。
+            let llm_result = strip_tool_attachments(&result);
             conv_messages.push(serde_json::json!({
                 "role": "tool",
                 "tool_call_id": tc_id,
-                "content": result,
+                "content": llm_result,
             }));
         }
 
         round += 1;
     }
+}
+
+/// 设置页"测试 chat"按钮的 backend。一次性非流式调 `{base_url}/chat/completions`
+/// 拿一个短回复（"Say pong"），用来验 model + key + base_url 真链路。不走 stream，
+/// 不走 tool，不写 session —— 纯粹的连通性测试。失败原样透传，让用户看到
+/// status code + 错误体。
+#[tauri::command]
+pub async fn chat_test() -> Result<String, String> {
+    let settings = crate::commands::settings::get_settings()?;
+    if settings.api_key.is_empty() {
+        return Err("API Key 未配置。打开「设置」填好后再试。".to_string());
+    }
+    if settings.model.trim().is_empty() {
+        return Err("model 未配置。".to_string());
+    }
+    let url = format!(
+        "{}/chat/completions",
+        settings.api_base.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "model": settings.model,
+        "messages": [
+            { "role": "user", "content": "Reply with the single word: pong" }
+        ],
+        "max_tokens": 20,
+        "stream": false,
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client init failed: {e}"))?;
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", settings.api_key))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求 chat API 失败：{e}"))?;
+    let status = resp.status();
+    let raw = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应体失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("chat API 返回 {}：{}", status, raw));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "解析响应失败：{e}；原始 body 前 200 字：{}",
+            &raw.chars().take(200).collect::<String>()
+        )
+    })?;
+    let content = parsed["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if content.is_empty() {
+        return Err(format!(
+            "chat API 没有返回文本。原始 body 前 200 字：{}",
+            &raw.chars().take(200).collect::<String>()
+        ));
+    }
+    Ok(content)
+}
+
+/// 从工具结果 JSON 串里移除 `_attachments` 字段，保留其它字段。给 LLM 送上下
+/// 文用 —— 把"前端要 render 的二进制"挡在外面。非 JSON / 没有此字段的 result
+/// 原样返回。
+pub(crate) fn strip_tool_attachments(result: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(result) else {
+        return result.to_string();
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return result.to_string();
+    };
+    if obj.remove("_attachments").is_none() {
+        // 没此字段 → 等价 noop，原样返回避免 to_string 多一次重排序；
+        // 同时少一次拷贝。
+        return result.to_string();
+    }
+    v.to_string()
 }
 
 #[tauri::command]

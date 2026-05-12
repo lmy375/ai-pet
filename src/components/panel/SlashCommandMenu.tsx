@@ -43,7 +43,7 @@ export function SlashCommandMenu({ commands, selectedIdx, onSelect }: Props) {
           transition: background-color 0.12s ease;
         }
         .pet-slash-row:hover {
-          background: rgba(0, 0, 0, 0.04);
+          background: color-mix(in srgb, var(--pet-color-accent) 8%, transparent);
         }
       `}</style>
       {commands.map((cmd, i) => {
@@ -107,6 +107,6 @@ const menuContainerStyle: React.CSSProperties = {
   background: "var(--pet-color-card)",
   border: "1px solid var(--pet-color-border)",
   borderRadius: "6px",
-  boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+  boxShadow: "var(--pet-shadow-md)",
   zIndex: 20,
 };

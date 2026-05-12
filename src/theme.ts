@@ -17,6 +17,36 @@
 
 export type Theme = "light" | "dark";
 
+/**
+ * Accent 调色板：5 选 1。default 沿用既有 sky 蓝；其余 4 色给愿意自定义的
+ * advanced 用户。每个 accent 都有 light / dark 一对值，dark 下整体提亮一档
+ * 保对比度（与既有 sky 的 0ea5e9 → 38bdf8 升一档同模式）。
+ */
+export type Accent = "default" | "green" | "purple" | "orange" | "rose";
+
+const ACCENT_VALUES: Record<Accent, Record<Theme, string>> = {
+  // sky-500 / sky-400 —— 当前默认主品牌色，保持兼容
+  default: { light: "#0ea5e9", dark: "#38bdf8" },
+  // emerald-500 / emerald-400
+  green: { light: "#10b981", dark: "#34d399" },
+  // violet-500 / violet-400
+  purple: { light: "#8b5cf6", dark: "#a78bfa" },
+  // orange-500 / orange-400
+  orange: { light: "#f97316", dark: "#fb923c" },
+  // rose-500 / rose-400 —— 偏粉调，与红 tint redFg 有区分（redFg 暗红警示色）
+  rose: { light: "#f43f5e", dark: "#fb7185" },
+};
+
+/** UI 选项元数据：label / 颜色样本（中性 light hex 当 swatch 即可，dark
+ *  下也通过 CSS var 自动跟随）。 */
+export const ACCENT_OPTIONS: Array<{ key: Accent; label: string; swatch: string }> = [
+  { key: "default", label: "蓝", swatch: ACCENT_VALUES.default.light },
+  { key: "green", label: "绿", swatch: ACCENT_VALUES.green.light },
+  { key: "purple", label: "紫", swatch: ACCENT_VALUES.purple.light },
+  { key: "orange", label: "橙", swatch: ACCENT_VALUES.orange.light },
+  { key: "rose", label: "玫红", swatch: ACCENT_VALUES.rose.light },
+];
+
 export interface ThemeTokens {
   /** 页面 / panel 容器底色 */
   bg: string;
@@ -59,6 +89,10 @@ export interface ThemeTints {
   /** 蓝 — butler 最近执行 */
   blueBg: string;
   blueFg: string;
+  /** 红 — 高紧迫信号（任务过期、危险确认按钮）。orange 表示警告但不至于
+   *  fail；red 留给"已经出问题 / 立刻看"。 */
+  redBg: string;
+  redFg: string;
 }
 
 export const TOKENS: Record<Theme, ThemeTokens> = {
@@ -94,6 +128,8 @@ export const TINTS: Record<Theme, ThemeTints> = {
     orangeFg: "#9a3412",
     blueBg: "#f0f9ff",
     blueFg: "#0369a1",
+    redBg: "#fef2f2",
+    redFg: "#b91c1c",
   },
   dark: {
     purpleBg: "#251a32",
@@ -108,6 +144,8 @@ export const TINTS: Record<Theme, ThemeTints> = {
     orangeFg: "#fdba74",
     blueBg: "#0c2236",
     blueFg: "#7dd3fc",
+    redBg: "#2a1010",
+    redFg: "#fca5a5",
   },
 };
 
@@ -120,14 +158,21 @@ function camelToKebab(s: string): string {
 }
 
 /** 把 `theme` 对应的 token + tint 集合写到 `document.documentElement` 的
- *  CSS 变量上。SSR 安全：window 不存在时直接 return。 */
-export function applyTheme(theme: Theme): void {
+ *  CSS 变量上。SSR 安全：window 不存在时直接 return。
+ *
+ *  `accent` 参数：传则覆盖 token 里的 accent 字段，让用户自选主品牌色生效；
+ *  缺省 / "default" 走原 token.accent（sky 蓝）。 */
+export function applyTheme(theme: Theme, accent?: Accent): void {
   if (typeof document === "undefined") return;
   const tokens = TOKENS[theme];
   const tints = TINTS[theme];
   const root = document.documentElement;
   for (const [key, value] of Object.entries(tokens)) {
-    root.style.setProperty(`${CSS_VAR_PREFIX}${key}`, value);
+    let effective = value;
+    if (key === "accent" && accent && accent !== "default") {
+      effective = ACCENT_VALUES[accent][theme];
+    }
+    root.style.setProperty(`${CSS_VAR_PREFIX}${key}`, effective);
   }
   for (const [key, value] of Object.entries(tints)) {
     root.style.setProperty(`${TINT_VAR_PREFIX}${camelToKebab(key)}`, value);
@@ -135,6 +180,7 @@ export function applyTheme(theme: Theme): void {
   // 也把 theme 名字塞到 data-attribute 上，便于将来用 [data-theme="dark"]
   // 选择器写更复杂的覆盖（如 hover / scrollbar 风格）。
   root.setAttribute("data-theme", theme);
+  if (accent) root.setAttribute("data-accent", accent);
 }
 
 const STORAGE_KEY = "pet-theme";
@@ -159,5 +205,31 @@ export function setStoredTheme(theme: Theme): void {
     window.localStorage.setItem(STORAGE_KEY, theme);
   } catch (e) {
     console.error("setStoredTheme failed:", e);
+  }
+}
+
+const ACCENT_STORAGE_KEY = "pet-accent";
+
+/** 读 accent 偏好；解析失败 / 没存过 / 不在白名单 → "default"。 */
+export function getStoredAccent(): Accent {
+  if (typeof window === "undefined") return "default";
+  try {
+    const raw = window.localStorage.getItem(ACCENT_STORAGE_KEY);
+    if (raw && (raw === "default" || raw === "green" || raw === "purple" || raw === "orange" || raw === "rose")) {
+      return raw;
+    }
+  } catch {
+    // localStorage 禁用 / 配额满 → 默认 default
+  }
+  return "default";
+}
+
+/** 写 accent 偏好。失败静默吞 —— 同 theme，丢失只让下次启动回 default。 */
+export function setStoredAccent(accent: Accent): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(ACCENT_STORAGE_KEY, accent);
+  } catch (e) {
+    console.error("setStoredAccent failed:", e);
   }
 }

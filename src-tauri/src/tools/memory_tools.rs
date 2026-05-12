@@ -222,3 +222,170 @@ async fn memory_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
         Err(e) => format!(r#"{{"error": "{}"}}"#, e),
     }
 }
+
+// ---- butler_task_edit （v11，per-domain dedicated tool）
+//
+// GOAL：「LLM 通过专用工具读写各域，不再共用 memory_edit」。本 tool 是
+// memory_edit 在 butler_tasks 这一域的专用 surface —— LLM 用它做"管家任务
+// 委托执行"管理。内部仍走 memory::memory_edit + mirror，所以双写 / read
+// 路径 / butler_history 记录全部跟随。
+
+pub struct ButlerTaskEditTool;
+
+impl Tool for ButlerTaskEditTool {
+    fn name(&self) -> &str {
+        "butler_task_edit"
+    }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "butler_task_edit",
+                "description": "Manage butler tasks — work the owner has asked YOU to perform on their behalf. Distinct from `todo_edit` (which is reminders the owner wants for themselves).\n\n- create: assign a new task. Use when the owner asks you to DO something — info gathering (\"每天早上把日历发给我\"), file work (\"周末整理一下 ~/Downloads\"), scheduled reports, recurring chores. Description records what was asked + how often + last execution status.\n- update: modify an existing task (matched by title). Use when status changes ([done] / [error: ...] / [result: ...] markers), description tweaks, or progress notes.\n- delete: remove a task you (or the owner) have decided to retire.\n\nSchedule prefix in description so the proactive prompt can flag 到期:\n  - `[every: HH:MM] topic` — daily recurring at local HH:MM\n  - `[once: YYYY-MM-DD HH:MM] topic` — single-fire at absolute moment\n  - `[deadline: YYYY-MM-DD HH:MM] topic` — soft deadline (will nag as time approaches)\nNo prefix = \"do this whenever you judge it right\".\n\nMarkers in description (appended over time as you execute):\n  - `[done]` — finished\n  - `[done] [result: ...]` — finished with one-line产出 summary\n  - `[error: 原因]` — failed, may be retried\n  - `[cancelled: 原因]` — owner cancelled (terminal)\n  - `#tag` — categorization\n\nExample: `[every: 09:00] 把今天的日历汇总写到 ~/today.md`",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["create", "update", "delete"],
+                            "description": "The action to perform"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Task title (max 20 chars). For update/delete, used to locate the task."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Brief task description with schedule prefix + status markers (max 300 chars). Required for create, optional for update."
+                        },
+                        "detail_content": {
+                            "type": "string",
+                            "description": "Full progress notes / working log to write to detail .md file. Optional. Use for longer reasoning, partial results, intermediate state."
+                        }
+                    },
+                    "required": ["action", "title"]
+                }
+            }
+        })
+    }
+
+    fn execute<'a>(
+        &'a self,
+        arguments: &'a str,
+        ctx: &'a ToolContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        Box::pin(butler_task_edit_impl(arguments, ctx))
+    }
+}
+
+async fn butler_task_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
+    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let action = args["action"].as_str().unwrap_or("").to_string();
+    let title = args["title"].as_str().unwrap_or("").to_string();
+    let description = args["description"].as_str().map(String::from);
+    let detail_content = args["detail_content"].as_str().map(String::from);
+
+    if action.is_empty() || title.is_empty() {
+        return r#"{"error": "missing required parameters: action, title"}"#.to_string();
+    }
+
+    let logged = action == "update" || action == "delete";
+    let desc_for_log = description.clone().unwrap_or_default();
+
+    match memory::memory_edit(
+        action.clone(),
+        "butler_tasks".to_string(),
+        title.clone(),
+        description,
+        detail_content,
+    ) {
+        Ok(msg) => {
+            ctx.log(&format!("butler_task_edit: {} '{}'", action, title));
+            if logged {
+                crate::butler_history::record_event(&action, &title, &desc_for_log).await;
+            }
+            serde_json::json!({ "status": "ok", "message": msg }).to_string()
+        }
+        Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+    }
+}
+
+// ---- todo_edit （v11，per-domain dedicated tool）
+//
+// 与 butler_task_edit 对偶 —— LLM 用此管理"用户给自己的提醒"。
+
+pub struct TodoEditTool;
+
+impl Tool for TodoEditTool {
+    fn name(&self) -> &str {
+        "todo_edit"
+    }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "todo_edit",
+                "description": "Manage reminders the user wants for themselves — clock-driven nudges YOU should surface at the right moment. Distinct from `butler_task_edit` (which is work the user wants YOU to perform).\n\n- create: add a new reminder. Description should carry a `[remind: YYYY-MM-DD HH:MM] topic` prefix so the proactive layer can fire it within the 30-minute window.\n- update: rewrite the description (move the time, edit the topic).\n- delete: drop the reminder.\n\nFormats:\n  - `[remind: 2026-05-14 14:00] 客户视频会议`\n  - `[remind: 18:00] 喝水` — implicit today\n\nUse this when the owner says \"提醒我...\" / \"等下记得...\" / 等关键词。Don't use for owner-delegated work — that's `butler_task_edit`.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["create", "update", "delete"],
+                            "description": "The action to perform"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Short reminder title (max 20 chars). For update/delete, locates the entry."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Reminder body with [remind: ...] prefix + topic. Required for create."
+                        },
+                        "detail_content": {
+                            "type": "string",
+                            "description": "Optional long-form notes. Most reminders don't need this."
+                        }
+                    },
+                    "required": ["action", "title"]
+                }
+            }
+        })
+    }
+
+    fn execute<'a>(
+        &'a self,
+        arguments: &'a str,
+        ctx: &'a ToolContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        Box::pin(todo_edit_impl(arguments, ctx))
+    }
+}
+
+async fn todo_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
+    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let action = args["action"].as_str().unwrap_or("").to_string();
+    let title = args["title"].as_str().unwrap_or("").to_string();
+    let description = args["description"].as_str().map(String::from);
+    let detail_content = args["detail_content"].as_str().map(String::from);
+
+    if action.is_empty() || title.is_empty() {
+        return r#"{"error": "missing required parameters: action, title"}"#.to_string();
+    }
+
+    match memory::memory_edit(
+        action.clone(),
+        "todo".to_string(),
+        title.clone(),
+        description,
+        detail_content,
+    ) {
+        Ok(msg) => {
+            ctx.log(&format!("todo_edit: {} '{}'", action, title));
+            serde_json::json!({ "status": "ok", "message": msg }).to_string()
+        }
+        Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+    }
+}

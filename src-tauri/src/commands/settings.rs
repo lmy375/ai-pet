@@ -395,6 +395,15 @@ pub struct AppSettings {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// 图片生成走的 model 名（OpenAI compatible images API）。与 chat model
+    /// 解耦 —— chat 是文本/多模态模型，images endpoint 一般要 dall-e-3 / sd-xl
+    /// 这种独立 model。空串表示禁用 `/image` 命令。
+    #[serde(default = "default_image_model")]
+    pub image_model: String,
+    /// 图片生成尺寸，OpenAI compatible API 接受 `WxH` 串。空串 fallback 到
+    /// `default_image_size`。常用 1024x1024 / 1024x1792 / 1792x1024。
+    #[serde(default = "default_image_size")]
+    pub image_size: String,
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
@@ -414,6 +423,12 @@ pub struct AppSettings {
     /// users put weird values they'll see them echoed.
     #[serde(default)]
     pub user_name: String,
+    /// 复制对话历史时用的角色前缀。默认 🧑 / 🐾；用户自定义 SOUL（如猫娘 / 助手）
+    /// 时可以换成「我」「猫娘」等中文短串。空串 = fallback 内置默认（前端处理）。
+    #[serde(default = "default_user_glyph")]
+    pub user_glyph: String,
+    #[serde(default = "default_assistant_glyph")]
+    pub assistant_glyph: String,
     /// 工具审核覆盖：键是工具名，值是 `auto` / `always_review` / `always_approve`。
     /// 未列出的工具按 `auto`（跟分类器走）。值字符串而非 enum，让前向兼容
     /// 自然成立 — 见 `tool_review_policy::parse_mode`，不识别值默认退回 `auto`。
@@ -439,6 +454,22 @@ fn default_model() -> String {
     "gpt-4o-mini".to_string()
 }
 
+fn default_image_model() -> String {
+    "dall-e-3".to_string()
+}
+
+fn default_image_size() -> String {
+    "1024x1024".to_string()
+}
+
+fn default_user_glyph() -> String {
+    "🧑".to_string()
+}
+
+fn default_assistant_glyph() -> String {
+    "🐾".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -446,6 +477,8 @@ impl Default for AppSettings {
             api_base: default_api_base(),
             api_key: String::new(),
             model: default_model(),
+            image_model: default_image_model(),
+            image_size: default_image_size(),
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),
             proactive: ProactiveConfig::default(),
@@ -453,6 +486,8 @@ impl Default for AppSettings {
             memory_consolidate: MemoryConsolidateConfig::default(),
             chat: ChatConfig::default(),
             user_name: String::new(),
+            user_glyph: default_user_glyph(),
+            assistant_glyph: default_assistant_glyph(),
             tool_review_overrides: HashMap::new(),
             motion_mapping: HashMap::new(),
         }
@@ -540,6 +575,125 @@ pub fn save_config_raw(content: String) -> Result<(), String> {
     fs::write(&path, &content).map_err(|e| format!("Failed to write config: {}", e))
 }
 
+/// 从 panel 触发桌面 Live2D 播一个 motion，让用户在设置页改完 motion_mapping
+/// 后立刻验"映射对不对"。emit 给所有 webview window —— 桌面 useMoodAnimation
+/// 的 listener 会接到，按"语义键 → 映射 → 实际 group"翻译播放，与生产路径
+/// (proactive / chat-done) 同。
+///
+/// 不直接传 mapping —— 设置页改了字段还没保存时，最新映射只在前端 state，
+/// 后端 settings 里是旧值。让前端在调用前先 save_settings，再调本命令；或
+/// 用户测的就是已保存的映射（更典型）。文案在前端按钮 tooltip 里说明。
+#[tauri::command]
+pub fn trigger_motion(app: tauri::AppHandle, semantic: String) -> Result<(), String> {
+    use tauri::Emitter;
+    // 用既有 chat-done 事件结构（motion + mood + timestamp），桌面 listener
+    // 已经处理这个 shape，零额外 wiring。mood 留 None，让 pickMotionGroup 直
+    // 接走 motion；timestamp 写当前。
+    let payload = serde_json::json!({
+        "motion": semantic,
+        "mood": null,
+        "timestamp": chrono::Local::now().to_rfc3339(),
+    });
+    app.emit("chat-done", payload)
+        .map_err(|e| format!("emit motion test failed: {e}"))
+}
+
+/// 快照：把 config.yaml + SOUL.md 打包为 base64(JSON) 字符串，让用户复制
+/// 到剪贴板带到另一台机器（不上云）。version 字段给未来 schema 演进留口子。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SettingsSnapshot {
+    /// schema 版本，当前固定 1。导入时校验防陈旧格式撞当下解析器。
+    version: u32,
+    /// 完整 config.yaml 文本（含注释 / 空行也保留）。
+    config_yaml: String,
+    /// 完整 SOUL.md 文本。
+    soul: String,
+}
+
+/// 设置页"导出快照"按钮：序列化当前 config + SOUL 为 base64(JSON)，前端把它
+/// 复制到剪贴板。文本格式 → 任意 IM / 笔记里贴；不上云。
+#[tauri::command]
+pub fn export_settings_snapshot() -> Result<String, String> {
+    use base64::Engine;
+    let config_yaml = get_config_raw()?;
+    let soul = get_soul().unwrap_or_default();
+    let snapshot = SettingsSnapshot {
+        version: 1,
+        config_yaml,
+        soul,
+    };
+    let json = serde_json::to_string(&snapshot)
+        .map_err(|e| format!("序列化快照失败: {}", e))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(json.as_bytes()))
+}
+
+/// 设置页"导入快照"按钮：解 base64 + JSON，校验 config_yaml 能 parse 成
+/// AppSettings 后才落盘。失败原样透传错误让用户看清楚是格式坏还是配置不兼容。
+#[tauri::command]
+pub fn import_settings_snapshot(payload: String) -> Result<(), String> {
+    use base64::Engine;
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return Err("剪贴板为空 / 没有 snapshot 字符串。".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .map_err(|e| format!("base64 解码失败：{}", e))?;
+    let json = std::str::from_utf8(&bytes)
+        .map_err(|e| format!("UTF-8 解析失败：{}", e))?;
+    let snapshot: SettingsSnapshot = serde_json::from_str(json)
+        .map_err(|e| format!("JSON 解析失败：{}", e))?;
+    if snapshot.version != 1 {
+        return Err(format!(
+            "快照版本 {} 不被支持（当前期望 1）。",
+            snapshot.version
+        ));
+    }
+    // 落盘前先 lint config_yaml 防写一份后端 deserialize 不了的废 yaml
+    let _: AppSettings = serde_yaml::from_str(&snapshot.config_yaml)
+        .map_err(|e| format!("快照里的 config.yaml 解析失败: {}", e))?;
+    let cfg = config_path()?;
+    if let Some(parent) = cfg.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    fs::write(&cfg, &snapshot.config_yaml)
+        .map_err(|e| format!("写 config.yaml 失败: {}", e))?;
+    let sp = soul_path()?;
+    if let Some(parent) = sp.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    fs::write(&sp, &snapshot.soul).map_err(|e| format!("写 SOUL.md 失败: {}", e))?;
+    Ok(())
+}
+
+/// 设置页"重置默认"按钮：把 config.yaml 完整重写为 AppSettings::default()
+/// 的 YAML 序列化。不删用户的其它数据（memory / sessions / SOUL.md / butler_history），
+/// 只把"设置项"清零让用户从一个干净的起点重配。失败 → 错误透传给前端。
+#[tauri::command]
+pub fn reset_config_to_defaults() -> Result<(), String> {
+    let defaults = AppSettings::default();
+    let yaml = serde_yaml::to_string(&defaults)
+        .map_err(|e| format!("Failed to serialize defaults: {}", e))?;
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    fs::write(&path, yaml).map_err(|e| format!("Failed to write config: {}", e))
+}
+
+/// 设置页 YAML 编辑器 lint：只跑 serde_yaml + AppSettings 解析，不落盘。
+/// 调用频率高（debounce 500ms），所以保持 pure 函数无 IO；前端拿错误串
+/// 直接显在 textarea 上方。空内容视为合法（用户清空准备粘贴新内容是中间态）。
+#[tauri::command]
+pub fn validate_config_raw(content: String) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+    let _: AppSettings =
+        serde_yaml::from_str(&content).map_err(|e| format!("YAML 解析失败: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn save_soul(content: String) -> Result<(), String> {
     let path = soul_path()?;
@@ -547,6 +701,69 @@ pub fn save_soul(content: String) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
     }
     fs::write(&path, content).map_err(|e| format!("Failed to write SOUL.md: {}", e))
+}
+
+/// Reset SOUL.md to the built-in default string. Used by PanelPersona "重置
+/// 为内置默认" button —— 用户实验 soul 改坏了想复位。
+///
+/// 返回新写入的 default soul 内容让前端 textarea 立即 sync，省一次额外
+/// get_soul fetch。
+#[tauri::command]
+pub fn reset_soul_to_default() -> Result<String, String> {
+    let content = default_soul();
+    let path = soul_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    fs::write(&path, &content).map_err(|e| format!("Failed to write SOUL.md: {}", e))?;
+    Ok(content)
+}
+
+/// 当前已知支持图像输入的多模态 model name 子串。匹配是大小写不敏感的
+/// substring，覆盖 OpenAI / Anthropic / Google 主流模型与 OpenRouter /
+/// Together / 国内厂商常见命名。新模型出现时把名字片段补到这里即可。
+///
+/// 故意只看模型名而不真正调 API 探测：模型在加载阶段就要决定 paste
+/// handler 是否启用，不能为此每次启动都打一次远程请求。命名漂移是边缘
+/// 情况，只影响多模态用户的体验，不影响常规聊天。
+const MULTIMODAL_MARKERS: &[&str] = &[
+    "gpt-4o",
+    "gpt-4-turbo",
+    "gpt-4-vision",
+    "claude-3",
+    "claude-sonnet",
+    "claude-opus",
+    "claude-haiku",
+    "gemini",
+    "vision",
+    "-vl-",
+    "qwen-vl",
+    "internvl",
+    "llava",
+    "yi-vl",
+    "pixtral",
+];
+
+pub fn is_multimodal_model(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    MULTIMODAL_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Tauri 命令：当前 settings.model 是否多模态。前端 paste handler 用这个
+/// 决定是否允许图片输入；不支持时显错误条不送图。
+#[tauri::command]
+pub fn is_current_model_multimodal() -> bool {
+    get_settings()
+        .map(|s| is_multimodal_model(&s.model))
+        .unwrap_or(false)
+}
+
+/// 任意 model 名查多模态能力。设置页用 —— 用户在 input 里改字时，chip 实时
+/// 反映，不依赖 saved settings。逻辑纯粹（substring match），所以放命令而不
+/// 是异步状态层。
+#[tauri::command]
+pub fn check_multimodal_model_name(name: String) -> bool {
+    is_multimodal_model(&name)
 }
 
 /// 返回宠物本地数据根目录（`config.yaml` / `SOUL.md` / `memories/` / `sessions/`

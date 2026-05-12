@@ -60,15 +60,16 @@ export function PanelFilterButtonRow<V extends string>({
       {options.map((opt) => {
         const isActive = active === opt.value;
         const style: CSSProperties = {
-          padding: "2px 8px",
-          fontSize: "10px",
-          borderRadius: "10px",
-          border: `1px solid ${isActive ? opt.accent : "#cbd5e1"}`,
-          background: isActive ? opt.accent : "#fff",
-          color: isActive ? "#fff" : "#475569",
+          padding: "2px 9px",
+          fontSize: "10.5px",
+          borderRadius: 999,
+          border: `1px solid ${isActive ? opt.accent : "var(--pet-color-border)"}`,
+          background: isActive ? opt.accent : "var(--pet-color-card)",
+          color: isActive ? "#fff" : "var(--pet-color-muted)",
           cursor: "pointer",
           fontWeight: 600,
           fontFamily: "inherit",
+          letterSpacing: 0.3,
         };
         return (
           <button

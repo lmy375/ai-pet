@@ -49,6 +49,11 @@ pub enum FeedbackKind {
     /// 所以聚合层会和 Replied 同样计入正向，但单独在 aggregate hint 里展示
     /// 计数，让 LLM 能感知"主动点赞" vs "顺手回个字" 的区别。
     Liked,
+    /// 用户在 panel chat 里点了 🤔 —— "不太懂 / 表达不清"信号。语义上不算
+    /// 拒绝（不归入 negative_signal_ratio），也不算赞同；它告诉 LLM "这条
+    /// 我没读懂，可以澄清 / 换说法"。aggregate hint 单独展示计数让 LLM 感
+    /// 知"我最近表达不清的频率"。
+    Puzzled,
 }
 
 impl FeedbackKind {
@@ -58,6 +63,7 @@ impl FeedbackKind {
             FeedbackKind::Ignored => "ignored",
             FeedbackKind::Dismissed => "dismissed",
             FeedbackKind::Liked => "liked",
+            FeedbackKind::Puzzled => "puzzled",
         }
     }
 }
@@ -105,6 +111,7 @@ pub fn parse_line(line: &str) -> Option<FeedbackEntry> {
         "ignored" => FeedbackKind::Ignored,
         "dismissed" => FeedbackKind::Dismissed,
         "liked" => FeedbackKind::Liked,
+        "puzzled" => FeedbackKind::Puzzled,
         _ => return None,
     };
     Some(FeedbackEntry {
@@ -189,6 +196,23 @@ pub async fn record_bubble_dismissed(excerpt: String) {
 #[tauri::command]
 pub async fn record_bubble_liked(excerpt: String) {
     record_event(FeedbackKind::Liked, &excerpt).await;
+}
+
+/// Panel chat 单条 assistant 消息上 🤔 按钮的 IO 入口。语义"不太懂 /
+/// 表达不清"，不算 negative / 也不算 positive，独立计入。前端在用户点
+/// 🤔 时调；与 Liked / Dismissed 互斥（前端 UI 只挂一条按钮组，点一个
+/// 自动 disabled 另两个）。
+#[tauri::command]
+pub async fn record_bubble_puzzled(excerpt: String) {
+    record_event(FeedbackKind::Puzzled, &excerpt).await;
+}
+
+/// Panel chat 单条 assistant 消息上 👎 按钮的 IO 入口。复用既有
+/// `Dismissed` kind（桌面气泡的"主动点掉"也走这条）—— 语义"对这条不满
+/// 意"统一。两个入口分别命名（按钮上下文不同），便于前端调用 self-document。
+#[tauri::command]
+pub async fn record_message_disliked(excerpt: String) {
+    record_event(FeedbackKind::Dismissed, &excerpt).await;
 }
 
 /// Iter R7 / R1b: compute the share of *negative-signal* outcomes in
@@ -330,20 +354,26 @@ pub fn format_feedback_aggregate_hint(entries: &[FeedbackEntry]) -> String {
     let mut liked = 0;
     let mut ignored = 0;
     let mut dismissed = 0;
+    let mut puzzled = 0;
     for e in entries {
         match e.kind {
             FeedbackKind::Replied => replied += 1,
             FeedbackKind::Liked => liked += 1,
             FeedbackKind::Ignored => ignored += 1,
             FeedbackKind::Dismissed => dismissed += 1,
+            FeedbackKind::Puzzled => puzzled += 1,
         }
     }
-    // 始终展示 replied / ignored（核心二元对照）；liked / dismissed 仅在 > 0 时
-    // 列出，保持文案紧凑。Liked 紧跟在 replied 之后展示，让"两类正向"在视觉
-    // 上聚集；dismissed 放最后，与 ignored 都属负向但更主动。
+    // 始终展示 replied / ignored（核心二元对照）；liked / dismissed / puzzled
+    // 仅在 > 0 时列出，保持文案紧凑。Liked 紧跟在 replied 之后展示，让"两
+    // 类正向"在视觉上聚集；puzzled 中性放中间；dismissed 放最后，与 ignored
+    // 都属负向但更主动。
     let mut parts: Vec<String> = vec![format!("{} 回复", replied)];
     if liked > 0 {
         parts.push(format!("{} 主动点赞", liked));
+    }
+    if puzzled > 0 {
+        parts.push(format!("{} 表示困惑", puzzled));
     }
     parts.push(format!("{} 静默忽略", ignored));
     if dismissed > 0 {
@@ -385,6 +415,10 @@ pub fn format_feedback_hint(entries: &[FeedbackEntry], redact: &dyn Fn(&str) -> 
         ),
         FeedbackKind::Liked => format!(
             "上次你说「{}」，用户**主动点了赞** — 这条说到了 ta 心里去，这次可以延续这种语气 / 角度，也可以换个话题但保持同档松弛度。",
+            redacted
+        ),
+        FeedbackKind::Puzzled => format!(
+            "上次你说「{}」，用户**表示困惑（🤔）** — 没看懂或没表达清楚。这次开口要么换个角度澄清同件事，要么用更短更具体的话，避免抽象 / 长句。",
             redacted
         ),
     }

@@ -49,6 +49,128 @@ pub static LAST_PROACTIVE_TIMESTAMP: std::sync::Mutex<Option<String>> = std::syn
 pub static LAST_FEEDBACK_RECORDED_FOR: std::sync::Mutex<Option<String>> =
     std::sync::Mutex::new(None);
 
+/// Panel "▶️ 现在跑一次" 命令把目标 butler_task 标题塞进这里，紧接调
+/// `trigger_proactive_turn` —— `run_proactive_turn` 起跑时 take 一次（消
+/// 费式 read），把 forced-focus 提示拼到 butler_tasks_hint 前。
+///
+/// 用 take（不是 clone）保证下一轮自然 / 普通 manual fire 不会继承此意图，
+/// 即使前一轮因为某种原因没真正起跑也只影响"下次最先起跑的那一轮"。命令
+/// 侧用 defer-clear 兜底防 panic 路径漏失。
+pub static FORCED_TASK_FOCUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// PanelDebug "✏️ 编辑临时 prompt"：fire 前用户改 SOUL 想测，把 override
+/// 塞这里，run_proactive_turn 起跑时 take（消费式 read）替代 get_soul()。
+/// 与 FORCED_TASK_FOCUS 同 take-once 语义防漏：下一轮自然 / 手动 fire
+/// 不会复用此 override；命令侧 defer-clear 兜底。仅"立即开口 with prompt"
+/// 路径塞，普通"立即开口"不动。
+pub static FORCED_PROMPT_OVERRIDE: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
+
+/// 上次手动 fire（global 或 per-task）的元数据，PanelDebug 显示给用户审计：
+/// "我刚才点了哪条任务的『现在跑一次』、什么时候点的、结果是什么"。
+/// 进程内 only，重启清空 —— manual fire 行为是低频 + 即时反馈，不需持久。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ManualFireRecord {
+    /// ISO-8601 local timestamp（"%Y-%m-%d %H:%M:%S"），与 LAST_PROACTIVE_TIMESTAMP
+    /// 同形让 panel 渲染一致。
+    pub timestamp: String,
+    /// 目标 task 标题；`None` = 全局 fire（无 forced focus）；`Some` =
+    /// per-item 路径塞的 forced title。
+    pub title: Option<String>,
+    /// `trigger_proactive_turn` 的返回字符串（如 "开口完成 (X ms, idle=Ys): ..." /
+    /// "宠物选择沉默 ..." / "触发失败: ..."）。原样存让 panel 直接显。
+    pub result: String,
+}
+pub static LAST_MANUAL_FIRE: std::sync::Mutex<Option<ManualFireRecord>> =
+    std::sync::Mutex::new(None);
+
+/// manual fire 历史 ring buffer（最近 5 条，旧条 FIFO 挤出）。与
+/// LAST_MANUAL_FIRE 并行写：LAST_MANUAL_FIRE 是"快速访问最近一条"的
+/// pointer-equivalent；本 ring 给 PanelDebug 显历史列表。重置 stash 时
+/// 两者一起清。
+pub const MANUAL_FIRE_HISTORY_CAP: usize = 5;
+pub static LAST_MANUAL_FIRE_HISTORY: std::sync::Mutex<
+    std::collections::VecDeque<ManualFireRecord>,
+> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// 把一条新 ManualFireRecord 推进 ring：尾插 + 超容 FIFO pop_front。
+/// 调用方负责传 final 形态的 record（含 source / title / result）。
+pub fn push_manual_fire_history(record: ManualFireRecord) {
+    if let Ok(mut g) = LAST_MANUAL_FIRE_HISTORY.lock() {
+        g.push_back(record);
+        while g.len() > MANUAL_FIRE_HISTORY_CAP {
+            g.pop_front();
+        }
+    }
+}
+
+/// Tauri command — 返回最近一次 manual fire 的记录。`None` = 进程启动后
+/// 没人点过 manual fire（自然 tick 不进此 stash）。
+#[tauri::command]
+pub fn get_last_manual_fire() -> Option<ManualFireRecord> {
+    LAST_MANUAL_FIRE.lock().ok().and_then(|g| g.clone())
+}
+
+/// Tauri command — 返回最近 N 条（cap 5）manual fire 历史，最新在前。
+#[tauri::command]
+pub fn get_manual_fire_history() -> Vec<ManualFireRecord> {
+    LAST_MANUAL_FIRE_HISTORY
+        .lock()
+        .map(|g| {
+            let mut out: Vec<ManualFireRecord> = g.iter().cloned().collect();
+            out.reverse(); // 最新在前
+            out
+        })
+        .unwrap_or_default()
+}
+
+/// Tauri command — 清空 proactive 相关的所有进程内 stash：LAST_PROACTIVE_*
+/// （prompt / reply / timestamp / tools / turns ring buffer）+
+/// LAST_FEEDBACK_RECORDED_FOR + FORCED_TASK_FOCUS + LAST_MANUAL_FIRE。
+/// 不动磁盘文件（butler_history.log / memories / settings / decision log
+/// 等），仅 wipe 内存。
+///
+/// 调试 prompt 时常用：迭代调 system soul 后想看新 prompt 不被旧 ring
+/// buffer 干扰；或者刚 fire 过一次想测下一次 "冷启" 行为。
+///
+/// 不清 LAST_SEEN_BUTLER_DONE_TITLES：那个是"刚完成点名"语义的 dedup 状
+/// 态，清掉会让下一轮重复点名已经完成的任务，对正常运行有副作用。debug
+/// 场景里它一般不参与；保守起见 keep。
+#[tauri::command]
+pub fn reset_proactive_stash() -> Result<(), String> {
+    if let Ok(mut g) = LAST_PROACTIVE_PROMPT.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = LAST_PROACTIVE_REPLY.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = LAST_PROACTIVE_TIMESTAMP.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = LAST_FEEDBACK_RECORDED_FOR.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = FORCED_TASK_FOCUS.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = FORCED_PROMPT_OVERRIDE.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = LAST_MANUAL_FIRE.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = LAST_MANUAL_FIRE_HISTORY.lock() {
+        g.clear();
+    }
+    if let Ok(mut g) = LAST_PROACTIVE_TOOLS.lock() {
+        g.clear();
+    }
+    if let Ok(mut g) = LAST_PROACTIVE_TURNS.lock() {
+        g.clear();
+    }
+    Ok(())
+}
+
 /// Iter E3: distinct tool names the LLM called during the most recent turn
 /// (e.g. ["get_active_window", "memory_edit"]). Empty Vec when the turn ran but
 /// invoked no tools. Surfacing this answers "did the LLM look at the

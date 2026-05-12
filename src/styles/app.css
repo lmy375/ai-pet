@@ -10,3 +10,40 @@ html, body, #root {
 * {
   box-sizing: border-box;
 }
+
+/* 全窗口共享 shadow token：迭代 1 从 PanelApp.tsx 注入的 :root 规则提到
+   全局 CSS 里 —— 桌面宠物 App.tsx / 调试 DebugApp.tsx 等独立 webview 也
+   需要这套 token。data-theme="dark" 由 applyTheme() 在 documentElement 上
+   切换，浅深主题阴影自动跟随。 */
+:root {
+  --pet-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04),
+                   0 1px 3px rgba(15, 23, 42, 0.06);
+  --pet-shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08),
+                   0 2px 4px rgba(15, 23, 42, 0.04);
+  --pet-shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.22),
+                   0 8px 20px rgba(15, 23, 42, 0.12);
+}
+[data-theme="dark"] {
+  --pet-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25),
+                   0 1px 3px rgba(0, 0, 0, 0.30);
+  --pet-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.40),
+                   0 2px 4px rgba(0, 0, 0, 0.25);
+  --pet-shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.55),
+                   0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+/* 全局 modal 进入动画：Modal.tsx 组件本身已 inject 相同 keyframes（mount
+   时），但若 caller 走自己的 inline overlay（如 marks modal），需要在 Modal
+   尚未开过的窗口里也能使用动画 —— 故提到全局。重名 keyframes 同 DOM 多次
+   定义合法且后者覆盖前者，与组件内 inject 不冲突。 */
+@keyframes pet-modal-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes pet-modal-pop {
+  from { opacity: 0; transform: scale(0.96) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pet-modal-card { animation: none !important; }
+}

@@ -1412,6 +1412,7 @@ mod tests {
         TaskView {
             title: title.to_string(),
             body: String::new(),
+            raw_description: String::new(),
             priority,
             due: due.map(String::from),
             status,
@@ -1420,6 +1421,7 @@ mod tests {
             result,
             created_at: "2026-05-04T13:00:00+08:00".to_string(),
             updated_at: "2026-05-04T13:00:00+08:00".to_string(),
+            detail_path: String::new(),
         }
     }
 

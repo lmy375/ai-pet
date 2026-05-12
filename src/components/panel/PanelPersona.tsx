@@ -696,6 +696,93 @@ export function PanelPersona() {
             还没有心情记录。第一次主动开口后，LLM 会用 memory_edit create 写入 ai_insights/current_mood。
           </p>
         )}
+        {/* 今日 4-motion 频次 mini bar：moodDaily 末尾是今日。零数据时不渲
+            染（避免占视觉位）。每条 motion 一栏 28px 高，高度比 = count/max。
+            颜色 + glyph 沿用 MOTION_META，让"当下心情"与"今日整体"配色一致。 */}
+        {(() => {
+          const today = moodDaily[moodDaily.length - 1];
+          if (!today || today.total === 0) return null;
+          const motions = ["Tap", "Flick", "Flick3", "Idle"] as const;
+          const max = Math.max(
+            ...motions.map((k) => today.motions[k] ?? 0),
+            1,
+          );
+          return (
+            <div
+              style={{
+                marginTop: 12,
+                paddingTop: 10,
+                borderTop: "1px dashed var(--pet-color-border)",
+              }}
+              title="今天每种 motion 触发的次数（mood_history.log 当日聚合）。柱高比 = count / max。"
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--pet-color-muted)",
+                  marginBottom: 6,
+                }}
+              >
+                今日心情谱（{today.total} 次）
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 12, height: 40 }}>
+                {motions.map((m) => {
+                  const meta = MOTION_META[m];
+                  const count = today.motions[m] ?? 0;
+                  const heightPct = (count / max) * 100;
+                  return (
+                    <div
+                      key={m}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 2,
+                        flex: 1,
+                        height: "100%",
+                      }}
+                      title={`${meta.label} (${m}) · ${count} 次`}
+                    >
+                      <div
+                        style={{
+                          flex: 1,
+                          display: "flex",
+                          flexDirection: "column",
+                          justifyContent: "flex-end",
+                          width: "100%",
+                        }}
+                      >
+                        <div
+                          style={{
+                            // 0 → 2px 留底；非 0 → 至少 4px 看得出
+                            height: count === 0 ? 2 : `max(4px, ${heightPct}%)`,
+                            background: count === 0
+                              ? "var(--pet-color-border)"
+                              : meta.color,
+                            borderRadius: "3px 3px 0 0",
+                            opacity: count === 0 ? 0.4 : 1,
+                            transition: "height 240ms ease-out",
+                          }}
+                        />
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: count > 0 ? meta.color : "var(--pet-color-muted)",
+                          fontWeight: count > 0 ? 600 : 400,
+                          fontVariantNumeric: "tabular-nums",
+                          lineHeight: 1,
+                        }}
+                      >
+                        {meta.glyph} {count}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
       </Section>
 
       {/* Mood trend — long-term emotional register */}
@@ -2078,23 +2165,57 @@ function Section({
       style={{
         background: "var(--pet-color-card)",
         border: "1px solid var(--pet-color-border)",
-        borderRadius: "8px",
-        padding: "16px 18px",
+        borderRadius: "12px",
+        padding: "18px 20px",
+        boxShadow: "var(--pet-shadow-sm)",
       }}
     >
-      <header style={{ marginBottom: "12px" }}>
+      <header
+        style={{
+          marginBottom: "14px",
+          display: "flex",
+          alignItems: "baseline",
+          gap: "10px",
+        }}
+      >
+        {/* accent 圆点：让每个 Section 标题左侧多一个细巧的视觉锚 ——
+            提升信息密度页面的"分块感"，又不抢字 weight。8% alpha 让 dark
+            模式下也不刺眼。 */}
+        <span
+          aria-hidden
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: "var(--pet-color-accent)",
+            boxShadow:
+              "0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 18%, transparent)",
+            flexShrink: 0,
+            alignSelf: "center",
+          }}
+        />
         <h3
           style={{
             margin: 0,
             fontSize: "14px",
             fontWeight: 600,
             color: "var(--pet-color-fg)",
+            letterSpacing: 0.1,
           }}
         >
           {title}
         </h3>
         {subtitle && (
-          <p style={{ margin: "2px 0 0", fontSize: "11px", color: "var(--pet-color-muted)" }}>{subtitle}</p>
+          <p
+            style={{
+              margin: 0,
+              fontSize: "11px",
+              color: "var(--pet-color-muted)",
+              letterSpacing: 0.1,
+            }}
+          >
+            {subtitle}
+          </p>
         )}
       </header>
       {children}

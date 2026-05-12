@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelChipStrip } from "./PanelChipStrip";
 import { PanelStatsCard } from "./PanelStatsCard";
@@ -69,9 +69,75 @@ export function PanelDebug() {
     neutral: 0,
   });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
+  // R142: 三 timeline 切换 tab。三卡（speech / tool / feedback）原本堆叠占
+  // 垂直空间多；改成单选 tab 让用户聚焦其中一种。default 选 speech（用户
+  // 最关心宠物刚说了什么）。session 内有效，关 panel 重置回 speech。
+  type TimelineTab = "speech" | "tool" | "feedback";
+  const [activeTimeline, setActiveTimeline] = useState<TimelineTab>("speech");
   const [lifetimeSpeechCount, setLifetimeSpeechCount] = useState<number>(0);
+  // 既有"今日 / 本周"固定窗口仍保留 —— markdown 导出 / 既有 stats card
+  // 仍用 today / week。Iter Pω: 加一个可调窗口 N 日 stat 在 stats card 同行。
   const [todaySpeechCount, setTodaySpeechCount] = useState<number>(0);
   const [weekSpeechCount, setWeekSpeechCount] = useState<number>(0);
+  // 可调窗口 N 日的主动开口次数。选项 1/3/7/14/30；localStorage 持久 ——
+  // 用户偏好稳定（看长尺度的人会一直留 30 天）。
+  const [speechWindowDays, setSpeechWindowDays] = useState<number>(() => {
+    try {
+      const raw = window.localStorage.getItem("pet-debug-speech-window-days");
+      if (raw) {
+        const n = parseInt(raw, 10);
+        if ([1, 3, 7, 14, 30].includes(n)) return n;
+      }
+    } catch {
+      // ignore
+    }
+    return 3;
+  });
+  const [speechWindowCount, setSpeechWindowCount] = useState<number>(0);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchWindowCount = async () => {
+      try {
+        const n = await invoke<number>("get_speech_count_days", {
+          days: speechWindowDays,
+        });
+        if (!cancelled) setSpeechWindowCount(n);
+      } catch (e) {
+        console.error("get_speech_count_days failed:", e);
+      }
+    };
+    void fetchWindowCount();
+    // 每 30s 轮询一次跟随 daily bucket 更新（与 debug snapshot 同节奏）
+    const id = window.setInterval(fetchWindowCount, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [speechWindowDays]);
+  // 今日 24 小时主动开口分桶。get_today_speech_hourly 返长度 24 数组；
+  // index 0 = 00:00。每 60s 刷新一次（hour 粒度，更高频意义不大）。
+  const [hourlyBuckets, setHourlyBuckets] = useState<number[]>(() =>
+    new Array(24).fill(0),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    const fetchHourly = async () => {
+      try {
+        const arr = await invoke<number[]>("get_today_speech_hourly");
+        if (!cancelled && Array.isArray(arr) && arr.length === 24) {
+          setHourlyBuckets(arr);
+        }
+      } catch (e) {
+        console.error("get_today_speech_hourly failed:", e);
+      }
+    };
+    void fetchHourly();
+    const id = window.setInterval(fetchHourly, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
   // TG bot 启动期非 fatal 失败列表（set_my_commands / bot_start 等）。
   // 进程内 in-memory，重启清空；用于让用户知道为啥 bot 自动补全 / 整体
@@ -100,6 +166,43 @@ export function PanelDebug() {
     }[]
   >([]);
   const [reviewError, setReviewError] = useState<string>("");
+  // 工具风险概览：PanelDebug 底部展示每个内置工具的 nominal risk + 当前
+  // 用户偏好 (auto / always_review / always_approve)。3-chip 行内 toggle
+  // 直接 set_tool_review_mode 写盘 → 下次 chat 调 get_settings 即生效。
+  // 整个表 default 折叠，避免长列表撑 panel；点 header 展开。
+  const [toolRiskRows, setToolRiskRows] = useState<
+    { name: string; level: string; note: string; mode: string }[]
+  >([]);
+  const [toolRiskExpanded, setToolRiskExpanded] = useState(false);
+  const [toolRiskBusyName, setToolRiskBusyName] = useState<string | null>(null);
+  const [toolRiskMsg, setToolRiskMsg] = useState("");
+  const fetchToolRiskOverview = useCallback(async () => {
+    try {
+      const rows = await invoke<
+        { name: string; level: string; note: string; mode: string }[]
+      >("get_tool_risk_overview");
+      setToolRiskRows(rows);
+    } catch (e) {
+      console.error("get_tool_risk_overview failed:", e);
+    }
+  }, []);
+  useEffect(() => {
+    void fetchToolRiskOverview();
+  }, [fetchToolRiskOverview]);
+  const handleSetToolReviewMode = async (name: string, mode: string) => {
+    setToolRiskBusyName(name);
+    try {
+      await invoke("set_tool_review_mode", { name, mode });
+      await fetchToolRiskOverview();
+      setToolRiskMsg(`${name} → ${mode}`);
+      window.setTimeout(() => setToolRiskMsg(""), 2000);
+    } catch (e) {
+      setToolRiskMsg(`改失败：${e}`);
+      window.setTimeout(() => setToolRiskMsg(""), 4000);
+    } finally {
+      setToolRiskBusyName(null);
+    }
+  };
   // Iter R4: structured tool-call history (newest first) from the backend
   // ring buffer. PanelDebug renders a collapsible "工具调用历史" card so
   // prompt-tuning can see purpose / risk / review status at a glance.
@@ -116,6 +219,39 @@ export function PanelDebug() {
   };
   const [toolCallHistory, setToolCallHistory] = useState<ToolCallRecord[]>([]);
   const [showToolHistory, setShowToolHistory] = useState(false);
+  // 专用工具调用占比（v11/v12 SQLite 重构副产物）：butler_task_edit /
+  // todo_edit 是新加的专用接口，memory_edit 仍接受 butler_tasks/todo 作
+  // fallback。本块统计最近 N 条工具调用里两者的比例，让 owner 看到 prompt
+  // 引导效果。30s polling 跟随 stats 节奏。
+  type DedicatedToolStats = {
+    butler_task_edit_count: number;
+    memory_edit_butler_count: number;
+    todo_edit_count: number;
+    memory_edit_todo_count: number;
+    total_records: number;
+  };
+  const [dedicatedToolStats, setDedicatedToolStats] = useState<DedicatedToolStats | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchStats = async () => {
+      try {
+        const s = await invoke<DedicatedToolStats>("get_dedicated_tool_stats");
+        if (!cancelled) setDedicatedToolStats(s);
+      } catch {
+        // 命令未注册（旧 backend）→ 静默退化为 null，section 不渲染
+      }
+    };
+    void fetchStats();
+    const id = window.setInterval(fetchStats, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+  // 工具调用历史按 tool name 折叠分组：让"哪个 tool 用得最多"一眼看到。
+  // session 内 toggle，默认关（保留原 timeline 顺序视图）。
+  const [toolHistoryGroupByName, setToolHistoryGroupByName] = useState(false);
+  const [toolGroupExpanded, setToolGroupExpanded] = useState<Set<string>>(new Set());
   // R146: 决策日志 collapse；default true（展开）—— 决策日志是 debug 主信号，
   // 而非 tool/feedback 那种次要 buffer，所以默认展开方向相反。
   const [showDecisions, setShowDecisions] = useState(true);
@@ -246,12 +382,92 @@ export function PanelDebug() {
   // revert；第 2 击真触发。决策日志行 "重跑" 仍直触不走门控（power-user
   // iterate prompt 工作流）。
   const [triggerArmed, setTriggerArmed] = useState(false);
+  /// "✏️ 临时 prompt fire" modal：用户改 SOUL 想 fire 测一次但不写盘。
+  /// open=true 时 modal 可见；draft 缓存 textarea 当前值（默认从 get_soul
+  /// 预填，让用户在原 prompt 基础上改）。busy 期 disable 按钮防双触。
+  const [tempPromptOpen, setTempPromptOpen] = useState(false);
+  const [tempPromptDraft, setTempPromptDraft] = useState("");
+  const [tempPromptBusy, setTempPromptBusy] = useState(false);
+  const openTempPromptModal = useCallback(async () => {
+    setTempPromptOpen(true);
+    setTempPromptDraft("");
+    try {
+      const soul = await invoke<string>("get_soul");
+      setTempPromptDraft(soul);
+    } catch {
+      // get_soul 失败 → 空 draft；用户从零写
+    }
+  }, []);
+  /// "重置 in-process stash" 按钮的二次确认 armed 态。与 triggerArmed 同模
+  /// 式 —— 首点变红 + 3s 内再点确认；超时自动 revert。LAST_PROACTIVE_*
+  /// 等内存 stash wipe 不可逆（虽不动磁盘），二次确认防误触。
+  const [resetStashArmed, setResetStashArmed] = useState(false);
+  const [resetStashBusy, setResetStashBusy] = useState(false);
   // R128: 工具调用历史 args/result 块复制反馈。key = `${index}-args` /
   // `${index}-result`，1.5s 自清空让 ✓ 反馈短暂可见。多个按钮共用一个 state，
   // 同时只一个处于"已复制"态（用户连点两个时后者覆盖前者，符合直觉）。
   const [copiedToolKey, setCopiedToolKey] = useState<string | null>(null);
   const [showPromptHints, setShowPromptHints] = useState(false);
   const [proactiveStatus, setProactiveStatus] = useState<string>("");
+  // ⚙️ mute 15min 快捷按钮：调 prompt / 测 SOUL 时不想被 proactive 打扰，
+  // 绕开 PanelChat /sleep 路径。muteUntil 空 → 显示 mute；非空 → 显示剩
+  // 余分钟 + 允许再点解除。30s polling 跟随后端 MUTE_UNTIL。
+  const [muteUntil, setMuteUntil] = useState<string>("");
+  const [muteBusy, setMuteBusy] = useState(false);
+  // "上次 manual fire" audit info：进程内 only。trigger_proactive_turn /
+  // trigger_proactive_turn_for_task 完成后后端 stash；这里挂载 / fire 后
+  // poll 一次。title=null 表示全局 manual fire；title=string 表示从
+  // PanelMemory 的 ▶️ 现在跑 触发。
+  type ManualFireRecord = {
+    timestamp: string;
+    title: string | null;
+    result: string;
+  };
+  const [lastManualFire, setLastManualFire] = useState<ManualFireRecord | null>(null);
+  // 近 5 条 manual fire 历史 ring（最新在前）。"上次 manual fire" 行展
+  // 开为 collapsible list；默认只显最新一条，点击 ▾ 展开看全部。
+  const [manualFireHistory, setManualFireHistory] = useState<
+    ManualFireRecord[]
+  >([]);
+  const [manualFireHistoryExpanded, setManualFireHistoryExpanded] =
+    useState(false);
+  const refreshLastManualFire = useCallback(async () => {
+    try {
+      const [latest, history] = await Promise.all([
+        invoke<ManualFireRecord | null>("get_last_manual_fire"),
+        invoke<ManualFireRecord[]>("get_manual_fire_history").catch(
+          // 老 backend 没此命令时退到 []
+          () => [] as ManualFireRecord[],
+        ),
+      ]);
+      setLastManualFire(latest);
+      setManualFireHistory(history);
+    } catch {
+      // 命令不可用 / 早期版本 backend → 静默忽略
+    }
+  }, []);
+  useEffect(() => {
+    void refreshLastManualFire();
+  }, [refreshLastManualFire]);
+  // Iter D7: poll MUTE_UNTIL for the ⚙️ mute 15min button label. 30s 节奏
+  // 与 stats card 同源；剩余分钟显示用本地时间差算，不依赖后端持续 fetch。
+  useEffect(() => {
+    let cancelled = false;
+    const fetchMute = async () => {
+      try {
+        const u = await invoke<string>("get_mute_until");
+        if (!cancelled) setMuteUntil(u);
+      } catch {
+        // 老 backend / 命令不可用 → 静默
+      }
+    };
+    void fetchMute();
+    const id = window.setInterval(fetchMute, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   // Iter E4: ring buffer of recent turns, newest first. Panel modal navigates
   // with « / » buttons; index 0 = newest. Replaces E1/E2/E3's three separate
   // fetches with a single Vec<TurnRecord> source.
@@ -274,6 +490,13 @@ export function PanelDebug() {
     () => new Map(),
   );
   const [turnIndex, setTurnIndex] = useState(0);
+  /// recent turns ring buffer 的 outcome 过滤：调 prompt 时常想"只看刚才
+  /// silent 的 turn"或"只看 spoke"，全局列表里翻翻太多杂音。三档：all /
+  /// spoke / silent。filter 切换时 turnIndex 重置 0，避免 stale index 指
+  /// 到空 / 越界。
+  const [turnOutcomeFilter, setTurnOutcomeFilter] = useState<
+    "all" | "spoke" | "silent"
+  >("all");
   const [showLastPrompt, setShowLastPrompt] = useState(false);
   const [copyMsg, setCopyMsg] = useState<string>("");
   // 上次 prompt modal 内 PROMPT / REPLY 两段的折叠态。默认展开（保留首次
@@ -284,7 +507,18 @@ export function PanelDebug() {
   // 行数：空字符串 → 0（贴近"啥也没有"的视觉直觉，而非 split 默认的 1）。
   const countLines = (text: string): number =>
     text.length === 0 ? 0 : text.split("\n").length;
-  const currentTurn = recentTurns[turnIndex] ?? null;
+  // outcome filter 应用到 ring buffer。`outcome === undefined` 视作 spoke
+  // （非 silent 的老 ring 项升级前没记录字段时按 spoke 兜底 — 与 R25 既
+  // 有 spoke / silent 二态对齐）。"all" 不过滤。
+  const filteredTurns =
+    turnOutcomeFilter === "all"
+      ? recentTurns
+      : recentTurns.filter((t) =>
+          turnOutcomeFilter === "silent"
+            ? t.outcome === "silent"
+            : t.outcome === undefined || t.outcome === "spoke",
+        );
+  const currentTurn = filteredTurns[turnIndex] ?? null;
   const lastPrompt = currentTurn?.prompt ?? "";
   const lastReply = currentTurn?.reply ?? "";
   const lastToolCalls = currentTurn?.tool_calls ?? [];
@@ -456,6 +690,175 @@ export function PanelDebug() {
     });
   };
 
+  /// 把当前 PanelDebug 各 chip / stats / timeline / 风险表 拼成 markdown
+  /// 写到剪贴板，方便用户贴 issue / 排查时一次性导出诊断快照。
+  const buildDebugMarkdownSnapshot = useCallback((): string => {
+    const ts = new Date().toLocaleString();
+    const lines: string[] = [
+      `# Pet 调试快照（${ts}）`,
+      "",
+      `- 陪伴 ${companionshipDays} 天`,
+      `- 主动开口 · 今日 ${todaySpeechCount} · 本周 ${weekSpeechCount} · 累计 ${lifetimeSpeechCount}`,
+      "",
+      `## 工具缓存`,
+      `- turns: ${cacheStats.turns}`,
+      `- hits / calls: ${cacheStats.total_hits} / ${cacheStats.total_calls}`,
+      "",
+      `## 心情 motion 命中`,
+      `- with_tag: ${moodTagStats.with_tag}`,
+      `- without_tag: ${moodTagStats.without_tag}`,
+      `- no_mood: ${moodTagStats.no_mood}`,
+      "",
+      `## proactive 出口分布`,
+      `- spoke: ${llmOutcomeStats.spoke}`,
+      `- silent: ${llmOutcomeStats.silent}`,
+      `- error: ${llmOutcomeStats.error}`,
+      "",
+      `## env 工具被引用`,
+      `- spoke_total: ${envToolStats.spoke_total} · spoke_with_any: ${envToolStats.spoke_with_any}`,
+      `- active_window: ${envToolStats.active_window}`,
+      `- weather: ${envToolStats.weather}`,
+      `- upcoming_events: ${envToolStats.upcoming_events}`,
+      `- memory_search: ${envToolStats.memory_search}`,
+      "",
+      `## prompt tilt 分布`,
+      `- restraint_dominant: ${promptTiltStats.restraint_dominant}`,
+      `- engagement_dominant: ${promptTiltStats.engagement_dominant}`,
+      `- balanced: ${promptTiltStats.balanced}`,
+      `- neutral: ${promptTiltStats.neutral}`,
+    ];
+    if (tone) {
+      lines.push("", `## tone snapshot`, "```json", JSON.stringify(tone, null, 2), "```");
+    }
+    if (pendingReviews.length > 0) {
+      lines.push("", `## 待审核工具调用（${pendingReviews.length}）`);
+      for (const r of pendingReviews) {
+        lines.push(
+          `- ${r.timestamp} · **${r.tool_name}** · 用途: ${r.purpose || "-"} · 原因: ${r.reasons.join(" / ") || "-"}`,
+        );
+      }
+    }
+    if (reminders.length > 0) {
+      lines.push("", `## 待提醒 (${reminders.length})`);
+      for (const r of reminders.slice(0, 10)) {
+        lines.push(`- ${r.title}`);
+      }
+      if (reminders.length > 10) lines.push(`- ... 还有 ${reminders.length - 10} 条`);
+    }
+    const overrideRows = toolRiskRows.filter((r) => r.mode !== "auto");
+    if (overrideRows.length > 0) {
+      lines.push("", `## 工具风险偏好覆盖（${overrideRows.length}）`);
+      for (const r of overrideRows) {
+        lines.push(`- ${r.name} (${r.level}): \`${r.mode}\` — ${r.note}`);
+      }
+    }
+    if (recentSpeeches.length > 0) {
+      lines.push("", `## 宠物最近说（${recentSpeeches.length}）`);
+      for (const s of recentSpeeches.slice(-5)) {
+        lines.push(`- ${s}`);
+      }
+    }
+    return lines.join("\n");
+  }, [
+    companionshipDays,
+    todaySpeechCount,
+    weekSpeechCount,
+    lifetimeSpeechCount,
+    cacheStats,
+    moodTagStats,
+    llmOutcomeStats,
+    envToolStats,
+    promptTiltStats,
+    tone,
+    pendingReviews,
+    reminders,
+    toolRiskRows,
+    recentSpeeches,
+  ]);
+  const [debugExportMsg, setDebugExportMsg] = useState("");
+  const handleExportDebugMd = async () => {
+    try {
+      await navigator.clipboard.writeText(buildDebugMarkdownSnapshot());
+      setDebugExportMsg("已复制调试快照 markdown 到剪贴板");
+    } catch (e) {
+      setDebugExportMsg(`复制失败：${e}`);
+    }
+    window.setTimeout(() => setDebugExportMsg(""), 3500);
+  };
+
+  /// 快照对比：抓两个时间点的 markdown 快照，简单 set-diff 显增 / 删 / 同。
+  /// 不用 jsdiff —— 内部 snapshot 格式是稳定的 key:value 行，set-diff 已能
+  /// 答"哪些值变了"的核心问题，省一个 npm 依赖。
+  const [snapshotA, setSnapshotA] = useState<string | null>(null);
+  const [snapshotATs, setSnapshotATs] = useState<string>("");
+  const [compareDiff, setCompareDiff] = useState<string | null>(null);
+  const handleCaptureSnapshotA = () => {
+    setSnapshotA(buildDebugMarkdownSnapshot());
+    setSnapshotATs(new Date().toLocaleString());
+    setCompareDiff(null);
+    setDebugExportMsg("已抓 A 快照（点 🔀 对比 现在的状态）");
+    window.setTimeout(() => setDebugExportMsg(""), 3500);
+  };
+  const handleCompareSnapshot = () => {
+    if (snapshotA === null) return;
+    const b = buildDebugMarkdownSnapshot();
+    const bTs = new Date().toLocaleString();
+    const aLines = snapshotA.split("\n");
+    const bLines = b.split("\n");
+    const aSet = new Set(aLines);
+    const bSet = new Set(bLines);
+    const removed: string[] = [];
+    const added: string[] = [];
+    let common = 0;
+    for (const line of aLines) {
+      if (!bSet.has(line)) removed.push(line);
+      else common += 1;
+    }
+    for (const line of bLines) {
+      if (!aSet.has(line)) added.push(line);
+    }
+    const out: string[] = [
+      `# 调试快照对比`,
+      `- A: ${snapshotATs}`,
+      `- B: ${bTs}`,
+      `- 共有行: ${common} · 仅 A: ${removed.length} · 仅 B: ${added.length}`,
+      "",
+    ];
+    if (removed.length > 0) {
+      out.push("## 仅 A 出现（被移除 / 已变化）");
+      out.push("```diff");
+      for (const l of removed) out.push(`- ${l}`);
+      out.push("```");
+      out.push("");
+    }
+    if (added.length > 0) {
+      out.push("## 仅 B 出现（新增 / 已变化）");
+      out.push("```diff");
+      for (const l of added) out.push(`+ ${l}`);
+      out.push("```");
+      out.push("");
+    }
+    if (removed.length === 0 && added.length === 0) {
+      out.push("> 两次快照完全一致 —— 这段时间没有可观测变化");
+    }
+    setCompareDiff(out.join("\n"));
+  };
+  const handleCopyCompareDiff = async () => {
+    if (!compareDiff) return;
+    try {
+      await navigator.clipboard.writeText(compareDiff);
+      setDebugExportMsg("已复制 diff markdown 到剪贴板");
+    } catch (e) {
+      setDebugExportMsg(`复制失败：${e}`);
+    }
+    window.setTimeout(() => setDebugExportMsg(""), 3500);
+  };
+  const handleClearSnapshotCompare = () => {
+    setSnapshotA(null);
+    setSnapshotATs("");
+    setCompareDiff(null);
+  };
+
   const handleTriggerProactive = async () => {
     setTriggeringProactive(true);
     setProactiveStatus("");
@@ -466,12 +869,50 @@ export function PanelDebug() {
       console.error("trigger_proactive_turn failed:", e);
       setProactiveStatus(`触发失败: ${e}`);
     } finally {
+      // 拉一次 last manual fire 让审计行同步更新（用户自己点的 fire 才
+      // 跟得上自己的动作；其它窗口 / 路径触发的也会在下次挂载 / refresh
+      // 时同步）。
+      void refreshLastManualFire();
       setTriggeringProactive(false);
       // Auto-clear after a few seconds so the toolbar doesn't stick on a stale message.
       setTimeout(() => setProactiveStatus(""), 8000);
     }
   };
 
+  // 计算 mute 剩余分钟（向上取整）。muteUntil 空 / 解析失败 / 已过期 → 0。
+  // 后端 get_mute_until 已对过期返回空串，这里再用本地 now 兜底渲染层不会
+  // 显示"-1m"等异常值。
+  const muteRemainingMins = useMemo(() => {
+    if (!muteUntil) return 0;
+    const t = Date.parse(muteUntil);
+    if (!Number.isFinite(t)) return 0;
+    const diff = t - Date.now();
+    if (diff <= 0) return 0;
+    return Math.ceil(diff / 60_000);
+  }, [muteUntil]);
+  const handleMuteToggle = async () => {
+    if (muteBusy) return;
+    setMuteBusy(true);
+    const isMuted = muteRemainingMins > 0;
+    try {
+      const until = await invoke<string>("set_mute_minutes", {
+        minutes: isMuted ? 0 : 15,
+      });
+      setMuteUntil(until);
+      setProactiveStatus(
+        isMuted
+          ? "✓ mute 已解除"
+          : until
+            ? `✓ 已 mute 15 分钟（至 ${until.replace("T", " ").slice(11, 16)}）`
+            : "✓ 已 mute 15 分钟",
+      );
+    } catch (e) {
+      setProactiveStatus(`mute 失败：${e}`);
+    } finally {
+      setMuteBusy(false);
+      window.setTimeout(() => setProactiveStatus(""), 4000);
+    }
+  };
   const handleOpenDevTools = async () => {
     // 由 Rust 端 open_devtools 命令直接调 webview.open_devtools() —— 旧
     // 前端 fallback 链（plugin:webview|internal_toggle_devtools / 或
@@ -515,18 +956,18 @@ export function PanelDebug() {
               boxShadow: "0 10px 40px rgba(0,0,0,0.25)",
             }}
           >
-            <div style={{ fontSize: "13px", color: "#dc2626", fontWeight: 700, marginBottom: "10px" }}>
+            <div style={{ fontSize: "13px", color: "var(--pet-tint-red-fg)", fontWeight: 700, marginBottom: "10px" }}>
               ⚠ 高风险工具调用待审核（{pendingReviews.length}）
             </div>
             {pendingReviews.map((r) => (
               <div
                 key={r.review_id}
                 style={{
-                  border: "1px solid #f3d7d7",
+                  border: "1px solid color-mix(in srgb, var(--pet-tint-red-fg) 30%, transparent)",
                   borderRadius: "8px",
                   padding: "12px 14px",
                   marginBottom: "10px",
-                  background: "#fffafa",
+                  background: "var(--pet-tint-red-bg)",
                 }}
               >
                 <div style={{ fontSize: "12px", color: "var(--pet-color-fg)", marginBottom: "6px" }}>
@@ -539,7 +980,7 @@ export function PanelDebug() {
                 <div style={{ fontSize: "12px", color: "var(--pet-color-fg)", marginBottom: "6px" }}>
                   <strong>用途：</strong>{r.purpose || "(未提供)"}
                 </div>
-                <div style={{ fontSize: "11px", color: "#7c2d12", marginBottom: "6px" }}>
+                <div style={{ fontSize: "11px", color: "var(--pet-tint-red-fg)", marginBottom: "6px" }}>
                   <strong>风险：</strong>{r.reasons.join(" / ") || "-"}
                 </div>
                 {r.safe_alternative && (
@@ -570,7 +1011,7 @@ export function PanelDebug() {
                     style={{
                       flex: 1,
                       padding: "6px 10px",
-                      background: "#16a34a",
+                      background: "var(--pet-tint-green-fg)",
                       color: "#fff",
                       border: "none",
                       borderRadius: "5px",
@@ -586,7 +1027,7 @@ export function PanelDebug() {
                     style={{
                       flex: 1,
                       padding: "6px 10px",
-                      background: "#dc2626",
+                      background: "var(--pet-tint-red-fg)",
                       color: "#fff",
                       border: "none",
                       borderRadius: "5px",
@@ -601,7 +1042,7 @@ export function PanelDebug() {
               </div>
             ))}
             {reviewError && (
-              <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "6px" }}>
+              <div style={{ fontSize: "11px", color: "var(--pet-tint-red-fg)", marginTop: "6px" }}>
                 {reviewError}
               </div>
             )}
@@ -614,6 +1055,185 @@ export function PanelDebug() {
 
       {/* Iter E1: modal showing the last-built proactive prompt verbatim. Triggered
           by the "看上次 prompt" toolbar button; click backdrop to close. */}
+      {/* "✏️ 临时 prompt fire" modal：用户编辑 SOUL 后 fire 一次（不写盘）。
+          backdrop click / Esc 关；busy 期间整 modal disable 防双触。 */}
+      {tempPromptOpen && (
+        <div
+          onClick={() => !tempPromptBusy && setTempPromptOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !tempPromptBusy) setTempPromptOpen(false);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.4)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "40px",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "var(--pet-color-card)",
+              borderRadius: "8px",
+              maxWidth: "640px",
+              width: "100%",
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+            }}
+          >
+            <div
+              style={{
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--pet-color-border)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--pet-color-fg)" }}>
+                ✏️ 临时 prompt fire（仅本轮生效，不写盘）
+              </span>
+              <span style={{ flex: 1 }} />
+              <button
+                onClick={() => setTempPromptOpen(false)}
+                disabled={tempPromptBusy}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  cursor: tempPromptBusy ? "default" : "pointer",
+                  color: "var(--pet-color-muted)",
+                  fontSize: 16,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <textarea
+              value={tempPromptDraft}
+              onChange={(e) => setTempPromptDraft(e.target.value)}
+              disabled={tempPromptBusy}
+              style={{
+                flex: 1,
+                padding: "10px 14px",
+                fontSize: 12,
+                lineHeight: 1.6,
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                border: "none",
+                outline: "none",
+                resize: "none",
+                background: "var(--pet-color-bg)",
+                color: "var(--pet-color-fg)",
+                minHeight: 240,
+              }}
+              placeholder="编辑 SOUL prompt（已预填当前 SOUL.md 内容）..."
+            />
+            <div
+              style={{
+                padding: "8px 16px",
+                borderTop: "1px solid var(--pet-color-border)",
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+              }}
+            >
+              <span>{tempPromptDraft.length} 字</span>
+              <span style={{ flex: 1 }} />
+              {/* 📥 加载上次 prompt：把 LAST_PROACTIVE_PROMPT 全文塞进 textarea，
+                  让 prompt 调优有起点（不必从 SOUL 默认开始改）。失败时
+                  silently 留原 draft。 */}
+              <button
+                onClick={async () => {
+                  try {
+                    const last = await invoke<string>("get_last_proactive_prompt");
+                    if (last && last.trim().length > 0) {
+                      setTempPromptDraft(last);
+                    } else {
+                      setProactiveStatus("上次 prompt 为空（还没 fire 过）");
+                      window.setTimeout(() => setProactiveStatus(""), 4000);
+                    }
+                  } catch {
+                    // ignore
+                  }
+                }}
+                disabled={tempPromptBusy}
+                title="把 LAST_PROACTIVE_PROMPT（上一次 fire 时构造的完整 prompt）覆盖到 textarea，作为本轮 prompt 调优的起点"
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: tempPromptBusy ? "default" : "pointer",
+                }}
+              >
+                📥 上次 prompt
+              </button>
+              <button
+                onClick={() => setTempPromptOpen(false)}
+                disabled={tempPromptBusy}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-fg)",
+                  cursor: tempPromptBusy ? "default" : "pointer",
+                }}
+              >
+                取消
+              </button>
+              <button
+                onClick={async () => {
+                  if (!tempPromptDraft.trim()) return;
+                  setTempPromptBusy(true);
+                  setProactiveStatus("");
+                  try {
+                    const status = await invoke<string>(
+                      "trigger_proactive_turn_with_prompt",
+                      { soulOverride: tempPromptDraft },
+                    );
+                    setProactiveStatus(status);
+                    setTempPromptOpen(false);
+                  } catch (e) {
+                    setProactiveStatus(`触发失败: ${e}`);
+                  } finally {
+                    setTempPromptBusy(false);
+                    void refreshLastManualFire();
+                    window.setTimeout(() => setProactiveStatus(""), 8000);
+                  }
+                }}
+                disabled={tempPromptBusy || !tempPromptDraft.trim()}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  border: "none",
+                  borderRadius: 6,
+                  background: tempPromptBusy ? "var(--pet-color-muted)" : "#10b981",
+                  color: "#fff",
+                  fontWeight: 600,
+                  cursor:
+                    tempPromptBusy || !tempPromptDraft.trim()
+                      ? "default"
+                      : "pointer",
+                  opacity: !tempPromptDraft.trim() ? 0.5 : 1,
+                }}
+              >
+                {tempPromptBusy ? "开口中…" : "🚀 fire 一次"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showLastPrompt && (
         <div
           onClick={() => setShowLastPrompt(false)}
@@ -653,8 +1273,60 @@ export function PanelDebug() {
               <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--pet-color-fg)" }}>
                 proactive 的 prompt + reply
               </span>
+              {/* outcome filter chips：调 prompt 时聚焦 silent / spoke 子集。
+                  filter 切换时 turnIndex 归零防越界。仅 recentTurns.length > 0
+                  时浮（无数据时 noop）。 */}
+              {recentTurns.length > 0 && (
+                <span style={{ display: "inline-flex", gap: 3 }}>
+                  {(["all", "spoke", "silent"] as const).map((kind) => {
+                    const active = turnOutcomeFilter === kind;
+                    const label =
+                      kind === "all"
+                        ? "全部"
+                        : kind === "spoke"
+                          ? "开口"
+                          : "沉默";
+                    const cnt =
+                      kind === "all"
+                        ? recentTurns.length
+                        : kind === "silent"
+                          ? recentTurns.filter((t) => t.outcome === "silent").length
+                          : recentTurns.filter(
+                              (t) =>
+                                t.outcome === undefined || t.outcome === "spoke",
+                            ).length;
+                    return (
+                      <button
+                        key={kind}
+                        onClick={() => {
+                          setTurnOutcomeFilter(kind);
+                          setTurnIndex(0);
+                        }}
+                        style={{
+                          fontSize: 10,
+                          padding: "1px 6px",
+                          borderRadius: 8,
+                          border: `1px solid ${active ? "var(--pet-color-accent)" : "var(--pet-color-border)"}`,
+                          background: active ? "var(--pet-color-bg)" : "var(--pet-color-card)",
+                          color: active ? "var(--pet-color-accent)" : "var(--pet-color-muted)",
+                          cursor: "pointer",
+                          fontWeight: active ? 600 : 400,
+                        }}
+                        title={
+                          active
+                            ? `当前过滤：${label}（${cnt} 条）`
+                            : `切到「${label}」过滤（${cnt} 条）`
+                        }
+                      >
+                        {active ? "✓ " : ""}
+                        {label} ({cnt})
+                      </button>
+                    );
+                  })}
+                </span>
+              )}
               {/* Iter E4: prev/next navigator across the ring buffer */}
-              {recentTurns.length > 0 ? (
+              {filteredTurns.length > 0 ? (
                 <span
                   style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
                   title="« 上一条（更早）/ » 下一条（更新）。Iter E4 ring buffer 保留最近 5 次"
@@ -662,17 +1334,17 @@ export function PanelDebug() {
                   <button
                     onClick={() => {
                       // 切 turn 不再清空展开状态 —— 折叠记忆 per-turn 持久化
-                      setTurnIndex((i) => Math.min(i + 1, recentTurns.length - 1));
+                      setTurnIndex((i) => Math.min(i + 1, filteredTurns.length - 1));
                     }}
-                    disabled={turnIndex >= recentTurns.length - 1}
+                    disabled={turnIndex >= filteredTurns.length - 1}
                     style={{
                       fontSize: "11px",
                       padding: "1px 6px",
                       borderRadius: "4px",
                       border: "1px solid var(--pet-color-border)",
-                      background: turnIndex >= recentTurns.length - 1 ? "#f1f5f9" : "var(--pet-color-card)",
-                      color: turnIndex >= recentTurns.length - 1 ? "#cbd5e1" : "var(--pet-color-fg)",
-                      cursor: turnIndex >= recentTurns.length - 1 ? "default" : "pointer",
+                      background: turnIndex >= filteredTurns.length - 1 ? "#f1f5f9" : "var(--pet-color-card)",
+                      color: turnIndex >= filteredTurns.length - 1 ? "#cbd5e1" : "var(--pet-color-fg)",
+                      cursor: turnIndex >= filteredTurns.length - 1 ? "default" : "pointer",
                     }}
                   >
                     «
@@ -686,7 +1358,7 @@ export function PanelDebug() {
                       textAlign: "center",
                     }}
                   >
-                    {turnIndex + 1}/{recentTurns.length}
+                    {turnIndex + 1}/{filteredTurns.length}
                   </span>
                   <button
                     onClick={() => {
@@ -722,7 +1394,7 @@ export function PanelDebug() {
                   <span
                     style={{
                       fontSize: "11px",
-                      color: promptOver ? "#dc2626" : "var(--pet-color-muted)",
+                      color: promptOver ? "var(--pet-tint-red-fg)" : "var(--pet-color-muted)",
                       fontWeight: promptOver ? 600 : 400,
                     }}
                     title={
@@ -765,7 +1437,7 @@ export function PanelDebug() {
                     fontSize: "10px",
                     padding: "1px 8px",
                     borderRadius: "10px",
-                    background: currentTurn.outcome === "spoke" ? "#16a34a" : "#94a3b8",
+                    background: currentTurn.outcome === "spoke" ? "var(--pet-tint-green-fg)" : "var(--pet-color-muted)",
                     color: "#fff",
                     fontWeight: 600,
                   }}
@@ -781,10 +1453,147 @@ export function PanelDebug() {
               {copyMsg && (
                 <span style={{ fontSize: "11px", color: "#0d9488" }}>{copyMsg}</span>
               )}
+              {/* 全文复制：把这一 turn 的 timestamp / outcome / tools / prompt /
+                  reply 拼成一段 markdown 写到剪贴板 —— 复盘 prompt / 提 issue /
+                  把当下 turn 发给 LLM 让它自查时一次粘贴全部上下文，省得 4 次
+                  分段复制再手动拼接。 */}
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const meta: string[] = [];
+                  if (lastTurnMeta.timestamp) {
+                    meta.push(`**Timestamp:** ${lastTurnMeta.timestamp}`);
+                  }
+                  if (currentTurn?.outcome) {
+                    meta.push(`**Outcome:** ${currentTurn.outcome}`);
+                  }
+                  if (lastTurnMeta.tools_used.length > 0) {
+                    meta.push(`**Tools used:** ${lastTurnMeta.tools_used.join(", ")}`);
+                  }
+                  const sections: string[] = [
+                    "# Proactive turn",
+                    meta.join("\n"),
+                    "## PROMPT",
+                    "```",
+                    lastPrompt || "（空）",
+                    "```",
+                    "## REPLY",
+                    "```",
+                    lastReply || "（空 / <silent>）",
+                    "```",
+                  ];
+                  if (lastToolCalls.length > 0) {
+                    sections.push("## TOOL CALLS");
+                    for (const tc of lastToolCalls) {
+                      sections.push(`### ${tc.name}`);
+                      sections.push("**arguments**");
+                      sections.push("```json");
+                      sections.push(tc.arguments || "（空）");
+                      sections.push("```");
+                      sections.push("**result**");
+                      sections.push("```");
+                      sections.push(tc.result || "（空）");
+                      sections.push("```");
+                    }
+                  }
+                  try {
+                    await navigator.clipboard.writeText(sections.join("\n\n"));
+                    setCopyMsg("全文已复制");
+                    setTimeout(() => setCopyMsg(""), 2500);
+                  } catch (err) {
+                    setCopyMsg(`复制失败：${err}`);
+                    setTimeout(() => setCopyMsg(""), 4000);
+                  }
+                }}
+                style={{
+                  marginLeft: "auto",
+                  border: "1px solid var(--pet-color-border)",
+                  background: "var(--pet-color-card)",
+                  cursor: "pointer",
+                  color: "var(--pet-color-fg)",
+                  fontSize: "11px",
+                  padding: "3px 10px",
+                  borderRadius: "4px",
+                }}
+                title="把 timestamp / outcome / tools / prompt / reply / tool calls 一次拼成 markdown 写剪贴板（复盘 / 提 issue / 二次问 LLM 用）。"
+              >
+                📋 全文复制
+              </button>
+              {/* issue 模板复制：在"全文复制"基础上再拼 buildDebugMarkdownSnapshot
+                  （含陪伴天数 / proactive 出口分布 / env 工具使用 / 工具风险偏
+                  好 overrides / tone snapshot 等），一次复制后贴到 GitHub
+                  issue / 私聊 maintainer 即足够上下文复现问题。 */}
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const meta: string[] = [];
+                  if (lastTurnMeta.timestamp) {
+                    meta.push(`**Timestamp:** ${lastTurnMeta.timestamp}`);
+                  }
+                  if (currentTurn?.outcome) {
+                    meta.push(`**Outcome:** ${currentTurn.outcome}`);
+                  }
+                  if (lastTurnMeta.tools_used.length > 0) {
+                    meta.push(`**Tools used:** ${lastTurnMeta.tools_used.join(", ")}`);
+                  }
+                  const sections: string[] = [
+                    "# Issue 模板 — Proactive turn 复盘",
+                    "",
+                    "## TURN",
+                    meta.join("\n"),
+                    "### PROMPT",
+                    "```",
+                    lastPrompt || "（空）",
+                    "```",
+                    "### REPLY",
+                    "```",
+                    lastReply || "（空 / <silent>）",
+                    "```",
+                  ];
+                  if (lastToolCalls.length > 0) {
+                    sections.push("### TOOL CALLS");
+                    for (const tc of lastToolCalls) {
+                      sections.push(`#### ${tc.name}`);
+                      sections.push("**arguments**");
+                      sections.push("```json");
+                      sections.push(tc.arguments || "（空）");
+                      sections.push("```");
+                      sections.push("**result**");
+                      sections.push("```");
+                      sections.push(tc.result || "（空）");
+                      sections.push("```");
+                    }
+                  }
+                  sections.push("");
+                  sections.push("---");
+                  sections.push("");
+                  sections.push(buildDebugMarkdownSnapshot());
+                  try {
+                    await navigator.clipboard.writeText(sections.join("\n\n"));
+                    setCopyMsg("issue 模板已复制");
+                    setTimeout(() => setCopyMsg(""), 2500);
+                  } catch (err) {
+                    setCopyMsg(`复制失败：${err}`);
+                    setTimeout(() => setCopyMsg(""), 4000);
+                  }
+                }}
+                style={{
+                  border: "1px solid var(--pet-color-accent)",
+                  background: "var(--pet-color-card)",
+                  cursor: "pointer",
+                  color: "var(--pet-color-accent)",
+                  fontSize: "11px",
+                  padding: "3px 10px",
+                  borderRadius: "4px",
+                  fontWeight: 600,
+                }}
+                title="在'全文复制'基础上拼陪伴 / proactive 出口分布 / env 工具使用 / 工具偏好 overrides 等调试快照。一次复制粘到 issue / 私聊就足够复现上下文。"
+              >
+                📋+ issue 模板
+              </button>
               <button
                 onClick={() => setShowLastPrompt(false)}
                 style={{
-                  marginLeft: "auto",
                   border: "none",
                   background: "transparent",
                   cursor: "pointer",
@@ -880,7 +1689,7 @@ export function PanelDebug() {
                     <span style={{ fontSize: "11px", fontWeight: 600, color: "#92400e" }}>
                       🔧 TOOL CALLS ({lastToolCalls.length} 个)
                     </span>
-                    <span style={{ fontSize: "10px", color: "#94a3b8" }}>
+                    <span style={{ fontSize: "10px", color: "var(--pet-color-muted)" }}>
                       LLM 在本 turn 实际调用的工具，按调用顺序；点击展开看 args / result。
                     </span>
                   </div>
@@ -900,7 +1709,7 @@ export function PanelDebug() {
                         <div
                           key={j}
                           style={{
-                            border: "1px solid #fde68a",
+                            border: "1px solid var(--pet-tint-yellow-fg)",
                             borderRadius: "4px",
                             overflow: "hidden",
                           }}
@@ -966,7 +1775,7 @@ export function PanelDebug() {
                                   fontSize: "10px",
                                   color: "#1e40af",
                                   fontWeight: 600,
-                                  borderTop: "1px solid #fde68a",
+                                  borderTop: "1px solid var(--pet-tint-yellow-fg)",
                                 }}
                               >
                                 arguments
@@ -994,7 +1803,7 @@ export function PanelDebug() {
                                   fontSize: "10px",
                                   color: "#166534",
                                   fontWeight: 600,
-                                  borderTop: "1px solid #fde68a",
+                                  borderTop: "1px solid var(--pet-tint-yellow-fg)",
                                 }}
                               >
                                 result
@@ -1047,7 +1856,7 @@ export function PanelDebug() {
                 <span style={{ fontSize: "11px", fontWeight: 600, color: "#166534" }}>
                   ⇠ REPLY (LLM output)
                 </span>
-                <span style={{ fontSize: "10px", color: "#94a3b8" }}>
+                <span style={{ fontSize: "10px", color: "var(--pet-color-muted)" }}>
                   {lastReply.length} 字符 · {countLines(lastReply)} 行
                 </span>
                 <button
@@ -1115,10 +1924,103 @@ export function PanelDebug() {
         onResetPromptTilt={handleResetPromptTiltStats}
       />
 
+      {/* 专用工具调用占比（SQLite v11/v12 引入的新工具 vs memory_edit
+          fallback）。窗口是 ring buffer 最近 30 条工具调用；total 为 0 时
+          不渲染（新启动 / 没调用过任何工具）。 */}
+      {dedicatedToolStats && dedicatedToolStats.total_records > 0 && (() => {
+        const s = dedicatedToolStats;
+        const butlerTotal = s.butler_task_edit_count + s.memory_edit_butler_count;
+        const todoTotal = s.todo_edit_count + s.memory_edit_todo_count;
+        const butlerRatio = butlerTotal === 0 ? null : s.butler_task_edit_count / butlerTotal;
+        const todoRatio = todoTotal === 0 ? null : s.todo_edit_count / todoTotal;
+        const fmt = (r: number | null) => (r === null ? "—" : `${Math.round(r * 100)}%`);
+        return (
+          <div
+            style={{
+              padding: "6px 16px",
+              fontSize: 11,
+              display: "flex",
+              gap: 16,
+              alignItems: "center",
+              borderBottom: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-bg)",
+              color: "var(--pet-color-muted)",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+            title={`最近 ${s.total_records} 条工具调用里专用工具的占比。owner 用来判断 prompt 引导效果 —— 比例高代表 LLM 在用 butler_task_edit / todo_edit 而非旧 memory_edit fallback。`}
+          >
+            <span>🛠 专用工具占比（窗口 {s.total_records}）：</span>
+            <span>
+              butler_task_edit{" "}
+              <strong style={{ color: "var(--pet-color-fg)" }}>{fmt(butlerRatio)}</strong>{" "}
+              <span style={{ color: "var(--pet-color-muted)" }}>
+                ({s.butler_task_edit_count} / {butlerTotal || 0})
+              </span>
+            </span>
+            <span>
+              todo_edit{" "}
+              <strong style={{ color: "var(--pet-color-fg)" }}>{fmt(todoRatio)}</strong>{" "}
+              <span style={{ color: "var(--pet-color-muted)" }}>
+                ({s.todo_edit_count} / {todoTotal || 0})
+              </span>
+            </span>
+          </div>
+        );
+      })()}
+
       {/* Toolbar */}
-      <div style={{ display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid var(--pet-color-border)", background: "var(--pet-color-card)" }}>
+      <div style={{ display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid var(--pet-color-border)", background: "var(--pet-color-card)", alignItems: "center" }}>
         <button onClick={fetchLogs} style={toolBtnStyle}>刷新</button>
         <button onClick={handleClear} style={toolBtnStyle}>清空</button>
+        <button
+          onClick={() => void handleExportDebugMd()}
+          style={toolBtnStyle}
+          title="把当前 PanelDebug 的 stats / chip / tone / pending review / 工具风险偏好覆盖 / 最近 5 句宠物语 拼成一份 markdown 写到剪贴板，方便贴 issue 或排查时给同事看"
+        >
+          📋 导出快照 MD
+        </button>
+        <button
+          onClick={handleCaptureSnapshotA}
+          style={toolBtnStyle}
+          title="保存当前调试快照为 A（一个时间点）。稍后再点「🔀 对比」会用当前状态作 B，做 set-based 行 diff。"
+        >
+          {snapshotA ? "📸 重抓 A" : "📸 抓快照 A"}
+        </button>
+        {snapshotA && (
+          <>
+            <button
+              onClick={handleCompareSnapshot}
+              style={{
+                ...toolBtnStyle,
+                background: "var(--pet-tint-blue-bg)",
+                color: "var(--pet-tint-blue-fg)",
+                border: "1px solid var(--pet-tint-blue-fg)",
+              }}
+              title={`对比 A (${snapshotATs}) 与现在的状态，按行做 set-diff，列出仅 A / 仅 B / 共有数。`}
+            >
+              🔀 对比 A → 现在
+            </button>
+            <button
+              onClick={handleClearSnapshotCompare}
+              style={toolBtnStyle}
+              title="清掉已抓的 A 与上次 diff 结果"
+            >
+              清 A
+            </button>
+          </>
+        )}
+        {debugExportMsg && (
+          <span
+            style={{
+              fontSize: 11,
+              color: debugExportMsg.startsWith("复制失败")
+                ? "var(--pet-tint-red-fg)"
+                : "var(--pet-tint-green-fg)",
+            }}
+          >
+            {debugExportMsg}
+          </span>
+        )}
         <button
           onClick={() => {
             if (!triggerArmed) {
@@ -1140,12 +2042,12 @@ export function PanelDebug() {
           style={{
             ...toolBtnStyle,
             background: triggeringProactive
-              ? "#94a3b8"
+              ? "var(--pet-color-muted)"
               : triggerArmed
-                ? "#fef2f2"
+                ? "var(--pet-tint-red-bg)"
                 : "#10b981",
-            color: triggeringProactive ? "#fff" : triggerArmed ? "#b91c1c" : "#fff",
-            borderColor: triggerArmed ? "#dc2626" : undefined,
+            color: triggeringProactive ? "#fff" : triggerArmed ? "var(--pet-tint-red-fg)" : "#fff",
+            borderColor: triggerArmed ? "var(--pet-tint-red-fg)" : undefined,
             fontWeight: triggerArmed ? 600 : undefined,
           }}
         >
@@ -1154,6 +2056,21 @@ export function PanelDebug() {
             : triggerArmed
               ? "再点确认 (3s)"
               : "立即开口"}
+        </button>
+        {/* "✏️ 临时 prompt" 按钮：打开 modal 让用户编辑 SOUL 后 fire 一次
+            （不写盘）。比"改 SOUL → fire → 改回"省两步，调 prompt 时高频
+            用。 */}
+        <button
+          onClick={() => void openTempPromptModal()}
+          disabled={triggeringProactive || tempPromptBusy}
+          title="打开 modal 编辑 SOUL.md 临时 fire 一次（仅本轮生效，不写盘）。调 prompt / 测 system 变种时不必去 PanelSettings 改完再改回。"
+          style={{
+            ...toolBtnStyle,
+            background: "#6366f1",
+            color: "#fff",
+          }}
+        >
+          ✏️ 临时 prompt
         </button>
         <button
           onClick={async () => {
@@ -1176,11 +2093,159 @@ export function PanelDebug() {
         <button onClick={handleOpenDevTools} style={{ ...toolBtnStyle, background: "#f59e0b", color: "#fff" }}>
           DevTools
         </button>
+        {/* 重置 in-process stash：清 proactive 相关 in-memory 静态（prompt /
+            reply / timestamp / turns ring / manual fire / forced focus / tools）。
+            不动磁盘文件。两次点击确认（与"立即开口"同模式）；clear 完调
+            refreshLastManualFire 让 audit 行同步消失。 */}
+        <button
+          onClick={async () => {
+            if (resetStashBusy) return;
+            if (!resetStashArmed) {
+              setResetStashArmed(true);
+              window.setTimeout(() => setResetStashArmed(false), 3000);
+              return;
+            }
+            setResetStashArmed(false);
+            setResetStashBusy(true);
+            try {
+              await invoke("reset_proactive_stash");
+              setProactiveStatus("✓ in-process stash 已清空");
+              // 也清前端镜像
+              setLastManualFire(null);
+              setRecentTurns([]);
+              setTurnIndex(0);
+            } catch (e) {
+              setProactiveStatus(`重置失败: ${e}`);
+            } finally {
+              setResetStashBusy(false);
+              window.setTimeout(() => setProactiveStatus(""), 4000);
+            }
+          }}
+          disabled={resetStashBusy}
+          title={
+            resetStashBusy
+              ? "重置中…"
+              : resetStashArmed
+                ? "再次点击确认重置 (3s 内有效)"
+                : "清 proactive 相关 in-process stash（prompt / reply / turns ring / manual fire / forced focus 等内存 stash）。不动磁盘 —— butler_history / memory / sessions / decision log 都不受影响。两次点击确认。"
+          }
+          style={{
+            ...toolBtnStyle,
+            background: resetStashBusy
+              ? "var(--pet-color-muted)"
+              : resetStashArmed
+                ? "var(--pet-tint-red-bg)"
+                : "var(--pet-color-muted)",
+            color: resetStashBusy ? "#fff" : resetStashArmed ? "var(--pet-tint-red-fg)" : "#fff",
+            borderColor: resetStashArmed ? "var(--pet-tint-red-fg)" : undefined,
+            fontWeight: resetStashArmed ? 600 : undefined,
+          }}
+        >
+          {resetStashBusy
+            ? "清理中…"
+            : resetStashArmed
+              ? "再点确认 (3s)"
+              : "🧹 重置 stash"}
+        </button>
+        {/* ⚙️ mute 15min：proactive 静音 15 分钟的快捷按钮。muted 时显剩余
+            分钟 + 再点解除，与 PanelChat /sleep 同后端命令（set_mute_minutes）。
+            放在 proactive 工具组末尾 —— 与"立即开口 / 临时 prompt"语义相邻。 */}
+        <button
+          onClick={() => void handleMuteToggle()}
+          disabled={muteBusy}
+          title={
+            muteBusy
+              ? "处理中…"
+              : muteRemainingMins > 0
+                ? `当前已 mute（剩 ${muteRemainingMins} 分钟）— 点击解除`
+                : "mute proactive 15 分钟，调 prompt / 测 SOUL 时绕开 PanelChat /sleep 路径"
+          }
+          style={{
+            ...toolBtnStyle,
+            background: muteBusy
+              ? "var(--pet-color-muted)"
+              : muteRemainingMins > 0
+                ? "var(--pet-tint-blue-fg)"
+                : "var(--pet-color-accent)",
+            color: "#fff",
+          }}
+        >
+          {muteBusy
+            ? "处理中…"
+            : muteRemainingMins > 0
+              ? `🔕 mute ${muteRemainingMins}m`
+              : "⚙️ mute 15min"}
+        </button>
+        {/* 强制 reload 整个 DebugApp window：用户改外部 config / memory /
+            sessions 文件后想 panel 立刻 sync 时用。write current tab 到
+            sessionStorage 让 reload 后 DebugApp useState initializer 读回，
+            用户落回当前 tab 而非"应用"默认。reload 全清前端 state（也清
+            in-process stash 镜像，与 🧹 重置 stash 是不同 axis：那条仅清
+            backend 内存 stash 不动 frontend）。 */}
+        <button
+          onClick={() => {
+            try {
+              const cur = (() => {
+                // 尝试从顶部 tab bar 找当前 active tab（class 含 borderBottom
+                // 0ea5e9 的）—— 但 PanelDebug 没拿到 DebugApp 的 activeTab。
+                // 退而求其次：从 document.title 不行，干脆默认写"应用"（用
+                // 户在 PanelDebug 内点 reload 必然处于"应用" tab）。
+                return "应用";
+              })();
+              sessionStorage.setItem("pet-debug-reload-tab", cur);
+            } catch {
+              // 失败 → reload 后落"应用"默认，无副作用
+            }
+            window.location.reload();
+          }}
+          title="强制 reload 当前 DebugApp 窗口 —— 用户改外部 config / memory / sessions 文件后想 panel 立刻 sync 时用。reload 会清掉所有前端 state 与 cache；当前 tab 通过 sessionStorage 保留。"
+          style={{ ...toolBtnStyle, background: "var(--pet-color-accent)", color: "#fff" }}
+        >
+          🔄 reload
+        </button>
+        {/* "📥 stash JSON" 按钮：把所有 in-process stash（last prompt /
+            reply / turns ring / manual fire latest + history）一次拉到一段
+            JSON 写剪贴板。issue 复现 / reproduce 用最稳 —— 比单独 4 个命
+            令 round-trip 快。 */}
+        <button
+          onClick={async () => {
+            try {
+              const [prompt, reply, meta, turns, lastFire, fireHistory] =
+                await Promise.all([
+                  invoke<string>("get_last_proactive_prompt"),
+                  invoke<string>("get_last_proactive_reply"),
+                  invoke<unknown>("get_last_proactive_meta"),
+                  invoke<unknown[]>("get_recent_proactive_turns"),
+                  invoke<unknown>("get_last_manual_fire"),
+                  invoke<unknown[]>("get_manual_fire_history"),
+                ]);
+              const stash = {
+                exported_at: new Date().toISOString(),
+                last_proactive_prompt: prompt,
+                last_proactive_reply: reply,
+                last_proactive_meta: meta,
+                recent_proactive_turns: turns,
+                last_manual_fire: lastFire,
+                manual_fire_history: fireHistory,
+              };
+              const json = JSON.stringify(stash, null, 2);
+              await navigator.clipboard.writeText(json);
+              setProactiveStatus(`已复制 stash JSON（${json.length} 字符）`);
+            } catch (e) {
+              setProactiveStatus(`stash 抓取失败: ${e}`);
+            }
+            window.setTimeout(() => setProactiveStatus(""), 4000);
+          }}
+          title="把所有 in-process stash（prompt / reply / turns ring / manual fire latest + history）一次拉成 JSON 复制到剪贴板。issue 复现 / 跨进程粘贴 reproduce 用。"
+          style={{ ...toolBtnStyle, background: "#a855f7", color: "#fff" }}
+        >
+          📥 stash JSON
+        </button>
         {proactiveStatus && (
           <span
             style={{
               fontSize: "12px",
-              color: proactiveStatus.startsWith("触发失败") ? "#dc2626" : "#059669",
+              color: proactiveStatus.startsWith("触发失败") ? "var(--pet-tint-red-fg)" : "var(--pet-tint-green-fg)",
               alignSelf: "center",
               maxWidth: "260px",
               overflow: "hidden",
@@ -1193,6 +2258,247 @@ export function PanelDebug() {
           </span>
         )}
       </div>
+
+      {/* 上次 manual fire 审计行 + 历史 ring（近 5 条）：让用户回顾"我本
+          次进程内手动触发过哪几条任务、什么时候、结果如何"。进程重启清空；
+          自然 tick / 后台 loop 不进此 stash —— 只有 PanelDebug "立即开口"
+          与 PanelMemory "▶️ 现在跑" 两个入口才记录。点击 🔄 立即从后端
+          refetch（用户在别的窗口 fire 后切回时手动同步用）；▾ 展开看历
+          史 ≤ 5 条。 */}
+      {lastManualFire && (
+        <div
+          style={{
+            borderBottom: "1px solid var(--pet-color-border)",
+            background: "var(--pet-color-bg)",
+          }}
+        >
+          <div
+            style={{
+              padding: "6px 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 11,
+              color: "var(--pet-color-muted)",
+            }}
+          >
+            <span style={{ fontWeight: 600, color: "var(--pet-color-fg)" }}>
+              🕒 上次 manual fire
+            </span>
+            <span style={{ fontFamily: "'SF Mono', 'Menlo', monospace" }}>
+              {lastManualFire.timestamp}
+            </span>
+            <span>·</span>
+            <span>
+              {lastManualFire.title === null
+                ? "全局 fire"
+                : `▶️ 「${lastManualFire.title}」`}
+            </span>
+            <span style={{ color: "var(--pet-color-border)" }}>|</span>
+            <span
+              style={{
+                flex: 1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                color: lastManualFire.result.startsWith("触发失败")
+                  ? "var(--pet-tint-red-fg)"
+                  : "var(--pet-color-fg)",
+              }}
+              title={lastManualFire.result}
+            >
+              {lastManualFire.result}
+            </span>
+            {manualFireHistory.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setManualFireHistoryExpanded((v) => !v)}
+                style={{
+                  padding: "2px 6px",
+                  fontSize: 10,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 3,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+                title={
+                  manualFireHistoryExpanded
+                    ? "折叠历史 ring"
+                    : `展开历史 ring（共 ${manualFireHistory.length} 条）`
+                }
+              >
+                {manualFireHistoryExpanded ? "▾" : "▸"} {manualFireHistory.length}
+              </button>
+            )}
+            {/* 📋 复制全部 manual fire history 为 markdown：拼时间 / 类型
+                / result 拼一段 markdown table-like 写剪贴板。issue / 调
+                prompt 时一次性带走全部 fire 记录。仅 history 非空时浮。 */}
+            {manualFireHistory.length > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const lines: string[] = [
+                    `# Manual fire history (${manualFireHistory.length} 条)`,
+                    "",
+                    "| 时间 | 类型 | 结果 |",
+                    "| --- | --- | --- |",
+                  ];
+                  for (const rec of manualFireHistory) {
+                    const scope =
+                      rec.title === null ? "全局" : `▶️ 「${rec.title}」`;
+                    // markdown table cell escape：把 | 改 \| 防 cell 错位
+                    const safeResult = rec.result.replace(/\|/g, "\\|");
+                    lines.push(`| ${rec.timestamp} | ${scope} | ${safeResult} |`);
+                  }
+                  try {
+                    await navigator.clipboard.writeText(lines.join("\n"));
+                    setProactiveStatus(
+                      `已复制 history markdown（${manualFireHistory.length} 条）`,
+                    );
+                  } catch (e) {
+                    setProactiveStatus(`复制失败: ${e}`);
+                  }
+                  window.setTimeout(() => setProactiveStatus(""), 4000);
+                }}
+                style={{
+                  padding: "2px 6px",
+                  fontSize: 10,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 3,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+                title="把整个 history ring（含当前最新条）拼成 markdown table 复制到剪贴板。issue / prompt 调试分享用。"
+              >
+                📋
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void refreshLastManualFire()}
+              style={{
+                padding: "2px 6px",
+                fontSize: 10,
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 3,
+                background: "var(--pet-color-card)",
+                color: "var(--pet-color-muted)",
+                cursor: "pointer",
+                flexShrink: 0,
+              }}
+              title="重新从后端拉取（在别的窗口 fire 过后用此同步）"
+            >
+              🔄
+            </button>
+          </div>
+          {manualFireHistoryExpanded && manualFireHistory.length > 1 && (
+            <div
+              style={{
+                padding: "0 16px 8px 16px",
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+              }}
+            >
+              {manualFireHistory.slice(1).map((rec, i) => (
+                <div
+                  key={`${rec.timestamp}-${i}`}
+                  style={{
+                    display: "flex",
+                    gap: 6,
+                    alignItems: "baseline",
+                    padding: "3px 0",
+                    borderTop: "1px dashed var(--pet-color-border)",
+                  }}
+                >
+                  <span style={{ fontFamily: "'SF Mono', 'Menlo', monospace", flexShrink: 0 }}>
+                    {rec.timestamp}
+                  </span>
+                  <span style={{ flexShrink: 0 }}>
+                    {rec.title === null ? "全局" : `▶️ 「${rec.title}」`}
+                  </span>
+                  <span style={{ color: "var(--pet-color-border)" }}>|</span>
+                  <span
+                    style={{
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      color: rec.result.startsWith("触发失败")
+                        ? "var(--pet-tint-red-fg)"
+                        : "var(--pet-color-fg)",
+                    }}
+                    title={rec.result}
+                  >
+                    {rec.result}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 快照对比 diff 展示：仅 compareDiff 非空时显。pre code 风格 + 复制
+          按钮 + 关闭。set-diff 不保留位置信息，对结构稳定的 snapshot 已够用。 */}
+      {compareDiff && (
+        <div
+          style={{
+            padding: "10px 16px",
+            borderBottom: "1px solid var(--pet-color-border)",
+            background: "var(--pet-color-bg)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 6,
+            }}
+          >
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--pet-color-fg)" }}>
+              🔀 快照对比
+            </span>
+            <button
+              onClick={() => void handleCopyCompareDiff()}
+              style={{ ...toolBtnStyle, fontSize: 11, padding: "3px 9px" }}
+              title="复制 diff markdown 到剪贴板"
+            >
+              📋 复制 diff
+            </button>
+            <button
+              onClick={() => setCompareDiff(null)}
+              style={{ ...toolBtnStyle, fontSize: 11, padding: "3px 9px" }}
+              title="关闭对比结果"
+            >
+              ✕ 关
+            </button>
+          </div>
+          <pre
+            style={{
+              margin: 0,
+              padding: "10px 12px",
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 6,
+              fontSize: 11,
+              lineHeight: 1.5,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              maxHeight: 320,
+              overflowY: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              color: "var(--pet-color-fg)",
+            }}
+          >
+            {compareDiff}
+          </pre>
+        </div>
+      )}
 
       {/* Inline expansion of the active prompt hints — only renders when the user has
           clicked the badge. Each hint shows its nature badge + title + a one-line summary,
@@ -1245,7 +2551,7 @@ export function PanelDebug() {
           })()}
           {tone.active_prompt_rules.map((label) => {
             const desc = PROMPT_RULE_DESCRIPTIONS[label];
-            const natureColor = desc ? NATURE_META[desc.nature].color : "#94a3b8";
+            const natureColor = desc ? NATURE_META[desc.nature].color : "var(--pet-color-muted)";
             const natureLabel = desc ? NATURE_META[desc.nature].label : "?";
             return (
               <div key={label} style={{ display: "flex", gap: "8px", lineHeight: "1.6" }}>
@@ -1290,6 +2596,145 @@ export function PanelDebug() {
         companionshipDays={companionshipDays}
         tone={tone}
       />
+      {/* 可调窗口主动开口次数：与上方固定的"今日 / 本周 / 累计"互补，让用
+          户看任意窗口（1d / 3d / 7d / 14d / 30d）的趋势。值通过 get_speech_count_days
+          后端命令计算；切窗口立即重抓 + 30s 轮询同步 daily bucket 增量。 */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "8px 16px",
+          borderBottom: "1px solid var(--pet-color-border)",
+          background: "var(--pet-color-bg)",
+          fontSize: 12,
+        }}
+      >
+        <span style={{ color: "var(--pet-color-muted)" }}>近</span>
+        {[1, 3, 7, 14, 30].map((d) => {
+          const active = d === speechWindowDays;
+          return (
+            <button
+              key={d}
+              type="button"
+              onClick={() => {
+                setSpeechWindowDays(d);
+                try {
+                  window.localStorage.setItem(
+                    "pet-debug-speech-window-days",
+                    String(d),
+                  );
+                } catch {
+                  // ignore
+                }
+              }}
+              style={{
+                fontSize: 11,
+                padding: "2px 10px",
+                border: "1px solid",
+                borderColor: active ? "var(--pet-color-accent)" : "var(--pet-color-border)",
+                borderRadius: 4,
+                background: active ? "var(--pet-color-accent)" : "var(--pet-color-card)",
+                color: active ? "#fff" : "var(--pet-color-muted)",
+                cursor: active ? "default" : "pointer",
+                fontWeight: active ? 600 : 400,
+                fontFamily: "inherit",
+              }}
+            >
+              {d}d
+            </button>
+          );
+        })}
+        <span
+          style={{
+            color: "var(--pet-color-fg)",
+            fontFamily: "'SF Mono', 'Menlo', monospace",
+            fontSize: 14,
+            fontWeight: 600,
+            marginLeft: 8,
+          }}
+          title={`过去 ${speechWindowDays} 天累计主动开口次数（含今天）。来自 speech_daily.json 各日 bucket 求和。`}
+        >
+          {speechWindowCount}
+        </span>
+        <span style={{ color: "var(--pet-color-muted)", fontSize: 11 }}>
+          次 ·{" "}
+          {speechWindowDays > 0 ? (speechWindowCount / speechWindowDays).toFixed(1) : "—"}/日均
+        </span>
+      </div>
+      {/* 今日 24 小时分布 mini bar：每柱代表一小时。最高柱满高，其余按比例。
+          零桶仍占位（保 24 列等宽对齐时间轴感）。bar 配色与 PanelStatsCard
+          今日颜色 sky 一致。每 60s 自动 refresh；hover 显 "HH:00 · N 次"。 */}
+      {(() => {
+        const max = Math.max(1, ...hourlyBuckets);
+        const todayTotal = hourlyBuckets.reduce((a, b) => a + b, 0);
+        return (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-end",
+              gap: 8,
+              padding: "8px 16px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-bg)",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+                whiteSpace: "nowrap",
+                paddingBottom: 2,
+              }}
+            >
+              今日 24h
+            </span>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(24, 1fr)",
+                gap: 2,
+                flex: 1,
+                height: 28,
+                alignItems: "end",
+              }}
+              title={`今日总 ${todayTotal} 次主动开口；hover 任一柱看小时数`}
+            >
+              {hourlyBuckets.map((n, h) => {
+                const ratio = max > 0 ? n / max : 0;
+                const heightPct = Math.max(n > 0 ? 8 : 2, ratio * 100);
+                return (
+                  <div
+                    key={h}
+                    title={`${h.toString().padStart(2, "0")}:00 · ${n} 次`}
+                    style={{
+                      height: `${heightPct}%`,
+                      background:
+                        n > 0
+                          ? "var(--pet-color-accent)"
+                          : "var(--pet-color-border)",
+                      borderRadius: "2px 2px 0 0",
+                      opacity: n > 0 ? 1 : 0.4,
+                      transition: "height 240ms ease-out",
+                      cursor: "default",
+                    }}
+                  />
+                );
+              })}
+            </div>
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+                fontVariantNumeric: "tabular-nums",
+                paddingBottom: 2,
+              }}
+            >
+              Σ {todayTotal}
+            </span>
+          </div>
+        );
+      })()}
 
       <PanelToolsTopK history={toolCallHistory} />
 
@@ -1326,7 +2771,7 @@ export function PanelDebug() {
                     gap: 6,
                     fontSize: 11,
                     fontFamily: "'SF Mono', 'Menlo', monospace",
-                    color: "#7c2d12",
+                    color: "var(--pet-tint-red-fg)",
                   }}
                   title={w.timestamp}
                 >
@@ -1514,7 +2959,7 @@ export function PanelDebug() {
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: "6px", flexWrap: "wrap" }}>
             {(() => {
               const kindOptions: { value: string; label: string; accent: string; title: string }[] = [
-                { value: "Spoke", label: "开口", accent: "#16a34a", title: "LLM 选择开口的轮次" },
+                { value: "Spoke", label: "开口", accent: "var(--pet-tint-green-fg)", title: "LLM 选择开口的轮次" },
                 { value: "LlmSilent", label: "沉默", accent: "#a855f7", title: "LLM 选择沉默的轮次" },
                 { value: "Skip", label: "跳过", accent: "#f59e0b", title: "gate 阻止 LLM 跑的轮次" },
               ];
@@ -1718,7 +3163,7 @@ export function PanelDebug() {
               <span
                 style={{
                   marginLeft: 4,
-                  color: decisions.length >= 16 ? "#a16207" : "var(--pet-color-muted)",
+                  color: decisions.length >= 16 ? "var(--pet-tint-yellow-fg)" : "var(--pet-color-muted)",
                 }}
               >
                 · buffer {decisions.length}/16
@@ -1803,7 +3248,7 @@ export function PanelDebug() {
                         }}
                         title={`点击复制完整 timestamp ${d.timestamp} 到剪贴板`}
                         style={{
-                          color: isOtherDay ? "#a16207" : "var(--pet-color-muted)",
+                          color: isOtherDay ? "var(--pet-tint-yellow-fg)" : "var(--pet-color-muted)",
                           cursor: "pointer",
                         }}
                       >
@@ -1874,7 +3319,7 @@ export function PanelDebug() {
                         borderRadius: 4,
                         border: "1px solid var(--pet-color-border)",
                         background: triggeringProactive ? "#f1f5f9" : "var(--pet-color-card)",
-                        color: triggeringProactive ? "#94a3b8" : "var(--pet-color-fg)",
+                        color: triggeringProactive ? "var(--pet-color-muted)" : "var(--pet-color-fg)",
                         cursor: triggeringProactive ? "not-allowed" : "pointer",
                         flexShrink: 0,
                       }}
@@ -1891,8 +3336,66 @@ export function PanelDebug() {
         </div>
       )}
 
+      {/* R142: 三 timeline 切换 tab。speech / tool / feedback 共用一槽，
+          点 tab 切换聚焦其中一种。tab 上显条数让用户在切换前预判内容。
+          accent 边表 active，灰 border + muted 字表 inactive。 */}
+      <div
+        style={{
+          display: "flex",
+          gap: 2,
+          padding: "6px 16px 0",
+          background: "var(--pet-color-card)",
+          borderBottom: "1px solid var(--pet-color-border)",
+          flexShrink: 0,
+        }}
+      >
+        {(
+          [
+            { key: "speech" as const, glyph: "🗯", label: "宠物说", count: recentSpeeches.length },
+            { key: "tool" as const, glyph: "🔧", label: "工具调用", count: toolCallHistory.length },
+            { key: "feedback" as const, glyph: "💬", label: "反馈记录", count: feedbackHistory.length },
+          ]
+        ).map(({ key, glyph, label, count }) => {
+          const active = activeTimeline === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setActiveTimeline(key)}
+              style={{
+                fontSize: 11.5,
+                padding: "5px 10px 6px",
+                border: "none",
+                borderBottom: active
+                  ? "2px solid var(--pet-color-accent)"
+                  : "2px solid transparent",
+                background: "transparent",
+                color: active ? "var(--pet-color-accent)" : "var(--pet-color-muted)",
+                fontWeight: active ? 600 : 500,
+                cursor: active ? "default" : "pointer",
+                fontFamily: "inherit",
+              }}
+              title={`切到「${label}」timeline`}
+            >
+              {glyph} {label}
+              <span
+                style={{
+                  fontSize: 10,
+                  marginLeft: 4,
+                  fontWeight: 400,
+                  opacity: 0.75,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Pet's recent proactive utterances — sourced from speech_history.log */}
-      {recentSpeeches.length > 0 && (
+      {activeTimeline === "speech" && recentSpeeches.length > 0 && (
         <div
           style={{
             padding: "8px 16px",
@@ -1923,10 +3426,28 @@ export function PanelDebug() {
         </div>
       )}
 
+      {/* 空 speech 占位（active tab=speech 但 list 为空时，避免 tab 切过去
+          看不到内容像 bug）。 */}
+      {activeTimeline === "speech" && recentSpeeches.length === 0 && (
+        <div
+          style={{
+            padding: "12px 16px",
+            borderBottom: "1px solid var(--pet-color-border)",
+            background: "var(--pet-tint-purple-bg)",
+            fontSize: 12,
+            color: "var(--pet-tint-purple-fg)",
+            fontStyle: "italic",
+          }}
+        >
+          还没有宠物主动开口记录。下一次 proactive 触发后会写入 speech_history.log。
+        </div>
+      )}
+
       {/* Iter R4: 工具调用历史 collapsible. Surfaces purpose / risk / review
           status from the tool_call_history ring buffer. Toggled via the
           summary chip; not always-on because in long sessions the list
           would dominate the panel. */}
+      {activeTimeline === "tool" && (
       <div
         style={{
           padding: "8px 16px",
@@ -1981,29 +3502,193 @@ export function PanelDebug() {
               : toolCallHistory.filter((c) => c.risk_level === toolRiskFilter);
           return (
             <>
-              <PanelFilterButtonRow<typeof toolRiskFilter>
-                active={toolRiskFilter}
-                onChange={setToolRiskFilter}
-                rowStyle={{ paddingTop: "6px" }}
-                options={[
-                  { value: "all", label: "全部", count: toolCallHistory.length, accent: "#475569", title: "显示全部工具调用" },
-                  { value: "low", label: "低险", count: lowCt, accent: "#16a34a", title: "只看 low risk_level 调用（read-only / 无副作用）" },
-                  { value: "medium", label: "中险", count: medCt, accent: "#d97706", title: "只看 medium risk_level 调用（写本地 / 启动外部）" },
-                  { value: "high", label: "高险", count: highCt, accent: "#dc2626", title: "只看 high risk_level 调用（删数据 / 网络外发 / 走 TR3 review）" },
-                ]}
-              />
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <PanelFilterButtonRow<typeof toolRiskFilter>
+                  active={toolRiskFilter}
+                  onChange={setToolRiskFilter}
+                  rowStyle={{ paddingTop: "6px" }}
+                  options={[
+                    { value: "all", label: "全部", count: toolCallHistory.length, accent: "#475569", title: "显示全部工具调用" },
+                    { value: "low", label: "低险", count: lowCt, accent: "var(--pet-tint-green-fg)", title: "只看 low risk_level 调用（read-only / 无副作用）" },
+                    { value: "medium", label: "中险", count: medCt, accent: "#d97706", title: "只看 medium risk_level 调用（写本地 / 启动外部）" },
+                    { value: "high", label: "高险", count: highCt, accent: "var(--pet-tint-red-fg)", title: "只看 high risk_level 调用（删数据 / 网络外发 / 走 TR3 review）" },
+                  ]}
+                />
+                <button
+                  type="button"
+                  onClick={() => setToolHistoryGroupByName((v) => !v)}
+                  title={
+                    toolHistoryGroupByName
+                      ? "切回时间线视图（最新在前）"
+                      : "按 tool name 分组，看哪个工具调最多"
+                  }
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    border: "1px solid",
+                    borderColor: toolHistoryGroupByName ? "var(--pet-color-accent)" : "var(--pet-color-border)",
+                    borderRadius: 4,
+                    background: toolHistoryGroupByName ? "#e0f2fe" : "#fff",
+                    color: toolHistoryGroupByName ? "var(--pet-tint-blue-fg)" : "var(--pet-color-muted)",
+                    cursor: "pointer",
+                    fontWeight: toolHistoryGroupByName ? 600 : 400,
+                    marginTop: 6,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {toolHistoryGroupByName ? "📊 按工具分组" : "📜 时间线"}
+                </button>
+              </div>
               <div style={{ paddingTop: "6px", maxHeight: "260px", overflowY: "auto" }}>
                 {filtered.length === 0 && (
-                  <div style={{ color: "#94a3b8", fontStyle: "italic", padding: "4px 0" }}>
+                  <div style={{ color: "var(--pet-color-muted)", fontStyle: "italic", padding: "4px 0" }}>
                     当前过滤下没有匹配条目。
                   </div>
                 )}
-                {filtered.map((c, i) => (
+                {toolHistoryGroupByName && filtered.length > 0 && (() => {
+                  // 派生 Map<name, calls[]>。BUILTIN_TOOL_NAMES 不一定全在
+                  // history 里出现，只对 history 实际见过的 name 分组。按
+                  // call count 降序 → 排前是"最高频"，符合"哪个 tool 调
+                  // 最多一眼看到"的需求。
+                  const groups = new Map<string, ToolCallRecord[]>();
+                  for (const c of filtered) {
+                    const arr = groups.get(c.name) ?? [];
+                    arr.push(c);
+                    groups.set(c.name, arr);
+                  }
+                  const sortedGroups = [...groups.entries()].sort(
+                    (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
+                  );
+                  return sortedGroups.map(([name, calls]) => {
+                    const expanded = toolGroupExpanded.has(name);
+                    // 一组的最高风险等级：决定 header 红/橙/绿 chip
+                    const highest = calls.some((c) => c.risk_level === "high")
+                      ? "high"
+                      : calls.some((c) => c.risk_level === "medium")
+                        ? "medium"
+                        : "low";
+                    return (
+                      <div
+                        key={name}
+                        style={{
+                          marginBottom: 6,
+                          border: "1px solid var(--pet-tint-yellow-fg)",
+                          borderRadius: 6,
+                          background: "#fffbeb",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          onClick={() => {
+                            setToolGroupExpanded((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(name)) next.delete(name);
+                              else next.add(name);
+                              return next;
+                            });
+                          }}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "6px 10px",
+                            cursor: "pointer",
+                            userSelect: "none",
+                            borderBottom: expanded ? "1px solid var(--pet-tint-yellow-fg)" : "none",
+                          }}
+                        >
+                          <span style={{ width: 10, fontFamily: "monospace", color: "#475569" }}>
+                            {expanded ? "▾" : "▸"}
+                          </span>
+                          <span style={{ fontFamily: "monospace", color: "#1e293b", fontWeight: 600 }}>
+                            {name}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "1px 6px",
+                              borderRadius: 10,
+                              background: riskBadgeBg(highest),
+                              color: "#fff",
+                              fontWeight: 600,
+                            }}
+                          >
+                            {highest}
+                          </span>
+                          <span style={{ color: "#475569", fontWeight: 500 }}>
+                            × {calls.length}
+                          </span>
+                          <span
+                            style={{
+                              marginLeft: "auto",
+                              color: "var(--pet-color-muted)",
+                              fontFamily: "monospace",
+                              fontSize: 10,
+                            }}
+                            title={`最近一次调用: ${calls[0]?.timestamp ?? "-"}`}
+                          >
+                            最近 {calls[0]?.timestamp?.slice(11, 16) ?? "—"}
+                          </span>
+                        </div>
+                        {expanded && (
+                          <div style={{ padding: "6px 10px" }}>
+                            {calls.map((c, j) => (
+                              <div
+                                key={`${name}-${j}`}
+                                style={{
+                                  padding: "4px 0",
+                                  borderTop: j === 0 ? "none" : "1px dashed var(--pet-tint-yellow-fg)",
+                                  fontSize: 12,
+                                }}
+                              >
+                                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      padding: "1px 6px",
+                                      borderRadius: 10,
+                                      background: riskBadgeBg(c.risk_level),
+                                      color: "#fff",
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    {c.risk_level}
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      padding: "1px 6px",
+                                      borderRadius: 10,
+                                      background: reviewStatusBg(c.review_status),
+                                      color: "#fff",
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    {reviewStatusLabel(c.review_status)}
+                                  </span>
+                                  <span style={{ color: "var(--pet-color-muted)", fontFamily: "monospace", fontSize: 10 }}>
+                                    {c.timestamp.slice(11)}
+                                  </span>
+                                  {c.purpose && (
+                                    <span style={{ color: "#1e293b" }}>
+                                      {c.purpose.length > 60 ? c.purpose.slice(0, 60) + "…" : c.purpose}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
+                {!toolHistoryGroupByName && filtered.map((c, i) => (
               <div
                 key={i}
                 className="pet-tool-history-row"
                 style={{
-                  border: "1px solid #fde68a",
+                  border: "1px solid var(--pet-tint-yellow-fg)",
                   borderRadius: "6px",
                   padding: "6px 10px",
                   marginBottom: "6px",
@@ -2038,7 +3723,7 @@ export function PanelDebug() {
                   >
                     {reviewStatusLabel(c.review_status)}
                   </span>
-                  <span style={{ color: "#94a3b8", fontFamily: "monospace", fontSize: "10px" }}>
+                  <span style={{ color: "var(--pet-color-muted)", fontFamily: "monospace", fontSize: "10px" }}>
                     {c.timestamp.slice(11)}
                   </span>
                 </div>
@@ -2048,7 +3733,7 @@ export function PanelDebug() {
                   </div>
                 )}
                 {c.reasons.length > 0 && (
-                  <div style={{ color: "#7c2d12", marginTop: "2px", fontSize: "11px" }}>
+                  <div style={{ color: "var(--pet-tint-red-fg)", marginTop: "2px", fontSize: "11px" }}>
                     <strong>风险：</strong>{c.reasons.join(" / ")}
                   </div>
                 )}
@@ -2071,7 +3756,7 @@ export function PanelDebug() {
                       border: "1px solid var(--pet-color-border)",
                       borderRadius: 4,
                       background: "var(--pet-color-card)",
-                      color: copied ? "#16a34a" : "var(--pet-color-muted)",
+                      color: copied ? "var(--pet-tint-green-fg)" : "var(--pet-color-muted)",
                       cursor: "pointer",
                     });
                     return (
@@ -2123,12 +3808,14 @@ export function PanelDebug() {
           );
         })()}
       </div>
+      )}
 
       {/* Iter R6: feedback timeline. Surfaces R1's capture data so the user
           can audit what the pet "saw" — whether each prior proactive turn
           was replied to or ignored. Pure data view; the prompt-side hint is
           built from the same log. Default-collapsed; chip shows count + a
           summary ratio of recent replies. */}
+      {activeTimeline === "feedback" && (
       <div
         style={{
           padding: "8px 16px",
@@ -2195,10 +3882,10 @@ export function PanelDebug() {
                 rowStyle={{ paddingTop: "6px" }}
                 options={[
                   { value: "all", label: "全部", count: feedbackHistory.length, accent: "#475569", title: "显示全部反馈" },
-                  { value: "replied", label: "回复", count: repliedCt, accent: "#16a34a", title: "只看用户回复的开口" },
+                  { value: "replied", label: "回复", count: repliedCt, accent: "var(--pet-tint-green-fg)", title: "只看用户回复的开口" },
                   { value: "liked", label: "👍 点赞", count: likedCt, accent: "#ec4899", title: "只看用户主动点赞的开口（高质量正向）" },
-                  { value: "ignored", label: "忽略", count: ignoredCt, accent: "#94a3b8", title: "只看被动忽略的开口" },
-                  { value: "dismissed", label: "点掉", count: dismissedCt, accent: "#dc2626", title: "只看 5 秒内主动点掉的开口" },
+                  { value: "ignored", label: "忽略", count: ignoredCt, accent: "var(--pet-color-muted)", title: "只看被动忽略的开口" },
+                  { value: "dismissed", label: "点掉", count: dismissedCt, accent: "var(--pet-tint-red-fg)", title: "只看 5 秒内主动点掉的开口" },
                 ]}
               />
               <div style={{ paddingTop: "6px", maxHeight: "240px", overflowY: "auto" }}>
@@ -2230,10 +3917,10 @@ export function PanelDebug() {
                     padding: "1px 8px",
                     borderRadius: "10px",
                     background:
-                      f.kind === "replied" ? "#16a34a"
+                      f.kind === "replied" ? "var(--pet-tint-green-fg)"
                       : f.kind === "liked" ? "#ec4899"
-                      : f.kind === "dismissed" ? "#dc2626"
-                      : "#94a3b8",
+                      : f.kind === "dismissed" ? "var(--pet-tint-red-fg)"
+                      : "var(--pet-color-muted)",
                     color: "#fff",
                     fontWeight: 600,
                     minWidth: "44px",
@@ -2272,6 +3959,7 @@ export function PanelDebug() {
           );
         })()}
       </div>
+      )}
 
       {/* Pending user-set reminders — sourced from todo memory category */}
       {reminders.length > 0 && (
@@ -2292,7 +3980,7 @@ export function PanelDebug() {
             <div key={i} style={{ display: "flex", gap: "8px" }}>
               <span
                 style={{
-                  color: r.due_now ? "#ea580c" : "#a16207",
+                  color: r.due_now ? "#ea580c" : "var(--pet-tint-yellow-fg)",
                   fontFamily: "'SF Mono', 'Menlo', monospace",
                   fontWeight: r.due_now ? 600 : 400,
                   minWidth: "44px",
@@ -2314,6 +4002,125 @@ export function PanelDebug() {
       {/* 日志窗已抽到独立「日志」tab（PanelDebugLogs）。这里只留 stats /
           chips / 模态层 / 工具栏，让"应用"tab 不再既显状态又显大段黑底
           日志，分流后两个 tab 各司其职。 */}
+
+      {/* 工具风险表 inline 调整：每行 3-chip toggle 直接 set_tool_review_mode
+          写盘 → 下次 chat 调 get_settings 自动读到新值，不必去 PanelSettings
+          整表保存。default 折叠避免长列表撑 panel。 */}
+      <div style={{ marginTop: 20, padding: "14px 16px", background: "var(--pet-color-card)", border: "1px solid var(--pet-color-border)", borderRadius: 10 }}>
+        <div
+          onClick={() => setToolRiskExpanded((v) => !v)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+          title="每个内置工具的基线风险 + 当前用户偏好（auto / 强制审核 / 强制放行）。点 chip 直改 settings 立即生效；不必去 PanelSettings 改整表。"
+        >
+          <span style={{ width: 10, fontFamily: "monospace", color: "var(--pet-color-muted)" }}>
+            {toolRiskExpanded ? "▾" : "▸"}
+          </span>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--pet-color-fg)", letterSpacing: 0.2 }}>
+            🛡 工具风险表
+          </span>
+          <span style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
+            ({toolRiskRows.length} 个工具 · 点 chip 改完立刻生效)
+          </span>
+          {toolRiskMsg && (
+            <span style={{ marginLeft: "auto", fontSize: 11, color: toolRiskMsg.startsWith("改失败") ? "var(--pet-tint-red-fg)" : "var(--pet-tint-green-fg)" }}>
+              {toolRiskMsg}
+            </span>
+          )}
+        </div>
+        {toolRiskExpanded && (
+          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+            {toolRiskRows.map((row) => {
+              const busy = toolRiskBusyName === row.name;
+              const levelBg =
+                row.level === "high" ? "var(--pet-tint-red-fg)" : row.level === "medium" ? "#f59e0b" : "var(--pet-color-muted)";
+              return (
+                <div
+                  key={row.name}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 10px",
+                    border: "1px solid var(--pet-color-border)",
+                    borderRadius: 8,
+                    background: "var(--pet-color-bg)",
+                    opacity: busy ? 0.6 : 1,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      color: "#fff",
+                      background: levelBg,
+                      padding: "1px 6px",
+                      borderRadius: 4,
+                      textTransform: "uppercase",
+                      flexShrink: 0,
+                      minWidth: 50,
+                      textAlign: "center",
+                    }}
+                  >
+                    {row.level}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--pet-color-fg)", fontFamily: "'SF Mono', 'Menlo', monospace" }}>
+                      {row.name}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--pet-color-muted)", marginTop: 2 }}>
+                      {row.note}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+                    {(
+                      [
+                        { mode: "auto", label: "自动", title: "跟着分类器走（默认）" },
+                        { mode: "always_review", label: "审核", title: "强制走 panel 审核（保险）" },
+                        { mode: "always_approve", label: "放行", title: "直接放行（关掉打扰）" },
+                      ] as const
+                    ).map(({ mode, label, title }) => {
+                      const active = row.mode === mode;
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          disabled={busy || active}
+                          onClick={() => void handleSetToolReviewMode(row.name, mode)}
+                          title={title}
+                          style={{
+                            fontSize: 11,
+                            padding: "3px 9px",
+                            border: "1px solid",
+                            borderColor: active ? "var(--pet-color-accent)" : "var(--pet-color-border)",
+                            borderRadius: 4,
+                            background: active ? "var(--pet-color-accent)" : "var(--pet-color-card)",
+                            color: active ? "#fff" : "var(--pet-color-fg)",
+                            cursor: active || busy ? "default" : "pointer",
+                            fontWeight: active ? 600 : 400,
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+            {toolRiskRows.length === 0 && (
+              <div style={{ padding: "12px", textAlign: "center", color: "var(--pet-color-muted)", fontSize: 12 }}>
+                加载中…
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2324,29 +4131,29 @@ export function PanelDebug() {
 function riskBadgeBg(level: string): string {
   switch (level) {
     case "high":
-      return "#dc2626";
+      return "var(--pet-tint-red-fg)";
     case "medium":
       return "#f59e0b";
     case "low":
-      return "#16a34a";
+      return "var(--pet-tint-green-fg)";
     default:
-      return "#94a3b8";
+      return "var(--pet-color-muted)";
   }
 }
 
 function reviewStatusBg(status: string): string {
   switch (status) {
     case "approved":
-      return "#0ea5e9";
+      return "var(--pet-color-accent)";
     case "denied":
-      return "#dc2626";
+      return "var(--pet-tint-red-fg)";
     case "timeout":
       return "#f97316";
     case "missing_purpose":
       return "#6b21a8";
     case "not_required":
     default:
-      return "#64748b";
+      return "var(--pet-color-muted)";
   }
 }
 
@@ -2384,20 +4191,20 @@ function kindColor(kind: string): string {
     case "Run":
       return "#22c55e";
     case "Spoke":
-      return "#16a34a";
+      return "var(--pet-tint-green-fg)";
     case "LlmSilent":
       return "#a855f7";
     case "LlmError":
-      return "#dc2626";
+      return "var(--pet-tint-red-fg)";
     case "Skip":
       return "#f59e0b";
     case "Silent":
-      return "#94a3b8";
+      return "var(--pet-color-muted)";
     // Iter R2: tool-review outcomes share the timeline with proactive decisions.
     case "ToolReviewApprove":
-      return "#0ea5e9";
+      return "var(--pet-color-accent)";
     case "ToolReviewDeny":
-      return "#dc2626";
+      return "var(--pet-tint-red-fg)";
     case "ToolReviewTimeout":
       return "#f97316";
     default:

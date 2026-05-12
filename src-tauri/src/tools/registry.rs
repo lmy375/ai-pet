@@ -6,7 +6,10 @@ use tokio::sync::Mutex as TokioMutex;
 use super::calendar_tool::GetUpcomingEventsTool;
 use super::context::ToolContext;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
-use super::memory_tools::{MemoryEditTool, MemoryListTool, MemorySearchTool};
+use super::give_image_tool::GiveImageTool;
+use super::memory_tools::{
+    ButlerTaskEditTool, MemoryEditTool, MemoryListTool, MemorySearchTool, TodoEditTool,
+};
 use super::shell_tools::{BashTool, CheckShellStatusTool};
 use super::system_tools::GetActiveWindowTool;
 use super::task_create_tool::TaskCreateTool;
@@ -35,11 +38,14 @@ pub const BUILTIN_TOOL_NAMES: &[&str] = &[
     "memory_list",
     "memory_search",
     "memory_edit",
+    "butler_task_edit",
+    "todo_edit",
     "get_active_window",
     "get_weather",
     "get_upcoming_events",
     "propose_task",
     "task_create",
+    "give_image",
 ];
 
 /// Registry holding all available tools (built-in + MCP)
@@ -77,11 +83,14 @@ impl ToolRegistry {
             Box::new(MemoryListTool),
             Box::new(MemorySearchTool),
             Box::new(MemoryEditTool),
+            Box::new(ButlerTaskEditTool),
+            Box::new(TodoEditTool),
             Box::new(GetActiveWindowTool),
             Box::new(GetWeatherTool),
             Box::new(GetUpcomingEventsTool),
             Box::new(ProposeTaskTool),
             Box::new(TaskCreateTool),
+            Box::new(GiveImageTool),
         ];
         Self::with_tools(tools, mcp_definitions)
     }

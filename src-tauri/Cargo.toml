@@ -21,6 +21,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 serde_yaml = "0.9"
+base64 = "0.22"
 dirs = "6"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
@@ -33,4 +34,6 @@ rmcp = { version = "1.2", features = [
 teloxide = { version = "0.13", features = ["macros"] }
 log = "0.4"
 regex = "1"
+# bundled feature 编译时静态打包 SQLite C 源码，无外部依赖。
+rusqlite = { version = "0.32", features = ["bundled"] }
 

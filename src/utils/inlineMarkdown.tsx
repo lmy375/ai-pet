@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -173,28 +174,149 @@ const INLINE_CODE_STYLE: React.CSSProperties = {
   borderRadius: "3px",
 };
 
-/// 桌面气泡用的最小 block-level markdown 解析器。在 `parseInlineMarkdown` 之
-/// 上叠加按行处理：
-/// - 行首 `- ` 或 `* `（允许前导空格） → 列表项：`<div>• ...</div>`，左缩进
+/// 桌面气泡用的"够用的"block-level markdown 解析器。在 `parseInlineMarkdown`
+/// 之上叠加按行处理，状态机消费 fence code block / 表格 / 列表 / 标题 / 段落。
+/// 每个 block 渲染为 `<div>` / `<pre>` / `<table>`；inline 部分继续走
+/// `parseInlineMarkdown`，所以 `**bold**` / `` `code` `` / URL 等仍生效。
+///
+/// 支持的块级语法：
+/// - ` ``` ... ``` ` fence code（带可选 language tag）→ monospace pre 块，
+///   行号 + 简单 syntax tinting（仅按 lang 给整个块上轻 tint，不深 highlight
+///   减少 bundle）。
+/// - `| col | col |` 表头 + `|---|---|` 分隔 + body 行 → `<table>` 渲染
+/// - 行首 `- ` / `* `（允许前导空格） → 无序列表项
+/// - 行首 `1. ` / `2. ` 等数字 → 有序列表项（保留数字）
+/// - `# ` / `## ` / `### ` → 标题（1.4-1.0x 字号 + 加粗）
 /// - 空行 → 段落间 4px 视觉 gap
-/// - 其它行 → 普通 `<div>{parseInlineMarkdown(line)}</div>`
+/// - 其它 → 普通段落 `<div>{parseInlineMarkdown(line)}</div>`
 ///
-/// 每行渲染为 block-level `<div>`，自带换行，不需 `<br>`。行内继续走
-/// `parseInlineMarkdown`，所以 `**bold**` / `` `code` `` 等仍生效。
-///
-/// 不识别有序列表 / 表格 / 引用 / 代码块 / 标题 / 链接 / 图片 —— 桌面气泡 max-
-/// height 80px 容不下复杂排版；如未来需要，扩展点是这个函数。
+/// 不识别：> 引用 / [link](url)（已通过 URL 自动识别）/ ![image] / 嵌套列表
+/// 深层缩进。桌面气泡空间小，复杂排版反而干扰。
 export function parseMarkdown(input: string): ReactNode[] {
   const out: ReactNode[] = [];
   const lines = input.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
+
+    // ``` fence code block：consume lines until closing ```
+    const fenceOpen = trimmed.match(/^```(\S*)\s*$/);
+    if (fenceOpen) {
+      const lang = fenceOpen[1] || "";
+      const codeLines: string[] = [];
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim().match(/^```\s*$/)) {
+        codeLines.push(lines[j]);
+        j++;
+      }
+      out.push(
+        <FenceCodeBlock
+          key={`md-blk-${i}`}
+          lang={lang}
+          code={codeLines.join("\n")}
+        />,
+      );
+      // skip past closing fence (j < lines.length 时是闭合行；否则 EOF，
+      // 把剩余视为代码块，不报错)
+      i = j;
+      continue;
+    }
+
+    // 表格：当前行是 `|...|` + 下一行是 `|---|---|` separator 时开始消费
+    if (trimmed.startsWith("|") && trimmed.endsWith("|") && i + 1 < lines.length) {
+      const nextTrim = lines[i + 1].trim();
+      const isSeparator = /^\|[\s:|-]+\|$/.test(nextTrim) && nextTrim.includes("-");
+      if (isSeparator) {
+        const splitRow = (row: string) =>
+          row
+            .replace(/^\|/, "")
+            .replace(/\|$/, "")
+            .split("|")
+            .map((c) => c.trim());
+        const header = splitRow(trimmed);
+        const bodyRows: string[][] = [];
+        let j = i + 2;
+        while (
+          j < lines.length &&
+          lines[j].trim().startsWith("|") &&
+          lines[j].trim().endsWith("|")
+        ) {
+          bodyRows.push(splitRow(lines[j].trim()));
+          j++;
+        }
+        out.push(
+          <table key={`md-blk-${i}`} style={TABLE_STYLE}>
+            <thead>
+              <tr>
+                {header.map((h, k) => (
+                  <th key={k} style={TABLE_TH_STYLE}>
+                    {parseInlineMarkdown(h)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, ri) => (
+                <tr key={ri}>
+                  {row.map((c, ci) => (
+                    <td key={ci} style={TABLE_TD_STYLE}>
+                      {parseInlineMarkdown(c)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>,
+        );
+        i = j - 1; // for-loop ++ 后跳到 j
+        continue;
+      }
+    }
+
     if (trimmed.length === 0) {
       out.push(<div key={`md-blk-${i}`} style={PARAGRAPH_GAP_STYLE} />);
       continue;
     }
-    // `- ` 或 `* ` 前导（允许任意空格）→ 列表项
+
+    // 标题 # / ## / ###（最多三级，避免无意义大字号占气泡空间）
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const body = headingMatch[2];
+      const fontSize = level === 1 ? "1.25em" : level === 2 ? "1.1em" : "1.0em";
+      out.push(
+        <div
+          key={`md-blk-${i}`}
+          style={{
+            fontWeight: 600,
+            fontSize,
+            marginTop: 4,
+            marginBottom: 2,
+          }}
+        >
+          {parseInlineMarkdown(body)}
+        </div>,
+      );
+      continue;
+    }
+
+    // 有序列表：行首 `<digit>. `
+    const olMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
+    if (olMatch) {
+      const num = olMatch[2];
+      const body = olMatch[3];
+      out.push(
+        <div key={`md-blk-${i}`} style={LIST_ITEM_STYLE}>
+          <span style={{ marginRight: 4, minWidth: 16, color: "var(--pet-color-muted)" }}>
+            {num}.
+          </span>
+          {parseInlineMarkdown(body)}
+        </div>,
+      );
+      continue;
+    }
+
+    // 无序列表：`- ` 或 `* `（允许任意前导空格）
     const listMatch = line.match(/^(\s*)[-*]\s+(.*)$/);
     if (listMatch) {
       const body = listMatch[2];
@@ -206,10 +328,9 @@ export function parseMarkdown(input: string): ReactNode[] {
       );
       continue;
     }
+
     // 普通行
-    out.push(
-      <div key={`md-blk-${i}`}>{parseInlineMarkdown(line)}</div>,
-    );
+    out.push(<div key={`md-blk-${i}`}>{parseInlineMarkdown(line)}</div>);
   }
   return out;
 }
@@ -223,4 +344,119 @@ const LIST_ITEM_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "flex-start",
   gap: 0,
+};
+
+/// Fence code block 渲染组件。hover 时右上角浮 📋 复制按钮（与 lang badge
+/// 同 corner 错开排）；点击 navigator.clipboard.writeText + 1.5s "✓" 反馈。
+/// 必须是单独组件而不是 inline JSX —— useState 不能放在 parseMarkdown 这
+/// 种纯函数循环内（hook 顺序规则）。
+function FenceCodeBlock({ lang, code }: { lang: string; code: string }) {
+  const [hovered, setHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.error("copy code failed:", err);
+    }
+  };
+  return (
+    <pre
+      style={CODE_BLOCK_STYLE}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {lang && <span style={CODE_LANG_BADGE_STYLE}>{lang}</span>}
+      {/* 复制按钮：默认仅 hover 时显（与 lang badge 配色错开避免色块挤）。
+          copied 状态强制显 1.5s 让用户看到反馈。 */}
+      {(hovered || copied) && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleCopy();
+          }}
+          style={{
+            ...CODE_COPY_BTN_STYLE,
+            color: copied ? "#16a34a" : CODE_COPY_BTN_STYLE.color,
+            borderColor: copied ? "#86efac" : (CODE_COPY_BTN_STYLE.borderColor as string),
+          }}
+          title={copied ? "已复制 code 到剪贴板" : "复制 code 到剪贴板"}
+          aria-label="copy code"
+        >
+          {copied ? "✓" : "📋"}
+        </button>
+      )}
+      <code>{code}</code>
+    </pre>
+  );
+}
+
+/// fence code block 整体样式。背景与 inline code 同色系（暖琥珀）但稍浅 +
+/// 边框更柔，让多行块感觉是"代码段"而非"badge"。语言标签飘在右上角，给阅
+/// 读者"这是什么语言"信号。
+const CODE_BLOCK_STYLE: React.CSSProperties = {
+  fontFamily: "'SF Mono', 'Menlo', monospace",
+  fontSize: "11.5px",
+  background: "#fffbeb",
+  color: "#78350f",
+  border: "1px solid #fde68a",
+  borderRadius: 4,
+  padding: "6px 8px",
+  margin: "4px 0",
+  position: "relative",
+  overflowX: "auto",
+  whiteSpace: "pre",
+  lineHeight: 1.4,
+};
+
+const CODE_LANG_BADGE_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 2,
+  left: 4,
+  fontSize: 9,
+  color: "#a16207",
+  fontWeight: 500,
+  letterSpacing: 0.3,
+  userSelect: "none",
+};
+
+/// fence code block 复制按钮：hover-only 右上角浮窗。border + bg 让按钮在
+/// 暖琥珀代码块底色上仍可读。
+const CODE_COPY_BTN_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 2,
+  right: 4,
+  padding: "1px 6px",
+  fontSize: 10,
+  lineHeight: 1.2,
+  border: "1px solid #fde68a",
+  borderRadius: 3,
+  background: "#fffbeb",
+  color: "#a16207",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  userSelect: "none",
+};
+
+/// 表格样式：紧凑 padding（mini 空间紧），细线 border 与气泡背景区分。
+const TABLE_STYLE: React.CSSProperties = {
+  borderCollapse: "collapse",
+  margin: "4px 0",
+  fontSize: "11.5px",
+};
+
+const TABLE_TH_STYLE: React.CSSProperties = {
+  padding: "3px 6px",
+  borderBottom: "1px solid var(--pet-color-border)",
+  background: "var(--pet-color-bg)",
+  fontWeight: 600,
+  textAlign: "left",
+};
+
+const TABLE_TD_STYLE: React.CSSProperties = {
+  padding: "2px 6px",
+  borderBottom: "1px solid var(--pet-color-border)",
 };

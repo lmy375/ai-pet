@@ -236,7 +236,8 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
         rules.push(
             "- **你也是用户的小管家**：上面「管家任务」段列出了用户委托给你的事，你可以用 \
 `read_file` / `write_file` / `edit_file` / `bash` 真去执行（读 ta 的某个文件、写一份日报、\
-整理目录都行），完成后用 `memory_edit update` 在 `butler_tasks` 里记录这次执行时间和结果。\
+整理目录都行），完成后用 `butler_task_edit` 工具（action=update）在那一项 title 上记录执行\
+时间和结果（在 description 后追加 `[done]` / `[done] [result: ...]` 或 `[error: 原因]` 标记）。\
 一次开口推进一项就够，不必一次清空。如果当下不是合适执行时机，也可以只做轻提及。"
                 .into(),
         );
@@ -301,7 +302,7 @@ pub fn proactive_rules(inputs: &PromptInputs) -> Vec<String> {
                 inputs.pre_quiet_minutes.unwrap_or(0)
             ),
             "reminders" => {
-                "- **有到期的用户提醒**：上面 reminders 段列出的事项是用户之前明确让你提醒的，请把其中**最相关的一条**自然带进开口里（不要全念出来），并在开口后用 `memory_edit delete` 把已经提醒过的那条 todo 条目删掉，避免下次再提一遍。".to_string()
+                "- **有到期的用户提醒**：上面 reminders 段列出的事项是用户之前明确让你提醒的，请把其中**最相关的一条**自然带进开口里（不要全念出来），并在开口后用 `todo_edit`（action=delete）把已经提醒过的那条删掉，避免下次再提一遍。".to_string()
             }
             "plan" => {
                 "- **你有今日计划在执行中**：上面 plan 段列出了你今天的小目标。开口时**优先**考虑推进其中一条（不必每次推进，看时机自然）；推进后用 `memory_edit update` 在 ai_insights/daily_plan 里更新进度（比如把 [0/2] 改成 [1/2]），全部完成的项可以删除。".to_string()

@@ -483,6 +483,55 @@ pub async fn get_week_speech_count() -> u64 {
     week_speech_count().await
 }
 
+/// Pure: 把 speech_history.log 内容按当日小时分桶。返回 24 元素数组，
+/// index = 本地 0-23 时；其它日期 / 解析失败行跳过。供 PanelDebug 24h
+/// mini bar 用，让用户看"今天宠物开口集中在几点"。
+pub fn hourly_counts_for_date(content: &str, target_date: chrono::NaiveDate) -> [u64; 24] {
+    use chrono::Timelike;
+    let mut buckets = [0u64; 24];
+    for line in content.lines().filter(|l| !l.is_empty()) {
+        let Some((ts, _)) = line.split_once(' ') else {
+            continue;
+        };
+        let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else {
+            continue;
+        };
+        let local = dt.with_timezone(&chrono::Local);
+        if local.date_naive() != target_date {
+            continue;
+        }
+        let h = local.hour() as usize;
+        if h < 24 {
+            buckets[h] += 1;
+        }
+    }
+    buckets
+}
+
+/// Tauri 命令：返回今日（本机时区）24 小时的主动开口分桶计数。Vec<u64>
+/// length 24；index 0 = 00:00-00:59，... 23 = 23:00-23:59。
+#[tauri::command]
+pub async fn get_today_speech_hourly() -> Vec<u64> {
+    let content = read_history_content().await;
+    let today = chrono::Local::now().date_naive();
+    hourly_counts_for_date(&content, today).to_vec()
+}
+
+/// Tauri command — generic trailing N-day proactive speech count（1 / 3 / 7
+/// / 14 / 30 等可调窗口）。复用 sum_recent_days；days 钳到 [1, 365]，让恶
+/// 意 / 极端值不爆 IO。days <= 1 等价于今日单日（与既有 get_today_speech_count
+/// 一致语义）。
+#[tauri::command]
+pub async fn get_speech_count_days(days: u32) -> u64 {
+    let n = days.clamp(1, 365) as usize;
+    let Some(path) = daily_path() else {
+        return 0;
+    };
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let map = parse_daily(&content);
+    sum_recent_days(&map, chrono::Local::now().date_naive(), n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

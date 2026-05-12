@@ -132,6 +132,56 @@ pub fn recent_tool_calls() -> Vec<ToolCallRecord> {
     out
 }
 
+/// SQLite v11/v12 引入了 `butler_task_edit` / `todo_edit` 专用工具，旧的
+/// `memory_edit` 仍接受 butler_tasks / todo category 作 fallback。owner 需
+/// 要看到 prompt 引导后 LLM 是否真在用新工具 —— 本 struct 把 ring buffer
+/// 里最近 N 条按"专用 vs 共用"二分计数。
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct DedicatedToolStats {
+    pub butler_task_edit_count: usize,
+    pub memory_edit_butler_count: usize,
+    pub todo_edit_count: usize,
+    pub memory_edit_todo_count: usize,
+    /// 样本窗口大小（recent_tool_calls() 的当前长度）。让前端能渲染
+    /// "5/30" 这种相对比例提示。
+    pub total_records: usize,
+}
+
+/// Pure：从 ring buffer records 计算各类调用数。memory_edit 的 category 字段
+/// 从 args_excerpt JSON 解析（前 200 字符已截断，但 category 在头部，正常情
+/// 况下不丢；解析失败的记录静默忽略，不阻塞统计）。
+pub fn compute_dedicated_tool_stats(records: &[ToolCallRecord]) -> DedicatedToolStats {
+    let mut stats = DedicatedToolStats {
+        total_records: records.len(),
+        ..Default::default()
+    };
+    for r in records {
+        match r.name.as_str() {
+            "butler_task_edit" => stats.butler_task_edit_count += 1,
+            "todo_edit" => stats.todo_edit_count += 1,
+            "memory_edit" => {
+                // args_excerpt 是 truncate 过的 JSON 文本；category 字段
+                // 通常在前 50 字内，解析失败时（字段被截断 / 非 JSON）跳过。
+                if let Ok(args) = serde_json::from_str::<serde_json::Value>(&r.args_excerpt) {
+                    match args.get("category").and_then(|v| v.as_str()) {
+                        Some("butler_tasks") => stats.memory_edit_butler_count += 1,
+                        Some("todo") => stats.memory_edit_todo_count += 1,
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    stats
+}
+
+/// Tauri 命令包装：直接 read ring buffer 算 stats 返前端。
+#[tauri::command]
+pub fn get_dedicated_tool_stats() -> DedicatedToolStats {
+    compute_dedicated_tool_stats(&recent_tool_calls())
+}
+
 /// Tauri command for callers that don't pull the full DebugSnapshot.
 #[tauri::command]
 pub fn get_recent_tool_calls() -> Vec<ToolCallRecord> {
@@ -206,6 +256,67 @@ mod tests {
         if let Ok(mut g) = TOOL_CALL_HISTORY.lock() {
             g.clear();
         }
+    }
+
+    fn mk_record(name: &str, args: &str) -> ToolCallRecord {
+        ToolCallRecord {
+            timestamp: "2026-05-12 10:00:00".to_string(),
+            name: name.to_string(),
+            args_excerpt: args.to_string(),
+            purpose: "".to_string(),
+            risk_level: "low".to_string(),
+            reasons: vec![],
+            safe_alternative: None,
+            review_status: ToolCallReviewStatus::NotRequired,
+            result_excerpt: "".to_string(),
+        }
+    }
+
+    #[test]
+    fn dedicated_vs_legacy_counts() {
+        let records = vec![
+            mk_record("butler_task_edit", r#"{"action":"create","title":"日报"}"#),
+            mk_record("butler_task_edit", r#"{"action":"update","title":"日报"}"#),
+            mk_record(
+                "memory_edit",
+                r#"{"action":"create","category":"butler_tasks","title":"周报"}"#,
+            ),
+            mk_record("todo_edit", r#"{"action":"create","title":"喝水"}"#),
+            mk_record(
+                "memory_edit",
+                r#"{"action":"delete","category":"todo","title":"老提醒"}"#,
+            ),
+            mk_record(
+                "memory_edit",
+                r#"{"action":"create","category":"user_profile","title":"作息"}"#,
+            ),
+            mk_record("get_weather", r#"{"city":"shanghai"}"#),
+        ];
+        let stats = compute_dedicated_tool_stats(&records);
+        assert_eq!(stats.butler_task_edit_count, 2);
+        assert_eq!(stats.memory_edit_butler_count, 1);
+        assert_eq!(stats.todo_edit_count, 1);
+        assert_eq!(stats.memory_edit_todo_count, 1);
+        assert_eq!(stats.total_records, 7);
+    }
+
+    #[test]
+    fn dedicated_stats_empty_records() {
+        let stats = compute_dedicated_tool_stats(&[]);
+        assert_eq!(stats, DedicatedToolStats::default());
+    }
+
+    #[test]
+    fn dedicated_stats_ignore_non_json_args() {
+        // 截断后 args_excerpt 可能不是合法 JSON —— 我们不计入也不 panic。
+        let records = vec![
+            mk_record("memory_edit", "this is not json"),
+            mk_record("memory_edit", r#"{"action":"create","categ"#),
+        ];
+        let stats = compute_dedicated_tool_stats(&records);
+        assert_eq!(stats.memory_edit_butler_count, 0);
+        assert_eq!(stats.memory_edit_todo_count, 0);
+        assert_eq!(stats.total_records, 2);
     }
 
     #[test]

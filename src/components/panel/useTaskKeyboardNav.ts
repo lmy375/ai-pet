@@ -73,10 +73,14 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // ⌘F / Ctrl+F 永远聚焦搜索框，不论当前在哪个输入控件 —— 与 mac
-      // 浏览器 / Finder / Notion 的"⌘F = 搜索"直觉一致。tagName 守卫**之
-      // 后**就拦不到 input 内的 ⌘F 了，所以放最前。
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+      // ⌘F / Ctrl+F / ⌘K / Ctrl+K 永远聚焦搜索框，不论当前在哪个输入控件 ——
+      // 与 mac 浏览器 / Finder / Notion 的"⌘F = 搜索"以及 Slack / Linear /
+      // Cursor 的"⌘K = 全局搜索"直觉一致。tagName 守卫**之后**就拦不到 input
+      // 内的 ⌘F / ⌘K 了，所以放最前。
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        (e.key.toLowerCase() === "f" || e.key.toLowerCase() === "k")
+      ) {
         e.preventDefault();
         const el = searchInputRef.current;
         if (el) {

@@ -160,13 +160,13 @@ export function PanelDebugLogs() {
         <button
           type="button"
           onClick={() => setLogLevels(new Set())}
-          style={multiSelectChipStyle(logLevels.size === 0, "#475569")}
+          style={multiSelectChipStyle(logLevels.size === 0, "var(--pet-color-muted)")}
           title="显示全部级别。点击清空多选过滤。"
         >
           全部 {logs.length}
         </button>
         {(["ERROR", "WARN", "INFO"] as const).map((lvl) => {
-          const accent = lvl === "ERROR" ? "#dc2626" : lvl === "WARN" ? "#f59e0b" : "#475569";
+          const accent = lvl === "ERROR" ? "var(--pet-tint-red-fg)" : lvl === "WARN" ? "#f59e0b" : "var(--pet-color-muted)";
           const active = logLevels.has(lvl);
           return (
             <button
