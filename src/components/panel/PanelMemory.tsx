@@ -6,6 +6,9 @@ import { renderContentWithTaskRefs } from "./panelChatBits";
 import { EmptyState } from "./EmptyState";
 import { LoadingState } from "./LoadingState";
 import { Modal } from "./Modal";
+import { formatBytes } from "../../utils/formatBytes";
+import { formatRelativeAgeBuckets } from "../../utils/formatRelativeAge";
+import { useSearchHistory } from "../../hooks/useSearchHistory";
 
 interface MemoryItem {
   title: string;
@@ -89,6 +92,57 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   const [renamingMemoryKey, setRenamingMemoryKey] = useState<string | null>(null);
   const [renameMemoryDraft, setRenameMemoryDraft] = useState("");
   const [renameMemoryBusy, setRenameMemoryBusy] = useState(false);
+  /// 双击 description 进 inline edit。与 rename 同 key 协议 (`cat::title`)
+  /// 跨 category 唯一。draft 是 textarea 当前值；commit 走 memory_edit
+  /// update 路径（与既有 modal 编辑同源）。无未改变检查 — 用户敲一下立马
+  /// 关 textarea 不写盘（与 trim 后 noop 短路保一致）。rename 与 desc 编
+  /// 辑互斥：renamingMemoryKey 非 null 时双击 description 不进入 desc 编
+  /// 辑，让两个 inline UI 不打架。
+  const [editingDescKey, setEditingDescKey] = useState<string | null>(null);
+  const [editingDescDraft, setEditingDescDraft] = useState("");
+  const [editingDescBusy, setEditingDescBusy] = useState(false);
+  const cancelDescEdit = () => {
+    setEditingDescKey(null);
+    setEditingDescDraft("");
+  };
+  const commitDescEdit = async () => {
+    const key = editingDescKey;
+    if (!key) return;
+    const sep = key.indexOf("::");
+    if (sep < 0) {
+      cancelDescEdit();
+      return;
+    }
+    const category = key.slice(0, sep);
+    const title = key.slice(sep + 2);
+    const newDesc = editingDescDraft;
+    // 与原值相等 → noop（避免无意义写盘 + 让 trim 仅删首尾的差异也归零）
+    const origItem = index?.categories[category]?.items.find(
+      (i) => i.title === title,
+    );
+    if (origItem && origItem.description === newDesc) {
+      cancelDescEdit();
+      return;
+    }
+    setEditingDescBusy(true);
+    try {
+      await invoke("memory_edit", {
+        action: "update",
+        category,
+        title,
+        description: newDesc,
+        detailContent: null,
+      });
+      await loadIndex();
+      setEditingDescKey(null);
+      setEditingDescDraft("");
+    } catch (e) {
+      setMessage(`保存失败：${e}`);
+      setTimeout(() => setMessage(""), 4000);
+    } finally {
+      setEditingDescBusy(false);
+    }
+  };
   const commitRenameMemory = async () => {
     const key = renamingMemoryKey;
     if (!key) return;
@@ -324,6 +378,27 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     }
     return new Set();
   });
+  /// 全局排序模式：true 时各 category 的 rest 段（非 pinned）按 updated_at
+  /// 倒序，pinned 仍挂头但段内也时间序。false 走 yaml 文件原序（pinned 优先
+  /// + 其它原序）—— 与历史行为一致。持久化到 localStorage，下次打开保留偏好。
+  const [sortByRecent, setSortByRecent] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-memory-sort-recent") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSortByRecent = () => {
+    setSortByRecent((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem("pet-memory-sort-recent", next ? "1" : "0");
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
   /// butler_tasks 段 schedule kind 过滤：Set 内值为 "every" / "once" /
   /// "deadline" / "none"（合成 sentinel，含义 "无 schedule 前缀"）。空 Set
   /// = 不过滤；非空 = OR 命中（item.kind 或 "none" 命中则通过）。session 内
@@ -442,6 +517,21 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       0,
     );
   }, [index]);
+  // 今日新增计数：created_at 以本地 today (YYYY-MM-DD) 开头的 item 总数。
+  // 用 toLocaleDateString("sv-SE") 拿 ISO 格式的本地日期，与写盘 ISO（带
+  // +08:00 等本地偏移）的前 10 字符兼容；不会被 toISOString() 的 UTC 把
+  // "今天凌晨"折到"昨天"。
+  const todayNewCount = useMemo(() => {
+    if (!index) return 0;
+    const today = new Date().toLocaleDateString("sv-SE");
+    let n = 0;
+    for (const cat of Object.values(index.categories)) {
+      for (const it of cat.items) {
+        if (it.created_at && it.created_at.startsWith(today)) n += 1;
+      }
+    }
+    return n;
+  }, [index]);
 
 
   const loadIndex = async () => {
@@ -488,7 +578,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
 
   const loadButlerHistory = async () => {
     try {
-      const lines = await invoke<string[]>("get_butler_history", { n: 5 });
+      // 拉最近 20 条让 fold logic（threshold = 5）真正生效 —— 之前 n=5 导
+      // 致 "展开全部 N 条" 永远不出现（永远只有 5 条可显）。20 条是 history
+      // ~3 字符行平均也才几 KB，poll 15s 也不肉痛。
+      const lines = await invoke<string[]>("get_butler_history", { n: 20 });
       setButlerHistory(lines);
     } catch (e: any) {
       console.error("Failed to load butler history:", e);
@@ -720,39 +813,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     };
   };
 
-  /// 最近 5 个搜索 keyword history：localStorage `pet-memory-search-history`
-  /// → string[] (newest first)。每次成功 handleSearch 入栈；去重 + cap 5。
-  /// native <datalist> 元素挂在 input 的 `list=` 属性，浏览器自动浮自动完
-  /// 成下拉 —— 不用自己实现 popover / outside-click 关闭。
-  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
-    try {
-      const raw = window.localStorage.getItem("pet-memory-search-history");
-      if (!raw) return [];
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) {
-        return arr.filter((v): v is string => typeof v === "string").slice(0, 5);
-      }
-    } catch {
-      // 解析失败 → 空 history（不退化用户体验）
-    }
-    return [];
-  });
-  const pushSearchHistory = (kw: string) => {
-    const trimmed = kw.trim();
-    if (!trimmed) return;
-    setSearchHistory((prev) => {
-      const next = [trimmed, ...prev.filter((x) => x !== trimmed)].slice(0, 5);
-      try {
-        window.localStorage.setItem(
-          "pet-memory-search-history",
-          JSON.stringify(next),
-        );
-      } catch {
-        // 私密浏览 / quota 满 → session 内仍生效
-      }
-      return next;
-    });
-  };
+  /// 最近 5 个搜索 keyword history —— 走共享 useSearchHistory hook。每次成
+  /// 功 handleSearch 入栈；datalist 浮自动完成；不用手写 popover 逻辑。
+  const { history: searchHistory, push: pushSearchHistory } =
+    useSearchHistory("pet-memory-search-history");
 
   const handleSearch = async () => {
     if (!searchKeyword.trim()) {
@@ -947,6 +1011,83 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   // 的 armed 模式，与 PanelDebug "立即开口" 按钮同模式。
   const [armedDeleteKey, setArmedDeleteKey] = useState<string | null>(null);
   const armDeleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /// 批量删除选区。key = `${category}::${title}`（与 armedDeleteKey 同模式
+  /// 避免跨类目同名碰撞）。空 Set 时所有 bulk UI 不渲染，跨"非选中态"零
+  /// 视觉打扰。选完后批量 delete 走 memory_edit 每条调一次 —— 与单条删除
+  /// 同 audit trail（mirror 双写、search 索引刷新等）。
+  const [selectedMemKeys, setSelectedMemKeys] = useState<Set<string>>(
+    new Set(),
+  );
+  const toggleMemSelected = (key: string) => {
+    setSelectedMemKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const clearMemSelection = () => setSelectedMemKeys(new Set());
+  /// 批量删除走 arm/confirm 二次确认。armed 期间按钮文案 / 颜色变红；3s
+  /// 内再点真执行，否则自动 disarm。与单条 handleDelete 模式一致，避免
+  /// 误删一片。
+  const [bulkDeleteArmed, setBulkDeleteArmed] = useState(false);
+  const bulkDeleteArmTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const armBulkDelete = () => {
+    if (bulkDeleteArmTimer.current) clearTimeout(bulkDeleteArmTimer.current);
+    setBulkDeleteArmed(true);
+    bulkDeleteArmTimer.current = setTimeout(() => {
+      setBulkDeleteArmed(false);
+      bulkDeleteArmTimer.current = null;
+    }, 3000);
+  };
+  const handleBulkDeleteMem = async () => {
+    if (selectedMemKeys.size === 0) return;
+    if (!bulkDeleteArmed) {
+      armBulkDelete();
+      return;
+    }
+    if (bulkDeleteArmTimer.current) clearTimeout(bulkDeleteArmTimer.current);
+    setBulkDeleteArmed(false);
+    setBulkDeleting(true);
+    const keys = Array.from(selectedMemKeys);
+    let ok = 0;
+    let failures: string[] = [];
+    for (const key of keys) {
+      // key 形如 "category::title"，title 自身不含 "::"（受 memory create
+      // 校验保护），split 一次即可拆出 (cat, title) 元组。
+      const sep = key.indexOf("::");
+      if (sep < 0) continue;
+      const category = key.slice(0, sep);
+      const title = key.slice(sep + 2);
+      try {
+        await invoke("memory_edit", { action: "delete", category, title });
+        ok++;
+      } catch (e) {
+        failures.push(`${title}: ${e}`);
+      }
+    }
+    setSelectedMemKeys(new Set());
+    setBulkDeleting(false);
+    if (failures.length === 0) {
+      setMessage(`已批量删除 ${ok} 条`);
+    } else {
+      setMessage(
+        `批量删除：成功 ${ok}，失败 ${failures.length}（${failures.slice(0, 2).join("； ")}${failures.length > 2 ? "…" : ""}）`,
+      );
+    }
+    await loadIndex();
+    // 任一删除可能命中 butler_tasks → 刷历史；命中 search 结果集 → 让用户重搜
+    await loadButlerHistory();
+    setSearchResults(null);
+  };
+  useEffect(() => {
+    return () => {
+      if (bulkDeleteArmTimer.current) clearTimeout(bulkDeleteArmTimer.current);
+    };
+  }, []);
   const handleDelete = async (category: string, title: string) => {
     const key = `${category}::${title}`;
     if (armedDeleteKey !== key) {
@@ -1011,9 +1152,35 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   }
 
   const s = {
-    container: { padding: 16, overflowY: "auto" as const, height: "100%", background: "var(--pet-color-bg)" },
-    section: { marginBottom: 20 },
-    sectionTitle: { fontSize: 13.5, fontWeight: 600, color: "var(--pet-color-fg)", marginBottom: 10, paddingBottom: 6, borderBottom: "1px solid var(--pet-color-border)", display: "flex", alignItems: "center", gap: 8, letterSpacing: 0.2 },
+    container: { padding: 22, overflowY: "auto" as const, height: "100%" },
+    // section: 升级为 card 形态（背景 + 边框 + 渐变顶 + shadow），与 PanelPersona
+    // / PanelSettings 的 section 视觉同步。内边距 16 给 list/title 足够呼吸。
+    section: {
+      marginBottom: 18,
+      padding: "16px 18px",
+      background:
+        "linear-gradient(180deg, color-mix(in srgb, var(--pet-color-accent) 3%, var(--pet-color-card)) 0%, var(--pet-color-card) 55%)",
+      border: "1px solid var(--pet-color-border)",
+      borderRadius: 12,
+      boxShadow: "var(--pet-shadow-sm)",
+    },
+    sectionTitle: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: "var(--pet-color-fg)",
+      marginBottom: 12,
+      paddingBottom: 10,
+      // 渐变 hairline，与 SectionTitle.tsx divider 风格一致
+      backgroundImage:
+        "linear-gradient(90deg, transparent, var(--pet-color-border) 12%, var(--pet-color-border) 88%, transparent)",
+      backgroundRepeat: "no-repeat",
+      backgroundSize: "100% 1px",
+      backgroundPosition: "bottom",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      letterSpacing: 0.2,
+    },
     badge: { fontSize: 11, background: "var(--pet-color-border)", color: "var(--pet-color-muted)", borderRadius: 10, padding: "1px 8px" },
     item: { padding: "10px 12px", background: "var(--pet-color-card)", border: "1px solid var(--pet-color-border)", borderRadius: 8, marginBottom: 6, fontSize: 13 },
     itemTitle: { fontWeight: 600, color: "var(--pet-color-fg)", marginBottom: 2 },
@@ -1021,11 +1188,23 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     itemMeta: { color: "var(--pet-color-muted)", fontSize: 11, marginTop: 4 },
     btn: { padding: "5px 11px", border: "1px solid var(--pet-color-border)", borderRadius: 6, background: "var(--pet-color-card)", color: "var(--pet-color-muted)", cursor: "pointer", fontSize: 12 },
     btnDanger: { padding: "5px 11px", border: "1px solid color-mix(in srgb, var(--pet-tint-red-fg) 40%, transparent)", borderRadius: 6, background: "var(--pet-color-card)", color: "var(--pet-tint-red-fg)", cursor: "pointer", fontSize: 12 },
-    btnPrimary: { padding: "7px 18px", border: "none", borderRadius: 6, background: "var(--pet-color-accent)", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 500 },
-    input: { width: "100%", padding: "7px 11px", border: "1px solid var(--pet-color-border)", borderRadius: 6, fontSize: 13, boxSizing: "border-box" as const, background: "var(--pet-color-card)", color: "var(--pet-color-fg)" },
-    textarea: { width: "100%", padding: "7px 11px", border: "1px solid var(--pet-color-border)", borderRadius: 6, fontSize: 13, resize: "vertical" as const, minHeight: 60, boxSizing: "border-box" as const, background: "var(--pet-color-card)", color: "var(--pet-color-fg)" },
-    searchRow: { display: "flex", gap: 8, marginBottom: 16 },
-    msg: { padding: "8px 12px", background: "var(--pet-tint-green-bg)", color: "var(--pet-tint-green-fg)", borderRadius: 6, fontSize: 12, marginBottom: 12, border: "1px solid color-mix(in srgb, var(--pet-tint-green-fg) 35%, transparent)" },
+    btnPrimary: {
+      padding: "7px 18px",
+      border: "none",
+      borderRadius: 8,
+      background: "var(--pet-color-accent)",
+      color: "#fff",
+      cursor: "pointer",
+      fontSize: 13,
+      fontWeight: 600,
+      letterSpacing: 0.2,
+      boxShadow:
+        "0 3px 10px color-mix(in srgb, var(--pet-color-accent) 28%, transparent)",
+    },
+    input: { width: "100%", padding: "8px 12px", border: "1px solid var(--pet-color-border)", borderRadius: 8, fontSize: 13, boxSizing: "border-box" as const, background: "var(--pet-color-card)", color: "var(--pet-color-fg)" },
+    textarea: { width: "100%", padding: "8px 12px", border: "1px solid var(--pet-color-border)", borderRadius: 8, fontSize: 13, resize: "vertical" as const, minHeight: 60, boxSizing: "border-box" as const, background: "var(--pet-color-card)", color: "var(--pet-color-fg)" },
+    searchRow: { display: "flex", gap: 8, marginBottom: 18 },
+    msg: { padding: "8px 12px", background: "var(--pet-tint-green-bg)", color: "var(--pet-tint-green-fg)", borderRadius: 8, fontSize: 12, marginBottom: 12, border: "1px solid color-mix(in srgb, var(--pet-tint-green-fg) 35%, transparent)" },
   };
 
   return (
@@ -1070,6 +1249,14 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
           <span>
             📚 {totalMemoryCount} 条记忆
           </span>
+          {todayNewCount > 0 && (
+            <span
+              style={{ color: "var(--pet-tint-green-fg)" }}
+              title={`今天新增 ${todayNewCount} 条记忆（created_at 以今天日期开头）`}
+            >
+              🌱 今日新增 {todayNewCount}
+            </span>
+          )}
           <span>
             💾 {formatBytes(diskUsage.total_bytes)} ({diskUsage.file_count} 个文件)
           </span>
@@ -1084,7 +1271,21 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
           placeholder="搜索记忆…（⌘F / Ctrl+F 聚焦）"
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              handleSearch();
+            } else if (
+              e.key === "Escape" &&
+              (searchKeyword || searchResults !== null)
+            ) {
+              // 现代搜索框肌肉记忆：Esc 清当前 query + results。空状态时不抢
+              // 全局 Esc 行为（panel-wide Esc 关 modal / 帮助层）。不 blur：
+              // 用户可能马上要换 query 继续搜，保持焦点。
+              e.preventDefault();
+              setSearchResults(null);
+              setSearchKeyword("");
+            }
+          }}
           list="pet-memory-search-history"
         />
         {/* 最近 5 个搜索 keyword 历史 —— 浏览器 native datalist 自动浮下拉，
@@ -1326,7 +1527,91 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         >
           ⊟ 全折叠
         </button>
+        {/* 排序模式 toggle：默认序（yaml 文件原序）↔ 按时间（updated_at 倒序）。
+            active 态用 tint-blue 染底色让"现在按时间排"一眼可识别。pinned 仍
+            优先，但段内也跟着时间排，"最近钉的"最先看到。 */}
+        <button
+          style={
+            sortByRecent
+              ? {
+                  ...s.btn,
+                  background: "var(--pet-tint-blue-bg)",
+                  color: "var(--pet-tint-blue-fg)",
+                  borderColor: "var(--pet-tint-blue-fg)",
+                }
+              : s.btn
+          }
+          onClick={toggleSortByRecent}
+          title={
+            sortByRecent
+              ? "现在按 updated_at 倒序。点击切回 yaml 文件原序。pinned 仍挂头。"
+              : "现在按 yaml 文件原序。点击切到按 updated_at 倒序（最近改的在上）。pinned 仍挂头。"
+          }
+        >
+          📅 {sortByRecent ? "按时间" : "默认序"}
+        </button>
       </div>
+
+      {/* 批量删除 action bar：仅 selectedMemKeys 非空时浮出；
+          arm/confirm 模式与单条 handleDelete 同。失败合并到既有 setMessage 提示。
+          UI 风格与 PanelTasks bulkBar 对齐：accent border + 12 radius +
+          shadow-sm；高对比让用户清楚"现在处于批量选择中"。 */}
+      {selectedMemKeys.size > 0 && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: "8px 12px",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+            border: "1px solid color-mix(in srgb, var(--pet-color-accent) 40%, var(--pet-color-border))",
+            background: "color-mix(in srgb, var(--pet-color-accent) 5%, var(--pet-color-card))",
+            borderRadius: 12,
+            boxShadow: "var(--pet-shadow-sm)",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--pet-color-fg)", fontWeight: 600 }}>
+            已选 {selectedMemKeys.size} 条
+          </span>
+          <button
+            type="button"
+            style={
+              bulkDeleteArmed
+                ? {
+                    ...s.btnDanger,
+                    background: "var(--pet-tint-red-fg)",
+                    color: "#fff",
+                    borderColor: "var(--pet-tint-red-fg)",
+                    fontWeight: 600,
+                  }
+                : s.btnDanger
+            }
+            onClick={handleBulkDeleteMem}
+            disabled={bulkDeleting}
+            title={
+              bulkDeleteArmed
+                ? "再次点击确认批量删除（3s 后撤销）"
+                : "点击进入二次确认：再点一次真正删除所选条目"
+            }
+          >
+            {bulkDeleting
+              ? "删除中…"
+              : bulkDeleteArmed
+                ? `确认删除 ${selectedMemKeys.size}`
+                : "🗑 批量删除"}
+          </button>
+          <button
+            type="button"
+            style={s.btn}
+            onClick={clearMemSelection}
+            disabled={bulkDeleting}
+            title="清空当前选区"
+          >
+            取消选择
+          </button>
+        </div>
+      )}
 
       {/* consolidate 进度条：仅 consolidating + 有进度数据时显。phase 文案
           + percent bar，让用户感知"做到哪一步了"。 */}
@@ -2477,13 +2762,27 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 // stable sort 在大多数 V8 实现已保证（ECMA 2019+），这里二
                 // 分而非 .sort 以显式表达"两段拼接"语义并避开 comparator
                 // 的 stability 顾虑。
+                //
+                // sortByRecent 开启时：pinned + rest 各自按 updated_at 倒序，
+                // pinned 仍优先（用户主动钉是强信号），但段内"最近钉的"最先看到。
                 const pinned: MemoryItem[] = [];
                 const rest: MemoryItem[] = [];
                 for (const it of scheduleFilteredItems) {
                   if (pinnedKeys.has(`${catKey}::${it.title}`)) pinned.push(it);
                   else rest.push(it);
                 }
-                const sortedItems = pinned.length > 0 ? [...pinned, ...rest] : scheduleFilteredItems;
+                if (sortByRecent) {
+                  const cmpRecent = (a: MemoryItem, b: MemoryItem) =>
+                    (b.updated_at || "").localeCompare(a.updated_at || "");
+                  pinned.sort(cmpRecent);
+                  rest.sort(cmpRecent);
+                }
+                const sortedItems =
+                  pinned.length > 0
+                    ? [...pinned, ...rest]
+                    : sortByRecent
+                      ? rest
+                      : scheduleFilteredItems;
                 const isLong = sortedItems.length > CATEGORY_FOLD_THRESHOLD;
                 const expanded = expandedCategories.has(catKey);
                 const shownItems =
@@ -2606,6 +2905,36 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        {/* 批量选择 checkbox：default 无视觉强调（小一档 +
+                            muted），选中时变 accent。click 仅切自己；renaming
+                            态下 disabled 避免误改正在编辑的条目。 */}
+                        {(() => {
+                          const selKey = `${catKey}::${item.title}`;
+                          const checked = selectedMemKeys.has(selKey);
+                          const renamingThis =
+                            renamingMemoryKey === `${catKey}::${item.title}`;
+                          return (
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={renamingThis || bulkDeleting}
+                              onChange={() => toggleMemSelected(selKey)}
+                              onClick={(e) => e.stopPropagation()}
+                              title={
+                                checked
+                                  ? "取消选中本条"
+                                  : "选中本条（顶部 bulkBar 可批量删除）"
+                              }
+                              aria-label={`选择「${item.title}」`}
+                              style={{
+                                cursor: renamingThis ? "not-allowed" : "pointer",
+                                accentColor: "var(--pet-color-accent)",
+                                marginRight: 2,
+                                flexShrink: 0,
+                              }}
+                            />
+                          );
+                        })()}
                         {(() => {
                           const renameKey = `${catKey}::${item.title}`;
                           if (renamingMemoryKey === renameKey) {
@@ -2921,6 +3250,69 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                               </span>
                             );
                           })()}
+                        {/* inline #tag chips: 与 PanelTasks 行内 tag 视觉对齐。
+                            正则与 task_queue::parse_task_tags 同语义但放宽到含
+                            中文（前端展示层容忍 > 后端解析层）。dedupe + cap 5
+                            + `+N` 溢出提示。 */}
+                        {(() => {
+                          const matches =
+                            item.description.match(/#[A-Za-z0-9_一-龥-]+/g) ?? [];
+                          const seen = new Set<string>();
+                          const tags: string[] = [];
+                          for (const m of matches) {
+                            const t = m.slice(1);
+                            if (t.length === 0 || t.length > 30) continue;
+                            const key = t.toLowerCase();
+                            if (!seen.has(key)) {
+                              seen.add(key);
+                              tags.push(t);
+                            }
+                          }
+                          if (tags.length === 0) return null;
+                          const shown = tags.slice(0, 5);
+                          const more = tags.length > 5 ? tags.length - 5 : 0;
+                          return (
+                            <>
+                              {shown.map((t) => (
+                                <button
+                                  key={t}
+                                  type="button"
+                                  onClick={() => {
+                                    setSearchKeyword(`#${t}`);
+                                    searchInputRef.current?.focus();
+                                  }}
+                                  style={{
+                                    fontSize: 10,
+                                    padding: "1px 6px",
+                                    borderRadius: 4,
+                                    background: "var(--pet-tint-purple-bg)",
+                                    color: "var(--pet-tint-purple-fg)",
+                                    border: "1px dashed var(--pet-tint-purple-fg)",
+                                    cursor: "pointer",
+                                    fontFamily: "inherit",
+                                  }}
+                                  title={`点击预填搜索框 #${t}（再按 Enter 搜）`}
+                                >
+                                  #{t}
+                                </button>
+                              ))}
+                              {more > 0 && (
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    color: "var(--pet-color-muted)",
+                                  }}
+                                  title={`其余 ${more} 个 tag：${tags
+                                    .slice(5)
+                                    .map((x) => `#${x}`)
+                                    .join(" ")}`}
+                                >
+                                  +{more}
+                                </span>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                       <div style={{ display: "flex", gap: 4 }}>
                         {(() => {
@@ -3187,17 +3579,86 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         })()}
                       </div>
                     </div>
-                    <div style={s.itemDesc}>
-                      {/* `「task title」` ref token 渲 hover preview / 双击导航
-                          （与 PanelChat 同款）。helper 在没 ref 命中时 fast-path
-                          返 parseUrls(content) —— 顺便给 memory 描述里偶发的
-                          URL 也加蓝下划线，比原 plain text 强。 */}
-                      {renderContentWithTaskRefs(
-                        displayDesc,
-                        refTaskMap,
-                        onRequestFocusTask,
-                      )}
-                    </div>
+                    {editingDescKey === `${catKey}::${item.title}` ? (
+                      <div style={{ ...s.itemDesc, display: "flex", flexDirection: "column", gap: 4 }}>
+                        <textarea
+                          autoFocus
+                          value={editingDescDraft}
+                          disabled={editingDescBusy}
+                          onChange={(e) => setEditingDescDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelDescEdit();
+                            } else if (e.key === "Enter" && !e.shiftKey) {
+                              // IME composing 时 Enter 不该触发提交
+                              if (
+                                (e.nativeEvent as KeyboardEvent).isComposing
+                              )
+                                return;
+                              e.preventDefault();
+                              void commitDescEdit();
+                            }
+                          }}
+                          onBlur={() => void commitDescEdit()}
+                          rows={Math.min(
+                            6,
+                            Math.max(
+                              2,
+                              (editingDescDraft.match(/\n/g)?.length ?? 0) + 1,
+                            ),
+                          )}
+                          style={{
+                            width: "100%",
+                            padding: "4px 8px",
+                            fontSize: 12,
+                            border: "1px solid var(--pet-color-accent)",
+                            borderRadius: 4,
+                            background: "var(--pet-color-card)",
+                            color: "var(--pet-color-fg)",
+                            outline: "none",
+                            resize: "vertical",
+                            fontFamily: "inherit",
+                            boxSizing: "border-box",
+                            lineHeight: 1.45,
+                          }}
+                        />
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: "var(--pet-color-muted)",
+                          }}
+                        >
+                          Enter 保存 · Shift+Enter 换行 · Esc 取消 · 失焦自动保存
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        style={{ ...s.itemDesc, cursor: "text" }}
+                        onDoubleClick={(e) => {
+                          // ref token 自带 stopPropagation 双击不会冒到这里。
+                          // rename 输入框激活时禁进 description 编辑，避免两
+                          // inline 编辑器视觉打架。
+                          if (renamingMemoryKey !== null) return;
+                          // 选区 / 系统级双击有时与"我要编辑"冲突；用户能
+                          // 通过 Esc 退出，体验损失低。
+                          e.stopPropagation();
+                          setEditingDescKey(`${catKey}::${item.title}`);
+                          setEditingDescDraft(item.description);
+                        }}
+                        title="双击编辑（Enter 保存 / Esc 取消 / 失焦自动保存）"
+                      >
+                        {/* `「task title」` ref token 渲 hover preview / 双击导航
+                            （与 PanelChat 同款）。helper 在没 ref 命中时 fast-path
+                            返 parseUrls(content) —— 顺便给 memory 描述里偶发的
+                            URL 也加蓝下划线，比原 plain text 强。 */}
+                        {renderContentWithTaskRefs(
+                          displayDesc,
+                          refTaskMap,
+                          onRequestFocusTask,
+                        )}
+                      </div>
+                    )}
                     <div style={s.itemMeta}>
                       {item.detail_path} | 更新于 {item.updated_at?.slice(0, 16).replace("T", " ")}
                       {/* "detail X 字"：仅 size > 0 且后端拉到时显。配色
@@ -3343,23 +3804,10 @@ function exportMemoriesAsMarkdown(idx: MemoryIndex): string {
 /// 字节数格式化为人友好的 KB / MB / GB 字符串。基数 1024（与 macOS Finder /
 /// Linux du -h 习惯一致）；小于 1KB 直接 `N B`。1 位小数足够，多 1 位精度
 /// 在"该不该 consolidate"的判断上无价值。
-function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return "0 B";
-  if (n < 1024) return `${n} B`;
-  const kb = n / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb.toFixed(1)} MB`;
-  const gb = mb / 1024;
-  return `${gb.toFixed(1)} GB`;
-}
-
 function formatLastUpdated(latestTs: number, now: number): string {
   const age = now - latestTs;
   if (age < 60_000) return "刚刚更新";
-  if (age < 3_600_000) return `${Math.floor(age / 60_000)} 分钟前更新`;
-  if (age < 86_400_000) return `${Math.floor(age / 3_600_000)} 小时前更新`;
-  return `${Math.floor(age / 86_400_000)} 天前更新`;
+  return `${formatRelativeAgeBuckets(age)}更新`;
 }
 
 /// R88: 搜索结果黄底高亮。与 PanelTasks / PanelSettings 同款（黄底深棕字），

@@ -445,7 +445,13 @@ async fn handle_tg_command(
     };
 
     let reply: String = match cmd {
-        TgCommand::Cancel { ref title } | TgCommand::Retry { ref title }
+        TgCommand::Cancel { ref title }
+        | TgCommand::Retry { ref title }
+        | TgCommand::Done { ref title }
+        | TgCommand::Snooze { ref title, .. }
+        | TgCommand::Unsnooze { ref title }
+        | TgCommand::Pin { ref title }
+        | TgCommand::Unpin { ref title }
             if title.trim().is_empty() =>
         {
             format_missing_argument(cmd.name())
@@ -501,6 +507,124 @@ async fn handle_tg_command(
                 Err(msg) => format_command_error(&msg),
             }
         }
+        TgCommand::Done { title } => {
+            // Resolve 与 /cancel /retry 同三层（数字 index → fuzzy → 错误）。
+            // task_mark_done_inner 传 None result —— TG 单行命令不收 result
+            // 摘要；想加 result 走桌面板。已 done / cancelled 状态会被后端
+            // 拒绝（与桌面同策略）。
+            let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                Some(t) => Ok(t),
+                None => resolve_tg_task_title(&title),
+            };
+            match actual {
+                Ok(t) => {
+                    let decisions = state
+                        .app
+                        .state::<crate::decision_log::DecisionLogStore>()
+                        .inner()
+                        .clone();
+                    match crate::commands::task::task_mark_done_inner(
+                        t.clone(),
+                        None,
+                        decisions,
+                    ) {
+                        Ok(()) => format_command_success("done", &t),
+                        Err(e) => format_command_error(&e),
+                    }
+                }
+                Err(msg) => format_command_error(&msg),
+            }
+        }
+        TgCommand::Snooze { title, token } => {
+            // Resolve 与 /done /cancel /retry 同三层。token 空时默认 30m；
+            // token 非空但解析失败（比如 "/snooze title 99y"）→ 报错而非
+            // 沉默落 default，让用户知道 typo。
+            // 先校验 token 再 resolve title —— 让 invalid-token 错误比
+            // task-not-found 优先级高（用户先解决 typo 再考虑 title 是否对）。
+            let spec_result: Result<crate::telegram::commands::SnoozeSpec, String> =
+                if token.is_empty() {
+                    Ok(crate::telegram::commands::SnoozeSpec::Minutes(30))
+                } else {
+                    crate::telegram::commands::parse_snooze_token(&token).ok_or_else(|| {
+                        format!(
+                            "未知 preset「{}」 — 支持 30m / 2h / tonight / tomorrow / monday，或省略走默认 30m",
+                            token,
+                        )
+                    })
+                };
+            match spec_result {
+                Err(msg) => format_command_error(&msg),
+                Ok(spec) => {
+                    let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                        Some(t) => Ok(t),
+                        None => resolve_tg_task_title(&title),
+                    };
+                    match actual {
+                        Ok(t) => {
+                            let now = chrono::Local::now().naive_local();
+                            let until = crate::telegram::commands::compute_snooze_until(
+                                spec, now,
+                            );
+                            let until_str =
+                                until.format("%Y-%m-%d %H:%M").to_string();
+                            match crate::commands::task::task_set_snooze(
+                                t.clone(),
+                                Some(until_str.clone()),
+                            ) {
+                                Ok(()) => format!(
+                                    "💤 已暂停「{}」至 {}\n如需解除发 /unsnooze {}",
+                                    t, until_str, t
+                                ),
+                                Err(e) => format_command_error(&e),
+                            }
+                        }
+                        Err(msg) => format_command_error(&msg),
+                    }
+                }
+            }
+        }
+        TgCommand::Unsnooze { title } => {
+            let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                Some(t) => Ok(t),
+                None => resolve_tg_task_title(&title),
+            };
+            match actual {
+                Ok(t) => match crate::commands::task::task_set_snooze(t.clone(), None) {
+                    Ok(()) => format!("☀️ 已解除「{}」 的暂停", t),
+                    Err(e) => format_command_error(&e),
+                },
+                Err(msg) => format_command_error(&msg),
+            }
+        }
+        TgCommand::Pin { title } => {
+            // Resolve 三层与 /done /snooze 同。task_set_pinned 是 strip-before-
+            // write 幂等：已 pinned 时 owner 再 /pin 不会让 description 累积
+            // 冗余 marker。提示文案附 /unpin 反向命令。
+            let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                Some(t) => Ok(t),
+                None => resolve_tg_task_title(&title),
+            };
+            match actual {
+                Ok(t) => match crate::commands::task::task_set_pinned(t.clone(), true) {
+                    Ok(()) => format!("📌 已钉住「{}」\n如需解除发 /unpin {}", t, t),
+                    Err(e) => format_command_error(&e),
+                },
+                Err(msg) => format_command_error(&msg),
+            }
+        }
+        TgCommand::Unpin { title } => {
+            let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                Some(t) => Ok(t),
+                None => resolve_tg_task_title(&title),
+            };
+            match actual {
+                Ok(t) => match crate::commands::task::task_set_pinned(t.clone(), false) {
+                    Ok(()) => format!("📌 已取消钉住「{}」", t),
+                    Err(e) => format_command_error(&e),
+                },
+                Err(msg) => format_command_error(&msg),
+            }
+        }
         TgCommand::Task { title, priority } => {
             // 直接落 butler_tasks，不经 LLM。`priority` 由 `parse_task_prefix`
             // 预解析：默认 3（与桌面 PanelTasks 默认一致）/ `!!` 5 / `!!!` 7。
@@ -547,6 +671,115 @@ async fn handle_tg_command(
                 cache.insert(key, body.clone());
                 body
             }
+        }
+        TgCommand::Stats => {
+            // 与 /tasks 共用 read path（memory_list → 过滤 Tg(chat_id) → build_task_view），
+            // 但不去重、不缓存：用户连发 /stats 就是想看"现在到底什么样"。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let now = chrono::Local::now().naive_local();
+            crate::telegram::commands::format_stats_reply(&views, now, now.date())
+        }
+        TgCommand::Pinned => {
+            // 与 /tasks 共用 read path + 同 chat 过滤；再加 t.pinned 子集过滤。
+            // 不缓存（与 /stats 同思路）：用户连发就是想"看现在到底什么样"。
+            let views: Vec<crate::task_queue::TaskView> = read_tg_chat_task_views(chat_id.0)
+                .into_iter()
+                .filter(|v| v.pinned)
+                .collect();
+            crate::telegram::commands::format_pinned_tasks_list(&views)
+        }
+        TgCommand::Mood => {
+            // 心情是宠物全局状态（与 MoodWidget 同 mood state 文件），不分 chat
+            // 过滤。read 失败 / 未写过 → format 函数兜底友好提示。
+            let parsed = crate::mood::read_current_mood_parsed();
+            crate::telegram::commands::format_mood_reply(parsed)
+        }
+        TgCommand::Whoami => {
+            // 与桌面 chat `/whoami` 对偶：并发收集 5 个 IPC 源，每个独立兜底
+            // （某一源缺失不挡整段渲染）。这些都是廉价同步 read（< 1ms），
+            // 不开 async / spawn。
+            let user_name = crate::commands::settings::get_user_name();
+            let companionship_days =
+                Some(crate::companionship::companionship_days().await);
+            let mood = crate::mood::read_current_mood_parsed();
+            let persona_summary = crate::commands::memory::read_ai_insights_item(
+                "persona_summary",
+            )
+            .map(|i| i.description)
+            .unwrap_or_default();
+            let top_tools_raw = crate::tool_call_history::get_top_tools_used();
+            let top_tools: Vec<(String, u64)> = top_tools_raw
+                .into_iter()
+                .map(|s| (s.name, s.count))
+                .collect();
+            crate::telegram::commands::format_whoami_reply(
+                &user_name,
+                companionship_days,
+                mood,
+                &persona_summary,
+                &top_tools,
+            )
+        }
+        TgCommand::Today => {
+            // 今日叙事视图：reuse 与 /tasks /stats 同一 read path；本地 today
+            // 日期注入。views 已按 origin==Tg(chat_id) 过滤，与其它命令一致。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_today_reply(&views, today)
+        }
+        TgCommand::Version => {
+            // app_version 走编译期 env，schema_version 走 _migrations 最大 version。
+            // 单 SQL 查不引入新 Tauri 命令；读失败 → 0（format 时省略 schema 行）。
+            let schema_version = crate::db::with_db(|conn| {
+                let v: i32 = conn
+                    .query_row(
+                        "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                Ok(v)
+            })
+            .unwrap_or(0);
+            crate::telegram::commands::format_version_reply(
+                env!("CARGO_PKG_VERSION"),
+                schema_version,
+            )
+        }
+        TgCommand::Reset => {
+            // 清掉 LLM 对话上下文：仅保留 role=="system" 的消息（人设 / SOUL
+            // 提示）。同时持久化让 bot 重启后仍是 system-only。不动 last_tasks
+            // 缓存（与 LLM 上下文正交）。
+            let kept_system = {
+                let mut msgs = state.session_messages.lock().await;
+                let system: Vec<serde_json::Value> = msgs
+                    .iter()
+                    .filter(|m| {
+                        m.get("role")
+                            .and_then(|r| r.as_str())
+                            .map(|r| r == "system")
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
+                *msgs = system.clone();
+                system
+            };
+            let now = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                .to_string();
+            let s = crate::commands::session::Session {
+                id: state.session_id.clone(),
+                title: "Telegram".to_string(),
+                created_at: String::new(),
+                updated_at: now,
+                messages: kept_system,
+                items: vec![],
+            };
+            if let Err(e) = crate::commands::session::save_session(s) {
+                eprintln!("session save after /reset failed (best-effort): {e}");
+            }
+            crate::telegram::commands::format_reset_reply()
         }
         TgCommand::Help => format_help_text(&state.custom_command_objects),
         TgCommand::Unknown { name } => {
@@ -619,16 +852,15 @@ fn read_butler_task_titles() -> Vec<String> {
     cat.items.iter().map(|i| i.title.clone()).collect()
 }
 
-/// 返回 `(body, ordered_titles)`：body 是给 TG 用户看的完整文本，ordered_titles
-/// 是同显示顺序的 title vec（给 `/cancel N` / `/retry N` 解析序号用）。
-/// 显示顺序遵循 `format_tasks_list` 的 section 排列（Pending → Done →
-/// Error → Cancelled，section 内沿用 `compare_for_queue`）。
-fn format_tasks_for_chat(chat_id: i64) -> (String, Vec<String>) {
+/// 读 butler_tasks → 过滤 origin==Tg(chat_id) → build_task_view → 按 queue
+/// 顺序排序的 views 列表。`/tasks` `/stats` 共用此读路径，不再各自拷一份过滤
+/// 逻辑。memory_list 失败 / 类目缺失视作"无任务"，返回空 Vec。
+fn read_tg_chat_task_views(chat_id: i64) -> Vec<crate::task_queue::TaskView> {
     let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
-        return (crate::telegram::commands::format_tasks_list(&[]), Vec::new());
+        return Vec::new();
     };
     let Some(cat) = index.categories.get("butler_tasks") else {
-        return (crate::telegram::commands::format_tasks_list(&[]), Vec::new());
+        return Vec::new();
     };
     let mut views: Vec<crate::task_queue::TaskView> = cat
         .items
@@ -643,6 +875,15 @@ fn format_tasks_for_chat(chat_id: i64) -> (String, Vec<String>) {
         .collect();
     let now = chrono::Local::now().naive_local();
     views.sort_by(|a, b| crate::task_queue::compare_for_queue(a, b, now));
+    views
+}
+
+/// 返回 `(body, ordered_titles)`：body 是给 TG 用户看的完整文本，ordered_titles
+/// 是同显示顺序的 title vec（给 `/cancel N` / `/retry N` 解析序号用）。
+/// 显示顺序遵循 `format_tasks_list` 的 section 排列（Pending → Done →
+/// Error → Cancelled，section 内沿用 `compare_for_queue`）。
+fn format_tasks_for_chat(chat_id: i64) -> (String, Vec<String>) {
+    let views = read_tg_chat_task_views(chat_id);
     let body = crate::telegram::commands::format_tasks_list(&views);
     // 与 format_tasks_list 的 section 顺序一致地拼 ordered_titles
     use crate::task_queue::TaskStatus;

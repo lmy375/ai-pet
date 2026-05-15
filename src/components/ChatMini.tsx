@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { bubbleStyle } from "./panel/panelChatBits";
+import { EmptyState } from "./panel/EmptyState";
 import { ImageLightbox } from "./common/ImageLightbox";
 import { ImageThumb } from "./common/ImageThumb";
 import { parseMarkdown } from "../utils/inlineMarkdown";
@@ -42,10 +43,23 @@ interface Props {
   /// 当前 NOW-marked 任务 title → 过期 ms 时戳。pet 端跨 panel 监听
   /// "task-now-mark" 事件后由 App.tsx 维护。hover 顶部 mini chat 出小卡列。
   nowTasks?: Map<string, number>;
+  /// 当前 session 累积 LLM context token 量（system-excluded；后端
+  /// `get_active_session_context_stats` 同源）。> MINI_TOKEN_WARN_THRESHOLD
+  /// 时顶部浮 "上下文" chip + 一键 reset 入口。undefined / 0 = 不显。
+  sessionTokens?: number;
+  /// 一键 reset 当前 session 的 LLM context + 可见 items。armed-confirm 二次
+  /// 确认（与桌面 ChatPanel 顶部「清空」按钮同模式），单次误点不会丢历史。
+  /// 不传则 chip 仅显信息无 reset 按钮（兜底降级）。
+  onResetContext?: () => void;
 }
 
 /// 最近 N 条的硬上限。窗口很小，DOM 太长既不好读也耗渲染。
 const MINI_CHAT_MAX_ITEMS = 20;
+
+/// 上下文 token 提示阈值。与 PanelDebugStats 的 `SESSION_TOKEN_WARN_THRESHOLD`
+/// 同值 —— 让"DebugApp 显警告" 和 "桌面 chip 显警告" 触发条件一致。
+/// 4000 是经验值：8k-128k context 都有，留 50%+ 给后续对话不至于撞墙。
+const MINI_TOKEN_WARN_THRESHOLD = 4000;
 
 const MINI_CHAT_STYLES = `
 @keyframes pet-mini-chat-fade-in {
@@ -170,6 +184,40 @@ function formatBubbleTimestamp(ts: string | undefined): string {
   return `[${hh}:${mm}]`;
 }
 
+/// 把 ts 转成"YYYY-MM-DD" 日期键，给"跨日分隔条" 分组用。无效 / 缺失返
+/// null —— caller 不该插分隔（与上一条同处理）。
+function dateKeyFromTs(ts: string | undefined): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/// 把"YYYY-MM-DD" 日期键转成给用户看的相对文案：今天 / 昨天 / 本年内 MM-DD
+/// / 跨年 YYYY-MM-DD。`now` 注入便于将来单测；不传则取系统时钟。
+function formatDateDividerLabel(
+  dateKey: string,
+  now: Date = new Date(),
+): string {
+  const ny = now.getFullYear();
+  const nm = String(now.getMonth() + 1).padStart(2, "0");
+  const nd = String(now.getDate()).padStart(2, "0");
+  if (dateKey === `${ny}-${nm}-${nd}`) return "今天";
+  // yesterday
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  const yy = y.getFullYear();
+  const ym = String(y.getMonth() + 1).padStart(2, "0");
+  const yd = String(y.getDate()).padStart(2, "0");
+  if (dateKey === `${yy}-${ym}-${yd}`) return "昨天";
+  // 同年走 MM-DD；跨年走完整 YYYY-MM-DD（防"01-15" 在 2 年后看不出年代）
+  if (dateKey.startsWith(`${ny}-`)) return dateKey.slice(5);
+  return dateKey;
+}
+
 export function ChatMini({
   messages,
   currentResponse,
@@ -182,7 +230,17 @@ export function ChatMini({
   userGlyph,
   assistantGlyph,
   nowTasks,
+  sessionTokens,
+  onResetContext,
 }: Props) {
+  // armed-confirm: 第一次点击进 "再点确认" 态 + 3s 内不点就回 idle，防误触。
+  // 与桌面 ChatPanel 顶部「清空」按钮 / 任务面板「清结束」按钮同模式。
+  const [resetArmed, setResetArmed] = useState(false);
+  useEffect(() => {
+    if (!resetArmed) return;
+    const id = window.setTimeout(() => setResetArmed(false), 3000);
+    return () => window.clearTimeout(id);
+  }, [resetArmed]);
   // 空 / undefined fallback 内置默认；trim 去掉用户误打的空格。
   const effectiveUserGlyph = userGlyph?.trim() || "🧑";
   const effectiveAssistantGlyph = assistantGlyph?.trim() || "🐾";
@@ -212,6 +270,70 @@ export function ChatMini({
   // 单条 bubble 复制反馈：刚被复制的 visibleItems idx，1.5s 自动清。
   // 与 copyToast（⌘+C 复制最近一条）分开，让两套语义各自独立显视觉反馈。
   const [bubbleCopyIdx, setBubbleCopyIdx] = useState<number | null>(null);
+  /// 右键菜单状态：聚合"复制 / 带时间戳复制 / 针对这条再问 / 在 Panel 打开"
+  /// 几个原本散在双击 / 小按钮里的动作到一个发现入口。idx 是 visibleItems
+  /// 下标；x/y 是 viewport 坐标（fixed 定位）。null = 关闭。
+  const [ctxMenu, setCtxMenu] = useState<{
+    idx: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  /// 点击 菜单外 / 按 Esc 关菜单。与 PanelTasks taskCtxMenu 同模式。
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onDocClick = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCtxMenu(null);
+    };
+    // mousedown 而非 click 让 user 鼠标按下那一刻就关；click 还得等 mouseup
+    // 周期才关，菜单跟手感差。菜单内的 onMouseDown 自身 stopPropagation 防
+    // 自关。
+    window.addEventListener("mousedown", onDocClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDocClick);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
+  // 静默淡出：N 秒无新消息 & 无 hover 时，整段聊天列表淡到半透明，让
+  // Live2D 宠物在桌面成为视觉焦点；hover / 新消息 / streaming 立即回满。
+  // 60s 是经验值：长到不会在用户看消息时偷偷淡掉，短到"放置一会儿"就生效。
+  // localStorage 旁路：用户嫌烦可写 "pet-chatmini-idle-fade" = "off"。
+  const [idleFaded, setIdleFaded] = useState(false);
+  const idleFadeTimerRef = useRef<number | null>(null);
+  const idleFadeEnabled = useMemo(() => {
+    try {
+      return window.localStorage.getItem("pet-chatmini-idle-fade") !== "off";
+    } catch {
+      return true;
+    }
+  }, []);
+  const scheduleIdleFade = () => {
+    if (!idleFadeEnabled) return;
+    if (idleFadeTimerRef.current !== null) {
+      window.clearTimeout(idleFadeTimerRef.current);
+    }
+    idleFadeTimerRef.current = window.setTimeout(() => {
+      setIdleFaded(true);
+      idleFadeTimerRef.current = null;
+    }, 60_000);
+  };
+  const wakeIdleFade = () => {
+    setIdleFaded(false);
+    scheduleIdleFade();
+  };
+  // 任何"活动信号"重置倒计时：新消息追加、streaming chunk 来、tool 状态变化。
+  // 三个 dep 一起监听让 effect 一处兜底，避免漏。
+  useEffect(() => {
+    wakeIdleFade();
+    return () => {
+      if (idleFadeTimerRef.current !== null) {
+        window.clearTimeout(idleFadeTimerRef.current);
+        idleFadeTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length, currentResponse, toolStatus, isLoading]);
   const handleBubbleCopy = (idx: number, text: string) => {
     if (!text) return;
     navigator.clipboard
@@ -278,6 +400,44 @@ export function ChatMini({
     if (items.length <= MINI_CHAT_MAX_ITEMS) return items;
     return items.slice(items.length - MINI_CHAT_MAX_ITEMS);
   }, [messages]);
+
+  /// 时间戳自适应折叠：在"密集同方对话"中只保留首末 ts，省视觉切碎。
+  /// 规则：某条消息的 prev AND next 都满足"同 role + ts 差距 < 60s" 时，
+  /// 视为"burst 中间"隐藏 ts；burst 首尾（一端不同 role / 一端超出 60s
+  /// / 一端无）保留 ts。单条消息 / 两端不连续 → 永远显。
+  /// hover tooltip 仍把完整时间写在 title attr 里，用户想看精确时间总能拿到。
+  const TIMESTAMP_BURST_GAP_MS = 60_000;
+  const hiddenTimestampIdx = useMemo(() => {
+    const out = new Set<number>();
+    const ts = (i: number): number | null => {
+      const raw = visibleItems[i]?.ts;
+      if (!raw) return null;
+      const t = Date.parse(raw);
+      return Number.isNaN(t) ? null : t;
+    };
+    for (let i = 0; i < visibleItems.length; i++) {
+      const cur = visibleItems[i];
+      if (!cur) continue;
+      const curTs = ts(i);
+      if (curTs === null) continue; // 时间无效自然不显，不用进 hide 集
+      const prev = i > 0 ? visibleItems[i - 1] : null;
+      const next = i < visibleItems.length - 1 ? visibleItems[i + 1] : null;
+      const prevTs = i > 0 ? ts(i - 1) : null;
+      const nextTs = i < visibleItems.length - 1 ? ts(i + 1) : null;
+      const tightPrev =
+        prev !== null &&
+        prev.role === cur.role &&
+        prevTs !== null &&
+        curTs - prevTs < TIMESTAMP_BURST_GAP_MS;
+      const tightNext =
+        next !== null &&
+        next.role === cur.role &&
+        nextTs !== null &&
+        nextTs - curTs < TIMESTAMP_BURST_GAP_MS;
+      if (tightPrev && tightNext) out.add(i);
+    }
+    return out;
+  }, [visibleItems]);
 
   /// 搜索命中：visibleItems 内 text 含 keyword 的 idx 列表。空 keyword 返
   /// 空数组（UI 自动隐藏 counter / 高亮）。case-insensitive。
@@ -513,8 +673,21 @@ export function ChatMini({
       <style>{MINI_CHAT_STYLES}</style>
       {/* 容器是相对定位 wrapper，让 ⛶ / ↓ 浮标按钮可以基于它绝对定位
           而不会跑出 chat 列表区。flex: 1 让它占 Live2D 与输入框之间的全部
-          剩余空间，与三段堆叠布局对齐。 */}
-      <div style={{ flex: 1, position: "relative", padding: "8px 12px 0", minHeight: 0 }}>
+          剩余空间，与三段堆叠布局对齐。
+          idleFaded 时整段半透明 — 透出后面的 Live2D，让放置态桌面更干净；
+          移到列表上立刻回满（onMouseEnter wakeIdleFade）。 */}
+      <div
+        onMouseEnter={wakeIdleFade}
+        onMouseMove={idleFaded ? wakeIdleFade : undefined}
+        style={{
+          flex: 1,
+          position: "relative",
+          padding: "8px 12px 0",
+          minHeight: 0,
+          opacity: idleFaded ? 0.45 : 1,
+          transition: "opacity 600ms ease-out",
+        }}
+      >
         {/* ⌘F inline 搜索条：浮在 chat 列表顶部，不挤压列表本身（list 的
             paddingTop 用 visibility 切换的方式吸收 38px，避免空间被搜索条
             盖住）。Enter / Shift+Enter / Esc 在 input keydown 里处理。 */}
@@ -892,7 +1065,92 @@ export function ChatMini({
             boxSizing: "border-box",
           }}
         >
+        {/* 上下文 token 警示 chip：与 DebugApp 统计 tab 「当前会话 LLM 上下
+            文」卡片同源信号（4000 阈值）。一键 reset 走 armed-confirm 二次
+            确认（首点变"再点确认"+3s 自清）防止误触丢历史。 */}
+        {sessionTokens !== undefined &&
+          sessionTokens > MINI_TOKEN_WARN_THRESHOLD && (
+            <div
+              style={{
+                marginBottom: 6,
+                padding: "5px 9px",
+                borderRadius: 8,
+                background: "var(--pet-tint-yellow-bg)",
+                color: "var(--pet-tint-yellow-fg)",
+                border:
+                  "1px solid color-mix(in srgb, var(--pet-tint-yellow-fg) 30%, transparent)",
+                fontSize: 11,
+                lineHeight: 1.4,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title={`当前 session LLM 上下文累计 ~${sessionTokens} tokens；超过 ${MINI_TOKEN_WARN_THRESHOLD} 通常意味着 prompt 在膨胀。建议 /reset 清掉以省 token + 让宠物注意力回到当前话题。`}
+            >
+              <span style={{ flex: 1 }}>
+                💭 上下文 ~{sessionTokens} tok（已超 {MINI_TOKEN_WARN_THRESHOLD}，建议
+                <strong> /reset</strong>）
+              </span>
+              {onResetContext && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (resetArmed) {
+                      onResetContext();
+                      setResetArmed(false);
+                    } else {
+                      setResetArmed(true);
+                    }
+                  }}
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    border: resetArmed
+                      ? "1px solid var(--pet-tint-red-fg)"
+                      : "1px solid color-mix(in srgb, var(--pet-tint-yellow-fg) 50%, transparent)",
+                    background: resetArmed
+                      ? "var(--pet-tint-red-fg)"
+                      : "var(--pet-color-card)",
+                    color: resetArmed ? "#fff" : "var(--pet-tint-yellow-fg)",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={
+                    resetArmed
+                      ? "再点确认：清掉本 session 的 LLM context + 可见 mini chat 历史（系统提示词保留）。3s 内不点自动收起。"
+                      : "清掉本 session 的 LLM context + 可见 mini chat 历史。点击进入二次确认。"
+                  }
+                >
+                  {resetArmed ? "再点确认 (3s)" : "/reset"}
+                </button>
+              )}
+            </div>
+          )}
+        {visibleItems.length === 0 && !currentResponse && (
+          // 首次启动 / 全部 dismissed 后空态：给一行轻量 hint 让用户知道这里
+          // 会显示什么、可以做什么。compact 模式 padding 较小，与 pet 窗 300px
+          // 窄宽度匹配。
+          <EmptyState
+            icon="🐾"
+            title="等宠物开口"
+            hint="底部输入框敲字开始聊天；宠物也会在 proactive 时主动找你。"
+            compact
+          />
+        )}
         {visibleItems.map((m, idx) => {
+          // 跨日分隔：当前 ts 有效 + 与前一条 ts 的日期键不同时插一条分隔条。
+          // 第一条（idx === 0）有有效 ts 时也显（让"对话起点是哪天"清楚）；
+          // ts 缺失静默跳（与 ts 标签"无效 → 不显" 同语义边界）。
+          const curDateKey = dateKeyFromTs(m.ts);
+          const prevDateKey =
+            idx > 0 ? dateKeyFromTs(visibleItems[idx - 1].ts) : null;
+          const showDateDivider =
+            curDateKey !== null && curDateKey !== prevDateKey;
+          const dateLabel = showDateDivider
+            ? formatDateDividerLabel(curDateKey!)
+            : "";
           const isLast = idx === lastIdx;
           const isAssistant = m.role === "assistant";
           const text = extractText(m.content);
@@ -960,10 +1218,52 @@ export function ChatMini({
               </button>
             ) : null;
           return (
+            <Fragment key={`${m.role}-${idx}-${text.length}-${imgs.length}`}>
+              {showDateDivider && (
+                <div
+                  aria-hidden
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 9,
+                    color: "var(--pet-color-muted)",
+                    letterSpacing: 0.5,
+                    margin: "8px 4px 4px",
+                    userSelect: "none",
+                  }}
+                  title={`本组消息从 ${curDateKey} 开始`}
+                >
+                  <span
+                    style={{
+                      flex: 1,
+                      height: 1,
+                      background:
+                        "color-mix(in srgb, var(--pet-color-border) 70%, transparent)",
+                    }}
+                  />
+                  <span style={{ flexShrink: 0 }}>{dateLabel}</span>
+                  <span
+                    style={{
+                      flex: 1,
+                      height: 1,
+                      background:
+                        "color-mix(in srgb, var(--pet-color-border) 70%, transparent)",
+                    }}
+                  />
+                </div>
+              )}
             <div
-              key={`${m.role}-${idx}-${text.length}-${imgs.length}`}
               className="pet-mini-row"
               data-mini-idx={idx}
+              onContextMenu={(e) => {
+                // 右键菜单：聚合发现入口。preventDefault 吃掉 webview 默认
+                // 右键（Tauri 已禁默认 context-menu，但保险一道）；
+                // stopPropagation 防被 wake-up / drag handlers 抢走。
+                e.preventDefault();
+                e.stopPropagation();
+                setCtxMenu({ idx, x: e.clientX, y: e.clientY });
+              }}
               style={{
                 display: "flex",
                 justifyContent: m.role === "user" ? "flex-end" : "flex-start",
@@ -975,8 +1275,12 @@ export function ChatMini({
             >
               {/* hover-only 时间戳角标。bubble 上方浮 absolute；user 行靠右
                   / assistant 行靠左 —— 与 bubble 对齐方向同侧（time 是 bubble
-                  的"附加信息"，靠 bubble 自身一边更直观）。 */}
-              {hasValidTime && (
+                  的"附加信息"，靠 bubble 自身一边更直观）。
+                  burst 折叠：hiddenTimestampIdx 含此 idx 时跳过渲染 ——
+                  连续 < 60s 同 role 消息中间的 ts 标签合并为"仅首末显"，
+                  让密集对话不被时间戳切碎；hover bubble 自身的 title attr 仍
+                  能拿到完整时间。 */}
+              {hasValidTime && !hiddenTimestampIdx.has(idx) && (
                 <span
                   className="pet-mini-row-time"
                   style={{
@@ -1090,6 +1394,7 @@ export function ChatMini({
                 </div>
               )}
             </div>
+            </Fragment>
           );
         })}
         {/* 思考脉冲：isLoading 但还没 chunk 到达（也没 toolStatus）时唯一可
@@ -1252,6 +1557,171 @@ export function ChatMini({
           {copyToast === "done" ? "✓ 已复制最近回复" : "✗ 复制失败"}
         </div>
       )}
+      {/* 右键菜单：fixed 定位到 click 坐标；夹紧 viewport 右/下边界避免被
+          切。子菜单按 role 条件化渲染（💭 仅 assistant）。所有 item 点击后
+          自身关菜单；菜单外 mousedown / Esc 也关（effect 里挂全局监听）。 */}
+      {ctxMenu && (() => {
+        const m = visibleItems[ctxMenu.idx];
+        if (!m) return null;
+        const text = extractText(m.content);
+        const hasText = text.length > 0;
+        const isAssistant = m.role === "assistant";
+        // 经验值夹紧：菜单大约 200×180px；超出 right/bottom 时向上 / 左挪。
+        const MAX_W = 220;
+        const MAX_H = 180;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 800;
+        const vh = typeof window !== "undefined" ? window.innerHeight : 600;
+        const x = Math.min(ctxMenu.x, vw - MAX_W - 4);
+        const y = Math.min(ctxMenu.y, vh - MAX_H - 4);
+        const item: React.CSSProperties = {
+          padding: "6px 12px",
+          fontSize: 12,
+          textAlign: "left",
+          background: "transparent",
+          color: "var(--pet-color-fg)",
+          border: "none",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          whiteSpace: "nowrap",
+        };
+        const itemHoverIn = (e: React.MouseEvent<HTMLButtonElement>) => {
+          (e.currentTarget as HTMLButtonElement).style.background =
+            "var(--pet-color-bg)";
+        };
+        const itemHoverOut = (e: React.MouseEvent<HTMLButtonElement>) => {
+          (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+        };
+        return (
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: "fixed",
+              left: x,
+              top: y,
+              minWidth: 180,
+              maxWidth: MAX_W,
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 8,
+              boxShadow: "var(--pet-shadow-md)",
+              padding: "4px 0",
+              display: "flex",
+              flexDirection: "column",
+              zIndex: 90,
+              fontFamily: "inherit",
+            }}
+          >
+            <button
+              type="button"
+              style={item}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              disabled={!hasText}
+              onClick={() => {
+                setCtxMenu(null);
+                if (hasText) handleBubbleCopy(ctxMenu.idx, text);
+              }}
+            >
+              📋 复制本条
+            </button>
+            <button
+              type="button"
+              style={item}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              disabled={!hasText}
+              onClick={() => {
+                setCtxMenu(null);
+                if (!hasText) return;
+                const ts = formatBubbleTimestamp(m.ts);
+                const payload = ts === "[?]" ? text : `${ts} ${text}`;
+                navigator.clipboard
+                  .writeText(payload)
+                  .then(() => {
+                    setBubbleCopyIdx(ctxMenu.idx);
+                    window.setTimeout(
+                      () =>
+                        setBubbleCopyIdx((cur) =>
+                          cur === ctxMenu.idx ? null : cur,
+                        ),
+                      1500,
+                    );
+                  })
+                  .catch((err) =>
+                    console.error("bubble copy w/ timestamp failed:", err),
+                  );
+              }}
+            >
+              ⌚ 复制 · 含时间戳
+            </button>
+            {isAssistant && hasText && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  const excerpt =
+                    text.length > 30 ? text.slice(0, 30) + "…" : text;
+                  window.dispatchEvent(
+                    new CustomEvent("pet-mini-respond-to", { detail: excerpt }),
+                  );
+                }}
+              >
+                💭 针对这条再问
+              </button>
+            )}
+            {onOpenPanel && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  onOpenPanel();
+                }}
+              >
+                ⛶ 在 Panel 中打开聊天
+              </button>
+            )}
+            {/* "在 Panel 定位本条"：写 deeplink (chatMatch.excerpt) + 打开
+                Panel。PanelChat 反向扫 items 找最近 substr 命中 → 滚到该
+                bubble + 1.5s 高亮。仅 text 非空（hasText）才显 —— 纯图
+                bubble 没文字给 PanelChat 匹配。 */}
+            {onOpenPanel && hasText && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  // excerpt: 取前 80 字符（按 Unicode code point 算）作 substring
+                  // 关键字。够独特命中、又够短不挤 localStorage。
+                  const excerpt = Array.from(text).slice(0, 80).join("");
+                  try {
+                    window.localStorage.setItem(
+                      "pet-panel-deeplink",
+                      JSON.stringify({
+                        chatMatch: { excerpt },
+                        ts: Date.now(),
+                      }),
+                    );
+                  } catch {
+                    // localStorage 不可用：仍 onOpenPanel；用户至少进 Panel
+                  }
+                  onOpenPanel();
+                }}
+              >
+                ⛶ 在 Panel 中定位本条
+              </button>
+            )}
+          </div>
+        );
+      })()}
     </>
   );
 }

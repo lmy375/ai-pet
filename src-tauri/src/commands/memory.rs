@@ -664,3 +664,71 @@ pub fn memory_read_detail_full(detail_path: String) -> Result<String, String> {
     }
     fs::read_to_string(&full_canon).or(Ok(String::new()))
 }
+
+/// 在系统文件管理器里"显示并选中" detail.md 文件，让 owner 能直接在 Finder
+/// 里操作（拖入图片附件 / git add / 用其它编辑器打开 / 重命名等）。
+/// 与 `open_pet_data_dir` 不同 —— 那个打开"宠物数据目录"根；本命令针对具体
+/// detail.md 文件，在 macOS 用 `open -R` 让 Finder 高亮选中。
+///
+/// 安全：同 `memory_read_detail` 的 path traversal 防御（trim、拒绝 `..` /
+/// 绝对路径、canonicalize 后再校验落在 memories_dir 之内）。文件不存在时返
+/// 错误让前端 toast 显原因（与 read_detail 的"返空字符串"语义不同 —— open
+/// 操作没有"无声 fallback"，必须告诉用户为啥没打开）。
+///
+/// 跨平台：
+/// - macOS：`open -R <abs>` 在 Finder 里"显示包含该文件的文件夹并选中该文件"。
+/// - Windows：`explorer /select,<abs>` 同义。
+/// - 其它（Linux 等）：`xdg-open <parent>` 退化 —— `xdg-open` 不支持"选中"
+///   语义，只能打开父目录让用户自己找。
+#[tauri::command]
+pub fn memory_reveal_detail_in_finder(detail_path: String) -> Result<(), String> {
+    let trimmed = detail_path.trim();
+    if trimmed.is_empty() {
+        return Err("detail_path is required".to_string());
+    }
+    if trimmed.contains("..") || trimmed.starts_with('/') {
+        return Err("invalid detail_path".to_string());
+    }
+    let mem_dir = memories_dir()?;
+    let full = mem_dir.join(trimmed);
+    let mem_canon = fs::canonicalize(&mem_dir)
+        .map_err(|e| format!("Failed to resolve memories_dir: {}", e))?;
+    let full_canon = fs::canonicalize(&full).map_err(|e| {
+        format!("detail.md not found (path: {}): {}", trimmed, e)
+    })?;
+    if !full_canon.starts_with(&mem_canon) {
+        return Err("detail_path escaped memories_dir".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&full_canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to reveal via `open -R`: {}", e))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // explorer /select,<abs> —— `/select,` 后直接接路径，不能有空格隔开。
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(&full_canon);
+        std::process::Command::new("explorer")
+            .arg(arg)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to reveal via `explorer /select`: {}", e))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        // xdg-open 不支持 select；只能打开父目录。
+        let parent = full_canon
+            .parent()
+            .ok_or_else(|| "could not derive parent dir".to_string())?;
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open parent dir via xdg-open: {}", e))
+    }
+}

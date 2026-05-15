@@ -201,6 +201,66 @@ pub fn task_cancel_inner(
     Ok(())
 }
 
+/// `task_unarchive`：把 task_archive 里某条恢复到 butler_tasks。剥 [archived:]
+/// / [done] / [cancelled:] / [error:] / [result:] 标记让任务回到 pending；脱
+/// 掉 `YYYY-MM-DD_` 前缀让 title 回原始形态；通过 memory_edit create 加到
+/// butler_tasks（SQLite mirror 自动同步），随后 memory_edit delete 清归档条
+/// 目。原 detail.md 在 task_archive/ 下保留不动（避免回滚 + 老笔记仍能翻
+/// 出来），新 butler_tasks 起一份空 detail.md。
+///
+/// 失败模式：归档条目不存在 → Err；新 title 与现有 butler_tasks 冲突 →
+/// memory_edit 不会拒（yaml 允许重名），SQLite mirror 的 UNIQUE 索引会拒
+/// 第二条但属 best-effort 容忍。
+#[tauri::command]
+pub fn task_unarchive(title: String) -> Result<String, String> {
+    let archive_title = title.trim().to_string();
+    if archive_title.is_empty() {
+        return Err("title is required".to_string());
+    }
+    // 1. 从 SQLite task_archive 取条目
+    let archived = crate::db::with_db(|c| crate::db::task_archive_get(c, &archive_title))
+        .map_err(|e| format!("db read failed: {e}"))?
+        .ok_or_else(|| format!("archive item not found: {archive_title}"))?;
+
+    // 2. 剥 archive / 终态 marker，拿到 pending 形态 description
+    let new_description = crate::task_queue::strip_archive_markers(&archived.description);
+
+    // 3. 脱 `YYYY-MM-DD_` 前缀；regex 不引入，直接 split_once
+    //    形如 "2026-04-01_整理 downloads" → "整理 downloads"
+    let new_title = archive_title
+        .splitn(2, '_')
+        .nth(1)
+        .filter(|rest| {
+            let prefix_len = archive_title.len() - rest.len() - 1;
+            archive_title.get(..prefix_len).is_some_and(|p| {
+                // 严格检查前缀是 YYYY-MM-DD 格式（10 字符）
+                p.len() == 10 && p.chars().filter(|&c| c == '-').count() == 2
+            })
+        })
+        .map(String::from)
+        .unwrap_or(archive_title.clone());
+
+    // 4. 创建到 butler_tasks
+    memory::memory_edit(
+        "create".to_string(),
+        "butler_tasks".to_string(),
+        new_title.clone(),
+        Some(new_description),
+        None,
+    )?;
+
+    // 5. 删除原 archive 条目
+    memory::memory_edit(
+        "delete".to_string(),
+        "task_archive".to_string(),
+        archive_title,
+        None,
+        None,
+    )?;
+
+    Ok(format!("Restored as butler_task: {new_title}"))
+}
+
 /// `task_mark_done`：在 description 末尾追加 `[done]`（可选 `[result: ...]`）
 /// 标记。`result` 为 `None` / 空 / 仅空白 → 不附 result，与按 d 键盘快捷键
 /// 路径等价；非空 → 附 `[result: <trim>]`，与 LLM 自动 mark done 时形态
@@ -358,6 +418,89 @@ pub fn task_set_due(title: String, due: Option<String>) -> Result<(), String> {
         },
     };
     let new_desc = format_task_description(&new_header);
+    memory::memory_edit(
+        "update".to_string(),
+        "butler_tasks".to_string(),
+        item.title.clone(),
+        Some(new_desc),
+        None,
+    )?;
+    Ok(())
+}
+
+/// `task_set_pinned`：写 / 撤销任务 description 的 `[pinned]` marker。owner 在
+/// 面板点 📌 切换；pinned=true 时 append `[pinned]`，false 时 strip 所有 marker。
+/// 与 `task_set_snooze` 同模式 —— 单 bool 字段原子修改、保留其它 markers 不动。
+///
+/// 不推 decision_log —— 与 due / snooze 同：owner 标注偏好，非状态转移。
+#[tauri::command]
+pub fn task_set_pinned(title: String, pinned: bool) -> Result<(), String> {
+    let title_trim = title.trim();
+    if title_trim.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trim)
+        .ok_or_else(|| format!("task not found: {}", title_trim))?;
+    let stripped = crate::task_queue::strip_pinned_markers(&item.description);
+    let new_desc = if pinned {
+        let base = stripped.trim_end();
+        if base.is_empty() {
+            "[pinned]".to_string()
+        } else {
+            format!("{} [pinned]", base)
+        }
+    } else {
+        stripped
+    };
+    memory::memory_edit(
+        "update".to_string(),
+        "butler_tasks".to_string(),
+        item.title.clone(),
+        Some(new_desc),
+        None,
+    )?;
+    Ok(())
+}
+
+/// `task_set_snooze`：写 / 撤销任务 description 的 `[snooze: ...]` marker。
+/// 与 `task_set_due` 同模式 —— 单字段原子修改、保留其它 markers 不动。
+///
+/// `until == None` 或 trim 后为空 → 调 `strip_snooze_markers` 清掉所有
+/// 既有 `[snooze:]` marker（"撤销暂停"语义）。
+/// 否则按 `YYYY-MM-DD HH:MM` 严格解析；解析失败返回 Err。写入时先 strip
+/// 旧 marker 再 append 新 marker，保证 description 整洁（多次 set / unset
+/// 不会让 description 越积越长）。
+///
+/// 不推 decision_log —— 与 due / priority 同：日常 UX 调整，非状态转移。
+#[tauri::command]
+pub fn task_set_snooze(title: String, until: Option<String>) -> Result<(), String> {
+    let title_trim = title.trim();
+    if title_trim.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let parsed_until = match until.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => {
+            NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").map_err(|e| {
+                format!("invalid snooze (expect YYYY-MM-DD HH:MM): {}", e)
+            })?;
+            Some(s.to_string())
+        }
+        None => None,
+    };
+    let item = find_butler_task(title_trim)
+        .ok_or_else(|| format!("task not found: {}", title_trim))?;
+    let stripped = crate::task_queue::strip_snooze_markers(&item.description);
+    let new_desc = match parsed_until {
+        Some(s) => {
+            let base = stripped.trim_end();
+            if base.is_empty() {
+                format!("[snooze: {}]", s)
+            } else {
+                format!("{} [snooze: {}]", base, s)
+            }
+        }
+        None => stripped,
+    };
     memory::memory_edit(
         "update".to_string(),
         "butler_tasks".to_string(),
@@ -567,13 +710,27 @@ pub(crate) fn build_task_view(item: &memory::MemoryItem) -> TaskView {
         ),
         None => (0u8, None, raw.trim().to_string()),
     };
-    // 面板里隐藏 [origin:...] / [result:...] 标记 — 前者是 routing 协议，
-    // 后者已在 result 字段独立展示，body 里再有就是重复。tag 不剥（让用户
-    // 在 body 里也看得到 #xxx 词）。
-    let body = strip_result_marker(&strip_origin_marker(&body_raw));
+    // 面板里隐藏 [origin:...] / [result:...] / [pinned] 标记 — origin 是
+    // routing 协议、result 已在 result 字段单独展示、pinned 由 TaskView.pinned
+    // bool 暴露。tag 不剥（让用户在 body 里也看得到 #xxx 词）。
+    let body = crate::task_queue::strip_pinned_markers(&strip_result_marker(
+        &strip_origin_marker(&body_raw),
+    ));
     let (status, error_message) = classify_status(raw);
     let tags = parse_task_tags(raw);
     let result = parse_task_result(raw);
+    let blocked_by = crate::task_queue::parse_blocked_by(raw);
+    let pinned = crate::task_queue::parse_pinned(raw);
+    // snoozed_until：仅当 snooze 时刻仍在未来时填字符串；过点后视作 None
+    // 让前端 chip 自动消失（marker 自然失效，不需要 cleanup）。
+    let snoozed_until = crate::task_queue::parse_snooze(raw).and_then(|until| {
+        let now = chrono::Local::now().naive_local();
+        if until > now {
+            Some(until.format("%Y-%m-%dT%H:%M").to_string())
+        } else {
+            None
+        }
+    });
     TaskView {
         title: item.title.clone(),
         body,
@@ -587,7 +744,123 @@ pub(crate) fn build_task_view(item: &memory::MemoryItem) -> TaskView {
         created_at: item.created_at.clone(),
         updated_at: item.updated_at.clone(),
         detail_path: item.detail_path.clone(),
+        blocked_by,
+        snoozed_until,
+        pinned,
     }
+}
+
+/// `regenerate_task_title`：让 LLM 看任务 title + 描述 + detail.md 前 600 字，
+/// 给出 ≤ 10 字的中文新标题，并 atomic 调 `memory_rename` 写回。与
+/// `regenerate_session_title` 同 IO 模板（非流式 / 30s timeout / temperature
+/// 0.3 / max_tokens 30 / 输出清洗）。
+///
+/// 设计：
+/// - **不走 chat_pipeline**：本调用是"总结任务"工具，宠物自我画像 / 工具用法
+///   等 layer 注入只会污染 prompt。bare-bones context + 一条指令。
+/// - **detail.md best-effort 600 字**：长 detail 截断；读失败 / 空文件不阻塞
+///   —— 仍能基于 title + description 给标题。
+/// - **rename 失败但 LLM 成功时返 Err**：用户没看到新名也没改名，对称错误。
+///   memory_rename 的"new == old" / "已存在重名" 等错误透传给前端。
+/// - **不推 decision_log**：与 due / priority / pinned 等"UX 操作"同非状态转移。
+#[tauri::command]
+pub async fn regenerate_task_title(title: String) -> Result<String, String> {
+    let settings = crate::commands::settings::get_settings()?;
+    if settings.api_key.is_empty() {
+        return Err("API Key 未配置。打开「设置」填好后再试。".to_string());
+    }
+    if settings.model.trim().is_empty() {
+        return Err("model 未配置。".to_string());
+    }
+    let title_trim = title.trim().to_string();
+    if title_trim.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(&title_trim)
+        .ok_or_else(|| format!("task not found: {}", title_trim))?;
+    // 拼任务上下文：title + description + (可选) detail.md 前 600 字。
+    let mut context = String::new();
+    context.push_str("原标题：");
+    context.push_str(&item.title);
+    context.push_str("\n描述：");
+    context.push_str(item.description.trim());
+    if !item.detail_path.is_empty() {
+        if let Ok(detail) =
+            crate::commands::memory::memory_read_detail(item.detail_path.clone())
+        {
+            let trimmed: String = detail.chars().take(600).collect();
+            if !trimmed.trim().is_empty() {
+                context.push_str("\n详情（前 600 字）：");
+                context.push_str(&trimmed);
+            }
+        }
+    }
+    let messages = vec![serde_json::json!({
+        "role": "user",
+        "content": format!(
+            "{}\n\n请用 ≤ 10 字的中文给这条任务起一个更切题 / 更易识别的新标题，仅输出标题文本，不要带引号 / 句号 / 表情。",
+            context
+        ),
+    })];
+    let url = format!(
+        "{}/chat/completions",
+        settings.api_base.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "model": settings.model,
+        "messages": messages,
+        "max_tokens": 30,
+        "stream": false,
+        "temperature": 0.3,
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client init failed: {e}"))?;
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", settings.api_key))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求 chat API 失败：{e}"))?;
+    let status = resp.status();
+    let raw = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应体失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("chat API 返回 {}：{}", status, raw));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "解析响应失败：{e}；原始 body 前 200 字：{}",
+            &raw.chars().take(200).collect::<String>()
+        )
+    })?;
+    let raw_content = parsed["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .trim();
+    // 清洗：剥首尾引号 / 句号；夹 \n 用 " " 替换避免多行标题。
+    let stripped: String = raw_content
+        .trim_matches(|c: char| {
+            matches!(c, '"' | '\'' | '“' | '”' | '‘' | '’' | '.' | '。')
+        })
+        .replace('\n', " ")
+        .trim()
+        .to_string();
+    if stripped.is_empty() {
+        return Err("LLM 返回了空标题。".to_string());
+    }
+    let new_title: String = stripped.chars().take(30).collect();
+    // 不变（noop）/ 重名（rename Err）等都直接透传，让前端 toast 给原因。
+    crate::commands::memory::memory_rename(
+        "butler_tasks".to_string(),
+        item.title.clone(),
+        new_title.clone(),
+    )?;
+    Ok(new_title)
 }
 
 #[cfg(test)]

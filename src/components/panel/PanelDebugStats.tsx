@@ -118,9 +118,30 @@ function StatCard({
   );
 }
 
+/// active session 的 LLM 上下文统计（与 `get_active_session_context_stats`
+/// 后端返回结构一致）。messages / chars / tokens 都是 system-excluded 的
+/// "会被 /reset 砍掉的部分"。session_id / session_title 用来告诉用户"哪
+/// 个 session 数据"。
+interface SessionContextStats {
+  messages: number;
+  chars: number;
+  tokens: number;
+  session_id: string;
+  session_title: string;
+}
+
+/// `tokens > N` 时浮出"该 /reset 一下"提示。4000 是经验值：常见 LLM context
+/// 8k-128k 都有，4000 留出一倍的回头空间给后续对话不至于撞墙。
+const SESSION_TOKEN_WARN_THRESHOLD = 4000;
+
 export function PanelDebugStats() {
   const [data, setData] = useState<DebugStatsBundle | null>(null);
   const [errMsg, setErrMsg] = useState("");
+  /// active session 上下文规模独立抓 —— 来自 commands::session 的命令而非
+  /// debug_snapshot；分离让两个数据源失败时彼此不互拖。
+  const [sessionCtx, setSessionCtx] = useState<SessionContextStats | null>(
+    null,
+  );
 
   const fetchData = useCallback(async () => {
     try {
@@ -132,11 +153,28 @@ export function PanelDebugStats() {
     }
   }, []);
 
+  const fetchSessionCtx = useCallback(async () => {
+    try {
+      const stats = await invoke<SessionContextStats>(
+        "get_active_session_context_stats",
+      );
+      setSessionCtx(stats);
+    } catch (e) {
+      // 后端走"读失败 → 0 兜底"，理论上不会到这里；偶发 IPC 异常静默
+      // 让卡片回到"—"态而不显错误吐司（debug 卡片不该挡用户其它操作）。
+      console.error("get_active_session_context_stats failed:", e);
+    }
+  }, []);
+
   useEffect(() => {
     void fetchData();
-    const id = window.setInterval(fetchData, POLL_MS);
+    void fetchSessionCtx();
+    const id = window.setInterval(() => {
+      fetchData();
+      fetchSessionCtx();
+    }, POLL_MS);
     return () => window.clearInterval(id);
-  }, [fetchData]);
+  }, [fetchData, fetchSessionCtx]);
 
   const reset = async (cmd: string) => {
     try {
@@ -222,6 +260,57 @@ export function PanelDebugStats() {
           subtitle="自首次启动至今的本地日数"
           primary={`${data.companionship_days} 天`}
         />
+        {/* 当前 session LLM 上下文规模：与 PanelChat `/reset` 配合让用户感
+            知"上下文是否该清"。messages / chars / tokens 都排除 system
+            （/reset 保留 system 不动）。tokens 超阈值时 detail 走 yellow
+            tint + "/reset 提示"，与既有 stat card 的 empty 灰 / 实色 fg
+            视觉对偶。 */}
+        {(() => {
+          const ctx = sessionCtx;
+          const empty = !ctx || ctx.messages === 0;
+          const tooBig =
+            !!ctx && ctx.tokens > SESSION_TOKEN_WARN_THRESHOLD;
+          const subtitle = ctx?.session_title
+            ? `当前会话「${ctx.session_title.length > 14 ? ctx.session_title.slice(0, 14) + "…" : ctx.session_title}」，排除 system / 持久化态`
+            : "排除 system / 当前 active session";
+          const detail = empty
+            ? undefined
+            : tooBig
+              ? `~${ctx!.tokens} tok · ${ctx!.chars} 字 · ${ctx!.messages} 条 — 考虑敲 /reset 清掉以省 token`
+              : `~${ctx!.tokens} tok · ${ctx!.chars} 字 · ${ctx!.messages} 条`;
+          return (
+            <div style={cardStyle}>
+              <div style={cardHeaderStyle}>
+                <span style={cardTitleStyle}>当前会话 LLM 上下文</span>
+              </div>
+              <div style={cardSubtitleStyle}>{subtitle}</div>
+              <div
+                style={{
+                  ...cardNumberStyle,
+                  color: empty
+                    ? "var(--pet-color-muted)"
+                    : tooBig
+                      ? "var(--pet-tint-yellow-fg)"
+                      : "var(--pet-color-fg)",
+                }}
+              >
+                {empty ? "—" : `~${ctx!.tokens} tok`}
+              </div>
+              {detail && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: tooBig
+                      ? "var(--pet-tint-yellow-fg)"
+                      : "var(--pet-color-muted)",
+                  }}
+                >
+                  {detail}
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <StatCard
           title="主动开口（今天）"
           subtitle="今日 proactive 实际开口次数"

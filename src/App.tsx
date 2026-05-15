@@ -8,8 +8,10 @@ import { ChatPanel } from "./components/ChatPanel";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
-import { useMoodAnimation } from "./hooks/useMoodAnimation";
-import { applyTheme, getStoredTheme, setStoredTheme, getStoredAccent, setStoredAccent, type Accent } from "./theme";
+import { usePollingState } from "./hooks/usePollingState";
+import { useThemeChangeSync } from "./hooks/useThemeChangeSync";
+import { useMoodAnimation, playPetMotion } from "./hooks/useMoodAnimation";
+import { applyTheme, getStoredTheme, getStoredAccent, setStoredTheme } from "./theme";
 import { extractText } from "./utils/messageContent";
 import {
   formatImageHelpText,
@@ -35,6 +37,39 @@ const MOOD_GLYPH: Record<string, string> = {
   Flick3: "💢",
   Idle: "💤",
 };
+
+/// motion → 颜色（与 PanelPersona MOTION_META 同款配色，但本地不复用，
+/// 避免桌面层 import 进 panel-only 文件造成 bundle 偶联）。
+const MOOD_COLOR: Record<string, string> = {
+  Tap: "#ec4899",
+  Flick: "#f59e0b",
+  Flick3: "#ea580c",
+  Idle: "#64748b",
+};
+const MOOD_COLOR_FALLBACK = "#cbd5e1";
+
+/// 与 PanelPersona DailyMotion 同形：后端 get_mood_daily_motions 的 JSON 输出。
+interface DailyMotionPayload {
+  date: string;
+  motions: Record<string, number>;
+  total: number;
+}
+
+/// 从 motions map 找占比最大的 motion key。空 map → null。同票时 keys 排
+/// 序后取第一个让结果稳定（不依赖 JS 对象迭代顺序）。
+function topMotion(motions: Record<string, number>): string | null {
+  let best: string | null = null;
+  let bestN = -1;
+  // 稳定排序保证同票决定性
+  const keys = Object.keys(motions).sort();
+  for (const k of keys) {
+    if (motions[k] > bestN) {
+      bestN = motions[k];
+      best = k;
+    }
+  }
+  return best;
+}
 
 /// 桌面 Live2D 区右下角的心情展示位。轮询 get_current_mood 每 5s（与
 /// PanelPersona 同节奏），有心情才渲染（空 / 未记录直接 null）。
@@ -64,6 +99,41 @@ function MoodWidget() {
   const [mood, setMood] = useState<CurrentMood | null>(null);
   const [history, setHistory] = useState<MoodSnapshot[]>([]);
   const [historyVisible, setHistoryVisible] = useState(false);
+  /// 双击 widget 浮"最近 7 天心情" sparkline 浮窗。轻量 IPC：仅在首次打开
+  /// 时拉一次 get_mood_daily_motions(days=7)；关闭后保留缓存，再次打开走
+  /// 缓存秒开。loadingDaily 防 race 重复 fetch；errorDaily 显简短失败提示。
+  const [sparklineOpen, setSparklineOpen] = useState(false);
+  const [daily7, setDaily7] = useState<DailyMotionPayload[] | null>(null);
+  const [loadingDaily, setLoadingDaily] = useState(false);
+  const sparklineFetchOnceRef = useRef(false);
+  useEffect(() => {
+    if (!sparklineOpen) return;
+    if (sparklineFetchOnceRef.current) return;
+    sparklineFetchOnceRef.current = true;
+    setLoadingDaily(true);
+    invoke<DailyMotionPayload[]>("get_mood_daily_motions", { days: 7 })
+      .then((arr) => setDaily7(Array.isArray(arr) ? arr : []))
+      .catch((e) => {
+        console.error("get_mood_daily_motions failed:", e);
+        setDaily7([]);
+      })
+      .finally(() => setLoadingDaily(false));
+  }, [sparklineOpen]);
+  /// 点窗外 / 按 Esc 关闭。mousedown 而非 click 让"按下即关"跟手；popover
+  /// 内 stopPropagation 防自关。
+  useEffect(() => {
+    if (!sparklineOpen) return;
+    const onDoc = () => setSparklineOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSparklineOpen(false);
+    };
+    window.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [sparklineOpen]);
   // nowMs 慢节奏 tick（10s）让 hover tooltip 里的"X 分前"自然刷新，无需
   // 重订 polling 频率。
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -164,8 +234,123 @@ function MoodWidget() {
           ))}
         </div>
       )}
+      {/* 「最近 7 天心情」双击浮窗：每天一个 dot，色取自当日 top motion 的
+          MOOD_COLOR；opacity 跟 total 缩放（多记录 = 实色，0 记录 = 灰透）；
+          hover 单 dot 显日期 + motions 分布；空数据兜底"还没攒到 7 天历史"。
+          mousedown stopPropagation 阻自关；窗外 click / Esc 由 effect 监听。 */}
+      {sparklineOpen && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            bottom: "calc(100% + 6px)",
+            left: 0,
+            minWidth: 200,
+            padding: "8px 12px",
+            background: "var(--pet-color-card)",
+            border: "1px solid var(--pet-color-border)",
+            borderRadius: 10,
+            boxShadow: "var(--pet-shadow-md)",
+            whiteSpace: "nowrap",
+            zIndex: 80,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              color: "var(--pet-color-muted)",
+              marginBottom: 6,
+              letterSpacing: 0.3,
+            }}
+          >
+            最近 7 天心情（最旧 ← → 最新）
+          </div>
+          {loadingDaily && (
+            <div style={{ fontSize: 10, color: "var(--pet-color-muted)" }}>
+              加载中…
+            </div>
+          )}
+          {!loadingDaily && daily7 !== null && daily7.length === 0 && (
+            <div style={{ fontSize: 10, color: "var(--pet-color-muted)" }}>
+              还没攒到 7 天心情历史；先一起聊聊。
+            </div>
+          )}
+          {!loadingDaily && daily7 && daily7.length > 0 && (() => {
+            const maxTotal = Math.max(1, ...daily7.map((d) => d.total));
+            return (
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                {daily7.map((d) => {
+                  const top = topMotion(d.motions);
+                  const color =
+                    top && MOOD_COLOR[top]
+                      ? MOOD_COLOR[top]
+                      : MOOD_COLOR_FALLBACK;
+                  // opacity 0.25 起步让"0 记录的日子"也可见但很淡；满记录 1.0
+                  const opacity =
+                    d.total === 0 ? 0.25 : 0.45 + (d.total / maxTotal) * 0.55;
+                  // size 也按 total 缩 8..14，让"重磅日"更显眼
+                  const size = d.total === 0 ? 8 : 8 + Math.min(6, d.total);
+                  // tooltip：日期 + 各 motion 分布；按计数降序
+                  const breakdown = Object.entries(d.motions)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([k, v]) => `${MOOD_GLYPH[k] ?? k}×${v}`)
+                    .join(" ");
+                  const dateLabel = d.date.slice(5); // MM-DD
+                  return (
+                    <div
+                      key={d.date}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 3,
+                      }}
+                      title={
+                        d.total === 0
+                          ? `${d.date}：无心情记录`
+                          : `${d.date}：${breakdown}`
+                      }
+                    >
+                      <div
+                        style={{
+                          width: size,
+                          height: size,
+                          borderRadius: "50%",
+                          background: color,
+                          opacity,
+                          transition: "transform 120ms ease-out",
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: 9,
+                          color: "var(--pet-color-muted)",
+                          fontFamily: "'SF Mono', 'Menlo', monospace",
+                        }}
+                      >
+                        {dateLabel}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
       <div
-        title={`当前心情：${mood.text}${mood.motion ? `（${mood.motion}）` : ""}\n（hover 看最近 ${MOOD_HISTORY_MAX} 条变化）`}
+        title={`当前心情：${mood.text}${mood.motion ? `（${mood.motion}）` : ""}\n（hover 看最近 ${MOOD_HISTORY_MAX} 条变化；双击展开 7 天浮窗）`}
+        onDoubleClick={(e) => {
+          // 防"双击 widget = 双击 Live2D = happy motion"双触发：自身 stopPropagation。
+          e.stopPropagation();
+          setSparklineOpen((v) => !v);
+        }}
+        onMouseDown={(e) => {
+          // 防 widget 上 mousedown 冒泡触发 window onDoc → 自关。stop 让 effect 里
+          // 的 onDoc 不命中本 widget。historyVisible hover 不挡。
+          e.stopPropagation();
+        }}
         style={{
           display: "flex",
           alignItems: "center",
@@ -177,6 +362,7 @@ function MoodWidget() {
           boxShadow: "var(--pet-shadow-sm)",
           fontSize: 11,
           color: "var(--pet-color-muted)",
+          cursor: "pointer",
         }}
       >
         <span style={{ fontSize: 14, lineHeight: 1 }}>{glyph}</span>
@@ -190,9 +376,30 @@ function MoodWidget() {
   );
 }
 
+/// 任务完成 sparkle 飘飞粒子表。手工排出 6 颗的 top/left/dx/rot/delay/size，
+/// 让弧线感漂亮而非纯随机散点。各粒子独立 animation-delay 形成涟漪式
+/// 涌现，1.5s 内全部 fade out。glyph 取自 emoji ✨ / ⭐ / 🌟 三种，让视觉
+/// 不机械重复。
+const SPARKLE_PARTICLES: Array<{
+  top: string;
+  left: string;
+  dx: string;
+  rot: string;
+  delay: number;
+  size: number;
+  glyph: string;
+}> = [
+  { top: "62%", left: "32%", dx: "-14px", rot: "-12deg", delay: 0,   size: 22, glyph: "✨" },
+  { top: "55%", left: "68%", dx: "14px",  rot: "12deg",  delay: 80,  size: 22, glyph: "✨" },
+  { top: "44%", left: "48%", dx: "-2px",  rot: "0deg",   delay: 160, size: 26, glyph: "🌟" },
+  { top: "58%", left: "18%", dx: "-22px", rot: "-18deg", delay: 240, size: 18, glyph: "⭐" },
+  { top: "50%", left: "82%", dx: "22px",  rot: "18deg",  delay: 320, size: 18, glyph: "⭐" },
+  { top: "36%", left: "62%", dx: "8px",   rot: "6deg",   delay: 400, size: 20, glyph: "✨" },
+];
+
 function App() {
   const { settings, soul, loaded } = useSettings();
-  const { messages, currentResponse, toolStatus, isLoading, sendMessage, cancel, appendAssistant } = useChat(soul);
+  const { messages, currentResponse, toolStatus, isLoading, sendMessage, cancel, appendAssistant, resetContext } = useChat(soul);
   const modelRef = useRef<any>(null);
   const { hidden, handleMouseEnter, collapse } = useAutoHide();
   // 把 settings.motion_mapping 传给动画 hook，让用户在「设置」改了映射立即
@@ -232,6 +439,63 @@ function App() {
   // 当前 active 的 NOW 标记 → 过期 ms 时戳。pet 端独立持有副本（与
   // PanelTasks 的 Set 跨窗口），让 ChatMini hover 可显出当前专注队列。
   const [nowTasks, setNowTasks] = useState<Map<string, number>>(new Map());
+  /// pet 窗顶部 pill 数据源：逾期 + 今日完成两个维度。走后端 task_stats 单
+  /// SoT（同函数也供桌面 /stats / PanelDebug strip）。60s 轮询（panel 30s，
+  /// pet 窗常驻 → 稀疏一点省 IPC 噪声）。失败保持上次值不闪 0（hook 默认行为）。
+  /// initial = {0, 0} 让首帧 pill 不挂（!hasOverdue && !hasDone → 不渲染分支）。
+  const { data: taskStats } = usePollingState(
+    () =>
+      invoke<{ overdue: number; done_today: number; snoozed: number }>(
+        "task_stats",
+      ),
+    60_000,
+    { overdue: 0, done_today: 0, snoozed: 0 },
+  );
+  /// 陪伴天数：桌面 Live2D 区右上角 ✦ N chip 数据源。day-granular，10 min
+  /// 轮询足够（midnight 跨日 ≤ 10min 内更新）。`-1` 兜底"未 fetch / 失败"
+  /// → chip 不渲染（避免空 chip 占位）。
+  const { data: companionshipDays } = usePollingState(
+    () => invoke<number>("get_companionship_days"),
+    600_000,
+    -1,
+  );
+
+  /// 当前 session 上下文 token 量。60 秒轮一次（变化频率与 user 聊天节奏一致；
+  /// 更频会浪费 IPC，更稀疏会漏报"刚刚才聊几句就过线"）。> 4000 时 ChatMini
+  /// 顶部浮出"该 /reset 一下" chip，与 DebugApp 统计 tab 同源信号 +
+  /// SESSION_TOKEN_WARN_THRESHOLD 同阈值。fallback 0 = 未抓到不显 chip。
+  const { data: sessionTokens } = usePollingState(
+    async () => {
+      try {
+        const stats = await invoke<{ tokens: number }>(
+          "get_active_session_context_stats",
+        );
+        return stats.tokens;
+      } catch (e) {
+        // 偶发 IPC 异常静默兜 0 = chip 不显，不打扰用户操作流。
+        console.error("get_active_session_context_stats failed:", e);
+        return 0;
+      }
+    },
+    60_000,
+    0,
+  );
+
+  /// 任务完成庆祝 sparkle：done_today 计数从 prev → cur 单调上升时，触发
+  /// 一次 ~1.5s ✨ 飘飞动画覆盖 Live2D 区。首次观测仅作 baseline 不点燃
+  /// （初始 0 → 真实 N 不是"刚完成"信号）；午夜回到 0 也不触发（cur > prev
+  /// 条件兜住）。多次连发用 key 自增让 React remount 动画从头跑。
+  const lastDoneTodayRef = useRef<number | null>(null);
+  const [sparkleKey, setSparkleKey] = useState(0);
+  useEffect(() => {
+    const cur = taskStats.done_today;
+    const prev = lastDoneTodayRef.current;
+    lastDoneTodayRef.current = cur;
+    if (prev === null) return;
+    if (cur > prev) {
+      setSparkleKey((k) => k + 1);
+    }
+  }, [taskStats.done_today]);
   // 监听 PanelTasks "⚡ 标 NOW" 事件：立刻给桌面 ChatMini 推一条 ack +
   // 60s 后再推一条 nudge 提醒。每次 mark 起独立 timer（多任务并存 OK），
   // 组件 unmount 时清。同时更新 nowTasks Map 让 ChatMini 显倒计时浮窗。
@@ -334,33 +598,9 @@ function App() {
     };
   }, []);
 
-  // 监听 panel 发的主题切换：setStoredTheme 持久化 + applyTheme 刷 CSS vars，
-  // 让桌面 ChatMini / ChatPanel / MoodWidget 跟随。emit 来自 PanelApp.toggleTheme
-  // 或 PanelSettings 的 toggle（待加）。本 window 是接收方，不回 emit 防循环。
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let unlistenAccent: (() => void) | undefined;
-    (async () => {
-      unlisten = await listen<string>("theme-change", (event) => {
-        const next = event.payload === "dark" ? "dark" : "light";
-        if (getStoredTheme() === next) return;
-        setStoredTheme(next);
-        applyTheme(next, getStoredAccent());
-      });
-      unlistenAccent = await listen<string>("accent-change", (event) => {
-        const valid: Accent[] = ["default", "green", "purple", "orange", "rose"];
-        const raw = event.payload as Accent;
-        const next = valid.includes(raw) ? raw : "default";
-        if (getStoredAccent() === next) return;
-        setStoredAccent(next);
-        applyTheme(getStoredTheme(), next);
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-      if (unlistenAccent) unlistenAccent();
-    };
-  }, []);
+  // 跨窗口主题 / 强调色同步：监听 PanelApp 发的 emit。逻辑全在共享 hook
+  // 里（与 DebugApp 用同一份）。
+  useThemeChangeSync();
 
   // 👍 反馈：写 Liked 信号到 feedback_history。excerpt 取消息列表里最近一
   // 条 assistant 内容（来自 useChat.messages，含 proactive 推过来的）。
@@ -379,6 +619,26 @@ function App() {
   const handleModelReady = useCallback((model: any) => {
     modelRef.current = model;
   }, []);
+
+  /// 双击 Live2D 区触发"happy / 活泼"动作（Tap motion group）作为
+  /// 用户互动的可见反馈，符合 GOAL「UI 美观可爱」+「自我进化」的陪伴感。
+  /// 600ms cooldown 防连点刷动画 —— 短于 mood 自然 motion 的最低节奏，
+  /// 长到给一次动作播完的时间。settings.motion_mapping 仍生效，让用户
+  /// 自定义模型也能命中 happy 等价的 group 名。
+  const lastTapAtRef = useRef<number>(0);
+  const handlePetDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      // 状态 pill / MoodWidget / 收起按钮等绝对定位子元素自身已挂 onMouseDown
+      // 的 stopPropagation；这里再守一道避免点 pill 时被解读为 Live2D 双击。
+      const target = e.target as HTMLElement;
+      if (target?.closest?.("[data-no-pet-dblclick]")) return;
+      const now = Date.now();
+      if (now - lastTapAtRef.current < 600) return;
+      lastTapAtRef.current = now;
+      playPetMotion(modelRef.current, "Tap", settings.motion_mapping);
+    },
+    [settings.motion_mapping],
+  );
 
   /// 桌面输入路由：先 parse 看是否 slash 命令。当前桌面仅支持 /image / /image -h，
   /// 其它 slash 命令（/clear / /tasks / /sleep 等）面板专属，桌面下落到 LLM 自
@@ -456,6 +716,57 @@ function App() {
     e.preventDefault();
     getCurrentWindow().startDragging();
   };
+
+  /// Live2D 区右键聚合菜单：聚合"打开 panel / 切主题 / mute 30/60 分钟 / 重启
+  /// 窗口"等快捷动作，当前 pet 窗口右键没反应（仅 textarea 等输入控件有默认菜单）。
+  /// 状态：null = 关闭；非 null = viewport 坐标位置。useEffect 处理外部点击 +
+  /// Esc 关闭，与既有 ctxMenu 模式一致。
+  const [petCtxMenu, setPetCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  /// Esc 全局键盘快捷：触发 collapse() 把宠物滑到桌边只露 tab。替代手点右
+  /// 上角 ▶| 按钮，让键盘党 / mac trackpad 用户少一次定位。让位条件：
+  /// - hidden（已收起）：noop 避免反复触发
+  /// - petCtxMenu 开着：让右键菜单自己的 Esc 关 menu 先（不抢键）
+  /// - 输入控件聚焦：让 textarea / input / contentEditable 自己处理 Esc
+  ///   （桌面 ChatPanel textarea 在编辑回复 / cancel 流式等场景有 Esc 行为）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (hidden || petCtxMenu) return;
+      const ae = document.activeElement;
+      if (
+        ae instanceof HTMLInputElement ||
+        ae instanceof HTMLTextAreaElement ||
+        (ae instanceof HTMLElement && ae.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      collapse();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [hidden, petCtxMenu, collapse]);
+  useEffect(() => {
+    if (!petCtxMenu) return;
+    const close = () => setPetCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
+    };
+    // 用 setTimeout 0 让本次 onContextMenu 完成后再挂监听 —— 同次事件触发
+    // contextmenu + 立即捕获到自身的 click 会让菜单"刚开就关"。
+    const t = window.setTimeout(() => {
+      window.addEventListener("mousedown", close);
+      window.addEventListener("keydown", onKey);
+    }, 0);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [petCtxMenu]);
 
   const openPanel = () => {
     invoke("open_panel").catch(console.error);
@@ -622,17 +933,222 @@ function App() {
           )}
           {/* Live2D 区 220px：窗口默认 450px 高，给 ChatMini 留 ≥ 150px 显
               4 行左右对话；输入框 ~ 60px。260 / 150 / 60 = 470 不够，220
-              / 170 / 60 = 450 平衡。 */}
-          <div style={{ position: "relative", flexShrink: 0, height: "220px" }}>
+              / 170 / 60 = 450 平衡。
+              onDoubleClick：双击空白处触发 happy motion（见 handlePetDoubleClick）。
+              子级浮标（pill / MoodWidget / 收起按钮 / sparkle）渲染时不挂
+              [data-no-pet-dblclick]，但它们自身的 onClick / onMouseDown 已
+              stopPropagation —— 双击事件冒泡到 wrapper 时这些 hit area 自然
+              不响应。 */}
+          <div
+            style={{ position: "relative", flexShrink: 0, height: "220px" }}
+            onDoubleClick={handlePetDoubleClick}
+            onContextMenu={(e) => {
+              // 仅在 Live2D 主区域响应；子级浮标（pill / chip / 按钮）右键时
+              // 不抢菜单，让用户对那些 hit area 仍可走系统默认 / 子元素自定义。
+              const tag = (e.target as HTMLElement).tagName;
+              if (tag === "BUTTON" || tag === "INPUT" || tag === "TEXTAREA") return;
+              e.preventDefault();
+              setPetCtxMenu({ x: e.clientX, y: e.clientY });
+            }}
+          >
             <Live2DCharacter
               key={settings.live_2d_model_path}
               modelPath={settings.live_2d_model_path}
               onModelReady={handleModelReady}
             />
+            {/* 任务状态 pill：钉在 Live2D 区左上角（与右上 ▶| 收起钮错开）。
+                显示策略：含逾期 → 红 pill（紧迫感优先），仅 done_today → 绿
+                pill（庆祝），都为 0 不渲染。点击调 openPanel + deeplink：含逾
+                期跳 overdue filter，仅 done 时跳 all filter 让用户回看队列。
+                stopPropagation 防穿透到 Live2D 拖动。 */}
+            {(taskStats.overdue > 0 ||
+              taskStats.done_today > 0 ||
+              taskStats.snoozed > 0) &&
+              (() => {
+              const overdue = taskStats.overdue;
+              const done = taskStats.done_today;
+              const snoozed = taskStats.snoozed;
+              const overdueLabel = overdue > 99 ? "99+" : `${overdue}`;
+              const doneLabel = done > 99 ? "99+" : `${done}`;
+              const snoozedLabel = snoozed > 99 ? "99+" : `${snoozed}`;
+              const hasOverdue = overdue > 0;
+              const hasDone = done > 0;
+              const hasSnoozed = snoozed > 0;
+              // 拼分段：≥ 2 段时只显简短 emoji + 数字；单段时附"逾期 /
+              // 今日完成 / 暂停" 后缀让初见也能读懂。tint 按紧迫度优先：
+              // 红（逾期）> 绿（完成）> 蓝（暂停）。
+              const segments: string[] = [];
+              if (hasOverdue) segments.push(`🔴 ${overdueLabel}`);
+              if (hasDone) segments.push(`✓ ${doneLabel}`);
+              if (hasSnoozed) segments.push(`💤 ${snoozedLabel}`);
+              let text = segments.join(" · ");
+              if (segments.length === 1) {
+                text = hasOverdue
+                  ? `🔴 ${overdueLabel} 逾期`
+                  : hasDone
+                    ? `✓ ${doneLabel} 今日完成`
+                    : `💤 ${snoozedLabel} 暂停`;
+              }
+              const tipParts: string[] = [];
+              if (hasOverdue) tipParts.push(`${overdue} 条任务已过期`);
+              if (hasDone) tipParts.push(`今日完成 ${done} 条`);
+              if (hasSnoozed) tipParts.push(`${snoozed} 条暂停中`);
+              const tooltip = `${tipParts.join(" · ")} · 点开「任务」tab`;
+              const tint: "red" | "green" | "blue" = hasOverdue
+                ? "red"
+                : hasDone
+                  ? "green"
+                  : "blue";
+              return (
+                <div
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // deeplink：含逾期 → overdue filter；仅 done → all filter
+                    // 让用户自由看队列。ts 是 TTL 戳，PanelApp 仅认 10s 内的。
+                    try {
+                      localStorage.setItem(
+                        "pet-panel-deeplink",
+                        JSON.stringify({
+                          tab: "任务",
+                          dueFilter: hasOverdue ? "overdue" : "all",
+                          ts: Date.now(),
+                        }),
+                      );
+                    } catch {
+                      // localStorage 不可用 → 至少打开面板
+                    }
+                    openPanel();
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  title={tooltip}
+                  style={{
+                    position: "absolute",
+                    top: "8px",
+                    left: "8px",
+                    padding: "3px 9px",
+                    background: `var(--pet-tint-${tint}-bg)`,
+                    color: `var(--pet-tint-${tint}-fg)`,
+                    border: `1px solid var(--pet-tint-${tint}-fg)`,
+                    borderRadius: "12px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    lineHeight: 1.2,
+                    cursor: "pointer",
+                    zIndex: 60,
+                    boxShadow: "var(--pet-shadow-sm)",
+                    userSelect: "none",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {text}
+                </div>
+              );
+            })()}
+            {/* 任务完成 sparkle 庆祝：done_today 单调 +1 时点燃一次。key
+                自增让多次连发也能 remount 从头跑。粒子表 SPARKLE_PARTICLES
+                在模块顶；reduced-motion 下整段不渲染（CSS @media 兜底）。
+                pointerEvents: none 保 Live2D 拖动 / pill 点击穿透不被遮。 */}
+            {sparkleKey > 0 && (
+              <div
+                key={sparkleKey}
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  pointerEvents: "none",
+                  zIndex: 70,
+                  overflow: "hidden",
+                }}
+              >
+                <style>{`
+                  @keyframes pet-sparkle {
+                    0%   { opacity: 0; transform: translate(0, 0) scale(0.4) rotate(var(--rot, 0deg)); }
+                    25%  { opacity: 1; transform: translate(var(--dx, 0), -10px) scale(1.2) rotate(var(--rot, 0deg)); }
+                    70%  { opacity: 1; transform: translate(var(--dx, 0), -28px) scale(1.0) rotate(var(--rot, 0deg)); }
+                    100% { opacity: 0; transform: translate(var(--dx, 0), -44px) scale(0.6) rotate(var(--rot, 0deg)); }
+                  }
+                  @media (prefers-reduced-motion: reduce) {
+                    .pet-sparkle-particle { animation: none !important; opacity: 0 !important; }
+                  }
+                `}</style>
+                {SPARKLE_PARTICLES.map((p, i) => (
+                  <span
+                    key={i}
+                    className="pet-sparkle-particle"
+                    style={{
+                      position: "absolute",
+                      top: p.top,
+                      left: p.left,
+                      fontSize: p.size,
+                      lineHeight: 1,
+                      animation: `pet-sparkle 1500ms ${p.delay}ms ease-out forwards`,
+                      ["--dx" as never]: p.dx,
+                      ["--rot" as never]: p.rot,
+                    } as React.CSSProperties}
+                  >
+                    {p.glyph}
+                  </span>
+                ))}
+              </div>
+            )}
             {/* 心情展示位：钉在 Live2D 区右下角，让用户随时看到宠物当前心情。
                 空心情 → 不渲染（避免占视觉位）。motion → emoji 取自 PanelPersona
                 的 MOTION_META 简化版；心情文字 trunc 到 ~24 字符。 */}
             <MoodWidget />
+            {/* 陪伴天数 ✦ N chip：紧贴收起按钮左侧。默认 opacity 0.6 让它
+                半透不抢戏；hover 上去满灰度。companionshipDays === -1 = 未
+                fetch / 失败兜底 → 不渲染。点击跳到 Panel 「人格」tab（用户
+                想看更多陪伴 stats / persona summary 的自然路径）。 */}
+            {companionshipDays >= 0 && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  try {
+                    window.localStorage.setItem(
+                      "pet-panel-deeplink",
+                      JSON.stringify({ tab: "人格", ts: Date.now() }),
+                    );
+                  } catch {
+                    // localStorage 不可用 → 至少打开面板
+                  }
+                  openPanel();
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                title={
+                  companionshipDays === 0
+                    ? "今天与你初识 🐾（点开「人格」tab 看陪伴 / 心情 / 工具）"
+                    : `已陪伴 ${companionshipDays} 天 🐾（点开「人格」tab 看陪伴 / 心情 / 工具）`
+                }
+                style={{
+                  position: "absolute",
+                  top: "8px",
+                  right: "36px",
+                  padding: "3px 9px",
+                  borderRadius: "12px",
+                  background: "var(--pet-color-card)",
+                  border: "1px solid var(--pet-color-border)",
+                  color: "var(--pet-color-muted)",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  cursor: "pointer",
+                  zIndex: 60,
+                  boxShadow: "var(--pet-shadow-sm)",
+                  opacity: 0.6,
+                  transition: "opacity 120ms ease-out",
+                  userSelect: "none",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseOver={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.opacity = "1";
+                }}
+                onMouseOut={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.opacity = "0.6";
+                }}
+              >
+                ✦ {companionshipDays}
+              </div>
+            )}
             {/* 收起按钮：钉在 Live2D 区右上角；调 useAutoHide.collapse 把窗口
                 滑到桌边只露 tab。 */}
             <div
@@ -641,7 +1157,7 @@ function App() {
                 collapse();
               }}
               onMouseDown={(e) => e.stopPropagation()}
-              title="收起到桌边（mouse-enter 左侧 tab 召回）"
+              title="收起到桌边（也可按 Esc；mouse-enter 左侧 tab 召回）"
               style={{
                 position: "absolute",
                 top: "8px",
@@ -686,10 +1202,187 @@ function App() {
             userGlyph={settings.user_glyph}
             assistantGlyph={settings.assistant_glyph}
             nowTasks={nowTasks}
+            sessionTokens={sessionTokens}
+            onResetContext={resetContext}
           />
           <ChatPanel onSend={handleSend} isLoading={isLoading} />
         </>
       )}
+      {petCtxMenu &&
+        (() => {
+          // 视口右下越界时把菜单往回挪；经验值宽 180 / 高 ~230 足够 6 个 item +
+          // separator。clamp `Math.max(8, Math.min(...))` 让贴边时留 8px 安全
+          // 边距。mousedown e.stopPropagation 防菜单内部点击被 useEffect outside-
+          // close 误关。
+          const W = 180;
+          // H 经验值 ~ 7 个 button (button ≈ 26px) + 3 个 separator (≈ 9px) +
+          // 8px padding ≈ 217；加点余量到 270 给字体放大 / 不同主题边距浮动。
+          const H = 270;
+          const left = Math.max(8, Math.min(petCtxMenu.x, window.innerWidth - W - 8));
+          const top = Math.max(8, Math.min(petCtxMenu.y, window.innerHeight - H - 8));
+          const itemStyle: React.CSSProperties = {
+            display: "block",
+            width: "100%",
+            textAlign: "left",
+            padding: "6px 12px",
+            fontSize: 12,
+            lineHeight: 1.35,
+            border: "none",
+            background: "transparent",
+            color: "var(--pet-color-fg)",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            borderRadius: 4,
+          };
+          const itemHoverIn = (e: React.MouseEvent<HTMLButtonElement>) => {
+            (e.currentTarget as HTMLButtonElement).style.background =
+              "var(--pet-color-bg)";
+          };
+          const itemHoverOut = (e: React.MouseEvent<HTMLButtonElement>) => {
+            (e.currentTarget as HTMLButtonElement).style.background =
+              "transparent";
+          };
+          const sep = (
+            <div
+              style={{
+                height: 1,
+                background: "var(--pet-color-border)",
+                margin: "4px 0",
+              }}
+            />
+          );
+          const runMute = async (minutes: number) => {
+            setPetCtxMenu(null);
+            try {
+              await invoke<string | null>("set_mute_minutes", { minutes });
+            } catch (e) {
+              console.error("set_mute_minutes failed:", e);
+            }
+          };
+          return (
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              style={{
+                position: "fixed",
+                left,
+                top,
+                width: W,
+                background: "var(--pet-color-card)",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 8,
+                boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                padding: 4,
+                zIndex: 100,
+                fontFamily: "inherit",
+              }}
+            >
+              <button
+                type="button"
+                style={itemStyle}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setPetCtxMenu(null);
+                  openPanel();
+                }}
+              >
+                📋 打开面板
+              </button>
+              {/* 📂 打开宠物数据目录：复用既有 `open_pet_data_dir` Tauri 命令
+                  （PanelSettings「在 Finder 中打开」同后端），让 owner 不开
+                  Panel 也能直奔 `~/.config/pet/` 浏览 config / SOUL / memories /
+                  sessions。错误静默 console；macOS Finder 打开本身视觉反馈足够。 */}
+              <button
+                type="button"
+                style={itemStyle}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={async () => {
+                  setPetCtxMenu(null);
+                  try {
+                    await invoke("open_pet_data_dir");
+                  } catch (e) {
+                    console.error("open_pet_data_dir failed:", e);
+                  }
+                }}
+                title="在系统文件管理器里打开宠物数据目录（~/.config/pet/）—— 含 config.yaml / SOUL.md / memories/ / sessions/ 等。"
+              >
+                📂 打开数据目录
+              </button>
+              {sep}
+              <button
+                type="button"
+                style={itemStyle}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  // 直接读 storage 当前值翻转 —— 比绑 React state 简单：theme 不
+                  // 经 React 渲染（CSS var 自动 propagate），不必同步局部 state。
+                  setPetCtxMenu(null);
+                  const next = getStoredTheme() === "dark" ? "light" : "dark";
+                  setStoredTheme(next);
+                  applyTheme(next, getStoredAccent());
+                }}
+                title="切换 light / dark 主题（CSS var 即时生效；偏好持久化到 localStorage）"
+              >
+                {getStoredTheme() === "dark" ? "☀️ 切到 light 主题" : "🌙 切到 dark 主题"}
+              </button>
+              {sep}
+              <button
+                type="button"
+                style={itemStyle}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => void runMute(30)}
+                title="让宠物 30 分钟内不主动开口（proactive 暂停）"
+              >
+                😴 mute 30 分
+              </button>
+              <button
+                type="button"
+                style={itemStyle}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => void runMute(60)}
+                title="让宠物 60 分钟内不主动开口"
+              >
+                😴 mute 60 分
+              </button>
+              <button
+                type="button"
+                style={{ ...itemStyle, color: "var(--pet-color-accent)" }}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => void runMute(0)}
+                title="解除 mute（minutes=0 撤销 proactive 暂停）"
+              >
+                ☀️ 解除 mute
+              </button>
+              {sep}
+              <button
+                type="button"
+                style={{ ...itemStyle, color: "var(--pet-color-muted)" }}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={async () => {
+                  setPetCtxMenu(null);
+                  try {
+                    await invoke("restart_pet_window");
+                  } catch (e) {
+                    console.error("restart_pet_window failed:", e);
+                  }
+                }}
+                title="重启桌面 pet 窗口（仅刷新此窗口，session / 后端不动）"
+              >
+                🔄 重启窗口
+              </button>
+            </div>
+          );
+        })()}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
  * most-likely persona keywords and fall back to Idle. If nothing matches, we still play a
  * gentle motion so the pet visibly reacts when speaking proactively.
  */
-type MotionGroup = "Tap" | "Flick" | "Flick3" | "Idle";
+export type MotionGroup = "Tap" | "Flick" | "Flick3" | "Idle";
 
 const VALID_GROUPS: ReadonlySet<MotionGroup> = new Set<MotionGroup>([
   "Tap",
@@ -92,6 +92,29 @@ function triggerMotion(
     model.motion(group, undefined, 2);
   } catch (e) {
     // Some models throw if a group has no motions; safe to ignore.
+    console.debug("motion trigger failed:", e);
+  }
+}
+
+/**
+ * 公开 API：直接按语义键播一个 motion group。用户互动（如双击 Live2D
+ * 触发 happy）走这条路径 —— 不必经过 `mood/motion 映射推导`，调用方提供
+ * 语义键即可。复用 `resolveGroupName` 的 mapping 翻译让用户自定义模型也
+ * 能命中。priority 2（NORMAL）：当前 motion 可被打断；不抢更高优先级。
+ *
+ * 调用方传 modelRef.current 而非 ref 自身 —— 让此函数纯（参数 → 副作用），
+ * 不与 React lifecycle 耦合。
+ */
+export function playPetMotion(
+  model: any,
+  semantic: MotionGroup,
+  mapping: Record<string, string> | undefined,
+) {
+  if (!model) return;
+  const group = resolveGroupName(semantic, mapping);
+  try {
+    model.motion(group, undefined, 2);
+  } catch (e) {
     console.debug("motion trigger failed:", e);
   }
 }

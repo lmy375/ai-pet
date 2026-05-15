@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { usePollingState } from "../../hooks/usePollingState";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelChipStrip } from "./PanelChipStrip";
 import { PanelStatsCard } from "./PanelStatsCard";
@@ -93,51 +94,31 @@ export function PanelDebug() {
     }
     return 3;
   });
-  const [speechWindowCount, setSpeechWindowCount] = useState<number>(0);
-  useEffect(() => {
-    let cancelled = false;
-    const fetchWindowCount = async () => {
-      try {
-        const n = await invoke<number>("get_speech_count_days", {
-          days: speechWindowDays,
-        });
-        if (!cancelled) setSpeechWindowCount(n);
-      } catch (e) {
-        console.error("get_speech_count_days failed:", e);
-      }
-    };
-    void fetchWindowCount();
-    // 每 30s 轮询一次跟随 daily bucket 更新（与 debug snapshot 同节奏）
-    const id = window.setInterval(fetchWindowCount, 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [speechWindowDays]);
-  // 今日 24 小时主动开口分桶。get_today_speech_hourly 返长度 24 数组；
-  // index 0 = 00:00。每 60s 刷新一次（hour 粒度，更高频意义不大）。
-  const [hourlyBuckets, setHourlyBuckets] = useState<number[]>(() =>
-    new Array(24).fill(0),
+  // speechWindowCount：跟随 speechWindowDays 状态 — 切 3/7/30 天 chip 时立
+  // 即重 fetch。usePollingState 的 deps 参数承载这语义；30s 周期 polling 在
+  // 各档下都自动跑。catch 走 hook 静默吞。
+  const { data: speechWindowCount } = usePollingState(
+    () =>
+      invoke<number>("get_speech_count_days", { days: speechWindowDays }),
+    30_000,
+    0,
+    [speechWindowDays],
   );
-  useEffect(() => {
-    let cancelled = false;
-    const fetchHourly = async () => {
-      try {
-        const arr = await invoke<number[]>("get_today_speech_hourly");
-        if (!cancelled && Array.isArray(arr) && arr.length === 24) {
-          setHourlyBuckets(arr);
-        }
-      } catch (e) {
-        console.error("get_today_speech_hourly failed:", e);
+  // 今日 24 小时主动开口分桶。get_today_speech_hourly 返长度 24 数组；
+  // index 0 = 00:00。每 60s 刷新一次（hour 粒度，更高频意义不大）。形状
+  // 验证（必须 length === 24）走 fetcher 内 throw → 由 hook 静默吞掉保留
+  // 上一份 buckets，避免渲染时撞 length 不对的 array crash。
+  const { data: hourlyBuckets } = usePollingState(
+    async () => {
+      const arr = await invoke<number[]>("get_today_speech_hourly");
+      if (!Array.isArray(arr) || arr.length !== 24) {
+        throw new Error("invalid hourly buckets shape");
       }
-    };
-    void fetchHourly();
-    const id = window.setInterval(fetchHourly, 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
+      return arr;
+    },
+    60_000,
+    new Array(24).fill(0) as number[],
+  );
   const [companionshipDays, setCompanionshipDays] = useState<number>(0);
   // TG bot 启动期非 fatal 失败列表（set_my_commands / bot_start 等）。
   // 进程内 in-memory，重启清空；用于让用户知道为啥 bot 自动补全 / 整体
@@ -230,24 +211,60 @@ export function PanelDebug() {
     memory_edit_todo_count: number;
     total_records: number;
   };
-  const [dedicatedToolStats, setDedicatedToolStats] = useState<DedicatedToolStats | null>(null);
+  // 🛠 dedicated_tool_stats：30s 轮询 + 点击立刻 refresh。逻辑全在 usePollingState
+  // 里（与下方 task_stats strip 共享同一份 polling 三件套）。
+  const {
+    data: dedicatedToolStats,
+    refresh: refreshDedicatedToolStats,
+    refreshing: dedicatedToolStatsRefreshing,
+  } = usePollingState<DedicatedToolStats>(
+    () => invoke<DedicatedToolStats>("get_dedicated_tool_stats"),
+    30_000,
+  );
+  /// app 版本 + SQLite schema version —— 拼到调试 snapshot 顶部"环境"段。
+  /// 三元素全可独立 fail（旧 backend 缺 app_version / get_db_stats）；缺失时
+  /// snapshot 该段相应字段省略，不挡其它字段。
+  const [envInfo, setEnvInfo] = useState<{
+    appVersion: string;
+    schemaVersion: number;
+  } | null>(null);
   useEffect(() => {
     let cancelled = false;
-    const fetchStats = async () => {
-      try {
-        const s = await invoke<DedicatedToolStats>("get_dedicated_tool_stats");
-        if (!cancelled) setDedicatedToolStats(s);
-      } catch {
-        // 命令未注册（旧 backend）→ 静默退化为 null，section 不渲染
-      }
-    };
-    void fetchStats();
-    const id = window.setInterval(fetchStats, 30_000);
+    (async () => {
+      const [v, s] = await Promise.all([
+        invoke<string>("app_version").catch(() => ""),
+        invoke<{ schema_version: number }>("get_db_stats")
+          .then((d) => d.schema_version)
+          .catch(() => 0),
+      ]);
+      if (!cancelled) setEnvInfo({ appVersion: v, schemaVersion: s });
+    })();
     return () => {
       cancelled = true;
-      window.clearInterval(id);
     };
   }, []);
+  // dedicatedToolStats 的 30s 自动轮询由 usePollingState 内部 effect 接管，
+  // 这里不再保留旧的 effect。
+  /// 任务状态汇总 —— 30s 轮询，与 🛠 dedicated tool stats strip 并排显在
+  /// PanelDebug 顶部。后端 task_stats 单 SoT（桌面 /stats / pet 窗 pill 共用
+  /// 同一函数）。命令未注册 / 失败 → null，strip 不渲染。
+  type TaskStats = {
+    pending: number;
+    overdue: number;
+    done_today: number;
+    error: number;
+    cancelled_today: number;
+  };
+  // task_stats：30s 轮询 + 点击立刻 refresh。usePollingState 接管 polling +
+  // 手动 refresh + refreshing flag 三件套（与上方 🛠 strip 同 hook）。
+  const {
+    data: taskStats,
+    refresh: refreshTaskStats,
+    refreshing: taskStatsRefreshing,
+  } = usePollingState<TaskStats>(
+    () => invoke<TaskStats>("task_stats"),
+    30_000,
+  );
   // 工具调用历史按 tool name 折叠分组：让"哪个 tool 用得最多"一眼看到。
   // session 内 toggle，默认关（保留原 timeline 顺序视图）。
   const [toolHistoryGroupByName, setToolHistoryGroupByName] = useState(false);
@@ -412,7 +429,6 @@ export function PanelDebug() {
   // ⚙️ mute 15min 快捷按钮：调 prompt / 测 SOUL 时不想被 proactive 打扰，
   // 绕开 PanelChat /sleep 路径。muteUntil 空 → 显示 mute；非空 → 显示剩
   // 余分钟 + 允许再点解除。30s polling 跟随后端 MUTE_UNTIL。
-  const [muteUntil, setMuteUntil] = useState<string>("");
   const [muteBusy, setMuteBusy] = useState(false);
   // "上次 manual fire" audit info：进程内 only。trigger_proactive_turn /
   // trigger_proactive_turn_for_task 完成后后端 stash；这里挂载 / fire 后
@@ -449,25 +465,18 @@ export function PanelDebug() {
   useEffect(() => {
     void refreshLastManualFire();
   }, [refreshLastManualFire]);
-  // Iter D7: poll MUTE_UNTIL for the ⚙️ mute 15min button label. 30s 节奏
-  // 与 stats card 同源；剩余分钟显示用本地时间差算，不依赖后端持续 fetch。
-  useEffect(() => {
-    let cancelled = false;
-    const fetchMute = async () => {
-      try {
-        const u = await invoke<string>("get_mute_until");
-        if (!cancelled) setMuteUntil(u);
-      } catch {
-        // 老 backend / 命令不可用 → 静默
-      }
-    };
-    void fetchMute();
-    const id = window.setInterval(fetchMute, 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
+  // Iter D7: MUTE_UNTIL polling for the ⚙️ mute 15min button label。30s 节奏
+  // 与 stats strip 同源；剩余分钟在 render 时用本地时间差算（不依赖后端持
+  // 续 fetch），所以一次 muteUntil 字符串足够。muteUntil 为 "" 时按钮显
+  // "mute 15min"；非空显剩余分钟。
+  //
+  // 失败时静默走 hook 默认（保留上一份 muteUntil；不闪到空）。button 点击
+  // set_mute_minutes 之后调 refresh 拿最新 until 值。
+  const { data: muteUntil, refresh: refreshMute } = usePollingState(
+    () => invoke<string>("get_mute_until"),
+    30_000,
+    "",
+  );
   // Iter E4: ring buffer of recent turns, newest first. Panel modal navigates
   // with « / » buttons; index 0 = newest. Replaces E1/E2/E3's three separate
   // fetches with a single Vec<TurnRecord> source.
@@ -697,9 +706,39 @@ export function PanelDebug() {
     const lines: string[] = [
       `# Pet 调试快照（${ts}）`,
       "",
+    ];
+    // 环境段：app + schema + 平台。给 triage 提供"是哪个版本 / 哪个 schema"
+    // 关键上下文。envInfo === null（还在 fetch 或 backend 缺命令）时整段跳。
+    if (envInfo) {
+      lines.push("## 环境");
+      if (envInfo.appVersion) lines.push(`- app: pet v${envInfo.appVersion}`);
+      if (envInfo.schemaVersion > 0) lines.push(`- schema: v${envInfo.schemaVersion}`);
+      // navigator.platform 在 Tauri webview 仍返回（Mac / Win / Linux），粗粒度
+      // OS 分类够用；空 / undefined 时跳过该行。
+      const plat = typeof navigator !== "undefined" ? navigator.platform : "";
+      if (plat) lines.push(`- 平台: ${plat}`);
+      lines.push(`- 时间: ${ts}`);
+      lines.push("");
+    }
+    lines.push(
       `- 陪伴 ${companionshipDays} 天`,
       `- 主动开口 · 今日 ${todaySpeechCount} · 本周 ${weekSpeechCount} · 累计 ${lifetimeSpeechCount}`,
       "",
+    );
+    // 任务状态：与 PanelDebug 顶部 "📊 任务状态" strip 同 SoT（task_stats 命令）。
+    // null 时整段跳；非 null 含全 0 也输出，让"任务清零"本身在 snapshot 可见。
+    if (taskStats) {
+      lines.push(
+        `## 任务状态`,
+        `- 待办: ${taskStats.pending}`,
+        `- 逾期: ${taskStats.overdue}`,
+        `- 今日完成: ${taskStats.done_today}`,
+        `- 出错: ${taskStats.error}`,
+        `- 今日取消: ${taskStats.cancelled_today}`,
+        "",
+      );
+    }
+    lines.push(
       `## 工具缓存`,
       `- turns: ${cacheStats.turns}`,
       `- hits / calls: ${cacheStats.total_hits} / ${cacheStats.total_calls}`,
@@ -726,7 +765,7 @@ export function PanelDebug() {
       `- engagement_dominant: ${promptTiltStats.engagement_dominant}`,
       `- balanced: ${promptTiltStats.balanced}`,
       `- neutral: ${promptTiltStats.neutral}`,
-    ];
+    );
     if (tone) {
       lines.push("", `## tone snapshot`, "```json", JSON.stringify(tone, null, 2), "```");
     }
@@ -760,6 +799,8 @@ export function PanelDebug() {
     }
     return lines.join("\n");
   }, [
+    envInfo,
+    taskStats,
     companionshipDays,
     todaySpeechCount,
     weekSpeechCount,
@@ -898,7 +939,10 @@ export function PanelDebug() {
       const until = await invoke<string>("set_mute_minutes", {
         minutes: isMuted ? 0 : 15,
       });
-      setMuteUntil(until);
+      // set_mute_minutes 返回最新 until；调 hook 的 refresh 重 fetch 让
+      // polling 数据源单一（hook 状态 = 真值，避免双 set 路径漂移）。多 1 次
+      // IPC 在 mute toggle 这种罕见动作上代价可忽略。
+      void refreshMute();
       setProactiveStatus(
         isMuted
           ? "✓ mute 已解除"
@@ -1936,6 +1980,8 @@ export function PanelDebug() {
         const fmt = (r: number | null) => (r === null ? "—" : `${Math.round(r * 100)}%`);
         return (
           <div
+            role="button"
+            onClick={() => void refreshDedicatedToolStats()}
             style={{
               padding: "6px 16px",
               fontSize: 11,
@@ -1946,10 +1992,18 @@ export function PanelDebug() {
               background: "var(--pet-color-bg)",
               color: "var(--pet-color-muted)",
               fontFamily: "'SF Mono', 'Menlo', monospace",
+              cursor: dedicatedToolStatsRefreshing ? "default" : "pointer",
+              opacity: dedicatedToolStatsRefreshing ? 0.6 : 1,
+              transition: "opacity 120ms ease-out",
+              userSelect: "none",
             }}
-            title={`最近 ${s.total_records} 条工具调用里专用工具的占比。owner 用来判断 prompt 引导效果 —— 比例高代表 LLM 在用 butler_task_edit / todo_edit 而非旧 memory_edit fallback。`}
+            title={`最近 ${s.total_records} 条工具调用里专用工具的占比。owner 用来判断 prompt 引导效果 —— 比例高代表 LLM 在用 butler_task_edit / todo_edit 而非旧 memory_edit fallback。点击立即刷新。`}
           >
-            <span>🛠 专用工具占比（窗口 {s.total_records}）：</span>
+            <span>
+              {dedicatedToolStatsRefreshing
+                ? "🔄 刷新中"
+                : `🛠 专用工具占比（窗口 ${s.total_records}）：`}
+            </span>
             <span>
               butler_task_edit{" "}
               <strong style={{ color: "var(--pet-color-fg)" }}>{fmt(butlerRatio)}</strong>{" "}
@@ -1967,6 +2021,58 @@ export function PanelDebug() {
           </div>
         );
       })()}
+
+      {/* 任务状态横条：与 🛠 dedicated tool stats strip 同款。consume 后端
+          task_stats（单 SoT）。逾期段在 N>0 时染红，其它段保持 muted 让逾期
+          视觉优先。taskStats === null（fetch 失败 / 旧 backend）→ 整条不渲染。 */}
+      {taskStats && (
+        <div
+          role="button"
+          onClick={() => void refreshTaskStats()}
+          style={{
+            padding: "6px 16px",
+            fontSize: 11,
+            display: "flex",
+            gap: 14,
+            alignItems: "center",
+            borderBottom: "1px solid var(--pet-color-border)",
+            background: "var(--pet-color-bg)",
+            color: "var(--pet-color-muted)",
+            fontFamily: "'SF Mono', 'Menlo', monospace",
+            flexWrap: "wrap",
+            cursor: taskStatsRefreshing ? "default" : "pointer",
+            opacity: taskStatsRefreshing ? 0.6 : 1,
+            transition: "opacity 120ms ease-out",
+            userSelect: "none",
+          }}
+          title="butler_tasks 状态汇总（与桌面 /stats / pet 窗 pill 同后端命令）· 点击立即刷新"
+        >
+          <span style={{ color: "var(--pet-color-fg)", fontWeight: 600 }}>
+            {taskStatsRefreshing ? "🔄 刷新中" : "📊 任务状态"}
+          </span>
+          <span>待办 {taskStats.pending}</span>
+          <span
+            style={
+              taskStats.overdue > 0
+                ? { color: "var(--pet-tint-red-fg)", fontWeight: 600 }
+                : undefined
+            }
+          >
+            🔴 逾期 {taskStats.overdue}
+          </span>
+          <span>✓ 今日完成 {taskStats.done_today}</span>
+          <span
+            style={
+              taskStats.error > 0
+                ? { color: "var(--pet-tint-red-fg)" }
+                : undefined
+            }
+          >
+            ⚠️ 出错 {taskStats.error}
+          </span>
+          <span>🗑 今日取消 {taskStats.cancelled_today}</span>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div style={{ display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid var(--pet-color-border)", background: "var(--pet-color-card)", alignItems: "center" }}>

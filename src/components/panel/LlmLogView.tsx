@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { EmptyState } from "./EmptyState";
 
 interface LlmLogEntry {
   round: number;
@@ -338,13 +339,17 @@ export function LlmLogView() {
       {/* Log entries */}
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "8px 12px", background: "var(--pet-color-bg)" }}>
         {entries.length === 0 ? (
-          <div style={{ color: "var(--pet-color-muted)", textAlign: "center", marginTop: "40px", fontSize: "13px" }}>
-            暂无 LLM 日志。发送聊天消息后会产生记录。
-          </div>
+          <EmptyState
+            icon="📜"
+            title="暂无 LLM 日志"
+            hint="发送聊天消息后会产生记录。"
+          />
         ) : visibleEntries.length === 0 ? (
-          <div style={{ color: "var(--pet-color-muted)", textAlign: "center", marginTop: "40px", fontSize: "13px" }}>
-            当前过滤无命中 —— 试试点上方"清过滤"或扩大窗口（"加载更早"）。
-          </div>
+          <EmptyState
+            icon="🔍"
+            title="当前过滤无命中"
+            hint='点上方"清过滤"或扩大窗口（"加载更早"）。'
+          />
         ) : (
           visibleEntries.map((entry, i) => {
             const isExpanded = expandedIdx === i;

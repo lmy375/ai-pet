@@ -18,6 +18,4 @@
 - 不要考虑专注模式相关的需求。
 - 做深色 / 浅色主题
 
-- 【已确认】持久化分层重构（SQLite）：memory 只承担"大模型记忆/回想"职责；butler_tasks / todo / task_archive / 计划进度 / mood 等业务态搬出 memory，另建 sqlite 表（复用 memory 字段：title / description / created_at / updated_at / detail_path / tags / status）。LLM 通过专用工具读写各域，不再共用 memory_edit。
-
 # 待确认

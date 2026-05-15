@@ -7,6 +7,11 @@
 > 3. 每一条需求，在实现时，在 docs 中创建一个 `yyyymmdd-hhmm-title.md` 的文件。编写开发计划，记录开发结果。
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
-- 【用户确认】UI 太太太丑了（主要是 Panel 的各个页），修改的美观一些。
-- 【用户确认】持久化分层重构（SQLite）：memory 只承担"大模型记忆/回想"职责；butler_tasks / todo / task_archive / 计划进度 / mood 等业务态搬出 memory，另建 sqlite 表（复用 memory 字段：title / description / created_at / updated_at / detail_path / tags / status）。LLM 通过专用工具读写各域，不再共用 memory_edit。
-- PanelTasks 任务行右键菜单：右键弹出常用动作（复制 ref / 改优先级 / 标 done / 取消）。当前所有动作散在 hover 出现的按钮组，新用户难发现；右键菜单作汇总入口。
+
+- detail.md 内嵌 https 链接：渲染 LinkCard 时显特殊域名 emoji（GitHub 🐙 / Linear 📐 / Figma 🎨 / Notion 📓 / YouTube ▶️），其它仍 📎，让常用引用一眼可见。
+- 任务行 hover preview 段的 detail.md 文本也走 LinkCard：当前仅展开任务的 detail 段渲染 chip，hover preview 文本还是纯文本。
+
+
+
+
+

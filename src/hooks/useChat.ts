@@ -305,6 +305,22 @@ export function useChat(systemPrompt: string) {
   const displayMessage = currentResponse || (lastAssistantMsg ? extractText(lastAssistantMsg.content) : "");
   const showBubble = isLoading || !!lastAssistantMsg;
 
+  /// 清掉当前 session 的 LLM 上下文 + 可见历史（与 TG `/reset` 同语义）。
+  /// 桌面 mini chat 与 PanelChat 不同：messages 即 display 即 LLM context（无
+  /// split），所以这里同时清两者并立即 save_session 让重启后状态一致。
+  /// 用户通过"上下文 token 提示 chip"armed-confirm 二次确认触发 —— 单次点击
+  /// 不会丢历史。系统提示词保留。
+  const resetContext = useCallback(() => {
+    const systemOnly: ChatMessage[] = [{ role: "system", content: prevPrompt.current }];
+    setMessages(systemOnly);
+    setCurrentResponse("");
+    setToolStatus("");
+    itemsRef.current = [];
+    accumulatedRef.current = "";
+    updatedMessagesRef.current = [];
+    void saveSession(systemOnly, []);
+  }, [saveSession]);
+
   return {
     messages,
     currentResponse,
@@ -315,5 +331,6 @@ export function useChat(systemPrompt: string) {
     appendAssistant,
     displayMessage,
     showBubble,
+    resetContext,
   };
 }

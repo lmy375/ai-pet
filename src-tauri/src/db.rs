@@ -628,6 +628,19 @@ pub fn task_archive_delete(conn: &Connection, title: &str) -> Result<bool, rusql
     Ok(n > 0)
 }
 
+/// 找 updated_at < cutoff 的 title 列表（pure SQL，便于单测）。caller 拿到
+/// titles 后通过 memory_edit("delete", ...) 逐条清，保持 yaml 与 SQLite 同
+/// 步。cutoff 是 RFC3339 字符串（与 updated_at 同格式），SQLite TEXT 字典
+/// 比较即时序比较。
+pub fn select_archive_titles_older_than(
+    conn: &Connection,
+    cutoff: &str,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT title FROM task_archive WHERE updated_at < ?1")?;
+    let rows = stmt.query_map([cutoff], |r| r.get::<_, String>(0))?;
+    rows.collect()
+}
+
 pub fn backfill_task_archive(
     conn: &Connection,
     items: &[crate::commands::memory::MemoryItem],
@@ -1040,6 +1053,176 @@ pub fn db_butler_tasks_list() -> Result<Vec<ButlerTaskRow>, String> {
     with_db(butler_tasks_list)
 }
 
+/// SQLite db 状态：文件大小 + 各表行数。给前端 Settings「本地数据目录」
+/// section 显示，让 owner 看到 v0–v12 migration 实际落地的数据量。
+#[derive(Debug, Clone, Serialize)]
+pub struct DbStats {
+    /// pet.db 文件字节数。读盘失败 → 0（caller 渲染时显示"—"）。
+    pub size_bytes: u64,
+    /// 当前 schema migration 版本（_migrations 表里最大 version）。新启动 + 全
+    /// migration 跑完后等于 `apply_migrations` 实现的最高版。让 owner 直观知道
+    /// db 是否升级到位（v0 = 1, v9 = 4, etc.）。
+    pub schema_version: i32,
+    /// butler_tasks 表当前行数。
+    pub butler_tasks_count: u64,
+    /// todo 表当前行数。
+    pub todo_count: u64,
+    /// task_archive 表当前行数。
+    pub task_archive_count: u64,
+    /// kv_state 表当前行数（mood / persona_summary / daily_plan / daily_review_<date> 等）。
+    pub kv_state_count: u64,
+}
+
+#[tauri::command]
+pub fn get_db_stats() -> DbStats {
+    let size_bytes = match db_path() {
+        Ok(p) => std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
+        Err(_) => 0,
+    };
+    let (butler, todo, archive, kv, version) = with_db(|conn| {
+        let bt: u64 = conn.query_row("SELECT COUNT(*) FROM butler_tasks", [], |r| r.get(0))?;
+        let td: u64 = conn.query_row("SELECT COUNT(*) FROM todo", [], |r| r.get(0))?;
+        let ar: u64 = conn.query_row("SELECT COUNT(*) FROM task_archive", [], |r| r.get(0))?;
+        let kv: u64 = conn.query_row("SELECT COUNT(*) FROM kv_state", [], |r| r.get(0))?;
+        let ver: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        Ok((bt, td, ar, kv, ver))
+    })
+    .unwrap_or((0, 0, 0, 0, 0));
+    DbStats {
+        size_bytes,
+        schema_version: version,
+        butler_tasks_count: butler,
+        todo_count: todo,
+        task_archive_count: archive,
+        kv_state_count: kv,
+    }
+}
+
+/// butler_tasks 状态汇总：5 维计数，桌面 /stats / 未来 widgets / PanelDebug 卡片
+/// 共用此单一数据源（TG /stats 走 origin 过滤的另一条路径，不复用此函数）。
+///
+/// "今日" 用 `updated_at LIKE 'YYYY-MM-DD%'`，与写盘端 `now_iso` 同本地时区
+/// 格式（`%Y-%m-%dT%H:%M:%S%:z`）—— LIKE 前缀刚好命中本地日期。
+///
+/// "逾期" 没单独的 `due` 列（butler_tasks v1 schema 没加），从 description 里
+/// `parse_task_header` 抠出 due 与 now 比较。pending 行数典型 < 20，单次解析
+/// 不到 1ms，远低于"今日什么样"这种交互查询的时延阈值。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TaskStats {
+    pub pending: u32,
+    pub overdue: u32,
+    pub done_today: u32,
+    pub error: u32,
+    pub cancelled_today: u32,
+    /// pending 子集里 `[snooze: ...]` 时刻仍在 future 的条数。"已经暂停
+    /// 中、不该 surface" 的任务量，让桌面 pill 能完整反映"逾期 / 今日完
+    /// 成 / 暂停中"三种状态。
+    pub snoozed: u32,
+}
+
+fn compute_task_stats(
+    conn: &Connection,
+    now: chrono::NaiveDateTime,
+) -> Result<TaskStats, rusqlite::Error> {
+    let today_prefix = now.format("%Y-%m-%d%%").to_string();
+    let pending: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM butler_tasks WHERE status = 'pending'",
+        [],
+        |r| r.get(0),
+    )?;
+    let error: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM butler_tasks WHERE status = 'error'",
+        [],
+        |r| r.get(0),
+    )?;
+    let done_today: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM butler_tasks WHERE status = 'done' AND updated_at LIKE ?1",
+        [&today_prefix],
+        |r| r.get(0),
+    )?;
+    let cancelled_today: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM butler_tasks WHERE status = 'cancelled' AND updated_at LIKE ?1",
+        [&today_prefix],
+        |r| r.get(0),
+    )?;
+    // 逾期 + 暂停：都是 pending 子集的派生计数。一次 SQL + 单次扫描两个
+    // 维度（parse_task_header 给 due / parse_snooze 给 snooze_until），
+    // 避免连两次 prepare。snooze 仅 pending 状态有意义（done / cancelled
+    // 已是终态，marker 自然失效）。
+    let mut stmt =
+        conn.prepare("SELECT description FROM butler_tasks WHERE status = 'pending'")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut overdue: u32 = 0;
+    let mut snoozed: u32 = 0;
+    for desc in rows {
+        let d = desc?;
+        if let Some(header) = crate::task_queue::parse_task_header(&d) {
+            if let Some(due) = header.due {
+                if due < now {
+                    overdue += 1;
+                }
+            }
+        }
+        if let Some(snooze_until) = crate::task_queue::parse_snooze(&d) {
+            if snooze_until > now {
+                snoozed += 1;
+            }
+        }
+    }
+    Ok(TaskStats {
+        pending,
+        overdue,
+        done_today,
+        error,
+        cancelled_today,
+        snoozed,
+    })
+}
+
+#[tauri::command]
+pub fn task_stats() -> Result<TaskStats, String> {
+    let now = chrono::Local::now().naive_local();
+    with_db(|conn| compute_task_stats(conn, now))
+}
+
+/// 清理 `task_archive` 表里 `updated_at < now - days` 的归档条目，返回实际
+/// 删除条数。逐条走 `memory_edit("delete", "task_archive", title)` —— 与既有
+/// 归档进入 / 单条删除路径走同一 audit trail（同步 yaml + SQLite）。
+///
+/// 设计取舍：bulk SQL `DELETE WHERE updated_at < ?` 一句更快，但会绕开 yaml
+/// 同步（mirror 模式仅在 memory_edit 走到时触发）。当下归档量级 < 几百条，
+/// 逐条调用的开销可忽略。
+#[tauri::command]
+pub fn task_archive_purge_older_than(days: u32) -> Result<u32, String> {
+    let cutoff = chrono::Local::now()
+        .checked_sub_signed(chrono::Duration::days(days as i64))
+        .ok_or_else(|| "duration overflow".to_string())?
+        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let titles = with_db(|conn| select_archive_titles_older_than(conn, &cutoff))?;
+    let mut deleted = 0u32;
+    for title in titles {
+        if crate::commands::memory::memory_edit(
+            "delete".to_string(),
+            "task_archive".to_string(),
+            title,
+            None,
+            None,
+        )
+        .is_ok()
+        {
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
+}
+
 /// 启动时从 yaml 回填 butler_tasks 到 SQLite。幂等（已存在 title 跳过），
 /// 多次启动只插一次。**同步**执行 —— v5 切读路径后，read 不能在 backfill
 /// 完之前 race；几百条 task 的 INSERT < 10ms，阻塞启动可接受。失败 eprintln
@@ -1427,5 +1610,263 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].title, "B", "newest updated_at first");
         assert_eq!(rows[1].title, "A");
+    }
+
+    // -------- task_stats --------
+
+    fn insert_row(
+        conn: &Connection,
+        title: &str,
+        desc: &str,
+        status: &str,
+        updated_at: &str,
+    ) {
+        butler_task_create(
+            conn,
+            &ButlerTaskRow {
+                title: title.to_string(),
+                description: desc.to_string(),
+                status: status.to_string(),
+                detail_path: None,
+                tags: vec![],
+                created_at: updated_at.to_string(),
+                updated_at: updated_at.to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn task_stats_all_zero_on_empty_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 14)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let s = compute_task_stats(&conn, now).unwrap();
+        assert_eq!(s.pending, 0);
+        assert_eq!(s.overdue, 0);
+        assert_eq!(s.done_today, 0);
+        assert_eq!(s.error, 0);
+        assert_eq!(s.cancelled_today, 0);
+        assert_eq!(s.snoozed, 0);
+    }
+
+    #[test]
+    fn task_stats_counts_each_status() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        // pending（无 due → 不计逾期）
+        insert_row(
+            &conn,
+            "未来的事",
+            "[task pri=3] 未来的事",
+            "pending",
+            "2026-05-14T11:30:00+08:00",
+        );
+        // done 今天
+        insert_row(
+            &conn,
+            "已完成今天",
+            "[task pri=3] 已完成今天 [done]",
+            "done",
+            "2026-05-14T10:00:00+08:00",
+        );
+        // done 昨天 —— 不计今日
+        insert_row(
+            &conn,
+            "已完成昨天",
+            "[task pri=3] 已完成昨天 [done]",
+            "done",
+            "2026-05-13T10:00:00+08:00",
+        );
+        // error（任意时间，不限今日）
+        insert_row(
+            &conn,
+            "出错的事",
+            "[task pri=3] 出错的事 [error: 没网]",
+            "error",
+            "2026-05-10T10:00:00+08:00",
+        );
+        // cancelled 今天
+        insert_row(
+            &conn,
+            "今天取消",
+            "[task pri=3] 今天取消 [cancelled: 改主意]",
+            "cancelled",
+            "2026-05-14T11:00:00+08:00",
+        );
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 14)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let s = compute_task_stats(&conn, now).unwrap();
+        assert_eq!(s.pending, 1, "{s:?}");
+        assert_eq!(s.overdue, 0, "{s:?}");
+        assert_eq!(s.done_today, 1, "{s:?}");
+        assert_eq!(s.error, 1, "{s:?}");
+        assert_eq!(s.cancelled_today, 1, "{s:?}");
+    }
+
+    #[test]
+    fn task_stats_overdue_picks_pending_with_past_due() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        // due 在 now 之前 → 计入逾期
+        insert_row(
+            &conn,
+            "过期了",
+            "[task pri=3 due=2020-01-01T10:00] 过期了",
+            "pending",
+            "2026-05-14T11:30:00+08:00",
+        );
+        // due 在 now 之后 → 不计入
+        insert_row(
+            &conn,
+            "未来到期",
+            "[task pri=3 due=2030-01-01T10:00] 未来到期",
+            "pending",
+            "2026-05-14T11:30:00+08:00",
+        );
+        // done 状态有过期 due 也不计入（仅 pending 才数）
+        insert_row(
+            &conn,
+            "已完成的过期",
+            "[task pri=3 due=2020-01-01T10:00] 已完成的过期 [done]",
+            "done",
+            "2026-05-13T11:00:00+08:00",
+        );
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 14)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let s = compute_task_stats(&conn, now).unwrap();
+        assert_eq!(s.pending, 2);
+        assert_eq!(s.overdue, 1, "only pending with past due counts");
+    }
+
+    #[test]
+    fn task_stats_snoozed_counts_pending_with_future_snooze() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        // pending + snooze 未来 → 计入 snoozed
+        insert_row(
+            &conn,
+            "睡到下周",
+            "[task pri=3] 睡到下周 [snooze: 2030-01-01 09:00]",
+            "pending",
+            "2026-05-14T11:30:00+08:00",
+        );
+        // pending + snooze 过去（已到期）→ 不计 snoozed（marker 自然失效）
+        insert_row(
+            &conn,
+            "已醒",
+            "[task pri=3] 已醒 [snooze: 2020-01-01 09:00]",
+            "pending",
+            "2026-05-14T11:30:00+08:00",
+        );
+        // pending 无 snooze marker → 不计 snoozed
+        insert_row(
+            &conn,
+            "活跃任务",
+            "[task pri=3] 活跃任务",
+            "pending",
+            "2026-05-14T11:30:00+08:00",
+        );
+        // done 状态即便有 future snooze 也不计（snooze 仅 pending 有意义）
+        insert_row(
+            &conn,
+            "已完成的暂停",
+            "[task pri=3] 已完成的暂停 [snooze: 2030-01-01 09:00] [done]",
+            "done",
+            "2026-05-13T11:00:00+08:00",
+        );
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 14)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let s = compute_task_stats(&conn, now).unwrap();
+        assert_eq!(s.pending, 3, "{s:?}");
+        assert_eq!(s.snoozed, 1, "only pending + future snooze counts");
+    }
+
+    // -------- archive purge helper --------
+
+    #[test]
+    fn select_archive_titles_older_than_picks_only_old() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        // 老归档 1：2025-12-01
+        task_archive_create(
+            &conn,
+            &TaskArchiveRow {
+                title: "old-1".to_string(),
+                description: "old".to_string(),
+                status: "archived".to_string(),
+                detail_path: None,
+                tags: vec![],
+                created_at: "2025-12-01T10:00:00+08:00".to_string(),
+                updated_at: "2025-12-01T10:00:00+08:00".to_string(),
+            },
+        )
+        .unwrap();
+        // 老归档 2：2025-12-15
+        task_archive_create(
+            &conn,
+            &TaskArchiveRow {
+                title: "old-2".to_string(),
+                description: "old".to_string(),
+                status: "archived".to_string(),
+                detail_path: None,
+                tags: vec![],
+                created_at: "2025-12-15T10:00:00+08:00".to_string(),
+                updated_at: "2025-12-15T10:00:00+08:00".to_string(),
+            },
+        )
+        .unwrap();
+        // 新归档：2026-05-13
+        task_archive_create(
+            &conn,
+            &TaskArchiveRow {
+                title: "new".to_string(),
+                description: "new".to_string(),
+                status: "archived".to_string(),
+                detail_path: None,
+                tags: vec![],
+                created_at: "2026-05-13T10:00:00+08:00".to_string(),
+                updated_at: "2026-05-13T10:00:00+08:00".to_string(),
+            },
+        )
+        .unwrap();
+        // cutoff = 2026-01-01 → 应仅命中 2 条 2025-12-* 归档
+        let titles = select_archive_titles_older_than(&conn, "2026-01-01T00:00:00+08:00")
+            .unwrap();
+        assert_eq!(titles.len(), 2, "got: {titles:?}");
+        assert!(titles.contains(&"old-1".to_string()));
+        assert!(titles.contains(&"old-2".to_string()));
+        assert!(!titles.contains(&"new".to_string()));
+    }
+
+    #[test]
+    fn select_archive_titles_older_than_empty_when_nothing_old() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        task_archive_create(
+            &conn,
+            &TaskArchiveRow {
+                title: "fresh".to_string(),
+                description: "x".to_string(),
+                status: "archived".to_string(),
+                detail_path: None,
+                tags: vec![],
+                created_at: "2026-05-13T10:00:00+08:00".to_string(),
+                updated_at: "2026-05-13T10:00:00+08:00".to_string(),
+            },
+        )
+        .unwrap();
+        let titles = select_archive_titles_older_than(&conn, "2020-01-01T00:00:00+08:00")
+            .unwrap();
+        assert!(titles.is_empty(), "got: {titles:?}");
     }
 }

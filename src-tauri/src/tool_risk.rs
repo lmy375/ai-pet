@@ -78,30 +78,9 @@ pub fn assess_tool_risk(tool_name: &str, args_json: &str, _purpose: &str) -> Too
             reasons.push("修改本地文件内容（受 old_string 唯一性约束）".to_string());
             ToolRiskLevel::Medium
         }
-        "memory_edit" => {
-            let action = serde_json::from_str::<serde_json::Value>(args_json)
-                .ok()
-                .and_then(|v| v.get("action").and_then(|a| a.as_str()).map(String::from))
-                .unwrap_or_default();
-            match action.as_str() {
-                "delete" => {
-                    reasons.push("memory 删除不可恢复".to_string());
-                    safe_alternative = Some(
-                        "若只是想标记失效，可以用 update 把 description 改为已废弃说明而不是 delete".to_string(),
-                    );
-                    ToolRiskLevel::High
-                }
-                "create" | "update" => {
-                    reasons.push(format!("写入宠物长期记忆（action={}）", action));
-                    ToolRiskLevel::Medium
-                }
-                _ => {
-                    // 未知 action — 走 Medium 兜底。
-                    reasons.push(format!("memory_edit 未识别 action='{}'", action));
-                    ToolRiskLevel::Medium
-                }
-            }
-        }
+        "memory_edit" => assess_persisted_edit_action(args_json, "memory_edit", "宠物长期记忆", &mut reasons, &mut safe_alternative),
+        "butler_task_edit" => assess_persisted_edit_action(args_json, "butler_task_edit", "管家任务队列", &mut reasons, &mut safe_alternative),
+        "todo_edit" => assess_persisted_edit_action(args_json, "todo_edit", "用户提醒列表", &mut reasons, &mut safe_alternative),
         "read_file" => {
             reasons.push("只读访问本地文件".to_string());
             ToolRiskLevel::Low
@@ -137,6 +116,40 @@ pub fn assess_tool_risk(tool_name: &str, args_json: &str, _purpose: &str) -> Too
         reasons,
         requires_human_review,
         safe_alternative,
+    }
+}
+
+/// 共享 helper：把 memory_edit / butler_task_edit / todo_edit 三类持久化 edit
+/// 工具的 action-based 风险评级抽到一处。delete 是 High（不可恢复），
+/// create/update 是 Medium（写持久层但可改回），未知 action 兜底 Medium。
+fn assess_persisted_edit_action(
+    args_json: &str,
+    tool_name: &str,
+    target_label: &str,
+    reasons: &mut Vec<String>,
+    safe_alternative: &mut Option<String>,
+) -> ToolRiskLevel {
+    let action = serde_json::from_str::<serde_json::Value>(args_json)
+        .ok()
+        .and_then(|v| v.get("action").and_then(|a| a.as_str()).map(String::from))
+        .unwrap_or_default();
+    match action.as_str() {
+        "delete" => {
+            reasons.push(format!("{} 删除不可恢复", target_label));
+            *safe_alternative = Some(
+                "若只是想标记失效，可以用 update 把 description 改为已废弃说明而不是 delete"
+                    .to_string(),
+            );
+            ToolRiskLevel::High
+        }
+        "create" | "update" => {
+            reasons.push(format!("写入 {}（action={}）", target_label, action));
+            ToolRiskLevel::Medium
+        }
+        _ => {
+            reasons.push(format!("{} 未识别 action='{}'", tool_name, action));
+            ToolRiskLevel::Medium
+        }
     }
 }
 
@@ -243,6 +256,44 @@ mod tests {
     fn memory_edit_with_malformed_args_falls_to_medium() {
         let a = assess_tool_risk("memory_edit", "not json", purpose());
         assert_eq!(a.risk_level, ToolRiskLevel::Medium);
+    }
+
+    #[test]
+    fn butler_task_edit_per_action_matches_memory_edit() {
+        let create = assess_tool_risk(
+            "butler_task_edit",
+            r#"{"action":"create","title":"日报"}"#,
+            purpose(),
+        );
+        assert_eq!(create.risk_level, ToolRiskLevel::Medium);
+        assert!(create.reasons.iter().any(|r| r.contains("管家")));
+
+        let delete = assess_tool_risk(
+            "butler_task_edit",
+            r#"{"action":"delete","title":"日报"}"#,
+            purpose(),
+        );
+        assert_eq!(delete.risk_level, ToolRiskLevel::High);
+        assert!(delete.requires_human_review);
+        assert!(delete.safe_alternative.is_some());
+    }
+
+    #[test]
+    fn todo_edit_per_action_matches_memory_edit() {
+        let update = assess_tool_risk(
+            "todo_edit",
+            r#"{"action":"update","title":"喝水"}"#,
+            purpose(),
+        );
+        assert_eq!(update.risk_level, ToolRiskLevel::Medium);
+        assert!(update.reasons.iter().any(|r| r.contains("提醒")));
+
+        let delete = assess_tool_risk(
+            "todo_edit",
+            r#"{"action":"delete","title":"喝水"}"#,
+            purpose(),
+        );
+        assert_eq!(delete.risk_level, ToolRiskLevel::High);
     }
 
     #[test]

@@ -1084,6 +1084,135 @@ pub async fn chat_test() -> Result<String, String> {
     Ok(content)
 }
 
+/// "重写会话标题"按钮的 backend：load 给定 session，取最近 ~10 条 user /
+/// assistant turn 当上下文 + 短指令"用 ≤ 10 字概括主题"调一次非流式
+/// `chat/completions`，拿到新 title 后写回 session 并 save。
+///
+/// 设计：
+/// - 与 `chat_test` 同非流式 + 短 max_tokens + 30s timeout 模式，保 LLM
+///   往返廉价；session 长时只取尾 10 条避免 prompt 过大。
+/// - 不走 chat_pipeline 的 tool / system / persona / mood 注入：本调用是
+///   "总结历史" 工具调用，不该让宠物自我画像 / 工具用法等再渗进 prompt。
+///   bare-bones 几条 raw user/assistant 即可。
+/// - LLM 输出 trim 引号 / 句号 / 句中换行；cap 30 char 防失控。
+/// - 失败原样透传 status + body 头一段，与 chat_test 同体验。
+#[tauri::command]
+pub async fn regenerate_session_title(id: String) -> Result<String, String> {
+    let settings = crate::commands::settings::get_settings()?;
+    if settings.api_key.is_empty() {
+        return Err("API Key 未配置。打开「设置」填好后再试。".to_string());
+    }
+    if settings.model.trim().is_empty() {
+        return Err("model 未配置。".to_string());
+    }
+    let session = crate::commands::session::load_session(id.clone())?;
+    // 抽 user / assistant 消息的纯文本，过滤空。multipart content 取 text
+    // 段拼接（与 SessionContextStats 同 helper 思路）。每条 cap 400 字防
+    // 超长聊天单条压垮 prompt。
+    let mut sample: Vec<serde_json::Value> = Vec::new();
+    for msg in &session.messages {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let text: String = if let Some(s) = msg.get("content").and_then(|v| v.as_str()) {
+            s.to_string()
+        } else if let Some(arr) = msg.get("content").and_then(|v| v.as_array()) {
+            let mut buf = String::new();
+            for part in arr {
+                if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                    if !buf.is_empty() {
+                        buf.push('\n');
+                    }
+                    buf.push_str(t);
+                }
+            }
+            buf
+        } else {
+            String::new()
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let truncated: String = text.chars().take(400).collect();
+        sample.push(serde_json::json!({
+            "role": role,
+            "content": truncated,
+        }));
+    }
+    if sample.is_empty() {
+        return Err("会话内还没有消息可用于概括标题。先聊几句再试。".to_string());
+    }
+    let sample_n = sample.len().min(10);
+    let tail: Vec<serde_json::Value> = sample[sample.len() - sample_n..].to_vec();
+
+    let mut messages = tail;
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": "用 ≤ 10 字概括上面这段对话的主题，仅输出标题文本，不要带引号 / 句号 / 表情。",
+    }));
+
+    let url = format!(
+        "{}/chat/completions",
+        settings.api_base.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "model": settings.model,
+        "messages": messages,
+        "max_tokens": 30,
+        "stream": false,
+        // 略低 temperature 让"标题"风稳定（不要每次跑出不同 wording）。
+        "temperature": 0.3,
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client init failed: {e}"))?;
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", settings.api_key))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求 chat API 失败：{e}"))?;
+    let status = resp.status();
+    let raw = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应体失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("chat API 返回 {}：{}", status, raw));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "解析响应失败：{e}；原始 body 前 200 字：{}",
+            &raw.chars().take(200).collect::<String>()
+        )
+    })?;
+    let raw_content = parsed["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .trim();
+    // 清洗：剥首尾引号（半角 / 全角）/ 句号；夹 \n 用 " " 替换避免多行标题。
+    let stripped: String = raw_content
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '“' | '”' | '‘' | '’' | '.' | '。'))
+        .replace('\n', " ")
+        .trim()
+        .to_string();
+    if stripped.is_empty() {
+        return Err("LLM 返回了空标题。".to_string());
+    }
+    // 30 字 cap：CJK 1 char/字、ASCII 1 char/字母 —— 都按 chars().take(30)。
+    let title: String = stripped.chars().take(30).collect();
+    let mut updated = session;
+    updated.title = title.clone();
+    updated.updated_at = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f")
+        .to_string();
+    crate::commands::session::save_session(updated)?;
+    Ok(title)
+}
+
 /// 从工具结果 JSON 串里移除 `_attachments` 字段，保留其它字段。给 LLM 送上下
 /// 文用 —— 把"前端要 render 的二进制"挡在外面。非 JSON / 没有此字段的 result
 /// 原样返回。

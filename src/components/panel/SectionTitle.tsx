@@ -35,12 +35,23 @@ export function SectionTitle({
   return (
     <div
       style={{
+        position: "relative",
         display: "flex",
         alignItems: "center",
         gap: 10,
         marginBottom: noMargin ? 0 : divider ? 10 : 12,
-        paddingBottom: divider ? 8 : 0,
-        borderBottom: divider ? "1px solid var(--pet-color-border)" : undefined,
+        paddingBottom: divider ? 10 : 0,
+        // divider 不再用 1px solid 直拉到底；改用渐变 hairline，让 section
+        // 切割感更克制，与 .pet-divider 节奏一致。
+        ...(divider
+          ? {
+              backgroundImage:
+                "linear-gradient(90deg, transparent, var(--pet-color-border) 12%, var(--pet-color-border) 88%, transparent)",
+              backgroundRepeat: "no-repeat",
+              backgroundSize: "100% 1px",
+              backgroundPosition: "bottom",
+            }
+          : null),
       }}
     >
       {dot && (
@@ -50,9 +61,10 @@ export function SectionTitle({
             width: 8,
             height: 8,
             borderRadius: "50%",
-            background: "var(--pet-color-accent)",
+            background:
+              "radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--pet-color-accent) 70%, white), var(--pet-color-accent))",
             boxShadow:
-              "0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 18%, transparent)",
+              "0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 18%, transparent), 0 0 8px color-mix(in srgb, var(--pet-color-accent) 40%, transparent)",
             flexShrink: 0,
             alignSelf: "center",
           }}
@@ -61,7 +73,7 @@ export function SectionTitle({
       <h3
         style={{
           margin: 0,
-          fontSize: text.md,
+          fontSize: text.lg,
           fontWeight: fontWeight.semibold,
           color: "var(--pet-color-fg)",
           letterSpacing: letterSpacing.wider,

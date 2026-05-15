@@ -7,6 +7,8 @@ import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelPersona } from "./components/panel/PanelPersona";
 import { PanelTasks } from "./components/panel/PanelTasks";
 import { KeyboardHelpOverlay } from "./components/panel/KeyboardHelpOverlay";
+import { usePollingState } from "./hooks/usePollingState";
+import { useTabKeyboardShortcut } from "./hooks/useTabKeyboardShortcut";
 import {
   applyTheme,
   getStoredTheme,
@@ -123,7 +125,84 @@ export function PanelApp() {
     setPendingTaskFocusTitle(title);
     setActiveTab("任务");
   };
-  const [overdueCount, setOverdueCount] = useState<number>(0);
+  /// 跨窗口 deeplink 传过来的 due filter。pet 窗 🔴 逾期 pill 点击时写
+  /// localStorage `pet-panel-deeplink`，本组件 mount + storage 事件两路径消费 →
+  /// 切到「任务」tab + 推 filter 到 PanelTasks。consume 后由 PanelTasks 回调清空。
+  const [pendingDueFilter, setPendingDueFilter] = useState<
+    "all" | "today" | "overdue" | "createdToday" | null
+  >(null);
+  /// 桌面 ChatMini 右键菜单"在 Panel 中定位本条"用：把消息文本片段
+  /// （≤ 80 字 excerpt）通过同一 deeplink 通道送来，PanelChat 收到后反向扫
+  /// items 找最近 substr 命中，scrollIntoView + 1.5s 高亮。consume 后由
+  /// PanelChat 回调清空。
+  const [pendingChatMatch, setPendingChatMatch] = useState<string | null>(null);
+  const consumePanelDeeplink = useCallback(() => {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem("pet-panel-deeplink");
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    try {
+      localStorage.removeItem("pet-panel-deeplink");
+    } catch {
+      // 即便清不掉也不阻塞 —— TTL 守门保证 stale 值不会反复触发
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    const p = parsed as {
+      tab?: unknown;
+      dueFilter?: unknown;
+      ts?: unknown;
+      chatMatch?: unknown;
+    };
+    // TTL: 10s 内才认；防过期 deeplink 在用户后续手动打开 panel 时误触发
+    if (typeof p.ts !== "number" || Date.now() - p.ts > 10_000) return;
+    if (typeof p.tab === "string" && (TABS as readonly string[]).includes(p.tab)) {
+      setActiveTab(p.tab as Tab);
+    }
+    if (
+      p.dueFilter === "all" ||
+      p.dueFilter === "today" ||
+      p.dueFilter === "overdue" ||
+      p.dueFilter === "createdToday"
+    ) {
+      setPendingDueFilter(p.dueFilter);
+    }
+    if (
+      p.chatMatch &&
+      typeof p.chatMatch === "object" &&
+      typeof (p.chatMatch as { excerpt?: unknown }).excerpt === "string"
+    ) {
+      const excerpt = (p.chatMatch as { excerpt: string }).excerpt.trim();
+      if (excerpt) {
+        // chat match 隐含切到「聊天」tab —— 即便 caller 没传 tab 字段。
+        // 已显式传 tab 的不动（保留 caller 意图）。
+        if (typeof p.tab !== "string") setActiveTab("聊天");
+        setPendingChatMatch(excerpt);
+      }
+    }
+  }, []);
+  // 已开 panel：pet 窗 setItem 触发 storage 事件 → 立即消费
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== "pet-panel-deeplink") return;
+      if (!e.newValue) return;
+      consumePanelDeeplink();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [consumePanelDeeplink]);
+  // 未开 panel：open_panel 后 PanelApp 首次 mount → 这里读
+  useEffect(() => {
+    consumePanelDeeplink();
+  }, [consumePanelDeeplink]);
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   // 主题：迭代 1 仅框架级 surface 切换（顶层 bg / tab bar）。组件内部
   // inline color 留给后续迭代按 panel 逐步迁移到 CSS var。启动时从
@@ -174,26 +253,21 @@ export function PanelApp() {
     invoke("open_debug").catch(console.error);
   };
 
-  const fetchOverdue = useCallback(async () => {
-    try {
-      const n = await invoke<number>("task_overdue_count");
-      setOverdueCount(n);
-    } catch (e) {
-      console.error("task_overdue_count failed:", e);
-    }
-  }, []);
+  // ⌘1 – ⌘5（含 Ctrl 等价）跳到 N 号 tab —— Chrome / Slack / Linear 都有的
+  // 肌肉记忆，与 DebugApp 共享 useTabKeyboardShortcut hook。
+  useTabKeyboardShortcut(TABS, setActiveTab);
 
-  // 启动时拉一次 + 30s 周期 polling。切到「任务」标签也立刻 refetch
-  // 一次（让用户在 PanelTasks 里 retry / cancel / 改 due 后切回主面板时
-  // 徽章 N 同步），其它标签的操作不会改任务故无需 trigger。
+  // overdueCount 30s 自动轮询走 usePollingState；切到「任务」tab 也立即
+  // refetch 一次（用户在 PanelTasks 里 retry / cancel / 改 due 后切回主面板
+  // 时徽章 N 同步），其它 tab 的操作不改任务故无需 trigger。
+  const { data: overdueCount, refresh: refreshOverdue } = usePollingState(
+    () => invoke<number>("task_overdue_count"),
+    OVERDUE_POLL_MS,
+    0,
+  );
   useEffect(() => {
-    fetchOverdue();
-    const id = window.setInterval(fetchOverdue, OVERDUE_POLL_MS);
-    return () => window.clearInterval(id);
-  }, [fetchOverdue]);
-  useEffect(() => {
-    if (activeTab === "任务") fetchOverdue();
-  }, [activeTab, fetchOverdue]);
+    if (activeTab === "任务") void refreshOverdue();
+  }, [activeTab, refreshOverdue]);
 
   // 全局 `?` 唤起键盘快捷键帮助层。tagName 守卫挡掉输入控件 focus 时的
   // ?（用户可能在搜索框里输入 ?）；Shift+/ 也命中（中英键盘 ? 实际是
@@ -212,11 +286,20 @@ export function PanelApp() {
   }, []);
 
   return (
-    <div style={{ width: "100%", height: "100vh", display: "flex", flexDirection: "column", background: "var(--pet-color-bg)" }}>
-      {/* Panel-global 视觉抛光：注入一层 base CSS 给各 panel 页提供更精致
-          的默认（字体 smoothing、scrollbar、focus ring、tab bar hover 暖底、
-          按钮 hover 微浮、双层 focus halo、selection 高亮）。各页继续走自己
-          的 inline 样式 + 既有 .pet-* 局部规则；这里只补缺省。 */}
+    <div
+      className="pet-panel-root"
+      style={{
+        width: "100%",
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--pet-color-bg)",
+      }}
+    >
+      {/* Panel-global 视觉抛光。注入 base CSS：字体 smoothing、scrollbar、
+          focus ring、tab bar、按钮交互、卡片 / chip / 输入控件 utility class、
+          以及面板底层的微弱径向 accent 光晕做视觉锚。各页继续走自己的 inline
+          样式；本块只提供"补齐 + opt-in"。 */}
       <style>{`
         html, body, #root {
           font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
@@ -225,8 +308,25 @@ export function PanelApp() {
           -moz-osx-font-smoothing: grayscale;
           text-rendering: optimizeLegibility;
         }
-        /* 文本选区与 accent 呼应。22% alpha 在 light / dark 都柔和（浏览器默
-           认蓝过饱和、暗黑下尤其刺眼）。 */
+        /* 面板底层环境光：左上 / 右下两团极淡 accent 光晕给整面板一点"温度",
+           不让大片素白(或纯深)显得冷漠。alpha 5-7% 既能感觉到色相,又不抢
+           内容；fixed 让滚动时背景不动。 */
+        .pet-panel-root::before {
+          content: "";
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          background:
+            radial-gradient(circle at 12% 0%,
+              color-mix(in srgb, var(--pet-color-accent) 6%, transparent) 0%,
+              transparent 38%),
+            radial-gradient(circle at 100% 100%,
+              color-mix(in srgb, var(--pet-color-accent) 5%, transparent) 0%,
+              transparent 42%);
+          z-index: 0;
+        }
+        .pet-panel-root > * { position: relative; z-index: 1; }
+        /* 文本选区与 accent 呼应。28% alpha 在 light / dark 都柔和。 */
         ::selection {
           background: color-mix(in srgb, var(--pet-color-accent) 28%, transparent);
         }
@@ -234,7 +334,7 @@ export function PanelApp() {
            节奏不一致。 */
         input::placeholder, textarea::placeholder {
           color: var(--pet-color-muted);
-          opacity: 0.85;
+          opacity: 0.7;
         }
         /* 共享 scrollbar：inactive 更淡，hover 加深；轨道两侧留 2px 空隙，
            不顶到 panel 边缘看着更"贵气"。 */
@@ -270,9 +370,15 @@ export function PanelApp() {
             0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 22%, transparent),
             inset 0 0 0 1px color-mix(in srgb, var(--pet-color-accent) 45%, transparent);
         }
-        /* Tab bar：active 走 accent 字 + accent 底纹（极浅 12% alpha 暖底）。
-           原 borderBottom 2px 仍由 inline 控制 active 指示；hover 用 tint
-           blue bg 而非纯 page bg，让"我在指向哪个 tab" 更明显。 */
+        /* Tab bar：玻璃感底色（accent ~3% + card 主体）+ 底部微渐 hairline；
+           原 borderBottom 1px 仍保布局, 这里靠 background 做层次。 */
+        .pet-panel-tabbar {
+          background:
+            linear-gradient(180deg,
+              color-mix(in srgb, var(--pet-color-accent) 4%, var(--pet-color-card)) 0%,
+              var(--pet-color-card) 100%);
+          backdrop-filter: saturate(140%);
+        }
         .pet-panel-tab {
           transition: color 140ms ease-out, background-color 140ms ease-out,
             border-color 140ms ease-out;
@@ -285,10 +391,9 @@ export function PanelApp() {
           outline: 2px solid var(--pet-color-accent);
           outline-offset: -4px;
         }
-        /* 迭代 7：active 指示器从"整条 2px 下边线"换成"居中圆角短条"。
+        /* active 指示器从"整条 2px 下边线"换成"居中圆角短条 + halo"。
            inline borderBottom 仍占 2px transparent 保布局；::after 用
-           position:absolute 浮在底缘做视觉指示，accent halo 暖光呼应迭代
-           1 的 shadow token 语言。 */
+           position:absolute 浮在底缘做视觉指示。 */
         .pet-panel-tab[data-active="true"]::after {
           content: "";
           position: absolute;
@@ -299,10 +404,8 @@ export function PanelApp() {
           height: 3px;
           border-radius: 2px;
           background: var(--pet-color-accent);
-          box-shadow: 0 0 8px color-mix(in srgb, var(--pet-color-accent) 50%, transparent);
+          box-shadow: 0 0 10px color-mix(in srgb, var(--pet-color-accent) 60%, transparent);
         }
-        /* hover inactive tab 时让 ::after 提前预告：浅短条 + 略短宽度，
-           click 后会涨成 active 全长。视觉连续提示"这里能成 active"。 */
         .pet-panel-tab:hover:not([data-active="true"])::after {
           content: "";
           position: absolute;
@@ -314,9 +417,7 @@ export function PanelApp() {
           border-radius: 2px;
           background: color-mix(in srgb, var(--pet-color-accent) 50%, transparent);
         }
-        /* 全局 button：平滑 transition + hover 时 -0.5px 微浮 + 轻投影，
-           active 按下回落。已有 transition / transform 的 inline style 优
-           先级更高自然覆盖，所以仅作用到"裸 inline button"。 */
+        /* 全局 button：平滑 transition + hover 时 -0.5px 微浮 + 轻投影。 */
         button {
           transition: background-color 120ms ease-out, color 120ms ease-out,
             border-color 120ms ease-out, transform 80ms ease-out,
@@ -338,18 +439,102 @@ export function PanelApp() {
           outline: 2px solid var(--pet-color-accent);
           outline-offset: 2px;
         }
-        /* utility class：希望某个容器看起来像"卡片"时挂这个 class。inline
-           style 已用 background:card 的 div 加这条就立刻多一层精致感。border
-           +shadow 组合，不动既有 padding / radius —— 各调用方自己决定。 */
+        /* —— Card utilities ———————————————————————————————————————————
+           .pet-card        — 基础卡片（border + sm shadow）
+           .pet-card-elev   — 进阶卡片：顶部 accent 极淡渐变 + md shadow,
+                              用于 PanelPersona / PanelSettings 的 section
+                              （比 .pet-card 更"高级"一档）。
+           inline style 已用 background:card 的 div 加 class 后立即多一层精致
+           感，不动既有 padding / radius。 */
         .pet-card {
           background: var(--pet-color-card);
           border: 1px solid var(--pet-color-border);
           border-radius: 10px;
           box-shadow: var(--pet-shadow-sm);
         }
+        .pet-card-elev {
+          position: relative;
+          background:
+            linear-gradient(180deg,
+              color-mix(in srgb, var(--pet-color-accent) 3%, var(--pet-color-card)) 0%,
+              var(--pet-color-card) 60%);
+          border: 1px solid var(--pet-color-border);
+          border-radius: 12px;
+          box-shadow: var(--pet-shadow-sm);
+          transition: box-shadow 200ms ease-out, border-color 200ms ease-out;
+        }
+        .pet-card-elev::before {
+          content: "";
+          position: absolute;
+          left: 14px;
+          right: 14px;
+          top: -1px;
+          height: 1px;
+          background: linear-gradient(90deg,
+            transparent,
+            color-mix(in srgb, var(--pet-color-accent) 60%, transparent) 50%,
+            transparent);
+          opacity: 0.85;
+        }
+        .pet-card-elev:hover {
+          box-shadow: var(--pet-shadow-md);
+        }
+        /* —— Chip ————————————————————————————————————————————————
+           小色块标签；调用方挂 inline color/background 即可（让既有 tint 体系
+           生效），class 提供圆角 / padding / 字距统一节奏。 */
+        .pet-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 500;
+          letter-spacing: 0.2px;
+          line-height: 1.4;
+          white-space: nowrap;
+        }
+        /* —— Divider ———————————————————————————————————————————————
+           柔和虚线分割，比 1px solid border 更不显沉重。 */
+        .pet-divider {
+          height: 1px;
+          background: linear-gradient(90deg,
+            transparent,
+            var(--pet-color-border) 15%,
+            var(--pet-color-border) 85%,
+            transparent);
+          border: none;
+          margin: 12px 0;
+        }
+        /* —— Generic list-row hover ————————————————————————————————
+           .pet-row-hover 给"列表里能点的行"加一致的交互：hover 微微高亮 +
+           accent 边色，避免每个 panel 自己写一段 CSS。 */
+        .pet-row-hover {
+          transition: background-color 140ms ease-out, border-color 180ms ease-out,
+            box-shadow 180ms ease-out;
+        }
+        .pet-row-hover:hover {
+          background: color-mix(in srgb, var(--pet-color-accent) 4%, var(--pet-color-card)) !important;
+          border-color: color-mix(in srgb, var(--pet-color-accent) 35%, var(--pet-color-border)) !important;
+          box-shadow: var(--pet-shadow-sm);
+        }
+        /* Reduce motion safety：把所有的 transform / shadow transition 退化 */
+        @media (prefers-reduced-motion: reduce) {
+          .pet-panel-root *, .pet-panel-tab, button, .pet-row-hover, .pet-card-elev {
+            transition: none !important;
+            animation: none !important;
+          }
+        }
       `}</style>
       {/* Tab bar */}
-      <div style={{ display: "flex", borderBottom: "1px solid var(--pet-color-border)", background: "var(--pet-color-card)", flexShrink: 0 }}>
+      <div
+        className="pet-panel-tabbar"
+        style={{
+          display: "flex",
+          borderBottom: "1px solid var(--pet-color-border)",
+          flexShrink: 0,
+        }}
+      >
         {TABS.map((tab) => {
           const showOverdueBadge = tab === "任务" && overdueCount > 0;
           const isActive = activeTab === tab;
@@ -467,12 +652,16 @@ export function PanelApp() {
             <PanelChat
               onRequestTab={setActiveTab}
               onRequestFocusTask={requestFocusTask}
+              pendingChatMatch={pendingChatMatch}
+              onConsumePendingChatMatch={() => setPendingChatMatch(null)}
             />
           )}
           {activeTab === "任务" && (
             <PanelTasks
               pendingFocusTitle={pendingTaskFocusTitle}
               onConsumeFocus={() => setPendingTaskFocusTitle(null)}
+              pendingDueFilter={pendingDueFilter}
+              onConsumePendingDueFilter={() => setPendingDueFilter(null)}
             />
           )}
           {activeTab === "记忆" && (

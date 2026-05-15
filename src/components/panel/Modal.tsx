@@ -50,7 +50,11 @@ export function Modal({
       style={{
         position: "fixed",
         inset: 0,
-        background: "color-mix(in srgb, var(--pet-color-fg) 50%, transparent)",
+        // backdrop：fg 半透混 + 轻量 blur 让背景内容隐去；blur 在 light / dark
+        // 都柔和，且让 modal 卡片"浮"出来。
+        background: "color-mix(in srgb, var(--pet-color-fg) 45%, transparent)",
+        backdropFilter: "blur(6px) saturate(120%)",
+        WebkitBackdropFilter: "blur(6px) saturate(120%)",
         zIndex,
         display: "flex",
         alignItems: "center",
@@ -64,12 +68,18 @@ export function Modal({
         className="pet-modal-card"
         onClick={(e) => e.stopPropagation()}
         style={{
+          position: "relative",
           width: "100%",
           maxWidth,
-          background: "var(--pet-color-card)",
-          borderRadius: 12,
+          // 顶端 accent 极淡渐变，与 .pet-card-elev 同语言；让 modal 卡片有
+          // 一点 "this is special" 的视觉信号。
+          background:
+            "linear-gradient(180deg, color-mix(in srgb, var(--pet-color-accent) 4%, var(--pet-color-card)) 0%, var(--pet-color-card) 35%)",
+          border:
+            "1px solid color-mix(in srgb, var(--pet-color-accent) 8%, var(--pet-color-border))",
+          borderRadius: 14,
           boxShadow: "var(--pet-shadow-lg)",
-          padding: "18px 22px",
+          padding: "20px 24px",
           maxHeight: "85vh",
           overflowY: "auto",
           animation: "pet-modal-pop 180ms ease-out",

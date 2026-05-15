@@ -22,14 +22,145 @@ export interface SlashCommand {
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "clear", description: "清空当前会话的消息（不删 session 文件）", parametric: false },
+  { name: "reset", description: "清掉 LLM 上下文但保留可见历史（与 TG /reset 对偶）", parametric: false },
+  { name: "repeat", description: "再发一遍上一条 user 消息（IM 风便利）", parametric: false },
   { name: "tasks", description: "切到「任务」标签", parametric: false },
+  { name: "stats", description: "汇总：待办 / 逾期 / 今日完成 / 出错 / 今日取消 计数", parametric: false },
+  { name: "today", description: "今日叙事视图：到期 / 已完成任务标题清单", parametric: false },
+  { name: "mood", description: "查看宠物当前心情", parametric: false },
+  { name: "whoami", description: "宠物自我介绍：陪伴 / 心情 / 自我画像 / 近常用工具", parametric: false },
+  { name: "version", description: "查看 pet 版本 / schema / 平台", parametric: false },
+  { name: "clearstats", description: "清掉 slash 命令使用历史（重置 /help 与菜单排序）", parametric: false },
+  { name: "title", description: "改当前会话标题：/title <新标题>", parametric: true },
+  { name: "new", description: "新建会话：/new [初始标题]（留空走默认「新会话」）", parametric: true },
+  { name: "pin", description: "无参 → 钉住当前会话；带参 → 钉任务：/pin [<标题>]", parametric: false },
   { name: "search", description: "打开跨会话搜索面板", parametric: false },
   { name: "sleep", description: "让宠物 mute 主动开口 N 分钟（缺省 30；输 0 解除）", parametric: true },
+  { name: "done", description: "标记任务完成：/done <标题（子串模糊匹配）>", parametric: true },
+  { name: "cancel", description: "取消任务：/cancel <标题（子串模糊匹配）>", parametric: true },
+  { name: "retry", description: "重试 Error 任务：/retry <标题（子串模糊匹配）>", parametric: true },
+  {
+    name: "snooze",
+    description: "暂停任务：/snooze <标题> [30m / 2h / tonight / tomorrow / monday]（缺省 30m）",
+    parametric: true,
+  },
+  { name: "unsnooze", description: "解除任务暂停：/unsnooze <标题>", parametric: true },
+  { name: "unpin", description: "取消任务钉住：/unpin <标题>", parametric: true },
   { name: "image", description: "生成图：/image <描述>（-n 多张 / -r 引用上文 / -h help）", parametric: true },
   { name: "help", description: "在当前会话展示命令清单", parametric: false },
 ];
 
 const DEFAULT_SLEEP_MINUTES = 30;
+/// `/snooze` 不带 preset token 时的缺省时长，分钟。与 TG `/snooze` 同。
+const DEFAULT_SNOOZE_MINUTES = 30;
+
+/// Snooze preset 的语义键。与 Rust `SnoozeSpec` 一一对应；handler 拿到后
+/// 配合 `computeSnoozeUntil(spec, now)` 算绝对时刻。
+export type SnoozeSpec =
+  | { kind: "minutes"; n: number }
+  | { kind: "hours"; n: number }
+  | { kind: "tonight" }
+  | { kind: "tomorrow" }
+  | { kind: "monday" };
+
+/// 把 `/snooze` 的 preset token 解析为 SnoozeSpec。大小写不敏感。
+/// 空串 / 不识别 / 数字越界（> 7 天）→ null。与 Rust `parse_snooze_token`
+/// 同算法 —— 让桌面与 TG 行为完全对等。
+export function parseSnoozeToken(token: string): SnoozeSpec | null {
+  const t = token.trim().toLowerCase();
+  if (t.length === 0) return null;
+  if (t === "tonight") return { kind: "tonight" };
+  if (t === "tomorrow") return { kind: "tomorrow" };
+  if (t === "monday") return { kind: "monday" };
+  const mMatch = /^(\d+)m$/.exec(t);
+  if (mMatch) {
+    const n = parseInt(mMatch[1], 10);
+    if (!Number.isFinite(n) || n <= 0 || n > 7 * 24 * 60) return null;
+    return { kind: "minutes", n };
+  }
+  const hMatch = /^(\d+)h$/.exec(t);
+  if (hMatch) {
+    const n = parseInt(hMatch[1], 10);
+    if (!Number.isFinite(n) || n <= 0 || n > 7 * 24) return null;
+    return { kind: "hours", n };
+  }
+  return null;
+}
+
+/// 把 SnoozeSpec + now 算成 `YYYY-MM-DD HH:MM` 字符串（task_set_snooze 接口
+/// 协议格式，空格分隔不是 ISO `T`）。tonight / tomorrow / monday 边界与桌面
+/// 右键 Snooze chip + Rust `compute_snooze_until` 完全一致。
+export function computeSnoozeUntil(spec: SnoozeSpec, now: Date): string {
+  const fmt = (d: Date) => {
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    const da = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${y}-${mo}-${da} ${hh}:${mm}`;
+  };
+  switch (spec.kind) {
+    case "minutes":
+      return fmt(new Date(now.getTime() + spec.n * 60 * 1000));
+    case "hours":
+      return fmt(new Date(now.getTime() + spec.n * 60 * 60 * 1000));
+    case "tonight": {
+      const d = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        18,
+        0,
+        0,
+      );
+      if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+      return fmt(d);
+    }
+    case "tomorrow":
+      return fmt(
+        new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() + 1,
+          9,
+          0,
+          0,
+        ),
+      );
+    case "monday": {
+      // JS getDay: Sun=0..Sat=6；目标：下个周一（今日也是周一时跳下周一）。
+      const today = now.getDay();
+      const daysAhead = today === 0 ? 1 : 7 - today + 1;
+      return fmt(
+        new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() + daysAhead,
+          9,
+          0,
+          0,
+        ),
+      );
+    }
+  }
+}
+
+/// `/snooze <title> [preset]` 参数串拆 `(title, token)`。取最后一个 whitespace-
+/// 分隔 token；命中 `parseSnoozeToken` 时剥下作 preset，其余拼回 title；不命
+/// 中 → 全 arg 当 title、token 空。与 Rust `split_trailing_snooze_token` 同算
+/// 法 —— 让 `/snooze 报告 with whitespace` 这种"标题含 preset 字眼"也能正确归到
+/// title 而不是被吞当 preset。
+function splitTrailingSnoozeToken(arg: string): { title: string; token: string } {
+  const a = arg.trim();
+  if (a.length === 0) return { title: "", token: "" };
+  const words = a.split(/\s+/);
+  if (words.length < 2) return { title: a, token: "" };
+  const last = words[words.length - 1];
+  if (parseSnoozeToken(last) !== null) {
+    return { title: words.slice(0, -1).join(" "), token: last };
+  }
+  return { title: a, token: "" };
+}
 
 /// `/image -n N` 的前端"软"上限。提供商 API（dall-e-3 只支持 1，dall-e-2 支
 /// 持 10，SD/flux 通常 1-4）会自己再约束；这里只是兜底防误打 -n 100 触发
@@ -40,9 +171,27 @@ const IMAGE_MAX_N = 8;
 /// `/` 还没输入命令名，UI 此时应展示全部命令任选。
 export type SlashAction =
   | { kind: "clear" }
+  | { kind: "reset" }
+  | { kind: "repeat" }
   | { kind: "tasks" }
+  | { kind: "stats" }
+  | { kind: "today" }
+  | { kind: "mood" }
+  | { kind: "whoami" }
+  | { kind: "version" }
+  | { kind: "clearstats" }
+  | { kind: "title"; query: string }
+  | { kind: "new"; query: string }
+  | { kind: "pin" }
+  | { kind: "pinTask"; query: string }
   | { kind: "search" }
   | { kind: "sleep"; minutes: number }
+  | { kind: "done"; query: string }
+  | { kind: "cancel"; query: string }
+  | { kind: "retry"; query: string }
+  | { kind: "snooze"; title: string; spec: SnoozeSpec }
+  | { kind: "unsnooze"; query: string }
+  | { kind: "unpin"; query: string }
   | {
       kind: "image";
       prompt: string;
@@ -71,8 +220,41 @@ export function parseSlashCommand(input: string): SlashAction | null {
   switch (name) {
     case "clear":
       return { kind: "clear" };
+    case "reset":
+      return { kind: "reset" };
+    case "repeat":
+      return { kind: "repeat" };
     case "tasks":
       return { kind: "tasks" };
+    case "stats":
+      return { kind: "stats" };
+    case "today":
+      return { kind: "today" };
+    case "mood":
+      return { kind: "mood" };
+    case "whoami":
+      return { kind: "whoami" };
+    case "version":
+      return { kind: "version" };
+    case "clearstats":
+      return { kind: "clearstats" };
+    case "title": {
+      // 必带新标题；空 → unknown 让用户看用法提示
+      if (arg.length === 0) return { kind: "unknown", name: "title" };
+      return { kind: "title", query: arg };
+    }
+    case "new": {
+      // 空 arg 合法 —— 等价于点 ＋ 新建按钮（默认 "新会话" 标题）
+      return { kind: "new", query: arg };
+    }
+    case "pin": {
+      // 双语义：无参 → 切换当前会话钉住（原 SessionList toggle 行为）；带参
+      // → 钉指定任务（写任务 description 的 `[pinned]` marker）。两个动作发
+      // 生在不同对象上，由 `/pin` 后是否跟标题消歧；与 /snooze 单义命令对照
+      // 看，pin 之所以兼容双语义是因为"钉当前会话"恰好是高频且没歧义的 alias。
+      if (arg.length === 0) return { kind: "pin" };
+      return { kind: "pinTask", query: arg };
+    }
     case "search":
       return { kind: "search" };
     case "help":
@@ -83,6 +265,46 @@ export function parseSlashCommand(input: string): SlashAction | null {
       const n = parseInt(arg, 10);
       if (Number.isNaN(n) || n < 0) return { kind: "unknown", name: "sleep" };
       return { kind: "sleep", minutes: n };
+    }
+    case "done": {
+      // 必须带 title query；空参数 → unknown 提示用法。fuzzy 匹配在执行层
+      // (PanelChat) 做，parser 只做字符串拆分。
+      if (arg.length === 0) return { kind: "unknown", name: "done" };
+      return { kind: "done", query: arg };
+    }
+    case "cancel": {
+      // 与 done 同构。
+      if (arg.length === 0) return { kind: "unknown", name: "cancel" };
+      return { kind: "cancel", query: arg };
+    }
+    case "retry": {
+      // 与 done / cancel 同构；执行层做 status==error 预过滤。
+      if (arg.length === 0) return { kind: "unknown", name: "retry" };
+      return { kind: "retry", query: arg };
+    }
+    case "snooze": {
+      // `/snooze <title> [preset]`：剥尾随 preset token，余者当 title。空
+      // title → unknown 让用户看用法。preset 缺省 30m；不识别的 token 已被
+      // splitTrailingSnoozeToken 留作 title 一部分（与 TG 同语义）—— 用户
+      // "/snooze 倒垃圾 with whitespace" 不会把 whitespace 误当 preset。
+      if (arg.length === 0) return { kind: "unknown", name: "snooze" };
+      const { title, token } = splitTrailingSnoozeToken(arg);
+      if (title.length === 0) return { kind: "unknown", name: "snooze" };
+      const spec: SnoozeSpec =
+        token.length > 0
+          ? (parseSnoozeToken(token) ?? { kind: "minutes", n: DEFAULT_SNOOZE_MINUTES })
+          : { kind: "minutes", n: DEFAULT_SNOOZE_MINUTES };
+      return { kind: "snooze", title, spec };
+    }
+    case "unsnooze": {
+      // 与 done 同构：执行层 fuzzy 命中 title 后调 task_set_snooze(null)。
+      if (arg.length === 0) return { kind: "unknown", name: "unsnooze" };
+      return { kind: "unsnooze", query: arg };
+    }
+    case "unpin": {
+      // 与 pin 对偶；调 task_set_pinned(false) 剥所有 `[pinned]` marker。
+      if (arg.length === 0) return { kind: "unknown", name: "unpin" };
+      return { kind: "unpin", query: arg };
     }
     case "image": {
       // 空 prompt → 当 unknown，弹错给用户提示用法。`/image` 默认 parametric=true，
@@ -197,6 +419,17 @@ function readSlashScores(): ScoreMap {
     // localStorage 禁用 / 解析失败 → 返回空 map，等价"无历史"，不影响功能。
   }
   return {};
+}
+
+/// 清掉持久化的 slash 命令使用历史 —— 让 `/help` 与 slash 菜单的排序回到
+/// 声明默认序。`/clearstats` 命令的实现入口。localStorage 不可用时静默失败
+/// （下次启动读到空 / 仍是空效果一致）。
+export function clearSlashScores(): void {
+  try {
+    localStorage.removeItem(SLASH_HISTORY_KEY);
+  } catch {
+    // 隐私 / 配额 → 静默；下次重启读到空也是同效果
+  }
 }
 
 function writeSlashScores(scores: ScoreMap): void {
@@ -347,12 +580,39 @@ export function formatImageHelpText(): string {
   ].join("\n");
 }
 
-/// `/help` 在会话气泡里显示的文案。每行 `/{name}  {description}`，开头
-/// 一行总说明。pure 让测试 / 调用方都能直接复用。
+/// `/help` 在会话气泡里显示的文案。按使用频次分桶 → 与 slash 菜单（同 score
+/// 排序）的视觉顺序一致，顺便把"没试过"的命令独立段做发现引导。
+///
+/// 分桶规则：
+/// - 用过（score > 0）：按 score 倒序。
+/// - 没用过（score = 0）：保留 SLASH_COMMANDS 声明序（隐式约定 = 推荐优先级）。
+///
+/// 三种边界：全新用户（无 used）单段无 header；老用户（全 used）单段标注按
+/// 频次；混合态二段 "常用 / 未试过" header。
 export function formatHelpText(): string {
-  const lines = SLASH_COMMANDS.map((c) => {
+  const scores = readSlashScores();
+  const used: SlashCommand[] = [];
+  const unused: SlashCommand[] = [];
+  for (const c of SLASH_COMMANDS) {
+    if ((scores[c.name] ?? 0) > 0) used.push(c);
+    else unused.push(c);
+  }
+  used.sort((a, b) => (scores[b.name] ?? 0) - (scores[a.name] ?? 0));
+  const fmt = (c: SlashCommand): string => {
     const arg = c.parametric ? " <参数>" : "";
     return `/${c.name}${arg}  —  ${c.description}`;
-  });
-  return ["可用命令：", ...lines].join("\n");
+  };
+  if (used.length === 0) {
+    return ["可用命令：", ...SLASH_COMMANDS.map(fmt)].join("\n");
+  }
+  if (unused.length === 0) {
+    return ["可用命令（按近期使用频次）：", ...used.map(fmt)].join("\n");
+  }
+  return [
+    "常用：",
+    ...used.map(fmt),
+    "",
+    "未试过：",
+    ...unused.map(fmt),
+  ].join("\n");
 }
