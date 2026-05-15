@@ -21,10 +21,14 @@ interface ShortcutGroup {
 const GROUPS: ShortcutGroup[] = [
   {
     title: "Panel 全局",
-    scope: "任意 tab",
+    scope: "任意 tab（input/textarea 聚焦时让出键位）",
     items: [
       { keys: ["?"], description: "唤起本帮助层" },
       { keys: ["Esc"], description: "关闭弹窗 / 帮助层 / 高风险工具审核（拒绝最上面一条）" },
+      {
+        keys: ["⌘1", "⌘2", "⌘3", "⌘4", "⌘5"],
+        description: "跳到对应 tab（设置 / 聊天 / 任务 / 记忆 / 人格；Ctrl 等价）",
+      },
     ],
   },
   {
@@ -40,7 +44,33 @@ const GROUPS: ShortcutGroup[] = [
       { keys: ["Enter"], description: "展开 / 折叠当前焦点行的详情" },
       { keys: ["d"], description: "把当前焦点行标 done（pending / error 才响应）" },
       { keys: ["r"], description: "重试当前焦点行（仅 error）" },
+      { keys: ["p"], description: "切换当前焦点行 pinned（与右键菜单「📌 钉住」对偶；所有 status 都响应）" },
       { keys: ["Delete", "Backspace"], description: "打开当前焦点行的「取消任务」原因输入" },
+    ],
+  },
+  {
+    title: "搜索输入框",
+    scope: "记忆 / 任务 / 跨会话搜索三处共享同模式",
+    items: [
+      { keys: ["Esc"], description: "非空时清掉 query（保持焦点继续敲）；空 input 让出键位走全局 Esc" },
+      { keys: ["Enter"], description: "把当前 query 入历史（datalist 浮自动补全可选）" },
+    ],
+  },
+  {
+    title: "聊天输入框（PanelChat / 桌面 ChatPanel）",
+    scope: "两个聊天输入框共享 shell 风历史栈（cap 20 · localStorage 持久 · 跨窗口）",
+    items: [
+      { keys: ["↑"], description: "空输入或正在浏览历史 → 拉上一条；多按继续往前翻" },
+      { keys: ["↓"], description: "历史浏览中 → 反向；超过最新一条退出 + 清空" },
+      {
+        keys: ["⌥↑", "Alt+↑"],
+        description:
+          "PanelChat：空 input 时 IM 风召回最近一条 user bubble 进 inline 编辑模式（直接到 textarea，Enter 重发）",
+      },
+      {
+        keys: ["双击 user 气泡"],
+        description: "PanelChat：进入 inline 编辑；Enter 重发（截断 items[i:] + messagesRef）",
+      },
     ],
   },
   {

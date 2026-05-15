@@ -32,6 +32,12 @@ export interface ChatItem {
   imageRetryN?: number;
   /// 配套的 -s WxH size 覆盖。重试时一并 replay；undefined / null 走 settings 默认。
   imageRetrySize?: string | null;
+  /// 本地系统反馈消息（`/help` 输出、`/clear` armed 警告、`/done` 已标
+  /// 反馈等）。type 仍为 "assistant" 让它出现在 bubble 区域，但渲染
+  /// 时走 subdued 样式（字号小、虚线边、半透明）—— 与真 LLM 回复区分。
+  /// markdown 导出时过滤掉这些（不是用户与 AI 的对话内容）。
+  /// 旧 session 加载时此字段缺失 = 不是 systemNote，行为不变。
+  systemNote?: boolean;
 }
 
 /// 与后端 `commands::session::SearchHit` 对应。`match_start` 是 char 偏移
@@ -55,7 +61,9 @@ export interface SearchHit {
 export function exportSessionAsMarkdown(title: string, items: ChatItem[]): string {
   const lines: string[] = [];
   const visibleItems = items.filter(
-    (it) => it.type === "user" || it.type === "assistant",
+    // user / assistant 之外的（tool / error）不导出；assistant 的 systemNote
+    // （/help、/done 反馈等本地系统消息）也不算用户与 AI 的对话内容，跳过。
+    (it) => (it.type === "user" || it.type === "assistant") && !it.systemNote,
   );
   lines.push(`# ${title}`);
   lines.push(
@@ -72,7 +80,30 @@ export function exportSessionAsMarkdown(title: string, items: ChatItem[]): strin
   return lines.join("\n");
 }
 
-export function bubbleStyle(role: "user" | "assistant"): React.CSSProperties {
+export function bubbleStyle(
+  role: "user" | "assistant",
+  subdued = false,
+): React.CSSProperties {
+  // 系统反馈（/help / /done 反馈等）走 subdued：字小、虚线边、半透明、无阴影。
+  // 让用户一眼分辨"这是 panel 自己回的"而非 LLM 真说。仅在 assistant 路径
+  // 生效（user bubble 永不 systemNote）。
+  if (role === "assistant" && subdued) {
+    return {
+      maxWidth: "80%",
+      padding: "9px 14px",
+      borderRadius: "12px 12px 12px 4px",
+      background:
+        "color-mix(in srgb, var(--pet-color-card) 60%, transparent)",
+      color: "var(--pet-color-muted)",
+      border: "1px dashed var(--pet-color-border)",
+      fontSize: "13px",
+      lineHeight: "1.5",
+      boxShadow: "none",
+      wordBreak: "break-word",
+      whiteSpace: "pre-wrap",
+      transition: "border-color 160ms ease-out",
+    };
+  }
   return {
     maxWidth: "80%",
     padding: "11px 16px",
@@ -247,6 +278,7 @@ export function CopyableMessage({
   onRefDoubleClick,
   marked,
   onToggleMark,
+  subdued,
 }: {
   role: "user" | "assistant";
   content: string;
@@ -279,6 +311,9 @@ export function CopyableMessage({
   marked?: boolean;
   /// pin toggle callback。点击切换 marked 状态。
   onToggleMark?: () => void;
+  /// 系统反馈消息（pushLocalAssistantNote 注入的）走低调样式。仅 assistant
+  /// 路径会被设；user 行不传。
+  subdued?: boolean;
 }) {
   const button = (
     <button
@@ -420,7 +455,12 @@ export function CopyableMessage({
   };
   const hiddenCount = content.length - HEAD_KEEP - TAIL_KEEP;
   const bubble = (
-    <div className="pet-chat-bubble" data-role={role} style={bubbleStyle(role)}>
+    <div
+      className="pet-chat-bubble"
+      data-role={role}
+      data-subdued={subdued ? "true" : undefined}
+      style={bubbleStyle(role, subdued)}
+    >
       {hasImages && (
         <div
           style={{

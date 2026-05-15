@@ -92,6 +92,27 @@ export function SlashCommandMenu({ commands, selectedIdx, onSelect }: Props) {
           </div>
         );
       })}
+      {/* 键盘提示 footer：让 ↑↓/Enter/Tab/Esc 这些隐式 keymap 显式可见。
+          列表非空时才挂；commands.length === 0 时上面 early return 已经渲染
+          empty hint，无需 footer 占位。 */}
+      <div
+        style={{
+          padding: "5px 12px",
+          borderTop: "1px solid var(--pet-color-border)",
+          background: "var(--pet-color-bg)",
+          fontSize: 10,
+          color: "var(--pet-color-muted)",
+          display: "flex",
+          gap: 10,
+          fontFamily: "'SF Mono', Menlo, monospace",
+          letterSpacing: 0.2,
+        }}
+      >
+        <span>↑↓ 选</span>
+        <span>Enter 执行</span>
+        <span>Tab 补全</span>
+        <span>Esc 关</span>
+      </div>
     </div>
   );
 }

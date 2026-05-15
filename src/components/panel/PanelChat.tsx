@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ToolCallBlock } from "./ToolCallBlock";
@@ -16,6 +16,8 @@ import {
   attachThumbToImagePrompt,
   type ImagePromptEntry,
   recordSlashCommandUsage,
+  clearSlashScores,
+  computeSnoozeUntil,
   type SlashAction,
   type SlashCommand,
 } from "./slashCommands";
@@ -30,6 +32,10 @@ import {
 } from "./panelChatBits";
 import { ImageLightbox } from "../common/ImageLightbox";
 import { EmptyState } from "./EmptyState";
+import { matchTaskByQuery, formatMultiHitMessage } from "./taskSlashHelpers";
+import { formatRelativeAgeBuckets } from "../../utils/formatRelativeAge";
+import { useSearchHistory } from "../../hooks/useSearchHistory";
+import { readSentHistory, pushSentHistory } from "../chatHistoryStore";
 
 type StreamEvent =
   | { event: "chunk"; data: { text: string } }
@@ -73,6 +79,15 @@ interface PanelChatProps {
   /// tab 并把焦点落到该 title 的卡片上。可选 —— 不传则 ref token 仍可
   /// hover 显 status，但双击 noop。
   onRequestFocusTask?: (title: string) => void;
+  /// 跨窗口 deeplink 跳到当前 session 内某条消息的载荷（excerpt 文本）。
+  /// 桌面 ChatMini 右键菜单"在 Panel 中定位本条"会把消息文本前 80 字写到
+  /// localStorage `pet-panel-deeplink.chatMatch.excerpt`，PanelApp 消费后
+  /// 切到聊天 tab 并把 excerpt 推到本 prop。PanelChat 反向扫 items 找最近
+  /// 子串命中 → setPendingScroll(idx) 走既有 scrollIntoView + 高亮。
+  pendingChatMatch?: string | null;
+  /// 命中（或找不到也算消费）后回调清空 pendingChatMatch，避免 stale
+  /// 值在用户后续切 session / 滚动后又触发。
+  onConsumePendingChatMatch?: () => void;
 }
 
 /// 把 data URL 图片用 canvas 缩到 maxSize 短边内、JPEG 0.7 质量重编码，
@@ -112,6 +127,33 @@ function makeImagePromptThumb(dataUrl: string, maxSize = 64): Promise<string> {
 function formatLocalStamp(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/// session 下拉 + 跨会话搜索结果通用的「月份分组 key」。返回 4 档：
+/// - `_thisMonth` / `_lastMonth`：本月 / 上月（与 `now` 比较）
+/// - `YYYY-MM`：更早月份的具体 ISO
+/// - `older`：无效 / 空 timestamp 兜底（旧迁移期数据）
+/// `now` 作参数让 IIFE 一次性算出再传，避免每条 item 重 new Date()，也便于
+/// 测试（不依赖 wall clock）。
+export function monthKeyFromIso(iso: string, now: Date): string {
+  if (iso.length < 7) return "older";
+  const yyyymm = iso.slice(0, 7);
+  const curYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  if (yyyymm === curYm) return "_thisMonth";
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevYm = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+  if (yyyymm === prevYm) return "_lastMonth";
+  return yyyymm;
+}
+
+/// 月份 key → 中文 label。`_pinned` 虚拟 key 是 session 下拉专用（pinned 段
+/// 不归月份），其它 key 与 `monthKeyFromIso` 对偶。
+export function monthLabelOf(key: string): string {
+  if (key === "_pinned") return "📌 钉住";
+  if (key === "_thisMonth") return "本月";
+  if (key === "_lastMonth") return "上月";
+  if (key === "older") return "更早";
+  return key; // "YYYY-MM"
 }
 
 /// `@` 提及触发判定：cursor 前方是否有"未被空白打断的 @<chars>"段。命中
@@ -214,9 +256,89 @@ const CHAT_FOLLOWUP_TEMPLATES: Array<{ label: string; text: string }> = [
   { label: "🔄 换个例子", text: "换个例子试试？这个还不太具体。" },
 ];
 
-export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps = {}) {
+/**
+ * 给定 `items[userItemIdx]`（必须 type==='user'）算它在 `messages`（LLM-facing
+ * 数组，含 system）中对应的 index。
+ *
+ * 设计：items 与 messagesRef 不是逐位对齐的 —— 一个 chat turn 可能在 items
+ * 里写出多条 assistant（toolStart 把 accumulated 中转写一条），但
+ * messagesRef 只在 "done" 时 push 一次最终 assistant。所以不能用"items 偏移
+ * +1"硬算。
+ *
+ * 但 user 是逐位 1:1 的：sendMessage 一次同时给 items 和 messagesRef 各推
+ * 一条 user。所以"items 第 K 个 user"对应"messages 第 K 个 user 角色 msg"。
+ * 算法：扫一遍 items[0..userItemIdx] 数 user 计数 K；再扫 messages 找第 K
+ * 个 role==='user'，返回其下标。不命中（不一致 / 边界）返 null —— caller
+ * 应当退回拒绝编辑，避免错误截断。
+ *
+ * 导出便于将来加 unit test（vitest 落地时直接覆盖）。
+ */
+/// 粗略估算 token 数：CJK 字符 ~1 token/字，非 CJK 非空白字符 ~1 token/4 字。
+/// 与各 LLM 实际 tokenizer 都对不齐（GPT-4o BPE / Claude / Qwen 都不同），
+/// 但作为"我打了多长"的感知 chip 足够：±25% 误差不影响"30 vs 3000"的决策。
+/// 仅算 input 串，不计 system / history —— chip 是"当下这条" 直觉，不是
+/// 实际 LLM context 计费器（那要后端按真实 tokenizer 算，太重）。
+///
+/// 导出便于将来加 vitest pin。CJK 范围覆盖最常见 CJK Unified Ideographs +
+/// 日文假名 + 韩文音节；其它语种归 "non-CJK"（含 ASCII / 拉丁扩展 / 阿拉
+/// 伯文等）—— 边界 OK 因为这是 token 估算，不是字符分类。
+export function estimateInputTokens(s: string): number {
+  if (!s) return 0;
+  let cjk = 0;
+  let other = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    // CJK Unified Ideographs (4E00–9FFF) + 假名 (3040–30FF) + Hangul (AC00–D7AF)
+    const isCJK =
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0x3040 && code <= 0x30ff) ||
+      (code >= 0xac00 && code <= 0xd7af);
+    if (isCJK) {
+      cjk++;
+    } else if (!/\s/.test(ch)) {
+      other++;
+    }
+  }
+  return Math.ceil(cjk + other / 4);
+}
+
+export function findMessageIndexForUserItem(
+  items: ChatItem[],
+  messages: Array<{ role?: string }>,
+  userItemIdx: number,
+): number | null {
+  if (userItemIdx < 0 || userItemIdx >= items.length) return null;
+  if (items[userItemIdx]?.type !== "user") return null;
+  let userOrdinal = 0;
+  for (let i = 0; i <= userItemIdx; i++) {
+    if (items[i]?.type === "user") userOrdinal++;
+  }
+  if (userOrdinal === 0) return null;
+  let seen = 0;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role === "user") {
+      seen++;
+      if (seen === userOrdinal) return i;
+    }
+  }
+  return null;
+}
+
+export function PanelChat({
+  onRequestTab,
+  onRequestFocusTask,
+  pendingChatMatch,
+  onConsumePendingChatMatch,
+}: PanelChatProps = {}) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
+  /// IM 风消息编辑/重发：双击 user bubble → editingItemIdx = i + draft 预填
+  /// 当前内容；Enter 提交（截断 items[i+1:] + messagesRef 对应位 + sendMessage
+  /// 重发，得到新的 assistant 回复）；Esc 取消；Shift+Enter 换行。流式中
+  /// （isLoading）禁止进入编辑 —— 截断对正在跑的 chat 会把 messagesRef 改
+  /// 掉但 invoke 仍引用旧数据，行为模糊。
+  const [editingItemIdx, setEditingItemIdx] = useState<number | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
   /// 用户自定义 chat 模板（与 module-level CHAT_PROMPT_TEMPLATES 内置三段
   /// 互补）。localStorage `pet-chat-custom-templates` → Array<{label, text}>。
   /// cap 10 防 storage 膨胀；FIFO push 老的挤出。
@@ -465,6 +587,42 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
       setTaskPickerTasks([]);
     }
   }, []);
+  /// 全局 ⌘K / Ctrl+K 热键：让用户在 Panel 任意位置（消息区 / 侧栏 / 顶部
+  /// chip 等）按下也能唤出 task picker，而不必先点到 textarea。textarea 自己
+  /// 的 onKeyDown 已有同款 handler —— 当 textarea 处于焦点时不重复触发，让
+  /// textarea 路径独占（保留既有 `e.preventDefault()` 抢键时序）。
+  /// 离开 Panel（切到 Tasks / Memory tab 等）时此监听仍挂在 window 上，但因
+  /// document 实例独立（Tauri 多 webview），不会跨窗口误触。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        !(e.metaKey || e.ctrlKey) ||
+        e.shiftKey ||
+        e.altKey ||
+        e.key.toLowerCase() !== "k"
+      ) {
+        return;
+      }
+      // textarea 自带 handler → 这里跳过避免双触发（picker open 是幂等的，
+      // 但 e.preventDefault 调两次没意义且让事件流不清楚）。
+      if (document.activeElement === composeTextareaRef.current) return;
+      // input / textarea / contentEditable 等其它输入框也跳过 —— 用户可能在
+      // session 标题 inline rename / 搜索框等输入态，⌘K 应该被那些控件优先
+      // 接管（如果它们想用）。
+      const ae = document.activeElement;
+      if (
+        ae instanceof HTMLInputElement ||
+        ae instanceof HTMLTextAreaElement ||
+        (ae instanceof HTMLElement && ae.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      void openTaskPicker();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openTaskPicker]);
   const insertTaskRef = useCallback(
     (title: string) => {
       // 插入格式 `「title」` —— 全角直角引号，宠物侧 prompt 处理时易抓出
@@ -524,6 +682,15 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
   const [sessionTitle, setSessionTitle] = useState("新会话");
   const [sessionList, setSessionList] = useState<SessionMeta[]>([]);
   const [showSessionList, setShowSessionList] = useState(false);
+  /// session 下拉的标题搜索 query。30+ session 用户找"那条关于 Downloads"
+  /// 的会话时，title 子串 fuzzy 过滤比逐行扫快得多。与 chip filter（today /
+  /// images / tasks）共生 —— 先 chip 过滤，再 title 过滤，AND 关系。
+  /// 关闭下拉时自动清空（避免下次开 dropdown 时残留旧 query 让用户疑惑
+  /// "为什么只显几条"）。
+  const [sessionTitleQuery, setSessionTitleQuery] = useState("");
+  useEffect(() => {
+    if (!showSessionList) setSessionTitleQuery("");
+  }, [showSessionList]);
   /// 非当前 session 的"已读时间戳"：sessionId → ISO timestamp（用户上次
   /// 浏览此 session 时的时间）。session list 渲染时与 s.updated_at 比，
   /// updated_at > lastSeen → 显蓝色小圆点 hint "有未读"。
@@ -560,9 +727,9 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
     });
   }, []);
   // session 下拉的内容过滤：互斥 enum，同时只能开一个 filter。null = 全显；
-  // "images" / "tasks" 各自走对应后端命令。filterSessionIds 是后端返回的 id
-  // set；loading 时 toggle pill 灰态防重复点。
-  type SessionFilter = null | "images" | "tasks";
+  // "images" / "tasks" 各自走对应后端命令；"today" / "pinned" 本地 derive。
+  // filterSessionIds 是后端返回的 id set；loading 时 toggle pill 灰态防重复点。
+  type SessionFilter = null | "images" | "tasks" | "today" | "pinned";
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>(null);
   const [filterSessionIds, setFilterSessionIds] = useState<Set<string> | null>(null);
   const [filterLoading, setFilterLoading] = useState(false);
@@ -575,6 +742,27 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         return;
       }
       setSessionFilter(next);
+      // "today" 本地 derive，避开 invoke 往返：sessionList 已在内存，直接
+      // 用本地日期前缀过滤 updated_at。
+      if (next === "today") {
+        const todayPrefix = new Date().toLocaleDateString("sv-SE");
+        const ids = new Set(
+          sessionList
+            .filter((s) => s.updated_at.startsWith(todayPrefix))
+            .map((s) => s.id),
+        );
+        setFilterSessionIds(ids);
+        return;
+      }
+      // "pinned" 同 "today" 本地 derive：sessionList 已含 pinned 字段（后端
+      // set_session_pinned + list_sessions 返回），无需再发 IPC。
+      if (next === "pinned") {
+        const ids = new Set(
+          sessionList.filter((s) => s.pinned).map((s) => s.id),
+        );
+        setFilterSessionIds(ids);
+        return;
+      }
       setFilterSessionIds(null);
       setFilterLoading(true);
       try {
@@ -596,7 +784,7 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         setFilterLoading(false);
       }
     },
-    [sessionFilter],
+    [sessionFilter, sessionList],
   );
   const [loaded, setLoaded] = useState(false);
 
@@ -606,6 +794,10 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
   // 短暂高亮。
   const [searchMode, setSearchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  /// 跨会话搜索 keyword 历史。Enter 时 push；datalist 浮自动完成。与
+  /// PanelMemory / PanelTasks 同款 useSearchHistory hook。
+  const { history: chatSearchHistory, push: pushChatSearchHistory } =
+    useSearchHistory("pet-chat-search-history");
   const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
   // R96: 搜索范围。"all" 跨全部会话；"current" 只搜当前打开会话。退出 search
   // 模式时复位到 "all"，下次进 search 默认全局直觉一致。
@@ -865,11 +1057,14 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
   // 浮窗可见。selectedSlashIdx 由键盘上下 / Enter 控制；点击命令项也写它。
   const [selectedSlashIdx, setSelectedSlashIdx] = useState(0);
 
-  // R129: shell-readline 风格多条历史召回。messageHistory 是 ring buffer
-  // (cap 20, newest at end)；historyCursor null = 不在浏览模式，非 null =
-  // 当前浏览到第几条历史。input 空 + ↑ 进入历史末（最新）；继续 ↑ 往前；
-  // ↓ 往后或退出。slash 命令不入历史（panel 控制流不算 chat content）。
-  const [messageHistory, setMessageHistory] = useState<string[]>([]);
+  // shell-readline 风格多条历史召回。messageHistory 是 ring buffer
+  // (cap 20, **newest at index 0**)；historyCursor null = 不在浏览模式，
+  // 非 null = 当前浏览到第几条历史（0 = 最新）。
+  // input 空 + ↑ → cursor=0 进入历史顶；继续 ↑ → cursor+1 往前（更旧）；
+  // ↓ → cursor-1，cursor<0 退出 + 清空。
+  // slash 命令不入历史（panel 控制流不算 chat content）。
+  // 通过 chatHistoryStore 与 pet 窗 ChatPanel 共享 localStorage，跨窗口召回。
+  const [messageHistory, setMessageHistory] = useState<string[]>(readSentHistory);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
 
   // 多模态：粘贴板里的图片缓存（base64 data URL），发送时与文本拼成 multipart。
@@ -1186,6 +1381,36 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
     };
   }, [searchMode, searchQuery, searchScope, sessionId]);
 
+  // 跨窗口 deeplink chatMatch 消费：反向扫 items 找最近含 excerpt 的
+  // user/assistant 行（substring + case-insensitive）→ setPendingScroll(idx)
+  // 让既有 scrollIntoView + 高亮路径接管。tool / error 行的 content 可能含
+  // 调用日志噪音，不匹配。找不到走 emit message note 让用户知道为啥没跳。
+  // items 在 loadSession 后才填，所以 effect 依赖 [pendingChatMatch, items]。
+  useEffect(() => {
+    if (!pendingChatMatch) return;
+    if (items.length === 0) return; // 等 loadSession 落 items 再消费
+    const needle = pendingChatMatch.toLowerCase();
+    let foundIdx = -1;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.type !== "user" && it.type !== "assistant") continue;
+      if (typeof it.content !== "string") continue;
+      if (it.content.toLowerCase().includes(needle)) {
+        foundIdx = i;
+        break;
+      }
+    }
+    if (foundIdx >= 0) {
+      setPendingScroll(foundIdx);
+    } else {
+      pushLocalAssistantNote(
+        `⛶ 没在本会话找到含「${pendingChatMatch.slice(0, 20)}${pendingChatMatch.length > 20 ? "…" : ""}」的消息（可能在别的 session）。`,
+      );
+    }
+    onConsumePendingChatMatch?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChatMatch, items.length]);
+
   // 切到目标会话后把目标 item scrollIntoView + 短暂高亮（1.5s 后清掉）。
   // 通过 data-item-idx 选择器找到 DOM 节点；找不到就当作 noop。
   useEffect(() => {
@@ -1255,7 +1480,9 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         created_at: "", // preserved by backend
         updated_at: now,
         messages: messagesRef.current,
-        items: newItems,
+        // systemNote 是 slash 命令本地反馈，渲染层 subdued + 导出已过滤，
+        // 持久化层也跟齐 —— 不污染回读时的对话历史 / 跨会话搜索。
+        items: newItems.filter((it) => !it.systemNote),
       };
 
       try {
@@ -1387,7 +1614,9 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         const forked: Session = {
           ...newSession,
           title: forkTitle,
-          items: sourceItems,
+          // 同 saveCurrentSession 的过滤策略：systemNote 仅是 slash 命令本地
+          // 反馈，fork 出新会话时不该把这些"控制流回执"带过去。
+          items: sourceItems.filter((it) => !it.systemNote),
           messages: forkedMessages,
         };
         await invoke("save_session", { session: forked });
@@ -1425,11 +1654,75 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
     };
   }, [forkPopoverOpen]);
 
-  /// 把一条本地"系统反馈" message 推到 items（不持久化、不发给 LLM），用于
-  /// `/help` / `/clear` 后的提示 / 未知命令的错误反馈。type 选 assistant 让它
-  /// 视觉上像宠物自己说话，与命令的"对话内 hint"语义对齐。
+  /// 把一条本地"系统反馈" message 推到 items（不发给 LLM），用于 `/help` /
+  /// `/clear` 后的提示 / 未知命令的错误反馈 / 各种 slash 命令的执行回执。
+  /// type 选 assistant 让它出现在 bubble 区域，但置 systemNote=true 让渲染
+  /// 走 subdued 样式（小字 / 虚线 / 半透明）与真 LLM 回复区分；markdown 导出
+  /// 也会过滤掉这些（不算用户与 AI 的对话内容）。
   const pushLocalAssistantNote = useCallback((text: string) => {
-    setItems((prev) => [...prev, { type: "assistant", content: text }]);
+    setItems((prev) => [...prev, { type: "assistant", content: text, systemNote: true }]);
+  }, []);
+
+  /// PanelChat 内复用的 `/reset` 逻辑：把 messagesRef 砍到 system-only，保留
+  /// 可见 items，立即 save_session 落盘。chip onClick / slash 命令两条路径共
+  /// 享同一份。流式中拒绝（与 slash 同保护）；已 system-only 时 noop 反馈。
+  const handleResetLlmContext = useCallback(async () => {
+    if (isLoading) {
+      pushLocalAssistantNote(
+        "⚠️ 正在流式回复中；先等完成或 Esc 取消，再 /reset。",
+      );
+      return;
+    }
+    const sysOnly = messagesRef.current.filter((m) => m?.role === "system");
+    if (sysOnly.length === messagesRef.current.length) {
+      pushLocalAssistantNote(
+        "🧠 LLM 上下文本就是干净的（只剩 system 人设）。",
+      );
+      return;
+    }
+    const droppedCount = messagesRef.current.length - sysOnly.length;
+    messagesRef.current = sysOnly;
+    try {
+      await invoke("save_session", {
+        session: {
+          id: sessionId,
+          title: sessionTitle,
+          created_at: "",
+          updated_at: new Date().toISOString(),
+          messages: sysOnly,
+          items,
+        },
+      });
+    } catch (e) {
+      console.error("Failed to save reset session:", e);
+    }
+    pushLocalAssistantNote(
+      `🧠 已清掉 ${droppedCount} 条 LLM 上下文（保留可见历史 + system 人设）；下一条消息就是干净的 turn 1。`,
+    );
+  }, [isLoading, items, sessionId, sessionTitle, pushLocalAssistantNote]);
+
+  /// 当前 session 累积 LLM context token 量。60 秒轮一次，与 ChatMini /
+  /// DebugApp 同源信号（get_active_session_context_stats）+ 同阈值（4000）。
+  /// > 阈值 → 顶部 chip 浮出 + 一键 /reset 入口。IPC 失败兜 0 = chip 不显。
+  const [sessionTokens, setSessionTokens] = useState<number>(0);
+  useEffect(() => {
+    let alive = true;
+    const fetchOnce = async () => {
+      try {
+        const stats = await invoke<{ tokens: number }>(
+          "get_active_session_context_stats",
+        );
+        if (alive) setSessionTokens(stats.tokens);
+      } catch (e) {
+        console.error("get_active_session_context_stats failed:", e);
+      }
+    };
+    void fetchOnce();
+    const id = window.setInterval(fetchOnce, 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
   }, []);
 
   /// `/image` 通用执行：替换 `replaceAtIdx` 处的 item 为 pending 占位（idx<0
@@ -1590,11 +1883,338 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
           }).catch((e) => console.error("Failed to save cleared session:", e));
           break;
         }
+        case "repeat": {
+          // IM 风便利：再发一遍上一条 user 消息（与 ⌥↑ + Enter 等价但少一步）。
+          // 用例：宠物回的不满意想再试一次；或网络刚才半截、想重跑同样的
+          // 输入。**不丢历史**：直接 append 一条新 user turn 与原 user 同
+          // content + images；与 IM 系应用 "long-press → resend" 行为一致。
+          // 流式中拒绝（与 /reset 同语义边界）；无 user item 时也明确反馈。
+          if (isLoading) {
+            pushLocalAssistantNote(
+              "⚠️ 正在流式回复中；先等完成或 Esc 取消，再 /repeat。",
+            );
+            break;
+          }
+          let lastUser: ChatItem | null = null;
+          for (let i = items.length - 1; i >= 0; i--) {
+            const it = items[i];
+            if (it.type === "user") {
+              lastUser = it;
+              break;
+            }
+          }
+          if (!lastUser) {
+            pushLocalAssistantNote(
+              "⚠️ 当前会话还没有 user 消息可以 /repeat。",
+            );
+            break;
+          }
+          // sendMessage 会自动 push 新 user item + 触发 LLM stream；不必
+          // 手动操作 items / messagesRef。
+          void sendMessage(lastUser.content, lastUser.images);
+          break;
+        }
+        case "reset": {
+          // 与 TG `/reset` 对偶：清掉 LLM 上下文但保留可见 items。chip onClick
+          // 走同一条 path（handleResetLlmContext）—— 流式守门 / system-only
+          // noop / save_session 行为完全一致。
+          await handleResetLlmContext();
+          break;
+        }
         case "tasks": {
           if (onRequestTab) {
             onRequestTab("任务");
           } else {
             pushLocalAssistantNote("当前面板未提供切标签能力（onRequestTab 未注入）。");
+          }
+          break;
+        }
+        case "today": {
+          // 今日叙事视图：到期 / 已完成的任务标题清单。与 /stats（数字汇总）
+          // 互补 —— /stats 看结构性指标，/today 直接看"今天该干嘛 / 搞定了啥"
+          // 的具体清单。每段 cap 5 条 + 溢出提示。
+          try {
+            const resp = await invoke<{
+              tasks: Array<{
+                title: string;
+                status: string;
+                due: string | null;
+                updated_at: string;
+              }>;
+            }>("task_list");
+            const todayPrefix = new Date().toLocaleDateString("sv-SE");
+            const todayDisplay = todayPrefix;
+            const dueToday: Array<{ title: string; due: string }> = [];
+            const doneToday: string[] = [];
+            for (const t of resp.tasks) {
+              if (t.status === "pending" && t.due && t.due.slice(0, 10) === todayPrefix) {
+                dueToday.push({ title: t.title, due: t.due });
+              } else if (
+                t.status === "done" &&
+                t.updated_at.startsWith(todayPrefix)
+              ) {
+                doneToday.push(t.title);
+              }
+            }
+            const lines: string[] = [`📅 今日（${todayDisplay}）`];
+            if (dueToday.length === 0 && doneToday.length === 0) {
+              lines.push("");
+              lines.push("今日队列清爽 ✨，可 /stats 看整体队列。");
+            } else {
+              const renderBucket = (header: string, items: string[]) => {
+                if (items.length === 0) return;
+                lines.push("");
+                lines.push(`${header}（${items.length}）：`);
+                for (const it of items.slice(0, 5)) lines.push(`· ${it}`);
+                if (items.length > 5) lines.push(`…还有 ${items.length - 5} 条`);
+              };
+              // due 行带 HH:MM 时间后缀；HH:MM 来自 due 末尾（格式 "YYYY-MM-DDTHH:MM"）
+              const dueLines = dueToday.map((t) => {
+                const hm = t.due.length >= 16 ? t.due.slice(11, 16) : "";
+                return hm ? `${t.title} · ${hm}` : t.title;
+              });
+              renderBucket("今日到期", dueLines);
+              renderBucket("今日已完成", doneToday);
+            }
+            pushLocalAssistantNote(lines.join("\n"));
+          } catch (e) {
+            pushLocalAssistantNote(`/today 失败：${e}`);
+          }
+          break;
+        }
+        case "pin": {
+          // toggle 当前 session 的 pinned。从 sessionList 查当前 pinned 状态，
+          // 反转后写回；sessionList 由 set_session_pinned 后的 list_sessions 拉回
+          // 真值，避免 race。
+          try {
+            const cur = sessionList.find((s) => s.id === sessionId);
+            const wasPinned = !!cur?.pinned;
+            await invoke("set_session_pinned", { id: sessionId, pinned: !wasPinned });
+            const idx = await invoke<SessionIndex>("list_sessions");
+            setSessionList(idx.sessions);
+            pushLocalAssistantNote(
+              wasPinned ? "📌 已取消钉住本会话" : "📌 已钉住本会话",
+            );
+          } catch (e) {
+            pushLocalAssistantNote(`/pin 失败：${e}`);
+          }
+          break;
+        }
+        case "new": {
+          // 一键新会话；可选 [initial title]。空 arg 等价点 ＋ 新建按钮
+          // （留 "新会话" 默认 → 首条 user 消息后 auto-title 会接管）。
+          // 非空 arg → create_session 后立即 save 改 title；防 auto-title 覆盖。
+          try {
+            const session = await invoke<Session>("create_session");
+            const newTitle = action.query.trim();
+            setSessionId(session.id);
+            setSessionTitle(newTitle || session.title);
+            setItems([]);
+            messagesRef.current = session.messages;
+            setShowSessionList(false);
+            if (newTitle) {
+              // 第一秒就把 title 改成用户给的，避免后续 auto-title 把它替成
+              // first user message 前 20 字（commitSave 那条只在 sessionTitle
+              // === "新会话" 时触发；这里立刻覆盖到非默认值即可）。
+              const fresh = await invoke<Session>("load_session", { id: session.id });
+              fresh.title = newTitle;
+              await invoke("save_session", { session: fresh });
+            }
+            const idx = await invoke<SessionIndex>("list_sessions");
+            setSessionList(idx.sessions);
+            pushLocalAssistantNote(
+              newTitle ? `✨ 已新建会话「${newTitle}」` : "✨ 已新建会话",
+            );
+          } catch (e) {
+            pushLocalAssistantNote(`/new 失败：${e}`);
+          }
+          break;
+        }
+        case "title": {
+          // 改当前 session title。直接 load → 改 title → save → refresh list →
+          // 更新本地 sessionTitle state。与 dropdown rename 三件套同 IO 路径，
+          // 不走 renamingId state（slash 命令是 inline 命令，不需要 inline editor）。
+          const newTitle = action.query.trim();
+          if (!newTitle) {
+            pushLocalAssistantNote("⚠️ 用法：/title <新标题>");
+            break;
+          }
+          try {
+            const session = await invoke<Session>("load_session", { id: sessionId });
+            session.title = newTitle;
+            await invoke("save_session", { session });
+            const idx = await invoke<SessionIndex>("list_sessions");
+            setSessionList(idx.sessions);
+            setSessionTitle(newTitle);
+            pushLocalAssistantNote(`📝 已改名为「${newTitle}」`);
+          } catch (e) {
+            pushLocalAssistantNote(`/title 失败：${e}`);
+          }
+          break;
+        }
+        case "clearstats": {
+          // 清掉 slash 命令使用历史。注意：本 case 顶部已 record 一次本 clearstats
+          // 的 usage，所以清完后立刻又会写一条 score=1 的 clearstats entry —— 这
+          // 是符合预期的"刚用过 clearstats 也是最近使用"，不抹掉。
+          clearSlashScores();
+          pushLocalAssistantNote(
+            "🧹 已清掉 slash 命令使用历史。/help 与菜单的排序回到声明默认序。",
+          );
+          break;
+        }
+        case "version": {
+          // 聊天行内的"印一行版本信息"用法 —— 与 Settings chip / PanelDebug
+          // 快照同源（app_version + get_db_stats.schema_version + navigator.platform），
+          // 但更紧凑，不带 `app:` `schema:` 前缀，3 行内贴完。
+          try {
+            const [v, s] = await Promise.all([
+              invoke<string>("app_version").catch(() => ""),
+              invoke<{ schema_version: number }>("get_db_stats")
+                .then((d) => d.schema_version)
+                .catch(() => 0),
+            ]);
+            const plat = typeof navigator !== "undefined" ? navigator.platform : "";
+            const lines: string[] = [];
+            lines.push(v ? `🐾 pet v${v}` : "🐾 pet（版本号缺失）");
+            if (s > 0) lines.push(`schema v${s}`);
+            if (plat) lines.push(`平台 ${plat}`);
+            pushLocalAssistantNote(lines.join("\n"));
+          } catch (e) {
+            pushLocalAssistantNote(`/version 失败：${e}`);
+          }
+          break;
+        }
+        case "whoami": {
+          // 宠物自我介绍：把四个 IPC 读源 (companionship / mood / persona_summary
+          // / top_tools) 并发 fetch 然后排版。每段失败独立兜底（不让某个源
+          // 挂掉导致整段不渲染） —— Promise.allSettled 而非 all。
+          try {
+            const userNameP = invoke<string>("get_user_name").catch(() => "");
+            const daysP = invoke<number>("get_companionship_days").catch(() => null);
+            const moodP = invoke<{
+              text: string;
+              motion: string | null;
+              raw: string;
+            }>("get_current_mood").catch(() => null);
+            const personaP = invoke<{ text: string; updated_at: string }>(
+              "get_persona_summary",
+            ).catch(() => null);
+            const toolsP = invoke<
+              Array<{ name: string; count: number; last_used_at: string }>
+            >("get_top_tools_used").catch(() => [] as Array<{
+              name: string;
+              count: number;
+              last_used_at: string;
+            }>);
+            const [userName, days, mood, persona, tools] = await Promise.all([
+              userNameP,
+              daysP,
+              moodP,
+              personaP,
+              toolsP,
+            ]);
+            const lines: string[] = ["🪪 **/whoami**"];
+            if (userName && userName.trim()) {
+              lines.push(`🐾 我叫你「${userName.trim()}」。`);
+            }
+            if (typeof days === "number") {
+              lines.push(
+                days === 0
+                  ? "📅 今天与你初识。"
+                  : `📅 与你相伴已 ${days} 天。`,
+              );
+            }
+            if (mood && mood.raw !== "") {
+              const moodText = mood.text.trim();
+              if (moodText) {
+                lines.push(
+                  mood.motion?.trim()
+                    ? `💗 现在的心情：${moodText} · 动作组 ${mood.motion.trim()}`
+                    : `💗 现在的心情：${moodText}`,
+                );
+              }
+            }
+            if (persona && persona.text.trim()) {
+              // 自我画像 head：首段（首个空行前），最多 ~90 字截断防过长。
+              const first = persona.text.split(/\n\s*\n/, 1)[0]?.trim() ?? "";
+              if (first) {
+                const head = first.length > 90 ? first.slice(0, 90) + "…" : first;
+                lines.push(`🪞 自我画像：${head}`);
+              }
+            }
+            if (tools.length > 0) {
+              // top 3 让一行清单不臃肿。count 显示是为了让"频次差"被看见
+              // （某工具用了 12 次 vs 用了 1 次的语义不同）。
+              const top3 = tools.slice(0, 3);
+              const segs = top3.map((t) => `\`${t.name}\`×${t.count}`).join(" · ");
+              lines.push(`🛠 近常用工具：${segs}`);
+            }
+            if (lines.length === 1) {
+              // 所有源都空 —— 刚装机 / 全清状态，给一个温和兜底
+              lines.push("🐾 还没攒到自我介绍的素材，先一起聊聊吧。");
+            }
+            pushLocalAssistantNote(lines.join("\n"));
+          } catch (e) {
+            pushLocalAssistantNote(`/whoami 失败：${e}`);
+          }
+          break;
+        }
+        case "mood": {
+          // 与 TG `/mood` 同三态：无记录 / 含 motion / 不含 motion。后端
+          // `get_current_mood` 返回 CurrentMood{text, motion, raw}；raw === ""
+          // 区分"没记过" vs "记了空字符串"。
+          try {
+            const m = await invoke<{
+              text: string;
+              motion: string | null;
+              raw: string;
+            }>("get_current_mood");
+            if (m.raw === "") {
+              pushLocalAssistantNote(
+                "🐾 宠物还没记心情；一会儿主动开口时会写一笔。",
+              );
+              break;
+            }
+            const textLine =
+              m.text.trim() === ""
+                ? "🐾 心情：（无文字）"
+                : `🐾 心情：${m.text.trim()}`;
+            const lines: string[] = [textLine];
+            if (m.motion && m.motion.trim()) {
+              lines.push(`  动作组：${m.motion.trim()}`);
+            }
+            pushLocalAssistantNote(lines.join("\n"));
+          } catch (e) {
+            pushLocalAssistantNote(`/mood 失败：${e}`);
+          }
+          break;
+        }
+        case "stats": {
+          // 计数下沉到后端 task_stats（db.rs 单 SoT），桌面前端只负责文案排版。
+          // "今日"语义、due 解析都在 Rust 侧统一，未来 widgets / PanelDebug 卡片
+          // 复用同一份。TG /stats 走自己的 per-chat 路径，仍保持独立。
+          try {
+            const s = await invoke<{
+              pending: number;
+              overdue: number;
+              done_today: number;
+              error: number;
+              cancelled_today: number;
+            }>("task_stats");
+            const allZero =
+              !s.pending && !s.overdue && !s.done_today && !s.error && !s.cancelled_today;
+            pushLocalAssistantNote(
+              [
+                allZero ? "📊 任务状态（今日很安静 ✨）" : "📊 任务状态",
+                `○ 待办：${s.pending}`,
+                `🔴 逾期：${s.overdue}`,
+                `✓ 今日完成：${s.done_today}`,
+                `⚠️ 出错：${s.error}`,
+                `🗑 今日取消：${s.cancelled_today}`,
+              ].join("\n"),
+            );
+          } catch (e) {
+            pushLocalAssistantNote(`/stats 失败：${e}`);
           }
           break;
         }
@@ -1619,6 +2239,190 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
             );
           } catch (e) {
             pushLocalAssistantNote(`mute 失败：${e}`);
+          }
+          break;
+        }
+        case "done": {
+          // task_list → fuzzy 匹配 → 唯一命中调 task_mark_done。不限定状态
+          // （后端 marker 幂等，允许"补打 done"）。匹配/多命中文案逻辑抽到
+          // taskSlashHelpers，与 cancel/retry 共享。
+          try {
+            const resp = await invoke<{ tasks: Array<{ title: string }> }>("task_list");
+            const titles = resp.tasks.map((t) => t.title);
+            const res = matchTaskByQuery(action.query, titles);
+            if (res.kind === "none") {
+              pushLocalAssistantNote(
+                `⚠️ 没找到匹配 "${action.query.trim()}" 的任务。/tasks 看完整列表。`,
+              );
+              break;
+            }
+            if (res.kind === "multi") {
+              pushLocalAssistantNote(formatMultiHitMessage(action.query, res.candidates, ""));
+              break;
+            }
+            await invoke<void>("task_mark_done", { title: res.title, result: null });
+            pushLocalAssistantNote(`✓ 已标 done：${res.title}`);
+          } catch (e) {
+            pushLocalAssistantNote(`/done 失败：${e}`);
+          }
+          break;
+        }
+        case "cancel": {
+          // 与 /done 同模板；差异：调 task_cancel(reason="")（对齐 TG），
+          // 反馈图标 🗑。
+          try {
+            const resp = await invoke<{ tasks: Array<{ title: string }> }>("task_list");
+            const titles = resp.tasks.map((t) => t.title);
+            const res = matchTaskByQuery(action.query, titles);
+            if (res.kind === "none") {
+              pushLocalAssistantNote(
+                `⚠️ 没找到匹配 "${action.query.trim()}" 的任务。/tasks 看完整列表。`,
+              );
+              break;
+            }
+            if (res.kind === "multi") {
+              pushLocalAssistantNote(formatMultiHitMessage(action.query, res.candidates, ""));
+              break;
+            }
+            await invoke<void>("task_cancel", { title: res.title, reason: "" });
+            pushLocalAssistantNote(`🗑 已取消：${res.title}`);
+          } catch (e) {
+            pushLocalAssistantNote(`/cancel 失败：${e}`);
+          }
+          break;
+        }
+        case "retry": {
+          // 差异：fuzzy 前先按 status==error 过滤候选；0 命中文案显式提示
+          // "/retry 仅作用于 Error 状态"。
+          try {
+            const resp = await invoke<{
+              tasks: Array<{ title: string; status: string }>;
+            }>("task_list");
+            const errorTitles = resp.tasks
+              .filter((t) => t.status === "error")
+              .map((t) => t.title);
+            const res = matchTaskByQuery(action.query, errorTitles);
+            if (res.kind === "none") {
+              pushLocalAssistantNote(
+                `⚠️ 没找到匹配 "${action.query.trim()}" 的 Error 任务（/retry 仅作用于 Error 状态；其它状态请去「任务」tab）。`,
+              );
+              break;
+            }
+            if (res.kind === "multi") {
+              pushLocalAssistantNote(
+                formatMultiHitMessage(action.query, res.candidates, "Error "),
+              );
+              break;
+            }
+            await invoke<void>("task_retry", { title: res.title });
+            pushLocalAssistantNote(`↻ 已重试：${res.title}`);
+          } catch (e) {
+            pushLocalAssistantNote(`/retry 失败：${e}`);
+          }
+          break;
+        }
+        case "snooze": {
+          // `/snooze`：与 /done 同模板 fuzzy 命中 title，然后 task_set_snooze
+          // 把 description 写入 `[snooze: ...]` marker。spec 由 parser 解析、
+          // until 由本地 `new Date()` 计算 —— 与桌面右键 Snooze chip 同源。
+          // 候选范围：所有 task（pending / error），与桌面菜单 canMarkDone 同。
+          try {
+            const resp = await invoke<{
+              tasks: Array<{ title: string; status: string }>;
+            }>("task_list");
+            const candidateTitles = resp.tasks
+              .filter((t) => t.status === "pending" || t.status === "error")
+              .map((t) => t.title);
+            const res = matchTaskByQuery(action.title, candidateTitles);
+            if (res.kind === "none") {
+              pushLocalAssistantNote(
+                `⚠️ 没找到匹配 "${action.title.trim()}" 的待办任务（/snooze 仅作用于 pending / error；已完成 / 取消的请去「任务」tab）。`,
+              );
+              break;
+            }
+            if (res.kind === "multi") {
+              pushLocalAssistantNote(formatMultiHitMessage(action.title, res.candidates, ""));
+              break;
+            }
+            const until = computeSnoozeUntil(action.spec, new Date());
+            await invoke<void>("task_set_snooze", { title: res.title, until });
+            pushLocalAssistantNote(`💤 已暂停至 ${until}：${res.title}`);
+          } catch (e) {
+            pushLocalAssistantNote(`/snooze 失败：${e}`);
+          }
+          break;
+        }
+        case "unsnooze": {
+          // `/unsnooze`：fuzzy 命中后 task_set_snooze(null) 剥所有 `[snooze:]`
+          // marker。候选不限 status —— 已 done 的任务 description 也允许清理
+          // 残留 marker，但 0 命中文案聚焦 pending/error 主体场景。
+          try {
+            const resp = await invoke<{ tasks: Array<{ title: string }> }>("task_list");
+            const titles = resp.tasks.map((t) => t.title);
+            const res = matchTaskByQuery(action.query, titles);
+            if (res.kind === "none") {
+              pushLocalAssistantNote(
+                `⚠️ 没找到匹配 "${action.query.trim()}" 的任务。/tasks 看完整列表。`,
+              );
+              break;
+            }
+            if (res.kind === "multi") {
+              pushLocalAssistantNote(formatMultiHitMessage(action.query, res.candidates, ""));
+              break;
+            }
+            await invoke<void>("task_set_snooze", { title: res.title, until: null });
+            pushLocalAssistantNote(`☀️ 已解除暂停：${res.title}`);
+          } catch (e) {
+            pushLocalAssistantNote(`/unsnooze 失败：${e}`);
+          }
+          break;
+        }
+        case "pinTask": {
+          // `/pin <title>`：带参数时是任务钉住（无参 `/pin` 走既有 case "pin"
+          // 切换当前会话钉住）。fuzzy 命中后 task_set_pinned(true) 写 `[pinned]`
+          // marker。候选不限 status —— pinned 与状态正交（owner 偏好标注），
+          // 与 PanelTasks 右键菜单同语义。strip-before-write 后端保证幂等。
+          try {
+            const resp = await invoke<{ tasks: Array<{ title: string }> }>("task_list");
+            const titles = resp.tasks.map((t) => t.title);
+            const res = matchTaskByQuery(action.query, titles);
+            if (res.kind === "none") {
+              pushLocalAssistantNote(
+                `⚠️ 没找到匹配 "${action.query.trim()}" 的任务。/tasks 看完整列表。`,
+              );
+              break;
+            }
+            if (res.kind === "multi") {
+              pushLocalAssistantNote(formatMultiHitMessage(action.query, res.candidates, ""));
+              break;
+            }
+            await invoke<void>("task_set_pinned", { title: res.title, pinned: true });
+            pushLocalAssistantNote(`📌 已钉住：${res.title}`);
+          } catch (e) {
+            pushLocalAssistantNote(`/pin 失败：${e}`);
+          }
+          break;
+        }
+        case "unpin": {
+          // 与 /pin 对偶；调 task_set_pinned(false) 剥所有 `[pinned]` marker。
+          try {
+            const resp = await invoke<{ tasks: Array<{ title: string }> }>("task_list");
+            const titles = resp.tasks.map((t) => t.title);
+            const res = matchTaskByQuery(action.query, titles);
+            if (res.kind === "none") {
+              pushLocalAssistantNote(
+                `⚠️ 没找到匹配 "${action.query.trim()}" 的任务。/tasks 看完整列表。`,
+              );
+              break;
+            }
+            if (res.kind === "multi") {
+              pushLocalAssistantNote(formatMultiHitMessage(action.query, res.candidates, ""));
+              break;
+            }
+            await invoke<void>("task_set_pinned", { title: res.title, pinned: false });
+            pushLocalAssistantNote(`📌 已取消钉住：${res.title}`);
+          } catch (e) {
+            pushLocalAssistantNote(`/unpin 失败：${e}`);
           }
           break;
         }
@@ -1835,7 +2639,19 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
   };
 
   const sendMessage = useCallback(
-    async (content: string, images?: string[]) => {
+    async (
+      content: string,
+      images?: string[],
+      /// 编辑/重发等场景需要在追加新 user 之前先截断 items —— 但 setItems
+      /// 异步、closure 里读到的仍是旧 items。caller 直接传 baseItems 覆盖
+      /// 闭包，让 sendMessage 在显式 base 上追加而不必依赖 React 状态调度。
+      /// 不传时回到原行为：以闭包里的 `items` 为起点。
+      ///
+      /// caller 还需先把 `messagesRef.current` 截断到对应位置 ——
+      /// sendMessage 内部以 `messagesRef.current` 当时的值为基础 push，
+      /// 与 items 双侧对齐由 caller 保证（见 commitMessageEdit）。
+      opts?: { baseItems?: ChatItem[] },
+    ) => {
       // 多模态消息：OpenAI compatible multipart 内容数组。无图时仍走纯字符串
       // 路径，保持与未升级的后端 / 测试断言兼容。
       const hasImages = !!images && images.length > 0;
@@ -1847,8 +2663,9 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         : content;
       const userMsg = { role: "user", content: messageContent };
       messagesRef.current = [...messagesRef.current, userMsg];
+      const base = opts?.baseItems ?? items;
       const newItems = [
-        ...items,
+        ...base,
         {
           type: "user" as const,
           content,
@@ -1937,6 +2754,51 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
     [items, saveCurrentSession],
   );
 
+  /// 双击 user bubble 进编辑态。流式中拒绝（避免截断 race），有图的消息
+  /// 也拒绝（编辑文本同时保留 / 删图边界复杂，留给后续）。
+  const enterEditMode = useCallback(
+    (idx: number) => {
+      if (isLoading) return;
+      const it = items[idx];
+      if (!it || it.type !== "user") return;
+      if (it.images && it.images.length > 0) return;
+      setEditingItemIdx(idx);
+      setEditingDraft(it.content);
+    },
+    [isLoading, items],
+  );
+  const cancelEditMode = useCallback(() => {
+    setEditingItemIdx(null);
+    setEditingDraft("");
+  }, []);
+  /// 提交编辑：truncate items[idx:] 同时把 messagesRef.current 截到 user
+  /// 消息那条，然后 sendMessage(newContent, baseItems=newItems) —— sendMessage
+  /// 内部会再 push 一条新 user，并通过流式响应继续生成。saveCurrentSession
+  /// 在 sendMessage 的 done / error 分支里跑，自然写盘。
+  const commitMessageEdit = useCallback(() => {
+    if (editingItemIdx === null) return;
+    const trimmed = editingDraft.trim();
+    if (!trimmed) return; // 空文本不允许提交（保持原行为：empty 消息不发）
+    if (isLoading) return;
+    const msgIdx = findMessageIndexForUserItem(
+      items,
+      messagesRef.current,
+      editingItemIdx,
+    );
+    if (msgIdx === null) {
+      // 不一致（理论不会发生，items 与 messagesRef 一直 lockstep 加 user）。
+      // 进入恢复模式：取消编辑、留状态原样，让用户能手动 retry。
+      cancelEditMode();
+      return;
+    }
+    const newItems = items.slice(0, editingItemIdx);
+    messagesRef.current = messagesRef.current.slice(0, msgIdx);
+    setItems(newItems);
+    setEditingItemIdx(null);
+    setEditingDraft("");
+    void sendMessage(trimmed, undefined, { baseItems: newItems });
+  }, [editingItemIdx, editingDraft, isLoading, items, sendMessage, cancelEditMode]);
+
   // R126: submit 主逻辑抽出来让 textarea Enter 路径与 form button click 路径
   // 共用。trim / slash 分支 / sendMessage / messageHistory 维护都在这里。
   const submitInput = useCallback(() => {
@@ -1970,10 +2832,7 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
           }
           sendMessage(trimmed, pendingImages);
           setPendingImages([]);
-          setMessageHistory((prev) => {
-            const next = [...prev, trimmed];
-            return next.length > 20 ? next.slice(-20) : next;
-          });
+          setMessageHistory(pushSentHistory(trimmed));
           setHistoryCursor(null);
           setInput("");
         } catch (e) {
@@ -1984,13 +2843,9 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
       return;
     }
     sendMessage(trimmed);
-    // R129: push 到 messageHistory，cap 20。不去重相邻同内容（让用户连发
-    // 两次相同 prompt 的 redo 场景仍能 ↑ ↑ 命中各自）。historyCursor 重置
-    // null 让发送后下次 ↑ 从最末（即刚发的这条）开始。
-    setMessageHistory((prev) => {
-      const next = [...prev, trimmed];
-      return next.length > 20 ? next.slice(-20) : next;
-    });
+    // 走 chatHistoryStore 共享层 dedup + move-to-front + 写盘 + cap 20。
+    // historyCursor 重置 null 让发送后下次 ↑ 从最新（index 0）开始。
+    setMessageHistory(pushSentHistory(trimmed));
     setHistoryCursor(null);
     setInput("");
   }, [input, isLoading, executeSlash, sendMessage, pendingImages, pushLocalAssistantNote]);
@@ -2165,23 +3020,52 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         setHistoryCursor(null);
         return;
       }
-      // R129: shell-readline 风格 ↑ / ↓ 多条历史穿越。
-      // ↑：历史模式中往前；空 input + 历史非空 → 进入历史末（最新）。
-      // ↓：历史模式中往后；超过末尾 → 退出 + 清空。
+      // ⌥↑（Alt+ArrowUp）IM 风召回：跳过 send-history 循环、直接进入最近
+      // 一条 user 消息的 inline 编辑模式。要求 input 为空 + 不在历史模式
+      // 中 + 找得到 user item + 不在 isLoading 中（enterEditMode 内还会再
+      // 守一次），所有条件不满足则让出键位走原逻辑。
+      // 用 ⌥↑ 而非纯 ↑ 是为了不抢 send-history ↑（已有肌肉记忆）；与
+      // README §7「聊天输入历史栈」并存。
+      if (
+        e.key === "ArrowUp" &&
+        e.altKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        input.length === 0 &&
+        historyCursor === null &&
+        !isLoading
+      ) {
+        // 倒序找最近一条 type === "user" 的 item。null 时 noop（fresh
+        // session 没消息或全是 assistant 系统反馈，不该消化 ⌥↑）。
+        let lastUserIdx = -1;
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i]?.type === "user") {
+            lastUserIdx = i;
+            break;
+          }
+        }
+        if (lastUserIdx >= 0) {
+          e.preventDefault();
+          enterEditMode(lastUserIdx);
+          return;
+        }
+      }
+      // shell-readline 风 ↑ / ↓ 多条历史穿越。newest-at-front 约定：
+      // ↑：历史模式中 cursor+1 往前翻（更旧）；空 input + 历史非空 → cursor=0 顶
+      // ↓：历史模式中 cursor-1；< 0 → 退出 + 清空
       // 非空 input 且不在历史模式时不拦截 ↑（textarea 多行光标向上行为）。
       if (e.key === "ArrowUp") {
         if (historyCursor !== null) {
           e.preventDefault();
-          const next = Math.max(0, historyCursor - 1);
+          const next = Math.min(historyCursor + 1, messageHistory.length - 1);
           setHistoryCursor(next);
           setInput(messageHistory[next]);
           return;
         }
         if (input.length === 0 && messageHistory.length > 0) {
           e.preventDefault();
-          const next = messageHistory.length - 1;
-          setHistoryCursor(next);
-          setInput(messageHistory[next]);
+          setHistoryCursor(0);
+          setInput(messageHistory[0]);
           return;
         }
         return;
@@ -2189,13 +3073,13 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
       if (e.key === "ArrowDown") {
         if (historyCursor !== null) {
           e.preventDefault();
-          if (historyCursor < messageHistory.length - 1) {
-            const next = historyCursor + 1;
-            setHistoryCursor(next);
-            setInput(messageHistory[next]);
-          } else {
+          const next = historyCursor - 1;
+          if (next < 0) {
             setHistoryCursor(null);
             setInput("");
+          } else {
+            setHistoryCursor(next);
+            setInput(messageHistory[next]);
           }
         }
         return;
@@ -2609,6 +3493,61 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         >
           🔍
         </button>
+        {/* "今日 N 个会话 · M 条" chip：sessionList 里 updated_at 在今日
+            的会话数 + 它们 item_count 之和。是会话级近似（per-message
+            timestamp 不存在），点击不交互；hover 给 caveat。仅 N>0 时显，
+            避免新启动空状态噪音。 */}
+        {(() => {
+          if (sessionList.length === 0) return null;
+          const today = (() => {
+            const d = new Date();
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, "0");
+            const da = String(d.getDate()).padStart(2, "0");
+            return `${y}-${m}-${da}`;
+          })();
+          const todaySessions = sessionList.filter((s) =>
+            s.updated_at.startsWith(today),
+          );
+          if (todaySessions.length === 0) return null;
+          const itemSum = todaySessions.reduce(
+            (acc, s) => acc + (s.item_count ?? 0),
+            0,
+          );
+          const todayActive = sessionFilter === "today";
+          return (
+            <button
+              type="button"
+              onClick={() => {
+                void toggleSessionFilter("today");
+                setShowSessionList(true);
+              }}
+              style={{
+                ...newSessionBtnStyle,
+                color: todayActive
+                  ? "var(--pet-tint-blue-fg)"
+                  : "var(--pet-color-muted)",
+                background: todayActive
+                  ? "var(--pet-tint-blue-bg)"
+                  : "var(--pet-color-bg)",
+                borderColor: todayActive
+                  ? "var(--pet-color-accent)"
+                  : undefined,
+                cursor: "pointer",
+                fontVariantNumeric: "tabular-nums",
+                fontWeight: todayActive ? 600 : undefined,
+              }}
+              title={
+                todayActive
+                  ? `已开"今日"过滤，session 下拉只显今日 ${todaySessions.length} 个；再点关闭`
+                  : `今日活跃过 ${todaySessions.length} 个会话（updated_at 在今天）；它们累计 ${itemSum} 条消息（含 user / assistant / tool / error 行，不含 system）。点击在 session 下拉里只显今日。`
+              }
+              aria-label="today activity filter"
+            >
+              📅 {todaySessions.length} · {itemSum}
+            </button>
+          );
+        })()}
         {/* "📌 查看全部标记消息"按钮：仅 markedMessages 非空时显，count
             badge 显当前标记数量。点击 open marks modal 异步加载所有 mark
             过的 session 内容并展示。 */}
@@ -2857,16 +3796,31 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
               placeholder={searchScope === "current" ? "搜本会话…" : "按关键字搜索全部会话…"}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              list="pet-chat-search-history"
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   setSearchMode(false);
                   setSearchQuery("");
                   setSearchResults([]);
                   setSearchScope("all");
+                  return;
+                }
+                // Enter：把当前 query 入 history datalist。live filter 已在
+                // onChange 即时生效，Enter 是"用得满意 / 记一下"的显式信号。
+                if (e.key === "Enter" && searchQuery.trim()) {
+                  e.preventDefault();
+                  pushChatSearchHistory(searchQuery);
                 }
               }}
               style={{ flex: 1, padding: "6px 10px", border: "1px solid var(--pet-color-border)", borderRadius: 4, fontSize: 13, color: "var(--pet-color-fg)", background: "var(--pet-color-card)" }}
             />
+            {chatSearchHistory.length > 0 && (
+              <datalist id="pet-chat-search-history">
+                {chatSearchHistory.map((kw) => (
+                  <option key={kw} value={kw} />
+                ))}
+              </datalist>
+            )}
             {/* R96: scope 双键 pill toggle —— 全部 vs 本会话。active 态走 card
                 fg，inactive 走 bg muted（与系统 toggle pill 配色一致）。 */}
             <div
@@ -2929,13 +3883,73 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
               {searchScope === "current" ? "本会话没有匹配的消息" : "没有匹配的消息"}
             </div>
           ) : (
-            searchResults.map((hit) => (
-              <SearchResultRow
-                key={`${hit.session_id}-${hit.item_index}`}
-                hit={hit}
-                onSelect={handleSelectSearchHit}
-              />
-            ))
+            (() => {
+              // 跨会话搜索结果按月份分组：仅 searchScope === "all" 且命中
+              // > 20 条时启用 —— 单会话搜索 (current 模式) 所有 hit 共享同
+              // 一 session.updated_at 月份，分组无意义。"本月 / 上月 / YYYY-MM /
+              // 更早" 与 session 下拉同 4 档 label（共用 module-level helper）。
+              const enableGrouping =
+                searchScope === "all" && searchResults.length > 20;
+              const groupingNow = new Date();
+              const headerByIdx = new Map<
+                number,
+                { key: string; label: string; count: number }
+              >();
+              if (enableGrouping) {
+                let curKey: string | null = null;
+                let curStart = 0;
+                const flush = (endExclusive: number) => {
+                  if (curKey === null) return;
+                  headerByIdx.set(curStart, {
+                    key: curKey,
+                    label: monthLabelOf(curKey),
+                    count: endExclusive - curStart,
+                  });
+                };
+                for (let i = 0; i < searchResults.length; i++) {
+                  const key = monthKeyFromIso(
+                    searchResults[i].session_updated_at,
+                    groupingNow,
+                  );
+                  if (key !== curKey) {
+                    flush(i);
+                    curKey = key;
+                    curStart = i;
+                  }
+                }
+                flush(searchResults.length);
+              }
+              return searchResults.map((hit, idx) => (
+                <Fragment key={`${hit.session_id}-${hit.item_index}`}>
+                  {headerByIdx.get(idx) && (() => {
+                    const h = headerByIdx.get(idx)!;
+                    return (
+                      <div
+                        style={{
+                          padding: "6px 12px 4px",
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "var(--pet-color-muted)",
+                          background: "var(--pet-color-bg)",
+                          borderBottom: "1px solid var(--pet-color-border)",
+                          letterSpacing: 0.3,
+                          userSelect: "none",
+                          position: "sticky",
+                          top: 0,
+                          zIndex: 1,
+                        }}
+                      >
+                        {h.label}（{h.count}）
+                      </div>
+                    );
+                  })()}
+                  <SearchResultRow
+                    hit={hit}
+                    onSelect={handleSelectSearchHit}
+                  />
+                </Fragment>
+              ));
+            })()
           )}
         </div>
       )}
@@ -3045,10 +4059,28 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
               flexWrap: "wrap",
             }}
           >
-            {([
-              { kind: "images" as const, label: "📷 含图片", desc: "只显含图片消息的 session（粘贴 / 生图过的）" },
-              { kind: "tasks" as const, label: "📋 含派单", desc: "只显含 propose_task / task_create 工具调用的 session（工作场景）" },
-            ]).map(({ kind, label, desc }) => {
+            {(() => {
+              // 📌 钉住 chip 仅当 sessionList 含 pinned 会话时才出现 ——
+              // 用户没钉过任何会话时这个 chip 是噪音。pinned 会话本来就浮顶
+              // （后端 list_sessions 排序）；chip 提供"只看钉住"过滤路径。
+              const hasPinnedSession = sessionList.some((s) => s.pinned);
+              const baseChips = [
+                { kind: "today" as const, label: "📅 今日", desc: "只显今日活跃过的会话（updated_at 在今天）" },
+                { kind: "images" as const, label: "📷 含图片", desc: "只显含图片消息的 session（粘贴 / 生图过的）" },
+                { kind: "tasks" as const, label: "📋 含派单", desc: "只显含 propose_task / task_create 工具调用的 session（工作场景）" },
+              ];
+              const chips = hasPinnedSession
+                ? [
+                    ...baseChips,
+                    {
+                      kind: "pinned" as const,
+                      label: "📌 钉住",
+                      desc: "只显已钉住的会话（与 /pin 切换 + 列表浮顶同源）",
+                    },
+                  ]
+                : baseChips;
+              return chips;
+            })().map(({ kind, label, desc }) => {
               const active = sessionFilter === kind;
               const isLoading = active && filterLoading;
               const count = active && filterSessionIds ? filterSessionIds.size : null;
@@ -3097,6 +4129,67 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
               {exportToast}
             </div>
           )}
+          {/* 标题搜索框：sessionList.length > 5 时浮出，与既有 chip filter
+              组合（chip 过滤后再按 title 子串过滤）。autoFocus 让用户开下
+              拉就能敲；clear 由 effect 在 setShowSessionList(false) 时自动
+              做。`renamingId` 在键时段无任何冲突 —— 那是另一个 input 的 focus。 */}
+          {sessionList.length > 5 && (
+            <div
+              style={{
+                padding: "6px 12px",
+                borderBottom: "1px solid var(--pet-color-border)",
+                display: "flex",
+                gap: 6,
+                alignItems: "center",
+              }}
+            >
+              <input
+                type="text"
+                value={sessionTitleQuery}
+                onChange={(e) => setSessionTitleQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    if (sessionTitleQuery) {
+                      setSessionTitleQuery("");
+                    } else {
+                      setShowSessionList(false);
+                    }
+                  }
+                }}
+                placeholder="按标题筛选…（Esc 清空 / 关下拉）"
+                style={{
+                  flex: 1,
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-fg)",
+                  outline: "none",
+                  fontFamily: "inherit",
+                }}
+              />
+              {sessionTitleQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSessionTitleQuery("")}
+                  title="清空标题筛选"
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                    border: "1px solid var(--pet-color-border)",
+                    background: "var(--pet-color-card)",
+                    color: "var(--pet-color-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          )}
           {(() => {
             // pinned 永远排前；同组内按 backend index 倒序（最近创建在前）。
             // 不动原 sessionList，复制再 stable-sort —— `[].reverse()` 后用
@@ -3108,31 +4201,113 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
               );
             }
             const reversed = [...sessionList].reverse();
-            const filtered =
+            const chipFiltered =
               sessionFilter !== null && filterSessionIds !== null
                 ? reversed.filter((s) => filterSessionIds.has(s.id))
                 : reversed;
-            if (filtered.length === 0 && sessionFilter !== null) {
+            // 标题过滤：trim + case-insensitive 子串。空 query 直通。与 chip
+            // 过滤 AND 组合（两层都要满足）—— 让"📋 含派单 + 标题含 Downloads"
+            // 一类组合查询自然命中。
+            const titleQuery = sessionTitleQuery.trim().toLowerCase();
+            const filtered = titleQuery
+              ? chipFiltered.filter((s) =>
+                  s.title.toLowerCase().includes(titleQuery),
+                )
+              : chipFiltered;
+            if (filtered.length === 0 && (sessionFilter !== null || titleQuery)) {
+              // 区分两种"无匹配"反馈：单独 chip / 单独 title / 两者都开。
               const chipLabel = sessionFilter === "images" ? "📷" : "📋";
+              const reason =
+                sessionFilter !== null && titleQuery
+                  ? `chip 「${chipLabel}」与标题「${titleQuery}」组合无命中`
+                  : sessionFilter !== null
+                    ? "chip 过滤无命中"
+                    : `没有标题含「${titleQuery}」的会话`;
+              const hint =
+                sessionFilter !== null && titleQuery
+                  ? "改 chip 或清标题再试"
+                  : sessionFilter !== null
+                    ? `点 ${chipLabel} 关闭过滤`
+                    : "Esc 清空筛选";
               return (
                 <EmptyState
                   icon="🔍"
-                  title="没有匹配的 session"
-                  hint={`点 ${chipLabel} 关闭过滤`}
+                  title={reason}
+                  hint={hint}
                   compact
                 />
               );
             }
             if (filtered.length === 0) {
-              // sessionFilter null 但 list 空 —— 上面 sessionList.length===0
+              // 既无 chip / 无 title query 但 list 空 —— 上面 sessionList.length===0
               // 早 return 了，这里其实不可达；防御保留。
               return null;
             }
             const pinned = filtered.filter((s) => s.pinned);
             const unpinned = filtered.filter((s) => !s.pinned);
-            return [...pinned, ...unpinned].map((s) => (
+            const ordered = [...pinned, ...unpinned];
+            // 月份分组开关：sessionList > 20 时启用 —— 用户已积累足够历史，分
+            // 段比平铺更易扫。filter 收窄到 5 条仍按 sessionList 总量 gate，避
+            // 免"chip 临时过滤后突然无 header"的认知抖动。
+            const enableGrouping = sessionList.length > 20;
+            // 月份 key / label 算法走 module-level helper（monthKeyFromIso /
+            // monthLabelOf），与跨会话搜索结果分组共用 —— `now` 一次性 new Date()
+            // 让本 IIFE 内多条 session 复用同一 wall clock 快照。
+            const groupingNow = new Date();
+            // 预扫一遍：哪些 idx 应该在前面插 group header + 该 group 的成员
+            // 总数。同组连续 → 仅在第一个 idx 上挂 header。
+            const headerByIdx = new Map<
+              number,
+              { key: string; label: string; count: number }
+            >();
+            if (enableGrouping) {
+              let curKey: string | null = null;
+              let curStart = 0;
+              const flush = (endExclusive: number) => {
+                if (curKey === null) return;
+                headerByIdx.set(curStart, {
+                  key: curKey,
+                  label: monthLabelOf(curKey),
+                  count: endExclusive - curStart,
+                });
+              };
+              for (let i = 0; i < ordered.length; i++) {
+                const key = ordered[i].pinned
+                  ? "_pinned"
+                  : monthKeyFromIso(ordered[i].updated_at, groupingNow);
+                if (key !== curKey) {
+                  flush(i);
+                  curKey = key;
+                  curStart = i;
+                }
+              }
+              flush(ordered.length);
+            }
+            return ordered.map((s, idx) => (
+              <Fragment key={s.id}>
+                {headerByIdx.get(idx) && (() => {
+                  const h = headerByIdx.get(idx)!;
+                  return (
+                    <div
+                      style={{
+                        padding: "6px 12px 4px",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--pet-color-muted)",
+                        background: "var(--pet-color-bg)",
+                        borderBottom: "1px solid var(--pet-color-border)",
+                        letterSpacing: 0.3,
+                        userSelect: "none",
+                        position: "sticky",
+                        top: 0,
+                        zIndex: 1,
+                      }}
+                    >
+                      {h.label}（{h.count}）
+                    </div>
+                  );
+                })()}
               <div
-                key={s.id}
                 className="pet-session-row"
                 style={{
                   display: "flex",
@@ -3217,8 +4392,23 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
                           </span>
                         )}
                       </div>
-                      <div style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}>
-                        {s.updated_at.split("T")[0]}
+                      <div
+                        style={{ fontSize: "11px", color: "var(--pet-color-muted)" }}
+                        title={s.updated_at.replace("T", " ").slice(0, 16)}
+                      >
+                        {(() => {
+                          // 今天 / 昨天 / 否则原日期。当地时区前缀（sv-SE 给 ISO
+                          // YYYY-MM-DD 但走 local），与 updated_at 的本地 ISO 兼容。
+                          // hover title 显完整 "YYYY-MM-DD HH:MM" 供精确查看。
+                          const date = s.updated_at.slice(0, 10);
+                          const now = new Date();
+                          const today = now.toLocaleDateString("sv-SE");
+                          const yest = new Date(now.getTime() - 86_400_000)
+                            .toLocaleDateString("sv-SE");
+                          if (date === today) return "今天";
+                          if (date === yest) return "昨天";
+                          return date;
+                        })()}
                       </div>
                     </>
                   )}
@@ -3312,6 +4502,7 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
                   </button>
                 )}
               </div>
+              </Fragment>
             ));
           })()}
         </div>
@@ -3336,9 +4527,11 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         style={{ height: "100%", overflowY: "auto", padding: "16px" }}
       >
         {items.length === 0 && !currentResponse && (
-          <div style={{ textAlign: "center", color: "var(--pet-color-muted)", marginTop: "40px", fontSize: "14px" }}>
-            开始聊天吧~
-          </div>
+          <EmptyState
+            icon="💬"
+            title="新会话，开始聊天吧"
+            hint="敲 / 看快捷命令 · @ 引用任务 · Shift+Enter 换行"
+          />
         )}
 
         {items.map((item, i) => {
@@ -3358,22 +4551,142 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
           });
           if (item.type === "user") {
             const markKey = `${sessionId}::${i}`;
+            // 编辑态：inline textarea 替换 bubble。Enter 提交、Shift+Enter 换
+            // 行、Esc 取消，与桌面输入框肌肉记忆一致。图片消息走原 bubble
+            // 路径（enterEditMode 已拒绝 images.length > 0 的进入）。
+            if (editingItemIdx === i) {
+              return (
+                <div
+                  key={i}
+                  data-item-idx={i}
+                  style={wrapperBase("flex-end")}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      maxWidth: "85%",
+                      width: "100%",
+                    }}
+                  >
+                    <textarea
+                      autoFocus
+                      value={editingDraft}
+                      onChange={(e) => setEditingDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancelEditMode();
+                        } else if (e.key === "Enter" && !e.shiftKey) {
+                          // IME composing 时 Enter 不该触发提交 ——
+                          // nativeEvent.isComposing 是 DOM-level 真值
+                          // （React SyntheticEvent 没暴露 isComposing）。
+                          if ((e.nativeEvent as KeyboardEvent).isComposing) return;
+                          e.preventDefault();
+                          commitMessageEdit();
+                        }
+                      }}
+                      style={{
+                        width: "100%",
+                        minHeight: 60,
+                        padding: "8px 10px",
+                        borderRadius: 8,
+                        border:
+                          "1px solid color-mix(in srgb, var(--pet-color-accent) 50%, var(--pet-color-border))",
+                        background: "var(--pet-color-card)",
+                        color: "var(--pet-color-fg)",
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                        resize: "vertical",
+                        fontFamily: "inherit",
+                        boxSizing: "border-box",
+                        boxShadow:
+                          "0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 18%, transparent)",
+                      }}
+                    />
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        justifyContent: "flex-end",
+                        alignItems: "center",
+                        fontSize: 11,
+                        color: "var(--pet-color-muted)",
+                      }}
+                    >
+                      <span style={{ marginRight: "auto" }}>
+                        Enter 重发 · Shift+Enter 换行 · Esc 取消
+                      </span>
+                      <button
+                        type="button"
+                        onClick={cancelEditMode}
+                        style={{
+                          padding: "4px 12px",
+                          fontSize: 12,
+                          border: "1px solid var(--pet-color-border)",
+                          borderRadius: 6,
+                          background: "var(--pet-color-card)",
+                          color: "var(--pet-color-fg)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={commitMessageEdit}
+                        disabled={!editingDraft.trim()}
+                        style={{
+                          padding: "4px 14px",
+                          fontSize: 12,
+                          border: "none",
+                          borderRadius: 6,
+                          background: editingDraft.trim()
+                            ? "var(--pet-color-accent)"
+                            : "var(--pet-color-border)",
+                          color: editingDraft.trim()
+                            ? "#fff"
+                            : "var(--pet-color-muted)",
+                          fontWeight: 600,
+                          cursor: editingDraft.trim() ? "pointer" : "not-allowed",
+                        }}
+                      >
+                        保存并重发
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            const canEdit = !isLoading && !item.images?.length;
             return (
-              <CopyableMessage
+              <div
                 key={i}
-                role="user"
-                content={item.content}
-                itemIdx={i}
-                copied={copiedIdx === i}
-                onCopy={handleCopy}
-                wrapperStyle={wrapperBase("flex-end")}
-                images={item.images}
-                highlightKeyword={hitKeyword}
-                taskRefMap={chatTaskMap}
-                onRefDoubleClick={onRequestFocusTask}
-                marked={markedMessages.has(markKey)}
-                onToggleMark={() => toggleMessageMark(markKey)}
-              />
+                onDoubleClick={() => {
+                  if (!canEdit) return;
+                  // bubble 内的 task-ref token 已在自身 onDoubleClick 里
+                  // stopPropagation —— 双击 ref 跳任务的语义优先，本 handler
+                  // 不会被触发。其它双击（bubble 空白 / 文字）才进入编辑。
+                  enterEditMode(i);
+                }}
+                title={canEdit ? "双击编辑这条消息并重新生成回复" : undefined}
+              >
+                <CopyableMessage
+                  role="user"
+                  content={item.content}
+                  itemIdx={i}
+                  copied={copiedIdx === i}
+                  onCopy={handleCopy}
+                  wrapperStyle={wrapperBase("flex-end")}
+                  images={item.images}
+                  highlightKeyword={hitKeyword}
+                  taskRefMap={chatTaskMap}
+                  onRefDoubleClick={onRequestFocusTask}
+                  marked={markedMessages.has(markKey)}
+                  onToggleMark={() => toggleMessageMark(markKey)}
+                />
+              </div>
             );
           }
           if (item.type === "assistant") {
@@ -3439,6 +4752,7 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
                 onRefDoubleClick={onRequestFocusTask}
                 marked={markedMessages.has(markKey)}
                 onToggleMark={() => toggleMessageMark(markKey)}
+                subdued={item.systemNote}
               />
             );
           }
@@ -4026,13 +5340,8 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
                           ts === 0 是老格式 dangling 跳过。 */}
                       {e.markedAt > 0 && (() => {
                         const age = Date.now() - e.markedAt;
-                        let rel: string;
-                        if (age < 60_000) rel = "刚刚";
-                        else if (age < 3_600_000)
-                          rel = `${Math.floor(age / 60_000)} 分钟前`;
-                        else if (age < 86_400_000)
-                          rel = `${Math.floor(age / 3_600_000)} 小时前`;
-                        else rel = `${Math.floor(age / 86_400_000)} 天前`;
+                        const rel =
+                          age < 60_000 ? "刚刚" : formatRelativeAgeBuckets(age);
                         return (
                           <>
                             <span>·</span>
@@ -4107,6 +5416,57 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
         </div>
       )}
 
+      {/* 上下文 token 警示 banner：与 ChatMini 同源信号（get_active_session_
+          context_stats 60s 轮）+ 同 4000 阈值。> 阈值时贴顶 input bar 浮出，让
+          owner 在敲下一条之前感知 prompt 在膨胀。点 /reset 按钮调
+          handleResetLlmContext（与 slash 命令同 path）—— PanelChat /reset 保
+          留可见 items 仅清 LLM 上下文，比 ChatMini reset 软（无需 armed 二次
+          确认）。流式中按钮 disabled 防 race。 */}
+      {sessionTokens > 4000 && (
+        <div
+          style={{
+            padding: "5px 16px",
+            fontSize: 11,
+            color: "var(--pet-tint-yellow-fg)",
+            background: "var(--pet-tint-yellow-bg)",
+            borderTop: "1px solid var(--pet-color-border)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            💭 上下文 ~{sessionTokens} tok（已超 4000，建议
+            <strong> /reset</strong> 让宠物注意力回到当前话题）
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleResetLlmContext()}
+            disabled={isLoading}
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              padding: "2px 8px",
+              borderRadius: 6,
+              border:
+                "1px solid color-mix(in srgb, var(--pet-tint-yellow-fg) 50%, transparent)",
+              background: "var(--pet-color-card)",
+              color: "var(--pet-tint-yellow-fg)",
+              cursor: isLoading ? "default" : "pointer",
+              whiteSpace: "nowrap",
+              opacity: isLoading ? 0.5 : 1,
+            }}
+            title={
+              isLoading
+                ? "流式回复中，先等完成或 Esc 取消再 /reset"
+                : "清掉本 session 的 LLM 上下文（保留可见 mini chat 历史 + system 人设），等价于敲 /reset"
+            }
+          >
+            /reset
+          </button>
+        </div>
+      )}
+
       {/* Input bar */}
       <form
         onSubmit={handleSubmit}
@@ -4143,56 +5503,77 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
                   : `没有匹配「${mentionContext.query}」的任务；Esc 退出 / 继续敲改 query`}
               </div>
             ) : (
-              mentionFilteredTasks.map((t, i) => {
-                const selected = i === mentionSelectedIdx;
-                return (
-                  <div
-                    key={t.title}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      pickMention(t.title, mentionContext);
-                    }}
-                    style={{
-                      padding: "6px 12px",
-                      cursor: "pointer",
-                      background: selected
-                        ? "var(--pet-tint-blue-bg)"
-                        : "transparent",
-                      borderLeft: selected
-                        ? "2px solid var(--pet-color-accent)"
-                        : "2px solid transparent",
-                      display: "flex",
-                      alignItems: "baseline",
-                      gap: "10px",
-                      fontSize: "13px",
-                    }}
-                  >
-                    <span
+              <>
+                {mentionFilteredTasks.map((t, i) => {
+                  const selected = i === mentionSelectedIdx;
+                  return (
+                    <div
+                      key={t.title}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        pickMention(t.title, mentionContext);
+                      }}
                       style={{
-                        color: selected
-                          ? "var(--pet-tint-blue-fg)"
-                          : "var(--pet-color-fg)",
-                        fontWeight: 500,
-                        flex: 1,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
+                        padding: "6px 12px",
+                        cursor: "pointer",
+                        background: selected
+                          ? "var(--pet-tint-blue-bg)"
+                          : "transparent",
+                        borderLeft: selected
+                          ? "2px solid var(--pet-color-accent)"
+                          : "2px solid transparent",
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: "10px",
+                        fontSize: "13px",
                       }}
                     >
-                      {t.title}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: "10px",
-                        color: "var(--pet-color-muted)",
-                        fontFamily: "'SF Mono', 'Menlo', monospace",
-                      }}
-                    >
-                      {t.status}
-                    </span>
-                  </div>
-                );
-              })
+                      <span
+                        style={{
+                          color: selected
+                            ? "var(--pet-tint-blue-fg)"
+                            : "var(--pet-color-fg)",
+                          fontWeight: 500,
+                          flex: 1,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {t.title}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: "10px",
+                          color: "var(--pet-color-muted)",
+                          fontFamily: "'SF Mono', 'Menlo', monospace",
+                        }}
+                      >
+                        {t.status}
+                      </span>
+                    </div>
+                  );
+                })}
+                {/* 键盘提示 footer：与 SlashCommandMenu 同 hint 节奏。让 ↑↓
+                    / Enter / Tab / Esc 的隐式 keymap 可见。 */}
+                <div
+                  style={{
+                    padding: "5px 12px",
+                    borderTop: "1px solid var(--pet-color-border)",
+                    background: "var(--pet-color-bg)",
+                    fontSize: 10,
+                    color: "var(--pet-color-muted)",
+                    display: "flex",
+                    gap: 10,
+                    fontFamily: "'SF Mono', Menlo, monospace",
+                    letterSpacing: 0.2,
+                  }}
+                >
+                  <span>↑↓ 选</span>
+                  <span>Enter / Tab 引用</span>
+                  <span>Esc 取消</span>
+                </div>
+              </>
             )}
           </div>
         )}
@@ -4222,6 +5603,35 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
             {input.length} 字
           </div>
         )}
+        {/* Token 估算 chip：input 非空时浮在 input bar 顶部左侧（与右侧
+            history 提示错开互不挡）。粗略估算（CJK ~1tok/字、其它 ~4字/tok）；
+            tooltip 解释口径。input.length === 0 → 不渲染避免空 chip。
+            estimateInputTokens 是 pure / O(n)，input 通常 < 几千字，每次
+            re-render 重算无虞，不必 useMemo。 */}
+        {input.length > 0 && (() => {
+          const tokens = estimateInputTokens(input);
+          return (
+            <div
+              style={{
+                position: "absolute",
+                top: -22,
+                left: 16,
+                fontSize: 10,
+                background: "var(--pet-color-card)",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 4,
+                padding: "2px 8px",
+                color: "var(--pet-color-muted)",
+                pointerEvents: "auto",
+                whiteSpace: "nowrap",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+              title={`粗略估算输入的 token 数：CJK 1 token/字 + 其它 ~4 字/token。准确值因模型而异（GPT-4o BPE / Claude / Qwen 都不同），本 chip 仅供"我打了多长" 感知。\n\n当前 ${input.length} 字 → ~${tokens} tok`}
+            >
+              ~{tokens} tok
+            </div>
+          );
+        })()}
         {/* R132: 历史模式视觉提示。historyCursor 非 null 时浮在 input bar
             顶部右侧；onChange 改写 / Esc / 发送 / ↓ 越过末尾 自然 cursor=null
             → hint 消失。pointerEvents none 让它不挡按钮。 */}
@@ -4881,6 +6291,41 @@ export function PanelChat({ onRequestTab, onRequestFocusTask }: PanelChatProps =
               }}
             >
               📋 复制标题
+            </button>
+            {/* "重写标题"按钮：调 regenerate_session_title 走非流式 LLM 调用，
+                让 LLM 看尾部 ~10 条 turn 给 ≤ 10 字概括。LLM 调用有延迟 +
+                费用，故出 toast 表"进行中"避免用户误以为卡住；成功后刷
+                session list 让新 title 立即可见。 */}
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={hoverIn}
+              onMouseOut={hoverOut}
+              onClick={async () => {
+                setSessionTabCtxMenu(null);
+                setExportToast(`✨ 正在让 LLM 重写「${m.title}」的标题…`);
+                try {
+                  const newTitle = await invoke<string>(
+                    "regenerate_session_title",
+                    { id: m.id },
+                  );
+                  // 刷 sessionList 让新 title 立即显
+                  const idx = await invoke<SessionIndex>("list_sessions");
+                  setSessionList(idx.sessions);
+                  // 当前 session 命中时同步 setSessionTitle
+                  if (m.id === sessionId) {
+                    setSessionTitle(newTitle);
+                  }
+                  setExportToast(`✨ 已重写标题：${newTitle}`);
+                  setTimeout(() => setExportToast(""), 3000);
+                } catch (e) {
+                  setExportToast(`重写失败：${e}`);
+                  setTimeout(() => setExportToast(""), 4000);
+                }
+              }}
+              title="让 LLM 看会话末尾 10 条 turn 自动取个 ≤ 10 字标题（替代默认的『首条 user 消息前 20 字』硬截）。会调一次非流式 LLM，约 1-3s 完成。"
+            >
+              ✨ LLM 重写标题
             </button>
             <div
               style={{

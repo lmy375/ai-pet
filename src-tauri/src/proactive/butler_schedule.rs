@@ -35,47 +35,111 @@ pub fn format_butler_tasks_block(
     if items.is_empty() || max_items == 0 {
         return String::new();
     }
-    // Compute due-ness + error state once per item and stable-sort.
-    let mut annotated: Vec<(&(String, String, String), bool, bool)> = items
+    // Task dependencies + snooze: filter out items that are either blocked by
+    // an active prerequisite or still within their `[snooze: ...]` window.
+    // Both signals mean "not actionable right now" — surfacing them dilutes
+    // the prompt. Both sets computed against the full input.
+    let pairs: Vec<(String, String)> = items
+        .iter()
+        .map(|(t, d, _)| (t.clone(), d.clone()))
+        .collect();
+    let blocked_map = crate::task_queue::unresolved_blockers(&pairs);
+    let snooze_map = crate::task_queue::snoozed_until_map(&pairs, now);
+    let blocked_count = blocked_map.len();
+    let snoozed_count = snooze_map.len();
+    let filtered_items: Vec<&(String, String, String)> = items
+        .iter()
+        .filter(|(t, _, _)| {
+            !blocked_map.contains_key(t) && !snooze_map.contains_key(t)
+        })
+        .collect();
+    if filtered_items.is_empty() {
+        // 全部被 blocker / snooze 卡住的极端情况：仍输出一行说明，避免 LLM
+        // 完全不知道还有任务存在。max_items == 0 fast-path 已在上面 return。
+        let reason = match (blocked_count, snoozed_count) {
+            (b, 0) => format!("全部被 [blockedBy: …] 依赖卡住（共 {} 条）", b),
+            (0, s) => format!("全部处于 [snooze: …] 暂停期（共 {} 条）", s),
+            (b, s) => format!(
+                "全部不可用（{} 条 [blockedBy: …] 卡住、{} 条 [snooze: …] 暂停）",
+                b, s
+            ),
+        };
+        return format!(
+            "用户委托给你的管家任务：{}，等先决条件解决 / 时刻到达后再出现。",
+            reason
+        );
+    }
+    // Compute pinned / due / error state once per item and stable-sort.
+    // `pinned` 是 owner 显式标 `[pinned]` 的 "钉住" 信号；优先级高于 due —— owner
+    // 的意图覆盖系统的"到期"信号，让 LLM 先做主人盯紧的事。
+    let mut annotated: Vec<(&(String, String, String), bool, bool, bool)> = filtered_items
         .iter()
         .map(|i| {
+            let pinned = crate::task_queue::parse_pinned(&i.1);
             let due = parse_butler_schedule_prefix(&i.1)
                 .map(|(sched, _)| is_butler_due(&sched, now, &i.2))
                 .unwrap_or(false);
             let errored = has_butler_error(&i.1);
-            (i, due, errored)
+            (*i, pinned, due, errored)
         })
         .collect();
-    // Due → not-due primary, updated_at ascending secondary. Errored items keep
-    // their primary slot — they're often also due (last execution failed) so they
-    // bubble up naturally; if not due, they stay in normal order so the user
-    // doesn't drown in stale errors.
-    annotated.sort_by(|(a, a_due, _), (b, b_due, _)| match (a_due, b_due) {
+    // Sort 顺序：pinned → due → updated_at asc。pinned 最优先体现 owner 标注权重，
+    // due 仍是系统级时间窗信号，updated_at asc 防最老任务沉底（与原 "don't let
+    // tasks rot" 不变量一致）。errored 不参与 primary 排序 —— 失败常常伴随 due 已
+    // 经上浮，单独排还会让非 due 的 stale error 抢顶。
+    annotated.sort_by(|(a, a_pin, a_due, _), (b, b_pin, b_due, _)| match (a_pin, b_pin) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a.2.cmp(&b.2),
+        _ => match (a_due, b_due) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.2.cmp(&b.2),
+        },
     });
     let n = annotated.len().min(max_items);
-    let due_count = annotated.iter().take(n).filter(|(_, d, _)| *d).count();
-    let err_count = annotated.iter().take(n).filter(|(_, _, e)| *e).count();
-    let mut lines: Vec<String> = Vec::with_capacity(n + 2);
-    let header = match (due_count, err_count) {
-        (0, 0) => format!("用户委托给你的管家任务（共 {} 条，按最早委托排在前）：", n),
-        (d, 0) => format!(
-            "用户委托给你的管家任务（共 {} 条，其中 {} 条到期，按到期 → 最早委托排在前）：",
-            n, d
-        ),
-        (0, e) => format!(
-            "用户委托给你的管家任务（共 {} 条，其中 {} 条上次执行失败需要复查）：",
-            n, e
-        ),
-        (d, e) => format!(
-            "用户委托给你的管家任务（共 {} 条，{} 条到期、{} 条上次失败）：",
-            n, d, e
-        ),
+    let pin_count = annotated.iter().take(n).filter(|(_, p, _, _)| *p).count();
+    let due_count = annotated.iter().take(n).filter(|(_, _, d, _)| *d).count();
+    let err_count = annotated.iter().take(n).filter(|(_, _, _, e)| *e).count();
+    let mut lines: Vec<String> = Vec::with_capacity(n + 3);
+    // Header 拆段拼接：pinned / due / error 三个独立信号各占一段，避免 7+ 分支
+    // 笛卡尔积爆。无信号时输出朴素 "按最早委托排在前"。
+    let mut header_parts: Vec<String> = Vec::with_capacity(3);
+    if pin_count > 0 {
+        header_parts.push(format!("{} 条由 owner 钉住（优先做）", pin_count));
+    }
+    if due_count > 0 {
+        header_parts.push(format!("{} 条到期", due_count));
+    }
+    if err_count > 0 {
+        header_parts.push(format!("{} 条上次执行失败需要复查", err_count));
+    }
+    let header = if header_parts.is_empty() {
+        format!("用户委托给你的管家任务（共 {} 条，按最早委托排在前）：", n)
+    } else {
+        format!(
+            "用户委托给你的管家任务（共 {} 条，其中 {}，按 钉住 → 到期 → 最早委托 排在前）：",
+            n,
+            header_parts.join("、")
+        )
     };
     lines.push(header);
-    for ((title, desc, _), due, errored) in annotated.iter().take(n) {
+    if blocked_count > 0 || snoozed_count > 0 {
+        // 透明告知有任务被 blocker / snooze 卡住 —— 让 LLM 知道队列里还有
+        // "沉睡"的工作，但当前不该 pick。数字是 cap 前总过滤数，不会因
+        // max_items 截断失真。
+        let mut parts: Vec<String> = Vec::with_capacity(2);
+        if blocked_count > 0 {
+            parts.push(format!("{} 条被 [blockedBy: …] 依赖卡住", blocked_count));
+        }
+        if snoozed_count > 0 {
+            parts.push(format!("{} 条处于 [snooze: …] 暂停期", snoozed_count));
+        }
+        lines.push(format!(
+            "（另有 {}，先决条件解决 / 时刻到达后才会出现在本列表。）",
+            parts.join("、")
+        ));
+    }
+    for ((title, desc, _), pinned, due, errored) in annotated.iter().take(n) {
         let trimmed = desc.trim();
         let truncated: String = if trimmed.chars().count() <= max_desc_chars {
             trimmed.to_string()
@@ -83,8 +147,12 @@ pub fn format_butler_tasks_block(
             let head: String = trimmed.chars().take(max_desc_chars).collect();
             format!("{}…", head)
         };
-        // Marker order: error first (most urgent) → due second. Both can co-occur.
+        // Marker order: pinned 最先（owner 意图）→ error（最紧急系统信号）→ due
+        // （时间窗）。三者可以共存（"钉住的到期任务上次还失败了"）。
         let mut marker = String::new();
+        if *pinned {
+            marker.push_str("📌 钉住 · ");
+        }
         if *errored {
             marker.push_str("❌ 错误 · ");
         }
@@ -96,7 +164,8 @@ pub fn format_butler_tasks_block(
     lines.push(
         "执行完一项后用 `memory_edit update` 更新进度（标题前加 [done] / 写最后执行时间），\
 完全不需要的用 `memory_edit delete` 移除。带 `[every: HH:MM]` 或 `[once: ...]` 前缀的任务标记了到期窗口——\
-看到「⏰ 到期」就该这一轮优先处理它。\n\
+看到「⏰ 到期」就该这一轮优先处理它。\
+看到「📌 钉住」是 owner 显式标的「关键任务」 —— 优先级在到期之上，请这一轮就开始推进（哪怕做一小步也好），不要冷落 owner 反复钉的事。\n\
 **记得在你这一轮的开口里简短提一下**：「我帮你写好 today.md 了」「Downloads 整理完了」之类——\
 不必描述细节、一句话即可。让用户从 bubble 里直接看到管家工作的反馈，而不是必须打开 panel 才发现你做了事。\n\
 **完成时建议补一行 `[result: 你具体做了什么]`**——这条会在面板和周报里被独立展示，让主人能直接看到产物，不必翻 detail.md。例：`[result: 把 30 天前的 38 个文件归档到 ~/Archive/2026-04/]` / `[result: 找到 3 篇相关论文已写入 detail.md]` / `[result: 提醒过了]`。「信息收集」类任务写结论；「文件操作」类写「挪了多少 / 改了哪个文件」；「提醒」类写「提醒过了」。\n\
@@ -448,6 +517,152 @@ mod tests {
     }
 
     #[test]
+    fn format_butler_tasks_block_filters_blocked_tasks() {
+        // 「先决」未完成 → 「主任务」被卡，不该出现在 prompt block 里。
+        let items = vec![
+            (
+                "先决任务".into(),
+                "[task pri=3] 先做这个".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "主任务".into(),
+                "[blockedBy: 先决任务] 等先决完成后再做".into(),
+                "2026-04-02T10:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("先决任务"));
+        assert!(!out.contains("主任务"), "blocked 任务不该出现");
+        assert!(
+            out.contains("1 条被 [blockedBy: …] 依赖卡住"),
+            "header 应透明告知有任务被卡：{out}"
+        );
+    }
+
+    #[test]
+    fn format_butler_tasks_block_unblocks_after_dep_done() {
+        // 先决任务已 [done] → 主任务解锁，应出现在 prompt block 里。
+        let items = vec![
+            (
+                "先决任务".into(),
+                "[task pri=3] 已经做完 [done]".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "主任务".into(),
+                "[blockedBy: 先决任务] 终于可以做了".into(),
+                "2026-04-02T10:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("主任务"), "blocker done 后主任务解锁");
+        assert!(
+            !out.contains("依赖卡住"),
+            "全解锁时不该出现 blocked 横幅"
+        );
+    }
+
+    #[test]
+    fn format_butler_tasks_block_filters_snoozed_tasks() {
+        // [snooze: future] 的任务不该出现在 prompt block；header 透明告知
+        // "另有 N 条处于 snooze 暂停期"。
+        // fixed_now() 是 2026-05-04 12:00；snooze 至 2026-05-20 09:00 仍在
+        // 未来。
+        let items = vec![
+            (
+                "活跃任务".into(),
+                "[task pri=3] 现在就做".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "暂停任务".into(),
+                "[snooze: 2026-05-20 09:00] 等下个 sprint".into(),
+                "2026-04-02T10:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("活跃任务"));
+        assert!(!out.contains("暂停任务"), "snoozed 任务不该出现");
+        assert!(
+            out.contains("1 条处于 [snooze: …] 暂停期"),
+            "header 应透明告知 snooze 数：{out}"
+        );
+    }
+
+    #[test]
+    fn format_butler_tasks_block_past_snooze_passes_through() {
+        // [snooze: 过去] → 自然失效，任务恢复出现。
+        let items = vec![(
+            "原暂停".into(),
+            "[snooze: 2020-01-01 09:00] 早就该醒".into(),
+            "2026-04-02T10:00:00+08:00".into(),
+        )];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("原暂停"));
+        assert!(!out.contains("暂停期"), "过点 snooze 不应触发 header 标记");
+    }
+
+    #[test]
+    fn format_butler_tasks_block_blocked_and_snoozed_header() {
+        // 同时有 blocked 和 snoozed：transparency line 应列两段。
+        let items = vec![
+            (
+                "blocker".into(),
+                "[task pri=3] 先决".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "blocked".into(),
+                "[blockedBy: blocker] 等先决".into(),
+                "2026-04-02T10:00:00+08:00".into(),
+            ),
+            (
+                "snoozed".into(),
+                "[snooze: 2026-05-20 09:00] 等等".into(),
+                "2026-04-03T10:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("blocker"));
+        assert!(!out.contains("blocked："), "blocked 任务不该出现");
+        assert!(!out.contains("snoozed："), "snoozed 任务不该出现");
+        assert!(out.contains("1 条被 [blockedBy: …] 依赖卡住"));
+        assert!(out.contains("1 条处于 [snooze: …] 暂停期"));
+    }
+
+    #[test]
+    fn format_butler_tasks_block_all_blocked_returns_summary() {
+        // 极端：所有任务都被某个 blocker 卡住 → 输出兜底说明而非空。
+        let items = vec![
+            (
+                "blocker".into(),
+                "[task pri=3] 先决任务还没做".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "a".into(),
+                "[blockedBy: blocker] a".into(),
+                "2026-04-02T10:00:00+08:00".into(),
+            ),
+            (
+                "b".into(),
+                "[blockedBy: blocker] b".into(),
+                "2026-04-03T10:00:00+08:00".into(),
+            ),
+        ];
+        // 把 blocker 也变成被卡的：构造循环依赖（极端 footgun，应不死锁）。
+        // blocker 本身没 blocked_by 所以 active，主任务被卡 —— 输出含 blocker。
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("blocker"));
+        assert!(out.contains("依赖卡住"));
+        // title 列以 "- {title}：" 形态出现；用全角冒号锚定避免 "- b" 误匹
+        // 配到 "- blocker：" 前缀。
+        assert!(!out.contains("- a："));
+        assert!(!out.contains("- b："));
+    }
+
+    #[test]
     fn format_butler_tasks_block_sorts_oldest_first() {
         let items = vec![
             (
@@ -613,6 +828,88 @@ mod tests {
         out.lines()
             .filter(|l| l.starts_with("- ") && l.contains("⏰ 到期 · "))
             .count()
+    }
+
+    #[test]
+    fn format_butler_tasks_block_pinned_task_bubbles_to_top_with_marker() {
+        // owner [pinned] 任务上浮到第一行，line 带 "📌 钉住" marker，header 含
+        // "其中 1 条由 owner 钉住"。
+        let items = vec![
+            (
+                "plain-old".into(),
+                "do something whenever".into(),
+                "2026-04-01T08:00:00+08:00".into(),
+            ),
+            (
+                "key-task".into(),
+                "[task pri=3] crucial work [pinned]".into(),
+                "2026-05-02T08:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("📌 钉住"), "pinned should carry marker: {out}");
+        assert!(
+            out.contains("1 条由 owner 钉住"),
+            "header should reflect pin count: {out}"
+        );
+        let pinned_idx = out.find("key-task").unwrap();
+        let plain_idx = out.find("plain-old").unwrap();
+        assert!(pinned_idx < plain_idx, "pinned ranks above plain older");
+    }
+
+    #[test]
+    fn format_butler_tasks_block_pinned_dominates_due_in_ordering() {
+        // pinned 优先级高于 due —— owner 的标注覆盖系统的时间窗信号。
+        // due 任务（[every: 09:00] now=12:00）和 pinned 任务都"该做"，
+        // pinned 排在前。两者的 marker 都正确显示。
+        let items = vec![
+            (
+                "morning-report".into(),
+                "[every: 09:00] write today.md".into(),
+                "2026-05-02T09:30:00+08:00".into(),
+            ),
+            (
+                "pinned-task".into(),
+                "[task pri=3] 主人盯的 [pinned]".into(),
+                "2026-05-02T08:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        let pin_idx = out.find("pinned-task").unwrap();
+        let due_idx = out.find("morning-report").unwrap();
+        assert!(
+            pin_idx < due_idx,
+            "pinned should outrank due — owner intent over system signal: {out}"
+        );
+        // 双 marker 都正确显示（不互相吃掉）
+        assert!(out.contains("📌 钉住"));
+        assert!(out.contains("⏰ 到期"));
+        // 两个 count 都在 header 里
+        assert!(out.contains("1 条由 owner 钉住"));
+        assert!(out.contains("1 条到期"));
+    }
+
+    #[test]
+    fn format_butler_tasks_block_no_pinned_means_no_pin_phrase_in_header() {
+        // 无 pinned 任务时 header 行 + task line 都不出现 "📌 钉住" 标记 ——
+        // 避免给 LLM 假信号。footer 始终带 "看到「📌 钉住」" 教学文案，故
+        // 仅校验前 N 行（header + task lines）而非整体 output。
+        let items = vec![(
+            "plain".into(),
+            "[task pri=3] 普通任务".into(),
+            "2026-04-01T08:00:00+08:00".into(),
+        )];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        let header = out.lines().next().unwrap();
+        assert!(
+            !header.contains("钉住"),
+            "no pinned task → header doesn't mention 钉住: {header}"
+        );
+        // task line 也不能带 📌 marker
+        let task_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("- ")).collect();
+        for line in &task_lines {
+            assert!(!line.contains("📌"), "task line: {line}");
+        }
     }
 
     #[test]

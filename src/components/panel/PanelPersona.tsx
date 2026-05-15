@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { parseInlineMarkdown } from "../../utils/inlineMarkdown";
+import { formatRelativeAgeBuckets } from "../../utils/formatRelativeAge";
+import { EmptyState } from "./EmptyState";
 
 /**
  * Persona tab (Iter 105 / route A延展) — surfaces the long-term identity layer that
@@ -470,14 +472,13 @@ export function PanelPersona() {
                 if (isNaN(updatedDate.getTime())) return null;
                 const ageMs = Date.now() - updatedDate.getTime();
                 const ageDays = Math.floor(ageMs / (24 * 3600 * 1000));
-                const ageHours = Math.floor(ageMs / (3600 * 1000));
                 const stale = ageDays >= 7;
+                // 走共享 util；< 60s 退化到"刚刚更新"，其余按 minute / hour /
+                // day 三档走 formatRelativeAgeBuckets，附加 "更新" 后缀。
                 const label =
-                  ageDays >= 1
-                    ? `${ageDays} 天前更新`
-                    : ageHours >= 1
-                      ? `${ageHours} 小时前更新`
-                      : "刚刚更新";
+                  ageMs < 60_000
+                    ? "刚刚更新"
+                    : `${formatRelativeAgeBuckets(ageMs)}更新`;
                 return (
                   <span
                     style={{
@@ -561,9 +562,12 @@ export function PanelPersona() {
         subtitle="tool_call_history 最近 30 次调用里 top 5：count 高优先 / 同 count 取最近一次"
       >
         {topTools.length === 0 ? (
-          <p style={{ fontSize: "13px", color: "var(--pet-color-muted)", margin: 0, fontStyle: "italic" }}>
-            还没动过手。等下次开口里 LLM 调工具就会出现在这。
-          </p>
+          <EmptyState
+            icon="🛠"
+            title="还没动过手"
+            hint="等下次开口里 LLM 调工具就会出现在这。"
+            compact
+          />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
             {topTools.map((t) => {
@@ -575,13 +579,8 @@ export function PanelPersona() {
               const ageStr = (() => {
                 if (!Number.isFinite(ts)) return t.last_used_at;
                 const ageMs = Date.now() - ts;
-                const ageMin = Math.floor(ageMs / 60000);
-                if (ageMin < 1) return "刚刚";
-                if (ageMin < 60) return `${ageMin} 分钟前`;
-                const ageHr = Math.floor(ageMin / 60);
-                if (ageHr < 24) return `${ageHr} 小时前`;
-                const ageDay = Math.floor(ageHr / 24);
-                return `${ageDay} 天前`;
+                if (ageMs < 60_000) return "刚刚";
+                return formatRelativeAgeBuckets(ageMs);
               })();
               return (
                 <div
@@ -2163,7 +2162,10 @@ function Section({
   return (
     <section
       style={{
-        background: "var(--pet-color-card)",
+        // 与 PanelSettings sectionStyle / .pet-card-elev 同语言：顶部 accent
+        // 极淡渐变 + 主体 card。让 Persona 页与 Settings / Memory 视觉统一。
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--pet-color-accent) 3%, var(--pet-color-card)) 0%, var(--pet-color-card) 55%)",
         border: "1px solid var(--pet-color-border)",
         borderRadius: "12px",
         padding: "18px 20px",
@@ -2178,18 +2180,18 @@ function Section({
           gap: "10px",
         }}
       >
-        {/* accent 圆点：让每个 Section 标题左侧多一个细巧的视觉锚 ——
-            提升信息密度页面的"分块感"，又不抢字 weight。8% alpha 让 dark
-            模式下也不刺眼。 */}
+        {/* accent 圆点：与 SectionTitle.tsx 共享视觉语言（radial highlight +
+            halo + glow），让 Persona 页所有 section 标题一眼可辨。 */}
         <span
           aria-hidden
           style={{
             width: 8,
             height: 8,
             borderRadius: "50%",
-            background: "var(--pet-color-accent)",
+            background:
+              "radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--pet-color-accent) 70%, white), var(--pet-color-accent))",
             boxShadow:
-              "0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 18%, transparent)",
+              "0 0 0 3px color-mix(in srgb, var(--pet-color-accent) 18%, transparent), 0 0 8px color-mix(in srgb, var(--pet-color-accent) 40%, transparent)",
             flexShrink: 0,
             alignSelf: "center",
           }}

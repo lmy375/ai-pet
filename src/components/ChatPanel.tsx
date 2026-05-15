@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImageLightbox } from "./common/ImageLightbox";
+import { readSentHistory, pushSentHistory } from "./chatHistoryStore";
 
 interface Props {
   onSend: (message: string, images?: string[]) => void;
@@ -14,6 +15,21 @@ const PANEL_STYLES = `
 }
 `;
 
+/// 桌面输入框 placeholder 轮播文案。第一条保留功能性提示（可粘贴 / 拖入
+/// 图片）让新用户初见时能学到能力；后续几条 conversational 风让放置态
+/// 输入框少点"待机寡淡感"——与 ChatMini idle fade 一起把"宠物在等你"的
+/// 陪伴感做出来。仅在 input 为空且非流式时定时轮换。
+///
+/// 30 秒一换：长到不打扰阅读 / 思考，短到放置一会儿就能看到下一句。
+const CHAT_INPUT_PLACEHOLDERS: string[] = [
+  "说点什么…（可粘贴 / 拖入图片）",
+  "今天感觉怎么样？",
+  "想聊点啥？",
+  "需要帮忙做什么？",
+  "随便聊聊，我陪着 🐾",
+];
+const CHAT_INPUT_PLACEHOLDER_ROTATE_MS = 30_000;
+
 /// 桌面宠物输入框。作为 flex column 里的第三段、永远紧贴底部。**不再使用
 /// position:absolute** —— 既往多次出现 absolute-bottom 与 ChatMini 重叠的
 /// bug，本组件保持普通 flex item，由 App 容器通过 flex column 自然堆叠
@@ -21,6 +37,15 @@ const PANEL_STYLES = `
 export function ChatPanel({ onSend, isLoading }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /// shell 风历史栈（最新在前）。submit 后 push；ArrowUp / ArrowDown 召回。
+  const [sentHistory, setSentHistory] = useState<string[]>(readSentHistory);
+  /// 当前历史浏览游标（0 = 最新）。null = 不在历史模式，按 ↑↓ 走 textarea
+  /// 默认光标移动。用 ref 而非 state：仅影响下一次 keydown / change 判断，
+  /// 无需 re-render，且避免 setInput 与 setCursor 在同一帧的时序歧义。
+  const historyCursorRef = useRef<number | null>(null);
+  /// 上次 recall 写入 input 的值。用来判断"用户是否在召回后又手动编辑"——
+  /// onChange 里如果新值 ≠ recalledValueRef，说明用户在改字，跳出历史模式。
+  const recalledValueRef = useRef<string | null>(null);
   // 多模态：粘贴 / 拖拽进来的图片 data URL，发送时与文本拼成 multipart。
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   // 拖拽态高亮 + 子元素 enter/leave 抖动防抖计数。
@@ -32,6 +57,19 @@ export function ChatPanel({ onSend, isLoading }: Props) {
   // 缩略图点开 lightbox 大图（"发前能看清"）；与 PanelChat 不同 —— 这里 44×44 太
   // 小不挂 hover 📋 复制（已有 ✕ 删除占角）。
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  /// placeholder 轮播 idx：仅 input 空 + 非 loading 时按 30s 轮换。useState
+  /// 让 React 拿到值 re-render textarea 的 placeholder attr。loading / 有
+  /// 输入时跳过 setInterval —— 用户在打字 / 流式中 placeholder 看不到，省
+  /// re-render。
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+  const inputEmpty = input.length === 0;
+  useEffect(() => {
+    if (!inputEmpty || isLoading) return;
+    const id = window.setInterval(() => {
+      setPlaceholderIdx((i) => (i + 1) % CHAT_INPUT_PLACEHOLDERS.length);
+    }, CHAT_INPUT_PLACEHOLDER_ROTATE_MS);
+    return () => window.clearInterval(id);
+  }, [inputEmpty, isLoading]);
 
   const showErrorToast = useCallback((msg: string) => {
     setErrorToast(msg);
@@ -161,12 +199,64 @@ export function ChatPanel({ onSend, isLoading }: Props) {
     onSend(trimmed, hasImages ? pendingImages : undefined);
     setPendingImages([]);
     setInput("");
+    // shell 风历史栈：dedup + move-to-front + cap，写盘后同步本地 state。
+    // 与 PanelChat（大面板聊天框）共用同一份 localStorage，跨窗口召回。
+    setSentHistory(pushSentHistory(trimmed));
+    historyCursorRef.current = null;
+    recalledValueRef.current = null;
   }, [input, isLoading, pendingImages, onSend, showErrorToast]);
+
+  /// ↑/↓ 在合适状态下拦截作历史召回。其余按键交由 textarea 默认。
+  /// ↑：仅 `input === ""` 或处于历史浏览模式（recalledValue === 当前 input）时拦截
+  /// ↓：仅处于历史浏览模式时拦截
+  /// 这样既不打扰多行编辑场景，又给"清空后回溯"留下肌肉记忆通道。
+  const handleHistoryNav = (e: React.KeyboardEvent, direction: "up" | "down"): boolean => {
+    if (e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return false;
+    const inHistoryMode =
+      historyCursorRef.current !== null && recalledValueRef.current === input;
+    if (direction === "up") {
+      if (input !== "" && !inHistoryMode) return false;
+      if (sentHistory.length === 0) return false;
+      const next =
+        historyCursorRef.current === null
+          ? 0
+          : Math.min(historyCursorRef.current + 1, sentHistory.length - 1);
+      historyCursorRef.current = next;
+      const value = sentHistory[next];
+      recalledValueRef.current = value;
+      setInput(value);
+      return true;
+    }
+    // down
+    if (!inHistoryMode) return false;
+    const cur = historyCursorRef.current ?? 0;
+    const next = cur - 1;
+    if (next < 0) {
+      historyCursorRef.current = null;
+      recalledValueRef.current = null;
+      setInput("");
+    } else {
+      historyCursorRef.current = next;
+      const value = sentHistory[next];
+      recalledValueRef.current = value;
+      setInput(value);
+    }
+    return true;
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void submit();
+      return;
+    }
+    if (e.key === "ArrowUp" && handleHistoryNav(e, "up")) {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "ArrowDown" && handleHistoryNav(e, "down")) {
+      e.preventDefault();
+      return;
     }
   };
 
@@ -302,7 +392,20 @@ export function ChatPanel({ onSend, isLoading }: Props) {
           ref={textareaRef}
           className="pet-chat-input"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            const v = e.target.value;
+            setInput(v);
+            // 用户手敲编辑（与 recall 写入值不同）→ 跳出历史浏览模式，下次
+            // ↑ 从最新一条开始而非接着往后翻。recall 路径走 setInput 不触发
+            // onChange，所以这里只在真实键盘输入 / 粘贴时生效。
+            if (
+              historyCursorRef.current !== null &&
+              v !== recalledValueRef.current
+            ) {
+              historyCursorRef.current = null;
+              recalledValueRef.current = null;
+            }
+          }}
           onKeyDown={handleKeyDown}
           onPaste={(e) => {
             const items = e.clipboardData?.items;
@@ -319,7 +422,11 @@ export function ChatPanel({ onSend, isLoading }: Props) {
             e.preventDefault();
             ingestImageBlobs(blobs);
           }}
-          placeholder={isLoading ? "宠物正在回复中..." : "说点什么...（可粘贴 / 拖入图片）"}
+          placeholder={
+            isLoading
+              ? "宠物正在回复中..."
+              : CHAT_INPUT_PLACEHOLDERS[placeholderIdx]
+          }
           rows={1}
           style={{
             padding: "9px 14px",

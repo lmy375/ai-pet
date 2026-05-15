@@ -13,6 +13,8 @@ import { RefObject, useEffect, useRef } from "react";
 interface TaskItemLike {
   title: string;
   status: "pending" | "done" | "error" | "cancelled";
+  /** 是否被 owner 标 `[pinned]`。`p` 单键快捷反转此值。后端缺省 → false（兼容老 session）。 */
+  pinned?: boolean;
 }
 
 export interface UseTaskKeyboardNavArgs<T extends TaskItemLike> {
@@ -24,6 +26,8 @@ export interface UseTaskKeyboardNavArgs<T extends TaskItemLike> {
   handleMarkDone: (title: string) => Promise<void>;
   /** r 快捷键：仅 error 行触发 retry。其它状态跳过。 */
   handleRetry: (title: string) => Promise<void>;
+  /** p 快捷键：反转焦点行 pinned。pin 与 status 正交，done / cancelled 也响应（与桌面右键菜单 + bulk pin 同语义）。 */
+  handleTogglePinned: (title: string, nextPinned: boolean) => Promise<void>;
   searchInputRef: RefObject<HTMLInputElement | null>;
   titleInputRef: RefObject<HTMLInputElement | null>;
   setCreateFormExpanded: (v: boolean) => void;
@@ -40,6 +44,7 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
     handleCancelOpen,
     handleMarkDone,
     handleRetry,
+    handleTogglePinned,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -70,6 +75,10 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
   useEffect(() => {
     handleRetryRef.current = handleRetry;
   }, [handleRetry]);
+  const handleTogglePinnedRef = useRef(handleTogglePinned);
+  useEffect(() => {
+    handleTogglePinnedRef.current = handleTogglePinned;
+  }, [handleTogglePinned]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -224,6 +233,24 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
           if (item.status !== "error") return prev;
           e.preventDefault();
           void handleRetryRef.current(item.title);
+          return prev;
+        });
+      } else if (
+        e.key === "p" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        // p = 切换焦点行 pinned（owner 标"关键任务"）。与 d / r 同 fire-and-forget
+        // 模式；与桌面右键菜单「📌 钉住 / 📌 取消钉住」对偶。pin 与 status 正交
+        // → done / cancelled 行也响应（与既有右键菜单 / bulk pin 同放宽语义）。
+        setFocusedIdx((prev) => {
+          if (prev === null) return null;
+          const item = list[prev];
+          if (!item) return prev;
+          e.preventDefault();
+          void handleTogglePinnedRef.current(item.title, !item.pinned);
           return prev;
         });
       }

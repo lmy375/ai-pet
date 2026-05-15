@@ -83,6 +83,23 @@ pub struct TaskView {
     /// 必再去 backend 用 title 反查。
     #[serde(default)]
     pub detail_path: String,
+    /// 任务依赖：description 里 `[blockedBy: title1, title2]` 解析出的引用
+    /// title 列表。raw 列表（不做 cross-reference 过滤），前端拿到后与
+    /// active 任务集合交集得"仍未解决"的 blocker 子集渲染 🔒 chip。空列表
+    /// = 无依赖。
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
+    /// 任务 snooze：description 里 `[snooze: YYYY-MM-DD HH:MM]` 解析出的
+    /// 最后一个有效时间戳，渲染为 `YYYY-MM-DDThh:mm` 本地无时区字符串（与
+    /// `due` 协议同形）。**只在仍处 snooze 期（now < until）时填**；过点后
+    /// 后端 build 时返 None，前端不会再显 💤 chip。
+    #[serde(default)]
+    pub snoozed_until: Option<String>,
+    /// 任务是否被 owner 标记 `[pinned]`（"关键任务"自标）。前端用这个字段在
+    /// 「📌 钉住」chip filter 下专门列出，让长 pending 队列里关键条目不被淹。
+    /// 默认 false。
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// header 包装格式：`[task pri=N due=YYYY-MM-DDThh:mm]`。
@@ -210,6 +227,25 @@ pub fn strip_error_markers(description: &str) -> String {
     collapse_whitespace(&cleaned)
 }
 
+/// 把归档条目的 description 还原为 pending butler_task 形态：剥 `[archived:`
+/// `[done]` / `[cancelled:` / `[error:` / `[result:` 全套终态 marker。保留
+/// `[task pri=...]` header、`[every:]` / `[once:]` / `[deadline:]` schedule
+/// 前缀 + `#tag` —— 让恢复后的任务仍带原本的执行节奏 / 标签。
+pub fn strip_archive_markers(description: &str) -> String {
+    let cleaned = remove_bracketed_segments(
+        description,
+        &[
+            "[archived:",
+            "[archived",
+            "[done",
+            "[error",
+            "[cancelled",
+            "[result",
+        ],
+    );
+    collapse_whitespace(&cleaned)
+}
+
 /// 抽 `#xxx` 形式的 tags。词法：`#` 起始 + 一段连续"tag 字符"
 /// （ASCII 字母 / 数字 / `_` / `-` / 任意非 ASCII 字符如中文）。
 /// 空白、ASCII 标点（除 `_-`）、`#`、`]` 均终止 tag。返回**首次出现顺
@@ -314,6 +350,205 @@ pub fn parse_tag_ops(input: &str) -> Result<Vec<TagOp>, String> {
         }
     }
     Ok(ops)
+}
+
+/// 抽 `[blockedBy: title1, title2]` 标记里的引用 title 列表。任务依赖：
+/// 一条任务的 description 写 `[blockedBy: A, B]` 表示"必须等 A 和 B 都
+/// 完成或取消后才该被 pick"。proactive 选单层会拿这个列表与活跃任务集合
+/// 交集来决定是否过滤。
+///
+/// 词法：
+/// - key 大小写敏感 `blockedBy`（与 `[task pri=...]` / `[result: ...]` 等既
+///   有 marker 同 camelCase 风），且容忍紧贴空白；
+/// - 冒号后是逗号分隔的 title 列表；每个 title trim 首尾空白；
+/// - 空 title（连续逗号 / 仅空白）跳过；
+/// - 多个 `[blockedBy: ...]` marker 都被收集（与"两次 `[done]`"语义可加）；
+/// - 返回**首次出现顺序**且**去重**的列表，与 `parse_task_tags` 同节奏。
+///
+/// 设计取舍：
+/// - 不解析 `[blocks: ...]` 反向 marker。可由用户冗余声明双向，但执行语义
+///   只从 blockedBy 一侧驱动，避免两边数据不一致时的歧义判断。
+/// - 不验证 title 是否真实存在 —— 那是 caller 的事（proactive 看到"blocker
+///   title 不在 active 集"自然等价于"已经解决"，删了 / typo 也都按已解决处理）。
+pub fn parse_blocked_by(description: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 用简易状态机扫描 `[blockedBy:` 起点，到第一个 `]` 为止。不上 regex
+    // —— 与 parse_task_tags 同模式（保守、无 deps）；多 marker 时循环。
+    let bytes = description.as_bytes();
+    let needle = b"[blockedBy:";
+    let mut i: usize = 0;
+    while i + needle.len() <= bytes.len() {
+        // 找 needle
+        if &bytes[i..i + needle.len()] != needle {
+            i += 1;
+            continue;
+        }
+        // 寻找匹配的 `]`
+        let start = i + needle.len();
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b']' {
+            end += 1;
+        }
+        if end >= bytes.len() {
+            // 没有闭合 `]` —— 整段 marker 不合法，停止
+            break;
+        }
+        // 解析 start..end 内的 comma list
+        let inner = &description[start..end];
+        for piece in inner.split(',') {
+            let title = piece.trim();
+            if title.is_empty() {
+                continue;
+            }
+            let owned = title.to_string();
+            if seen.insert(owned.clone()) {
+                out.push(owned);
+            }
+        }
+        i = end + 1;
+    }
+    out
+}
+
+/// 给定 items 集合（title, description, status-like-key），返回每条任务
+/// 仍未解决的 blocker title 列表。"未解决"= blocker title 出现在 items
+/// 列表且其 status 不是 Done / Cancelled。
+///
+/// title 不在 items 里 → 视作"已解决"（删了 / 重命名 / typo 不阻塞执行）。
+/// 不在 items 里的 title 是常见 footgun 来源；选择"宽容"语义，避免拼写错
+/// 误让任务永久卡死。
+pub fn unresolved_blockers(
+    items: &[(String, String)],
+) -> std::collections::HashMap<String, Vec<String>> {
+    use std::collections::{HashMap, HashSet};
+    // active set：在 items 里且 status != Done/Cancelled 的 title。
+    let mut active: HashSet<&str> = HashSet::new();
+    for (title, desc) in items {
+        let (status, _) = classify_status(desc);
+        if status != TaskStatus::Done && status != TaskStatus::Cancelled {
+            active.insert(title.as_str());
+        }
+    }
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for (title, desc) in items {
+        let blockers = parse_blocked_by(desc);
+        let unresolved: Vec<String> = blockers
+            .into_iter()
+            .filter(|b| active.contains(b.as_str()))
+            .collect();
+        if !unresolved.is_empty() {
+            out.insert(title.clone(), unresolved);
+        }
+    }
+    out
+}
+
+/// 抽 `[snooze: YYYY-MM-DD HH:MM]` 标记里的最后一个有效时间戳。任务"暂时
+/// 别管"：到指定时刻前 proactive 选单忽略这条任务；过点后 marker 自然失
+/// 效（不会被 cleanup）。
+///
+/// 设计：
+/// - **多个 marker 时取最后一个有效的**（按文本出现顺序）。这让 LLM 重新
+///   snooze 时可以直接 append 一个新 `[snooze: ...]`，不必先把老的删掉；
+///   description 长一点的成本远低于"先剥旧 marker 再加"的 string-mut 风险。
+/// - 时间格式必须精确为 `YYYY-MM-DD HH:MM` —— 与 `[once: ...]` 同协议，
+///   24h、本地时区、minute precision。任一字段错就跳过这条 marker 找下一条。
+/// - 没找到有效 marker → None。caller 视作"未 snooze"。
+///
+/// 与 `parse_blocked_by` 同语言（marker 风、参数 trim、扫描风），让两个依
+/// 赖维度（who-before-me / when-am-I-ready）有可预期的一致语法。
+pub fn parse_snooze(description: &str) -> Option<chrono::NaiveDateTime> {
+    let bytes = description.as_bytes();
+    let needle = b"[snooze:";
+    let mut latest: Option<chrono::NaiveDateTime> = None;
+    let mut i: usize = 0;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] != needle {
+            i += 1;
+            continue;
+        }
+        let start = i + needle.len();
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b']' {
+            end += 1;
+        }
+        if end >= bytes.len() {
+            break; // 没闭合
+        }
+        let inner = description[start..end].trim();
+        // chrono 用 NaiveDateTime::parse_from_str；接受空格分隔 + minute 精度
+        if let Ok(dt) =
+            chrono::NaiveDateTime::parse_from_str(inner, "%Y-%m-%d %H:%M")
+        {
+            latest = Some(dt);
+        }
+        i = end + 1;
+    }
+    latest
+}
+
+/// pure：删 description 里所有 `[snooze: …]` marker（含闭合 `]`）。两侧紧贴
+/// 空白归一为单空格（避免删除后留双空格 / 行首空白）。未闭合的 marker
+/// 保留原样，避免数据被静默改写。
+///
+/// 给 `task_set_snooze` 命令用："写新 snooze 之前先把旧的剥干净"，保证
+/// 任意次 set / unset 后 description 整洁。`parse_snooze` 取最后一个有效
+/// marker 的语义在此 helper 之上仍正确（即便不剥，也只是 description 越
+/// 来越长），但 UI-driven 修改场景下让 description 整洁是 owner UX 关键。
+pub fn strip_snooze_markers(desc: &str) -> String {
+    let mut s = desc.to_string();
+    while let Some(start) = s.find("[snooze:") {
+        let rest = &s[start..];
+        let end_rel = match rest.find(']') {
+            Some(p) => p,
+            None => break, // 未闭合 marker 不破坏数据
+        };
+        let end = start + end_rel + 1;
+        let prefix_trim_end = s[..start].trim_end();
+        let suffix_trim_start = s[end..].trim_start();
+        let mut next = String::with_capacity(s.len());
+        next.push_str(prefix_trim_end);
+        if !prefix_trim_end.is_empty() && !suffix_trim_start.is_empty() {
+            next.push(' ');
+        }
+        next.push_str(suffix_trim_start);
+        s = next;
+    }
+    s
+}
+
+/// pure：description 是否带 `[pinned]` 标记（owner 自标"关键任务"）。仅严格
+/// 匹配字面 `[pinned]`（不接 `[pinned: ...]` / `[Pinned]` 等变体）—— 单一写
+/// 入路径让 LLM 与 UI 看到的形态一致，不必再做 normalize。
+pub fn parse_pinned(description: &str) -> bool {
+    description.contains("[pinned]")
+}
+
+/// pure：删 description 里所有 `[pinned]` marker。两侧紧贴空白归一为单空格。
+/// 与 `strip_snooze_markers` 同模式，给 `task_set_pinned` 命令做"写之前先剥"。
+pub fn strip_pinned_markers(desc: &str) -> String {
+    let cleaned = remove_bracketed_segments(desc, &["[pinned]"]);
+    collapse_whitespace(&cleaned)
+}
+
+/// 给定 items 集合 + now，返回每条仍在 snooze 期的 title → wake-up 时间映射。
+/// 已过 snooze 时刻的 marker 视作失效（不进 map），与"自然失效"语义一致。
+/// 配 `unresolved_blockers` 在 proactive prompt 层 union filter。
+pub fn snoozed_until_map(
+    items: &[(String, String)],
+    now: chrono::NaiveDateTime,
+) -> std::collections::HashMap<String, chrono::NaiveDateTime> {
+    let mut out: std::collections::HashMap<String, chrono::NaiveDateTime> =
+        std::collections::HashMap::new();
+    for (title, desc) in items {
+        if let Some(until) = parse_snooze(desc) {
+            if until > now {
+                out.insert(title.clone(), until);
+            }
+        }
+    }
+    out
 }
 
 /// pure：把 `ops` 应用到 description，返回新 description。
@@ -689,6 +924,9 @@ mod tests {
             created_at: created_at.to_string(),
             updated_at: created_at.to_string(),
             detail_path: String::new(),
+            blocked_by: Vec::new(),
+            snoozed_until: None,
+            pinned: false,
         }
     }
 
@@ -723,6 +961,38 @@ mod tests {
     fn returns_none_for_missing_brackets() {
         assert!(parse_task_header("task pri=1 没有方括号").is_none());
         assert!(parse_task_header("[task pri=1 没闭合").is_none());
+    }
+
+    #[test]
+    fn strip_archive_markers_clears_terminal_state_but_keeps_schedule() {
+        // 归档恢复场景：description 含 [archived:] [done] [result:] 标记，
+        // 剥光后应保留 [task pri=] header / [every:] schedule prefix / #tag。
+        let input =
+            "[archived: 2026-04-01] [task pri=3] [every: 09:00] 写日报 #工作 [done] [result: 写了 5 段]";
+        let out = strip_archive_markers(input);
+        // 关键 marker 都被剥
+        assert!(!out.contains("[archived"));
+        assert!(!out.contains("[done"));
+        assert!(!out.contains("[result"));
+        // 任务核心保留
+        assert!(out.contains("[task pri=3]"));
+        assert!(out.contains("[every: 09:00]"));
+        assert!(out.contains("写日报"));
+        assert!(out.contains("#工作"));
+    }
+
+    #[test]
+    fn strip_archive_markers_handles_cancelled_and_error() {
+        let cancelled = strip_archive_markers(
+            "[archived: 2026-04-01] [task pri=1] 拖延的事 [cancelled: 不做了]",
+        );
+        assert!(!cancelled.contains("[cancelled"));
+        assert!(cancelled.contains("拖延的事"));
+
+        let errored =
+            strip_archive_markers("[archived: 2026-04-01] [task pri=2] 死循环 [error: 超时]");
+        assert!(!errored.contains("[error"));
+        assert!(errored.contains("死循环"));
     }
 
     #[test]
@@ -1367,5 +1637,305 @@ mod tests {
         let newer = view("new", 3, None, TaskStatus::Pending, "2026-05-03T00:00");
         // 同 pri + 同 due（None） + 同 status → 老任务优先（避免饿死）
         assert_eq!(compare_for_queue(&older, &newer, now), Ordering::Less);
+    }
+
+    // ---------------- parse_blocked_by ----------------
+
+    #[test]
+    fn parse_blocked_by_basic() {
+        let v = parse_blocked_by("[blockedBy: 整理 Downloads, 写日报] 真正要做的事");
+        assert_eq!(v, vec!["整理 Downloads", "写日报"]);
+    }
+
+    #[test]
+    fn parse_blocked_by_no_marker() {
+        assert!(parse_blocked_by("普通任务").is_empty());
+        assert!(parse_blocked_by("[task pri=3] 普通任务").is_empty());
+    }
+
+    #[test]
+    fn parse_blocked_by_dedup_and_order() {
+        let v = parse_blocked_by("[blockedBy: A, B] 主体 [blockedBy: B, C, A]");
+        // 首次出现顺序 + 去重
+        assert_eq!(v, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn parse_blocked_by_trims_pieces() {
+        let v = parse_blocked_by("[blockedBy:  A ,  ,  B   ]");
+        assert_eq!(v, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn parse_blocked_by_ignores_unclosed_marker() {
+        // 没闭合 `]` —— 当前实现遇到这种情况停止扫描，整段不返。
+        let v = parse_blocked_by("[blockedBy: A, B 没闭合");
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn parse_blocked_by_case_sensitive_key() {
+        // 不接受小写 `blockedby` —— 与其它 marker 大小写敏感一致避免误匹配。
+        let v = parse_blocked_by("[blockedby: A]");
+        assert!(v.is_empty());
+    }
+
+    // ---------------- unresolved_blockers ----------------
+
+    #[test]
+    fn unresolved_blockers_filters_done_and_cancelled() {
+        let items = vec![
+            ("done-task".to_string(), "[task pri=3] 做完了 [done]".to_string()),
+            (
+                "cancel-task".to_string(),
+                "[task pri=3] 已取消 [cancelled: 改主意]".to_string(),
+            ),
+            (
+                "active-blocker".to_string(),
+                "[task pri=3] 还没做".to_string(),
+            ),
+            (
+                "blocked-task".to_string(),
+                "[blockedBy: done-task, cancel-task, active-blocker] 主任务".to_string(),
+            ),
+        ];
+        let map = unresolved_blockers(&items);
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get("blocked-task"),
+            Some(&vec!["active-blocker".to_string()]),
+            "done/cancelled blockers 已解决；active 仍卡住"
+        );
+    }
+
+    #[test]
+    fn unresolved_blockers_typo_blocker_treated_as_resolved() {
+        // blocker 引用了不存在的 title（typo / 被删 / 被改名）→ 视作已解决。
+        let items = vec![
+            (
+                "real".to_string(),
+                "[blockedBy: 不存在的任务] 主任务".to_string(),
+            ),
+            ("real-2".to_string(), "[task pri=3] 不相关".to_string()),
+        ];
+        let map = unresolved_blockers(&items);
+        assert!(map.is_empty(), "不存在的 blocker 不应卡住任务");
+    }
+
+    #[test]
+    fn unresolved_blockers_no_marker_no_entry() {
+        let items = vec![("a".to_string(), "[task pri=3] 没依赖".to_string())];
+        let map = unresolved_blockers(&items);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn unresolved_blockers_error_state_is_still_active() {
+        // error 状态的 blocker 仍算 active（用户没决定重试 / 取消，悬而未决）。
+        let items = vec![
+            (
+                "err".to_string(),
+                "[task pri=3] [error: 没网] 出错了".to_string(),
+            ),
+            (
+                "blocked".to_string(),
+                "[blockedBy: err] 主任务".to_string(),
+            ),
+        ];
+        let map = unresolved_blockers(&items);
+        assert_eq!(
+            map.get("blocked"),
+            Some(&vec!["err".to_string()]),
+            "error 状态阻塞仍有效"
+        );
+    }
+
+    // ---------------- parse_snooze ----------------
+
+    fn ndt(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(y, mo, d)
+            .unwrap()
+            .and_hms_opt(h, mi, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn parse_snooze_basic() {
+        let v = parse_snooze("[snooze: 2026-05-20 09:00] 主任务");
+        assert_eq!(v, Some(ndt(2026, 5, 20, 9, 0)));
+    }
+
+    #[test]
+    fn parse_snooze_no_marker() {
+        assert!(parse_snooze("普通任务").is_none());
+        assert!(parse_snooze("[task pri=3] 普通任务").is_none());
+    }
+
+    #[test]
+    fn parse_snooze_takes_latest_when_multiple() {
+        // 用户重新 snooze 时可以 append 一个新 marker，不必删旧；解析器
+        // 取最后一个有效值。
+        let v = parse_snooze(
+            "[snooze: 2026-05-15 09:00] 主任务 [snooze: 2026-05-20 09:00] 又延后",
+        );
+        assert_eq!(v, Some(ndt(2026, 5, 20, 9, 0)));
+    }
+
+    #[test]
+    fn parse_snooze_invalid_format_ignored() {
+        // chrono parse_from_str 对 "%Y-%m-%d %H:%M" 字段值非法 / 完全乱码
+        // 都返 Err。注意：chrono 对零填充是宽松的（`2026-5-1 9:00` 也 accept），
+        // 所以这里只测字段值越界 + 完全非时间串。
+        assert!(parse_snooze("[snooze: 2026-13-99 25:99]").is_none());
+        assert!(parse_snooze("[snooze: not-a-time]").is_none());
+        assert!(parse_snooze("[snooze: ]").is_none());
+        assert!(parse_snooze("[snooze:]").is_none());
+    }
+
+    #[test]
+    fn parse_snooze_invalid_then_valid_keeps_valid() {
+        // 第一个 marker 烂，第二个 marker 好 → 取后者；不应被烂条卡死。
+        let v = parse_snooze(
+            "[snooze: bad] [snooze: 2026-05-20 09:00]",
+        );
+        assert_eq!(v, Some(ndt(2026, 5, 20, 9, 0)));
+    }
+
+    #[test]
+    fn parse_snooze_case_sensitive_key() {
+        // 不接受 [SNOOZE: ...] / [Snooze: ...] —— 大小写敏感对齐其它 marker。
+        assert!(parse_snooze("[SNOOZE: 2026-05-20 09:00]").is_none());
+        assert!(parse_snooze("[Snooze: 2026-05-20 09:00]").is_none());
+    }
+
+    #[test]
+    fn parse_snooze_unclosed_marker() {
+        let v = parse_snooze("[snooze: 2026-05-20 09:00 没闭合");
+        assert!(v.is_none());
+    }
+
+    // ---------------- snoozed_until_map ----------------
+
+    #[test]
+    fn snoozed_until_map_filters_past_snooze() {
+        let now = ndt(2026, 5, 14, 12, 0);
+        let items = vec![
+            (
+                "future".to_string(),
+                "[snooze: 2026-05-20 09:00] 还没醒".to_string(),
+            ),
+            (
+                "past".to_string(),
+                "[snooze: 2026-05-10 09:00] 已经醒过".to_string(),
+            ),
+            ("none".to_string(), "[task pri=3] 无 snooze".to_string()),
+        ];
+        let m = snoozed_until_map(&items, now);
+        assert_eq!(m.len(), 1, "{:?}", m);
+        assert_eq!(m.get("future"), Some(&ndt(2026, 5, 20, 9, 0)));
+        assert!(!m.contains_key("past"), "past snooze 已 expired");
+        assert!(!m.contains_key("none"));
+    }
+
+    // ---------------- strip_snooze_markers ----------------
+
+    #[test]
+    fn strip_snooze_markers_basic() {
+        let s = strip_snooze_markers("主任务 [snooze: 2026-05-20 09:00] 末尾");
+        assert_eq!(s, "主任务 末尾", "{}", s);
+    }
+
+    #[test]
+    fn strip_snooze_markers_multiple() {
+        let s = strip_snooze_markers(
+            "[snooze: 2026-05-10 09:00] 头部 [snooze: 2026-05-20 09:00] 尾部",
+        );
+        assert_eq!(s, "头部 尾部", "{}", s);
+    }
+
+    #[test]
+    fn strip_snooze_markers_no_marker_noop() {
+        let s = strip_snooze_markers("[task pri=3] 普通任务 #tag");
+        assert_eq!(s, "[task pri=3] 普通任务 #tag");
+    }
+
+    #[test]
+    fn strip_snooze_markers_unclosed_marker_preserved() {
+        // 未闭合：保留原样，避免静默删除合法但 typo 的字面量
+        let s = strip_snooze_markers("[snooze: 2026-05-20 09:00 没闭合");
+        assert_eq!(s, "[snooze: 2026-05-20 09:00 没闭合");
+    }
+
+    #[test]
+    fn strip_snooze_markers_normalizes_whitespace() {
+        // marker 两侧多个空格 → 合并到单空格
+        let s = strip_snooze_markers("a   [snooze: 2026-05-20 09:00]   b");
+        assert_eq!(s, "a b", "{}", s);
+    }
+
+    #[test]
+    fn strip_snooze_markers_leading_marker() {
+        // 行首 marker：剥后无前缀空白
+        let s = strip_snooze_markers("[snooze: 2026-05-20 09:00] 主体");
+        assert_eq!(s, "主体");
+    }
+
+    #[test]
+    fn strip_snooze_markers_trailing_marker() {
+        // 行尾 marker：剥后无尾空白
+        let s = strip_snooze_markers("主体 [snooze: 2026-05-20 09:00]");
+        assert_eq!(s, "主体");
+    }
+
+    #[test]
+    fn snoozed_until_map_boundary_now_equals_wake_is_awake() {
+        // now == snooze 时刻：用户该被唤醒。`>` 严格 future 才算 snoozed。
+        let now = ndt(2026, 5, 20, 9, 0);
+        let items = vec![(
+            "boundary".to_string(),
+            "[snooze: 2026-05-20 09:00] 边界".to_string(),
+        )];
+        let m = snoozed_until_map(&items, now);
+        assert!(m.is_empty(), "now == wake 不再算 snooze");
+    }
+
+    // ---------------- parse_pinned / strip_pinned_markers ----------------
+
+    #[test]
+    fn parse_pinned_matches_strict_form() {
+        assert!(parse_pinned("[task pri=3] 主任务 [pinned]"));
+        assert!(parse_pinned("[pinned] 行首也算"));
+        assert!(parse_pinned("中间 [pinned] 也算"));
+    }
+
+    #[test]
+    fn parse_pinned_rejects_variants() {
+        // 严格匹配：大写 / 加载荷 / 拼写错 都不算。owner 写 `[pinned]` 才生效。
+        assert!(!parse_pinned("[Pinned]"));
+        assert!(!parse_pinned("[PINNED]"));
+        assert!(!parse_pinned("[pinned: foo]"));
+        assert!(!parse_pinned("[pin]"));
+        assert!(!parse_pinned("普通任务"));
+    }
+
+    #[test]
+    fn strip_pinned_markers_removes_and_normalizes() {
+        // 单次：normal whitespace 合并；多次：全部剥；未匹配：noop。
+        assert_eq!(strip_pinned_markers("主任务 [pinned]"), "主任务");
+        assert_eq!(strip_pinned_markers("[pinned] 主任务"), "主任务");
+        assert_eq!(strip_pinned_markers("a [pinned] b [pinned] c"), "a b c");
+        assert_eq!(strip_pinned_markers("无 marker"), "无 marker");
+    }
+
+    #[test]
+    fn strip_pinned_markers_preserves_other_markers() {
+        // 关键回归：只剥 [pinned]，不动 [task pri=3] / [snooze:] / [origin:tg:]
+        let s = strip_pinned_markers(
+            "[task pri=3 due=2026-05-20T18:00] 主任务 [pinned] [snooze: 2026-05-20 09:00] [origin:tg:123]",
+        );
+        assert!(s.contains("[task pri=3 due=2026-05-20T18:00]"));
+        assert!(s.contains("[snooze: 2026-05-20 09:00]"));
+        assert!(s.contains("[origin:tg:123]"));
+        assert!(!s.contains("[pinned]"));
     }
 }

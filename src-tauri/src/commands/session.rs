@@ -176,6 +176,123 @@ pub fn create_session() -> Result<Session, String> {
     Ok(session)
 }
 
+/// pure：粗略估算 token 数（与前端 `estimateInputTokens` 同算法）：
+/// CJK 字符 ~1 token/字，非 CJK 非空白字符 ~1 token/4 字。各家 LLM
+/// tokenizer 都对不上，但 ±25% 误差对"该不该 /reset"的决策足够。
+///
+/// 实现走 `chars()` 迭代（O(n) Unicode-safe）；CJK 范围覆盖最常见的
+/// Unified Ideographs + 假名 + 韩文音节。其它语种归 "non-CJK"。
+pub fn estimate_tokens(s: &str) -> u32 {
+    let mut cjk: u32 = 0;
+    let mut other: u32 = 0;
+    for ch in s.chars() {
+        let code = ch as u32;
+        let is_cjk = (0x4E00..=0x9FFF).contains(&code)
+            || (0x3040..=0x30FF).contains(&code)
+            || (0xAC00..=0xD7AF).contains(&code);
+        if is_cjk {
+            cjk = cjk.saturating_add(1);
+        } else if !ch.is_whitespace() {
+            other = other.saturating_add(1);
+        }
+    }
+    // ceil(other / 4) = (other + 3) / 4。CJK + ceil(other/4) 总和。
+    cjk.saturating_add((other.saturating_add(3)) / 4)
+}
+
+/// pure：从 OpenAI compatible content 字段（可能是 string 或 multipart
+/// `[{type:"text", text:"..."}, {type:"image_url",...}]`）抽出文本片段
+/// 拼成一个 string。multipart 中非 text 段（image_url）忽略。
+fn content_value_text(content: &serde_json::Value) -> String {
+    if let Some(s) = content.as_str() {
+        return s.to_string();
+    }
+    if let Some(arr) = content.as_array() {
+        let mut out = String::new();
+        for part in arr {
+            if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(t);
+            }
+        }
+        return out;
+    }
+    String::new()
+}
+
+/// 当前 active session 的 LLM 上下文规模 —— 给 PanelDebugStats 卡片做
+/// "该不该 /reset" 决策支持。**排除 role=="system"** —— system 是 SOUL
+/// 人设 / 工具说明，/reset 保留；本数字反映的是"会被 /reset 砍掉的部分"。
+///
+/// 任何读失败（索引读不到 / session 文件丢 / parse 失败）都退到 0 而非
+/// Err，让 PanelDebugStats 渲染"干净状态（0 条）"而非 toast 报错 ——
+/// 这卡片是辅助决策，挂掉不该挡用户其它操作。
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionContextStats {
+    pub messages: u32,
+    pub chars: u32,
+    pub tokens: u32,
+    /// 当前 active session 的 id，给 UI 显"哪个 session"。空 = 没有 active
+    /// session（极少 — 初次启动 create_session 前）。
+    pub session_id: String,
+    /// 同上的 title。
+    pub session_title: String,
+}
+
+#[tauri::command]
+pub fn get_active_session_context_stats() -> SessionContextStats {
+    let idx = read_index();
+    if idx.active_id.is_empty() {
+        return SessionContextStats {
+            messages: 0,
+            chars: 0,
+            tokens: 0,
+            session_id: String::new(),
+            session_title: String::new(),
+        };
+    }
+    let session = match load_session(idx.active_id.clone()) {
+        Ok(s) => s,
+        Err(_) => {
+            return SessionContextStats {
+                messages: 0,
+                chars: 0,
+                tokens: 0,
+                session_id: idx.active_id.clone(),
+                session_title: String::new(),
+            };
+        }
+    };
+    let mut messages = 0u32;
+    let mut chars = 0u32;
+    let mut tokens = 0u32;
+    for msg in &session.messages {
+        let role = msg
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if role == "system" {
+            continue;
+        }
+        messages = messages.saturating_add(1);
+        let empty_val = serde_json::Value::Null;
+        let content_val = msg.get("content").unwrap_or(&empty_val);
+        let text = content_value_text(content_val);
+        let c = text.chars().count() as u32;
+        chars = chars.saturating_add(c);
+        tokens = tokens.saturating_add(estimate_tokens(&text));
+    }
+    SessionContextStats {
+        messages,
+        chars,
+        tokens,
+        session_id: session.id,
+        session_title: session.title,
+    }
+}
+
 /// 跨会话搜索的命中条目。`item_index` 是 session.items 数组的下标 —— 前端
 /// 把它和 session_id 一起拿来 scrollIntoView 跳到原会话原位。
 ///
@@ -674,6 +791,63 @@ mod tests {
         assert_eq!(hits[0].session_title, "测试会话");
         assert_eq!(hits[0].item_index, 0);
         assert_eq!(hits[0].match_len, 2);
+    }
+
+    #[test]
+    // ---------------- estimate_tokens ----------------
+
+    #[test]
+    fn estimate_tokens_empty_is_zero() {
+        assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn estimate_tokens_cjk_one_per_char() {
+        // 「整理 Downloads」: 2 CJK + 1 space + 9 ASCII non-whitespace
+        // → 2 + ceil(9/4) = 2 + 3 = 5
+        assert_eq!(estimate_tokens("整理 Downloads"), 5);
+    }
+
+    #[test]
+    fn estimate_tokens_ascii_quarter() {
+        // "hello world" = 10 non-whitespace + 1 space → ceil(10/4) = 3
+        assert_eq!(estimate_tokens("hello world"), 3);
+    }
+
+    #[test]
+    fn estimate_tokens_whitespace_only_zero() {
+        assert_eq!(estimate_tokens("   \n\n\t"), 0);
+    }
+
+    #[test]
+    fn estimate_tokens_pure_cjk() {
+        // 11 个汉字（我/是/一/只/可/爱/的/桌/面/宠/物） → 11
+        assert_eq!(estimate_tokens("我是一只可爱的桌面宠物"), 11);
+    }
+
+    // ---------------- content_value_text ----------------
+
+    #[test]
+    fn content_text_extract_string() {
+        let v = serde_json::json!("hello");
+        assert_eq!(content_value_text(&v), "hello");
+    }
+
+    #[test]
+    fn content_text_extract_multipart() {
+        let v = serde_json::json!([
+            { "type": "text", "text": "first" },
+            { "type": "image_url", "image_url": { "url": "data:..." } },
+            { "type": "text", "text": "second" },
+        ]);
+        // 两段 text 用 \n 拼接；image_url 不参与
+        assert_eq!(content_value_text(&v), "first\nsecond");
+    }
+
+    #[test]
+    fn content_text_extract_unknown_returns_empty() {
+        let v = serde_json::json!({ "weird": "shape" });
+        assert_eq!(content_value_text(&v), "");
     }
 
     #[test]

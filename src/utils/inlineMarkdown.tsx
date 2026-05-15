@@ -192,7 +192,21 @@ const INLINE_CODE_STYLE: React.CSSProperties = {
 ///
 /// 不识别：> 引用 / [link](url)（已通过 URL 自动识别）/ ![image] / 嵌套列表
 /// 深层缩进。桌面气泡空间小，复杂排版反而干扰。
-export function parseMarkdown(input: string): ReactNode[] {
+/// 调用方为 `- [ ]` / `- [x]` 任务项接 toggle 回调。`lineOffset` 让 parser
+/// 可以把"slice 内 line idx"加上偏移再回传给上层，定位到完整 md 的全局行号。
+/// 不传 `checkboxToggle` 时 checkbox 渲染为 disabled（read-only）；想纯纯
+/// 静态显也行（与现有渲染同视觉，仅 input disabled）。
+export interface ParseMarkdownOpts {
+  checkboxToggle?: {
+    lineOffset: number;
+    onToggle: (globalLineIdx: number, checked: boolean) => void;
+  };
+}
+
+export function parseMarkdown(
+  input: string,
+  opts?: ParseMarkdownOpts,
+): ReactNode[] {
   const out: ReactNode[] = [];
   const lines = input.split("\n");
   for (let i = 0; i < lines.length; i++) {
@@ -278,6 +292,61 @@ export function parseMarkdown(input: string): ReactNode[] {
       continue;
     }
 
+    // 引用块 `> ...`：consume 连续的 `>` 起首行合并为单个 blockquote
+    // 容器。与 fence code block 同模式（合并消费），让多行引用渲成"一整段"
+    // 视觉而非每行独立 border。同时保 `>` 后空格灵活（`>` 单字 / `> text`
+    // / `>text` 都接受）；本段不支持嵌套引用 `>>` —— 默认按 1 级渲染。
+    if (line.match(/^>(\s|$)/) || line.startsWith(">")) {
+      // 二次校验：line.startsWith(">") 可能命中 `>>=`（C bit-shift 等）；
+      // 真正的 markdown 引用规则要求 `>` 后跟空白 / EOL / EOF。第一 regex
+      // 已覆盖；这里若 startsWith 单独命中（如 `>text` 无空白）只有当首字
+      // 后无 ASCII 字母 / 数字时才作引用，否则跳到下面普通行处理。
+      const isQuote =
+        /^>(\s|$)/.test(line) ||
+        // 接受 `>text` 这种"忘加空格"的常见误写
+        (line.startsWith(">") && line.length > 1 && line[1] !== ">");
+      if (isQuote) {
+        const quoteLines: string[] = [];
+        let j = i;
+        while (j < lines.length) {
+          const l = lines[j];
+          if (
+            /^>(\s|$)/.test(l) ||
+            (l.startsWith(">") && l.length > 1 && l[1] !== ">")
+          ) {
+            // 剥首位 `>` + 可选空白
+            quoteLines.push(l.replace(/^>\s?/, ""));
+            j++;
+          } else {
+            break;
+          }
+        }
+        out.push(
+          <div
+            key={`md-blk-${i}`}
+            style={{
+              borderLeft:
+                "3px solid color-mix(in srgb, var(--pet-color-accent) 50%, var(--pet-color-border))",
+              padding: "4px 10px",
+              margin: "4px 0",
+              color: "var(--pet-color-muted)",
+              background:
+                "color-mix(in srgb, var(--pet-color-accent) 4%, transparent)",
+              borderRadius: "0 4px 4px 0",
+            }}
+          >
+            {quoteLines.map((ql, k) => (
+              <div key={k} style={{ lineHeight: 1.55 }}>
+                {ql.length === 0 ? " " : parseInlineMarkdown(ql)}
+              </div>
+            ))}
+          </div>,
+        );
+        i = j - 1; // for-loop ++ 后跳到 j
+        continue;
+      }
+    }
+
     // 标题 # / ## / ###（最多三级，避免无意义大字号占气泡空间）
     const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
     if (headingMatch) {
@@ -311,6 +380,53 @@ export function parseMarkdown(input: string): ReactNode[] {
             {num}.
           </span>
           {parseInlineMarkdown(body)}
+        </div>,
+      );
+      continue;
+    }
+
+    // GitHub-flavored task list `- [ ]` / `- [x]` / `- [X]`：在普通无序列表
+    // 之前匹配（普通列表的 regex 会把 `- [ ]` 也吃进去，所以这里得先发）。
+    // checkboxToggle 提供时变成可勾选交互（点击触发 onToggle(全局行号, 新状态)）；
+    // 不提供时仍渲染 input 但 disabled —— 让读 / 写视图视觉一致，差异只是
+    // 能否点。`[ x]` 之后用 `parseInlineMarkdown` 渲 body（保留链接 / 粗体）。
+    const taskMatch = line.match(/^(\s*)- \[([ xX])\]\s+(.*)$/);
+    if (taskMatch) {
+      const checked = taskMatch[2].toLowerCase() === "x";
+      const body = taskMatch[3];
+      const toggle = opts?.checkboxToggle;
+      const globalIdx = (toggle?.lineOffset ?? 0) + i;
+      out.push(
+        <div key={`md-blk-${i}`} style={LIST_ITEM_STYLE}>
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={!toggle}
+            onChange={
+              toggle
+                ? (e) => toggle.onToggle(globalIdx, e.currentTarget.checked)
+                : undefined
+            }
+            // 与 panel-global focus / Live2D 区视觉对齐：accent 跟随主题；
+            // marginRight 与 bullet `•` 同 4px 节奏；flexShrink 防 body 长
+            // 时 checkbox 被挤走。
+            style={{
+              marginRight: 6,
+              flexShrink: 0,
+              accentColor: "var(--pet-color-accent)",
+              cursor: toggle ? "pointer" : "default",
+            }}
+            aria-label={checked ? "已完成的待办" : "未完成的待办"}
+          />
+          <span
+            style={
+              checked
+                ? { textDecoration: "line-through", opacity: 0.6 }
+                : undefined
+            }
+          >
+            {parseInlineMarkdown(body)}
+          </span>
         </div>,
       );
       continue;

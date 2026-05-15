@@ -1,3 +1,4 @@
+pub mod app;
 pub mod chat;
 pub mod debug;
 pub mod image;

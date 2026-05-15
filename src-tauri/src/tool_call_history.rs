@@ -132,15 +132,20 @@ pub fn recent_tool_calls() -> Vec<ToolCallRecord> {
     out
 }
 
-/// SQLite v11/v12 引入了 `butler_task_edit` / `todo_edit` 专用工具，旧的
-/// `memory_edit` 仍接受 butler_tasks / todo category 作 fallback。owner 需
-/// 要看到 prompt 引导后 LLM 是否真在用新工具 —— 本 struct 把 ring buffer
-/// 里最近 N 条按"专用 vs 共用"二分计数。
+/// SQLite v11/v12 引入 `butler_task_edit` / `todo_edit` 专用工具；本轮
+/// 把 LLM 面向的 `memory_edit` 工具改成拒绝 butler_tasks / todo / task_archive
+/// 三个 category（参见 `tools::memory_tools::dedicated_redirect_for`）—— 实
+/// 际"专用 vs 共用"占比的稳态期望是 memory_edit_* 计数为 0。统计仍保留是
+/// 为了观测：(a) 旧 ring buffer 里残留的 fallback 调用，(b) 万一未来回退
+/// 拒绝策略时立即能在面板看到回流。
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct DedicatedToolStats {
     pub butler_task_edit_count: usize,
+    /// 兜底信号：v13 起 LLM 拒绝写 butler_tasks 通过 memory_edit。
+    /// 仍出现意味 (a) 拒绝前 ring buffer 残留 (b) 拒绝策略被绕过。
     pub memory_edit_butler_count: usize,
     pub todo_edit_count: usize,
+    /// 同上，todo 的兜底信号。
     pub memory_edit_todo_count: usize,
     /// 样本窗口大小（recent_tool_calls() 的当前长度）。让前端能渲染
     /// "5/30" 这种相对比例提示。

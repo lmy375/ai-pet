@@ -139,7 +139,7 @@ impl Tool for MemoryEditTool {
             "type": "function",
             "function": {
                 "name": "memory_edit",
-                "description": "Create, update, or delete a memory item.\n\n- create: Add a new memory item to a category. Provide title, description, and optionally detail_content (written to a .md file).\n- update: Modify an existing item (matched by category + title). Can update description and/or detail_content.\n- delete: Remove an item (matched by category + title) and its .md file.\n\nCategories: ai_insights, user_profile, todo, butler_tasks, general\n\nUse `butler_tasks` whenever the owner asks you to DO something on their behalf — info gathering (\"每天早上把日历发给我\"), file work (\"周末整理一下 ~/Downloads\"), scheduled reports, or any recurring chore. Description should record what was asked + how often + last execution status. Don't confuse with `todo`: `todo` is reminders the user wants for themselves (\"提醒我 5pm 喝水\"), `butler_tasks` is work the user wants YOU to perform.\n\nFor tasks with a clock cadence, lead the description with one of these schedule prefixes so the proactive prompt can flag them as 「到期」 in time:\n  - `[every: HH:MM] topic` — daily recurring at HH:MM local time\n  - `[once: YYYY-MM-DD HH:MM] topic` — single-fire at the absolute moment\nExample: `[every: 09:00] 把今天的日历汇总写到 ~/today.md`. Tasks without a prefix are still valid — they're just \"do this whenever you judge it right\" instead of clock-driven.",
+                "description": "Create, update, or delete a **memory** item — long-term facts about the owner, your own thinking notes, generic knowledge worth keeping.\n\n- create: Add a new memory item to a category. Provide title, description, and optionally detail_content (written to a .md file).\n- update: Modify an existing item (matched by category + title). Can update description and/or detail_content.\n- delete: Remove an item (matched by category + title) and its .md file.\n\n**Use this tool ONLY for these categories**:\n  - `user_profile` — stable facts about the owner (habits, preferences, work setup)\n  - `ai_insights` — your own thinking / observations / persona summary / daily_plan / daily_review_<date>\n  - `general` — anything else that doesn't fit a more specific tool\n\n**Business state has dedicated tools — memory_edit will REFUSE these categories**:\n  - butler tasks (work the owner delegates to you) → use `butler_task_edit`\n  - reminders (clock-driven nudges for the owner) → use `todo_edit`\n  - task archive (settled tasks ≥ 30 days) — managed automatically by the consolidate loop; not an LLM-writable surface\n\nThe domain split keeps each store narrowly scoped: `memory` is your knowledge / self-portrait layer, while butler_tasks / todo / task_archive live in their own SQLite tables with per-domain validation. Calling memory_edit with one of those categories now returns an error pointing at the right tool.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -150,8 +150,8 @@ impl Tool for MemoryEditTool {
                         },
                         "category": {
                             "type": "string",
-                            "enum": ["ai_insights", "user_profile", "todo", "butler_tasks", "general"],
-                            "description": "The category"
+                            "enum": ["ai_insights", "user_profile", "general"],
+                            "description": "The memory domain. butler_tasks / todo / task_archive are no longer accepted here — use the dedicated tools."
                         },
                         "title": {
                             "type": "string",
@@ -193,14 +193,19 @@ async fn memory_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
         return r#"{"error": "missing required parameters: action, category, title"}"#.to_string();
     }
 
-    // Capture description for the butler-event log before move'ing into memory_edit.
-    // Iter Cε: when the LLM touches a butler_tasks entry (update / delete) we record
-    // a one-line event so the user has a "what did the pet do for me" surface
-    // distinct from speech_history. Creates aren't logged — those are *assignments*,
-    // not executions; logging them would dilute the signal.
-    let butler_action_logged =
-        category == "butler_tasks" && (action == "update" || action == "delete");
-    let desc_for_log = description.clone().unwrap_or_default();
+    // Reject migrated business-state domains at the LLM surface. The frontend's
+    // Tauri `invoke('memory_edit', ...)` path still hits `memory::memory_edit`
+    // directly (PanelMemory / PanelTasks editing); only the LLM tool wrapper
+    // refuses these categories so the LLM is forced into the dedicated tools.
+    if let Some(redirect) = dedicated_redirect_for(&category) {
+        let err = serde_json::json!({
+            "error": format!(
+                "memory_edit refuses category '{category}'. Use the dedicated tool: {redirect}.",
+            ),
+            "use_tool": redirect,
+        });
+        return err.to_string();
+    }
 
     match memory::memory_edit(
         action.clone(),
@@ -214,12 +219,24 @@ async fn memory_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
                 "memory_edit: {} '{}' in {}",
                 action, title, category
             ));
-            if butler_action_logged {
-                crate::butler_history::record_event(&action, &title, &desc_for_log).await;
-            }
             serde_json::json!({ "status": "ok", "message": msg }).to_string()
         }
         Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+    }
+}
+
+/// Return the dedicated-tool name an LLM should use for a migrated business
+/// domain, or `None` for memory-native categories. Pure to keep unit tests
+/// trivial; the rejection path in `memory_edit_impl` reuses the same lookup.
+pub(crate) fn dedicated_redirect_for(category: &str) -> Option<&'static str> {
+    match category {
+        "butler_tasks" => Some("butler_task_edit"),
+        "todo" => Some("todo_edit"),
+        // task_archive has no LLM-writable surface — the consolidate loop is
+        // the only legitimate writer. Reject + name it explicitly so the LLM
+        // gets a useful pointer rather than a generic "unknown" error.
+        "task_archive" => Some("(read-only — managed by the consolidate loop)"),
+        _ => None,
     }
 }
 
@@ -242,7 +259,7 @@ impl Tool for ButlerTaskEditTool {
             "type": "function",
             "function": {
                 "name": "butler_task_edit",
-                "description": "Manage butler tasks — work the owner has asked YOU to perform on their behalf. Distinct from `todo_edit` (which is reminders the owner wants for themselves).\n\n- create: assign a new task. Use when the owner asks you to DO something — info gathering (\"每天早上把日历发给我\"), file work (\"周末整理一下 ~/Downloads\"), scheduled reports, recurring chores. Description records what was asked + how often + last execution status.\n- update: modify an existing task (matched by title). Use when status changes ([done] / [error: ...] / [result: ...] markers), description tweaks, or progress notes.\n- delete: remove a task you (or the owner) have decided to retire.\n\nSchedule prefix in description so the proactive prompt can flag 到期:\n  - `[every: HH:MM] topic` — daily recurring at local HH:MM\n  - `[once: YYYY-MM-DD HH:MM] topic` — single-fire at absolute moment\n  - `[deadline: YYYY-MM-DD HH:MM] topic` — soft deadline (will nag as time approaches)\nNo prefix = \"do this whenever you judge it right\".\n\nMarkers in description (appended over time as you execute):\n  - `[done]` — finished\n  - `[done] [result: ...]` — finished with one-line产出 summary\n  - `[error: 原因]` — failed, may be retried\n  - `[cancelled: 原因]` — owner cancelled (terminal)\n  - `#tag` — categorization\n\nExample: `[every: 09:00] 把今天的日历汇总写到 ~/today.md`",
+                "description": "Manage butler tasks — work the owner has asked YOU to perform on their behalf. Distinct from `todo_edit` (which is reminders the owner wants for themselves).\n\n- create: assign a new task. Use when the owner asks you to DO something — info gathering (\"每天早上把日历发给我\"), file work (\"周末整理一下 ~/Downloads\"), scheduled reports, recurring chores. Description records what was asked + how often + last execution status.\n- update: modify an existing task (matched by title). Use when status changes ([done] / [error: ...] / [result: ...] markers), description tweaks, or progress notes.\n- delete: remove a task you (or the owner) have decided to retire.\n\nSchedule prefix in description so the proactive prompt can flag 到期:\n  - `[every: HH:MM] topic` — daily recurring at local HH:MM\n  - `[once: YYYY-MM-DD HH:MM] topic` — single-fire at absolute moment\n  - `[deadline: YYYY-MM-DD HH:MM] topic` — soft deadline (will nag as time approaches)\nNo prefix = \"do this whenever you judge it right\".\n\nMarkers in description (appended over time as you execute):\n  - `[done]` — finished\n  - `[done] [result: ...]` — finished with one-line产出 summary\n  - `[error: 原因]` — failed, may be retried\n  - `[cancelled: 原因]` — owner cancelled (terminal)\n  - `#tag` — categorization\n  - `[blockedBy: title-a, title-b]` — task dependency: this task should NOT be picked until every listed prerequisite is done / cancelled. The proactive prompt block automatically hides blocked tasks until their dependencies resolve, so use this to express \"先做 A 再做 B\" without creating a fragile schedule. Titles must match exactly (case-sensitive). Missing / typo titles are treated as resolved (no permanent dead-lock).\n  - `[snooze: YYYY-MM-DD HH:MM]` — temporal snooze: hide this task from the proactive prompt until the listed moment (local time, minute precision). After the moment passes, the marker auto-expires and the task reappears — no cleanup needed. Use when the owner says \"先放着，下周再说\" / \"今天先不动\" or when you decide a task isn't ripe yet. To re-snooze, append a new `[snooze: ...]` marker — the parser takes the latest one so you don't have to strip the old marker first.\n\nExample: `[every: 09:00] 把今天的日历汇总写到 ~/today.md`\nExample dependency: `[blockedBy: 调研竞品] 写决策文档` — only surfaces after `调研竞品` flips to done / cancelled.\nExample snooze: `[snooze: 2026-05-20 09:00] 等下个 sprint 再启动` — disappears from the prompt until 5/20 9:00.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -387,5 +404,34 @@ async fn todo_edit_impl(arguments: &str, ctx: &ToolContext) -> String {
             serde_json::json!({ "status": "ok", "message": msg }).to_string()
         }
         Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dedicated_redirect_for;
+
+    /// Migrated domains must redirect; memory-native categories must not.
+    /// This is the contract `memory_edit_impl` relies on — if a future
+    /// refactor breaks the table, the rejection path silently regresses.
+    #[test]
+    fn dedicated_redirect_table() {
+        assert_eq!(
+            dedicated_redirect_for("butler_tasks"),
+            Some("butler_task_edit")
+        );
+        assert_eq!(dedicated_redirect_for("todo"), Some("todo_edit"));
+        assert!(
+            dedicated_redirect_for("task_archive").is_some(),
+            "task_archive must be refused at the LLM surface"
+        );
+        // memory-native domains stay routable through memory_edit
+        assert_eq!(dedicated_redirect_for("ai_insights"), None);
+        assert_eq!(dedicated_redirect_for("user_profile"), None);
+        assert_eq!(dedicated_redirect_for("general"), None);
+        // unknown category falls through (memory::memory_edit will reject
+        // it with its own "Unknown category" error — we don't double-up).
+        assert_eq!(dedicated_redirect_for(""), None);
+        assert_eq!(dedicated_redirect_for("random"), None);
     }
 }

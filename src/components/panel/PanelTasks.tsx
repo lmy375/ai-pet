@@ -2,7 +2,10 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "rea
 import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { parseMarkdown } from "../../utils/inlineMarkdown";
+import { formatRelativeAgeBuckets } from "../../utils/formatRelativeAge";
+import { useSearchHistory } from "../../hooks/useSearchHistory";
 import { ImageLightbox } from "../common/ImageLightbox";
 import { ImageThumb } from "../common/ImageThumb";
 import { useTaskKeyboardNav } from "./useTaskKeyboardNav";
@@ -38,6 +41,44 @@ interface TaskView {
   /** detail.md 相对路径（memories_dir 下）。给 hover preview 用，直接调
    * memory_read_detail 即可。 */
   detail_path?: string;
+  /** 任务依赖：description 里 `[blockedBy: ...]` 解析出的引用 title 列表
+   * （raw，不 cross-reference）。前端用 `computeUnresolvedBlockers` 拿仍卡
+   * 着的子集渲染 🔒 chip。后端缺省 → `[]`（兼容老 session）。 */
+  blocked_by?: string[];
+  /** 任务 snooze：description 里 `[snooze: YYYY-MM-DD HH:MM]` 解析的最后一
+   * 个有效时刻。后端仅在 `now < until` 时填字符串（`YYYY-MM-DDThh:mm`，与
+   * `due` 协议同形）；过点后 = null/undefined 让 💤 chip 自动消失。 */
+  snoozed_until?: string | null;
+  /** 是否被 owner 标记 `[pinned]`。前端用此字段在「📌 钉住」chip filter 下专门
+   * 列出，让长 pending 队列里关键条目不被淹。后端缺省 → false（兼容老 session）。 */
+  pinned?: boolean;
+}
+
+/** 给定全部 tasks，返回每条 pending/error 任务仍未解决的 blocker title 列表。
+ * "未解决"= blocker title 仍在 tasks 里且其 status 不是 done / cancelled。
+ *
+ * 与后端 `task_queue::unresolved_blockers` 同算法（独立实现一份避免 IPC 往返
+ * + 让 UI 即时反映本地状态变更）。typo / 已删除的 blocker 视作已解决，避免
+ * 永久卡死。done / cancelled 任务自身不计算 blocker —— 终态行没有"等待"语义。
+ */
+function computeUnresolvedBlockers(
+  tasks: TaskView[],
+): Map<string, string[]> {
+  const activeTitles = new Set<string>();
+  for (const t of tasks) {
+    if (t.status !== "done" && t.status !== "cancelled") {
+      activeTitles.add(t.title);
+    }
+  }
+  const out = new Map<string, string[]>();
+  for (const t of tasks) {
+    if (t.status === "done" || t.status === "cancelled") continue;
+    const raw = t.blocked_by ?? [];
+    if (raw.length === 0) continue;
+    const unresolved = raw.filter((b) => activeTitles.has(b));
+    if (unresolved.length > 0) out.set(t.title, unresolved);
+  }
+  return out;
 }
 
 interface TaskListResponse {
@@ -70,11 +111,64 @@ interface TaskDetail {
 
 const PRIORITY_MAX = 9;
 
-/// PanelTasks 创建表单的"📋 从模板"预填项。每条 = 一个 one-shot 任务范
+interface TaskTemplate {
+  label: string;
+  title: string;
+  body: string;
+}
+
+/// localStorage key for user-defined templates；与内置 TASK_TEMPLATES 合并
+/// 后构成下拉选项总集合。shape：`Array<TaskTemplate>`。读失败 / 解析错 /
+/// 非数组 → 静默退到空数组（功能性降级）。
+const CUSTOM_TEMPLATES_LS_KEY = "pet-task-templates-custom";
+
+/// 自定义模板上限。20 是经验值：再多用户也不可能从下拉里挑得动；超过强
+/// 制让用户先在管理 modal 里清掉旧的。防止 localStorage 无界增长。
+const CUSTOM_TEMPLATES_MAX = 20;
+
+/// 自定义模板 label 最大字数。20 与任务标题 max 对齐，让 dropdown 不被拉宽。
+const CUSTOM_TEMPLATE_LABEL_MAX = 20;
+
+/// 读 localStorage 自定义模板。失败 / 解析错 → 空数组（不抛、不弹错）；
+/// 每条 entry 做 shape guard 防 hand-edit / 老版本字段漂移。
+function loadCustomTemplates(): TaskTemplate[] {
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_TEMPLATES_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (x): x is TaskTemplate =>
+        x !== null &&
+        typeof x === "object" &&
+        typeof x.label === "string" &&
+        typeof x.title === "string" &&
+        typeof x.body === "string" &&
+        x.label.trim().length > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+/// 写 localStorage 自定义模板。失败静默吞 —— localStorage 满 / 禁用都
+/// 不该阻塞表单交互；下次启动恢复为空。
+function saveCustomTemplates(list: TaskTemplate[]): void {
+  try {
+    window.localStorage.setItem(CUSTOM_TEMPLATES_LS_KEY, JSON.stringify(list));
+  } catch (e) {
+    console.error("saveCustomTemplates failed:", e);
+  }
+}
+
+/// PanelTasks 创建表单的"📋 从模板"内置预填项。每条 = 一个 one-shot 任务范
 /// 例，引导用户写出宠物易执行的形态（明确动作 + 明确产物 + 明确范围）。
 /// label 是 dropdown 显示文案，title / body 是 prefill 值。priority 默认
-/// 全 3（无信号偏置）；due 全空（用户决定）。新增 / 删模板就在这里改。
-const TASK_TEMPLATES: Array<{ label: string; title: string; body: string }> = [
+/// 全 3（无信号偏置）；due 全空（用户决定）。
+///
+/// 用户可在 dropdown 旁边「💾 存为」按钮把当前表单内容存为自定义模板，
+/// 与本内置列表合并显示。自定义模板可通过「管理…」入口删除；内置不可删。
+const TASK_TEMPLATES_BUILTIN: TaskTemplate[] = [
   {
     label: "📁 整理 Downloads",
     title: "整理 Downloads",
@@ -119,6 +213,77 @@ function formatDue(iso: string | null): string {
   if (!iso) return "";
   // 简单 split 即可：把 T 换成空格，分钟保留。
   return iso.replace("T", " ");
+}
+
+/** 把 `Date` 渲染为 datetime-local 输入框接受的 `YYYY-MM-DDThh:mm`（无时区，
+ * 本地时间）。后端 / `formatDue` 协议同形，不引入 timezone offset。
+ *
+ * Date 实例化用本地时间组件（getFullYear / getMonth + 1 / getDate / getHours
+ * / getMinutes），避免 toISOString 走 UTC 偏移 8 小时（夏令时换日界还会更乱）。
+ */
+export function formatDueInput(d: Date): string {
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  const h = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${y}-${mo}-${da}T${h}:${mi}`;
+}
+
+/** 计算"今晚 18:00"对应的 datetime-local 值。如果 now 已过 18:00（晚上加班场
+ * 景）跳到明晚同点，避免一点就退回过去时间的 footgun。 */
+export function dueTonight(now: Date): string {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0);
+  if (d.getTime() <= now.getTime()) {
+    d.setDate(d.getDate() + 1);
+  }
+  return formatDueInput(d);
+}
+
+/** 计算"明天 HH:MM"。默认 09:00，对应"明早开工"。 */
+export function dueTomorrow(now: Date, hour = 9, minute = 0): string {
+  const d = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 1,
+    hour,
+    minute,
+    0,
+  );
+  return formatDueInput(d);
+}
+
+/** 计算"下个周一 09:00"。如果今天就是周一且 09:00 还未到，仍跳到下周一 ——
+ * "周一" 的语义里"下周第一天"比"今天"自然，避免今天周一上午点了直接 due 几小
+ * 时后的歧义。 */
+export function dueNextMonday(now: Date): string {
+  // JS getDay(): 0 = Sun, 1 = Mon, ...
+  const today = now.getDay();
+  // 距离下一个周一的天数：今天周日 → 1；周一 → 7；周二 → 6；...
+  const daysAhead = today === 0 ? 1 : 7 - today + 1;
+  const d = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + daysAhead,
+    9,
+    0,
+    0,
+  );
+  return formatDueInput(d);
+}
+
+/** 计算"一周后" —— 今天的 +7 日，本地时间组件用 now 的小时分（不强制 09:00）。
+ * 既保留 +1 week 的语义，又让"现在加一周"的用户预期不被改写。 */
+export function dueOneWeek(now: Date): string {
+  const d = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 7,
+    now.getHours(),
+    now.getMinutes(),
+    0,
+  );
+  return formatDueInput(d);
 }
 
 /** 任务行 due 紧迫度判定。返回值映射到 due 文字颜色 — 让扫长队列时一眼
@@ -255,12 +420,192 @@ function isImageUrl(url: string): boolean {
   return /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?|#|$)/i.test(url);
 }
 
+/** detail.md 粘贴图片自动压缩门限（字节）。≤ 该阈值的 blob 直接 base64，原 mime
+ * 保留（含透明 PNG）；> 阈值 → 走 canvas resize + JPEG 0.85 重编码。256 KiB 选取
+ * 经验值：常见 markdown 单图段保留视觉无损 + detail.md 不会被几张大截图撑爆。 */
+const DETAIL_IMG_SKIP_BYTES = 256 * 1024;
+/** 长边像素 cap：1600 px 已能覆盖 4K 截图缩放后的可读性；canvas 输出像素超出
+ * 这条只是浪费 detail.md 体积。仅在触发压缩时生效，small blob 直通不缩。 */
+const DETAIL_IMG_MAX_DIM = 1600;
+const DETAIL_IMG_JPEG_QUALITY = 0.85;
+
+function readBlobAsDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("FileReader result is not a string"));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** 任务详情粘贴 / drop 图片时的压缩入口。返回 dataUrl + 原始字节 + 最终字节 +
+ * 是否触发压缩。失败时回退到原图 base64 —— 用户图比报错更重要。 */
+async function compressImageForDetail(blob: Blob): Promise<{
+  dataUrl: string;
+  originalBytes: number;
+  finalBytes: number;
+  didCompress: boolean;
+}> {
+  const originalBytes = blob.size;
+  if (originalBytes <= DETAIL_IMG_SKIP_BYTES) {
+    const dataUrl = await readBlobAsDataUrl(blob);
+    return { dataUrl, originalBytes, finalBytes: dataUrl.length, didCompress: false };
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("image load failed"));
+      i.src = url;
+    });
+    const ratio = Math.min(
+      DETAIL_IMG_MAX_DIM / img.width,
+      DETAIL_IMG_MAX_DIM / img.height,
+      1,
+    );
+    const w = Math.max(1, Math.round(img.width * ratio));
+    const h = Math.max(1, Math.round(img.height * ratio));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no 2d ctx");
+    ctx.drawImage(img, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL("image/jpeg", DETAIL_IMG_JPEG_QUALITY);
+    return {
+      dataUrl,
+      originalBytes,
+      finalBytes: dataUrl.length,
+      didCompress: true,
+    };
+  } catch (e) {
+    console.error("compressImageForDetail failed, falling back to raw:", e);
+    const dataUrl = await readBlobAsDataUrl(blob);
+    return { dataUrl, originalBytes, finalBytes: dataUrl.length, didCompress: false };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${n} B`;
+}
+
+/** detail.md 行内 bare https/http 链接的 chip 卡片。比 parseMarkdown 里的纯
+ * 蓝色下划线 UrlLink 更显眼："📎 hostname"形态让 detail.md 里的引用链接看起
+ * 来像附件而非散文里的 URL。点击调 plugin-opener 打开默认浏览器（与 UrlLink
+ * 同后端）。`title` attr 显完整 URL 让 owner 可 hover 验证地址。
+ *
+ * 域名解析失败（无效 URL）→ 退化用 URL 本身做 label，避免渲染空字符串。 */
+function LinkCard({ url }: { url: string }) {
+  let label = url;
+  try {
+    label = new URL(url).hostname;
+  } catch {
+    // 不合法 URL（regex 误命中）→ 保留原文，至少能识别
+  }
+  return (
+    <a
+      href={url}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openUrl(url).catch((err) => console.error("openUrl failed:", err));
+      }}
+      title={url}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "1px 7px",
+        margin: "0 2px",
+        borderRadius: 6,
+        background: "var(--pet-color-card)",
+        border: "1px solid var(--pet-color-border)",
+        color: "var(--pet-color-fg)",
+        fontSize: "0.92em",
+        textDecoration: "none",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        maxWidth: 240,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      📎 {label}
+    </a>
+  );
+}
+
+/** detail.md 文本段：把 bare https/http URL 切出来用 LinkCard 渲，其它子段
+ * 交给 parseMarkdown。negative lookbehind `(?<!\]\()` 排除 markdown 链接
+ * `[text](url)` 里的 url —— 那种已经有显式锚文本，渲染为 LinkCard 反而丢失
+ * 用户表达。trailing 标点（句号 / 逗号 / 引号）会被 char 范围排除自然落到
+ * 后续文本里，与既有 parseUrls 路径同思路。 */
+function renderDetailTextWithLinkCards(
+  text: string,
+  keyPrefix: string,
+): ReactNode[] {
+  const URL_RE = /(?<!\]\()https?:\/\/[^\s)\]<>"']+/g;
+  const out: ReactNode[] = [];
+  let lastIdx = 0;
+  let urlKey = 0;
+  let m: RegExpExecArray | null;
+  while ((m = URL_RE.exec(text)) !== null) {
+    if (m.index > lastIdx) {
+      out.push(
+        <Fragment key={`${keyPrefix}-pre-${m.index}`}>
+          {parseMarkdown(text.slice(lastIdx, m.index))}
+        </Fragment>,
+      );
+    }
+    // 剥句末标点（与 parseUrls 同 trail-trim 思路）：让 "看这里 https://a.com。"
+    // 不把"。"吃进 URL。
+    let url = m[0];
+    let tail = "";
+    while (
+      url.length > 8 &&
+      /[.,;:!?。,;:!?)）"'”“]/.test(url[url.length - 1])
+    ) {
+      tail = url[url.length - 1] + tail;
+      url = url.slice(0, -1);
+    }
+    out.push(<LinkCard key={`${keyPrefix}-url-${urlKey++}`} url={url} />);
+    if (tail) {
+      out.push(
+        <Fragment key={`${keyPrefix}-tail-${urlKey}`}>{tail}</Fragment>,
+      );
+    }
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) {
+    out.push(
+      <Fragment key={`${keyPrefix}-tail`}>
+        {parseMarkdown(text.slice(lastIdx))}
+      </Fragment>,
+    );
+  }
+  // 全无 URL 时退化到原 parseMarkdown 路径（避免 splice 空白 ReactNode）。
+  if (out.length === 0) {
+    return [parseMarkdown(text)];
+  }
+  return out;
+}
+
 /** 解析 detail.md：把 markdown image 语法 `![alt](url)` 切出来用 ImageThumb 渲，
- * 其它文本段交给现有 parseMarkdown。让任务详情里贴的截图直接可见 + 可点开 +
- * 可复制，不用切到 markdown 编辑器。
+ * 文本段进一步把 bare https/http URL 渲成「📎 hostname」link card；其它走
+ * 既有 parseMarkdown。让任务详情里贴的截图直接可见 + 可点开 + 可复制，引用
+ * 链接以附件形态独立呈现，不必切到 markdown 编辑器。
  *
  * 不识别带 title 的形式 `![alt](url "title")` —— 大模型 / 用户实际写的几乎全是
- * 朴素双段，复杂语法后续再扩。 */
+ * 朴素双段，复杂语法后续再扩。markdown 链接 `[text](url)` 仍走 parseMarkdown
+ * 自身的 anchor 渲染（保留显式锚文本），不会被 LinkCard 抢走。 */
 function parseDetailMdWithImages(
   md: string,
   onOpenImage: (src: string) => void,
@@ -275,7 +620,10 @@ function parseDetailMdWithImages(
     if (m.index > lastIdx) {
       out.push(
         <Fragment key={`txt-${m.index}`}>
-          {parseMarkdown(md.slice(lastIdx, m.index))}
+          {renderDetailTextWithLinkCards(
+            md.slice(lastIdx, m.index),
+            `txt-${m.index}`,
+          )}
         </Fragment>,
       );
     }
@@ -283,7 +631,7 @@ function parseDetailMdWithImages(
     if (isImageUrl(url)) {
       out.push(
         <div key={`img-${imgKey++}`} style={{ margin: "6px 0" }}>
-          <ImageThumb src={url} onOpen={() => onOpenImage(url)} />
+          <ImageThumb src={url} onOpen={() => onOpenImage(url)} lazy />
         </div>,
       );
     } else {
@@ -297,7 +645,9 @@ function parseDetailMdWithImages(
   }
   if (lastIdx < md.length) {
     out.push(
-      <Fragment key={`txt-tail`}>{parseMarkdown(md.slice(lastIdx))}</Fragment>,
+      <Fragment key={`txt-tail`}>
+        {renderDetailTextWithLinkCards(md.slice(lastIdx), "txt-tail")}
+      </Fragment>,
     );
   }
   return out;
@@ -454,9 +804,7 @@ function formatRelativeAge(createdAt: string, now: number): string {
   if (Number.isNaN(ts)) return "";
   const age = now - ts;
   if (age < 60_000) return "刚创建";
-  if (age < 3_600_000) return `${Math.floor(age / 60_000)} 分钟前`;
-  if (age < 86_400_000) return `${Math.floor(age / 3_600_000)} 小时前`;
-  return `${Math.floor(age / 86_400_000)} 天前`;
+  return formatRelativeAgeBuckets(age);
 }
 
 /** R136: due 距今相对时间。due hover tooltip 用，让用户快速判断紧迫度。
@@ -529,10 +877,27 @@ interface PanelTasksProps {
   /// 也 consume，仅在 actionErr 提示一行让用户知情。
   pendingFocusTitle?: string | null;
   onConsumeFocus?: () => void;
+  /// 跨窗口 deeplink（pet 窗 🔴 逾期 pill 等入口）把目标 due filter 推到这里。
+  /// 挂载后 useEffect 一次性消费 → setDueFilter，再调 onConsumePendingDueFilter
+  /// 清空 → 用户后续手改 filter 不会被 stale 值反复覆盖。
+  pendingDueFilter?: "all" | "today" | "overdue" | "createdToday" | null;
+  onConsumePendingDueFilter?: () => void;
 }
 
-export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProps = {}) {
+export function PanelTasks({
+  pendingFocusTitle,
+  onConsumeFocus,
+  pendingDueFilter,
+  onConsumePendingDueFilter,
+}: PanelTasksProps = {}) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
+  /// 任务依赖未解决映射：title → 仍卡着的 blocker title 列表。tasks 变化时
+  /// O(n) 计算一次；行渲染时 .has(title) 决定是否显 🔒 chip。useMemo 让 tasks
+  /// 不变时引用稳定，避免每次 re-render 都重算 Map（虽然 n 通常 < 几十）。
+  const blockedMap = useMemo<Map<string, string[]>>(
+    () => computeUnresolvedBlockers(tasks),
+    [tasks],
+  );
   const [loading, setLoading] = useState(true);
   const [showFinished, setShowFinished] = useState(false);
   // 归档查看：default 折叠；点开 + lazy fetch task_archive 类目下的条目。
@@ -552,6 +917,51 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     updated_at: string;
   }[]>([]);
   const [archiveError, setArchiveError] = useState("");
+  /// 归档区搜索查询。仅 archive tab + expanded + loaded 时可用。空串显
+  /// 全集；非空按 title / description 子串匹配（大小写不敏感）。session
+  /// 内有效，切 tab / 折叠时不清空（用户可能想再回来 refine）。
+  const [archiveQuery, setArchiveQuery] = useState("");
+  /// 最近 5 个 task 搜索 keyword 历史 —— 走共享 useSearchHistory hook（与
+  /// PanelMemory 同模式）。Enter 时 push；datalist 浮动。
+  const { history: taskSearchHistory, push: pushTaskSearchHistory } =
+    useSearchHistory("pet-tasks-search-history");
+  /// 「🗑 清理」二次确认。null = 未 armed；number = armed 时的 setTimeout id
+  /// （用于 disarm 倒计时；5s 内再点真执行）。armed 期间按钮文案 / 颜色变红。
+  const [archivePurgeArmed, setArchivePurgeArmed] = useState(false);
+  const archivePurgeArmTimerRef = useRef<number | null>(null);
+  const [archivePurging, setArchivePurging] = useState(false);
+  const armArchivePurge = () => {
+    if (archivePurgeArmTimerRef.current !== null) {
+      window.clearTimeout(archivePurgeArmTimerRef.current);
+    }
+    setArchivePurgeArmed(true);
+    archivePurgeArmTimerRef.current = window.setTimeout(() => {
+      setArchivePurgeArmed(false);
+      archivePurgeArmTimerRef.current = null;
+    }, 5000);
+  };
+  const disarmArchivePurge = () => {
+    if (archivePurgeArmTimerRef.current !== null) {
+      window.clearTimeout(archivePurgeArmTimerRef.current);
+      archivePurgeArmTimerRef.current = null;
+    }
+    setArchivePurgeArmed(false);
+  };
+  const doArchivePurge = async () => {
+    disarmArchivePurge();
+    setArchivePurging(true);
+    try {
+      const n = await invoke<number>("task_archive_purge_older_than", { days: 30 });
+      setBulkResultMsg(`已清理 ${n} 条 >30 天归档`);
+      window.setTimeout(() => setBulkResultMsg(""), 4000);
+      await reloadArchive();
+    } catch (e) {
+      setBulkResultMsg(`清理失败：${e}`);
+      window.setTimeout(() => setBulkResultMsg(""), 4000);
+    } finally {
+      setArchivePurging(false);
+    }
+  };
   // R91: 哪些任务的长描述已被用户展开。key = `${title}-${created_at}` 与
   // list <div key> 同款。session 内有效，关面板丢失（与 search / sort 等
   // 临时态同语义，不持久化）。
@@ -595,6 +1005,26 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
   const [originFilter, setOriginFilter] = useState<Set<"tg" | "panel">>(new Set());
   const taskHasTgOrigin = (t: TaskView): boolean =>
     t.raw_description.includes("[origin:tg:");
+  /// 📌 钉住过滤：true 时只显 pinned 任务。跨 session 持久化 —— 用户开过滤
+  /// 后切走再回到面板，状态保留；解决"chip 状态丢"的体验割裂。localStorage
+  /// 解析失败 / 旧用户首次升级时缺 key → fallback false（不打扰新用户）。
+  const [pinnedFilter, setPinnedFilter] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-task-pinned-filter") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "pet-task-pinned-filter",
+        pinnedFilter ? "true" : "false",
+      );
+    } catch (e) {
+      console.error("pinnedFilter localStorage save failed:", e);
+    }
+  }, [pinnedFilter]);
 
   // 创建表单
   const [title, setTitle] = useState("");
@@ -603,6 +1033,18 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
   const [due, setDue] = useState(""); // datetime-local 原始值，可空
   const [creating, setCreating] = useState(false);
   const [errMsg, setErrMsg] = useState("");
+  /// 用户自定义任务模板（与内置 TASK_TEMPLATES_BUILTIN 合并显示在「📋
+  /// 从模板」下拉里）。localStorage 持久。变更时通过 effect 写盘；首屏
+  /// 走 lazy initializer 读盘一次避免每次 render 重新 parse。
+  const [customTemplates, setCustomTemplates] = useState<TaskTemplate[]>(() =>
+    loadCustomTemplates(),
+  );
+  useEffect(() => {
+    saveCustomTemplates(customTemplates);
+  }, [customTemplates]);
+  /// 「管理自定义模板」modal 显隐。仅 customTemplates.length > 0 时入口
+  /// 渲染（empty 状态下连入口都没有，避免空 modal）。
+  const [templatesManagerOpen, setTemplatesManagerOpen] = useState(false);
   // 新建表单展开态：跨 session 记忆，default 展开（兼容既有 UX）。用户
   // 折叠后偏好持久；下次打开 panel 仍折叠 → 节省垂直空间。
   // ⌘N quick-add 全屏遮罩模态：与 inline 表单共享同一份 title / body / 等
@@ -810,8 +1252,58 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
   // 同时只一个 task 处于 edit（editingDetailTitle 互斥保证）；切换不丢
   // 未保存内容（state 共享 editingDetailContent）。
   type DetailViewMode = "edit" | "split" | "preview";
-  const [detailViewMode, setDetailViewMode] = useState<DetailViewMode>("edit");
+  // 三态偏好跨 session 持久化：偏好 split 的用户每次开新任务都要点切换太烦。
+  // 不合法 / 解析失败 / 老用户首次升级时缺 key → fallback "edit"（默认对最大
+  // 多数用户的预期）。下次切换时 useEffect 自动写回。
+  const [detailViewMode, setDetailViewMode] = useState<DetailViewMode>(() => {
+    try {
+      const raw = window.localStorage.getItem("pet-task-detail-view-mode");
+      if (raw === "edit" || raw === "split" || raw === "preview") return raw;
+    } catch {
+      // localStorage 不可用（私密模式 / 容量满）→ fallback edit
+    }
+    return "edit";
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("pet-task-detail-view-mode", detailViewMode);
+    } catch (e) {
+      // 配额满 → 用户至少这次切换仍生效，下次启动回 edit；不阻塞
+      console.error("detailViewMode localStorage save failed:", e);
+    }
+  }, [detailViewMode]);
   const [savingDetail, setSavingDetail] = useState(false);
+  /// detail.md textarea 光标位置（selectionStart UTF-16 offset）。给底部状态
+  /// 栏算"行 N / 共 M"。0 = 无 / 编辑器未打开 / cursor 在文首。两个 textarea
+  /// （edit / split 模式）共用一个 state —— 互斥编辑保证不竞争。
+  const [detailCursorPos, setDetailCursorPos] = useState<number>(0);
+  // 编辑器关闭 → 重置 cursor pos，避免下次打开新任务沿用旧值闪烁。
+  useEffect(() => {
+    if (editingDetailTitle === null) setDetailCursorPos(0);
+  }, [editingDetailTitle]);
+
+  /// preview 模式下点击 `- [ ]` / `- [x]` 复选框时切换源 description 该行的
+  /// marker。functional setState 让多次连点（不同行）都基于最新值，避免闭包
+  /// 拿到旧 content 误覆盖。不直接 save —— 用户保存按钮按下时一并写盘；
+  /// 「未保存」chip 自然就会显出来提示。匹配大小写 `[ ]` / `[x]` / `[X]` 三种；
+  /// row 不含 marker（理论上不会发生：onToggle 只在 parseMarkdown 命中
+  /// taskMatch 时触发）时 noop。
+  const toggleEditChecklistLine = useCallback(
+    (lineIdx: number, checked: boolean) => {
+      setEditingDetailContent((cur) => {
+        const lines = cur.split("\n");
+        if (lineIdx < 0 || lineIdx >= lines.length) return cur;
+        const replaced = lines[lineIdx].replace(
+          /- \[[ xX]\]/,
+          checked ? "- [x]" : "- [ ]",
+        );
+        if (replaced === lines[lineIdx]) return cur;
+        lines[lineIdx] = replaced;
+        return lines.join("\n");
+      });
+    },
+    [],
+  );
   // 进度笔记浏览态的渲染模式：rendered 默认（更友好），source 偶尔查 raw
   // 时切。全局 toggle，不持久 — 与 PanelTasks 其它切换 state 同语义。
   // 不影响编辑模式（编辑永远是 raw）。
@@ -1016,33 +1508,132 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     [],
   );
 
-  /// 把一组 image blob 异步读为 data URL，统一拼成 markdown `![](data:...)` 行
-  /// 插到当前 textarea 光标位置。一次性 Promise.all 后单次 setState，避免多个
-  /// reader.onload 并发改 selectionStart 漂移。
+  /// 在光标所在行首插入"✓ 完成行"模板：`- [x] YYYY-MM-DD HH:MM `。
+  /// 让 owner / 宠物记"我刚做完了什么 + 何时"成 1 步操作 —— 紧凑结合既有
+  /// `- [x]` GFM checklist 语法（被 parseMarkdown 渲成 disabled checkbox）+
+  /// 既有 `[snooze:]` / `[once:]` marker 同形的时间戳协议。光标落尾让用户立
+  /// 即接着敲"任务摘要"完成完整一行。
+  ///
+  /// 与 line-prefix mode 区别：line-prefix 是"每选中行加前缀"；此 helper 是
+  /// "光标所在行首插一段固定模板（时间戳是 final-form）"，更适合 quick log。
+  const insertDoneLineAtCursor = useCallback(() => {
+    const ta = detailEditorRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? 0;
+    const value = ta.value;
+    // 光标当前行的行首位置：从 start 往前找最近的 `\n`，行首 = idx + 1。
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    const now = new Date();
+    const y = now.getFullYear();
+    const mo = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const stamp = `- [x] ${y}-${mo}-${d} ${hh}:${mm} `;
+    // 若当前行已有内容且光标在行首之后，把模板插在行首前面（保留原内容）;
+    // 行首已经有 `- [` 或 `- [x]` 的话不重复加（避免连点变 `- [x] ... - [x] ...`)
+    const rest = value.slice(lineStart);
+    const alreadyChecklist = /^\s*- \[[ xX]\] /.test(rest);
+    if (alreadyChecklist) {
+      // 已是 checklist 行 → 不插模板（让用户用既有 ☐ 按钮，避免重复符号叠加）
+      // 但用 toast 通知用户为什么没动 —— 静默 noop 让人误以为按钮坏了。
+      setActionErr("当前行已是 checklist；想改时间戳请删后重插或手动编辑。");
+      window.setTimeout(() => setActionErr(""), 3500);
+      return;
+    }
+    const next = value.slice(0, lineStart) + stamp + value.slice(lineStart);
+    const cursorPos = lineStart + stamp.length;
+    setEditingDetailContent(next);
+    requestAnimationFrame(() => {
+      const cur = detailEditorRef.current;
+      if (!cur) return;
+      cur.focus();
+      cur.selectionStart = cur.selectionEnd = cursorPos;
+    });
+  }, []);
+
+  /// 在光标位置插入当前本地时间，格式 `YYYY-MM-DD HH:MM`（与 [snooze:] /
+  /// [once:] marker 协议同形，方便后续直接复制成 marker 或时间戳引用）。
+  /// 插入后光标落到字符串末尾，方便用户接着敲"完成了 X"等后续文字。
+  /// 与 insertMarkdownAtCursor 的 wrap / line-prefix 模式独立 —— 这是
+  /// "纯插入 + 光标落尾"，没 selection wrap 语义。
+  const insertCurrentTimeAtCursor = useCallback(() => {
+    const ta = detailEditorRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? start;
+    const value = ta.value;
+    const now = new Date();
+    const y = now.getFullYear();
+    const mo = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const stamp = `${y}-${mo}-${d} ${hh}:${mm}`;
+    const next = value.slice(0, start) + stamp + value.slice(end);
+    const cursorPos = start + stamp.length;
+    setEditingDetailContent(next);
+    requestAnimationFrame(() => {
+      const cur = detailEditorRef.current;
+      if (!cur) return;
+      cur.focus();
+      cur.selectionStart = cur.selectionEnd = cursorPos;
+    });
+  }, []);
+
+  /// 在光标位置插入 3×3 GFM table 骨架。需独占整段：若光标前一字符不是
+  /// 换行，先补一个 `\n` 让表头不被前文 "吞" 进同段。插入后把"列 1" 设为
+  /// 当前 selection —— 用户立刻可敲 / 选 / 删，不必先手动 select 占位文。
+  /// 既有 insertMarkdownAtCursor 的 wrap / line-prefix 双模式无法表达
+  /// "块级模板 + 落点为内部 selection"，故单独写一份而非扩第三个 mode。
+  const insertTableSkeletonAtCursor = useCallback(() => {
+    const ta = detailEditorRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? start;
+    const value = ta.value;
+    const needLeadingNL = start > 0 && value[start - 1] !== "\n";
+    const lead = needLeadingNL ? "\n" : "";
+    const skeleton =
+      `${lead}| 列 1 | 列 2 | 列 3 |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |\n`;
+    const next = value.slice(0, start) + skeleton + value.slice(end);
+    // "列 1" 在第一行的 "| " 之后；UTF-16 长度 3（列 + 空格 + 1）。
+    const headerCellStart = start + lead.length + 2;
+    const headerCellEnd = headerCellStart + 3;
+    setEditingDetailContent(next);
+    requestAnimationFrame(() => {
+      const cur = detailEditorRef.current;
+      if (!cur) return;
+      cur.focus();
+      cur.selectionStart = headerCellStart;
+      cur.selectionEnd = headerCellEnd;
+    });
+  }, []);
+
+  /// 把一组 image blob 异步压缩 + 读为 data URL，统一拼成 markdown
+  /// `![](data:...)` 行插到当前 textarea 光标位置。> 256 KiB 的 blob 走 canvas
+  /// resize（长边 cap 1600 px） + JPEG 0.85 重编码，小图保留原 mime。一次性
+  /// Promise.all 后单次 setState，避免多个 reader.onload 并发改 selectionStart
+  /// 漂移。压缩到任何一张时 toast 显原 / 后总体积。
   const insertImageBlobsIntoDetail = useCallback(async (blobs: Blob[]) => {
     if (blobs.length === 0) return;
     const ta = detailEditorRef.current;
     if (!ta) return;
-    const dataUrls = await Promise.all(
-      blobs.map(
-        (blob) =>
-          new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const url = reader.result;
-              if (typeof url === "string") resolve(url);
-              else reject(new Error("FileReader result is not a string"));
-            };
-            reader.onerror = () => reject(reader.error);
-            reader.readAsDataURL(blob);
-          }),
-      ),
-    );
+    const results = await Promise.all(blobs.map((b) => compressImageForDetail(b)));
+    const compressed = results.filter((r) => r.didCompress);
+    if (compressed.length > 0) {
+      const totalOriginal = compressed.reduce((s, r) => s + r.originalBytes, 0);
+      const totalFinal = compressed.reduce((s, r) => s + r.finalBytes, 0);
+      setBulkResultMsg(
+        `已压缩 ${compressed.length} 张图片（${formatBytes(totalOriginal)} → ${formatBytes(totalFinal)}）`,
+      );
+      window.setTimeout(() => setBulkResultMsg(""), 4000);
+    }
     const start = ta.selectionStart ?? 0;
     const end = ta.selectionEnd ?? start;
     // 前后各加换行让 markdown 段落分隔清晰；同次粘贴的多图也各占一行。
     const insert =
-      "\n" + dataUrls.map((u) => `![](${u})`).join("\n") + "\n";
+      "\n" + results.map((r) => `![](${r.dataUrl})`).join("\n") + "\n";
     setEditingDetailContent((prev) => prev.slice(0, start) + insert + prev.slice(end));
     // setState 后 React 重渲，textarea value 重置；用 rAF 等下一帧再写光标位置
     // 与 focus，否则 selectionStart 设上去会被 React 渲染覆盖。
@@ -1342,6 +1933,41 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     editingDetailOriginalRef.current = currentMd;
     setEditDetailErr("");
     setCancelEditArmed(false);
+    // 自动滚到最新 `- [x]` 行：打开 detail 时若末尾含完成行，让 owner 一眼看到
+    // "最近一次动作"。光标落到该行末尾，按 Enter 即起新一行接着记。无 done
+    // 行时不动 cursor / scroll，让用户从文首开始读 / 写。rAF 等 React 提交 +
+    // textarea autoFocus 完成后再操作 selection / scrollTop。
+    requestAnimationFrame(() => {
+      if (!currentMd) return;
+      const lines = currentMd.split("\n");
+      let lastDoneLineStart = -1;
+      let lineIdxOfLastDone = -1;
+      let offset = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (/^\s*- \[[xX]\] /.test(lines[i])) {
+          lastDoneLineStart = offset;
+          lineIdxOfLastDone = i;
+        }
+        offset += lines[i].length + 1; // +1 for `\n` separator
+      }
+      if (lastDoneLineStart < 0) return;
+      const ta = detailEditorRef.current;
+      if (!ta) return;
+      // 光标到该行末尾。用户敲 Enter 即新起一行写下一条完成记录。
+      const lineEnd = currentMd.indexOf("\n", lastDoneLineStart);
+      const cursor = lineEnd === -1 ? currentMd.length : lineEnd;
+      ta.selectionStart = ta.selectionEnd = cursor;
+      ta.focus();
+      // 强制把那行滚到 textarea 中央 —— browser 默认 focus 仅在 selection 不
+      // 在 viewport 时滚，已在则不动；我们想"显示并居中显示上下文"。lineHeight
+      // 估算来自 CSS 配置（fontSize 12 * lineHeight 1.65 ≈ 19.8px），略保守。
+      const lineHeight = 12 * 1.65;
+      ta.scrollTop = Math.max(
+        0,
+        lineIdxOfLastDone * lineHeight - ta.clientHeight / 2,
+      );
+      setDetailCursorPos(cursor);
+    });
   }, []);
   const handleCancelEditDetail = useCallback(() => {
     const dirty = editingDetailContent !== editingDetailOriginalRef.current;
@@ -1418,16 +2044,67 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     reload();
   }, [reload]);
 
+  /// 内置 + 自定义合并后的完整模板列表。dropdown 用此 index 作为 value，
+  /// applyTaskTemplate 用 index 取出。`useMemo` 让 customTemplates 不变时
+  /// 数组身份稳定（避免 dropdown 每次 PanelTasks render 都 remount option）。
+  const allTemplates = useMemo<TaskTemplate[]>(
+    () => [...TASK_TEMPLATES_BUILTIN, ...customTemplates],
+    [customTemplates],
+  );
   /// "📋 从模板" 下拉选中后调用：把所选模板的 title/body 填入表单 state，
   /// priority 重置默认 3、due 清空。inline create form / quickAdd modal /
   /// empty-state 三处共用一份 handler。
   const applyTaskTemplate = (idx: number) => {
-    const tpl = TASK_TEMPLATES[idx];
+    const tpl = allTemplates[idx];
     if (!tpl) return;
     setTitle(tpl.title);
     setBody(tpl.body);
     setPriority(3);
     setDue("");
+  };
+
+  /// 把当前表单 title/body 存为自定义模板。空 title 拒绝（没意义）；超
+  /// limit 拒绝（强制用户先清理）；label 重名（含内置）拒绝（避免下拉
+  /// 视觉碰撞）。window.prompt 是 native 输入 — 与 schedule / due preset
+  /// 等其它 native 控件同级简朴，不必引入额外 Modal。errMsg 复用既有
+  /// 表单错误条（红字浮在按钮下）。
+  const saveCurrentAsTemplate = () => {
+    const t = title.trim();
+    const b = body.trim();
+    if (!t) {
+      setErrMsg("先填标题再存模板。");
+      return;
+    }
+    if (customTemplates.length >= CUSTOM_TEMPLATES_MAX) {
+      setErrMsg(`自定义模板上限 ${CUSTOM_TEMPLATES_MAX}，请先在管理面板删几个。`);
+      return;
+    }
+    const proposed = window.prompt(
+      `命名这个模板（≤ ${CUSTOM_TEMPLATE_LABEL_MAX} 字）`,
+      t.slice(0, CUSTOM_TEMPLATE_LABEL_MAX),
+    );
+    if (proposed === null) return; // 用户取消
+    const label = proposed.trim();
+    if (!label) {
+      setErrMsg("模板名不能为空。");
+      return;
+    }
+    if (label.length > CUSTOM_TEMPLATE_LABEL_MAX) {
+      setErrMsg(`模板名 ≤ ${CUSTOM_TEMPLATE_LABEL_MAX} 字。`);
+      return;
+    }
+    if (allTemplates.some((c) => c.label === label)) {
+      setErrMsg(`模板名「${label}」已存在。`);
+      return;
+    }
+    setCustomTemplates((prev) => [...prev, { label, title: t, body: b }]);
+    setErrMsg("");
+  };
+  /// 删除一条自定义模板。按 label 匹配（label 是 unique，前面 saveCurrent
+  /// 已拒重名）。删完不需要二次确认 —— 用户可以再「存为」一次重建，损失
+  /// 极低；多一道确认反而打扰。
+  const deleteCustomTemplate = (label: string) => {
+    setCustomTemplates((prev) => prev.filter((c) => c.label !== label));
   };
 
   const handleCreate = async () => {
@@ -1501,6 +2178,26 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
       await reload();
     } catch (e) {
       setActionErr(`标 done 失败：${e}`);
+    } finally {
+      setBusyTitle(null);
+    }
+  };
+  /// `p` 键盘快捷反转 pinned：与桌面右键菜单「📌 钉住 / 📌 取消钉住」对偶 +
+  /// 同 strip-before-write 后端命令。fire-and-forget 错误用 setActionErr 显
+  /// 3.5s。pin 与 status 正交 → done / cancelled 也接受（让 owner 复盘时也能
+  /// 标"这条 done 任务是经典作"）。
+  const handleTogglePinned = async (taskTitle: string, nextPinned: boolean) => {
+    setActionErr("");
+    setBusyTitle(taskTitle);
+    try {
+      await invoke<void>("task_set_pinned", {
+        title: taskTitle,
+        pinned: nextPinned,
+      });
+      await reload();
+    } catch (e) {
+      setActionErr(`${nextPinned ? "钉住" : "取消钉住"}失败：${e}`);
+      window.setTimeout(() => setActionErr(""), 3500);
     } finally {
       setBusyTitle(null);
     }
@@ -1596,6 +2293,33 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
       "非 error 状态",
       async (title) => {
         await invoke<void>("task_retry", { title });
+      },
+    );
+  }, [runBulk]);
+
+  /// 批量钉住：跳过已 pinned 的（reload 后 chip / row 不变 = noop 不报错，但
+  /// 计入 skipped 让 toast 文案清楚"我跳过了多少")。strip-before-write 后端
+  /// 已保证幂等，predicate 这里仅是为了 toast 的"跳过 N 条已钉住"反馈。
+  const handleBulkPin = useCallback(async () => {
+    await runBulk(
+      "钉住",
+      (t) => !t.pinned,
+      "已钉住",
+      async (title) => {
+        await invoke<void>("task_set_pinned", { title, pinned: true });
+      },
+    );
+  }, [runBulk]);
+
+  /// 批量取消钉住：跳过未 pinned 的（同上 — 后端 strip 也是 noop-friendly，
+  /// predicate 是给用户的"跳过 N 条未钉住"清楚反馈）。
+  const handleBulkUnpin = useCallback(async () => {
+    await runBulk(
+      "取消钉住",
+      (t) => !!t.pinned,
+      "未钉住",
+      async (title) => {
+        await invoke<void>("task_set_pinned", { title, pinned: false });
       },
     );
   }, [runBulk]);
@@ -1907,6 +2631,7 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
       const isTg = taskHasTgOrigin(t);
       return originFilter.has(isTg ? "tg" : "panel");
     })
+    .filter((t) => (pinnedFilter ? !!t.pinned : true))
     .filter((t) => {
       if (!trimmedSearch) return true;
       return (
@@ -2118,6 +2843,16 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     return { dueTodayCount: today, overdueCount: overdue, createdTodayCount: createdToday };
   }, [tasks, nowMs]);
 
+  // 📌 钉住任务计数：只数活动态 —— 与 dueTodayCount / createdTodayCount 同
+  // 语义。finished 行不参与 chip 提示（pinned 的 done 任务已没人关心了）。
+  const pinnedCount = useMemo(() => {
+    let n = 0;
+    for (const t of tasks) {
+      if (!isFinished(t.status) && t.pinned) n += 1;
+    }
+    return n;
+  }, [tasks]);
+
   // R104: 各 priority 的活动任务计数。派生 tasks 全集（不受 link 上 search /
   // tag / due / sort 过滤影响），让用户在任一 filter 下都能看到"还有哪几档
   // priority 有事"。只数活动态：finished 不在 chip row，由 showFinished
@@ -2254,7 +2989,8 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     selectedTags.size > 0 ||
     dueFilter !== "all" ||
     priorityFilter.size > 0 ||
-    originFilter.size > 0;
+    originFilter.size > 0 ||
+    pinnedFilter;
 
   // 键盘导航整段抽到 useTaskKeyboardNav（ref-stable 监听 + visibleTasks
   // 长度 clamp）。hook 内部用 ref 持最新依赖，避免每次 visibleTasks 变化
@@ -2266,6 +3002,7 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     handleCancelOpen,
     handleMarkDone,
     handleRetry,
+    handleTogglePinned,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -2301,6 +3038,15 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     onConsumeFocus?.();
   }, [pendingFocusTitle, onConsumeFocus]);
 
+  // 跨窗口 deeplink：pet 窗 🔴 逾期 pill 写过来的 due filter。挂载后立即
+  // 应用一次 + consume 回 PanelApp 清空 state，避免用户后续手改 filter
+  // 时被 stale 值反复覆盖。
+  useEffect(() => {
+    if (!pendingDueFilter) return;
+    setDueFilter(pendingDueFilter);
+    onConsumePendingDueFilter?.();
+  }, [pendingDueFilter, onConsumePendingDueFilter]);
+
   // 完成小卡展开后外部 click / Esc 关闭。点 popover 内部的 title 也会冒泡到
   // window —— 那条路径自己 setCompletedListExpanded(false)，先发生的是 title
   // 的 onClick（setPendingTitleFocus + close），window mousedown 是叠加 close
@@ -2327,10 +3073,31 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
     // 主题迁移（迭代 2）：框架级 surface 走 CSS var；功能性配色（status
     // badge、action 按钮、chip、紧迫度等）保持原色不动 —— 它们携带 motion
     // 语义，跨主题需稳定可识别。
-    container: { padding: 16, overflowY: "auto" as const, height: "100%", background: "var(--pet-color-bg)" },
+    container: { padding: 22, overflowY: "auto" as const, height: "100%" },
     section: { marginBottom: 20 },
-    sectionTitle: { fontSize: 13.5, fontWeight: 600, color: "var(--pet-color-fg)", marginBottom: 10, paddingBottom: 6, borderBottom: "1px solid var(--pet-color-border)", letterSpacing: 0.2 },
-    formCard: { padding: 14, background: "var(--pet-color-card)", border: "1px solid var(--pet-color-border)", borderRadius: 10, marginBottom: 14, boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)" },
+    sectionTitle: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: "var(--pet-color-fg)",
+      marginBottom: 12,
+      paddingBottom: 10,
+      // 渐变 hairline 与 SectionTitle / PanelMemory.s.sectionTitle 一致
+      backgroundImage:
+        "linear-gradient(90deg, transparent, var(--pet-color-border) 12%, var(--pet-color-border) 88%, transparent)",
+      backgroundRepeat: "no-repeat",
+      backgroundSize: "100% 1px",
+      backgroundPosition: "bottom",
+      letterSpacing: 0.2,
+    },
+    formCard: {
+      padding: "16px 18px",
+      background:
+        "linear-gradient(180deg, color-mix(in srgb, var(--pet-color-accent) 3%, var(--pet-color-card)) 0%, var(--pet-color-card) 55%)",
+      border: "1px solid var(--pet-color-border)",
+      borderRadius: 12,
+      marginBottom: 16,
+      boxShadow: "var(--pet-shadow-sm)",
+    },
     label: { fontSize: 12, color: "var(--pet-color-muted)", display: "block", marginBottom: 4, fontWeight: 500 },
     input: { width: "100%", padding: "7px 11px", border: "1px solid var(--pet-color-border)", background: "var(--pet-color-card)", color: "var(--pet-color-fg)", borderRadius: 6, fontSize: 13, boxSizing: "border-box" as const },
     textarea: { width: "100%", padding: "7px 11px", border: "1px solid var(--pet-color-border)", background: "var(--pet-color-card)", color: "var(--pet-color-fg)", borderRadius: 6, fontSize: 13, resize: "vertical" as const, minHeight: 60, boxSizing: "border-box" as const },
@@ -2775,38 +3542,103 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
             }}
           >
             <label style={s.label}>标题</label>
-            {/* 📋 从模板 下拉：选中后 prefill title/body/priority/due。
-                value="" 是 disabled placeholder，选完立刻 reset 让下次能
-                重选同一个模板。与 iter #176 PanelMemory "复制 schedule"
-                下拉同模式。 */}
-            <select
-              value=""
-              onChange={(e) => {
-                const v = e.target.value;
-                if (!v) return;
-                applyTaskTemplate(parseInt(v, 10));
-                e.currentTarget.value = "";
-              }}
-              title="选一个常见任务范例预填表单（你可以直接保存或改完再交付）"
-              style={{
-                padding: "2px 6px",
-                fontSize: 11,
-                border: "1px solid var(--pet-color-border)",
-                borderRadius: 4,
-                background: "var(--pet-color-card)",
-                color: "var(--pet-color-fg)",
-                cursor: "pointer",
-                fontFamily: "inherit",
-                maxWidth: 200,
-              }}
-            >
-              <option value="">📋 从模板…</option>
-              {TASK_TEMPLATES.map((tpl, i) => (
-                <option key={tpl.label} value={i}>
-                  {tpl.label}
-                </option>
-              ))}
-            </select>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {/* 📋 从模板 下拉：选中后 prefill title/body/priority/due。
+                  value="" 是 disabled placeholder，选完立刻 reset 让下次能
+                  重选同一个模板。内置 + 用户自定义合并显示；optgroup 分组
+                  让用户一眼分辨「内置范例」vs「我存的」。 */}
+              <select
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) return;
+                  applyTaskTemplate(parseInt(v, 10));
+                  e.currentTarget.value = "";
+                }}
+                title="选一个常见任务范例预填表单（你可以直接保存或改完再交付）"
+                style={{
+                  padding: "2px 6px",
+                  fontSize: 11,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-fg)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  maxWidth: 200,
+                }}
+              >
+                <option value="">📋 从模板…</option>
+                <optgroup label="内置范例">
+                  {TASK_TEMPLATES_BUILTIN.map((tpl, i) => (
+                    <option key={tpl.label} value={i}>
+                      {tpl.label}
+                    </option>
+                  ))}
+                </optgroup>
+                {customTemplates.length > 0 && (
+                  <optgroup label="我存的">
+                    {customTemplates.map((tpl, j) => (
+                      <option
+                        key={tpl.label}
+                        value={TASK_TEMPLATES_BUILTIN.length + j}
+                      >
+                        {tpl.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              {/* 💾 把当前表单 title/body 存为自定义模板。title 空时禁用
+                  （saveCurrentAsTemplate 内也守一次），让 button 不可点防误触。 */}
+              <button
+                type="button"
+                onClick={saveCurrentAsTemplate}
+                disabled={!title.trim()}
+                title={
+                  title.trim()
+                    ? "把当前 title/body 存为我的模板"
+                    : "先填标题再存模板"
+                }
+                style={{
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: title.trim()
+                    ? "var(--pet-color-card)"
+                    : "var(--pet-color-bg)",
+                  color: title.trim()
+                    ? "var(--pet-color-fg)"
+                    : "var(--pet-color-muted)",
+                  cursor: title.trim() ? "pointer" : "not-allowed",
+                  fontFamily: "inherit",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                💾 存为
+              </button>
+              {customTemplates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setTemplatesManagerOpen(true)}
+                  title={`管理 ${customTemplates.length} 条自定义模板`}
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    border: "1px solid var(--pet-color-border)",
+                    borderRadius: 4,
+                    background: "var(--pet-color-card)",
+                    color: "var(--pet-color-muted)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  管理 {customTemplates.length}
+                </button>
+              )}
+            </div>
           </div>
           <input
             style={s.input}
@@ -2930,6 +3762,69 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                 onChange={(e) => setDue(e.target.value)}
                 onKeyDown={handleFormKeyDown}
               />
+              {/* 快捷预设 chips：高频 due 场景一键填，省手敲 datetime-local。
+                  Date 在 click 时实时求值（每次点都按"现在"算）；helper 是纯
+                  函数（formatDueInput / dueTonight / ...）跨 click 行为一致。
+                  「清除」单独靠右，与"赋值"chip 视觉分离避免误点。 */}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 6,
+                  marginTop: 6,
+                  alignItems: "center",
+                }}
+                aria-label="due 快捷预设"
+              >
+                {([
+                  { label: "今晚", title: "今晚 18:00（若已过则明晚）", build: dueTonight },
+                  { label: "明天", title: "明天 09:00", build: dueTomorrow },
+                  { label: "周一", title: "下周一 09:00", build: dueNextMonday },
+                  { label: "一周后", title: "+7 天（保留当前时分）", build: dueOneWeek },
+                ] as const).map(({ label, title: tipText, build }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => setDue(build(new Date()))}
+                    title={tipText}
+                    style={{
+                      padding: "3px 10px",
+                      fontSize: 11,
+                      borderRadius: 999,
+                      border: "1px solid var(--pet-color-border)",
+                      background:
+                        "color-mix(in srgb, var(--pet-color-accent) 6%, var(--pet-color-card))",
+                      color: "var(--pet-color-fg)",
+                      cursor: "pointer",
+                      lineHeight: 1.4,
+                      letterSpacing: 0.2,
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+                {due && (
+                  <button
+                    type="button"
+                    onClick={() => setDue("")}
+                    title="清除 due"
+                    style={{
+                      padding: "3px 10px",
+                      fontSize: 11,
+                      borderRadius: 999,
+                      border:
+                        "1px solid color-mix(in srgb, var(--pet-tint-red-fg) 35%, var(--pet-color-border))",
+                      background: "var(--pet-color-card)",
+                      color: "var(--pet-tint-red-fg)",
+                      cursor: "pointer",
+                      marginLeft: "auto",
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
             </div>
           </div>
           <button
@@ -3094,6 +3989,7 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                                 setSelectedTags(new Set());
                                 setDueFilter("all");
                                 setPriorityFilter(new Set());
+                                setPinnedFilter(false);
                                 setShowFinished(true);
                                 setPendingTitleFocus(it.title);
                                 setCompletedListExpanded(false);
@@ -3177,11 +4073,36 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
           <input
             ref={searchInputRef}
             type="text"
-            placeholder="按标题或内容搜索…（⌘F / ⌘K / `/` 聚焦）"
+            placeholder="按标题或内容搜索…（⌘F / ⌘K / `/` 聚焦 · Enter 入历史）"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            list="pet-tasks-search-history"
+            onKeyDown={(e) => {
+              // Esc：非空时清掉 query；空时让出键位（让全局 Esc 关 modal 等）。
+              if (e.key === "Escape" && search) {
+                e.preventDefault();
+                setSearch("");
+                return;
+              }
+              // Enter：把当前 query 入 history（与 PanelMemory pushSearchHistory
+              // 同模式）。live filter 已在 onChange 即时生效，Enter 只是"我用
+              // 这条 query 用得满意，记一下"的显式信号。
+              if (e.key === "Enter" && search.trim()) {
+                e.preventDefault();
+                pushTaskSearchHistory(search);
+              }
+            }}
             style={s.searchInput}
           />
+          {/* 最近 5 条搜索 keyword：native datalist 自动浮 dropdown。Enter
+              成功的 query 入栈；空 history 时不渲染 option 即 noop。 */}
+          {taskSearchHistory.length > 0 && (
+            <datalist id="pet-tasks-search-history">
+              {taskSearchHistory.map((kw) => (
+                <option key={kw} value={kw} />
+              ))}
+            </datalist>
+          )}
           {search && (
             <button
               type="button"
@@ -3208,9 +4129,10 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                   setDueFilter("all");
                   setPriorityFilter(new Set());
                   setOriginFilter(new Set());
+                  setPinnedFilter(false);
                 }}
                 style={s.searchClearBtn}
-                title="一键清掉全部 active filter（search / tag / due / priority / origin）"
+                title="一键清掉全部 active filter（search / tag / due / priority / origin / pinned）"
                 aria-label="清除全部过滤"
               >
                 ✕ 全部
@@ -3256,7 +4178,7 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
             📋 导出 MD ({visibleTasks.length})
           </button>
         </div>
-        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0) && (
+        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
             {/* 一键重试所有 error 任务 chip。> 0 时显，红底突出。点击调
                 handleRetryAllErrors 顺序 invoke task_retry；bulkBusy 期间
@@ -3360,6 +4282,50 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                   )
                 }
               />
+            )}
+            {/* 📌 钉住 chip：> 0 时常驻 chip 行。激活态走 amber tint
+                （与 due / priority 系列色族错开 —— pinned 是"owner 标注"维度
+                而非 due/时态/priority 维度，独立配色让识别更快）。pinnedFilter
+                在 localStorage 持久 —— 用户开过滤后切走再回到面板仍保留。 */}
+            {pinnedCount > 0 && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => setPinnedFilter((v) => !v)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setPinnedFilter((v) => !v);
+                  }
+                }}
+                aria-pressed={pinnedFilter}
+                title={
+                  pinnedFilter
+                    ? `已仅显钉住任务（${pinnedCount} 条）。点击恢复全部。`
+                    : `仅显示 owner 钉住的任务（${pinnedCount} 条）`
+                }
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  borderRadius: 999,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  background: pinnedFilter
+                    ? "var(--pet-tint-amber-fg, #d97706)"
+                    : "var(--pet-tint-amber-bg, #fef3c7)",
+                  color: pinnedFilter
+                    ? "#fff"
+                    : "var(--pet-tint-amber-fg, #92400e)",
+                  border: pinnedFilter
+                    ? "1px solid var(--pet-tint-amber-fg, #d97706)"
+                    : "1px solid color-mix(in srgb, var(--pet-tint-amber-fg, #d97706) 30%, transparent)",
+                }}
+              >
+                📌 {pinnedCount}
+              </span>
             )}
             {/* R104: priority 多选 chip 行。OR 命中（任一进集合即通过）；
                 P0 保留 "💡 idea 抽屉" glyph 让老用户直觉不变，其它走 P{n}
@@ -3608,6 +4574,22 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                 title="批量改 tag：输 +tag1 -tag2 单行，加 / 删可混用"
               >
                 改 tags
+              </button>
+              <button
+                style={bulkBusy ? s.bulkBtnDisabled : s.bulkBtn}
+                disabled={bulkBusy}
+                onClick={handleBulkPin}
+                title="批量钉住所有选中任务（写 [pinned] marker；已钉住的跳过）"
+              >
+                📌 钉住
+              </button>
+              <button
+                style={bulkBusy ? s.bulkBtnDisabled : s.bulkBtn}
+                disabled={bulkBusy}
+                onClick={handleBulkUnpin}
+                title="批量取消钉住所有选中任务（剥 [pinned] marker；未钉住的跳过）"
+              >
+                📌 取消钉
               </button>
               <button
                 style={bulkBusy ? s.bulkBtnDisabled : s.bulkBtn}
@@ -3887,8 +4869,9 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                   setDueFilter("all");
                   setPriorityFilter(new Set());
                   setOriginFilter(new Set());
+                  setPinnedFilter(false);
                 }}
-                title="清掉全部 active filter（search / tag / due / priority / origin）"
+                title="清掉全部 active filter（search / tag / due / priority / origin / pinned）"
               >
                 ✕ 清除全部过滤
               </button>
@@ -4469,6 +5452,153 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                     })()}
                   </div>
                   <div style={{ display: "flex", gap: 6, position: "relative" }}>
+                    {/* 📌 pinned chip：owner 标记 `[pinned]`。amber tint 与 chip
+                        行的「📌 N」过滤 chip 同色族；显示状态不分 status（done
+                        / cancelled 也保留视觉一致，但 chip 行计数只数活动态）。
+                        右键菜单可 toggle 钉 / 取消钉。 */}
+                    {t.pinned && (
+                      <span
+                        title="owner 已钉住本任务（描述含 [pinned]）。chip 行「📌 N」过滤可一键集中查看。右键 → 取消钉住。"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 2,
+                          padding: "1px 7px",
+                          fontSize: 10,
+                          fontWeight: 600,
+                          lineHeight: 1.4,
+                          letterSpacing: 0.2,
+                          borderRadius: 999,
+                          background: "var(--pet-tint-amber-bg, #fef3c7)",
+                          color: "var(--pet-tint-amber-fg, #92400e)",
+                          border:
+                            "1px solid color-mix(in srgb, var(--pet-tint-amber-fg, #d97706) 30%, transparent)",
+                          whiteSpace: "nowrap",
+                        }}
+                        aria-label="已钉住"
+                      >
+                        📌
+                      </span>
+                    )}
+                    {/* 任务 snooze 💤 chip：description 含 [snooze: ...] 且未过点。
+                        后端 build_task_view 已做"过点 → 不填"过滤，前端只需判 truthy。
+                        tooltip 显完整时刻；chip 文字短到 "至 MM-DD HH:MM"（13 字符
+                        以内）。终态行不渲染 —— 暂停语义对结束态无意义。 */}
+                    {t.snoozed_until && t.status !== "done" && t.status !== "cancelled" && (() => {
+                      const until = t.snoozed_until!;
+                      // `YYYY-MM-DDThh:mm` → 短串 `MM-DD HH:MM`
+                      const short =
+                        until.length >= 16
+                          ? `${until.slice(5, 10)} ${until.slice(11, 16)}`
+                          : until;
+                      return (
+                        <span
+                          title={`本任务已 [snooze:] 暂停，至 ${until.replace("T", " ")} 之前不会出现在 proactive 选单`}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 2,
+                            padding: "1px 7px",
+                            fontSize: 10,
+                            fontWeight: 600,
+                            lineHeight: 1.4,
+                            letterSpacing: 0.2,
+                            borderRadius: 999,
+                            background: "var(--pet-tint-purple-bg)",
+                            color: "var(--pet-tint-purple-fg)",
+                            border:
+                              "1px solid color-mix(in srgb, var(--pet-tint-purple-fg) 30%, transparent)",
+                            whiteSpace: "nowrap",
+                          }}
+                          aria-label="暂停至"
+                        >
+                          💤 至 {short}
+                        </span>
+                      );
+                    })()}
+                    {/* 任务依赖 🔒 chip：blockedBy 引用的 title 仍处 pending/error
+                        时显。tooltip 列出仍卡着的 blocker。proactive prompt 已自动
+                        过滤这些任务给 LLM，面板仍渲染让用户看到"为什么没人做这条"。
+                        终态行（done / cancelled）computeUnresolvedBlockers 跳过。 */}
+                    {(() => {
+                      const blockers = blockedMap.get(t.title);
+                      if (!blockers || blockers.length === 0) return null;
+                      const preview =
+                        blockers.length === 1
+                          ? blockers[0]
+                          : `${blockers[0]} +${blockers.length - 1}`;
+                      return (
+                        <span
+                          title={`本任务被 [blockedBy: …] 依赖卡住，等下列任务完成或取消后才会出现在 proactive 选单：\n${blockers.map((b) => `· ${b}`).join("\n")}`}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 2,
+                            padding: "1px 7px",
+                            fontSize: 10,
+                            fontWeight: 600,
+                            lineHeight: 1.4,
+                            letterSpacing: 0.2,
+                            borderRadius: 999,
+                            background: "var(--pet-tint-yellow-bg)",
+                            color: "var(--pet-tint-yellow-fg)",
+                            border:
+                              "1px solid color-mix(in srgb, var(--pet-tint-yellow-fg) 30%, transparent)",
+                            whiteSpace: "nowrap",
+                            maxWidth: 180,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                          aria-label={`等待 ${blockers.length} 条依赖`}
+                        >
+                          🔒 等 {preview}
+                        </span>
+                      );
+                    })()}
+                    {/* 🕰 老任务年龄 chip：created_at > 3 天且仍 pending/error
+                        时显，配 📌 钉住 chip 帮 owner 判断「这条放了多久 / 要不
+                        要拆 / 取消」。done / cancelled 不渲（静态终态，年龄无
+                        actionable 信号）。muted gray 与 actionable chips（📌 /
+                        💤 / 🔒）配色错开，弱化为"信息"非"动作"。tooltip 显完整
+                        created_at + 相对值，让 owner 心里有数 + hover 验证。 */}
+                    {(t.status === "pending" || t.status === "error") &&
+                      (() => {
+                        const ts = Date.parse(t.created_at);
+                        if (Number.isNaN(ts)) return null;
+                        const ageMs = nowMs - ts;
+                        // 3 天阈值：< 3 天的任务"新"，不需要提醒；≥ 3 天
+                        // 开始显，覆盖一周内 / 一两周 / 更久三个粒度。
+                        if (ageMs < 3 * 86_400_000) return null;
+                        const rel = formatRelativeAge(t.created_at, nowMs);
+                        if (!rel) return null;
+                        return (
+                          <span
+                            title={`创建于 ${t.created_at
+                              .slice(0, 16)
+                              .replace("T", " ")}（${rel}）—— 放了一阵了，要不要拆 / 改 priority / 取消？`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 2,
+                              padding: "1px 7px",
+                              fontSize: 10,
+                              fontWeight: 500,
+                              lineHeight: 1.4,
+                              letterSpacing: 0.2,
+                              borderRadius: 999,
+                              background:
+                                "color-mix(in srgb, var(--pet-color-muted) 12%, transparent)",
+                              color: "var(--pet-color-muted)",
+                              border:
+                                "1px solid color-mix(in srgb, var(--pet-color-muted) 25%, transparent)",
+                              whiteSpace: "nowrap",
+                            }}
+                            aria-label={`已创建 ${rel}`}
+                          >
+                            🕰 {rel}
+                          </span>
+                        );
+                      })()}
                     <button
                       type="button"
                       onMouseDown={(e) => e.stopPropagation()}
@@ -4682,7 +5812,13 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                     ? t.body.slice(0, BODY_FOLD_PREVIEW) + "…"
                     : t.body;
                   return (
-                    <div style={s.itemBody}>
+                    <div
+                      style={s.itemBody}
+                      // 折叠态加 native tooltip 显示全文 —— 用户不点展开就能
+                      // hover 看长描述，对于"扫一眼判断"是否需要展开有用。展开
+                      // 时不挂 title（避免 hover 弹一长串重复 content）。
+                      title={folded ? t.body : undefined}
+                    >
                       <HighlightedText text={shown} query={search} />
                       {isLong && !matchInBody && (
                         <button
@@ -4781,14 +5917,53 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                       return rel ? ` · ${rel}` : null;
                     })()}
                   </span>
+                  {/* origin chip：raw_description 带 `[origin:tg:<chat>]` 时
+                      行内显「📨 TG」一片，让用户扫长队列时一眼分辨"哪条是
+                      手机派的"。不带 origin marker 默认是面板创建，不显
+                      chip 避免噪音。点击 chip 跳到顶部 origin filter 集中
+                      看 TG 任务。 */}
+                  {t.raw_description.includes("[origin:tg:") && (
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOriginFilter((prev) => {
+                          if (prev.has("tg")) return prev;
+                          const next = new Set(prev);
+                          next.add("tg");
+                          return next;
+                        });
+                      }}
+                      style={{
+                        padding: "1px 6px",
+                        borderRadius: 999,
+                        background: "var(--pet-tint-blue-bg)",
+                        color: "var(--pet-tint-blue-fg)",
+                        fontSize: 10,
+                        fontWeight: 600,
+                        letterSpacing: 0.2,
+                        cursor: "pointer",
+                        userSelect: "none",
+                      }}
+                      title="本任务从 Telegram 派出。点击 chip → 顶部 origin filter 切到 TG，集中查看手机端派的任务。"
+                    >
+                      📨 TG
+                    </span>
+                  )}
                   {/* 更新于 X · Y 前 [· N 次更新]：与"创建于"对称展示活跃
                       度。updated_at 与 created_at 同 → 任务建后没动过，省
                       此 span 避免重复噪声。N 次更新依赖 detailMap[title] 已
                       经被 hover preview / expand 加载 —— 没加载就只显时间，
-                      graceful degrade。 */}
+                      graceful degrade。
+                      done/cancelled 终态时 label 用"完成于"/"取消于"——
+                      该 ts 就是状态确定的时刻，比泛泛"更新于"更有信息量。 */}
                   {t.updated_at && t.updated_at !== t.created_at && (
                     <span>
-                      更新于 {t.updated_at.slice(0, 16).replace("T", " ")}
+                      {t.status === "done"
+                        ? "完成于 "
+                        : t.status === "cancelled"
+                          ? "取消于 "
+                          : "更新于 "}
+                      {t.updated_at.slice(0, 16).replace("T", " ")}
                       {(() => {
                         const rel = formatRelativeAge(t.updated_at, nowMs);
                         return rel ? ` · ${rel}` : null;
@@ -5177,6 +6352,48 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                                     </button>
                                   );
                                 })}
+                                {/* 📋 复制全文：与既有 PanelMemory 的 📋 detail.md
+                                    全文复制对偶 —— 在 PanelTasks detail 编辑器顶
+                                    部一键拷整段 markdown 到剪贴板。preview 模式
+                                    下 owner 无法用 textarea 原生选中拷贝；edit /
+                                    split 模式下也省"⌘A + ⌘C"两步。空内容不渲
+                                    染避免噪音。toast 复用 bulkResultMsg 通道。 */}
+                                {editingDetailContent.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        await navigator.clipboard.writeText(
+                                          editingDetailContent,
+                                        );
+                                        const len = Array.from(editingDetailContent)
+                                          .length;
+                                        setBulkResultMsg(
+                                          `已复制 detail.md 全文（${len} 字）`,
+                                        );
+                                      } catch (e) {
+                                        setBulkResultMsg(`复制失败：${e}`);
+                                      }
+                                      window.setTimeout(
+                                        () => setBulkResultMsg(""),
+                                        4000,
+                                      );
+                                    }}
+                                    style={{
+                                      fontSize: 11,
+                                      padding: "2px 8px",
+                                      border: "1px solid var(--pet-color-border)",
+                                      borderRadius: 4,
+                                      background: "var(--pet-color-card)",
+                                      color: "var(--pet-color-muted)",
+                                      cursor: "pointer",
+                                    }}
+                                    title="把当前 detail.md 全文写到系统剪贴板（含未保存改动 —— textarea 当前值，不是磁盘版本）。便于贴到外部 markdown 笔记 / chat / issue。"
+                                    aria-label="copy detail.md content to clipboard"
+                                  >
+                                    📋
+                                  </button>
+                                )}
                                 {/* R141: dirty marker — content !== original 时
                                     显 "● 未保存"；marginLeft: auto 在字数 counter
                                     上，dirty marker 紧贴字数左侧（gap 4 分隔）。 */}
@@ -5194,14 +6411,27 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                                     ● 未保存
                                   </span>
                                 )}
-                                {(() => {
-                                  // 编辑态 counter 三档配色：与阅读态 counter
-                                  // （Array.from length；> 2000 amber）共一套
-                                  // 阈值语义但更激进 —— edit 是 user 主动写，
-                                  // > 5000 字进 red banner（下一行）。
-                                  const editCount = Array.from(editingDetailContent).length;
-                                  const longish = editCount > 2000;
-                                  const danger = editCount > 5000;
+                                {/* 行号状态栏：「行 N / 共 M」与 IDE 状态栏同体
+                                    验。仅在编辑模式（textarea 存在 → 光标存在）
+                                    显；preview 纯渲染态下无 cursor 概念省略。
+                                    line 计算：value.slice(0, cursor).split("\n").length
+                                    给 1-indexed 行号；total = split 全文行数。 */}
+                                {detailViewMode !== "preview" && (() => {
+                                  const cursor = Math.max(
+                                    0,
+                                    Math.min(
+                                      detailCursorPos,
+                                      editingDetailContent.length,
+                                    ),
+                                  );
+                                  const before = editingDetailContent.slice(
+                                    0,
+                                    cursor,
+                                  );
+                                  const line = before.split("\n").length;
+                                  const total = editingDetailContent.length === 0
+                                    ? 1
+                                    : editingDetailContent.split("\n").length;
                                   return (
                                     <span
                                       style={{
@@ -5210,6 +6440,78 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                                           editingDetailOriginalRef.current
                                             ? undefined
                                             : "auto",
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        fontFamily: "'SF Mono', 'Menlo', monospace",
+                                      }}
+                                      title="当前光标所在行号 / 文档总行数（与 IDE 状态栏同源）。调试 markdown 时方便对照。"
+                                    >
+                                      行 {line} / 共 {total}
+                                    </span>
+                                  );
+                                })()}
+                                {/* ☑ checkbox 进度 chip：扫 detail.md 里的
+                                    `- [ ]` / `- [x]` / `- [X]` 行计数。total > 0
+                                    才显（无 checklist 时是噪音）；done == total
+                                    时变绿，鼓励"全勾完"。与既有 GFM checklist
+                                    渲染 + ✓ 完成行按钮同 marker 协议，让"清单
+                                    完成度"成为一眼可见的反馈。 */}
+                                {(() => {
+                                  // 全文 scan：multiline regex 一次走完。换行
+                                  // 大小写都覆盖（与 toggleEditChecklistLine
+                                  // 接受的形态一致）。
+                                  const lines = editingDetailContent.split("\n");
+                                  let total = 0;
+                                  let done = 0;
+                                  for (const line of lines) {
+                                    const m = line.match(/^\s*- \[([ xX])\] /);
+                                    if (m) {
+                                      total += 1;
+                                      if (m[1] !== " ") done += 1;
+                                    }
+                                  }
+                                  if (total === 0) return null;
+                                  const allDone = done === total;
+                                  return (
+                                    <span
+                                      style={{
+                                        fontSize: 10,
+                                        color: allDone
+                                          ? "var(--pet-tint-green-fg)"
+                                          : "var(--pet-color-muted)",
+                                        fontWeight: allDone ? 600 : undefined,
+                                        fontFamily: "'SF Mono', 'Menlo', monospace",
+                                      }}
+                                      title={
+                                        allDone
+                                          ? `全部 ${total} 条 checklist 都已勾完 ✓`
+                                          : `本 detail.md 含 ${total} 条 GFM checklist；已勾 ${done} 条。点工具栏 ☐ 加新条 / ✓ 完成行加"做完一条 + 时间戳"。`
+                                      }
+                                    >
+                                      ☑ {done} / 共 {total}
+                                    </span>
+                                  );
+                                })()}
+                                {(() => {
+                                  // 编辑态 counter 三档配色：与阅读态 counter
+                                  // （Array.from length；> 2000 amber）共一套
+                                  // 阈值语义但更激进 —— edit 是 user 主动写，
+                                  // > 5000 字进 red banner（下一行）。
+                                  const editCount = Array.from(editingDetailContent).length;
+                                  const longish = editCount > 2000;
+                                  const danger = editCount > 5000;
+                                  // marginLeft auto 由更早的 chip 抢占（dirty ●
+                                  // 或 行号 chip）；只有 preview 模式 + clean 时
+                                  // 字数 chip 自己成为"右推 spacer"。多 auto chip
+                                  // 会让 flex 把空间平均分配，破坏布局。
+                                  const spacerOnSelf =
+                                    detailViewMode === "preview" &&
+                                    editingDetailContent ===
+                                      editingDetailOriginalRef.current;
+                                  return (
+                                    <span
+                                      style={{
+                                        marginLeft: spacerOnSelf ? "auto" : undefined,
                                         fontSize: 10,
                                         color: danger
                                           ? "var(--pet-tint-red-fg)"
@@ -5295,6 +6597,109 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                                   >
                                     🔗
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      insertMarkdownAtCursor(
+                                        "wrap",
+                                        "```\n",
+                                        "\n```",
+                                      )
+                                    }
+                                    title="代码块（```\\n...\\n```）。选中后点击包裹；无选区时光标落在两道围栏之间让你直接敲。"
+                                    style={{
+                                      ...mdToolbarBtnStyle,
+                                      fontFamily:
+                                        "'SF Mono', 'Menlo', monospace",
+                                    }}
+                                  >
+                                    {"</>"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      insertMarkdownAtCursor(
+                                        "line-prefix",
+                                        "- [ ] ",
+                                        "",
+                                      )
+                                    }
+                                    title="待办（- [ ] ...）。每选中行的行首加 - [ ]。完成后手动改成 - [x] 即标记完成；GitHub / Obsidian / Notion 都识别。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    ☐
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      insertMarkdownAtCursor(
+                                        "line-prefix",
+                                        "> ",
+                                        "",
+                                      )
+                                    }
+                                    title="引用块（> ...）。每选中行的行首加 >；多行连续就是多行引用。粘别人的话 / 引用之前结论 / 提示框都常用。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    ❝
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={insertTableSkeletonAtCursor}
+                                    title="表格（3×3 GFM）。插入 | 列 1 | 列 2 | 列 3 | + 分隔行 + 2 空白数据行；光标自动选中『列 1』，直接敲即覆盖。需独占整段，按钮会自动补换行。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    📊
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={insertCurrentTimeAtCursor}
+                                    title="插入当前时间（YYYY-MM-DD HH:MM 本地，与 [snooze:] / [once:] marker 协议同形）。记录里程碑 / 进度笔记 / 调用时间戳都用得到。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    📅
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={insertDoneLineAtCursor}
+                                    title="✓ 完成行（- [x] YYYY-MM-DD HH:MM ）。在光标所在行首插入「已完成 checklist + 时间戳」模板，光标落尾让你直接敲『做了什么』。当前行已是 checklist 时跳过。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    ✓
+                                  </button>
+                                  {/* 📂 在 Finder 显示 detail.md：让 owner 能在
+                                      系统文件管理器里操作（拖图 / git add /
+                                      用其它编辑器打开等）。macOS 用 `open -R`
+                                      高亮选中；Windows `explorer /select,`；其它
+                                      平台退化到打开父目录。文件还未存在（新任务
+                                      首次保存前）→ 后端报错，setActionErr 显原
+                                      因 toast 3.5s 自清。 */}
+                                  {t.detail_path && (
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        setActionErr("");
+                                        try {
+                                          await invoke<void>(
+                                            "memory_reveal_detail_in_finder",
+                                            { detailPath: t.detail_path },
+                                          );
+                                        } catch (e) {
+                                          setActionErr(
+                                            `在 Finder 打开失败：${e}（detail.md 可能尚未保存到磁盘 —— 先 ⌘S 一次再点）`,
+                                          );
+                                          window.setTimeout(
+                                            () => setActionErr(""),
+                                            5000,
+                                          );
+                                        }
+                                      }}
+                                      title={`在系统文件管理器里显示 detail.md（路径：memories/${t.detail_path}）。macOS Finder 会高亮选中文件，方便拖入附件 / git add / 重命名 / 用其它编辑器打开。`}
+                                      style={mdToolbarBtnStyle}
+                                    >
+                                      📂
+                                    </button>
+                                  )}
                                 </div>
                               )}
                               {/* edit / split / preview 三态渲染。split 用
@@ -5312,7 +6717,23 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                               <textarea
                                 ref={detailEditorRef}
                                 value={editingDetailContent}
-                                onChange={(e) => setEditingDetailContent(e.target.value)}
+                                onChange={(e) => {
+                                  setEditingDetailContent(e.target.value);
+                                  setDetailCursorPos(e.target.selectionStart);
+                                }}
+                                onSelect={(e) =>
+                                  setDetailCursorPos(
+                                    (e.target as HTMLTextAreaElement).selectionStart,
+                                  )
+                                }
+                                onKeyUp={(e) =>
+                                  setDetailCursorPos(e.currentTarget.selectionStart)
+                                }
+                                onClick={(e) =>
+                                  setDetailCursorPos(
+                                    (e.target as HTMLTextAreaElement).selectionStart,
+                                  )
+                                }
                                 onPaste={(e) => {
                                   // 粘贴板里抓 image/* 文件 → preventDefault
                                   // 阻止默认（不会把 file 路径文本错粘进 textarea）
@@ -5417,7 +6838,12 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                                         （空 — 在左侧编辑写笔记）
                                       </span>
                                     ) : (
-                                      parseMarkdown(editingDetailContent)
+                                      parseMarkdown(editingDetailContent, {
+                                        checkboxToggle: {
+                                          lineOffset: 0,
+                                          onToggle: toggleEditChecklistLine,
+                                        },
+                                      })
                                     )}
                                   </div>
                                 </div>
@@ -5445,14 +6871,35 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                                       （空 — 切回 ✏️ 编辑写笔记）
                                     </span>
                                   ) : (
-                                    parseMarkdown(editingDetailContent)
+                                    parseMarkdown(editingDetailContent, {
+                                      checkboxToggle: {
+                                        lineOffset: 0,
+                                        onToggle: toggleEditChecklistLine,
+                                      },
+                                    })
                                   )}
                                 </div>
                               ) : (
                               <textarea
                                 ref={detailEditorRef}
                                 value={editingDetailContent}
-                                onChange={(e) => setEditingDetailContent(e.target.value)}
+                                onChange={(e) => {
+                                  setEditingDetailContent(e.target.value);
+                                  setDetailCursorPos(e.target.selectionStart);
+                                }}
+                                onSelect={(e) =>
+                                  setDetailCursorPos(
+                                    (e.target as HTMLTextAreaElement).selectionStart,
+                                  )
+                                }
+                                onKeyUp={(e) =>
+                                  setDetailCursorPos(e.currentTarget.selectionStart)
+                                }
+                                onClick={(e) =>
+                                  setDetailCursorPos(
+                                    (e.target as HTMLTextAreaElement).selectionStart,
+                                  )
+                                }
                                 onPaste={(e) => {
                                   const items = e.clipboardData?.items;
                                   if (!items) return;
@@ -5850,6 +7297,48 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                 >
                   {archiveLoading ? "刷新中…" : "刷新"}
                 </button>
+                {/* 🗑 清理 >30 天：二次确认（首次进 armed 红字；5s 内再点真清）。
+                    禁用条件：归档为空 / 加载中 / 正在清。armed 5s 后自动 disarm。 */}
+                {archiveItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (archivePurgeArmed) void doArchivePurge();
+                      else armArchivePurge();
+                    }}
+                    disabled={archiveLoading || archivePurging}
+                    style={{
+                      fontSize: 11,
+                      padding: "2px 8px",
+                      border: "1px solid",
+                      borderColor: archivePurgeArmed
+                        ? "var(--pet-tint-red-fg)"
+                        : "var(--pet-color-border)",
+                      borderRadius: 4,
+                      background: archivePurgeArmed
+                        ? "var(--pet-tint-red-bg)"
+                        : "var(--pet-color-card)",
+                      color: archivePurgeArmed
+                        ? "var(--pet-tint-red-fg)"
+                        : "var(--pet-color-muted)",
+                      cursor:
+                        archiveLoading || archivePurging ? "default" : "pointer",
+                      fontWeight: archivePurgeArmed ? 600 : 400,
+                    }}
+                    title={
+                      archivePurgeArmed
+                        ? "再点一次真清；5 秒内不点自动取消"
+                        : "清掉 task_archive 里 updated_at 超 30 天的条目（与归档进入窗口对齐）"
+                    }
+                  >
+                    {archivePurging
+                      ? "清理中…"
+                      : archivePurgeArmed
+                        ? "再点确认 ⚠️"
+                        : "🗑 清理 >30 天"}
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -5867,8 +7356,80 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                   hint="consolidate 会把 30 天前已结束的 butler_tasks 自动挪过来"
                   compact
                 />
-              ) : (
-                archiveItems.map((it) => {
+              ) : (() => {
+                // 搜索过滤：空 query 直接走原列表；非空 case-insensitive 子串匹配
+                // title / description。filteredItems 渲染传给下方 map。
+                const q = archiveQuery.trim().toLowerCase();
+                const filtered =
+                  q.length === 0
+                    ? archiveItems
+                    : archiveItems.filter(
+                        (it) =>
+                          it.title.toLowerCase().includes(q) ||
+                          it.description.toLowerCase().includes(q),
+                      );
+                return (
+                  <>
+                    {/* 归档搜索框：仅 archiveItems 非空时渲染（loading / empty
+                        都不显，避免噪音）。空 query placeholder 提示总数；非
+                        空时下方计数显"过滤后 / 总数"。 */}
+                    <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center" }}>
+                      <input
+                        type="text"
+                        value={archiveQuery}
+                        onChange={(e) => setArchiveQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape" && archiveQuery) {
+                            e.preventDefault();
+                            setArchiveQuery("");
+                          }
+                        }}
+                        placeholder={`搜归档 title / description…（共 ${archiveItems.length} 条）`}
+                        style={{
+                          flex: 1,
+                          padding: "5px 10px",
+                          fontSize: 12,
+                          border: "1px solid var(--pet-color-border)",
+                          borderRadius: 6,
+                          background: "var(--pet-color-card)",
+                          color: "var(--pet-color-fg)",
+                          fontFamily: "inherit",
+                        }}
+                      />
+                      {archiveQuery.length > 0 && (
+                        <>
+                          <span style={{ fontSize: 11, color: "var(--pet-color-muted)", fontFamily: "'SF Mono', 'Menlo', monospace" }}>
+                            {filtered.length} / {archiveItems.length}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setArchiveQuery("")}
+                            style={{
+                              fontSize: 11,
+                              padding: "3px 8px",
+                              border: "1px solid var(--pet-color-border)",
+                              borderRadius: 4,
+                              background: "var(--pet-color-card)",
+                              color: "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                            title="清空搜索"
+                          >
+                            ✕
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {filtered.length === 0 ? (
+                      <EmptyState
+                        icon="🔍"
+                        title="没有匹配的归档"
+                        hint="试试更短的关键词，或清空搜索看全集"
+                        compact
+                      />
+                    ) : (
+                      filtered.map((it) => {
                   // title 形如 "2026-04-01_整理 downloads"；display 把日期前缀
                   // 单独亮出来。description 形如 "[archived: 2026-04-01] [task ...] 整理 [done] [result: 完成]"。
                   const m = it.title.match(/^(\d{4}-\d{2}-\d{2})_(.*)$/);
@@ -5900,9 +7461,40 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                         >
                           {archiveDate}
                         </span>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--pet-color-fg)", wordBreak: "break-word" }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--pet-color-fg)", wordBreak: "break-word", flex: 1 }}>
                           {displayTitle}
                         </span>
+                        {/* ↩ 恢复到队列：剥归档 / 终态 marker，重新创建为 pending
+                            butler_task；老 archive 条目同时删除。不弹确认（恢复
+                            操作是低风险 —— task_archive 条目还能再次手动创建）。 */}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const msg = await invoke<string>("task_unarchive", { title: it.title });
+                              setBulkResultMsg(msg);
+                              await reloadArchive();
+                              await reload();
+                            } catch (e) {
+                              setBulkResultMsg(`恢复失败：${e}`);
+                            }
+                            window.setTimeout(() => setBulkResultMsg(""), 4000);
+                          }}
+                          style={{
+                            flexShrink: 0,
+                            padding: "2px 8px",
+                            fontSize: 11,
+                            border: "1px solid var(--pet-color-border)",
+                            borderRadius: 4,
+                            background: "var(--pet-color-card)",
+                            color: "var(--pet-color-accent)",
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                          title="把这条归档剥光 done / archived / result 等标记，重建为 pending butler_task（detail.md 不带回，需要的话先手动复制内容）"
+                        >
+                          ↩ 恢复
+                        </button>
                       </div>
                       <div
                         style={{
@@ -5919,7 +7511,10 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                     </div>
                   );
                 })
-              )}
+                    )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -6126,11 +7721,25 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                 }}
               >
                 <option value="">📋 从模板…</option>
-                {TASK_TEMPLATES.map((tpl, i) => (
-                  <option key={tpl.label} value={i}>
-                    {tpl.label}
-                  </option>
-                ))}
+                <optgroup label="内置范例">
+                  {TASK_TEMPLATES_BUILTIN.map((tpl, i) => (
+                    <option key={tpl.label} value={i}>
+                      {tpl.label}
+                    </option>
+                  ))}
+                </optgroup>
+                {customTemplates.length > 0 && (
+                  <optgroup label="我存的">
+                    {customTemplates.map((tpl, j) => (
+                      <option
+                        key={tpl.label}
+                        value={TASK_TEMPLATES_BUILTIN.length + j}
+                      >
+                        {tpl.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
             <input
@@ -6385,6 +7994,117 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
           </div>
         );
       })()}
+      {/* 自定义模板管理 Modal：列每条 label + title 前缀 + body 前缀 + 删除按钮。
+          customTemplates 空数组时 Modal 仍可被强行打开（理论不发生：入口按钮在
+          length === 0 时根本不渲染），渲染兜底空态文案。 */}
+      <Modal
+        open={templatesManagerOpen}
+        onClose={() => setTemplatesManagerOpen(false)}
+        maxWidth={520}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            marginBottom: 14,
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>
+            自定义任务模板
+          </h2>
+          <span style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
+            点背景或 Esc 关闭 · 共 {customTemplates.length} / {CUSTOM_TEMPLATES_MAX}
+          </span>
+        </div>
+        {customTemplates.length === 0 ? (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--pet-color-muted)",
+              padding: "16px 0",
+              textAlign: "center",
+            }}
+          >
+            还没有自定义模板。填好新建任务的标题 / 内容后点「💾 存为」就能加一条。
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {customTemplates.map((tpl) => (
+              <div
+                key={tpl.label}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 10,
+                  padding: "8px 10px",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 8,
+                  background: "var(--pet-color-card)",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--pet-color-fg)",
+                      marginBottom: 2,
+                    }}
+                  >
+                    {tpl.label}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--pet-color-muted)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={`标题：${tpl.title}\n\n内容：${tpl.body}`}
+                  >
+                    标题：{tpl.title}
+                  </div>
+                  {tpl.body && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--pet-color-muted)",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        marginTop: 2,
+                      }}
+                    >
+                      内容：{tpl.body.replace(/\n/g, "  ").slice(0, 80)}
+                      {tpl.body.length > 80 ? "…" : ""}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => deleteCustomTemplate(tpl.label)}
+                  title={`删除模板「${tpl.label}」`}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    border:
+                      "1px solid color-mix(in srgb, var(--pet-tint-red-fg) 40%, var(--pet-color-border))",
+                    borderRadius: 6,
+                    background: "var(--pet-color-card)",
+                    color: "var(--pet-tint-red-fg)",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  删除
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
       {taskCtxMenu && (() => {
         // viewport 右 / 下越界时把菜单往回挪；menu 实际宽度 / 高度由内容定，
         // 这里用经验值 180 / 320 做夹紧足够（带 priority 子面板时纵向 +60）。
@@ -6476,6 +8196,78 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
             >
               📂 展开详情
             </button>
+            {/* 📌 钉住 toggle：done / cancelled 行也允许（owner 自标"重要"
+                与状态正交），所以不放在 canMarkDone gate 后面。current pinned
+                state 从 t.pinned 读，label / color 反映"将切换到的方向"。
+                调 task_set_pinned 后 reload 让 chip 计数 / row chip 即时刷。 */}
+            <button
+              type="button"
+              style={{
+                ...itemBtn,
+                color: t?.pinned
+                  ? "var(--pet-color-muted)"
+                  : "var(--pet-tint-amber-fg, #d97706)",
+              }}
+              onMouseOver={itemBtnHoverIn}
+              onMouseOut={itemBtnHoverOut}
+              onClick={async () => {
+                setTaskCtxMenu(null);
+                setActionErr("");
+                setBusyTitle(m.title);
+                try {
+                  await invoke<void>("task_set_pinned", {
+                    title: m.title,
+                    pinned: !t?.pinned,
+                  });
+                  await reload();
+                } catch (e) {
+                  setActionErr(`钉住失败：${e}`);
+                } finally {
+                  setBusyTitle(null);
+                }
+              }}
+              title={
+                t?.pinned
+                  ? "已钉住 —— 点击取消（剥 [pinned] marker）"
+                  : "钉住任务（写 [pinned] marker） —— 「📌 N」chip 可一键过滤"
+              }
+            >
+              {t?.pinned ? "📌 取消钉住" : "📌 钉住"}
+            </button>
+            {/* ✨ LLM 重写标题：与 PanelChat session ctx menu 的"LLM 重写标题"
+                按钮同模板。调用一次非流式 chat/completions（30s timeout /
+                temperature 0.3 / max_tokens 30），让 LLM 看任务 title + 描述 +
+                detail.md 前 600 字给一句 ≤ 10 字的新标题；返回后 atomic
+                memory_rename 写回。中途让 toast 显"进行中"避免用户以为按钮坏了。 */}
+            <button
+              type="button"
+              style={{ ...itemBtn, color: "var(--pet-color-accent)" }}
+              onMouseOver={itemBtnHoverIn}
+              onMouseOut={itemBtnHoverOut}
+              onClick={async () => {
+                setTaskCtxMenu(null);
+                setActionErr("");
+                setBulkResultMsg(`✨ 正在让 LLM 重写「${m.title}」的标题…`);
+                setBusyTitle(m.title);
+                try {
+                  const newTitle = await invoke<string>(
+                    "regenerate_task_title",
+                    { title: m.title },
+                  );
+                  setBulkResultMsg(`✨ 已重写标题：${newTitle}`);
+                  window.setTimeout(() => setBulkResultMsg(""), 4000);
+                  await reload();
+                } catch (e) {
+                  setActionErr(`重写标题失败：${e}`);
+                  setBulkResultMsg("");
+                } finally {
+                  setBusyTitle(null);
+                }
+              }}
+              title="让 LLM 看任务标题 + 描述 + detail.md 前 600 字，给一句 ≤ 10 字新标题，并直接改名。免去手动想新名的脑力开销。"
+            >
+              ✨ LLM 重写标题
+            </button>
             {canMarkDone && (
               <button
                 type="button"
@@ -6546,6 +8338,120 @@ export function PanelTasks({ pendingFocusTitle, onConsumeFocus }: PanelTasksProp
                 {preset.label}
               </button>
             ))}
+            {/* Snooze preset：把任务暂停到指定时刻 —— pending / error 都允许。
+                与 [snooze: ...] marker 协议同源（YYYY-MM-DD HH:MM 空格分隔）。
+                "今晚 18:00 已过" 自动跳明晚（与 due `今晚` chip 同行为）；
+                "下周一" 永远跳下周（即使今日就是周一）—— 与 dueNextMonday 同
+                语义。currentSnoozed 用 tasks.find 拿最新 snoozed_until；
+                truthy 时多渲一个"解除暂停"行让用户随时撤销。 */}
+            {canMarkDone && (() => {
+              const cur = tasks.find((x) => x.title === m.title);
+              const currentSnoozed = cur?.snoozed_until ?? null;
+              const fmt = (d: Date) => {
+                const y = d.getFullYear();
+                const mo = String(d.getMonth() + 1).padStart(2, "0");
+                const da = String(d.getDate()).padStart(2, "0");
+                const hh = String(d.getHours()).padStart(2, "0");
+                const mm = String(d.getMinutes()).padStart(2, "0");
+                return `${y}-${mo}-${da} ${hh}:${mm}`;
+              };
+              const computeUntil = (preset: string): string => {
+                const now = new Date();
+                if (preset === "30m") {
+                  return fmt(new Date(now.getTime() + 30 * 60 * 1000));
+                }
+                if (preset === "tonight") {
+                  const d = new Date(
+                    now.getFullYear(),
+                    now.getMonth(),
+                    now.getDate(),
+                    18,
+                    0,
+                    0,
+                  );
+                  if (d.getTime() <= now.getTime()) {
+                    d.setDate(d.getDate() + 1);
+                  }
+                  return fmt(d);
+                }
+                if (preset === "tomorrow") {
+                  const d = new Date(
+                    now.getFullYear(),
+                    now.getMonth(),
+                    now.getDate() + 1,
+                    9,
+                    0,
+                    0,
+                  );
+                  return fmt(d);
+                }
+                // nextMonday
+                const today = now.getDay();
+                const daysAhead = today === 0 ? 1 : 7 - today + 1;
+                const d = new Date(
+                  now.getFullYear(),
+                  now.getMonth(),
+                  now.getDate() + daysAhead,
+                  9,
+                  0,
+                  0,
+                );
+                return fmt(d);
+              };
+              const presets: Array<{ key: string; label: string }> = [
+                { key: "30m", label: "💤 暂停 30 分" },
+                { key: "tonight", label: "💤 暂停至今晚 18:00" },
+                { key: "tomorrow", label: "💤 暂停至明早 09:00" },
+                { key: "nextMonday", label: "💤 暂停至下周一 09:00" },
+              ];
+              const setSnooze = async (until: string | null) => {
+                setTaskCtxMenu(null);
+                setActionErr("");
+                setBusyTitle(m.title);
+                try {
+                  await invoke<void>("task_set_snooze", {
+                    title: m.title,
+                    until,
+                  });
+                  await reload();
+                } catch (e) {
+                  setActionErr(`设 snooze 失败：${e}`);
+                } finally {
+                  setBusyTitle(null);
+                }
+              };
+              return (
+                <>
+                  {presets.map((p) => (
+                    <button
+                      key={p.key}
+                      type="button"
+                      style={itemBtn}
+                      onMouseOver={itemBtnHoverIn}
+                      onMouseOut={itemBtnHoverOut}
+                      onClick={() => void setSnooze(computeUntil(p.key))}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                  {currentSnoozed && (
+                    <button
+                      type="button"
+                      style={{
+                        ...itemBtn,
+                        color: "var(--pet-color-accent)",
+                      }}
+                      onMouseOver={itemBtnHoverIn}
+                      onMouseOut={itemBtnHoverOut}
+                      onClick={() => void setSnooze(null)}
+                      title={`当前 snooze 至 ${currentSnoozed.replace("T", " ")}`}
+                    >
+                      ☀️ 解除暂停
+                    </button>
+                  )}
+                </>
+              );
+            })()}
             {canRetry && (
               <button
                 type="button"

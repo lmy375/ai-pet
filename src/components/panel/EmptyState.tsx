@@ -45,10 +45,21 @@ export function EmptyState({
         <div
           aria-hidden
           style={{
-            fontSize: compact ? 24 : 32,
+            // accent halo 包裹 icon —— 让"空"也成为一种视觉表达。
+            width: compact ? 44 : 64,
+            height: compact ? 44 : 64,
+            borderRadius: "50%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: compact ? 22 : 30,
             lineHeight: 1,
-            opacity: 0.55,
-            marginBottom: 2,
+            marginBottom: compact ? 4 : 8,
+            background:
+              "radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--pet-color-accent) 10%, transparent) 0%, transparent 70%)",
+            border:
+              "1px solid color-mix(in srgb, var(--pet-color-accent) 14%, var(--pet-color-border))",
+            opacity: 0.95,
           }}
         >
           {icon}
@@ -59,7 +70,8 @@ export function EmptyState({
           fontSize: compact ? text.base : text.md,
           fontWeight: fontWeight.medium,
           color: "var(--pet-color-fg)",
-          opacity: 0.7,
+          opacity: 0.82,
+          letterSpacing: 0.1,
         }}
       >
         {title}

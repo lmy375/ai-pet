@@ -1,17 +1,11 @@
-import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useState } from "react";
 import { PanelDebug } from "./components/panel/PanelDebug";
 import { LlmLogView } from "./components/panel/LlmLogView";
 import { PanelDebugStats } from "./components/panel/PanelDebugStats";
 import { PanelDebugLogs } from "./components/panel/PanelDebugLogs";
-import {
-  applyTheme,
-  getStoredAccent,
-  getStoredTheme,
-  setStoredAccent,
-  setStoredTheme,
-  type Accent,
-} from "./theme";
+import { useTabKeyboardShortcut } from "./hooks/useTabKeyboardShortcut";
+import { useThemeChangeSync } from "./hooks/useThemeChangeSync";
+import { applyTheme, getStoredAccent, getStoredTheme } from "./theme";
 
 const TABS = ["应用", "日志", "LLM 日志", "统计"] as const;
 type Tab = (typeof TABS)[number];
@@ -38,28 +32,12 @@ export function DebugApp() {
     return "应用";
   });
 
-  // 监听跨窗口 theme-change / accent-change：用户在 panel 切主题时，
-  // debug 窗口也跟着变（与 App.tsx 桌面宠物窗口同模式）。
-  useEffect(() => {
-    const pTheme = listen<string>("theme-change", (event) => {
-      const next = event.payload === "dark" ? "dark" : "light";
-      if (getStoredTheme() === next) return;
-      setStoredTheme(next);
-      applyTheme(next, getStoredAccent());
-    });
-    const pAccent = listen<string>("accent-change", (event) => {
-      const valid: Accent[] = ["default", "green", "purple", "orange", "rose"];
-      const raw = event.payload as Accent;
-      const next = valid.includes(raw) ? raw : "default";
-      if (getStoredAccent() === next) return;
-      setStoredAccent(next);
-      applyTheme(getStoredTheme(), next);
-    });
-    return () => {
-      pTheme.then((un) => un());
-      pAccent.then((un) => un());
-    };
-  }, []);
+  // 跨窗口主题 / 强调色同步走共享 hook（与 App.tsx 桌面宠物窗口同一份）。
+  useThemeChangeSync();
+
+  // ⌘1 – ⌘4（含 Ctrl 等价）跳到 N 号 tab —— 共用 useTabKeyboardShortcut hook
+  // 与 PanelApp 同模式（hook 内部按 tabs.length 自动适配键位范围）。
+  useTabKeyboardShortcut(TABS, setActiveTab);
 
   return (
     <div

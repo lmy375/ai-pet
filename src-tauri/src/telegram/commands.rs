@@ -19,11 +19,54 @@
 pub enum TgCommand {
     Cancel { title: String },
     Retry { title: String },
+    /// `/done <title>` —— 把 pending / error 任务标 done。result 摘要走桌面
+    /// 面板单条 mark-done dialog；TG 单行命令只支持空 result 路径（与键盘 `d`
+    /// 等价）。终态任务被拒（与桌面 task_mark_done 同策略）。
+    Done { title: String },
     /// `/task <title>` —— 单数，**创建**一条任务。与复数 `/tasks`（列表）
     /// 区分。空 title 由 handler 走 missing-argument 反馈。
     /// `priority` 由 `parse_task_prefix` 解析得出：默认 3 / `!!` 5 / `!!!` 7。
     Task { title: String, priority: u8 },
     Tasks,
+    /// `/stats` —— 一行汇总当前 chat 派出的任务状态计数（待办 / 逾期 /
+    /// 今日完成 / 出错 / 今日取消）。无参；对账 / 周末扫盘子的快速入口。
+    Stats,
+    /// `/mood` —— 查看宠物当前心情。无参；与桌面 MoodWidget 同源（mood
+    /// state 文件），让手机端也能感知"宠物现在感觉如何"。
+    Mood,
+    /// `/snooze <title> [preset]` —— 把任务暂停到指定时刻；preset 缺省 `30m`。
+    /// 与桌面右键菜单 Snooze 预设对偶（30m / 2h / tonight / tomorrow / monday）。
+    /// token 在 parser 层只剥不解析（保 pure parse），解析交给 handler 在
+    /// 有 now 时统一做。
+    Snooze { title: String, token: String },
+    /// `/unsnooze <title>` —— 解除暂停（清掉 `[snooze: ...]` marker）。与
+    /// Snooze 分立命令避免"/snooze title 0" 这种歧义参数。
+    Unsnooze { title: String },
+    /// `/pin <title>` —— 给任务加 `[pinned]` marker，标"关键"。与桌面右键菜单
+    /// 「📌 钉住」对偶；幂等（已 pinned 时再调 strip-before-write 不会让
+    /// description 累积冗余 marker）。
+    Pin { title: String },
+    /// `/unpin <title>` —— 清掉 `[pinned]` marker。与 Pin 分立避免歧义。
+    Unpin { title: String },
+    /// `/pinned` —— 列出本 chat 派单中所有当前 pinned 任务（与桌面任务面板
+    /// 「📌 N」chip 同源信号）。无参；多余尾部一律忽略。filter 范围与 `/tasks`
+    /// 一致（origin == Tg(chat_id)），让两个查询命令的"范围语义"对齐。
+    Pinned,
+    /// `/whoami` —— 宠物自我介绍。无参；与桌面 chat `/whoami` 同信号源
+    /// （陪伴天数 + 当前心情 + 自我画像首段 + 近常用工具 top 3），让 TG
+    /// 端也能让宠物自报家门。
+    Whoami,
+    /// `/today` —— 今日叙事视图。无参；列出今日到期 (pending+due 是今天)
+    /// 与今日已完成 (done+updated_at 在今天) 的任务标题清单。与 `/stats`
+    /// 数字汇总互补 —— /today 看具体清单。
+    Today,
+    /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
+    /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
+    /// 多用户文化下 armed 窗口不适用）。
+    Reset,
+    /// `/version` —— 查看 pet app 版本 + SQLite schema 版本。无参；与桌面
+    /// `/version` slash / Settings chip 同源。bug report 写"什么版本"用。
+    Version,
     Help,
     Unknown { name: String },
 }
@@ -34,20 +77,47 @@ impl TgCommand {
         match self {
             TgCommand::Cancel { .. } => "cancel",
             TgCommand::Retry { .. } => "retry",
+            TgCommand::Done { .. } => "done",
             TgCommand::Task { .. } => "task",
             TgCommand::Tasks => "tasks",
+            TgCommand::Stats => "stats",
+            TgCommand::Mood => "mood",
+            TgCommand::Whoami => "whoami",
+            TgCommand::Snooze { .. } => "snooze",
+            TgCommand::Unsnooze { .. } => "unsnooze",
+            TgCommand::Pin { .. } => "pin",
+            TgCommand::Unpin { .. } => "unpin",
+            TgCommand::Pinned => "pinned",
+            TgCommand::Today => "today",
+            TgCommand::Reset => "reset",
+            TgCommand::Version => "version",
             TgCommand::Help => "help",
             TgCommand::Unknown { name } => name,
         }
     }
 
-    /// 命令参数（标题）。Unknown / Tasks / Help 时返回 ""。
+    /// 命令参数（标题）。无参命令（Tasks / Stats / Mood / Today / Reset / Version / Help / Unknown）返回 ""。
     #[allow(dead_code)] // public API for future TG command handlers; covered by tests
     pub fn title(&self) -> &str {
         match self {
-            TgCommand::Cancel { title } | TgCommand::Retry { title } => title.as_str(),
+            TgCommand::Cancel { title }
+            | TgCommand::Retry { title }
+            | TgCommand::Done { title }
+            | TgCommand::Snooze { title, .. }
+            | TgCommand::Unsnooze { title }
+            | TgCommand::Pin { title }
+            | TgCommand::Unpin { title } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
-            TgCommand::Tasks | TgCommand::Help | TgCommand::Unknown { .. } => "",
+            TgCommand::Tasks
+            | TgCommand::Pinned
+            | TgCommand::Stats
+            | TgCommand::Mood
+            | TgCommand::Whoami
+            | TgCommand::Today
+            | TgCommand::Reset
+            | TgCommand::Version
+            | TgCommand::Help
+            | TgCommand::Unknown { .. } => "",
         }
     }
 }
@@ -98,15 +168,39 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
         "en" => vec![
             ("task", "Queue a task (!! P5 / !!! P7)"),
             ("tasks", "List tasks dispatched in this chat"),
+            ("stats", "Status counts: pending / overdue / done-today / etc."),
+            ("done", "Mark a task as done"),
             ("cancel", "Cancel a task"),
             ("retry", "Retry a failed task"),
+            ("snooze", "Snooze a task (30m / 2h / tonight / tomorrow / monday)"),
+            ("unsnooze", "Clear a task's snooze"),
+            ("pin", "Mark a task as pinned (key task)"),
+            ("unpin", "Clear a task's pinned mark"),
+            ("pinned", "List currently pinned tasks dispatched from this chat"),
+            ("mood", "Show the pet's current mood"),
+            ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
+            ("today", "Today's due / done task titles"),
+            ("reset", "Clear LLM chat context (keep persona)"),
+            ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
         ],
         _ => vec![
             ("task", "把单条任务塞进队列（!! P5 / !!! P7）"),
             ("tasks", "列出本会话派出的任务清单"),
+            ("stats", "状态计数：待办 / 逾期 / 今日完成 等"),
+            ("done", "把指定任务标 done"),
             ("cancel", "取消指定任务"),
             ("retry", "把失败任务重置回 pending"),
+            ("snooze", "暂停任务（30m / 2h / tonight / tomorrow / monday，缺省 30m）"),
+            ("unsnooze", "解除任务暂停"),
+            ("pin", "钉住任务（标 [pinned]）"),
+            ("unpin", "取消任务钉住（剥 [pinned]）"),
+            ("pinned", "列出本聊天派单中所有钉住任务（与桌面「📌 N」chip 同源）"),
+            ("mood", "查看宠物当前心情"),
+            ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
+            ("today", "今日到期 / 已完成的任务标题清单"),
+            ("reset", "清掉 LLM 对话上下文（保留人设）"),
+            ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
         ],
     }
@@ -206,6 +300,113 @@ pub fn parse_task_prefix(rest: &str) -> (u8, String) {
 /// - 剩余部分 trim 后作参数（标题），允许空（"/cancel" 单独）
 /// - cancel / retry 命中 → 对应 variant
 /// - 其它非空命令名 → `Unknown { name }`
+/// pure：把 `/snooze <title> [preset]` 的参数串拆成 `(title, token)`。
+/// 取最后一个 whitespace-分隔 token；命中 `parse_snooze_token` 时剥下作
+/// preset，其余拼回 title；不命中 → 全 arg 当 title，token 空。
+fn split_trailing_snooze_token(arg: &str) -> (String, String) {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return (String::new(), String::new());
+    }
+    let words: Vec<&str> = arg.split_whitespace().collect();
+    if words.len() < 2 {
+        // 只有一个 token：可能是单 title（"shopping"）也可能是 preset-only
+        // （"30m"）。两者都按 title 处理，让 handler 走 missing-argument 而
+        // 非把 preset 误当 title。preset-only 没 title 本身就该报错。
+        return (arg.to_string(), String::new());
+    }
+    let last = words[words.len() - 1];
+    if parse_snooze_token(last).is_some() {
+        let title = words[..words.len() - 1].join(" ");
+        (title, last.to_string())
+    } else {
+        (arg.to_string(), String::new())
+    }
+}
+
+/// Snooze preset 的语义键。Pure helper 把 user-typed 字符串映射到 enum，
+/// handler 拿到 enum 后 + now 算绝对时刻。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnoozeSpec {
+    /// `<N>m` ——  N 分钟（1..=10080，即 ≤ 7 天）
+    Minutes(u32),
+    /// `<N>h` ——  N 小时（1..=168，即 ≤ 7 天）
+    Hours(u32),
+    /// `tonight` —— 今晚 18:00（已过则跳明晚 18:00，与桌面右键 chip 同语义）
+    Tonight,
+    /// `tomorrow` —— 明天 09:00
+    Tomorrow,
+    /// `monday` —— 下个周一 09:00（今日是周一也跳下周一）
+    Monday,
+}
+
+/// 把 `/snooze` 的 preset token 解析为 SnoozeSpec。大小写不敏感。
+/// 空串 / 不识别 / 数字越界 → None。
+pub fn parse_snooze_token(token: &str) -> Option<SnoozeSpec> {
+    let t = token.trim().to_lowercase();
+    if t.is_empty() {
+        return None;
+    }
+    match t.as_str() {
+        "tonight" => return Some(SnoozeSpec::Tonight),
+        "tomorrow" => return Some(SnoozeSpec::Tomorrow),
+        "monday" => return Some(SnoozeSpec::Monday),
+        _ => {}
+    }
+    if let Some(num_str) = t.strip_suffix('m') {
+        let n: u32 = num_str.parse().ok()?;
+        if n == 0 || n > 7 * 24 * 60 {
+            return None;
+        }
+        return Some(SnoozeSpec::Minutes(n));
+    }
+    if let Some(num_str) = t.strip_suffix('h') {
+        let n: u32 = num_str.parse().ok()?;
+        if n == 0 || n > 7 * 24 {
+            return None;
+        }
+        return Some(SnoozeSpec::Hours(n));
+    }
+    None
+}
+
+/// 把 SnoozeSpec + now 算绝对 NaiveDateTime。Tonight / Tomorrow / Monday
+/// 的边界规则与桌面右键 Snooze chip 完全一致：
+/// - Tonight: today 18:00；已过 → tomorrow 18:00
+/// - Tomorrow: tomorrow 09:00
+/// - Monday: 下个周一 09:00；今日是周一也跳下周一（"下周一" 语义 = 下周第一天）
+pub fn compute_snooze_until(
+    spec: SnoozeSpec,
+    now: chrono::NaiveDateTime,
+) -> chrono::NaiveDateTime {
+    use chrono::{Datelike, Duration};
+    match spec {
+        SnoozeSpec::Minutes(n) => now + Duration::minutes(n as i64),
+        SnoozeSpec::Hours(n) => now + Duration::hours(n as i64),
+        SnoozeSpec::Tonight => {
+            let today_6pm = now
+                .date()
+                .and_hms_opt(18, 0, 0)
+                .expect("18:00 always valid");
+            if today_6pm <= now {
+                today_6pm + Duration::days(1)
+            } else {
+                today_6pm
+            }
+        }
+        SnoozeSpec::Tomorrow => (now.date() + Duration::days(1))
+            .and_hms_opt(9, 0, 0)
+            .expect("09:00 always valid"),
+        SnoozeSpec::Monday => {
+            let weekday = now.weekday().num_days_from_monday();
+            let days_ahead = if weekday == 0 { 7 } else { 7 - weekday };
+            (now.date() + Duration::days(days_ahead as i64))
+                .and_hms_opt(9, 0, 0)
+                .expect("09:00 always valid")
+        }
+    }
+}
+
 pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
     let trimmed = text.trim_start();
     let after_slash = trimmed.strip_prefix('/')?;
@@ -221,6 +422,7 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
     match name.as_str() {
         "cancel" => Some(TgCommand::Cancel { title }),
         "retry" => Some(TgCommand::Retry { title }),
+        "done" => Some(TgCommand::Done { title }),
         // `/task <title>`：单数，创建。空 title 由 handler 走 missing-argument。
         // 注意先于 `tasks` 判断不必要 — split 已按 token 边界切分，"task" 与
         // "tasks" 是两个独立 token。可选 `!!` / `!!!` 前缀映射 P5 / P7。
@@ -235,6 +437,36 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 让 `/tasks since:7d` 这种用户随手探的写法也能命中（暂不实现过滤
         // 语义，纯前向兼容预留）。
         "tasks" => Some(TgCommand::Tasks),
+        // `/stats` 同 /tasks：无参；多余尾部忽略
+        "stats" => Some(TgCommand::Stats),
+        // `/mood` 同 /tasks：无参；多余尾部忽略（让 "/mood now?" 也能命中）
+        "mood" => Some(TgCommand::Mood),
+        // `/whoami` 同上：无参；多余尾部忽略（让 "/whoami please" 也能命中）
+        "whoami" => Some(TgCommand::Whoami),
+        // `/snooze <title> [preset]`：把任务暂停到某时刻。preset 是 arg 的最
+        // 后一个 token；命中已知 preset 时剥下来作 token，其余拼回 title。
+        // 不命中（最后 token 不是 preset / 全 arg 只有 title）→ token 空，
+        // handler 默认走 30m。
+        "snooze" => {
+            let (title, token) = split_trailing_snooze_token(&title);
+            Some(TgCommand::Snooze { title, token })
+        }
+        // `/unsnooze <title>`：解除暂停。所有参数 = title。
+        "unsnooze" => Some(TgCommand::Unsnooze { title }),
+        // `/pin <title>`：钉住任务（写 [pinned] marker）。空 title 由 handler
+        // 走 missing-argument。无 preset 参数，所有内容当 title。
+        "pin" => Some(TgCommand::Pin { title }),
+        // `/unpin <title>`：取消钉住（剥 [pinned] marker）。与 pin 同样无参数。
+        "unpin" => Some(TgCommand::Unpin { title }),
+        // `/pinned`：列 pinned 任务清单。无参；多余尾部一律忽略（与 /tasks 同
+        // 容忍策略），让 "/pinned now?" 这种用户随手探的写法也能命中。
+        "pinned" => Some(TgCommand::Pinned),
+        // `/today` 同上无参语义
+        "today" => Some(TgCommand::Today),
+        // `/reset` 无参；多余尾部忽略
+        "reset" => Some(TgCommand::Reset),
+        // `/version` 无参；多余尾部忽略
+        "version" => Some(TgCommand::Version),
         // `/help` 同 /tasks：无参，多余尾部忽略
         "help" => Some(TgCommand::Help),
         _ => Some(TgCommand::Unknown { name }),
@@ -255,6 +487,10 @@ pub fn format_command_success(kind: &str, title: &str) -> String {
         "retry" => format!(
             "🔄 已重置「{}」回 pending，下一轮宠物会重新尝试\n如需取消发 /cancel {}",
             title, title
+        ),
+        "done" => format!(
+            "✓ 已标 done「{}」\n想加 result 摘要请回桌面板「✓ 标 done」按钮（TG 暂只支持空 result 路径）",
+            title
         ),
         _ => format!("✅ 「{}」 已处理", title),
     }
@@ -481,8 +717,17 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
     let mut lines: Vec<String> = vec![
         "🤖 可用命令（结果会自动回传，无需轮询 /tasks）：".to_string(),
         "/tasks  —  列出本会话派出的任务清单".to_string(),
+        "/stats  —  状态计数：待办 / 逾期 / 今日完成 / 出错 / 今日取消".to_string(),
         "/task <title>  —  入队（默认 P3；前缀 !! P5、!!! P7）".to_string(),
-        "/cancel <title> | /retry <title>  —  取消 / 重试（详细原因回桌面）".to_string(),
+        "/done <title> | /cancel <title> | /retry <title>  —  标 done / 取消 / 重试（详细原因 / result 回桌面）".to_string(),
+        "/snooze <title> [preset] | /unsnooze <title>  —  暂停 / 解除暂停（preset = 30m / 2h / tonight / tomorrow / monday）".to_string(),
+        "/pin <title> | /unpin <title>  —  钉住 / 取消钉住（与桌面「📌 N」chip 过滤同源）".to_string(),
+        "/pinned  —  列出本聊天派单中所有钉住任务（按状态分组，含 done/error/cancelled）".to_string(),
+        "/mood  —  查看宠物当前心情".to_string(),
+        "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
+        "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
+        "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
+        "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
     ];
     // custom 段：非空时插在硬编码段之后、注脚之前。规则：
@@ -564,6 +809,305 @@ pub fn format_tasks_list(views: &[crate::task_queue::TaskView]) -> String {
 
     let trimmed = out.trim_end_matches('\n').to_string();
     truncate_if_overflow(trimmed, views.len())
+}
+
+/// `/pinned` 命令回复文案。`views` 应已被 caller 过滤为"本 chat + pinned"子集。
+/// 与 `format_tasks_list` 分立而非合并 —— header 文案不同（📌 vs 📋）、空集合
+/// 引导也不同（教用户怎么 pin）。section 分组逻辑（Pending / Done / Error /
+/// Cancelled）复用同一思路保 TG 视觉一致。
+///
+/// 空集合：友好提示"暂无钉住"+ 教用户怎么 pin（`/pin <title>` / 桌面右键）。
+/// 非空集合：📌 header + 各状态 section。
+pub fn format_pinned_tasks_list(views: &[crate::task_queue::TaskView]) -> String {
+    use crate::task_queue::TaskStatus;
+    if views.is_empty() {
+        return "📌 暂无钉住任务（本聊天派单中）。\n用 /pin <标题> 钉住，或在桌面任务面板右键 → 「📌 钉住」。"
+            .to_string();
+    }
+
+    let mut pending: Vec<&crate::task_queue::TaskView> = Vec::new();
+    let mut done: Vec<&crate::task_queue::TaskView> = Vec::new();
+    let mut error: Vec<&crate::task_queue::TaskView> = Vec::new();
+    let mut cancelled: Vec<&crate::task_queue::TaskView> = Vec::new();
+    for v in views {
+        match v.status {
+            TaskStatus::Pending => pending.push(v),
+            TaskStatus::Done => done.push(v),
+            TaskStatus::Error => error.push(v),
+            TaskStatus::Cancelled => cancelled.push(v),
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("📌 当前钉住任务（共 {} 条）\n", views.len()));
+
+    let sections: [(&str, &str, &[&crate::task_queue::TaskView]); 4] = [
+        ("进行中", "⏳", &pending),
+        ("已完成", "✅", &done),
+        ("已失败", "⚠️", &error),
+        ("已取消", "🚫", &cancelled),
+    ];
+    for (label, emoji, items) in &sections {
+        if items.is_empty() {
+            continue;
+        }
+        out.push('\n');
+        out.push_str(&format!("{}（{}）\n", label, items.len()));
+        for v in items.iter() {
+            out.push_str(&format_task_line(emoji, v));
+            out.push('\n');
+        }
+    }
+
+    let trimmed = out.trim_end_matches('\n').to_string();
+    truncate_if_overflow(trimmed, views.len())
+}
+
+/// `/stats` 命令回复文案。pure：接收已过滤到本 chat 的 views + 当前时刻 +
+/// 今天日期（caller 注入便于测试），返回 6 行汇总文本。
+///
+/// 计数语义：
+/// - `待办`：状态==Pending 的全部
+/// - `逾期`：状态==Pending 且 `due` 已过（caller 注入的 now 解析 "YYYY-MM-DDTHH:MM" 比较）
+/// - `今日完成`：状态==Done 且 `updated_at` 以 `today` 开头
+/// - `出错`：状态==Error 的全部（不限今日 —— error 是需要 follow-up 的"债"）
+/// - `今日取消`：状态==Cancelled 且 `updated_at` 以 `today` 开头
+///
+/// 全 0 时 header 后追加 "（今日很安静 ✨）"，让用户在彻底空盘子时也有正反馈。
+pub fn format_stats_reply(
+    views: &[crate::task_queue::TaskView],
+    now: chrono::NaiveDateTime,
+    today: chrono::NaiveDate,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let today_prefix = today.format("%Y-%m-%d").to_string();
+    let mut pending = 0usize;
+    let mut overdue = 0usize;
+    let mut done_today = 0usize;
+    let mut error = 0usize;
+    let mut cancelled_today = 0usize;
+    for v in views {
+        match v.status {
+            TaskStatus::Pending => {
+                pending += 1;
+                if let Some(due_str) = &v.due {
+                    if let Ok(due_dt) =
+                        chrono::NaiveDateTime::parse_from_str(due_str, "%Y-%m-%dT%H:%M")
+                    {
+                        if due_dt < now {
+                            overdue += 1;
+                        }
+                    }
+                }
+            }
+            TaskStatus::Done => {
+                if v.updated_at.starts_with(&today_prefix) {
+                    done_today += 1;
+                }
+            }
+            TaskStatus::Error => error += 1,
+            TaskStatus::Cancelled => {
+                if v.updated_at.starts_with(&today_prefix) {
+                    cancelled_today += 1;
+                }
+            }
+        }
+    }
+    let all_zero =
+        pending == 0 && overdue == 0 && done_today == 0 && error == 0 && cancelled_today == 0;
+    let mut out = String::new();
+    out.push_str("📊 任务状态");
+    if all_zero {
+        out.push_str("（今日很安静 ✨）");
+    }
+    out.push('\n');
+    out.push_str(&format!("○ 待办：{}\n", pending));
+    out.push_str(&format!("🔴 逾期：{}\n", overdue));
+    out.push_str(&format!("✓ 今日完成：{}\n", done_today));
+    out.push_str(&format!("⚠️ 出错：{}\n", error));
+    out.push_str(&format!("🗑 今日取消：{}", cancelled_today));
+    out
+}
+
+/// `/mood` 命令回复文案。pure：接收 `read_current_mood_parsed()` 的 Option<(text,
+/// motion)>，返回给用户看的简短反馈。
+///
+/// 三态：
+/// - `None`：宠物还没记心情 → 友好提示而非空字符串
+/// - `Some(("", None))`：极端边界（写入空字符串）—— 视作"无文字"
+/// - `Some((text, motion))`：text 是 LLM 写的自由心情描述；motion 是可选的
+///   Live2D motion group 名（如 `happy_idle`）。motion 存在时多输一行让用户
+///   看到"宠物在 idle 还是兴奋"。
+pub fn format_mood_reply(parsed: Option<(String, Option<String>)>) -> String {
+    match parsed {
+        None => "🐾 宠物还没记心情；一会儿主动开口时会写一笔。".to_string(),
+        Some((text, motion)) => {
+            let text_line = if text.trim().is_empty() {
+                "🐾 心情：（无文字）".to_string()
+            } else {
+                format!("🐾 心情：{}", text.trim())
+            };
+            match motion {
+                Some(m) if !m.trim().is_empty() => format!("{}\n  动作组：{}", text_line, m.trim()),
+                _ => text_line,
+            }
+        }
+    }
+}
+
+/// `/whoami` 命令回复文案。pure：接收四个 IPC 源的派生输入，输出 multi-line
+/// 自我介绍文本。每段独立可缺失（None / 空 / 空字符串）—— 某源失败 / 没数据
+/// 时该行省略，不抛错也不输出"未知"。所有源都空 → 给一行温和兜底。
+///
+/// 与桌面 chat `case "whoami"` 的排版完全对齐（emoji + 顺序 + 90 字截断）。
+///
+/// 参数：
+/// - `user_name`：settings.user_name，空 → 不渲染
+/// - `companionship_days`：陪伴天数，None → 不渲染
+/// - `mood`：`(text, motion)` —— 与 `read_current_mood_parsed` 同源；None /
+///   空 text → 不渲染
+/// - `persona_summary`：自我画像描述，空 → 不渲染。函数内做首段切分 + 90 字截断
+/// - `top_tools`：`(name, count)` 列表，取前 3 渲染；空 → 不渲染
+pub fn format_whoami_reply(
+    user_name: &str,
+    companionship_days: Option<u64>,
+    mood: Option<(String, Option<String>)>,
+    persona_summary: &str,
+    top_tools: &[(String, u64)],
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("🪪 /whoami".to_string());
+    let trimmed_name = user_name.trim();
+    if !trimmed_name.is_empty() {
+        lines.push(format!("🐾 我叫你「{}」。", trimmed_name));
+    }
+    if let Some(days) = companionship_days {
+        if days == 0 {
+            lines.push("📅 今天与你初识。".to_string());
+        } else {
+            lines.push(format!("📅 与你相伴已 {} 天。", days));
+        }
+    }
+    if let Some((text, motion)) = mood {
+        let t = text.trim();
+        if !t.is_empty() {
+            match motion {
+                Some(m) if !m.trim().is_empty() => {
+                    lines.push(format!("💗 现在的心情：{} · 动作组 {}", t, m.trim()));
+                }
+                _ => lines.push(format!("💗 现在的心情：{}", t)),
+            }
+        }
+    }
+    let summary = persona_summary.trim();
+    if !summary.is_empty() {
+        // 取首段：按双空行 / 单空行 切割（与桌面 `/whoami` 同算法）；> 90 字
+        // 截断 + 省略号。短 persona summary 整段就是首段。
+        let first = summary
+            .split("\n\n")
+            .next()
+            .unwrap_or(summary)
+            .trim();
+        if !first.is_empty() {
+            let head: String = if first.chars().count() > 90 {
+                let mut h: String = first.chars().take(90).collect();
+                h.push('…');
+                h
+            } else {
+                first.to_string()
+            };
+            lines.push(format!("🪞 自我画像：{}", head));
+        }
+    }
+    if !top_tools.is_empty() {
+        let top3: Vec<String> = top_tools
+            .iter()
+            .take(3)
+            .map(|(name, count)| format!("`{}`×{}", name, count))
+            .collect();
+        lines.push(format!("🛠 近常用工具：{}", top3.join(" · ")));
+    }
+    if lines.len() == 1 {
+        // 兜底：所有源都空（fresh install / 全清状态）。与桌面 `/whoami` 同文案。
+        lines.push("🐾 还没攒到自我介绍的素材，先一起聊聊吧。".to_string());
+    }
+    lines.join("\n")
+}
+
+/// `/today` 命令回复文案。pure：接收已过滤到本 chat 的 views + 今天日期，
+/// 输出"今日到期"+"今日已完成" 两段标题清单。与桌面 `/today` 语义对齐：
+/// - 到期桶 = Pending && due.date == today
+/// - 完成桶 = Done && updated_at.starts_with(today_str)
+/// - 两段都空 → "今日队列清爽 ✨"
+/// 每段 cap 5，溢出补 `…还有 N 条`。
+pub fn format_today_reply(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let mut due_today: Vec<&str> = Vec::new();
+    let mut done_today: Vec<&str> = Vec::new();
+    for v in views {
+        match v.status {
+            TaskStatus::Pending => {
+                if let Some(due) = &v.due {
+                    if due.len() >= 10 && due[..10] == today_str {
+                        due_today.push(v.title.as_str());
+                    }
+                }
+            }
+            TaskStatus::Done => {
+                if v.updated_at.starts_with(&today_str) {
+                    done_today.push(v.title.as_str());
+                }
+            }
+            TaskStatus::Error | TaskStatus::Cancelled => {}
+        }
+    }
+    let mut out = String::new();
+    out.push_str(&format!("📅 今日（{}）", today_str));
+    if due_today.is_empty() && done_today.is_empty() {
+        out.push_str("\n\n今日队列清爽 ✨");
+        return out;
+    }
+    let render_bucket = |out: &mut String, header: &str, items: &[&str]| {
+        if items.is_empty() {
+            return;
+        }
+        out.push_str(&format!("\n\n{}（{}）：", header, items.len()));
+        for t in items.iter().take(5) {
+            out.push_str(&format!("\n· {}", t));
+        }
+        if items.len() > 5 {
+            out.push_str(&format!("\n…还有 {} 条", items.len() - 5));
+        }
+    };
+    render_bucket(&mut out, "今日到期", &due_today);
+    render_bucket(&mut out, "今日已完成", &done_today);
+    out
+}
+
+/// `/reset` 命令固定回复文案。caller 负责真正清空 session_messages（仅保留
+/// system / 人设），本函数只生成给 TG 用户看的反馈。
+pub fn format_reset_reply() -> String {
+    "🔄 已重置对话上下文（保留人设 / 系统提示）。".to_string()
+}
+
+/// `/version` 命令回复文案。app_version 走 `env!("CARGO_PKG_VERSION")`；
+/// schema_version 走 _migrations 表最大 version。app_version 空 → fallback
+/// "（版本号缺失）"；schema_version=0（旧 backend / 读失败）→ 该行省略。
+pub fn format_version_reply(app_version: &str, schema_version: i32) -> String {
+    let mut out = String::new();
+    if app_version.is_empty() {
+        out.push_str("🐾 pet（版本号缺失）");
+    } else {
+        out.push_str(&format!("🐾 pet v{}", app_version));
+    }
+    if schema_version > 0 {
+        out.push_str(&format!("\nschema v{}", schema_version));
+    }
+    out
 }
 
 const TG_TASKS_MSG_LIMIT: usize = 4096;
@@ -676,6 +1220,38 @@ mod tests {
                 title: "跑步".to_string()
             })
         );
+    }
+
+    #[test]
+    fn parse_done_with_title() {
+        assert_eq!(
+            parse_tg_command("/done 写日报"),
+            Some(TgCommand::Done {
+                title: "写日报".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_done_empty_title() {
+        // 空 title 走 handler missing-argument 分支
+        assert_eq!(parse_tg_command("/done"), Some(TgCommand::Done { title: "".to_string() }));
+        assert_eq!(parse_tg_command("/done   "), Some(TgCommand::Done { title: "".to_string() }));
+    }
+
+    #[test]
+    fn done_command_name_and_title() {
+        let c = TgCommand::Done { title: "x".to_string() };
+        assert_eq!(c.name(), "done");
+        assert_eq!(c.title(), "x");
+    }
+
+    #[test]
+    fn format_done_success_includes_panel_hint() {
+        let msg = format_command_success("done", "整理 Downloads");
+        assert!(msg.contains("✓ 已标 done"));
+        assert!(msg.contains("整理 Downloads"));
+        assert!(msg.contains("result"), "should hint that result needs desktop");
     }
 
     #[test]
@@ -1422,6 +1998,9 @@ mod tests {
             created_at: "2026-05-04T13:00:00+08:00".to_string(),
             updated_at: "2026-05-04T13:00:00+08:00".to_string(),
             detail_path: String::new(),
+            blocked_by: Vec::new(),
+            snoozed_until: None,
+            pinned: false,
         }
     }
 
@@ -1575,11 +2154,20 @@ mod tests {
             .map(|(n, _)| n)
             .collect();
         // 与 parse_tg_command 接受的命令矩阵对齐。Unknown / "/" 等不算用户命令。
-        assert!(names.contains(&"task"));
-        assert!(names.contains(&"tasks"));
-        assert!(names.contains(&"cancel"));
-        assert!(names.contains(&"retry"));
-        assert!(names.contains(&"help"));
+        // 新加 TG 命令时务必同步两处：registry（让 TG slash autocomplete 浮）
+        // + 本断言（让"忘加"被测试拦下）。历史上 /whoami / /snooze / /unsnooze
+        // 实现但漏注册了几轮才补；本测试就是把这种 silent gap 钉死。
+        for expected in [
+            "task", "tasks", "cancel", "retry", "done", "stats", "mood",
+            "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
+            "reset", "version", "help",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "registry missing user-facing command `{}`",
+                expected,
+            );
+        }
     }
 
     #[test]
@@ -1771,5 +2359,572 @@ mod tests {
         assert!(task_in_en.1.contains("Queue"));
         let timer_in_en = merged_en.iter().find(|(n, _)| n == "timer").unwrap();
         assert!(timer_in_en.1.contains("中文描述"), "custom should not be translated");
+    }
+
+    // -------- /stats parse + format --------
+
+    #[test]
+    fn parses_stats() {
+        let p = parse_tg_command("/stats");
+        assert_eq!(p, Some(TgCommand::Stats));
+    }
+
+    #[test]
+    fn parses_stats_ignores_trailing_args() {
+        // 与 /tasks /help 同模式：尾部 token 全忽略，保持前向兼容
+        let p = parse_tg_command("/stats since:7d");
+        assert_eq!(p, Some(TgCommand::Stats));
+    }
+
+    #[test]
+    fn stats_reply_all_zero_shows_quiet_marker() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 14)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let s = format_stats_reply(&[], now, now.date());
+        assert!(s.contains("📊 任务状态"));
+        assert!(s.contains("今日很安静"));
+        assert!(s.contains("待办：0"));
+    }
+
+    #[test]
+    fn stats_reply_counts_pending_overdue_done_today() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 14)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let today_iso = "2026-05-14T11:30:00+08:00";
+        let earlier_iso = "2026-05-13T11:30:00+08:00";
+        // 一个过期 pending（due 在 now 之前）
+        let mut overdue_pending = view(
+            "整理 Downloads",
+            3,
+            Some("2026-05-13T10:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        overdue_pending.updated_at = today_iso.to_string();
+        // 一个未过期 pending（due 在 now 之后）
+        let mut fresh_pending = view(
+            "写周报",
+            3,
+            Some("2026-05-20T18:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        fresh_pending.updated_at = today_iso.to_string();
+        // 一个今日完成
+        let mut done_today = view("跑步", 0, None, TaskStatus::Done, Some("5km"));
+        done_today.updated_at = today_iso.to_string();
+        // 一个昨日完成（不计今日）
+        let mut done_yesterday = view("洗碗", 0, None, TaskStatus::Done, None);
+        done_yesterday.updated_at = earlier_iso.to_string();
+        // 一个 error（不限今日）
+        let error_task = view("跑步失败", 0, None, TaskStatus::Error, Some("天气"));
+        // 一个今日取消
+        let mut cancelled_today = view("学 Rust", 0, None, TaskStatus::Cancelled, Some("改主意"));
+        cancelled_today.updated_at = today_iso.to_string();
+        let views = vec![
+            overdue_pending,
+            fresh_pending,
+            done_today,
+            done_yesterday,
+            error_task,
+            cancelled_today,
+        ];
+        let s = format_stats_reply(&views, now, now.date());
+        assert!(s.contains("待办：2"), "stats reply: {s}");
+        assert!(s.contains("逾期：1"), "stats reply: {s}");
+        assert!(s.contains("今日完成：1"), "stats reply: {s}");
+        assert!(s.contains("出错：1"), "stats reply: {s}");
+        assert!(s.contains("今日取消：1"), "stats reply: {s}");
+        assert!(!s.contains("今日很安静"));
+    }
+
+    // -------- /mood parse + format --------
+
+    #[test]
+    fn parses_mood() {
+        assert_eq!(parse_tg_command("/mood"), Some(TgCommand::Mood));
+    }
+
+    #[test]
+    fn parses_mood_ignores_trailing_args() {
+        assert_eq!(parse_tg_command("/mood now?"), Some(TgCommand::Mood));
+    }
+
+    #[test]
+    fn mood_reply_none_shows_friendly_empty() {
+        let s = format_mood_reply(None);
+        assert!(s.contains("还没记心情"), "mood reply: {s}");
+    }
+
+    #[test]
+    fn mood_reply_with_motion_shows_two_lines() {
+        let s = format_mood_reply(Some(("有点兴奋".to_string(), Some("happy_idle".to_string()))));
+        assert!(s.contains("心情：有点兴奋"), "mood reply: {s}");
+        assert!(s.contains("动作组：happy_idle"), "mood reply: {s}");
+    }
+
+    #[test]
+    fn mood_reply_without_motion_skips_action_line() {
+        let s = format_mood_reply(Some(("默默坐着".to_string(), None)));
+        assert!(s.contains("心情：默默坐着"), "mood reply: {s}");
+        assert!(!s.contains("动作组"), "mood reply: {s}");
+    }
+
+    #[test]
+    fn mood_reply_empty_text_keeps_marker() {
+        let s = format_mood_reply(Some((String::new(), None)));
+        assert!(s.contains("（无文字）"), "mood reply: {s}");
+    }
+
+    // -------- /whoami parse + format --------
+
+    #[test]
+    fn parses_whoami() {
+        assert_eq!(parse_tg_command("/whoami"), Some(TgCommand::Whoami));
+    }
+
+    #[test]
+    fn parses_whoami_ignores_trailing() {
+        assert_eq!(
+            parse_tg_command("/whoami please"),
+            Some(TgCommand::Whoami),
+        );
+    }
+
+    #[test]
+    fn whoami_reply_full_signal_renders_all_lines() {
+        let s = format_whoami_reply(
+            "Moon",
+            Some(14),
+            Some(("阳光特别足".to_string(), Some("happy".to_string()))),
+            "观察 Moon 在上午写代码、下午开会的节奏。",
+            &[
+                ("shell".to_string(), 12),
+                ("read_file".to_string(), 7),
+                ("weather".to_string(), 3),
+            ],
+        );
+        assert!(s.contains("我叫你「Moon」"), "{s}");
+        assert!(s.contains("相伴已 14 天"), "{s}");
+        assert!(s.contains("现在的心情：阳光特别足"), "{s}");
+        assert!(s.contains("动作组 happy"), "{s}");
+        assert!(s.contains("自我画像"), "{s}");
+        assert!(s.contains("`shell`×12"), "{s}");
+        assert!(s.contains("`read_file`×7"), "{s}");
+        assert!(s.contains("`weather`×3"), "{s}");
+    }
+
+    #[test]
+    fn whoami_reply_zero_days_says_today() {
+        let s = format_whoami_reply("M", Some(0), None, "", &[]);
+        assert!(s.contains("今天与你初识"), "{s}");
+        // 没心情 / 自我画像 / 工具 → 不渲染这些行
+        assert!(!s.contains("现在的心情"));
+        assert!(!s.contains("自我画像"));
+        assert!(!s.contains("近常用工具"));
+    }
+
+    #[test]
+    fn whoami_reply_skips_missing_sources() {
+        // 用户名空 → 不渲染该行；心情 raw text 空 → 不渲染；其它源 None → 不渲染
+        let s = format_whoami_reply(
+            "",
+            Some(3),
+            Some((String::new(), Some("happy".to_string()))),
+            "",
+            &[],
+        );
+        assert!(!s.contains("我叫你"));
+        assert!(!s.contains("现在的心情"));
+        assert!(!s.contains("自我画像"));
+        assert!(s.contains("相伴已 3 天"));
+    }
+
+    #[test]
+    fn whoami_reply_all_empty_falls_back_to_friendly_line() {
+        let s = format_whoami_reply("", None, None, "", &[]);
+        assert!(s.contains("还没攒到自我介绍的素材"), "{s}");
+    }
+
+    #[test]
+    fn whoami_reply_truncates_long_persona_summary() {
+        // 100 字符的 ASCII 字符串：> 90 → 应被截断 + 加省略号。
+        let long = "abcdefghij".repeat(10);
+        let s = format_whoami_reply("", None, None, &long, &[]);
+        assert!(s.contains("…"), "long persona should be truncated: {s}");
+    }
+
+    #[test]
+    fn whoami_reply_persona_first_paragraph_only() {
+        let multi = "第一段内容，简短一句。\n\n第二段不该出现。\n\n第三段更不该。";
+        let s = format_whoami_reply("", None, None, multi, &[]);
+        assert!(s.contains("第一段内容"), "{s}");
+        assert!(!s.contains("第二段"), "should drop after first blank line: {s}");
+    }
+
+    // -------- /snooze parse + token + compute --------
+
+    fn ndt2(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(y, mo, d)
+            .unwrap()
+            .and_hms_opt(h, mi, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn parses_snooze_with_preset_token() {
+        let cmd = parse_tg_command("/snooze 倒垃圾 tomorrow");
+        assert_eq!(
+            cmd,
+            Some(TgCommand::Snooze {
+                title: "倒垃圾".to_string(),
+                token: "tomorrow".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parses_snooze_no_preset_token() {
+        // 末尾不是已知 preset → 全 arg 当 title，token 空
+        let cmd = parse_tg_command("/snooze 倒垃圾 with whitespace");
+        assert_eq!(
+            cmd,
+            Some(TgCommand::Snooze {
+                title: "倒垃圾 with whitespace".to_string(),
+                token: "".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parses_snooze_single_word_arg_is_title_not_preset() {
+        // 单 token 即便是 "30m" 也按 title 处理 —— 没 title 的命令报错语义比
+        // "preset 没绑定 task" 更直接（用户漏了 title）。
+        let cmd = parse_tg_command("/snooze 30m");
+        assert_eq!(
+            cmd,
+            Some(TgCommand::Snooze {
+                title: "30m".to_string(),
+                token: "".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parses_snooze_minutes_form() {
+        let cmd = parse_tg_command("/snooze 倒垃圾 45m");
+        assert_eq!(
+            cmd,
+            Some(TgCommand::Snooze {
+                title: "倒垃圾".to_string(),
+                token: "45m".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parses_unsnooze() {
+        let cmd = parse_tg_command("/unsnooze 倒垃圾");
+        assert_eq!(
+            cmd,
+            Some(TgCommand::Unsnooze { title: "倒垃圾".to_string() }),
+        );
+    }
+
+    #[test]
+    fn parses_pin_unpin() {
+        // 全 arg 当 title（无 preset 解析），含多 token 也合法。
+        assert_eq!(
+            parse_tg_command("/pin 整理 Downloads"),
+            Some(TgCommand::Pin { title: "整理 Downloads".to_string() }),
+        );
+        assert_eq!(
+            parse_tg_command("/unpin 周报"),
+            Some(TgCommand::Unpin { title: "周报".to_string() }),
+        );
+    }
+
+    #[test]
+    fn parses_pin_unpin_empty_title_yields_command_with_empty() {
+        // 空 title 由 bot handler 走 missing-argument 反馈（与 done / snooze 同
+        // 路径），parser 层不做特殊化。
+        assert_eq!(
+            parse_tg_command("/pin"),
+            Some(TgCommand::Pin { title: "".to_string() }),
+        );
+        assert_eq!(
+            parse_tg_command("/unpin"),
+            Some(TgCommand::Unpin { title: "".to_string() }),
+        );
+    }
+
+    #[test]
+    fn parses_pinned() {
+        // 无参；多余尾部一律忽略（与 /tasks 同容忍策略，让 "/pinned all" 也能命中）
+        assert_eq!(parse_tg_command("/pinned"), Some(TgCommand::Pinned));
+        assert_eq!(parse_tg_command("/PINNED"), Some(TgCommand::Pinned));
+        assert_eq!(parse_tg_command("/pinned now?"), Some(TgCommand::Pinned));
+    }
+
+    #[test]
+    fn format_pinned_tasks_list_empty_teaches_pin_command() {
+        // 0 命中：友好提示 + 教学（与 /tasks 空集合 "📋 你的任务清单是空的" 思路同）
+        let s = format_pinned_tasks_list(&[]);
+        assert!(s.contains("📌"), "should keep pin emoji in header: {s}");
+        assert!(s.contains("/pin"), "should teach `/pin` syntax: {s}");
+        assert!(s.contains("桌面") || s.contains("右键"), "should mention desktop entry: {s}");
+    }
+
+    #[test]
+    fn format_pinned_tasks_list_groups_by_status_and_counts() {
+        // 三条混合：pending + done + cancelled。header 总数 3；section
+        // 各自报 (1) 计数；每条 title 出现一次。
+        let v_pending = view("活的", 3, None, TaskStatus::Pending, None);
+        let v_done = view("做完了", 3, None, TaskStatus::Done, Some("产物 X"));
+        let v_cancelled = view("不做了", 3, None, TaskStatus::Cancelled, Some("没意义"));
+        let s = format_pinned_tasks_list(&[v_pending, v_done, v_cancelled]);
+        assert!(s.contains("📌 当前钉住任务（共 3 条）"), "header: {s}");
+        assert!(s.contains("进行中（1）"), "pending section: {s}");
+        assert!(s.contains("已完成（1）"), "done section: {s}");
+        assert!(s.contains("已取消（1）"), "cancelled section: {s}");
+        assert!(s.contains("活的"));
+        assert!(s.contains("做完了"));
+        assert!(s.contains("不做了"));
+    }
+
+    #[test]
+    fn parse_snooze_token_keywords() {
+        assert_eq!(parse_snooze_token("tonight"), Some(SnoozeSpec::Tonight));
+        assert_eq!(parse_snooze_token("Tomorrow"), Some(SnoozeSpec::Tomorrow));
+        assert_eq!(parse_snooze_token("MONDAY"), Some(SnoozeSpec::Monday));
+    }
+
+    #[test]
+    fn parse_snooze_token_minutes_hours() {
+        assert_eq!(parse_snooze_token("30m"), Some(SnoozeSpec::Minutes(30)));
+        assert_eq!(parse_snooze_token("2h"), Some(SnoozeSpec::Hours(2)));
+        assert_eq!(parse_snooze_token("1h"), Some(SnoozeSpec::Hours(1)));
+    }
+
+    #[test]
+    fn parse_snooze_token_rejects_invalid() {
+        assert_eq!(parse_snooze_token(""), None);
+        assert_eq!(parse_snooze_token("0m"), None, "0 分无意义");
+        assert_eq!(parse_snooze_token("0h"), None);
+        assert_eq!(parse_snooze_token("99y"), None, "未知后缀");
+        assert_eq!(parse_snooze_token("xm"), None, "非数字");
+        // 超 7 天上限
+        assert_eq!(parse_snooze_token("99999m"), None);
+        assert_eq!(parse_snooze_token("200h"), None);
+    }
+
+    #[test]
+    fn compute_snooze_until_minutes() {
+        let now = ndt2(2026, 5, 14, 12, 0);
+        let until = compute_snooze_until(SnoozeSpec::Minutes(30), now);
+        assert_eq!(until, ndt2(2026, 5, 14, 12, 30));
+    }
+
+    #[test]
+    fn compute_snooze_until_hours() {
+        let now = ndt2(2026, 5, 14, 12, 0);
+        let until = compute_snooze_until(SnoozeSpec::Hours(2), now);
+        assert_eq!(until, ndt2(2026, 5, 14, 14, 0));
+    }
+
+    #[test]
+    fn compute_snooze_until_tonight_before_6pm() {
+        let now = ndt2(2026, 5, 14, 12, 0);
+        let until = compute_snooze_until(SnoozeSpec::Tonight, now);
+        assert_eq!(until, ndt2(2026, 5, 14, 18, 0), "今天还没到 18:00");
+    }
+
+    #[test]
+    fn compute_snooze_until_tonight_after_6pm_jumps_tomorrow() {
+        let now = ndt2(2026, 5, 14, 22, 0);
+        let until = compute_snooze_until(SnoozeSpec::Tonight, now);
+        assert_eq!(until, ndt2(2026, 5, 15, 18, 0), "已过 18:00 跳明晚");
+    }
+
+    #[test]
+    fn compute_snooze_until_tomorrow() {
+        let now = ndt2(2026, 5, 14, 12, 0);
+        let until = compute_snooze_until(SnoozeSpec::Tomorrow, now);
+        assert_eq!(until, ndt2(2026, 5, 15, 9, 0));
+    }
+
+    #[test]
+    fn compute_snooze_until_monday_when_today_is_monday_jumps_next_week() {
+        // 2026-05-11 是周一；snooze monday 应跳到 2026-05-18（下周一）
+        let now = ndt2(2026, 5, 11, 12, 0);
+        let until = compute_snooze_until(SnoozeSpec::Monday, now);
+        assert_eq!(until, ndt2(2026, 5, 18, 9, 0));
+    }
+
+    #[test]
+    fn compute_snooze_until_monday_when_today_is_wednesday() {
+        // 2026-05-13 是周三；snooze monday 应跳到 2026-05-18（5 天后周一）
+        let now = ndt2(2026, 5, 13, 12, 0);
+        let until = compute_snooze_until(SnoozeSpec::Monday, now);
+        assert_eq!(until, ndt2(2026, 5, 18, 9, 0));
+    }
+
+    #[test]
+    fn compute_snooze_until_monday_when_today_is_sunday() {
+        // 2026-05-17 是周日；snooze monday 应跳到 2026-05-18（次日周一）
+        let now = ndt2(2026, 5, 17, 12, 0);
+        let until = compute_snooze_until(SnoozeSpec::Monday, now);
+        assert_eq!(until, ndt2(2026, 5, 18, 9, 0));
+    }
+
+    #[test]
+    fn whoami_reply_top_tools_caps_at_three() {
+        let tools: Vec<(String, u64)> = vec![
+            ("a".to_string(), 5),
+            ("b".to_string(), 4),
+            ("c".to_string(), 3),
+            ("d".to_string(), 2),
+            ("e".to_string(), 1),
+        ];
+        let s = format_whoami_reply("", None, None, "", &tools);
+        assert!(s.contains("`a`×5"));
+        assert!(s.contains("`b`×4"));
+        assert!(s.contains("`c`×3"));
+        assert!(!s.contains("`d`"), "should cap at top 3: {s}");
+        assert!(!s.contains("`e`"), "should cap at top 3: {s}");
+    }
+
+    // -------- /today parse + format --------
+
+    #[test]
+    fn parses_today() {
+        assert_eq!(parse_tg_command("/today"), Some(TgCommand::Today));
+    }
+
+    #[test]
+    fn parses_today_ignores_trailing() {
+        assert_eq!(parse_tg_command("/today rest"), Some(TgCommand::Today));
+    }
+
+    #[test]
+    fn today_reply_empty_buckets_show_quiet() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let s = format_today_reply(&[], today);
+        assert!(s.contains("📅 今日（2026-05-14）"), "today reply: {s}");
+        assert!(s.contains("今日队列清爽 ✨"), "today reply: {s}");
+    }
+
+    #[test]
+    fn today_reply_mixed_buckets() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        // 今日到期
+        let mut due_today = view(
+            "整理 Downloads",
+            3,
+            Some("2026-05-14T18:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        due_today.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+        // 明日到期 → 不计
+        let mut due_tomorrow = view(
+            "写周报",
+            3,
+            Some("2026-05-15T18:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        due_tomorrow.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+        // 今日完成
+        let mut done_today = view("跑步", 0, None, TaskStatus::Done, Some("5km"));
+        done_today.updated_at = "2026-05-14T10:00:00+08:00".to_string();
+        // 昨日完成 → 不计
+        let mut done_yesterday = view("洗碗", 0, None, TaskStatus::Done, None);
+        done_yesterday.updated_at = "2026-05-13T10:00:00+08:00".to_string();
+        let views = vec![due_today, due_tomorrow, done_today, done_yesterday];
+        let s = format_today_reply(&views, today);
+        assert!(s.contains("今日到期（1）"), "today reply: {s}");
+        assert!(s.contains("整理 Downloads"), "today reply: {s}");
+        assert!(s.contains("今日已完成（1）"), "today reply: {s}");
+        assert!(s.contains("跑步"), "today reply: {s}");
+        assert!(!s.contains("写周报"), "today reply: {s}");
+        assert!(!s.contains("洗碗"), "today reply: {s}");
+        assert!(!s.contains("今日队列清爽"), "today reply: {s}");
+    }
+
+    // -------- /reset parse + format --------
+
+    #[test]
+    fn parses_reset() {
+        assert_eq!(parse_tg_command("/reset"), Some(TgCommand::Reset));
+    }
+
+    #[test]
+    fn parses_reset_ignores_trailing() {
+        assert_eq!(parse_tg_command("/reset now"), Some(TgCommand::Reset));
+    }
+
+    #[test]
+    fn reset_reply_mentions_persona_kept() {
+        let s = format_reset_reply();
+        assert!(s.contains("已重置"), "reset reply: {s}");
+        assert!(s.contains("人设") || s.contains("系统"), "reset reply: {s}");
+    }
+
+    // -------- /version parse + format --------
+
+    #[test]
+    fn parses_version() {
+        assert_eq!(parse_tg_command("/version"), Some(TgCommand::Version));
+    }
+
+    #[test]
+    fn parses_version_ignores_trailing() {
+        assert_eq!(parse_tg_command("/version please"), Some(TgCommand::Version));
+    }
+
+    #[test]
+    fn version_reply_includes_app_and_schema() {
+        let s = format_version_reply("0.1.0", 4);
+        assert!(s.contains("pet v0.1.0"), "version reply: {s}");
+        assert!(s.contains("schema v4"), "version reply: {s}");
+    }
+
+    #[test]
+    fn version_reply_omits_schema_when_zero() {
+        let s = format_version_reply("0.1.0", 0);
+        assert!(s.contains("pet v0.1.0"), "version reply: {s}");
+        assert!(!s.contains("schema"), "version reply: {s}");
+    }
+
+    #[test]
+    fn version_reply_handles_missing_version() {
+        let s = format_version_reply("", 4);
+        assert!(s.contains("版本号缺失"), "version reply: {s}");
+        assert!(s.contains("schema v4"), "version reply: {s}");
+    }
+
+    #[test]
+    fn today_reply_overflow_renders_more_hint() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let mut views: Vec<TaskView> = Vec::new();
+        for i in 0..8 {
+            let mut t = view(
+                &format!("待办-{i}"),
+                3,
+                Some("2026-05-14T18:00"),
+                TaskStatus::Pending,
+                None,
+            );
+            t.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+            views.push(t);
+        }
+        let s = format_today_reply(&views, today);
+        assert!(s.contains("今日到期（8）"), "today reply: {s}");
+        assert!(s.contains("…还有 3 条"), "today reply: {s}");
     }
 }

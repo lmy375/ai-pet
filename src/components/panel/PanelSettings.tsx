@@ -5,6 +5,8 @@ import { NumberField as SharedNumberField } from "../common/NumberField";
 import { ImageLightbox } from "../common/ImageLightbox";
 import { LoadingState } from "./LoadingState";
 import { SectionTitle } from "./SectionTitle";
+import { MaskedSecretField } from "./MaskedSecretField";
+import { formatBytes } from "../../utils/formatBytes";
 
 interface McpStatus {
   name: string;
@@ -126,7 +128,6 @@ export function PanelSettings() {
   const [message, setMessage] = useState("");
   // 长按 👁 时短暂解掩码。mouseUp / mouseLeave / touchEnd 都会立刻 setFalse，
   // 用户松手 / 把鼠标移出按钮，输入框立即变回 ••••。
-  const [apiKeyVisible, setApiKeyVisible] = useState(false);
   // motion mapping "全部演示一遍" 按钮的播放态。播放期间按钮 disabled +
   // 文案换"演示中…"，避免双击让 4 个 motion 错乱叠播。
   const [demoingMotions, setDemoingMotions] = useState(false);
@@ -170,6 +171,23 @@ export function PanelSettings() {
   const [petDataDirError, setPetDataDirError] = useState<string>("");
   const [openingDataDir, setOpeningDataDir] = useState<boolean>(false);
   const [pathCopied, setPathCopied] = useState<boolean>(false);
+  // SQLite db stats（v0-v12 migration 落地数据量）：挂载时一次性拉，让 owner
+  // 看到 backfill 已运转 + 各表实际行数。失败 / 旧 backend 无此命令 → null。
+  type DbStats = {
+    size_bytes: number;
+    /// SQLite _migrations 表里最大 version；显示让 owner 知道 schema 跑到哪一档。
+    schema_version: number;
+    butler_tasks_count: number;
+    todo_count: number;
+    task_archive_count: number;
+    kv_state_count: number;
+  };
+  const [dbStats, setDbStats] = useState<DbStats | null>(null);
+  /// App 版本号（Cargo.toml 编译期）。挂载时一次 fetch；老 backend / 失败 → null
+  /// 不渲染段。chip 行没显 pet vX.Y.Z 时退化等价 v0 状态，不破坏其它字段。
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  /// 版本 chip 点击复制后的瞬时绿色"已复制"反馈，1.5s 自清。
+  const [versionCopied, setVersionCopied] = useState(false);
   // image_model 测试态：调一次 image_generate 验真链路。testing = 进行中；
   // result 含 data URL + 耗时；error 透传后端错误（key 错 / quota / model 名错）。
   // 单次只跑一张 256x256 / 同 image_size 的实际配置 —— 测试就是要验真实路径。
@@ -308,6 +326,15 @@ export function PanelSettings() {
     invoke<string>("get_pet_data_dir")
       .then(setPetDataDir)
       .catch((e) => setPetDataDirError(String(e)));
+    // SQLite db stats 同样独立拉。命令未注册（旧 backend）→ 静默 null，
+    // 显示侧渲染时不会出该块。
+    invoke<DbStats>("get_db_stats")
+      .then(setDbStats)
+      .catch(() => setDbStats(null));
+    // app_version：编译期 env!，永远成功；catch 仅防老 backend 缺命令时静默
+    invoke<string>("app_version")
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
   }, []);
 
   const handleSave = async () => {
@@ -1018,9 +1045,77 @@ export function PanelSettings() {
             </div>
             <div style={{ fontSize: "11px", color: "var(--pet-color-muted)", marginTop: 6, lineHeight: 1.6 }}>
               此目录下：<code>config.yaml</code> 设置、<code>SOUL.md</code> 系统提示词、
-              <code>memories/</code> 记忆库（含 task_archive 归档）、<code>sessions/</code> 对话存档。
+              <code>memories/</code> 记忆库（含 task_archive 归档）、<code>sessions/</code> 对话存档、
+              <code>pet.db</code> SQLite 业务数据（butler_tasks / todo / task_archive / kv_state）。
               复制 / 备份整个目录即可迁移到新机器。
             </div>
+            {/* SQLite stats：让 owner 看到 v0-v12 migration 落地的实际数据
+                量。dbStats === null（旧 backend / 失败）时不渲染该块。 */}
+            {dbStats && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "8px 12px",
+                  background: "var(--pet-color-bg)",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  color: "var(--pet-color-muted)",
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "4px 14px",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                }}
+                title="pet.db 文件大小 + 各业务态表行数。SQLite 持久化分层（v0-v12）的落地状态，让你看到 backfill 已运转 + 数据规模"
+              >
+                {appVersion && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const plat =
+                        typeof navigator !== "undefined" ? navigator.platform : "";
+                      const parts = [`pet v${appVersion}`];
+                      if (dbStats?.schema_version)
+                        parts.push(`schema v${dbStats.schema_version}`);
+                      if (plat) parts.push(plat);
+                      try {
+                        await navigator.clipboard.writeText(parts.join(" · "));
+                        setVersionCopied(true);
+                        setTimeout(() => setVersionCopied(false), 1500);
+                      } catch {
+                        // 剪贴板权限错误 / 隐私模式：静默；按钮反馈不出现即可
+                      }
+                    }}
+                    title="点击复制 pet v / schema v / 平台 一行（贴 bug report 用）"
+                    style={{
+                      padding: "0 4px",
+                      border: "none",
+                      background: "transparent",
+                      color: versionCopied
+                        ? "var(--pet-tint-green-fg)"
+                        : "var(--pet-color-fg)",
+                      fontWeight: 600,
+                      fontFamily: "inherit",
+                      fontSize: 11,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {versionCopied ? "✓ 已复制" : `pet v${appVersion}`}
+                  </button>
+                )}
+                <span style={{ color: "var(--pet-color-fg)", fontWeight: 600 }}>
+                  pet.db
+                </span>
+                <span>{formatBytes(dbStats.size_bytes)}</span>
+                <span title="SQLite _migrations 表最大 version。当前最新 schema = 4（v9 加 kv_state 起）。低于此值说明 migration 没跑完，重启 app 让它补跑。">
+                  schema v{dbStats.schema_version}
+                </span>
+                <span>butler_tasks: {dbStats.butler_tasks_count}</span>
+                <span>todo: {dbStats.todo_count}</span>
+                <span>task_archive: {dbStats.task_archive_count}</span>
+                <span>kv_state: {dbStats.kv_state_count}</span>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1257,75 +1352,17 @@ export function PanelSettings() {
           placeholder="https://api.openai.com/v1"
         />
         <label style={{ ...labelStyle, marginTop: "8px" }}>API Key</label>
-        {/* 👁 长按显示 / 松手即重新掩码 —— 录屏 / 截图截到的窗口绝大多数都在
-            手没按时，"长按才显"比"toggle 切换"更不易因忘按而泄漏。📋 复制
-            走系统剪贴板，避开"全选输入框 + ⌘C"会触发的"显完整字符"短暂
-            可见。 */}
-        <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
-          <input
-            type={apiKeyVisible ? "text" : "password"}
-            value={form.api_key}
-            onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-            style={{ ...inputStyle, flex: 1, marginTop: 0 }}
-            placeholder="sk-..."
-          />
-          <button
-            type="button"
-            onMouseDown={() => setApiKeyVisible(true)}
-            onMouseUp={() => setApiKeyVisible(false)}
-            onMouseLeave={() => setApiKeyVisible(false)}
-            onTouchStart={() => setApiKeyVisible(true)}
-            onTouchEnd={() => setApiKeyVisible(false)}
-            title="按住显示 API key（松开即重新掩码）"
-            aria-label="按住显示 API key"
-            style={{
-              padding: "0 10px",
-              border: "1px solid var(--pet-color-border)",
-              borderRadius: 4,
-              background: apiKeyVisible
-                ? "var(--pet-tint-yellow-bg)"
-                : "var(--pet-color-card)",
-              color: apiKeyVisible
-                ? "var(--pet-tint-yellow-fg)"
-                : "var(--pet-color-muted)",
-              cursor: form.api_key ? "pointer" : "not-allowed",
-              fontFamily: "inherit",
-              fontSize: 13,
-              userSelect: "none",
-            }}
-            disabled={!form.api_key}
-          >
-            {apiKeyVisible ? "👁" : "👁‍🗨"}
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              if (!form.api_key) return;
-              try {
-                await navigator.clipboard.writeText(form.api_key);
-                setMessage(`已复制 API key 到剪贴板（${form.api_key.length} 字符）`);
-              } catch (e) {
-                setMessage(`复制失败：${e}`);
-              }
-              window.setTimeout(() => setMessage(""), 3000);
-            }}
-            title="复制 API key 到剪贴板（避开手动全选 → ⌘C 的明文可见瞬间）"
-            aria-label="复制 API key"
-            style={{
-              padding: "0 10px",
-              border: "1px solid var(--pet-color-border)",
-              borderRadius: 4,
-              background: "var(--pet-color-card)",
-              color: "var(--pet-color-muted)",
-              cursor: form.api_key ? "pointer" : "not-allowed",
-              fontFamily: "inherit",
-              fontSize: 13,
-            }}
-            disabled={!form.api_key}
-          >
-            📋
-          </button>
-        </div>
+        <MaskedSecretField
+          value={form.api_key}
+          onChange={(v) => setForm({ ...form, api_key: v })}
+          placeholder="sk-..."
+          secretLabel="API key"
+          inputStyle={{ ...inputStyle, marginTop: 0 }}
+          onCopyFeedback={(m) => {
+            setMessage(m);
+            window.setTimeout(() => setMessage(""), 3000);
+          }}
+        />
         <label
           style={{
             ...labelStyle,
@@ -1717,12 +1754,31 @@ export function PanelSettings() {
         </label>
 
         <label style={labelStyle}>Bot Token</label>
-        <input
-          type="password"
+        <MaskedSecretField
           value={form.telegram?.bot_token ?? ""}
-          onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, allowed_username: form.telegram?.allowed_username ?? "", bot_token: e.target.value } })}
-          style={{ ...inputStyle, marginBottom: "8px", fontFamily: "monospace", fontSize: "12px" }}
+          onChange={(v) =>
+            setForm({
+              ...form,
+              telegram: {
+                ...form.telegram,
+                enabled: form.telegram?.enabled ?? false,
+                allowed_username: form.telegram?.allowed_username ?? "",
+                bot_token: v,
+              },
+            })
+          }
           placeholder="123456789:ABCdefGhI..."
+          secretLabel="Bot Token"
+          inputStyle={{
+            ...inputStyle,
+            marginBottom: "8px",
+            fontFamily: "monospace",
+            fontSize: "12px",
+          }}
+          onCopyFeedback={(m) => {
+            setMessage(m);
+            window.setTimeout(() => setMessage(""), 3000);
+          }}
         />
 
         <label style={labelStyle}>
@@ -3012,7 +3068,7 @@ function McpServerEntry({
 /* ---------- Styles ---------- */
 
 const containerStyle: React.CSSProperties = {
-  padding: "20px 24px",
+  padding: "22px 24px 24px",
   height: "100%",
   overflowY: "auto",
 };
@@ -3020,7 +3076,10 @@ const containerStyle: React.CSSProperties = {
 const sectionStyle: React.CSSProperties = {
   marginBottom: "18px",
   padding: "18px 20px",
-  background: "var(--pet-color-card)",
+  // 与 .pet-card-elev 同语言：顶端 accent 极淡渐变，让每个 section 卡片有
+  // 一点温度而非纯白板。border / shadow 保持。
+  background:
+    "linear-gradient(180deg, color-mix(in srgb, var(--pet-color-accent) 3%, var(--pet-color-card)) 0%, var(--pet-color-card) 55%)",
   border: "1px solid var(--pet-color-border)",
   borderRadius: "12px",
   boxShadow: "var(--pet-shadow-sm)",
