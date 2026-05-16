@@ -1574,6 +1574,33 @@ export function PanelTasks({
       console.error("detailViewMode localStorage save failed:", e);
     }
   }, [detailViewMode]);
+  /// "🆎 切纯文本" preview toggle：split / preview 模式下临时关 markdown 渲
+  /// 染，把右侧预览段渲成 `<pre>` 原文 — 调 markdown 语法时看 raw（确认到
+  /// 底是哪段 syntax 没解析）/ 复制纯文本时直接 ⌘A 一键选中（不带 link
+  /// chip）。状态持久化 localStorage `pet-detail-preview-raw`，与
+  /// detailViewMode 同模板。仅 edit 模式无 preview 段时 toggle 无意义 ——
+  /// UI 也仅在非 edit 模式显此按钮。
+  const [previewRawMode, setPreviewRawMode] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-detail-preview-raw") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const togglePreviewRawMode = useCallback(() => {
+    setPreviewRawMode((cur) => {
+      const next = !cur;
+      try {
+        window.localStorage.setItem(
+          "pet-detail-preview-raw",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 私密 — session 内仍生效
+      }
+      return next;
+    });
+  }, []);
   /// "🔢 显行号 gutter" toggle：edit 模式 textarea 左侧浮一列行号。仅按
   /// `\n` 分段（逻辑行）；wrap 多行的逻辑行会在视觉上 mismatch（gutter 仍
   /// 单行高，textarea 占多行）—— 多数 detail.md 行较短可忽略；owner 在意
@@ -8731,6 +8758,42 @@ export function PanelTasks({
                                     </button>
                                   );
                                 })}
+                                {/* 🆎 切纯文本 toggle：仅 split / preview 模式
+                                    可见（edit 模式无 preview 段无意义）。on
+                                    时 preview pane 渲 <pre> 原文而非 parseMarkdown
+                                    渲染结果 — 调 markdown 语法 / 复制纯文本
+                                    的辅助开关。 */}
+                                {detailViewMode !== "edit" && (
+                                  <button
+                                    type="button"
+                                    onClick={togglePreviewRawMode}
+                                    title={
+                                      previewRawMode
+                                        ? "切回 markdown 渲染（链接 / 标题 / 列表渲染回来）"
+                                        : "切纯文本：preview 段显 <pre> 原 markdown 文本（调语法 / 复制 raw 用）"
+                                    }
+                                    style={{
+                                      fontSize: 11,
+                                      padding: "2px 8px",
+                                      border: "1px solid",
+                                      borderColor: previewRawMode
+                                        ? "var(--pet-tint-amber-fg, #d97706)"
+                                        : "var(--pet-color-border)",
+                                      borderRadius: 4,
+                                      background: previewRawMode
+                                        ? "var(--pet-tint-amber-bg, #fef3c7)"
+                                        : "var(--pet-color-card)",
+                                      color: previewRawMode
+                                        ? "var(--pet-tint-amber-fg, #92400e)"
+                                        : "var(--pet-color-muted)",
+                                      cursor: "pointer",
+                                      fontWeight: previewRawMode ? 600 : 400,
+                                    }}
+                                    aria-pressed={previewRawMode}
+                                  >
+                                    🆎 {previewRawMode ? "原文" : "渲染"}
+                                  </button>
+                                )}
                                 {/* 📋 复制全文：与既有 PanelMemory 的 📋 detail.md
                                     全文复制对偶 —— 在 PanelTasks detail 编辑器顶
                                     部一键拷整段 markdown 到剪贴板。preview 模式
@@ -9995,6 +10058,21 @@ export function PanelTasks({
                                       >
                                         （空 — 在左侧编辑写笔记）
                                       </span>
+                                    ) : previewRawMode ? (
+                                      <pre
+                                        style={{
+                                          whiteSpace: "pre-wrap",
+                                          wordBreak: "break-word",
+                                          fontFamily:
+                                            "'SF Mono', 'Menlo', monospace",
+                                          fontSize: 12,
+                                          lineHeight: 1.65,
+                                          margin: 0,
+                                          color: "var(--pet-color-fg)",
+                                        }}
+                                      >
+                                        {editingDetailContent}
+                                      </pre>
                                     ) : (
                                       parseMarkdown(editingDetailContent, {
                                         checkboxToggle: {
@@ -10030,6 +10108,21 @@ export function PanelTasks({
                                     >
                                       （空 — 切回 ✏️ 编辑写笔记）
                                     </span>
+                                  ) : previewRawMode ? (
+                                    <pre
+                                      style={{
+                                        whiteSpace: "pre-wrap",
+                                        wordBreak: "break-word",
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                        fontSize: 12,
+                                        lineHeight: 1.65,
+                                        margin: 0,
+                                        color: "var(--pet-color-fg)",
+                                      }}
+                                    >
+                                      {editingDetailContent}
+                                    </pre>
                                   ) : (
                                     parseMarkdown(editingDetailContent, {
                                       checkboxToggle: {
