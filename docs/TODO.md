@@ -8,6 +8,9 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- PanelTasks 顶部加 "📈 7-day 任务流" sparkline：显近 7 天每日 new / done count。
+- PanelMemory item 加 "🏷 改类目" 按钮：把 item 跨 category 移动（如 user_profile 旧条目挪到 general）。
+- TG bot 加 `/recent <N>` 命令：返回最近 N 条 done task 标题列表。
 
 
 

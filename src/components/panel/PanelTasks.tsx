@@ -4018,6 +4018,23 @@ export function PanelTasks({
     () => tasks.filter((t) => t.tags.length === 0).length,
     [tasks],
   );
+  /// 每个 tag 的负载分桶：total（所有 status）/ pending（未结束态）。让
+  /// 任务行 hover tag chip 时 tooltip 显 "同 tag 总 N / 进行中 M" — owner
+  /// 一眼掂量每类 tag 的工作量。pending 走 isFinished 反义（pending /
+  /// error 状态都算"未结束"，与 visibleTasks 的 dueFilter / sort 桶语义
+  /// 一致）。
+  const tagLoadMap = useMemo(() => {
+    const map = new Map<string, { total: number; pending: number }>();
+    for (const t of tasks) {
+      for (const tag of t.tags) {
+        const cur = map.get(tag) ?? { total: 0, pending: 0 };
+        cur.total += 1;
+        if (!isFinished(t.status)) cur.pending += 1;
+        map.set(tag, cur);
+      }
+    }
+    return map;
+  }, [tasks]);
 
   // 「今日到期 / 逾期」计数：派生自 tasks 全集，不被搜索/tag/sort 链上的
   // 过滤影响，让用户即使在 selectedTags 模式里也能看到"今天总共有 N 条到
@@ -7528,7 +7545,13 @@ export function PanelTasks({
                             e.stopPropagation();
                             setTagColorPicker({ tag, x: e.clientX, y: e.clientY });
                           }}
-                          title={`${selectedTags.has(tag) ? "点击取消该 tag 筛选" : "点击只看带此 tag 的任务"} · 双击改名（跨全表）· 右键改颜色`}
+                          title={(() => {
+                            const load = tagLoadMap.get(tag);
+                            const loadHint = load
+                              ? `📊 同 tag 总 ${load.total} 条 · 未结束 ${load.pending} · `
+                              : "";
+                            return `${loadHint}${selectedTags.has(tag) ? "点击取消该 tag 筛选" : "点击只看带此 tag 的任务"} · 双击改名（跨全表）· 右键改颜色`;
+                          })()}
                         >
                           {selectedTags.has(tag) ? "✓ " : ""}#{tag}
                         </span>
