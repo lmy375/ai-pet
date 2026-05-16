@@ -39,6 +39,23 @@ export function ChatPanel({ onSend, isLoading }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /// shell 风历史栈（最新在前）。submit 后 push；ArrowUp / ArrowDown 召回。
   const [sentHistory, setSentHistory] = useState<string[]>(readSentHistory);
+  /// 「💡 最近输入」鼠标入口 popover：替代 ↑↓ 键盘对鼠标 user 的 friction。
+  /// click 按钮 toggle；click outside / Esc 关。选 row → setInput(value) +
+  /// 同步 historyCursorRef + recalledValueRef，让接下来按 ↑ 顺序仍正确。
+  const [historyPopoverOpen, setHistoryPopoverOpen] = useState(false);
+  useEffect(() => {
+    if (!historyPopoverOpen) return;
+    const close = () => setHistoryPopoverOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setHistoryPopoverOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [historyPopoverOpen]);
   /// 当前历史浏览游标（0 = 最新）。null = 不在历史模式，按 ↑↓ 走 textarea
   /// 默认光标移动。用 ref 而非 state：仅影响下一次 keydown / change 判断，
   /// 无需 re-render，且避免 setInput 与 setCursor 在同一帧的时序歧义。
@@ -416,63 +433,197 @@ export function ChatPanel({ onSend, isLoading }: Props) {
             ))}
           </div>
         )}
-        <textarea
-          ref={textareaRef}
-          className="pet-chat-input"
-          value={input}
-          onChange={(e) => {
-            const v = e.target.value;
-            setInput(v);
-            // 用户手敲编辑（与 recall 写入值不同）→ 跳出历史浏览模式，下次
-            // ↑ 从最新一条开始而非接着往后翻。recall 路径走 setInput 不触发
-            // onChange，所以这里只在真实键盘输入 / 粘贴时生效。
-            if (
-              historyCursorRef.current !== null &&
-              v !== recalledValueRef.current
-            ) {
-              historyCursorRef.current = null;
-              recalledValueRef.current = null;
-            }
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={(e) => {
-            const items = e.clipboardData?.items;
-            if (!items) return;
-            const blobs: Blob[] = [];
-            for (let i = 0; i < items.length; i++) {
-              const it = items[i];
-              if (it.kind === "file" && it.type.startsWith("image/")) {
-                const f = it.getAsFile();
-                if (f) blobs.push(f);
+        <div style={{ position: "relative" }}>
+          <textarea
+            ref={textareaRef}
+            className="pet-chat-input"
+            value={input}
+            onChange={(e) => {
+              const v = e.target.value;
+              setInput(v);
+              // 用户手敲编辑（与 recall 写入值不同）→ 跳出历史浏览模式，下次
+              // ↑ 从最新一条开始而非接着往后翻。recall 路径走 setInput 不触发
+              // onChange，所以这里只在真实键盘输入 / 粘贴时生效。
+              if (
+                historyCursorRef.current !== null &&
+                v !== recalledValueRef.current
+              ) {
+                historyCursorRef.current = null;
+                recalledValueRef.current = null;
               }
+            }}
+            onKeyDown={handleKeyDown}
+            onPaste={(e) => {
+              const items = e.clipboardData?.items;
+              if (!items) return;
+              const blobs: Blob[] = [];
+              for (let i = 0; i < items.length; i++) {
+                const it = items[i];
+                if (it.kind === "file" && it.type.startsWith("image/")) {
+                  const f = it.getAsFile();
+                  if (f) blobs.push(f);
+                }
+              }
+              if (blobs.length === 0) return;
+              e.preventDefault();
+              ingestImageBlobs(blobs);
+            }}
+            placeholder={
+              isLoading
+                ? "宠物正在回复中..."
+                : CHAT_INPUT_PLACEHOLDERS[placeholderIdx]
             }
-            if (blobs.length === 0) return;
-            e.preventDefault();
-            ingestImageBlobs(blobs);
-          }}
-          placeholder={
-            isLoading
-              ? "宠物正在回复中..."
-              : CHAT_INPUT_PLACEHOLDERS[placeholderIdx]
-          }
-          rows={1}
-          style={{
-            padding: "9px 14px",
-            borderRadius: "20px",
-            border: "1px solid var(--pet-color-border)",
-            background: "var(--pet-color-card)",
-            backdropFilter: "blur(8px)",
-            fontSize: "14px",
-            outline: "none",
-            color: "var(--pet-color-fg)",
-            resize: "none",
-            lineHeight: "1.4",
-            fontFamily: "inherit",
-            overflow: "hidden",
-            boxSizing: "border-box",
-            transition: "border-color 150ms ease-out, box-shadow 150ms ease-out",
-          }}
-        />
+            rows={1}
+            style={{
+              padding: "9px 14px",
+              paddingRight: sentHistory.length > 0 ? 34 : 14,
+              borderRadius: "20px",
+              border: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-card)",
+              backdropFilter: "blur(8px)",
+              fontSize: "14px",
+              outline: "none",
+              color: "var(--pet-color-fg)",
+              resize: "none",
+              lineHeight: "1.4",
+              fontFamily: "inherit",
+              overflow: "hidden",
+              boxSizing: "border-box",
+              transition: "border-color 150ms ease-out, box-shadow 150ms ease-out",
+              width: "100%",
+              display: "block",
+            }}
+          />
+          {/* 💡 最近输入 鼠标入口：替代 ↑↓ 键盘对鼠标 user 的 friction。
+              floating 在 textarea 右上角；click 弹 popover 列最近 5 条，
+              row click 把内容灌进 textarea + 同步 historyCursorRef 让接下来
+              ↑ 接着翻。sentHistory 为空时按钮不渲染。 */}
+          {sentHistory.length > 0 && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setHistoryPopoverOpen((v) => !v);
+              }}
+              title={`显最近 ${Math.min(5, sentHistory.length)} 条输入历史（也可用 ↑↓ 键盘翻）`}
+              aria-label="show recent input history"
+              style={{
+                position: "absolute",
+                top: 6,
+                right: 8,
+                width: 22,
+                height: 22,
+                borderRadius: "50%",
+                border: "1px solid var(--pet-color-border)",
+                background: historyPopoverOpen
+                  ? "var(--pet-tint-blue-bg)"
+                  : "var(--pet-color-card)",
+                color: historyPopoverOpen
+                  ? "var(--pet-tint-blue-fg)"
+                  : "var(--pet-color-muted)",
+                fontSize: 11,
+                lineHeight: 1,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 0,
+                zIndex: 5,
+              }}
+            >
+              💡
+            </button>
+          )}
+          {historyPopoverOpen && sentHistory.length > 0 && (
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                bottom: "calc(100% + 6px)",
+                right: 0,
+                minWidth: 240,
+                maxWidth: 420,
+                maxHeight: 260,
+                overflowY: "auto",
+                padding: 4,
+                background: "var(--pet-color-card)",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 8,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
+                zIndex: 60,
+              }}
+            >
+              <div
+                style={{
+                  padding: "4px 9px 6px",
+                  fontSize: 10,
+                  color: "var(--pet-color-muted)",
+                  borderBottom: "1px solid var(--pet-color-border)",
+                  marginBottom: 4,
+                }}
+              >
+                💡 最近 {Math.min(5, sentHistory.length)} 条输入
+              </div>
+              {sentHistory.slice(0, 5).map((entry, i) => {
+                const oneLine = entry.replace(/\s+/g, " ").trim();
+                const preview =
+                  oneLine.length > 80 ? oneLine.slice(0, 80) + "…" : oneLine;
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => {
+                      setInput(entry);
+                      historyCursorRef.current = i;
+                      recalledValueRef.current = entry;
+                      setHistoryPopoverOpen(false);
+                      window.setTimeout(() => {
+                        const el = textareaRef.current;
+                        if (!el) return;
+                        el.focus();
+                        const len = el.value.length;
+                        try {
+                          el.setSelectionRange(len, len);
+                        } catch {
+                          // ignore
+                        }
+                      }, 0);
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "5px 9px",
+                      fontSize: 12,
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--pet-color-fg)",
+                      cursor: "pointer",
+                      borderRadius: 4,
+                      fontFamily: "inherit",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    onMouseOver={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.background =
+                        "var(--pet-color-bg)";
+                    }}
+                    onMouseOut={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.background =
+                        "transparent";
+                    }}
+                    title={entry}
+                  >
+                    {preview || "（空）"}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
       <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
     </>

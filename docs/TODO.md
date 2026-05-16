@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelChat 输入框加 "💡 最近输入" 浮按钮：click 显最近 5 条 input history popover（鼠标入口替代 ↑↓ 键盘）。
 - detail.md 编辑器 split 模式右侧 preview 加 "🆎 切纯文本" toggle：临时关 markdown 渲染看 raw 调试 markdown。
 - PanelDebug 加 "🧪 列 LLM tools 状态" 按钮：列所有可用工具 + 当前 enabled / disabled，方便排查"为什么宠物没用工具 X"。
 
