@@ -1825,6 +1825,13 @@ export function PanelTasks({
   /// 既有 useEffect 内 union close）。复用 task_set_snooze preset 入参（与
   /// /snooze tonight / monday 等 backend 同源）。
   const [snoozePickerTitle, setSnoozePickerTitle] = useState<string | null>(null);
+  /// 📅 调期 chip click 弹的 mini popover：从现在起 +1h / +1d / +3d / +1w
+  /// / +2w preset 微调 due_at（与 quickAdd "今晚 18:00" preset 同精神，只是
+  /// 是相对增量而非绝对锚点）。调用 task_set_due 走单字段原子修改。snooze
+  /// 是"暂时藏到 N 时之后"，调期是"改 due_at 截止时刻"——两条 chip 不冲突。
+  const [dueShiftPickerTitle, setDueShiftPickerTitle] = useState<string | null>(
+    null,
+  );
   // status badge 行内 picker。与 priority 同模式但只在 pending 行可点（done /
   // cancelled 暂无回退路径；error 走既有"重试"按钮）。
   const [statusPickerTitle, setStatusPickerTitle] = useState<string | null>(null);
@@ -1923,7 +1930,8 @@ export function PanelTasks({
       !statusPickerTitle &&
       !taskCtxMenu &&
       !tagColorPicker &&
-      !snoozePickerTitle
+      !snoozePickerTitle &&
+      !dueShiftPickerTitle
     )
       return;
     const close = () => {
@@ -1932,6 +1940,7 @@ export function PanelTasks({
       setTaskCtxMenu(null);
       setTagColorPicker(null);
       setSnoozePickerTitle(null);
+      setDueShiftPickerTitle(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -1940,6 +1949,7 @@ export function PanelTasks({
         setTaskCtxMenu(null);
         setTagColorPicker(null);
         setSnoozePickerTitle(null);
+        setDueShiftPickerTitle(null);
       }
     };
     window.addEventListener("mousedown", close);
@@ -1948,7 +1958,14 @@ export function PanelTasks({
       window.removeEventListener("mousedown", close);
       window.removeEventListener("keydown", onKey);
     };
-  }, [priorityPickerTitle, statusPickerTitle, taskCtxMenu, tagColorPicker, snoozePickerTitle]);
+  }, [
+    priorityPickerTitle,
+    statusPickerTitle,
+    taskCtxMenu,
+    tagColorPicker,
+    snoozePickerTitle,
+    dueShiftPickerTitle,
+  ]);
 
   // ⌘N / Ctrl+N 打开 quick-add 模态。Tauri WKWebView 没原生"新窗口"
   // 默认行为可吃，preventDefault 兜底。Esc 关闭。input / textarea 内
@@ -7419,6 +7436,174 @@ export function PanelTasks({
                         </span>
                       );
                     })()}
+                  {/* 📅 调期 chip：相对增量 preset 微调 due_at。终态行
+                      （done / cancelled）不显——调期对结束态无意义。
+                      popover 直接锚 chip 下方；与 💤 snooze 同 outside-click
+                      + Esc 关闭模式。 */}
+                  {!isFinished(t.status) && (() => {
+                    const open = dueShiftPickerTitle === t.title;
+                    const presets: { key: string; label: string; deltaMs: number | null }[] = [
+                      { key: "+1h", label: "📅 现在 +1 小时", deltaMs: 3_600_000 },
+                      { key: "+1d", label: "📅 现在 +1 天", deltaMs: 86_400_000 },
+                      { key: "+3d", label: "📅 现在 +3 天", deltaMs: 3 * 86_400_000 },
+                      { key: "+1w", label: "📅 现在 +1 周", deltaMs: 7 * 86_400_000 },
+                      { key: "+2w", label: "📅 现在 +2 周", deltaMs: 14 * 86_400_000 },
+                    ];
+                    return (
+                      <span style={{ position: "relative", display: "inline-block" }}>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDueShiftPickerTitle((cur) =>
+                              cur === t.title ? null : t.title,
+                            );
+                          }}
+                          disabled={busyTitle === t.title}
+                          title="调期 due_at：从现在起 +1h / +1d / +3d / +1w / +2w preset 微调，或清除 due。"
+                          style={{
+                            padding: "1px 7px",
+                            fontSize: 10,
+                            border: "1px solid var(--pet-color-border)",
+                            borderRadius: 999,
+                            background: "var(--pet-color-card)",
+                            color: "var(--pet-color-fg)",
+                            cursor:
+                              busyTitle === t.title ? "default" : "pointer",
+                            opacity: busyTitle === t.title ? 0.5 : 1,
+                            fontFamily: "inherit",
+                          }}
+                          aria-label="调期"
+                        >
+                          📅 调期
+                        </button>
+                        {open && (
+                          <div
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              position: "absolute",
+                              top: "calc(100% + 4px)",
+                              left: 0,
+                              minWidth: 160,
+                              padding: 4,
+                              background: "var(--pet-color-card)",
+                              border: "1px solid var(--pet-color-border)",
+                              borderRadius: 6,
+                              boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                              zIndex: 30,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 2,
+                            }}
+                          >
+                            {presets.map((p) => (
+                              <button
+                                key={p.key}
+                                type="button"
+                                style={{
+                                  display: "block",
+                                  width: "100%",
+                                  textAlign: "left",
+                                  padding: "5px 9px",
+                                  fontSize: 11,
+                                  border: "none",
+                                  background: "transparent",
+                                  color: "var(--pet-color-fg)",
+                                  cursor: "pointer",
+                                  fontFamily: "inherit",
+                                  borderRadius: 4,
+                                }}
+                                onMouseOver={(e) => {
+                                  (e.currentTarget as HTMLButtonElement).style.background =
+                                    "var(--pet-color-bg)";
+                                }}
+                                onMouseOut={(e) => {
+                                  (e.currentTarget as HTMLButtonElement).style.background =
+                                    "transparent";
+                                }}
+                                onClick={async () => {
+                                  setDueShiftPickerTitle(null);
+                                  setActionErr("");
+                                  setBusyTitle(t.title);
+                                  try {
+                                    const dueArg =
+                                      p.deltaMs === null
+                                        ? null
+                                        : formatDueInput(
+                                            new Date(Date.now() + p.deltaMs),
+                                          );
+                                    await invoke<void>("task_set_due", {
+                                      title: t.title,
+                                      due: dueArg,
+                                    });
+                                    await reload();
+                                  } catch (e) {
+                                    setActionErr(`调期失败：${e}`);
+                                  } finally {
+                                    setBusyTitle(null);
+                                  }
+                                }}
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                            <div
+                              style={{
+                                height: 1,
+                                background: "var(--pet-color-border)",
+                                margin: "2px 0",
+                              }}
+                            />
+                            <button
+                              type="button"
+                              style={{
+                                display: "block",
+                                width: "100%",
+                                textAlign: "left",
+                                padding: "5px 9px",
+                                fontSize: 11,
+                                border: "none",
+                                background: "transparent",
+                                color: "var(--pet-color-accent)",
+                                cursor: "pointer",
+                                fontFamily: "inherit",
+                                borderRadius: 4,
+                                fontWeight: 600,
+                              }}
+                              onMouseOver={(e) => {
+                                (e.currentTarget as HTMLButtonElement).style.background =
+                                  "var(--pet-color-bg)";
+                              }}
+                              onMouseOut={(e) => {
+                                (e.currentTarget as HTMLButtonElement).style.background =
+                                  "transparent";
+                              }}
+                              onClick={async () => {
+                                setDueShiftPickerTitle(null);
+                                setActionErr("");
+                                setBusyTitle(t.title);
+                                try {
+                                  await invoke<void>("task_set_due", {
+                                    title: t.title,
+                                    due: null,
+                                  });
+                                  await reload();
+                                } catch (e) {
+                                  setActionErr(`清 due 失败：${e}`);
+                                } finally {
+                                  setBusyTitle(null);
+                                }
+                              }}
+                            >
+                              清除 due
+                            </button>
+                          </div>
+                        )}
+                      </span>
+                    );
+                  })()}
                   <span>
                     创建于 {t.created_at.slice(0, 16).replace("T", " ")}
                     {(() => {
