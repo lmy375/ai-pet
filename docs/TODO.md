@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory ⌘K 唤起跨 cat memory quick-find palette：与 iter #240 detail.md ⌘K 同模板，让 owner 跨 cat fuzzy 找 memory item。
 - detail.md 编辑器 toolbar 加 "🔍 detail 全文搜" 浮 search bar：长 detail.md 内 ⌘F 找文本。
 
 
