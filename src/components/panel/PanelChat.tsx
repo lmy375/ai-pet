@@ -527,6 +527,22 @@ export function PanelChat({
       return next;
     });
   }, []);
+  /// 「🔍 在当前 session 找类似」：用消息文本作 query 触发顶部 search bar。
+  /// 截短到 ≤ 30 字 + 折掉换行，避免 query 过长在 input 里挤爆。scope 强制
+  /// "current"（"找本会话内类似" 是这条按钮的核心语义 — 不让 owner 再切
+  /// scope 一次）。setSearchMode(true) 唤起 search UI，setSearchInputFocusReq
+  /// 让 useEffect rAF 后聚焦 input 让 owner 立刻可改 query / 按 Enter 入历
+  /// 史。
+  const handleFindSimilarInSession = useCallback((text: string) => {
+    const q = text
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 30);
+    if (!q) return;
+    setSearchMode(true);
+    setSearchScope("current");
+    setSearchQuery(q);
+  }, []);
   const refreshChatTaskMap = useCallback(async () => {
     try {
       const resp = await invoke<{
@@ -4885,6 +4901,7 @@ export function PanelChat({
                   onRefDoubleClick={onRequestFocusTask}
                   marked={markedMessages.has(markKey)}
                   onToggleMark={() => toggleMessageMark(markKey)}
+                  onFindSimilar={handleFindSimilarInSession}
                 />
               </div>
             );
@@ -4953,6 +4970,7 @@ export function PanelChat({
                 marked={markedMessages.has(markKey)}
                 onToggleMark={() => toggleMessageMark(markKey)}
                 subdued={item.systemNote}
+                onFindSimilar={handleFindSimilarInSession}
               />
             );
           }

@@ -279,6 +279,7 @@ export function CopyableMessage({
   marked,
   onToggleMark,
   subdued,
+  onFindSimilar,
 }: {
   role: "user" | "assistant";
   content: string;
@@ -314,6 +315,10 @@ export function CopyableMessage({
   /// 系统反馈消息（pushLocalAssistantNote 注入的）走低调样式。仅 assistant
   /// 路径会被设；user 行不传。
   subdued?: boolean;
+  /// 「🔍 在当前 session 找类似」按钮的 click callback。传入消息纯文本
+  /// （已 strip images / tool envelope），由调用方截短作 search query 预填
+  /// 顶部搜索栏。未传 → 按钮不渲染。
+  onFindSimilar?: (text: string) => void;
 }) {
   const button = (
     <button
@@ -346,6 +351,34 @@ export function CopyableMessage({
   /// 📌 标记按钮：与复制 / reaction 共用 .pet-copy-btn hover-only 显隐。
   /// marked=true 时强制可见（与 copied 同语义 — 表达持久态）+ 黄底深字。
   /// 未传 onToggleMark → 整个按钮不渲染（如 tool / error 消息无 mark 语义）。
+  /// 🔍 在当前 session 找类似：以本条文本作 query 触发顶部 search（scope =
+  /// current session）。仅 content 非空 + 传 callback 时挂。与 copy / mark
+  /// 共用 .pet-copy-btn hover-only 显隐。
+  const findSimilarButton =
+    onFindSimilar !== undefined && content.trim().length > 0 ? (
+      <button
+        type="button"
+        className="pet-copy-btn"
+        onClick={() => onFindSimilar(content)}
+        title="在当前 session 内搜索类似消息（用本条文本作 query 触发顶部 🔍 搜索，scope=本会话）"
+        aria-label="find similar messages in this session"
+        style={{
+          alignSelf: "flex-end",
+          padding: "2px 6px",
+          fontSize: "10px",
+          lineHeight: 1.2,
+          border: "1px solid var(--pet-color-border)",
+          borderRadius: 4,
+          background: "var(--pet-color-card)",
+          color: "var(--pet-color-muted)",
+          cursor: "pointer",
+          whiteSpace: "nowrap",
+          flexShrink: 0,
+        }}
+      >
+        🔍
+      </button>
+    ) : null;
   const markButton =
     onToggleMark !== undefined ? (
       <button
@@ -547,6 +580,7 @@ export function CopyableMessage({
       {role === "user" ? (
         <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
           {markButton}
+          {findSimilarButton}
           {button}
           {bubble}
         </div>
@@ -555,6 +589,7 @@ export function CopyableMessage({
           {bubble}
           {reactionRow}
           {button}
+          {findSimilarButton}
           {markButton}
         </div>
       )}
