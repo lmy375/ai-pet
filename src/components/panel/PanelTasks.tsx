@@ -1574,6 +1574,29 @@ export function PanelTasks({
       console.error("detailViewMode localStorage save failed:", e);
     }
   }, [detailViewMode]);
+  /// "🔢 显行号 gutter" toggle：edit 模式 textarea 左侧浮一列行号。仅按
+  /// `\n` 分段（逻辑行）；wrap 多行的逻辑行会在视觉上 mismatch（gutter 仍
+  /// 单行高，textarea 占多行）—— 多数 detail.md 行较短可忽略；owner 在意
+  /// 时关掉此 toggle 即可。状态持久化 localStorage 与 detailViewMode 同模板。
+  const [showDetailGutter, setShowDetailGutter] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-detail-gutter") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const detailGutterRef = useRef<HTMLDivElement>(null);
+  const toggleShowDetailGutter = useCallback(() => {
+    setShowDetailGutter((cur) => {
+      const next = !cur;
+      try {
+        window.localStorage.setItem("pet-detail-gutter", next ? "1" : "0");
+      } catch {
+        // 配额满 / 私密 — session 内仍生效
+      }
+      return next;
+    });
+  }, []);
   const [savingDetail, setSavingDetail] = useState(false);
   /// detail.md textarea 光标位置（selectionStart UTF-16 offset）。给底部状态
   /// 栏算"行 N / 共 M"。0 = 无 / 编辑器未打开 / cursor 在文首。两个 textarea
@@ -9265,6 +9288,33 @@ export function PanelTasks({
                                   >
                                     ✓
                                   </button>
+                                  {/* 🔢 行号 gutter toggle：仅 edit 模式
+                                      （split 模式横向空间已紧，按 \n 分段
+                                      gutter 的 wrap mismatch 也更明显）。
+                                      持久化 localStorage `pet-detail-gutter`。 */}
+                                  {detailViewMode === "edit" && (
+                                    <button
+                                      type="button"
+                                      onClick={toggleShowDetailGutter}
+                                      title={
+                                        showDetailGutter
+                                          ? "隐藏左侧行号 gutter（按 \\n 分逻辑行；wrap 多行的逻辑行视觉对不齐时关掉更整齐）"
+                                          : "显左侧行号 gutter（按 \\n 分逻辑行；适合短行 markdown 笔记定位）"
+                                      }
+                                      style={{
+                                        ...mdToolbarBtnStyle,
+                                        background: showDetailGutter
+                                          ? "var(--pet-tint-blue-bg)"
+                                          : mdToolbarBtnStyle.background,
+                                        color: showDetailGutter
+                                          ? "var(--pet-tint-blue-fg)"
+                                          : mdToolbarBtnStyle.color,
+                                      }}
+                                      aria-pressed={showDetailGutter}
+                                    >
+                                      🔢
+                                    </button>
+                                  )}
                                   {/* 🔗 插 task ref：复用 ⌘K palette 但 mode
                                       = insertRef。fuzzy 选其他 task 后在光标
                                       位置插 `「title」`，token 与 bulk
@@ -9906,6 +9956,56 @@ export function PanelTasks({
                                   )}
                                 </div>
                               ) : (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "stretch",
+                                  width: "100%",
+                                }}
+                              >
+                                {/* 🔢 行号 gutter：仅 showDetailGutter on +
+                                    edit 模式。按 `\n` 分段（逻辑行）；wrap 多
+                                    行的逻辑行视觉 mismatch — 大多数 detail
+                                    短行可忽略。textarea onScroll 同步 gutter
+                                    scrollTop。 */}
+                                {showDetailGutter && (() => {
+                                  const lineCount = Math.max(
+                                    1,
+                                    editingDetailContent.split("\n").length,
+                                  );
+                                  return (
+                                    <div
+                                      ref={detailGutterRef}
+                                      aria-hidden
+                                      style={{
+                                        flexShrink: 0,
+                                        width: 36,
+                                        padding: "12px 4px 12px 8px",
+                                        textAlign: "right",
+                                        fontSize: 12,
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                        lineHeight: 1.65,
+                                        color: "var(--pet-color-muted)",
+                                        background: "var(--pet-color-bg)",
+                                        border:
+                                          "1px solid var(--pet-color-border)",
+                                        borderRight: "none",
+                                        borderRadius: "8px 0 0 8px",
+                                        boxShadow: "var(--pet-shadow-sm)",
+                                        boxSizing: "border-box",
+                                        overflow: "hidden",
+                                        userSelect: "none",
+                                        whiteSpace: "pre",
+                                      }}
+                                    >
+                                      {Array.from(
+                                        { length: lineCount },
+                                        (_, i) => i + 1,
+                                      ).join("\n")}
+                                    </div>
+                                  );
+                                })()}
                               <textarea
                                 ref={detailEditorRef}
                                 value={editingDetailContent}
@@ -9913,6 +10013,12 @@ export function PanelTasks({
                                   setEditingDetailContent(e.target.value);
                                   setDetailCursorPos(e.target.selectionStart);
                                   setDetailSelectionEnd(e.target.selectionEnd);
+                                }}
+                                onScroll={(e) => {
+                                  if (detailGutterRef.current) {
+                                    detailGutterRef.current.scrollTop =
+                                      e.currentTarget.scrollTop;
+                                  }
                                 }}
                                 onSelect={(e) => {
                                   const ta = e.target as HTMLTextAreaElement;
@@ -10000,7 +10106,8 @@ export function PanelTasks({
                                   fontSize: 12,
                                   fontFamily: "'SF Mono', 'Menlo', monospace",
                                   border: "1px solid var(--pet-color-border)",
-                                  borderRadius: 8,
+                                  borderRadius: showDetailGutter ? "0 8px 8px 0" : 8,
+                                  borderLeftWidth: showDetailGutter ? 0 : 1,
                                   resize: "vertical",
                                   boxSizing: "border-box",
                                   lineHeight: 1.65,
@@ -10011,6 +10118,7 @@ export function PanelTasks({
                                 autoFocus
                                 disabled={savingDetail}
                               />
+                              </div>
                               )}
                               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                                 <button
