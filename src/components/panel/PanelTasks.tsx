@@ -1903,6 +1903,13 @@ export function PanelTasks({
     | { tag: string; x: number; y: number }
     | null
   >(null);
+  /// 双击 tag chip → 跨全表 inline rename。`renamingTagName` 是被改的旧名
+  /// （null = 关）；commit 时遍历所有持有该 tag 的 task，依次 task_set_tags
+  /// `-old +new`。失败聚合到 actionErr 提示。同时只允许一条 tag 处于改名
+  /// （多 input 散在屏上分散注意力 + 防同名重复 commit 跑乱）。
+  const [renamingTagName, setRenamingTagName] = useState<string | null>(null);
+  const [renameTagDraft, setRenameTagDraft] = useState("");
+  const [renameTagBusy, setRenameTagBusy] = useState(false);
 
   /// 拖拽改 priority：仅在 sortMode === "priority" 时启用。drag source 是
   /// 被拖的 task title；drop target 是当前 dragOver 的 task title（用于边缘
@@ -2665,6 +2672,60 @@ export function PanelTasks({
   const cancelRenameTask = useCallback(() => {
     setRenamingTaskTitle(null);
     setRenameTaskDraft("");
+  }, []);
+
+  /// tag 改名 commit：跨全表把 oldName → newName。空 / 同名走 noop。
+  /// 串行 invoke task_set_tags 让后端 parse_tag_ops 校验 newName 合法字符
+  /// （非法时整体走 catch 一次性 actionErr，不需在前端再写一份正则）。失败
+  /// 计数累加，全部跑完后 reload 一次刷视图，比每条 reload 高效。
+  const commitRenameTag = useCallback(async () => {
+    const oldName = renamingTagName;
+    if (!oldName) return;
+    const newName = renameTagDraft.trim();
+    if (!newName || newName === oldName) {
+      setRenamingTagName(null);
+      setRenameTagDraft("");
+      return;
+    }
+    setRenameTagBusy(true);
+    setActionErr("");
+    const affected = tasks.filter((t) => t.tags.includes(oldName));
+    if (affected.length === 0) {
+      // 罕见：state 还残留 / 用户在改名 input 期间另一窗口删完了所有 tag
+      setRenamingTagName(null);
+      setRenameTagDraft("");
+      setRenameTagBusy(false);
+      return;
+    }
+    let failed = 0;
+    let firstErr = "";
+    for (const t of affected) {
+      try {
+        await invoke<void>("task_set_tags", {
+          title: t.title,
+          opsInput: `-${oldName} +${newName}`,
+        });
+      } catch (e) {
+        failed += 1;
+        if (!firstErr) firstErr = String(e);
+      }
+    }
+    await reload();
+    setRenamingTagName(null);
+    setRenameTagDraft("");
+    setRenameTagBusy(false);
+    if (failed > 0) {
+      setActionErr(
+        `改 tag 失败：${failed} / ${affected.length} 条（${firstErr}）`,
+      );
+    } else {
+      setBulkResultMsg(`✓ tag 改名：${affected.length} 条 #${oldName} → #${newName}`);
+      window.setTimeout(() => setBulkResultMsg(""), 4000);
+    }
+  }, [renamingTagName, renameTagDraft, tasks, reload]);
+  const cancelRenameTag = useCallback(() => {
+    setRenamingTagName(null);
+    setRenameTagDraft("");
   }, []);
 
   // 导出归档 markdown 的 toast 状态（reuse 既有 bulkResultMsg 通道；4s 自清）。
@@ -7345,26 +7406,83 @@ export function PanelTasks({
                 })()}
                 {t.tags.length > 0 && (
                   <div style={s.tagRow}>
-                    {t.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        style={{ ...s.tagChip, ...getTagTintStyle(tag) }}
-                        onClick={(e) => {
-                          // task card 本身有 onClick 展开详情；阻冒泡防止
-                          // 点 tag 也展开详情。
-                          e.stopPropagation();
-                          toggleTag(tag);
-                        }}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setTagColorPicker({ tag, x: e.clientX, y: e.clientY });
-                        }}
-                        title={`${selectedTags.has(tag) ? "点击取消该 tag 筛选" : "点击只看带此 tag 的任务"} · 右键改颜色`}
-                      >
-                        {selectedTags.has(tag) ? "✓ " : ""}#{tag}
-                      </span>
-                    ))}
+                    {t.tags.map((tag) => {
+                      const renaming = renamingTagName === tag;
+                      if (renaming) {
+                        return (
+                          <span
+                            key={tag}
+                            style={{ ...s.tagChip, ...getTagTintStyle(tag) }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            #
+                            <input
+                              type="text"
+                              autoFocus
+                              value={renameTagDraft}
+                              disabled={renameTagBusy}
+                              onChange={(e) => setRenameTagDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                e.stopPropagation();
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  void commitRenameTag();
+                                } else if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  cancelRenameTag();
+                                }
+                              }}
+                              onBlur={() => {
+                                // blur 走 commit；空 / 同名分支已在 commit 内
+                                // 处理为静默关闭
+                                void commitRenameTag();
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                background: "transparent",
+                                border: "none",
+                                outline: "none",
+                                color: "inherit",
+                                font: "inherit",
+                                padding: 0,
+                                margin: 0,
+                                width: `${Math.max(2, renameTagDraft.length || 2) + 1}ch`,
+                                minWidth: "2ch",
+                              }}
+                              aria-label={`改 tag #${tag} 名（跨全表）`}
+                            />
+                          </span>
+                        );
+                      }
+                      return (
+                        <span
+                          key={tag}
+                          style={{ ...s.tagChip, ...getTagTintStyle(tag) }}
+                          onClick={(e) => {
+                            // task card 本身有 onClick 展开详情；阻冒泡防止
+                            // 点 tag 也展开详情。
+                            e.stopPropagation();
+                            toggleTag(tag);
+                          }}
+                          onDoubleClick={(e) => {
+                            // 双击 → inline rename（跨全表批量改 tag 名）。
+                            // 阻冒泡防双击穿透触发 task card 双击行为。
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setRenamingTagName(tag);
+                            setRenameTagDraft(tag);
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setTagColorPicker({ tag, x: e.clientX, y: e.clientY });
+                          }}
+                          title={`${selectedTags.has(tag) ? "点击取消该 tag 筛选" : "点击只看带此 tag 的任务"} · 双击改名（跨全表）· 右键改颜色`}
+                        >
+                          {selectedTags.has(tag) ? "✓ " : ""}#{tag}
+                        </span>
+                      );
+                    })}
                   </div>
                 )}
                 {/* 已结束（done / cancelled）的任务若有产物，独立一行显示 */}
