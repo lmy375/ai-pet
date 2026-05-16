@@ -4256,6 +4256,49 @@ export function PanelTasks({
   }, [tasks]);
   /// 完成统计小卡展开态。点小卡 toggle；点 title 触发定位后自动关闭。
   const [completedListExpanded, setCompletedListExpanded] = useState(false);
+  /// 🔁 撤销最后一条 done：armed 二次确认。最后一条 = completionStats.weekList[0]
+  /// （已按 updated_at desc 排序）。armed 期间按钮文字变红显"再点确认 ⟲ X"
+  /// 露具体 title，让 owner 知道会撤哪条；5s 自动 disarm。
+  const [undoLastDoneArmed, setUndoLastDoneArmed] = useState(false);
+  const undoLastDoneTimerRef = useRef<number | null>(null);
+  const undoLastDoneBusyRef = useRef(false);
+  const handleUndoLastDone = useCallback(async () => {
+    const last = completionStats.weekList[0];
+    if (!last) {
+      setBulkResultMsg("近 7 天内没有 done 任务可撤销");
+      window.setTimeout(() => setBulkResultMsg(""), 4000);
+      return;
+    }
+    if (!undoLastDoneArmed) {
+      setUndoLastDoneArmed(true);
+      if (undoLastDoneTimerRef.current !== null) {
+        window.clearTimeout(undoLastDoneTimerRef.current);
+      }
+      undoLastDoneTimerRef.current = window.setTimeout(() => {
+        setUndoLastDoneArmed(false);
+        undoLastDoneTimerRef.current = null;
+      }, 5000);
+      return;
+    }
+    if (undoLastDoneTimerRef.current !== null) {
+      window.clearTimeout(undoLastDoneTimerRef.current);
+      undoLastDoneTimerRef.current = null;
+    }
+    setUndoLastDoneArmed(false);
+    if (undoLastDoneBusyRef.current) return;
+    undoLastDoneBusyRef.current = true;
+    setActionErr("");
+    try {
+      await invoke<void>("task_undo_done", { title: last.title });
+      await reload();
+      setBulkResultMsg(`✓ 已撤销 done：「${last.title}」回 pending`);
+      window.setTimeout(() => setBulkResultMsg(""), 4000);
+    } catch (e) {
+      setActionErr(`撤销 done 失败：${e}`);
+    } finally {
+      undoLastDoneBusyRef.current = false;
+    }
+  }, [completionStats.weekList, undoLastDoneArmed, reload]);
   /// 跨 render 定位 by title：点 title 后 setShowFinished + 清 filter，下一帧
   /// visibleTasks 重算才包含该任务；effect 在 visibleTasks 变化后查 idx 并
   /// setFocusedIdx，触发既有 scrollIntoView。
@@ -5395,6 +5438,49 @@ export function PanelTasks({
                       );
                     })}
                   </div>
+                );
+              })()}
+              {/* 🔁 撤销最后一条 done：armed 二次确认。仅在近 7 天有 done
+                  任务时浮（completionStats.week > 0）；按钮显最后一条标题（短
+                  名截 12 字），armed 状态变红字 + 5s 自动 disarm。误标 done
+                  撤销路径：剥 [done]/[result:] marker 回 pending，与
+                  task_mark_done 对偶。 */}
+              {completionStats.week > 0 && (() => {
+                const last = completionStats.weekList[0];
+                if (!last) return null;
+                const short =
+                  last.title.length > 12
+                    ? last.title.slice(0, 12) + "…"
+                    : last.title;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => void handleUndoLastDone()}
+                    title={
+                      undoLastDoneArmed
+                        ? `再点确认 — 撤销「${last.title}」回 pending（剥 [done]/[result:] marker）。5 秒内有效。`
+                        : `把最后一条 done 任务「${last.title}」还原为 pending（误标 done 撤销）。点击进入二次确认。`
+                    }
+                    style={{
+                      marginLeft: 6,
+                      fontSize: 11,
+                      padding: "2px 8px",
+                      borderRadius: 4,
+                      border: `1px solid ${undoLastDoneArmed ? "var(--pet-tint-red-fg)" : "var(--pet-color-border)"}`,
+                      background: undoLastDoneArmed
+                        ? "var(--pet-tint-red-fg)"
+                        : "transparent",
+                      color: undoLastDoneArmed ? "#fff" : "var(--pet-color-muted)",
+                      cursor: "pointer",
+                      fontWeight: undoLastDoneArmed ? 700 : 400,
+                      fontFamily: "inherit",
+                      verticalAlign: "middle",
+                    }}
+                  >
+                    {undoLastDoneArmed
+                      ? `⚠ 再点确认 ⟲「${short}」(5s)`
+                      : `🔁 撤销 done「${short}」`}
+                  </button>
                 );
               })()}
               {completedListExpanded && completionStats.week > 0 && (

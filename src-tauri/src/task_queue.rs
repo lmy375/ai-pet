@@ -227,6 +227,20 @@ pub fn strip_error_markers(description: &str) -> String {
     collapse_whitespace(&cleaned)
 }
 
+/// 把 Done 状态的 description 还原为 pending 形态：剥 `[done]` / `[result: ...]`
+/// 两类终态 marker。保留 `[task pri=...]` header / `[every:]` / `[once:]` /
+/// `[deadline:]` schedule 前缀 / `#tag` / `[snooze:]` / `[pinned]` 等 owner-intent
+/// markers — owner 误标 done 撤销后，原任务上下文应完整恢复。
+///
+/// 不剥 `[error:` / `[cancelled:`：done 状态下这两类 marker 理论上不会同时
+/// 存在（状态分类器以最后状态为准）；若同时出现是 description 历史脏数据，
+/// 不动它们让任务回 pending 后继承 latest state — caller 是 task_undo_done，
+/// 调用前已校验 status == Done，重置回 pending 不会引入 phantom error。
+pub fn strip_done_markers(description: &str) -> String {
+    let cleaned = remove_bracketed_segments(description, &["[done", "[result"]);
+    collapse_whitespace(&cleaned)
+}
+
 /// 把归档条目的 description 还原为 pending butler_task 形态：剥 `[archived:`
 /// `[done]` / `[cancelled:` / `[error:` / `[result:` 全套终态 marker。保留
 /// `[task pri=...]` header、`[every:]` / `[once:]` / `[deadline:]` schedule
@@ -1183,6 +1197,49 @@ mod tests {
     fn strip_handles_multiple_error_segments() {
         let cleaned = strip_error_markers("[error: 第一次失败] 进度 [error: 第二次失败]");
         assert_eq!(cleaned, "进度");
+    }
+
+    // ---------------- strip_done_markers ----------------
+
+    #[test]
+    fn strip_done_clears_done_and_result() {
+        let cleaned = strip_done_markers(
+            "[task pri=1] 整理 Downloads [done] [result: 挪了 30 个文件]",
+        );
+        assert_eq!(cleaned, "[task pri=1] 整理 Downloads");
+    }
+
+    #[test]
+    fn strip_done_keeps_owner_intent_markers() {
+        // schedule / tag / pinned / silent / snooze / blockedBy 都保留
+        let cleaned = strip_done_markers(
+            "[task pri=3] [every: 09:00] [pinned] #工作 [snooze: 2026-05-20 09:00] [blockedBy: A] 整理 [done] [result: ok]",
+        );
+        // 仅 [done] + [result] 被剥；其它 owner-intent markers 全保留
+        assert!(cleaned.contains("[task pri=3]"));
+        assert!(cleaned.contains("[every: 09:00]"));
+        assert!(cleaned.contains("[pinned]"));
+        assert!(cleaned.contains("#工作"));
+        assert!(cleaned.contains("[snooze: 2026-05-20 09:00]"));
+        assert!(cleaned.contains("[blockedBy: A]"));
+        assert!(cleaned.contains("整理"));
+        assert!(!cleaned.contains("[done]"));
+        assert!(!cleaned.contains("[result:"));
+    }
+
+    #[test]
+    fn strip_done_is_idempotent_on_clean_pending() {
+        let cleaned = strip_done_markers("[task pri=1] 整理 Downloads");
+        assert_eq!(cleaned, "[task pri=1] 整理 Downloads");
+    }
+
+    #[test]
+    fn strip_done_handles_multiple_result_segments() {
+        // LLM 偶尔追加多次 result；都剥
+        let cleaned = strip_done_markers(
+            "整理 [result: 第一轮] 中间笔记 [done] [result: 第二轮 final]",
+        );
+        assert_eq!(cleaned, "整理 中间笔记");
     }
 
     // ---------------- append_cancelled_marker ----------------
