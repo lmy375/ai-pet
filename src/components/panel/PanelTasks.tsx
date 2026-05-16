@@ -1985,6 +1985,113 @@ export function PanelTasks({
   // 单 task 编辑互斥（editingDetailTitle 是单值），所以单 ref 够用。
   const detailEditorRef = useRef<HTMLTextAreaElement>(null);
 
+  /// detail.md 编辑器内 ⌘F 全文搜浮 bar：长 detail.md（每条 ≥ 数千字）owner
+  /// 想快速跳到某关键词位置，PanelTasks 顶部 search 是按 task 标题 / 描述搜，
+  /// 不进 detail。这里加 in-textarea find — 与 Chrome / VS Code 找一致。
+  /// open 时聚焦 input；Enter / ↑↓ 切 match；textarea.setSelectionRange 选中
+  /// match 让 textarea 自动滚到位；Esc 关。editingDetailTitle === null 时
+  /// listener 不挂；切 task 时清空 query 重置 idx。
+  const [detailSearchOpen, setDetailSearchOpen] = useState(false);
+  const [detailSearchQuery, setDetailSearchQuery] = useState("");
+  const [detailSearchActiveIdx, setDetailSearchActiveIdx] = useState(0);
+  const detailSearchInputRef = useRef<HTMLInputElement>(null);
+  /// 切到不同 task 的 detail 时关搜索 + 清查询（不然旧 query 跨 task 错位）。
+  useEffect(() => {
+    if (editingDetailTitle === null) {
+      setDetailSearchOpen(false);
+      setDetailSearchQuery("");
+      setDetailSearchActiveIdx(0);
+    } else {
+      // 切到另一 task：仅重置 idx（保留 query 让 owner 用同关键词跨 task 搜）
+      setDetailSearchActiveIdx(0);
+    }
+  }, [editingDetailTitle]);
+  /// detail.md 内匹配位置（case-insensitive substring）。空 query → 空数组。
+  /// 含 0-length 防御 —— 不该出现（query 已 trim 检查），但同步 indexOf
+  /// 循环必须保护防无限递归。
+  const detailSearchMatches = useMemo(() => {
+    const q = detailSearchQuery;
+    if (!q) return [] as { start: number; end: number }[];
+    const out: { start: number; end: number }[] = [];
+    const haystack = editingDetailContent.toLowerCase();
+    const needle = q.toLowerCase();
+    let from = 0;
+    while (from < haystack.length) {
+      const idx = haystack.indexOf(needle, from);
+      if (idx < 0) break;
+      out.push({ start: idx, end: idx + needle.length });
+      from = idx + Math.max(1, needle.length);
+    }
+    return out;
+  }, [detailSearchQuery, editingDetailContent]);
+  /// ⌘F 在 detail 编辑器 textarea / 搜索 input 内时 → 拦下，开 / 聚焦本 bar；
+  /// 不在 detail 编辑器内时让 ⌘F 走 useTaskKeyboardNav 默认路径（聚焦顶部
+  /// task 搜索框）。capture: true + stopImmediatePropagation 保证比 nav hook
+  /// 先跑 + 让 nav hook 的 listener 不会再处理。
+  useEffect(() => {
+    if (editingDetailTitle === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "f") return;
+      const ae = document.activeElement;
+      const ta = detailEditorRef.current;
+      const si = detailSearchInputRef.current;
+      // 仅 detail 编辑器 textarea / 自身 search input 内才劫持 ⌘F；
+      // 其他位置（如顶部 task 搜索框已聚焦）让默认行为走。
+      if (ae !== ta && ae !== si) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setDetailSearchOpen(true);
+      setDetailSearchActiveIdx(0);
+      window.setTimeout(() => {
+        detailSearchInputRef.current?.focus();
+        detailSearchInputRef.current?.select();
+      }, 0);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, [editingDetailTitle]);
+  /// activeIdx / matches 变化 → 把对应 range 选中并把 input 焦点保留。
+  /// textarea.focus() + setSelectionRange 触发 webview 内 textarea 自动滚到
+  /// 选区位置；rAF 等浏览器滚完再 refocus input，避免连按 Enter 时焦点跳乱。
+  useEffect(() => {
+    if (!detailSearchOpen) return;
+    if (detailSearchMatches.length === 0) return;
+    const safeIdx = Math.max(
+      0,
+      Math.min(detailSearchActiveIdx, detailSearchMatches.length - 1),
+    );
+    const m = detailSearchMatches[safeIdx];
+    if (!m) return;
+    const ta = detailEditorRef.current;
+    if (!ta) return;
+    ta.focus();
+    try {
+      ta.setSelectionRange(m.start, m.end);
+    } catch {
+      // 极少数情况下 m.end 超出当前 textarea value 长度（content 还在改）
+      // — 忽略，下次 activeIdx 变化时重试
+    }
+    window.requestAnimationFrame(() => {
+      detailSearchInputRef.current?.focus();
+    });
+  }, [detailSearchActiveIdx, detailSearchMatches, detailSearchOpen]);
+  /// 循环切 match：next / prev wrap。matches 空时 noop。
+  const cycleDetailSearchMatch = useCallback(
+    (dir: "next" | "prev") => {
+      setDetailSearchActiveIdx((cur) => {
+        const n = detailSearchMatches.length;
+        if (n === 0) return 0;
+        const safe = Math.max(0, Math.min(cur, n - 1));
+        if (dir === "next") return (safe + 1) % n;
+        return (safe - 1 + n) % n;
+      });
+    },
+    [detailSearchMatches.length],
+  );
+
   /// markdown toolbar 通用 helper：在 textarea 当前 selection 上做 wrap /
   /// replace。`wrap` 模式：选区前后插 prefix/suffix（粗体 / 链接的内容包裹）；
   /// `line-prefix` 模式：每选中行行首插 prefix（列表 / 引用）。空选区时 wrap
@@ -7681,6 +7788,182 @@ export function PanelTasks({
                           </div>
                           {editingDetailTitle === t.title ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              {/* ⌘F detail.md 全文搜浮 bar：仅在 detail 编辑器
+                                  textarea 内 / 自身 input 内 ⌘F 时打开。input
+                                  + 命中计数 + ↑↓ 翻 match + ✕ 关。textarea
+                                  以 setSelectionRange 选中当前 match 让 textarea
+                                  内部自动滚到位。 */}
+                              {detailSearchOpen && (() => {
+                                const n = detailSearchMatches.length;
+                                const safeIdx = n === 0
+                                  ? 0
+                                  : Math.max(
+                                      0,
+                                      Math.min(detailSearchActiveIdx, n - 1),
+                                    );
+                                return (
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 6,
+                                      padding: "4px 8px",
+                                      border:
+                                        "1px solid var(--pet-color-border)",
+                                      background: "var(--pet-color-card)",
+                                      borderRadius: 6,
+                                      fontSize: 12,
+                                    }}
+                                  >
+                                    <span style={{ fontSize: 12, opacity: 0.7 }}>
+                                      🔍
+                                    </span>
+                                    <input
+                                      ref={detailSearchInputRef}
+                                      type="text"
+                                      autoFocus
+                                      value={detailSearchQuery}
+                                      onChange={(e) => {
+                                        setDetailSearchQuery(e.target.value);
+                                        setDetailSearchActiveIdx(0);
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Escape") {
+                                          e.preventDefault();
+                                          setDetailSearchOpen(false);
+                                          // 关闭后把焦点送回 textarea，让 owner
+                                          // 继续敲字
+                                          window.setTimeout(() => {
+                                            detailEditorRef.current?.focus();
+                                          }, 0);
+                                          return;
+                                        }
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          cycleDetailSearchMatch(
+                                            e.shiftKey ? "prev" : "next",
+                                          );
+                                          return;
+                                        }
+                                        if (e.key === "ArrowDown") {
+                                          e.preventDefault();
+                                          cycleDetailSearchMatch("next");
+                                          return;
+                                        }
+                                        if (e.key === "ArrowUp") {
+                                          e.preventDefault();
+                                          cycleDetailSearchMatch("prev");
+                                          return;
+                                        }
+                                      }}
+                                      placeholder="在本 detail.md 内搜（⌘F · Enter 下 / ⇧Enter 上 · Esc 关）"
+                                      style={{
+                                        flex: 1,
+                                        minWidth: 80,
+                                        padding: "3px 6px",
+                                        fontSize: 12,
+                                        border:
+                                          "1px solid var(--pet-color-border)",
+                                        borderRadius: 4,
+                                        background: "var(--pet-color-bg)",
+                                        color: "var(--pet-color-fg)",
+                                        fontFamily: "inherit",
+                                        outline: "none",
+                                      }}
+                                    />
+                                    <span
+                                      style={{
+                                        fontSize: 10,
+                                        color:
+                                          n === 0 && detailSearchQuery
+                                            ? "var(--pet-tint-red-fg)"
+                                            : "var(--pet-color-muted)",
+                                        fontFamily: "'SF Mono', monospace",
+                                        whiteSpace: "nowrap",
+                                        minWidth: 36,
+                                        textAlign: "right",
+                                      }}
+                                      title={
+                                        n === 0
+                                          ? detailSearchQuery
+                                            ? `没有命中「${detailSearchQuery}」`
+                                            : "输入关键词"
+                                          : `第 ${safeIdx + 1} / ${n} 处命中`
+                                      }
+                                    >
+                                      {detailSearchQuery
+                                        ? n === 0
+                                          ? "0/0"
+                                          : `${safeIdx + 1}/${n}`
+                                        : "—"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        cycleDetailSearchMatch("prev")
+                                      }
+                                      disabled={n === 0}
+                                      title="上一处（⇧Enter / ↑）"
+                                      style={{
+                                        padding: "2px 6px",
+                                        fontSize: 11,
+                                        border:
+                                          "1px solid var(--pet-color-border)",
+                                        borderRadius: 4,
+                                        background: "var(--pet-color-card)",
+                                        color: "var(--pet-color-fg)",
+                                        cursor: n === 0 ? "default" : "pointer",
+                                        opacity: n === 0 ? 0.4 : 1,
+                                      }}
+                                    >
+                                      ↑
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        cycleDetailSearchMatch("next")
+                                      }
+                                      disabled={n === 0}
+                                      title="下一处（Enter / ↓）"
+                                      style={{
+                                        padding: "2px 6px",
+                                        fontSize: 11,
+                                        border:
+                                          "1px solid var(--pet-color-border)",
+                                        borderRadius: 4,
+                                        background: "var(--pet-color-card)",
+                                        color: "var(--pet-color-fg)",
+                                        cursor: n === 0 ? "default" : "pointer",
+                                        opacity: n === 0 ? 0.4 : 1,
+                                      }}
+                                    >
+                                      ↓
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setDetailSearchOpen(false);
+                                        window.setTimeout(() => {
+                                          detailEditorRef.current?.focus();
+                                        }, 0);
+                                      }}
+                                      title="关闭搜索（Esc）"
+                                      style={{
+                                        padding: "2px 6px",
+                                        fontSize: 11,
+                                        border:
+                                          "1px solid var(--pet-color-border)",
+                                        borderRadius: 4,
+                                        background: "var(--pet-color-card)",
+                                        color: "var(--pet-color-muted)",
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                );
+                              })()}
                               {/* 草稿恢复 banner：editor 上次没 ⌘S 关掉时
                                   autosave 把 content 写进 localStorage；本次
                                   进入时检测 draft.content !== currentMd 弹
