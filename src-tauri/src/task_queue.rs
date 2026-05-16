@@ -532,6 +532,23 @@ pub fn strip_pinned_markers(desc: &str) -> String {
     collapse_whitespace(&cleaned)
 }
 
+/// pure：description 是否带 `[silent]` marker（owner 标"知道存在但不要主动选"
+/// 的 butler_task）。与 `[pinned]` 同形式严格字面 marker，由 owner 自由
+/// add / remove。proactive cycle 在 `format_butler_tasks_block` 把 silent
+/// items 过滤掉，让 LLM 完全看不到（与 `unresolved_blockers` / `snoozed_until_map`
+/// 同 filter pipeline）。owner 仍能在 PanelMemory 看到该 item + 🔇 chip。
+pub fn parse_silent(description: &str) -> bool {
+    description.contains("[silent]")
+}
+
+/// pure：删 description 里所有 `[silent]` marker。两侧紧贴空白归一为单空格。
+/// 与 `strip_pinned_markers` 同模式 —— 给 `task_set_silent` 命令做"写之前
+/// 先剥"。
+pub fn strip_silent_markers(desc: &str) -> String {
+    let cleaned = remove_bracketed_segments(desc, &["[silent]"]);
+    collapse_whitespace(&cleaned)
+}
+
 /// 给定 items 集合 + now，返回每条仍在 snooze 期的 title → wake-up 时间映射。
 /// 已过 snooze 时刻的 marker 视作失效（不进 map），与"自然失效"语义一致。
 /// 配 `unresolved_blockers` 在 proactive prompt 层 union filter。
@@ -1937,5 +1954,38 @@ mod tests {
         assert!(s.contains("[snooze: 2026-05-20 09:00]"));
         assert!(s.contains("[origin:tg:123]"));
         assert!(!s.contains("[pinned]"));
+    }
+
+    // ---------------- parse_silent / strip_silent_markers ----------------
+
+    #[test]
+    fn parse_silent_strict_literal() {
+        assert!(parse_silent("[silent]"));
+        assert!(parse_silent("整理 Downloads [silent]"));
+        assert!(parse_silent("[silent] 主任务"));
+        assert!(!parse_silent("[Silent]"), "大小写敏感");
+        assert!(!parse_silent("[silent: reason]"), "拒绝带 reason 变体");
+        assert!(!parse_silent(""), "空 description false");
+    }
+
+    #[test]
+    fn strip_silent_markers_removes_and_normalizes() {
+        assert_eq!(strip_silent_markers("主任务 [silent]"), "主任务");
+        assert_eq!(strip_silent_markers("[silent] 主任务"), "主任务");
+        assert_eq!(strip_silent_markers("a [silent] b [silent] c"), "a b c");
+        assert_eq!(strip_silent_markers("无 marker"), "无 marker");
+    }
+
+    #[test]
+    fn strip_silent_markers_preserves_other_markers() {
+        // 关键回归：只剥 [silent]，不动 [task pri=3] / [pinned] / [snooze:] / [origin:tg:]
+        let s = strip_silent_markers(
+            "[task pri=3 due=2026-05-20T18:00] 主任务 [silent] [pinned] [snooze: 2026-05-20 09:00] [origin:tg:123]",
+        );
+        assert!(s.contains("[task pri=3 due=2026-05-20T18:00]"));
+        assert!(s.contains("[pinned]"));
+        assert!(s.contains("[snooze: 2026-05-20 09:00]"));
+        assert!(s.contains("[origin:tg:123]"));
+        assert!(!s.contains("[silent]"));
     }
 }

@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { monthKeyFromIso, monthLabelOf } from "../../utils/monthGroup";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { renderContentWithTaskRefs } from "./panelChatBits";
 import { EmptyState } from "./EmptyState";
@@ -52,13 +53,17 @@ const CATEGORY_ORDER = [
 /// 直接写正文不需先打空格。
 const SCHEDULE_TEMPLATES: Array<{ label: string; text: string }> = [
   { label: "🔁 every", text: "[every: 09:00] " },
+  { label: "🔁 工作日", text: "[every: 工作日 09:00] " },
+  { label: "🔁 周末", text: "[every: 周末 10:00] " },
   { label: "📅 once", text: "[once: 2026-05-10 14:00] " },
   { label: "⏳ deadline", text: "[deadline: 2026-05-10 14:00] " },
+  { label: "🔔 reminderMin", text: "[reminderMin: 5] " },
+  { label: "🔇 silent", text: "[silent] " },
 ];
 
 const CATEGORY_PLACEHOLDERS: Record<string, string> = {
   butler_tasks:
-    "比如：[every: 09:00] 把今日日历汇总写到 ~/today.md\n或：[once: 2026-05-10 14:00] 周末整理 ~/Downloads（pet 在该时间点自动执行）\n或：[deadline: 2026-05-10 14:00] 把文档发出去（user 必须在那之前自己完成，pet 临近时提醒）\n或：直接写「整理 ~/Downloads，把 30 天旧文件挪到 ~/Archive」（不带前缀就由宠物自己判断时机）。\n（描述里说清楚做什么、多久做一次、写到哪里。）",
+    "比如：[every: 09:00] 把今日日历汇总写到 ~/today.md\n或：[every: 工作日 09:00] 早上 standup（仅 Mon-Fri 触发）\n或：[every: 周末 10:00] 整理桌面（仅 Sat-Sun 触发）\n或：[every: 周一 09:00] 周一周会准备\n或：[once: 2026-05-10 14:00] 周末整理 ~/Downloads（pet 在该时间点自动执行）\n或：[deadline: 2026-05-10 14:00] 把文档发出去（user 必须在那之前自己完成，pet 临近时提醒）\n或：直接写「整理 ~/Downloads，把 30 天旧文件挪到 ~/Archive」（不带前缀就由宠物自己判断时机）。\n（描述里说清楚做什么、多久做一次、写到哪里。）\n\n可选叠加 [reminderMin: N] 让到点前 N 分钟在桌面 ChatMini 浮一条软提醒（不打开 Live2D 主动模式）。例如：\n  [once: 2026-05-20 18:00] [reminderMin: 5] 准备会议材料\n\n或叠加 [silent] 让该任务知会存在但不被 LLM 主动选择（仍可手动在 PanelTasks 触发；只是不进 proactive cycle 主动 pick）。例如：\n  [silent] [every: 周日 16:00] 给某长辈打电话（owner 自己记得就行 / 别让 pet 主动想）",
   todo: "用户提醒自己的事项。建议加前缀：\n[remind: 17:00] 喝水\n[remind: 2026-05-10 09:00] 看医生",
   user_profile: "关于用户习惯 / 偏好的稳定事实。\n比如：起床时间 通常 8:30 起床\n或：偏好 dark theme 编辑器",
   ai_insights: "宠物自己的反思 / 心情 / 长期画像，通常由 LLM 自己写。手动编辑可以，但注意 current_mood / persona_summary 是受保护的。",
@@ -415,13 +420,33 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     description: string;
     /// 新值 string 形式（"HH:MM" / "YYYY-MM-DD" / "HH:MM"）方便直接绑
     /// input value；保存时统一 parse。
-    kind: "every" | "once" | "deadline";
+    kind: "every" | "every_weekdays" | "once" | "deadline";
     date: string; // YYYY-MM-DD（仅 once / deadline 用）
     time: string; // HH:MM
+    /// 仅 every_weekdays 用：7 位 bitmask（bit 0 = Mon ... bit 6 = Sun）。
+    /// 0 = 全无（save 时校验拒绝），0b1111111 = 每天（保存时按建议改回 every kind）。
+    weekdayMask: number;
   };
   const [editScheduleDraft, setEditScheduleDraft] =
     useState<EditScheduleDraft | null>(null);
   const [editScheduleBusy, setEditScheduleBusy] = useState(false);
+  /// reminderMin chip click 弹的小 popup 状态：n 是当前 marker 值（数字 / ""
+  /// 表示清除）。保存时 strip 旧 marker + 插新 marker；清除时仅 strip。
+  /// 与 editScheduleDraft 同 modal pattern 但更轻量（单字段 + 4 个 preset
+  /// 按钮）。
+  const [reminderEditDraft, setReminderEditDraft] = useState<{
+    title: string;
+    description: string;
+    n: number | "";
+  } | null>(null);
+  const [reminderEditBusy, setReminderEditBusy] = useState(false);
+  /// 🌱 今日新增 chip click 弹的 drill-down modal：列今日新增 item 标题
+  /// 按 cat 分段。让 owner 看到具体内容（不只是 N 计数）+ 评估 "今天宠
+  /// 物 / 我自己写了什么"。
+  const [todayNewDrillOpen, setTodayNewDrillOpen] = useState(false);
+  /// 行级长 description 折叠：超 200 字 default 折到前 120 字 + "展开
+  /// (N 字)" 按钮。与 PanelTasks 同 R91 折叠模板对偶。key = `${catKey}::${title}`。
+  const [expandedMemDesc, setExpandedMemDesc] = useState<Set<string>>(new Set());
   /// modal 内 date / time input refs：kind 切换后自动 focus 对应输入框，
   /// 让用户少敲一次 tab。useEffect 监听 draft.kind 变化。
   const editScheduleDateRef = useRef<HTMLInputElement>(null);
@@ -431,7 +456,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     // setTimeout 0 等 React commit（date input 在 kind="every" 时被 conditional
     // 渲染撤掉 / 添回，立即 focus 会拿到 null）
     window.setTimeout(() => {
-      if (editScheduleDraft.kind === "every") {
+      if (
+        editScheduleDraft.kind === "every" ||
+        editScheduleDraft.kind === "every_weekdays"
+      ) {
         editScheduleTimeRef.current?.focus();
       } else {
         editScheduleDateRef.current?.focus();
@@ -451,6 +479,11 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   /// 文件 frontmatter —— pin 是用户的 UI 偏好，不应改变 LLM 看到的内容。
   /// 同名跨类目不冲突（key 含 catKey），重命名 / 删除 memory 后 key 会变
   /// 成 dangling 但无副作用（sort 时找不到照原序）。
+  /// 仅显 silent 的类目集合 —— 配 section header 🔇 N silent 计数 chip click
+  /// toggle。激活时本 cat 的 shownItems 仅显含 `[silent]` marker 的 item，
+  /// 让 owner 一键回看所有标过 silent 的任务再决定调整 / 解除。不持久化
+  /// （filter 是临时 inspect 视图，跨 session 默认全显更符合直觉）。
+  const [silentOnlyCats, setSilentOnlyCats] = useState<Set<string>>(new Set());
   const [pinnedKeys, setPinnedKeys] = useState<Set<string>>(() => {
     try {
       const raw = window.localStorage.getItem("pet-memory-pinned");
@@ -576,6 +609,19 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     void refreshDetailSizes();
   }, [refreshDetailSizes, index]);
 
+  /// 类目 7 天 churn sparkline 数据（key = catKey，value = 7 个桶；index 0 =
+  /// 6 天前，index 6 = 今日）。后端 memory_category_churn_7d 一次返回所有
+  /// category。挂载 + index 变化时拉一次（与 detailSizes 同 trigger，避免
+  /// owner 刚 edit 完看不到 today bar 升上来）。失败兜空 map → section
+  /// header 不渲染 sparkline，不阻塞其它功能。
+  const [churnMap, setChurnMap] = useState<Record<string, number[]>>({});
+  useEffect(() => {
+    if (!index) return;
+    invoke<Record<string, number[]>>("memory_category_churn_7d")
+      .then(setChurnMap)
+      .catch((e) => console.error("memory_category_churn_7d failed:", e));
+  }, [index]);
+
   const loadButlerHistory = async () => {
     try {
       // 拉最近 20 条让 fold logic（threshold = 5）真正生效 —— 之前 n=5 导
@@ -636,8 +682,88 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   // to do the math themselves.
   type ButlerSchedule =
     | { kind: "every"; hour: number; minute: number }
+    // weekday-set 限定的循环：mask 是 7 位 bitmask（bit 0 = Mon ... bit 6 = Sun），
+    // 与后端 ButlerSchedule::EveryOnWeekdays(mask, h, m) 一一对应。
+    | { kind: "every_weekdays"; mask: number; hour: number; minute: number }
     | { kind: "once"; year: number; month: number; day: number; hour: number; minute: number }
     | { kind: "deadline"; year: number; month: number; day: number; hour: number; minute: number };
+
+  const WEEKDAY_MASK_WORKDAYS = 0b0011111;
+  const WEEKDAY_MASK_WEEKEND = 0b1100000;
+
+  /// 把单 weekday 关键词映射 mask bit。bit 0 = Mon ... bit 6 = Sun。
+  const parseSingleWeekdayKeyword = (s: string): number | null => {
+    const lower = s.trim().toLowerCase();
+    switch (lower) {
+      case "mon":
+      case "monday":
+        return 1 << 0;
+      case "tue":
+      case "tuesday":
+        return 1 << 1;
+      case "wed":
+      case "wednesday":
+        return 1 << 2;
+      case "thu":
+      case "thursday":
+        return 1 << 3;
+      case "fri":
+      case "friday":
+        return 1 << 4;
+      case "sat":
+      case "saturday":
+        return 1 << 5;
+      case "sun":
+      case "sunday":
+        return 1 << 6;
+    }
+    switch (s.trim()) {
+      case "周一":
+      case "星期一":
+      case "礼拜一":
+        return 1 << 0;
+      case "周二":
+      case "星期二":
+      case "礼拜二":
+        return 1 << 1;
+      case "周三":
+      case "星期三":
+      case "礼拜三":
+        return 1 << 2;
+      case "周四":
+      case "星期四":
+      case "礼拜四":
+        return 1 << 3;
+      case "周五":
+      case "星期五":
+      case "礼拜五":
+        return 1 << 4;
+      case "周六":
+      case "星期六":
+      case "礼拜六":
+        return 1 << 5;
+      case "周日":
+      case "周天":
+      case "星期日":
+      case "星期天":
+      case "礼拜日":
+      case "礼拜天":
+        return 1 << 6;
+      default:
+        return null;
+    }
+  };
+
+  const parseWeekdaySetKeyword = (s: string): number | null => {
+    const raw = s.trim();
+    const lower = raw.toLowerCase();
+    if (lower === "weekday" || lower === "weekdays") return WEEKDAY_MASK_WORKDAYS;
+    if (lower === "weekend" || lower === "weekends") return WEEKDAY_MASK_WEEKEND;
+    if (raw === "工作日" || raw === "周一到周五" || raw === "工作日子")
+      return WEEKDAY_MASK_WORKDAYS;
+    if (raw === "周末" || raw === "双休") return WEEKDAY_MASK_WEEKEND;
+    return parseSingleWeekdayKeyword(raw);
+  };
 
   const parseButlerSchedule = (desc: string): { schedule: ButlerSchedule; topic: string } | null => {
     const trimmed = desc.replace(/^\s+/, "");
@@ -646,7 +772,30 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     const [, kind, body, topic] = m;
     if (!topic.trim()) return null;
     if (kind === "every") {
-      const hm = body.trim().match(/^(\d{1,2}):(\d{1,2})$/);
+      const trimBody = body.trim();
+      // 尝试 weekday-set 路径：rsplit 末空白 token 当 HH:MM
+      const lastSpace = trimBody.search(/\s+\S+$/);
+      if (lastSpace !== -1) {
+        const lastTokenMatch = trimBody.slice(lastSpace).match(/^\s+(\S+)$/);
+        if (lastTokenMatch) {
+          const left = trimBody.slice(0, lastSpace).trim();
+          const right = lastTokenMatch[1];
+          const hmAlt = right.match(/^(\d{1,2}):(\d{1,2})$/);
+          if (hmAlt && left.length > 0) {
+            const hour = Number(hmAlt[1]);
+            const minute = Number(hmAlt[2]);
+            if (hour > 23 || minute > 59) return null;
+            const mask = parseWeekdaySetKeyword(left);
+            if (mask === null) return null;
+            return {
+              schedule: { kind: "every_weekdays", mask, hour, minute },
+              topic: topic.trim(),
+            };
+          }
+        }
+      }
+      // 纯 HH:MM 路径（既有行为）
+      const hm = trimBody.match(/^(\d{1,2}):(\d{1,2})$/);
       if (!hm) return null;
       const hour = Number(hm[1]);
       const minute = Number(hm[2]);
@@ -667,6 +816,19 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       },
       topic: topic.trim(),
     };
+  };
+
+  /// mask → 用户可读 label。常用 mask 用语义标签；其它显具体周几枚举。
+  const formatWeekdayMaskLabel = (mask: number): string => {
+    if (mask === WEEKDAY_MASK_WORKDAYS) return "工作日";
+    if (mask === WEEKDAY_MASK_WEEKEND) return "周末";
+    if (mask === 0b1111111) return "每天";
+    const dayLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    const parts: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      if (mask & (1 << i)) parts.push(dayLabels[i]);
+    }
+    return parts.length > 0 ? parts.join("/") : "（无）";
   };
 
   // Iter R80: TS mirror of compute_deadline_urgency. Returns urgency tier
@@ -704,6 +866,38 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         schedule.minute,
       );
       return now >= target ? target : null;
+    }
+    if (schedule.kind === "every_weekdays") {
+      // 与 backend is_butler_due EveryOnWeekdays 同算法：从今天起向回扫
+      // ≤ 7 天，找首个 mask 命中的日期 + HH:MM；今日命中且时刻未到 → 看
+      // 昨日。mask === 0 时不 fire（返 null）。
+      if (schedule.mask === 0) return null;
+      // chrono Mon = 0，Date.getDay() Sun = 0，需转换
+      const jsDayToMonBit = (d: number) => 1 << ((d + 6) % 7);
+      const targetToday = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        schedule.hour,
+        schedule.minute,
+      );
+      const todayBit = jsDayToMonBit(now.getDay());
+      const todayMatch =
+        (schedule.mask & todayBit) !== 0 && now >= targetToday;
+      let offsetBack = todayMatch ? 0 : 1;
+      while (offsetBack <= 7) {
+        const candDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - offsetBack,
+          schedule.hour,
+          schedule.minute,
+        );
+        const candBit = jsDayToMonBit(candDate.getDay());
+        if ((schedule.mask & candBit) !== 0) return candDate;
+        offsetBack += 1;
+      }
+      return null;
     }
     const targetToday = new Date(
       now.getFullYear(),
@@ -1250,12 +1444,24 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
             📚 {totalMemoryCount} 条记忆
           </span>
           {todayNewCount > 0 && (
-            <span
-              style={{ color: "var(--pet-tint-green-fg)" }}
-              title={`今天新增 ${todayNewCount} 条记忆（created_at 以今天日期开头）`}
+            <button
+              type="button"
+              onClick={() => setTodayNewDrillOpen(true)}
+              style={{
+                color: "var(--pet-tint-green-fg)",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                font: "inherit",
+                textDecoration: "underline",
+                textDecorationStyle: "dotted",
+                textUnderlineOffset: 2,
+              }}
+              title={`今天新增 ${todayNewCount} 条记忆。点击 drill-down 看具体清单（按类目分组）`}
             >
               🌱 今日新增 {todayNewCount}
-            </span>
+            </button>
           )}
           <span>
             💾 {formatBytes(diskUsage.total_bytes)} ({diskUsage.file_count} 个文件)
@@ -1724,14 +1930,18 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
               <select
                 value={editScheduleDraft.kind}
                 onChange={(e) => {
-                  const nextKind = e.target.value as "every" | "once" | "deadline";
+                  const nextKind = e.target.value as
+                    | "every"
+                    | "every_weekdays"
+                    | "once"
+                    | "deadline";
                   setEditScheduleDraft({
                     ...editScheduleDraft,
                     kind: nextKind,
-                    // 切到 every 不需要 date；切到 once / deadline 若 date
-                    // 空（从 every 切来）→ 用今天作默认，让用户少敲一段。
+                    // every / every_weekdays 不需 date；once / deadline 若
+                    // date 空（从 every 切来）→ 用今天作默认让用户少敲一段。
                     date:
-                      nextKind === "every"
+                      nextKind === "every" || nextKind === "every_weekdays"
                         ? ""
                         : editScheduleDraft.date ||
                           (() => {
@@ -1753,11 +1963,115 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 }}
               >
                 <option value="every">🔁 every（每天定时）</option>
+                <option value="every_weekdays">🔁 every_weekdays（按周几定时）</option>
                 <option value="once">📅 once（单次定时）</option>
                 <option value="deadline">⏳ deadline（截止前提醒）</option>
               </select>
             </div>
-            {editScheduleDraft.kind !== "every" && (
+            {editScheduleDraft.kind === "every_weekdays" && (
+              <div>
+                <label style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
+                  weekday 集合（至少选 1 天）
+                </label>
+                {/* 工作日 / 周末 / 每天 快捷一键 set */}
+                <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                  {[
+                    { label: "工作日", mask: WEEKDAY_MASK_WORKDAYS },
+                    { label: "周末", mask: WEEKDAY_MASK_WEEKEND },
+                    { label: "每天", mask: 0b1111111 },
+                    { label: "清空", mask: 0 },
+                  ].map((p) => {
+                    const active = editScheduleDraft.weekdayMask === p.mask;
+                    return (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() =>
+                          setEditScheduleDraft({
+                            ...editScheduleDraft,
+                            weekdayMask: p.mask,
+                          })
+                        }
+                        style={{
+                          fontSize: 11,
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          border: active
+                            ? "1px solid var(--pet-color-accent)"
+                            : "1px solid var(--pet-color-border)",
+                          background: active
+                            ? "var(--pet-tint-blue-bg)"
+                            : "var(--pet-color-card)",
+                          color: active
+                            ? "var(--pet-tint-blue-fg)"
+                            : "var(--pet-color-muted)",
+                          cursor: "pointer",
+                          fontWeight: active ? 600 : 400,
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* 7 个 weekday checkbox grid */}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(7, 1fr)",
+                    gap: 4,
+                  }}
+                >
+                  {["一", "二", "三", "四", "五", "六", "日"].map((label, i) => {
+                    const bit = 1 << i;
+                    const checked =
+                      (editScheduleDraft.weekdayMask & bit) !== 0;
+                    return (
+                      <label
+                        key={i}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          gap: 2,
+                          padding: "4px 0",
+                          fontSize: 11,
+                          border: checked
+                            ? "1px solid var(--pet-color-accent)"
+                            : "1px solid var(--pet-color-border)",
+                          borderRadius: 4,
+                          background: checked
+                            ? "var(--pet-tint-blue-bg)"
+                            : "var(--pet-color-card)",
+                          color: checked
+                            ? "var(--pet-tint-blue-fg)"
+                            : "var(--pet-color-muted)",
+                          fontWeight: checked ? 600 : 400,
+                          cursor: "pointer",
+                          userSelect: "none",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setEditScheduleDraft({
+                              ...editScheduleDraft,
+                              weekdayMask:
+                                editScheduleDraft.weekdayMask ^ bit,
+                            })
+                          }
+                          style={{ display: "none" }}
+                        />
+                        <span>周{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {(editScheduleDraft.kind === "once" ||
+              editScheduleDraft.kind === "deadline") && (
               <div>
                 <label style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
                   日期 (YYYY-MM-DD)
@@ -1836,9 +2150,18 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     setTimeout(() => setMessage(""), 3000);
                     return;
                   }
-                  if (d.kind !== "every" && !/^\d{4}-\d{2}-\d{2}$/.test(d.date)) {
+                  if (
+                    (d.kind === "once" || d.kind === "deadline") &&
+                    !/^\d{4}-\d{2}-\d{2}$/.test(d.date)
+                  ) {
                     setMessage("日期格式应为 YYYY-MM-DD");
                     setTimeout(() => setMessage(""), 3000);
+                    return;
+                  }
+                  // every_weekdays 至少选 1 天；全 7 天选 → 建议改 every
+                  if (d.kind === "every_weekdays" && d.weekdayMask === 0) {
+                    setMessage("at least 选 1 个 weekday，或切到「🔁 every（每天）」");
+                    setTimeout(() => setMessage(""), 4000);
                     return;
                   }
                   // 拿 parsed topic（剩余非 prefix 部分）
@@ -1851,7 +2174,12 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   const newPrefix =
                     d.kind === "every"
                       ? `[every: ${d.time}]`
-                      : `[${d.kind}: ${d.date} ${d.time}]`;
+                      : d.kind === "every_weekdays"
+                        ? // 7 全勾 → 等价 every，自动改 kind 节省 description 字数
+                          d.weekdayMask === 0b1111111
+                          ? `[every: ${d.time}]`
+                          : `[every: ${formatWeekdayMaskLabel(d.weekdayMask)} ${d.time}]`
+                        : `[${d.kind}: ${d.date} ${d.time}]`;
                   const newDesc = `${newPrefix} ${parsedNow.topic}`;
                   setEditScheduleBusy(true);
                   try {
@@ -1889,6 +2217,347 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
             </div>
           </div>
         )}
+      </Modal>
+      {/* reminderMin chip click 弹的快速编辑 modal：5/15/30 preset 按钮 +
+          自定义 input + 清除按钮。保存时 strip 旧 [reminderMin: ...] 再插
+          新 marker（不动其它 markers）；清除时仅 strip。 */}
+      <Modal
+        open={reminderEditDraft !== null}
+        onClose={() => {
+          if (!reminderEditBusy) setReminderEditDraft(null);
+        }}
+        maxWidth={340}
+        zIndex={110}
+      >
+        {reminderEditDraft && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>
+              🔔 改 reminderMin —「{reminderEditDraft.title}」
+            </div>
+            <div style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
+              到点前 N 分钟在桌面 ChatMini 浮软提醒（不打开 Live2D 主动模式）。
+            </div>
+            {/* preset 行 */}
+            <div style={{ display: "flex", gap: 6 }}>
+              {[5, 15, 30].map((p) => {
+                const active = reminderEditDraft.n === p;
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() =>
+                      setReminderEditDraft({ ...reminderEditDraft, n: p })
+                    }
+                    style={{
+                      fontSize: 12,
+                      padding: "4px 12px",
+                      borderRadius: 6,
+                      border: active
+                        ? "1px solid var(--pet-color-accent)"
+                        : "1px solid var(--pet-color-border)",
+                      background: active
+                        ? "var(--pet-tint-blue-bg)"
+                        : "var(--pet-color-card)",
+                      color: active
+                        ? "var(--pet-tint-blue-fg)"
+                        : "var(--pet-color-fg)",
+                      fontWeight: active ? 600 : 400,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {p} 分
+                  </button>
+                );
+              })}
+            </div>
+            {/* 自定义 input */}
+            <div>
+              <label
+                style={{
+                  fontSize: 11,
+                  color: "var(--pet-color-muted)",
+                  display: "block",
+                  marginBottom: 4,
+                }}
+              >
+                自定义 N（1-1440 分钟 / 1 分到 24 小时）
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={reminderEditDraft.n === "" ? "" : reminderEditDraft.n}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setReminderEditDraft({ ...reminderEditDraft, n: "" });
+                  } else {
+                    const num = Number(v);
+                    if (!Number.isNaN(num)) {
+                      setReminderEditDraft({ ...reminderEditDraft, n: num });
+                    }
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  padding: "6px 8px",
+                  fontSize: 12,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: "var(--pet-color-bg)",
+                  color: "var(--pet-color-fg)",
+                  fontFamily: "inherit",
+                }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+              <button
+                type="button"
+                onClick={async () => {
+                  // 清除：strip [reminderMin: ...] 段 + 写回
+                  const d = reminderEditDraft;
+                  setReminderEditBusy(true);
+                  try {
+                    const newDesc = d.description
+                      .replace(/\[reminderMin:\s*\d+\s*\]/g, "")
+                      .replace(/\s+/g, " ")
+                      .trim();
+                    await invoke("memory_edit", {
+                      action: "update",
+                      category: "butler_tasks",
+                      title: d.title,
+                      description: newDesc,
+                    });
+                    setMessage(`已移除 「${d.title}」的 reminderMin marker`);
+                    setReminderEditDraft(null);
+                    await loadIndex();
+                  } catch (e: any) {
+                    setMessage(`清除失败：${e}`);
+                  } finally {
+                    setReminderEditBusy(false);
+                    setTimeout(() => setMessage(""), 3000);
+                  }
+                }}
+                disabled={reminderEditBusy}
+                style={{
+                  fontSize: 12,
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "1px solid var(--pet-color-border)",
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-tint-red-fg)",
+                  cursor: reminderEditBusy ? "default" : "pointer",
+                }}
+                title="移除该任务的 [reminderMin] marker（不影响 schedule 本身）"
+              >
+                🗑 清除
+              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setReminderEditDraft(null)}
+                  disabled={reminderEditBusy}
+                  style={{
+                    fontSize: 12,
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "1px solid var(--pet-color-border)",
+                    background: "var(--pet-color-card)",
+                    color: "var(--pet-color-fg)",
+                    cursor: reminderEditBusy ? "default" : "pointer",
+                  }}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const d = reminderEditDraft;
+                    const num = typeof d.n === "number" ? d.n : NaN;
+                    if (!(num > 0 && num <= 1440)) {
+                      setMessage("N 必须是 1-1440 之间整数");
+                      setTimeout(() => setMessage(""), 3000);
+                      return;
+                    }
+                    setReminderEditBusy(true);
+                    try {
+                      // strip 旧 marker + append 新 marker 末尾
+                      const stripped = d.description
+                        .replace(/\[reminderMin:\s*\d+\s*\]/g, "")
+                        .replace(/\s+/g, " ")
+                        .trim();
+                      const newDesc = stripped
+                        ? `${stripped} [reminderMin: ${num}]`
+                        : `[reminderMin: ${num}]`;
+                      await invoke("memory_edit", {
+                        action: "update",
+                        category: "butler_tasks",
+                        title: d.title,
+                        description: newDesc,
+                      });
+                      setMessage(
+                        `已更新 「${d.title}」reminderMin = ${num}`,
+                      );
+                      setReminderEditDraft(null);
+                      await loadIndex();
+                    } catch (e: any) {
+                      setMessage(`保存失败：${e}`);
+                    } finally {
+                      setReminderEditBusy(false);
+                      setTimeout(() => setMessage(""), 3000);
+                    }
+                  }}
+                  disabled={reminderEditBusy}
+                  style={{
+                    fontSize: 12,
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "none",
+                    background: "var(--pet-color-accent)",
+                    color: "#fff",
+                    fontWeight: 600,
+                    cursor: reminderEditBusy ? "default" : "pointer",
+                    opacity: reminderEditBusy ? 0.6 : 1,
+                  }}
+                >
+                  {reminderEditBusy ? "保存中…" : "保存"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+      {/* 🌱 今日新增 drill-down modal：按类目分段列今日 created_at 以今日
+          日期开头的 item titles。让 owner 一眼看具体内容而非只看 N 计数。
+          只读视图（item click 不跳 jump-to-edit，保持简单）；想编辑走类目段。 */}
+      <Modal
+        open={todayNewDrillOpen}
+        onClose={() => setTodayNewDrillOpen(false)}
+        maxWidth={440}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>
+            🌱 今日新增 {todayNewCount} 条记忆
+          </div>
+          <div style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
+            按 created_at 起始 = 今日（本机时区）筛。点击关闭后回类目段编辑。
+          </div>
+          {(() => {
+            if (!index) return null;
+            const today = new Date().toLocaleDateString("sv-SE");
+            const sections: Array<{
+              cat: string;
+              label: string;
+              items: { title: string; created_at: string }[];
+            }> = [];
+            for (const catKey of CATEGORY_ORDER) {
+              const cat = index.categories[catKey];
+              if (!cat) continue;
+              const todayItems = cat.items.filter(
+                (it) =>
+                  it.created_at && it.created_at.startsWith(today),
+              );
+              if (todayItems.length > 0) {
+                sections.push({
+                  cat: catKey,
+                  label: categoryLabels[catKey] || cat.label,
+                  items: todayItems,
+                });
+              }
+            }
+            if (sections.length === 0) {
+              return (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--pet-color-muted)",
+                    fontStyle: "italic",
+                  }}
+                >
+                  （未找到今日新增 —— 可能 created_at 是非标准格式）
+                </div>
+              );
+            }
+            return (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                  maxHeight: 360,
+                  overflowY: "auto",
+                }}
+              >
+                {sections.map((sec) => (
+                  <div key={sec.cat}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "var(--pet-color-muted)",
+                        marginBottom: 4,
+                        letterSpacing: 0.3,
+                      }}
+                    >
+                      {sec.label}（{sec.items.length}）
+                    </div>
+                    <ul
+                      style={{
+                        margin: 0,
+                        paddingLeft: 18,
+                        fontSize: 12,
+                        lineHeight: 1.6,
+                        color: "var(--pet-color-fg)",
+                      }}
+                    >
+                      {sec.items.map((it, i) => {
+                        // created_at "YYYY-MM-DDTHH:MM:SS+TZ" → HH:MM
+                        const hhmm =
+                          it.created_at.length >= 16
+                            ? it.created_at.slice(11, 16)
+                            : "";
+                        return (
+                          <li key={i}>
+                            {hhmm && (
+                              <span
+                                style={{
+                                  fontFamily: "'SF Mono', monospace",
+                                  color: "var(--pet-color-muted)",
+                                  fontSize: 10,
+                                  marginRight: 6,
+                                }}
+                              >
+                                {hhmm}
+                              </span>
+                            )}
+                            {it.title}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={() => setTodayNewDrillOpen(false)}
+              style={{
+                fontSize: 12,
+                padding: "6px 12px",
+                borderRadius: 6,
+                border: "1px solid var(--pet-color-border)",
+                background: "var(--pet-color-card)",
+                color: "var(--pet-color-fg)",
+                cursor: "pointer",
+              }}
+            >
+              关闭
+            </button>
+          </div>
+        </div>
       </Modal>
       {/* Edit modal */}
       <Modal
@@ -2309,6 +2978,98 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 <span style={s.badge} title={previewTip}>
                   {cat.items.length}
                 </span>
+                {/* 🔇 silent / 💤 snooze 计数 chip：butler_tasks 专属（其它
+                    cat 这两 marker 无语义）。silent 严格字面 `[silent]`；
+                    snooze 解析 `[snooze: YYYY-MM-DD HH:MM]` 并仅算未过点
+                    （与 backend snoozed_until_map 同 active-only 语义）。
+                    0 计数时不渲染（与既有 pinned chip 同模板）。位置紧贴
+                    items 数 badge 后，让 owner 一眼看到 "管家队列里 N 条
+                    被静默 / M 条被暂停"。 */}
+                {catKey === "butler_tasks" &&
+                  (() => {
+                    let silentN = 0;
+                    let snoozeN = 0;
+                    const nowMs = now.getTime();
+                    const snoozeRe = /\[snooze:\s*(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{1,2})\]/g;
+                    for (const it of cat.items) {
+                      if (/\[silent\]/.test(it.description)) silentN += 1;
+                      // 多个 snooze marker 取最后一个 valid 值（与 backend
+                      // parse_snooze "last-wins" 语义对偶）；未过点才算 active
+                      let lastUntilMs: number | null = null;
+                      snoozeRe.lastIndex = 0;
+                      let m: RegExpExecArray | null;
+                      while ((m = snoozeRe.exec(it.description)) !== null) {
+                        const d = new Date(
+                          Number(m[1]),
+                          Number(m[2]) - 1,
+                          Number(m[3]),
+                          Number(m[4]),
+                          Number(m[5]),
+                        );
+                        if (!Number.isNaN(d.getTime())) lastUntilMs = d.getTime();
+                      }
+                      if (lastUntilMs !== null && lastUntilMs > nowMs) snoozeN += 1;
+                    }
+                    const chipBase: React.CSSProperties = {
+                      fontSize: 11,
+                      padding: "1px 6px",
+                      borderRadius: 8,
+                      fontWeight: 400,
+                      fontFamily: "'SF Mono', monospace",
+                    };
+                    const silentFilterActive = silentOnlyCats.has(catKey);
+                    return (
+                      <>
+                        {silentN > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSilentOnlyCats((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(catKey)) next.delete(catKey);
+                                else next.add(catKey);
+                                return next;
+                              });
+                            }}
+                            style={{
+                              ...chipBase,
+                              border: silentFilterActive
+                                ? "1px solid var(--pet-color-accent)"
+                                : "1px solid transparent",
+                              background: silentFilterActive
+                                ? "var(--pet-tint-blue-bg)"
+                                : "var(--pet-color-border)",
+                              color: silentFilterActive
+                                ? "var(--pet-tint-blue-fg)"
+                                : "var(--pet-color-muted)",
+                              fontWeight: silentFilterActive ? 600 : 400,
+                              opacity: 0.95,
+                              cursor: "pointer",
+                            }}
+                            title={
+                              silentFilterActive
+                                ? `当前仅显本段 ${silentN} 条 [silent] 任务。点击恢复显全部。`
+                                : `${silentN} 条 butler_task 被 owner 标 [silent]，不在 LLM proactive cycle 主动 pick 队列。仍可手动 PanelTasks 触发。点击仅看这 ${silentN} 条 silent 任务。`
+                            }
+                          >
+                            {silentFilterActive ? "✓ " : ""}🔇 {silentN}
+                          </button>
+                        )}
+                        {snoozeN > 0 && (
+                          <span
+                            style={{
+                              ...chipBase,
+                              background: "var(--pet-tint-blue-bg)",
+                              color: "var(--pet-tint-blue-fg)",
+                            }}
+                            title={`${snoozeN} 条 butler_task 处于 [snooze: ...] 暂停期，时刻到达前自动从 proactive 选单隐藏。`}
+                          >
+                            💤 {snoozeN}
+                          </span>
+                        )}
+                      </>
+                    );
+                  })()}
                 {latestTs !== null && (
                   <span
                     style={{ fontSize: 11, color: "var(--pet-color-muted)", fontWeight: 400 }}
@@ -2317,6 +3078,104 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     最近 {formatLastUpdated(latestTs, now.getTime())}
                   </span>
                 )}
+                {/* 7 天 churn mini sparkline：7 根柱（左→右 = 6天前→今日），柱
+                    高 = 该日 updated_at 落入此类目的 item 数 / 该类目最大日值
+                    （per-cat 归一化让每类自己的节奏可见，否则巨型 cat 把小 cat
+                    压成 0）。0 当日渲极小 baseline 让用户感知 "存在性"。今日
+                    柱用 accent 色 + 其它日用 tint，empty 用 border 灰。tooltip
+                    列具体每日数。 */}
+                {(() => {
+                  const buckets = churnMap[catKey];
+                  if (!buckets || buckets.length !== 7) return null;
+                  const max = Math.max(...buckets, 1);
+                  const barW = 6;
+                  const gap = 2;
+                  const N = 7;
+                  const W = barW * N + gap * (N - 1);
+                  const H = 14;
+                  const total = buckets.reduce((a, b) => a + b, 0);
+                  const dayLabels = ["6天前", "5天前", "4天前", "3天前", "2天前", "昨天", "今日"];
+                  const tip =
+                    total === 0
+                      ? `近 7 天没有动静`
+                      : `近 7 天 ${total} 次 update · ` +
+                        buckets
+                          .map((v, i) => `${dayLabels[i]} ${v}`)
+                          .filter((_, i) => buckets[i] > 0)
+                          .join(" · ");
+                  // 闲置 hint：7 天 0 update 且类目非空且能算出 latestTs。
+                  // 空类目本来就该新建，不是 "闲置"；latestTs null 兜底 → 不显
+                  // 误标签。≥ 30 天显 "Nmo+" 月份单位（更醒目）；< 30 天显
+                  // "Nd+" 天数。
+                  let idleDays: number | null = null;
+                  if (total === 0 && cat.items.length > 0 && latestTs !== null) {
+                    idleDays = Math.floor(
+                      (now.getTime() - latestTs) / 86400000,
+                    );
+                  }
+                  return (
+                    <>
+                      <span
+                        title={tip}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "flex-end",
+                          flexShrink: 0,
+                          marginLeft: 2,
+                        }}
+                      >
+                        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+                          {buckets.map((v, i) => {
+                            const x = i * (barW + gap);
+                            const h = v === 0 ? 1 : (v / max) * H;
+                            const y = H - h;
+                            const isToday = i === N - 1;
+                            return (
+                              <rect
+                                key={i}
+                                x={x}
+                                y={y}
+                                width={barW}
+                                height={h}
+                                rx={1}
+                                fill={
+                                  v === 0
+                                    ? "var(--pet-color-border)"
+                                    : isToday
+                                      ? "var(--pet-color-accent)"
+                                      : "var(--pet-color-muted)"
+                                }
+                                opacity={v === 0 ? 0.6 : isToday ? 1 : 0.7}
+                              />
+                            );
+                          })}
+                        </svg>
+                      </span>
+                      {idleDays !== null && idleDays >= 7 && (
+                        <span
+                          title={`该类目 ${idleDays} 天没动 — 可考虑 consolidate / 调整 / 删该类目`}
+                          style={{
+                            fontSize: 10,
+                            color: "var(--pet-color-muted)",
+                            background: "var(--pet-color-border)",
+                            border: "1px solid transparent",
+                            borderRadius: 8,
+                            padding: "1px 6px",
+                            opacity: 0.7,
+                            fontWeight: 400,
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}
+                        >
+                          闲置{" "}
+                          {idleDays >= 30
+                            ? `${Math.floor(idleDays / 30)}mo+`
+                            : `${idleDays}d+`}
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
                 {catKey === "butler_tasks" && overdueCount > 0 && (
                   <button
                     style={{
@@ -2374,6 +3233,12 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                       if (!p) return false;
                       const s = p.schedule;
                       if (s.kind === "every") return true;
+                      if (s.kind === "every_weekdays") {
+                        // mask 命中当前 weekday 才算今日命中（与 backend
+                        // is_butler_due EveryOnWeekdays 同语义）
+                        const jsDayToMonBit = (d: number) => 1 << ((d + 6) % 7);
+                        return (s.mask & jsDayToMonBit(now.getDay())) !== 0;
+                      }
                       return (
                         s.year === todayY &&
                         s.month === todayM &&
@@ -2430,6 +3295,55 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   + 新建
                 </button>
               </div>
+              {/* ai_insights onboarding banner：让首次用户知道这段是宠物
+                  自己写的（LLM proactive cycle 维护 persona_summary /
+                  current_mood / daily_plan / daily_review_<date> 等），
+                  手动编辑可以但要注意上述 protected items 别误改。purple
+                  tint + 🧠 emoji + 简短一行解释，与既有 butler_tasks 黄底
+                  butlerDaily banner 风格对偶。空 cat 也显（onboarding 价
+                  值最大的时机）。 */}
+              {catKey === "ai_insights" && (
+                <div
+                  style={{
+                    background: "var(--pet-tint-purple-bg, var(--pet-color-bg))",
+                    border: "1px solid var(--pet-color-border)",
+                    borderRadius: 6,
+                    padding: "6px 10px",
+                    marginBottom: 8,
+                    fontSize: 11,
+                    color: "var(--pet-color-muted)",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  🧠 <strong>这里是宠物自己写的</strong>：proactive cycle
+                  / consolidate 自动维护 <code>persona_summary</code> /
+                  <code>current_mood</code> / <code>daily_plan</code> /
+                  <code>daily_review_&lt;date&gt;</code> 等。手动编辑可以，
+                  但通常让宠物自己慢慢沉淀更自然。删除一条 = 让宠物"忘记"
+                  这段反思。
+                  {/* daily_review 历史计数：扫 ai_insights items title 以
+                      "daily_review_" 开头计数。0 时不显（noise）；> 0 时
+                      append " · 📦 N 条 daily_review 历史" inline。让 owner
+                      一眼看到宠物已积累的复盘量。 */}
+                  {(() => {
+                    const count = cat.items.filter((it) =>
+                      it.title.startsWith("daily_review_"),
+                    ).length;
+                    if (count === 0) return null;
+                    return (
+                      <>
+                        {" "}
+                        ·{" "}
+                        <span
+                          title={`本 cat 含 ${count} 条 daily_review_<date> 历史复盘条目（每日 consolidate cycle 写一条；retention 由 consolidate 配置控制）`}
+                        >
+                          📦 {count} 条 daily_review 历史
+                        </span>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
               {/* Iter Cη: per-day "今日小结" rolled up by consolidate. Each line is
                   "<date> <summary>". Newest day rendered at the top in a slightly
                   bolder treatment than the per-event timeline below. */}
@@ -2631,6 +3545,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   if (!parsed) return false;
                   const s = parsed.schedule;
                   if (s.kind === "every") return true;
+                  if (s.kind === "every_weekdays") {
+                    const jsDayToMonBit = (d: number) => 1 << ((d + 6) % 7);
+                    return (s.mask & jsDayToMonBit(now.getDay())) !== 0;
+                  }
                   return (
                     s.year === todayY && s.month === todayM && s.day === todayD
                   );
@@ -2643,7 +3561,12 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 for (const it of cat.items) {
                   const p = parseButlerSchedule(it.description);
                   if (!p) noneCnt += 1;
-                  else if (p.schedule.kind === "every") everyCnt += 1;
+                  // every_weekdays 也算 every 类（kind chip 同 🔁）
+                  else if (
+                    p.schedule.kind === "every" ||
+                    p.schedule.kind === "every_weekdays"
+                  )
+                    everyCnt += 1;
                   else if (p.schedule.kind === "once") onceCnt += 1;
                   else if (p.schedule.kind === "deadline") deadlineCnt += 1;
                   if (isTodayExecution(p)) todayCnt += 1;
@@ -2740,24 +3663,49 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 // "today" 是合成 sentinel：every 永远命中 / once/deadline 当
                 // 日命中，与 kind axis OR 关系（不是 AND）—— 多选 "today" +
                 // "every" 等于"今日要执行 OR 每天类"。
-                const scheduleFilteredItems =
-                  catKey === "butler_tasks" && butlerScheduleFilter.size > 0
-                    ? cat.items.filter((it) => {
-                        const p = parseButlerSchedule(it.description);
-                        const k = p ? p.schedule.kind : "none";
-                        if (butlerScheduleFilter.has(k)) return true;
-                        if (butlerScheduleFilter.has("today") && p) {
-                          if (p.schedule.kind === "every") return true;
+                const scheduleFilteredItems = (() => {
+                  let pool = cat.items;
+                  // 🔇 仅 silent filter（section header chip 点亮时）：把
+                  // pool 收窄到仅含 [silent] marker 的 item。与 schedule kind
+                  // filter 是 AND 关系（叠加），让 owner 选 "silent + every"
+                  // 时只看到周期性静默任务。
+                  if (silentOnlyCats.has(catKey)) {
+                    pool = pool.filter((it) =>
+                      /\[silent\]/.test(it.description),
+                    );
+                  }
+                  if (catKey === "butler_tasks" && butlerScheduleFilter.size > 0) {
+                    pool = pool.filter((it) => {
+                      const p = parseButlerSchedule(it.description);
+                      // every_weekdays 视作 "every" kind 命中（chip 共用 🔁
+                      // 类别 —— owner 选 "every" filter 想看到所有 recurring）
+                      const k = p
+                        ? p.schedule.kind === "every_weekdays"
+                          ? "every"
+                          : p.schedule.kind
+                        : "none";
+                      if (butlerScheduleFilter.has(k)) return true;
+                      if (butlerScheduleFilter.has("today") && p) {
+                        if (p.schedule.kind === "every") return true;
+                        if (p.schedule.kind === "every_weekdays") {
                           const now = new Date();
+                          const jsDayToMonBit = (d: number) => 1 << ((d + 6) % 7);
                           return (
-                            p.schedule.year === now.getFullYear() &&
-                            p.schedule.month === now.getMonth() + 1 &&
-                            p.schedule.day === now.getDate()
+                            (p.schedule.mask & jsDayToMonBit(now.getDay())) !== 0
                           );
                         }
-                        return false;
-                      })
-                    : cat.items;
+                        const now = new Date();
+                        return (
+                          p.schedule.year === now.getFullYear() &&
+                          p.schedule.month === now.getMonth() + 1 &&
+                          p.schedule.day === now.getDate()
+                        );
+                      }
+                      return false;
+                    });
+                  }
+                  return pool;
+                })();
                 // pin 排序：先把 pinSet 命中的 item 抓出来挂头，剩余照原序。
                 // stable sort 在大多数 V8 实现已保证（ECMA 2019+），这里二
                 // 分而非 .sort 以显式表达"两段拼接"语义并避开 comparator
@@ -2789,6 +3737,47 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   isLong && !expanded
                     ? sortedItems.slice(0, CATEGORY_FOLD_PREVIEW)
                     : sortedItems;
+                // 月份分组：仅 sortByRecent + expanded + > 20 条时启用 ——
+                // 与 session 下拉 / 跨会话搜索同模式（src/utils/monthGroup 共享
+                // helpers）。pinned 段不归月份，独占 "_pinned" 虚拟首段。
+                // collapsed 状态下 shownItems 是 sortedItems 前 N 条切片，挂
+                // 月份 header 会显出"本月 (5)" 但实际类目有 50 条，误导；
+                // expanded gate 避开。非 sortByRecent 时 sortedItems 可能按
+                // 非时间序排（pinned-only / schedule filter 等），月份 header
+                // 会被打散，gate 也避开。
+                const memEnableGrouping =
+                  sortByRecent &&
+                  expanded &&
+                  shownItems.length > 20;
+                const memGroupingNow = new Date();
+                const memHeaderByIdx = new Map<
+                  number,
+                  { key: string; label: string; count: number }
+                >();
+                if (memEnableGrouping) {
+                  let curKey: string | null = null;
+                  let curStart = 0;
+                  const flush = (endExclusive: number) => {
+                    if (curKey === null) return;
+                    memHeaderByIdx.set(curStart, {
+                      key: curKey,
+                      label: monthLabelOf(curKey),
+                      count: endExclusive - curStart,
+                    });
+                  };
+                  for (let mi = 0; mi < shownItems.length; mi++) {
+                    const it = shownItems[mi];
+                    const key = pinnedKeys.has(`${catKey}::${it.title}`)
+                      ? "_pinned"
+                      : monthKeyFromIso(it.updated_at || "", memGroupingNow);
+                    if (key !== curKey) {
+                      flush(mi);
+                      curKey = key;
+                      curStart = mi;
+                    }
+                  }
+                  flush(shownItems.length);
+                }
                 return (
                   <>
                     {shownItems.map((item, i) => {
@@ -2823,12 +3812,14 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     ? `每天 ${String(parsed.schedule.hour).padStart(2, "0")}:${String(
                         parsed.schedule.minute,
                       ).padStart(2, "0")}`
-                    : `${parsed.schedule.year}-${String(parsed.schedule.month).padStart(
-                        2,
-                        "0",
-                      )}-${String(parsed.schedule.day).padStart(2, "0")} ${String(
-                        parsed.schedule.hour,
-                      ).padStart(2, "0")}:${String(parsed.schedule.minute).padStart(2, "0")}`
+                    : parsed.schedule.kind === "every_weekdays"
+                      ? `${formatWeekdayMaskLabel(parsed.schedule.mask)} ${String(parsed.schedule.hour).padStart(2, "0")}:${String(parsed.schedule.minute).padStart(2, "0")}`
+                      : `${parsed.schedule.year}-${String(parsed.schedule.month).padStart(
+                          2,
+                          "0",
+                        )}-${String(parsed.schedule.day).padStart(2, "0")} ${String(
+                          parsed.schedule.hour,
+                        ).padStart(2, "0")}:${String(parsed.schedule.minute).padStart(2, "0")}`
                   : null;
                 // Strip schedule prefix + [error: ...] / [done] / [result: ...]
                 // blocks from displayed description — chips already surface
@@ -2849,17 +3840,47 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 const previewActive = previewHoverKey === item.detail_path;
                 const previewText = previewCache[item.detail_path];
                 return (
+                  <Fragment key={i}>
+                    {memHeaderByIdx.get(i) && (() => {
+                      const h = memHeaderByIdx.get(i)!;
+                      return (
+                        <div
+                          style={{
+                            padding: "6px 12px 4px",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: "var(--pet-color-muted)",
+                            background: "var(--pet-color-bg)",
+                            borderBottom:
+                              "1px solid var(--pet-color-border)",
+                            borderTop:
+                              i === 0
+                                ? "none"
+                                : "1px solid var(--pet-color-border)",
+                            letterSpacing: 0.3,
+                            userSelect: "none",
+                            position: "sticky",
+                            top: 0,
+                            zIndex: 1,
+                            marginTop: i === 0 ? 0 : 4,
+                          }}
+                        >
+                          {h.label}（{h.count}）
+                        </div>
+                      );
+                    })()}
                   <div
-                    key={i}
                     className="pet-memory-item"
                     style={{ ...s.item, position: "relative" }}
                     onMouseEnter={() => startPreviewHover(item.detail_path)}
                     onMouseLeave={endPreviewHover}
                   >
                     {/* hover 500ms 浮的 detail.md 预览 tooltip。读取首字 ≤
-                        600 字符；空内容时不渲染（无内容可显的"无信号"反馈
-                        都没必要打扰）。 */}
-                    {previewActive && previewText && previewText.length > 0 && (
+                        600 字符；改：previewActive 即渲染外壳 + 时间 / path
+                        头信息（让 detail.md 为空的 item 也能看到 created /
+                        updated 时间），预览正文段独立 gate（previewText 非空
+                        才显）。让 owner hover 任意 item 都能查到时间。 */}
+                    {previewActive && (
                       <div
                         style={{
                           position: "absolute",
@@ -2885,6 +3906,54 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             "'SF Mono', 'Menlo', monospace",
                         }}
                       >
+                        {/* 📅 创建 X 前 · 🔄 更新 Y 前：用 formatRelativeAgeBuckets
+                            既有 helper（共享 PanelTasks / PanelChat 同算法）。
+                            created_at === updated_at（item 未被改过）时简化
+                            为单段 "📅 创建 X 前（未改动过）"，少重复信息。
+                            解析失败 / 字段为空时跳过对应段，不渲染空行。 */}
+                        {(() => {
+                          const nowMs = Date.now();
+                          const createdMs = item.created_at
+                            ? Date.parse(item.created_at)
+                            : NaN;
+                          const updatedMs = item.updated_at
+                            ? Date.parse(item.updated_at)
+                            : NaN;
+                          const fmt = (ms: number) => {
+                            const age = nowMs - ms;
+                            return age < 60_000
+                              ? "刚刚"
+                              : formatRelativeAgeBuckets(age);
+                          };
+                          const parts: string[] = [];
+                          if (!Number.isNaN(createdMs)) {
+                            parts.push(`📅 创建 ${fmt(createdMs)}`);
+                          }
+                          if (
+                            !Number.isNaN(updatedMs) &&
+                            (Number.isNaN(createdMs) ||
+                              Math.abs(updatedMs - createdMs) > 60_000)
+                          ) {
+                            // 与 created_at 差 ≤ 60s 视为同一动作，不重复显
+                            parts.push(`🔄 更新 ${fmt(updatedMs)}`);
+                          }
+                          if (parts.length === 0) return null;
+                          return (
+                            <div
+                              style={{
+                                fontSize: 10,
+                                color: "var(--pet-color-muted)",
+                                marginBottom: 2,
+                              }}
+                              title={
+                                `created_at: ${item.created_at || "（缺）"}\n` +
+                                `updated_at: ${item.updated_at || "（缺）"}`
+                              }
+                            >
+                              {parts.join(" · ")}
+                            </div>
+                          );
+                        })()}
                         <div
                           style={{
                             fontSize: 10,
@@ -2894,7 +3963,38 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           📄 {item.detail_path}
                         </div>
-                        {previewText}
+                        {previewText && previewText.length > 0 ? (
+                          previewText
+                        ) : (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "var(--pet-color-muted)",
+                              fontStyle: "italic",
+                            }}
+                          >
+                            （detail.md 无内容 / 未写过）
+                          </div>
+                        )}
+                        {/* 双击编辑 onboarding hint：tooltip 底脚追加一行
+                            非常 muted 灰字，让首次 hover 的 owner 发现
+                            "title 可双击改名 · description 可双击改内容"
+                            既有 UX。与具体 hover preview 内容（detail.md
+                            前段）拉开距离用 marginTop + 顶部 divider 风格。
+                            inline 不引新 state；仅微量文本 5px 视觉成本。 */}
+                        <div
+                          style={{
+                            marginTop: 6,
+                            paddingTop: 4,
+                            borderTop: "1px dashed var(--pet-color-border)",
+                            fontSize: 9,
+                            color: "var(--pet-color-muted)",
+                            fontStyle: "italic",
+                            opacity: 0.7,
+                          }}
+                        >
+                          ✏️ 双击 title 改名 · 双击 description 改内容
+                        </div>
                       </div>
                     )}
                     <div
@@ -2984,6 +4084,68 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             </div>
                           );
                         })()}
+                        {/* [silent] chip：owner 标"知道存在但不要 pet 主动
+                            选择"。proactive cycle 在 format_butler_tasks_block
+                            把 silent 任务过滤掉，header 透明告知 LLM "有 N 条
+                            被 silent"。chip 视觉用 muted gray 表达"低能见度"
+                            语义；hover tooltip 解释作用 + 解除方式（从描述
+                            里删 [silent] marker）。 */}
+                        {catKey === "butler_tasks" &&
+                          /\[silent\]/.test(item.description) && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                background: "var(--pet-color-border)",
+                                color: "var(--pet-color-muted)",
+                                fontFamily: "'SF Mono', monospace",
+                                opacity: 0.85,
+                              }}
+                              title="该任务被 owner 标 [silent] —— LLM 在 proactive cycle 不会主动选它（仍在面板可见，仍可手动触发）。解除：编辑描述删掉 [silent] marker。"
+                            >
+                              🔇 silent
+                            </span>
+                          )}
+                        {/* reminderMin chip：到点前 N 分钟在桌面 ChatMini
+                            软提醒（不打开 Live2D 主动模式）。仅 butler_tasks
+                            + parse 到 [reminderMin: N] marker 时浮。chip 上的
+                            🔔 -Nmin 让 owner 一眼看到"这条会在 N 分前 ping
+                            我"。 */}
+                        {catKey === "butler_tasks" &&
+                          (() => {
+                            const m = item.description.match(
+                              /\[reminderMin:\s*(\d+)\s*\]/,
+                            );
+                            if (!m) return null;
+                            const n = Number(m[1]);
+                            if (!(n > 0 && n <= 1440)) return null;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setReminderEditDraft({
+                                    title: item.title,
+                                    description: item.description,
+                                    n,
+                                  })
+                                }
+                                style={{
+                                  fontSize: 10,
+                                  padding: "1px 6px",
+                                  borderRadius: 4,
+                                  background: "var(--pet-tint-green-bg)",
+                                  color: "var(--pet-tint-green-fg)",
+                                  fontFamily: "'SF Mono', monospace",
+                                  border: "none",
+                                  cursor: "pointer",
+                                }}
+                                title={`到点前 ${n} 分钟在桌面 ChatMini 浮一条软提醒。点击快速编辑（5/15/30 preset 或自定义 / 清除）`}
+                              >
+                                🔔 -{n}min
+                              </button>
+                            );
+                          })()}
                         {scheduleLabel && (() => {
                           // Iter R80: 4-way chip styling. every (循环) blue;
                           // once (一次性执行) amber; deadline (截止前提醒) by
@@ -2997,6 +4159,11 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             color = "var(--pet-tint-blue-fg)";
                             icon = "🔁";
                             hint = "每日定时触发，到期后下一轮 proactive 主动开口时执行";
+                          } else if (kind === "every_weekdays") {
+                            bg = "var(--pet-tint-blue-bg)";
+                            color = "var(--pet-tint-blue-fg)";
+                            icon = "🔁";
+                            hint = "周内特定日 定时触发，到期后下一轮 proactive 执行（mask 命中当日才 fire）";
                           } else if (kind === "once") {
                             bg = "var(--pet-tint-yellow-bg)";
                             color = "var(--pet-tint-yellow-fg)";
@@ -3058,13 +4225,17 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                                 description: item.description,
                                 kind: s.kind,
                                 date:
-                                  s.kind === "every"
-                                    ? ""
-                                    : `${s.year}-${String(s.month).padStart(2, "0")}-${String(s.day).padStart(2, "0")}`,
+                                  s.kind === "once" || s.kind === "deadline"
+                                    ? `${s.year}-${String(s.month).padStart(2, "0")}-${String(s.day).padStart(2, "0")}`
+                                    : "",
                                 time: `${String(s.hour).padStart(2, "0")}:${String(s.minute).padStart(2, "0")}`,
+                                weekdayMask:
+                                  s.kind === "every_weekdays"
+                                    ? s.mask
+                                    : 0b1111111,
                               });
                             }}
-                            title="改这条任务的 schedule 时间（不变 kind / topic）"
+                            title="改这条任务的 schedule 时间 / weekday 集合（不变 kind / topic）"
                             aria-label="edit schedule"
                             style={{
                               fontSize: 10,
@@ -3100,6 +4271,44 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             );
                             if (target.getTime() <= now.getTime()) {
                               target.setDate(target.getDate() + 1);
+                            }
+                          } else if (s.kind === "every_weekdays") {
+                            // 找未来最近的 mask 命中日 + HH:MM；mask === 0 兜底
+                            // 返今日同步（不应实际发生 —— parser 校验 mask
+                            // 至少一位）
+                            const jsDayToMonBit = (d: number) => 1 << ((d + 6) % 7);
+                            const todayTarget = new Date(
+                              now.getFullYear(),
+                              now.getMonth(),
+                              now.getDate(),
+                              s.hour,
+                              s.minute,
+                            );
+                            const todayBit = jsDayToMonBit(now.getDay());
+                            if (
+                              (s.mask & todayBit) !== 0 &&
+                              todayTarget.getTime() > now.getTime()
+                            ) {
+                              target = todayTarget;
+                            } else {
+                              // 向前找 ≤ 7 天
+                              let offsetFwd = 1;
+                              let found: Date | null = null;
+                              while (offsetFwd <= 7) {
+                                const cand = new Date(
+                                  now.getFullYear(),
+                                  now.getMonth(),
+                                  now.getDate() + offsetFwd,
+                                  s.hour,
+                                  s.minute,
+                                );
+                                if ((s.mask & jsDayToMonBit(cand.getDay())) !== 0) {
+                                  found = cand;
+                                  break;
+                                }
+                                offsetFwd += 1;
+                              }
+                              target = found ?? todayTarget;
                             }
                           } else {
                             target = new Date(
@@ -3411,6 +4620,31 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           🚀
                         </button>
+                        {/* 🔗 复制 detail.md 绝对路径：与 PanelTasks 行右
+                            键「🔗 复制 detail.md 绝对路径」对偶（iter
+                            #191 加 memory_detail_abs_path Tauri 命令）。
+                            owner 可粘到 VSCode ⌘P / IntelliJ ⇧⌘O /
+                            Finder ⇧⌘G / shell `open` 直接打开本地文件。 */}
+                        <button
+                          style={s.btn}
+                          onClick={async () => {
+                            try {
+                              const abs = await invoke<string>(
+                                "memory_detail_abs_path",
+                                { detailPath: item.detail_path },
+                              );
+                              await navigator.clipboard.writeText(abs);
+                              setMessage(`已复制 detail.md 绝对路径`);
+                            } catch (e) {
+                              setMessage(`复制 path 失败：${e}`);
+                            }
+                            setTimeout(() => setMessage(""), 2500);
+                          }}
+                          title={`把 ${item.detail_path} 的绝对路径（含 ~/.config/pet/memories/... 前缀）复制到剪贴板。粘到 VSCode ⌘P / IntelliJ ⇧⌘O / Finder ⇧⌘G / shell open 都能直接打开本地文件。`}
+                          aria-label="copy detail.md absolute path"
+                        >
+                          📋📄
+                        </button>
                         {/* 🔗 复制为 ref token：仅 butler_tasks 段显（其它
                             category 没 task ref 语义）。复制后粘到 chat 自动
                             被识别为 hover-able underline + 双击跳转源。与
@@ -3444,10 +4678,14 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             style={s.btn}
                             onClick={async () => {
                               const s = parsed.schedule;
+                              const hh = String(s.hour).padStart(2, "0");
+                              const mm = String(s.minute).padStart(2, "0");
                               const prefix =
                                 s.kind === "every"
-                                  ? `[every: ${String(s.hour).padStart(2, "0")}:${String(s.minute).padStart(2, "0")}]`
-                                  : `[${s.kind}: ${s.year}-${String(s.month).padStart(2, "0")}-${String(s.day).padStart(2, "0")} ${String(s.hour).padStart(2, "0")}:${String(s.minute).padStart(2, "0")}]`;
+                                  ? `[every: ${hh}:${mm}]`
+                                  : s.kind === "every_weekdays"
+                                    ? `[every: ${formatWeekdayMaskLabel(s.mask)} ${hh}:${mm}]`
+                                    : `[${s.kind}: ${s.year}-${String(s.month).padStart(2, "0")}-${String(s.day).padStart(2, "0")} ${hh}:${mm}]`;
                               const full = `${prefix} ${parsed.topic}`;
                               try {
                                 await navigator.clipboard.writeText(full);
@@ -3651,12 +4889,69 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         {/* `「task title」` ref token 渲 hover preview / 双击导航
                             （与 PanelChat 同款）。helper 在没 ref 命中时 fast-path
                             返 parseUrls(content) —— 顺便给 memory 描述里偶发的
-                            URL 也加蓝下划线，比原 plain text 强。 */}
-                        {renderContentWithTaskRefs(
-                          displayDesc,
-                          refTaskMap,
-                          onRequestFocusTask,
-                        )}
+                            URL 也加蓝下划线，比原 plain text 强。
+                            长 description (> 200 字) 折叠到前 120 字 + 展开
+                            按钮（与 PanelTasks R91 同模板）。搜索 keyword 命
+                            中本 description 时强制展开（折叠状态高亮看不见）。 */}
+                        {(() => {
+                          const FOLD_THRESHOLD = 200;
+                          const FOLD_PREVIEW = 120;
+                          const key = `${catKey}::${item.title}`;
+                          const isLong = displayDesc.length > FOLD_THRESHOLD;
+                          const expanded = expandedMemDesc.has(key);
+                          const q = searchKeyword.trim().toLowerCase();
+                          const matchInDesc =
+                            q !== "" &&
+                            displayDesc.toLowerCase().includes(q);
+                          const folded = isLong && !expanded && !matchInDesc;
+                          const shown = folded
+                            ? displayDesc.slice(0, FOLD_PREVIEW) + "…"
+                            : displayDesc;
+                          return (
+                            <>
+                              {renderContentWithTaskRefs(
+                                shown,
+                                refTaskMap,
+                                onRequestFocusTask,
+                              )}
+                              {isLong && !matchInDesc && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExpandedMemDesc((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(key)) next.delete(key);
+                                      else next.add(key);
+                                      return next;
+                                    });
+                                  }}
+                                  style={{
+                                    marginLeft: 6,
+                                    fontSize: 10,
+                                    padding: "0 6px",
+                                    border: "1px solid var(--pet-color-border)",
+                                    borderRadius: 4,
+                                    background: "var(--pet-color-card)",
+                                    color: "var(--pet-color-muted)",
+                                    cursor: "pointer",
+                                    fontFamily: "inherit",
+                                    verticalAlign: "baseline",
+                                  }}
+                                  title={
+                                    folded
+                                      ? `展开全部 ${displayDesc.length} 字`
+                                      : "折叠到前 120 字"
+                                  }
+                                >
+                                  {folded
+                                    ? `… 展开 (${displayDesc.length} 字)`
+                                    : `收起 (${displayDesc.length} 字)`}
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     )}
                     <div style={s.itemMeta}>
@@ -3696,6 +4991,7 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                       })()}
                     </div>
                   </div>
+                  </Fragment>
                 );
                     })}
                     {isLong && (

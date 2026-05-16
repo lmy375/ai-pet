@@ -52,6 +52,21 @@ pub enum TgCommand {
     /// 「📌 N」chip 同源信号）。无参；多余尾部一律忽略。filter 范围与 `/tasks`
     /// 一致（origin == Tg(chat_id)），让两个查询命令的"范围语义"对齐。
     Pinned,
+    /// `/silent <title>` —— 给任务加 `[silent]` marker，让 LLM 不在 proactive
+    /// cycle 主动 pick 此任务（owner 仍可手动触发）。与桌面右键菜单
+    /// 「🔇 标 silent」对偶；幂等（已 silent 时再调 strip-before-write 不会
+    /// 让 description 累积冗余 marker）。
+    Silent { title: String },
+    /// `/unsilent <title>` —— 清掉 `[silent]` marker。与 Silent 分立避免歧义。
+    Unsilent { title: String },
+    /// `/silenced` —— 列出本 chat 派单中所有当前 silent 任务（与 /pinned 对
+    /// 偶，给 owner audit "我标过哪些 silent" 用）。无参；多余尾部一律忽略。
+    /// filter 范围与 /tasks 一致（origin == Tg(chat_id)）。
+    Silenced,
+    /// `/markers` —— 一次列本 chat 派单中所有 owner-intent markers（pinned +
+    /// silent 联合）。与 /pinned + /silenced 两条命令对偶 —— 让 owner 用一
+    /// 条命令 audit 自己标过的所有 marker 状态。无参；多余尾部一律忽略。
+    Markers,
     /// `/whoami` —— 宠物自我介绍。无参；与桌面 chat `/whoami` 同信号源
     /// （陪伴天数 + 当前心情 + 自我画像首段 + 近常用工具 top 3），让 TG
     /// 端也能让宠物自报家门。
@@ -88,6 +103,10 @@ impl TgCommand {
             TgCommand::Pin { .. } => "pin",
             TgCommand::Unpin { .. } => "unpin",
             TgCommand::Pinned => "pinned",
+            TgCommand::Silent { .. } => "silent",
+            TgCommand::Unsilent { .. } => "unsilent",
+            TgCommand::Silenced => "silenced",
+            TgCommand::Markers => "markers",
             TgCommand::Today => "today",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
@@ -106,10 +125,14 @@ impl TgCommand {
             | TgCommand::Snooze { title, .. }
             | TgCommand::Unsnooze { title }
             | TgCommand::Pin { title }
-            | TgCommand::Unpin { title } => title.as_str(),
+            | TgCommand::Unpin { title }
+            | TgCommand::Silent { title }
+            | TgCommand::Unsilent { title } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
             | TgCommand::Pinned
+            | TgCommand::Silenced
+            | TgCommand::Markers
             | TgCommand::Stats
             | TgCommand::Mood
             | TgCommand::Whoami
@@ -177,6 +200,10 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pin", "Mark a task as pinned (key task)"),
             ("unpin", "Clear a task's pinned mark"),
             ("pinned", "List currently pinned tasks dispatched from this chat"),
+            ("silent", "Mark a task as [silent] (LLM won't auto-pick; manual fire still works)"),
+            ("unsilent", "Clear a task's [silent] mark"),
+            ("silenced", "List currently silent tasks dispatched from this chat"),
+            ("markers", "List all owner-intent markers in one shot (pinned + silent)"),
             ("mood", "Show the pet's current mood"),
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
@@ -196,6 +223,10 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pin", "钉住任务（标 [pinned]）"),
             ("unpin", "取消任务钉住（剥 [pinned]）"),
             ("pinned", "列出本聊天派单中所有钉住任务（与桌面「📌 N」chip 同源）"),
+            ("silent", "标静默（LLM 不主动选；面板 / 手动触发不受影响）"),
+            ("unsilent", "解除静默（剥 [silent] marker）"),
+            ("silenced", "列出本聊天派单中所有 silent 任务（与「🔇 N silent」面板同源）"),
+            ("markers", "一次列出所有 owner-intent markers（pinned + silent）"),
             ("mood", "查看宠物当前心情"),
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
@@ -341,18 +372,48 @@ pub enum SnoozeSpec {
 }
 
 /// 把 `/snooze` 的 preset token 解析为 SnoozeSpec。大小写不敏感。
+/// 支持 EN 预设 (tonight / tomorrow / monday) + CJK 预设 (今晚 / 明早 /
+/// 明天 / 下周一 / 周一) + Nm / Nh / 分 / 小时 后缀格式。
 /// 空串 / 不识别 / 数字越界 → None。
 pub fn parse_snooze_token(token: &str) -> Option<SnoozeSpec> {
-    let t = token.trim().to_lowercase();
-    if t.is_empty() {
+    let raw = token.trim();
+    if raw.is_empty() {
         return None;
     }
+    let t = raw.to_lowercase();
+    // EN 预设：原 ASCII 短串
     match t.as_str() {
         "tonight" => return Some(SnoozeSpec::Tonight),
         "tomorrow" => return Some(SnoozeSpec::Tomorrow),
         "monday" => return Some(SnoozeSpec::Monday),
         _ => {}
     }
+    // CJK 预设：直接 raw 比对（lowercase 对中文无影响但保持一致风格）。
+    // 明早 / 明天 / 明日 都映射 Tomorrow（09:00），与既有 EN tomorrow 同语义。
+    // 周一 / 下周一 / 下周1 都映射 Monday，"下周" 显式 = 下一个 Monday。
+    match raw {
+        "今晚" => return Some(SnoozeSpec::Tonight),
+        "明早" | "明天" | "明日" => return Some(SnoozeSpec::Tomorrow),
+        "周一" | "下周一" | "下周1" => return Some(SnoozeSpec::Monday),
+        _ => {}
+    }
+    // CJK 数字后缀：30 分 / 2 小时（带 / 不带空格）。空白归一后比对 suffix。
+    let raw_compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+    if let Some(num_str) = raw_compact.strip_suffix('分') {
+        let n: u32 = num_str.parse().ok()?;
+        if n == 0 || n > 7 * 24 * 60 {
+            return None;
+        }
+        return Some(SnoozeSpec::Minutes(n));
+    }
+    if let Some(num_str) = raw_compact.strip_suffix("小时") {
+        let n: u32 = num_str.parse().ok()?;
+        if n == 0 || n > 7 * 24 {
+            return None;
+        }
+        return Some(SnoozeSpec::Hours(n));
+    }
+    // EN Nm / Nh：与既有路径同
     if let Some(num_str) = t.strip_suffix('m') {
         let n: u32 = num_str.parse().ok()?;
         if n == 0 || n > 7 * 24 * 60 {
@@ -461,6 +522,16 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/pinned`：列 pinned 任务清单。无参；多余尾部一律忽略（与 /tasks 同
         // 容忍策略），让 "/pinned now?" 这种用户随手探的写法也能命中。
         "pinned" => Some(TgCommand::Pinned),
+        // `/silent <title>`：标 silent 让 LLM 不主动 pick；无 preset 参数，所有
+        // 内容当 title（与 /pin 同模板）。
+        "silent" => Some(TgCommand::Silent { title }),
+        // `/unsilent <title>`：解除 silent。
+        "unsilent" => Some(TgCommand::Unsilent { title }),
+        // `/silenced`：列 silent 任务清单。无参；多余尾部一律忽略（与 /pinned
+        // 同容忍策略）。
+        "silenced" => Some(TgCommand::Silenced),
+        // `/markers`：一次列 pinned + silent 联合。
+        "markers" => Some(TgCommand::Markers),
         // `/today` 同上无参语义
         "today" => Some(TgCommand::Today),
         // `/reset` 无参；多余尾部忽略
@@ -722,6 +793,9 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/done <title> | /cancel <title> | /retry <title>  —  标 done / 取消 / 重试（详细原因 / result 回桌面）".to_string(),
         "/snooze <title> [preset] | /unsnooze <title>  —  暂停 / 解除暂停（preset = 30m / 2h / tonight / tomorrow / monday）".to_string(),
         "/pin <title> | /unpin <title>  —  钉住 / 取消钉住（与桌面「📌 N」chip 过滤同源）".to_string(),
+        "/silent <title> | /unsilent <title>  —  标静默 / 解除静默（LLM 不主动选；面板仍可手动触发）".to_string(),
+        "/silenced  —  列出本聊天派单中所有 silent 任务（按状态分组）".to_string(),
+        "/markers  —  一次列出所有 owner-intent markers（pinned + silent 两段，与 /pinned + /silenced 组合等价）".to_string(),
         "/pinned  —  列出本聊天派单中所有钉住任务（按状态分组，含 done/error/cancelled）".to_string(),
         "/mood  —  查看宠物当前心情".to_string(),
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
@@ -861,6 +935,110 @@ pub fn format_pinned_tasks_list(views: &[crate::task_queue::TaskView]) -> String
 
     let trimmed = out.trim_end_matches('\n').to_string();
     truncate_if_overflow(trimmed, views.len())
+}
+
+/// `/silenced` 命令回复文案。`views` 应已被 caller 过滤为"本 chat + [silent]"
+/// 子集。与 `format_pinned_tasks_list` 同模板 —— header 🔇 vs 📌，空集合教学
+/// 引导不同，section 分组逻辑（Pending / Done / Error / Cancelled）复用。
+pub fn format_silenced_tasks_list(views: &[crate::task_queue::TaskView]) -> String {
+    use crate::task_queue::TaskStatus;
+    if views.is_empty() {
+        return "🔇 暂无静默任务（本聊天派单中）。\n用 /silent <标题> 标静默（LLM 不主动选；面板 / 手动触发仍可），或在桌面任务面板右键 → 「🔇 标 silent」。"
+            .to_string();
+    }
+
+    let mut pending: Vec<&crate::task_queue::TaskView> = Vec::new();
+    let mut done: Vec<&crate::task_queue::TaskView> = Vec::new();
+    let mut error: Vec<&crate::task_queue::TaskView> = Vec::new();
+    let mut cancelled: Vec<&crate::task_queue::TaskView> = Vec::new();
+    for v in views {
+        match v.status {
+            TaskStatus::Pending => pending.push(v),
+            TaskStatus::Done => done.push(v),
+            TaskStatus::Error => error.push(v),
+            TaskStatus::Cancelled => cancelled.push(v),
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("🔇 当前静默任务（共 {} 条 · LLM 不主动选）\n", views.len()));
+
+    let sections: [(&str, &str, &[&crate::task_queue::TaskView]); 4] = [
+        ("进行中", "⏳", &pending),
+        ("已完成", "✅", &done),
+        ("已失败", "⚠️", &error),
+        ("已取消", "🚫", &cancelled),
+    ];
+    for (label, emoji, items) in &sections {
+        if items.is_empty() {
+            continue;
+        }
+        out.push('\n');
+        out.push_str(&format!("{}（{}）\n", label, items.len()));
+        for v in items.iter() {
+            out.push_str(&format_task_line(emoji, v));
+            out.push('\n');
+        }
+    }
+
+    let trimmed = out.trim_end_matches('\n').to_string();
+    truncate_if_overflow(trimmed, views.len())
+}
+
+/// `/markers` 命令回复文案。一次列 pinned + silent 两段 —— owner 想"一眼看
+/// 我标过的 owner-intent markers" 时用，省 /pinned + /silenced 两条命令往返。
+/// `views` 应已被 caller 过滤为"本 chat" 子集；本 helper 内部再按 pinned /
+/// silent 分两组（同一 task 同时是 pinned + silent 时两段都列）。
+///
+/// 空集合：友好提示"暂无任何 owner-intent marker"+ 教学引导。
+pub fn format_markers_list(views: &[crate::task_queue::TaskView]) -> String {
+    let pinned: Vec<&crate::task_queue::TaskView> =
+        views.iter().filter(|v| v.pinned).collect();
+    let silent: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| crate::task_queue::parse_silent(&v.raw_description))
+        .collect();
+
+    if pinned.is_empty() && silent.is_empty() {
+        return "暂无 owner-intent markers（本聊天派单中）。\n用 /pin <标题> 钉住关键任务，或 /silent <标题> 让 LLM 不主动选某条。"
+            .to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "owner-intent markers · 📌 {} 钉 / 🔇 {} 静\n",
+        pinned.len(),
+        silent.len()
+    ));
+    if !pinned.is_empty() {
+        out.push_str(&format!("\n📌 钉住（{}）\n", pinned.len()));
+        for v in &pinned {
+            let emoji = match v.status {
+                crate::task_queue::TaskStatus::Pending => "⏳",
+                crate::task_queue::TaskStatus::Done => "✅",
+                crate::task_queue::TaskStatus::Error => "⚠️",
+                crate::task_queue::TaskStatus::Cancelled => "🚫",
+            };
+            out.push_str(&format_task_line(emoji, v));
+            out.push('\n');
+        }
+    }
+    if !silent.is_empty() {
+        out.push_str(&format!("\n🔇 静默（{}）\n", silent.len()));
+        for v in &silent {
+            let emoji = match v.status {
+                crate::task_queue::TaskStatus::Pending => "⏳",
+                crate::task_queue::TaskStatus::Done => "✅",
+                crate::task_queue::TaskStatus::Error => "⚠️",
+                crate::task_queue::TaskStatus::Cancelled => "🚫",
+            };
+            out.push_str(&format_task_line(emoji, v));
+            out.push('\n');
+        }
+    }
+    let trimmed = out.trim_end_matches('\n').to_string();
+    // 双段都长时可能超 4KB；用现有 truncate_if_overflow 按 union 数兜底
+    truncate_if_overflow(trimmed, pinned.len() + silent.len())
 }
 
 /// `/stats` 命令回复文案。pure：接收已过滤到本 chat 的 views + 当前时刻 +
@@ -2615,6 +2793,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_snooze_cjk_preset() {
+        let cmd = parse_tg_command("/snooze 倒垃圾 今晚");
+        assert_eq!(
+            cmd,
+            Some(TgCommand::Snooze {
+                title: "倒垃圾".to_string(),
+                token: "今晚".to_string(),
+            }),
+        );
+        let cmd2 = parse_tg_command("/snooze 整理桌面 明早");
+        assert_eq!(
+            cmd2,
+            Some(TgCommand::Snooze {
+                title: "整理桌面".to_string(),
+                token: "明早".to_string(),
+            }),
+        );
+    }
+
+    #[test]
     fn parses_snooze_minutes_form() {
         let cmd = parse_tg_command("/snooze 倒垃圾 45m");
         assert_eq!(
@@ -2663,11 +2861,150 @@ mod tests {
     }
 
     #[test]
+    fn parses_silent_unsilent() {
+        // 与 /pin /unpin 同模板：全 arg 当 title，含多 token 也合法。
+        assert_eq!(
+            parse_tg_command("/silent 整理 Downloads"),
+            Some(TgCommand::Silent { title: "整理 Downloads".to_string() }),
+        );
+        assert_eq!(
+            parse_tg_command("/unsilent 周报"),
+            Some(TgCommand::Unsilent { title: "周报".to_string() }),
+        );
+        // 大小写不敏感
+        assert_eq!(
+            parse_tg_command("/SILENT foo"),
+            Some(TgCommand::Silent { title: "foo".to_string() }),
+        );
+    }
+
+    #[test]
+    fn parses_silent_unsilent_empty_title() {
+        // 空 title 走 missing-argument 反馈（与 /pin 同路径）
+        assert_eq!(
+            parse_tg_command("/silent"),
+            Some(TgCommand::Silent { title: "".to_string() }),
+        );
+        assert_eq!(
+            parse_tg_command("/unsilent"),
+            Some(TgCommand::Unsilent { title: "".to_string() }),
+        );
+    }
+
+    #[test]
     fn parses_pinned() {
         // 无参；多余尾部一律忽略（与 /tasks 同容忍策略，让 "/pinned all" 也能命中）
         assert_eq!(parse_tg_command("/pinned"), Some(TgCommand::Pinned));
         assert_eq!(parse_tg_command("/PINNED"), Some(TgCommand::Pinned));
         assert_eq!(parse_tg_command("/pinned now?"), Some(TgCommand::Pinned));
+    }
+
+    #[test]
+    fn parses_silenced() {
+        // 与 /pinned 同模板：无参，大小写不敏感，尾部尾巴忽略
+        assert_eq!(parse_tg_command("/silenced"), Some(TgCommand::Silenced));
+        assert_eq!(parse_tg_command("/SILENCED"), Some(TgCommand::Silenced));
+        assert_eq!(parse_tg_command("/silenced all"), Some(TgCommand::Silenced));
+    }
+
+    #[test]
+    fn parses_markers() {
+        assert_eq!(parse_tg_command("/markers"), Some(TgCommand::Markers));
+        assert_eq!(parse_tg_command("/MARKERS"), Some(TgCommand::Markers));
+        assert_eq!(parse_tg_command("/markers all"), Some(TgCommand::Markers));
+    }
+
+    #[test]
+    fn format_markers_list_empty_teaches_both_commands() {
+        let s = format_markers_list(&[]);
+        assert!(s.contains("/pin"), "should teach /pin: {s}");
+        assert!(s.contains("/silent"), "should teach /silent: {s}");
+        assert!(
+            s.contains("无") || s.contains("none") || s.contains("暂无"),
+            "should signal empty: {s}",
+        );
+    }
+
+    #[test]
+    fn format_markers_list_separates_pinned_and_silent_sections() {
+        let pinned = crate::task_queue::TaskView {
+            title: "Pin-only".to_string(),
+            body: "".to_string(),
+            raw_description: "Pin-only".to_string(),
+            priority: 3,
+            due: None,
+            status: crate::task_queue::TaskStatus::Pending,
+            error_message: None,
+            tags: vec![],
+            result: None,
+            created_at: "2026-05-16T09:00:00+08:00".to_string(),
+            updated_at: "2026-05-16T09:00:00+08:00".to_string(),
+            detail_path: "".to_string(),
+            blocked_by: vec![],
+            snoozed_until: None,
+            pinned: true,
+        };
+        let silent = crate::task_queue::TaskView {
+            title: "Silent-only".to_string(),
+            raw_description: "Silent-only [silent]".to_string(),
+            pinned: false,
+            ..pinned.clone()
+        };
+        let both = crate::task_queue::TaskView {
+            title: "Both".to_string(),
+            raw_description: "Both [silent]".to_string(),
+            pinned: true,
+            ..pinned.clone()
+        };
+        let s = format_markers_list(&[pinned, silent, both]);
+        // header counts
+        assert!(s.contains("📌 2 钉 / 🔇 2 静"), "header should show counts: {s}");
+        // sections
+        assert!(s.contains("📌 钉住（2）"));
+        assert!(s.contains("🔇 静默（2）"));
+        // task lines in both sections (Both appears in both)
+        assert!(s.contains("Pin-only"));
+        assert!(s.contains("Silent-only"));
+        assert_eq!(
+            s.matches("Both").count(),
+            2,
+            "Both 应在 pinned + silent 两段各出现一次: {s}"
+        );
+    }
+
+    #[test]
+    fn format_silenced_tasks_list_empty_teaches_silent_command() {
+        // 0 命中：友好提示 + 教学
+        let s = format_silenced_tasks_list(&[]);
+        assert!(s.contains("🔇"), "should keep silent emoji in header: {s}");
+        assert!(s.contains("/silent"), "should teach `/silent` syntax: {s}");
+        assert!(s.contains("桌面") || s.contains("右键"), "should mention desktop entry: {s}");
+    }
+
+    #[test]
+    fn format_silenced_tasks_list_sections_show_per_status() {
+        // 简单 smoke：含至少一条任务时 header 有 "共 N 条"，content 出现 emoji
+        let pending = crate::task_queue::TaskView {
+            title: "X".to_string(),
+            body: "".to_string(),
+            raw_description: "X [silent]".to_string(),
+            priority: 3,
+            due: None,
+            status: crate::task_queue::TaskStatus::Pending,
+            error_message: None,
+            tags: vec![],
+            result: None,
+            created_at: "2026-05-16T09:00:00+08:00".to_string(),
+            updated_at: "2026-05-16T09:00:00+08:00".to_string(),
+            detail_path: "".to_string(),
+            blocked_by: vec![],
+            snoozed_until: None,
+            pinned: false,
+        };
+        let s = format_silenced_tasks_list(&[pending]);
+        assert!(s.contains("🔇"), "should have silent emoji header: {s}");
+        assert!(s.contains("共 1 条"), "should show count: {s}");
+        assert!(s.contains("进行中"), "should have status section: {s}");
     }
 
     #[test]
@@ -2720,6 +3057,36 @@ mod tests {
         // 超 7 天上限
         assert_eq!(parse_snooze_token("99999m"), None);
         assert_eq!(parse_snooze_token("200h"), None);
+    }
+
+    #[test]
+    fn parse_snooze_token_cjk_keywords() {
+        assert_eq!(parse_snooze_token("今晚"), Some(SnoozeSpec::Tonight));
+        assert_eq!(parse_snooze_token("明早"), Some(SnoozeSpec::Tomorrow));
+        assert_eq!(parse_snooze_token("明天"), Some(SnoozeSpec::Tomorrow));
+        assert_eq!(parse_snooze_token("明日"), Some(SnoozeSpec::Tomorrow));
+        assert_eq!(parse_snooze_token("周一"), Some(SnoozeSpec::Monday));
+        assert_eq!(parse_snooze_token("下周一"), Some(SnoozeSpec::Monday));
+        assert_eq!(parse_snooze_token("下周1"), Some(SnoozeSpec::Monday));
+    }
+
+    #[test]
+    fn parse_snooze_token_cjk_durations() {
+        assert_eq!(parse_snooze_token("30分"), Some(SnoozeSpec::Minutes(30)));
+        assert_eq!(parse_snooze_token("90分"), Some(SnoozeSpec::Minutes(90)));
+        assert_eq!(parse_snooze_token("2小时"), Some(SnoozeSpec::Hours(2)));
+        assert_eq!(parse_snooze_token("1小时"), Some(SnoozeSpec::Hours(1)));
+        // 空白宽容：30 分 / 2 小时 同等 OK（与中文打字习惯一致）
+        assert_eq!(parse_snooze_token("30 分"), Some(SnoozeSpec::Minutes(30)));
+        assert_eq!(parse_snooze_token("2 小时"), Some(SnoozeSpec::Hours(2)));
+    }
+
+    #[test]
+    fn parse_snooze_token_cjk_rejects_overflow() {
+        assert_eq!(parse_snooze_token("0分"), None, "0 分无意义");
+        assert_eq!(parse_snooze_token("99999分"), None, "超 7 天");
+        assert_eq!(parse_snooze_token("200小时"), None);
+        assert_eq!(parse_snooze_token("后天"), None, "未实现的关键词");
     }
 
     #[test]

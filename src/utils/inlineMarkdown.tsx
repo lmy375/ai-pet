@@ -201,6 +201,17 @@ export interface ParseMarkdownOpts {
     lineOffset: number;
     onToggle: (globalLineIdx: number, checked: boolean) => void;
   };
+  /// 给 H1-H3 heading 块挂 DOM `id` —— 让外部 outline / 大纲组件能用
+  /// `document.getElementById` 触发 scrollIntoView 跳节。计数按"出现顺序"
+  /// 累计（不论 level），id 形如 `${prefix}-h1` / `-h2` ...；不依赖文本 slug
+  /// 防同标题碰撞 + 中文 slug 化复杂度。不传时不挂 id（向后兼容）。
+  headingIdPrefix?: string;
+  /// 在每个 heading 旁渲染一个「📋 复制此节」按钮。callback 收到 heading
+  /// 计数（按 emit 顺序 1-indexed，与 headingIdPrefix 同源），caller 在外
+  /// 部根据 counter 从 raw markdown 提取 section（heading 行 + 后续内容直
+  /// 到下个同级或更高级别 heading）。不传时不渲染按钮（保持 heading 简洁，
+  /// 不打扰 chat / mini chat 等其它 callsite）。
+  onHeadingCopySection?: (counter: number) => void;
 }
 
 export function parseMarkdown(
@@ -209,6 +220,8 @@ export function parseMarkdown(
 ): ReactNode[] {
   const out: ReactNode[] = [];
   const lines = input.split("\n");
+  // 累计计数 H1-H3 emit 顺序，外部 outline / 大纲组件 id 用同序号匹配。
+  let headingCounter = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
@@ -353,17 +366,68 @@ export function parseMarkdown(
       const level = headingMatch[1].length;
       const body = headingMatch[2];
       const fontSize = level === 1 ? "1.25em" : level === 2 ? "1.1em" : "1.0em";
+      headingCounter += 1;
+      const counter = headingCounter;
+      const copyCb = opts?.onHeadingCopySection;
+      // 有 copy callback 时 heading 切到 flex 容器（heading 文本 + 右侧 📋
+      // 按钮）。无 callback 时保持原 `<div>` 结构不变，确保 chat / mini chat
+      // / memory hover preview 等其它 callsite 视觉零变化。
       out.push(
         <div
           key={`md-blk-${i}`}
+          id={
+            opts?.headingIdPrefix
+              ? `${opts.headingIdPrefix}-h${counter}`
+              : undefined
+          }
           style={{
             fontWeight: 600,
             fontSize,
             marginTop: 4,
             marginBottom: 2,
+            // 用 scroll-margin-top 给 sticky toolbar / 顶栏留出空间，避免点击
+            // outline 跳过来后 heading 紧贴顶部被工具栏遮住。
+            scrollMarginTop: 12,
+            ...(copyCb
+              ? { display: "flex", alignItems: "center", gap: 6 }
+              : {}),
           }}
         >
-          {parseInlineMarkdown(body)}
+          <span style={copyCb ? { flex: 1, minWidth: 0 } : undefined}>
+            {parseInlineMarkdown(body)}
+          </span>
+          {copyCb && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                copyCb(counter);
+              }}
+              title={`复制本节 markdown 到剪贴板（heading + 直到下个同级 / 更高级 heading 之前的内容）`}
+              style={{
+                fontSize: 10,
+                lineHeight: 1,
+                padding: "1px 5px",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 3,
+                background: "var(--pet-color-card)",
+                color: "var(--pet-color-muted)",
+                cursor: "pointer",
+                opacity: 0.5,
+                transition: "opacity 120ms ease-out",
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.opacity = "1";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.opacity = "0.5";
+              }}
+              aria-label="copy section markdown"
+            >
+              📋
+            </button>
+          )}
         </div>,
       );
       continue;

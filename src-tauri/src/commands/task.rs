@@ -462,14 +462,54 @@ pub fn task_set_pinned(title: String, pinned: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// `task_set_silent`：写 / 撤销任务 description 的 `[silent]` marker。owner 在
+/// 面板点 🔇 切换；silent=true 时 append `[silent]`，false 时 strip 所有
+/// marker。与 `task_set_pinned` 同模式 —— 单 bool 字段原子修改、保留其它
+/// markers 不动。`[silent]` 在 `format_butler_tasks_block` 被过滤，使该
+/// task 不进 LLM proactive 主动 pick 队列。
+///
+/// 不推 decision_log —— 与 pinned / due / snooze 同：owner 标注偏好，非状态转移。
+#[tauri::command]
+pub fn task_set_silent(title: String, silent: bool) -> Result<(), String> {
+    let title_trim = title.trim();
+    if title_trim.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trim)
+        .ok_or_else(|| format!("task not found: {}", title_trim))?;
+    let stripped = crate::task_queue::strip_silent_markers(&item.description);
+    let new_desc = if silent {
+        let base = stripped.trim_end();
+        if base.is_empty() {
+            "[silent]".to_string()
+        } else {
+            format!("{} [silent]", base)
+        }
+    } else {
+        stripped
+    };
+    memory::memory_edit(
+        "update".to_string(),
+        "butler_tasks".to_string(),
+        item.title.clone(),
+        Some(new_desc),
+        None,
+    )?;
+    Ok(())
+}
+
 /// `task_set_snooze`：写 / 撤销任务 description 的 `[snooze: ...]` marker。
 /// 与 `task_set_due` 同模式 —— 单字段原子修改、保留其它 markers 不动。
 ///
 /// `until == None` 或 trim 后为空 → 调 `strip_snooze_markers` 清掉所有
 /// 既有 `[snooze:]` marker（"撤销暂停"语义）。
-/// 否则按 `YYYY-MM-DD HH:MM` 严格解析；解析失败返回 Err。写入时先 strip
-/// 旧 marker 再 append 新 marker，保证 description 整洁（多次 set / unset
-/// 不会让 description 越积越长）。
+/// 否则两步解析（先预设后严格）：
+///   1. 先尝试 `parse_snooze_token` 预设短串（EN: tonight / tomorrow /
+///      monday / Nm / Nh，CJK: 今晚 / 明早 / 明天 / 下周一 / 周一 / N分 /
+///      N小时）；命中 → 用 `compute_snooze_until(now)` 解析到绝对时刻
+///   2. 再 fall back 到严格 `YYYY-MM-DD HH:MM`
+/// 两路径都失败 → Err（提示同时列预设 + 绝对格式让用户知道两种都行）。
+/// 写入时先 strip 旧 marker 再 append 新 marker，保证 description 整洁。
 ///
 /// 不推 decision_log —— 与 due / priority 同：日常 UX 调整，非状态转移。
 #[tauri::command]
@@ -480,10 +520,19 @@ pub fn task_set_snooze(title: String, until: Option<String>) -> Result<(), Strin
     }
     let parsed_until = match until.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => {
-            NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").map_err(|e| {
-                format!("invalid snooze (expect YYYY-MM-DD HH:MM): {}", e)
-            })?;
-            Some(s.to_string())
+            // 先试预设短串：tonight / tomorrow / monday / 今晚 / 明早 / 30m / 2h / 30分 / 2小时
+            if let Some(spec) = crate::telegram::commands::parse_snooze_token(s) {
+                let now = chrono::Local::now().naive_local();
+                let abs = crate::telegram::commands::compute_snooze_until(spec, now);
+                Some(abs.format("%Y-%m-%d %H:%M").to_string())
+            } else if NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").is_ok() {
+                Some(s.to_string())
+            } else {
+                return Err(format!(
+                    "invalid snooze input {:?} —— 预设支持：tonight / tomorrow / monday / 今晚 / 明早 / 明天 / 下周一 / 30m / 2h / 30分 / 2小时；或绝对格式 YYYY-MM-DD HH:MM",
+                    s
+                ));
+            }
         }
         None => None,
     };

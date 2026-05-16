@@ -1556,6 +1556,7 @@ async fn run_proactive_turn(
     // 让 LLM 在用户那边收尾确认。每次 tick 自维护 LAST_SEEN_BUTLER_DONE_TITLES
     // 静态实现"只 fire 一次"语义。
     let task_completion_hint = build_task_completion_hint();
+    let recent_completion_hint = build_recent_completion_hint(now_local.naive_local());
 
     // Iter R77: pull butler_tasks with `[deadline:]` prefix and format the
     // urgency-aware hint. Reads same memory category as butler_tasks_hint
@@ -1667,6 +1668,7 @@ async fn run_proactive_turn(
         butler_tasks_hint: &butler_tasks_hint,
         task_heartbeat_hint: &task_heartbeat_hint,
         task_completion_hint: &task_completion_hint,
+        recent_completion_hint: &recent_completion_hint,
         user_name: &user_name,
         feedback_hint: &feedback_hint,
         feedback_aggregate_hint: &feedback_aggregate_hint,
@@ -1906,6 +1908,7 @@ pub static LAST_SEEN_BUTLER_DONE_TITLES: std::sync::LazyLock<
 
 /// 单条「刚完成」记录给纯格式化函数用。`result` 来自 description 里的
 /// `[result: ...]`（None = LLM 没写产物）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletedTaskBrief {
     pub title: String,
     pub result: Option<String>,
@@ -1969,6 +1972,102 @@ pub fn format_task_completion_hint(items: &[CompletedTaskBrief]) -> String {
         lines.push(format!("· …还有 {} 条", items.len() - take));
     }
     lines.join("\n")
+}
+
+/// [最近 24h 完成] 全集：rolling window，与 task_completion_hint 单 tick 增
+/// 量互补。让 LLM 在 proactive turn 看到 owner / pet 过去一天的 accomplishments
+/// 整体景观，能用作"咱昨天搞定的 X 怎么样了 / 前面那个 Y 看起来挺顺手"等连
+/// 贯关怀的抓手。
+pub const RECENT_COMPLETION_HINT_MAX_ITEMS: usize = 8;
+pub const RECENT_COMPLETION_HINT_HOURS: i64 = 24;
+
+pub fn format_recent_completion_hint(items: &[CompletedTaskBrief]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut lines: Vec<String> = Vec::with_capacity(items.len() + 2);
+    lines.push("[最近 24h 完成] 你和用户在过去一天里完成了下面这些 butler_task —— 可以用作连贯关怀的抓手（如「咱昨天搞定的 X 怎么样了？」/「前面那个 Y 看起来挺顺手」等），但别每条都点名：".to_string());
+    let take = items.len().min(RECENT_COMPLETION_HINT_MAX_ITEMS);
+    for brief in items.iter().take(take) {
+        let line = match brief.result.as_deref() {
+            Some(r) => {
+                let r = r.trim();
+                let truncated: String = if r.chars().count() <= TASK_COMPLETION_RESULT_CHARS {
+                    r.to_string()
+                } else {
+                    let head: String =
+                        r.chars().take(TASK_COMPLETION_RESULT_CHARS).collect();
+                    format!("{}…", head)
+                };
+                format!("· {}（产物：{}）", brief.title.trim(), truncated)
+            }
+            None => format!("· {}", brief.title.trim()),
+        };
+        lines.push(line);
+    }
+    if items.len() > take {
+        lines.push(format!("· …还有 {} 条", items.len() - take));
+    }
+    lines.join("\n")
+}
+
+/// pure：从 `butler_tasks_as_memory_items` 类输入扫 done 且 updated_at 落在
+/// `now - HOURS` 与 now 之间的条目，按 updated_at 倒序输出 CompletedTaskBrief
+/// 列表。`updated_at` 解析失败 / 非 Done status 跳过。IO 由 caller 注入便于
+/// 单测（不依赖 wall clock / butler_tasks 后端状态）。
+pub fn compute_recent_completions(
+    items: &[(String, String, String)],
+    now: chrono::NaiveDateTime,
+) -> Vec<CompletedTaskBrief> {
+    let cutoff = now - chrono::Duration::hours(RECENT_COMPLETION_HINT_HOURS);
+    let mut tuples: Vec<(chrono::NaiveDateTime, CompletedTaskBrief)> = Vec::new();
+    for (title, desc, updated_at) in items {
+        let (status, _) = crate::task_queue::classify_status(desc);
+        if status != crate::task_queue::TaskStatus::Done {
+            continue;
+        }
+        // Try parse two common formats: with milliseconds (chrono::Local 输出)
+        // or without。Tauri save_session / memory_edit 都走 chrono Local 格式
+        // 但兜底两形态防偶发数据形变。
+        let updated = match chrono::NaiveDateTime::parse_from_str(
+            updated_at,
+            "%Y-%m-%dT%H:%M:%S%.f",
+        ) {
+            Ok(t) => t,
+            Err(_) => match chrono::NaiveDateTime::parse_from_str(
+                updated_at,
+                "%Y-%m-%dT%H:%M:%S",
+            ) {
+                Ok(t) => t,
+                Err(_) => continue,
+            },
+        };
+        if updated < cutoff || updated > now {
+            // 跳过：> 24h 前的（不在窗口） + 未来时间戳（数据 corrupt 防御）
+            continue;
+        }
+        let result = crate::task_queue::parse_task_result(desc);
+        tuples.push((
+            updated,
+            CompletedTaskBrief {
+                title: title.clone(),
+                result,
+            },
+        ));
+    }
+    // 最近完成在前（descending by updated_at）
+    tuples.sort_by(|a, b| b.0.cmp(&a.0));
+    tuples.into_iter().map(|(_, b)| b).collect()
+}
+
+/// IO 包装：读 butler_tasks → 走 compute_recent_completions → format。
+pub fn build_recent_completion_hint(now: chrono::NaiveDateTime) -> String {
+    let tuples: Vec<(String, String, String)> = crate::db::butler_tasks_as_memory_items()
+        .into_iter()
+        .map(|i| (i.title, i.description, i.updated_at))
+        .collect();
+    let recent = compute_recent_completions(&tuples, now);
+    format_recent_completion_hint(&recent)
 }
 
 /// IO 包装：读 `butler_tasks` → 找 done 转换 → 更新静态 → 走纯 formatter。
@@ -2480,6 +2579,8 @@ mod prompt_tests {
             task_heartbeat_hint: "",
             // 默认空：报喜测试需要时显式覆盖。
             task_completion_hint: "",
+            // 默认空：rolling 24h 完成清单测试需要时显式覆盖。
+            recent_completion_hint: "",
             // Default empty — pre-Iter Cυ state, no owner name set in settings.
             // Tests for the user_name line set this explicitly.
             user_name: "",
@@ -4141,6 +4242,181 @@ mod prompt_tests {
         // 5 listed bullets + 1 "…还有 N 条" overflow bullet。
         assert_eq!(bullets, TASK_COMPLETION_HINT_MAX_ITEMS + 1);
         assert!(out.contains("…还有 3 条"));
+    }
+
+    // -- recent (24h) completion hint ----------------------------------------
+
+    fn ndt(y: i32, m: u32, d: u32, hh: u32, mm: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(hh, mm, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn recent_completion_empty_returns_empty_string() {
+        let now = ndt(2026, 5, 16, 12, 0);
+        assert_eq!(compute_recent_completions(&[], now), Vec::new());
+        assert_eq!(format_recent_completion_hint(&[]), "");
+    }
+
+    #[test]
+    fn recent_completion_filters_non_done_status() {
+        // pending / error / cancelled 任务一律跳过 —— 本 hint 只展示已完成
+        let now = ndt(2026, 5, 16, 12, 0);
+        let items = vec![
+            (
+                "做完了".to_string(),
+                "[task pri=3] xxx [done]".to_string(),
+                "2026-05-16T10:00:00".to_string(),
+            ),
+            (
+                "还没做".to_string(),
+                "[task pri=3] yyy".to_string(),
+                "2026-05-16T10:00:00".to_string(),
+            ),
+            (
+                "失败了".to_string(),
+                "[task pri=3] zzz [error: timeout]".to_string(),
+                "2026-05-16T10:00:00".to_string(),
+            ),
+            (
+                "取消了".to_string(),
+                "[task pri=3] qqq [cancelled: no need]".to_string(),
+                "2026-05-16T10:00:00".to_string(),
+            ),
+        ];
+        let recent = compute_recent_completions(&items, now);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].title, "做完了");
+    }
+
+    #[test]
+    fn recent_completion_24h_window_cutoff() {
+        // updated 25h 前 → 不在窗口；< 24h → 在
+        let now = ndt(2026, 5, 16, 12, 0);
+        let items = vec![
+            (
+                "刚完成".to_string(),
+                "[task pri=3] aaa [done]".to_string(),
+                "2026-05-16T08:00:00".to_string(),  // 4h ago
+            ),
+            (
+                "昨天完成".to_string(),
+                "[task pri=3] bbb [done]".to_string(),
+                "2026-05-15T13:00:00".to_string(),  // 23h ago
+            ),
+            (
+                "前天完成".to_string(),
+                "[task pri=3] ccc [done]".to_string(),
+                "2026-05-15T11:00:00".to_string(),  // 25h ago → out
+            ),
+        ];
+        let recent = compute_recent_completions(&items, now);
+        assert_eq!(recent.len(), 2);
+        let titles: Vec<&str> = recent.iter().map(|r| r.title.as_str()).collect();
+        assert!(titles.contains(&"刚完成"));
+        assert!(titles.contains(&"昨天完成"));
+        assert!(!titles.contains(&"前天完成"));
+    }
+
+    #[test]
+    fn recent_completion_sorts_by_recency() {
+        // 最近完成的在前
+        let now = ndt(2026, 5, 16, 12, 0);
+        let items = vec![
+            (
+                "早 4h".to_string(),
+                "[task pri=3] x [done]".to_string(),
+                "2026-05-16T08:00:00".to_string(),
+            ),
+            (
+                "早 1h".to_string(),
+                "[task pri=3] x [done]".to_string(),
+                "2026-05-16T11:00:00".to_string(),
+            ),
+            (
+                "早 2h".to_string(),
+                "[task pri=3] x [done]".to_string(),
+                "2026-05-16T10:00:00".to_string(),
+            ),
+        ];
+        let recent = compute_recent_completions(&items, now);
+        assert_eq!(recent[0].title, "早 1h");
+        assert_eq!(recent[1].title, "早 2h");
+        assert_eq!(recent[2].title, "早 4h");
+    }
+
+    #[test]
+    fn recent_completion_skips_unparseable_timestamps() {
+        // 老 yaml 偶发 corrupt timestamp 不该让 hint 整段炸
+        let now = ndt(2026, 5, 16, 12, 0);
+        let items = vec![
+            (
+                "好数据".to_string(),
+                "[task pri=3] ok [done]".to_string(),
+                "2026-05-16T10:00:00".to_string(),
+            ),
+            (
+                "坏数据".to_string(),
+                "[task pri=3] bad [done]".to_string(),
+                "not-a-timestamp".to_string(),
+            ),
+        ];
+        let recent = compute_recent_completions(&items, now);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].title, "好数据");
+    }
+
+    #[test]
+    fn recent_completion_includes_result_marker() {
+        let now = ndt(2026, 5, 16, 12, 0);
+        let items = vec![(
+            "整理 downloads".to_string(),
+            "[task pri=3] xxx [done] [result: 归档 38 个文件]".to_string(),
+            "2026-05-16T10:00:00".to_string(),
+        )];
+        let recent = compute_recent_completions(&items, now);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].result.as_deref(), Some("归档 38 个文件"));
+        let out = format_recent_completion_hint(&recent);
+        assert!(out.contains("[最近 24h 完成]"));
+        assert!(out.contains("整理 downloads"));
+        assert!(out.contains("产物：归档 38 个文件"));
+    }
+
+    #[test]
+    fn recent_completion_caps_list_with_overflow_line() {
+        // 超过 N 条 cap，多余的转 "…还有 K 条"
+        let now = ndt(2026, 5, 16, 12, 0);
+        let items: Vec<(String, String, String)> = (0
+            ..(RECENT_COMPLETION_HINT_MAX_ITEMS + 4))
+            .map(|i| {
+                (
+                    format!("t{}", i),
+                    "[task pri=3] x [done]".to_string(),
+                    format!("2026-05-16T{:02}:00:00", 11 - (i as u32 % 12)),
+                )
+            })
+            .collect();
+        let recent = compute_recent_completions(&items, now);
+        // 24h 窗口内的都收，不限制 cap（cap 在 format 层）
+        assert!(recent.len() >= RECENT_COMPLETION_HINT_MAX_ITEMS + 1);
+        let out = format_recent_completion_hint(&recent);
+        assert!(out.contains(&format!("…还有 {} 条", recent.len() - RECENT_COMPLETION_HINT_MAX_ITEMS)));
+    }
+
+    #[test]
+    fn recent_completion_future_timestamp_is_skipped() {
+        // 数据 corrupt 防御：updated_at > now 视作无效
+        let now = ndt(2026, 5, 16, 12, 0);
+        let items = vec![(
+            "未来时间戳".to_string(),
+            "[task pri=3] x [done]".to_string(),
+            "2026-05-16T13:00:00".to_string(),  // 1h after now
+        )];
+        let recent = compute_recent_completions(&items, now);
+        assert!(recent.is_empty());
     }
 
     #[test]
