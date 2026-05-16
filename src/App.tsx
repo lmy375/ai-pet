@@ -873,6 +873,22 @@ function App() {
   /// 状态：null = 关闭；非 null = viewport 坐标位置。useEffect 处理外部点击 +
   /// Esc 关闭，与既有 ctxMenu 模式一致。
   const [petCtxMenu, setPetCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  /// "🎲 摇一摇主动开口"按钮的 armed 二次确认态。armed=true 时 3s 内再点
+  /// 才真触发，否则 timer 自动还原 false。防误触绕过 proactive cooldown
+  /// 把宠物搞炸。fireShakeBusy 是请求 in-flight 期间禁用按钮防双触。
+  const [shakeArmed, setShakeArmed] = useState(false);
+  const shakeArmedTimerRef = useRef<number | null>(null);
+  const [fireShakeBusy, setFireShakeBusy] = useState(false);
+  const armShake = () => {
+    if (shakeArmedTimerRef.current !== null) {
+      window.clearTimeout(shakeArmedTimerRef.current);
+    }
+    setShakeArmed(true);
+    shakeArmedTimerRef.current = window.setTimeout(() => {
+      setShakeArmed(false);
+      shakeArmedTimerRef.current = null;
+    }, 3000);
+  };
   /// Esc 全局键盘快捷：触发 collapse() 把宠物滑到桌边只露 tab。替代手点右
   /// 上角 ▶| 按钮，让键盘党 / mac trackpad 用户少一次定位。让位条件：
   /// - hidden（已收起）：noop 避免反复触发
@@ -1811,6 +1827,61 @@ function App() {
                 title="测当前 model.api_base 连通 + 延迟 (ms)。owner 排查'宠物不回应'时第一步：看是网络挂了 / api_base 错了 / api_key 错了。"
               >
                 📡 ping LLM
+              </button>
+              {sep}
+              {/* 🎲 摇一摇主动开口：armed 二次确认。首点 → 红字"再点确认 3s"
+                  + 启 3s 计时器；二次点 → 真调 trigger_proactive_turn 绕过
+                  cooldown 立即跑一次 proactive turn。fireShakeBusy 在 invoke
+                  期间禁用，防双触。结果走 appendAssistant 让 owner 在
+                  ChatMini 看到执行 outcome 摘要。 */}
+              <button
+                type="button"
+                style={{
+                  ...itemStyle,
+                  color: shakeArmed ? "var(--pet-tint-red-fg)" : itemStyle.color,
+                  fontWeight: shakeArmed ? 600 : itemStyle.fontWeight,
+                }}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                disabled={fireShakeBusy}
+                onClick={async () => {
+                  if (!shakeArmed) {
+                    armShake();
+                    return;
+                  }
+                  // armed 状态下二次点击 → 真触发
+                  if (shakeArmedTimerRef.current !== null) {
+                    window.clearTimeout(shakeArmedTimerRef.current);
+                    shakeArmedTimerRef.current = null;
+                  }
+                  setShakeArmed(false);
+                  setPetCtxMenu(null);
+                  setFireShakeBusy(true);
+                  appendAssistant("🎲 摇一摇 → 触发宠物主动开口…");
+                  try {
+                    const status = await invoke<string>(
+                      "trigger_proactive_turn",
+                    );
+                    appendAssistant(`✅ ${status}`);
+                  } catch (e) {
+                    appendAssistant(`❌ 触发失败：${e}`);
+                  } finally {
+                    setFireShakeBusy(false);
+                  }
+                }}
+                title={
+                  fireShakeBusy
+                    ? "正在跑 proactive turn…"
+                    : shakeArmed
+                      ? "再点确认（3s 内有效）：立即跑一次 proactive turn，绕过 cooldown / quiet hours"
+                      : "摇一摇让宠物现在主动开口（绕过 proactive cooldown / quiet hours）。点击进入二次确认。"
+                }
+              >
+                {fireShakeBusy
+                  ? "🎲 跑中…"
+                  : shakeArmed
+                    ? "🎲 再点确认 (3s)"
+                    : "🎲 摇一摇 主动开口"}
               </button>
               {sep}
               <button
