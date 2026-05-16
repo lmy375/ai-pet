@@ -786,6 +786,13 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_today_reply(&views, today)
         }
+        TgCommand::Recent { n } => {
+            // 最近完成清单：reuse 同 read path（已 origin==Tg(chat_id) 过滤），
+            // formatter 内部按 updated_at 倒序 + n cap。clamp 已在 parser 完
+            // 成 (1..=20)。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_recent_reply(&views, n)
+        }
         TgCommand::Version => {
             // app_version 走编译期 env，schema_version 走 _migrations 最大 version。
             // 单 SQL 查不引入新 Tauri 命令；读失败 → 0（format 时省略 schema 行）。
