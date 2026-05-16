@@ -793,6 +793,12 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_recent_reply(&views, n)
         }
+        TgCommand::Find { keyword } => {
+            // keyword 搜本 chat 派单。reuse 同 read path；空 keyword 由
+            // formatter 内部走 missing-argument 模板。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_find_reply(&views, &keyword)
+        }
         TgCommand::Version => {
             // app_version 走编译期 env，schema_version 走 _migrations 最大 version。
             // 单 SQL 查不引入新 Tauri 命令；读失败 → 0（format 时省略 schema 行）。

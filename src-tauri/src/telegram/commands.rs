@@ -80,6 +80,10 @@ pub enum TgCommand {
     /// 近完成了什么"扫读 — 比 /today 更宽（不限今日 ）；比 /tasks 更聚焦
     /// （只 done 段）。
     Recent { n: u32 },
+    /// `/find <keyword>` —— 在本 chat 派单中搜 keyword（命中标题 / 描述子
+    /// 串，case-insensitive），返回最多 10 条命中行（status emoji + 标题 +
+    /// 命中点 hint）。空 keyword 由 handler 走 missing-argument。
+    Find { keyword: String },
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -114,6 +118,7 @@ impl TgCommand {
             TgCommand::Markers => "markers",
             TgCommand::Today => "today",
             TgCommand::Recent { .. } => "recent",
+            TgCommand::Find { .. } => "find",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help => "help",
@@ -133,7 +138,8 @@ impl TgCommand {
             | TgCommand::Pin { title }
             | TgCommand::Unpin { title }
             | TgCommand::Silent { title }
-            | TgCommand::Unsilent { title } => title.as_str(),
+            | TgCommand::Unsilent { title }
+            | TgCommand::Find { keyword: title } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
             | TgCommand::Pinned
@@ -215,6 +221,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
+            ("find", "Search this chat's tasks by keyword (title / description substring)"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -239,6 +246,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
+            ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -554,6 +562,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 .unwrap_or(5);
             Some(TgCommand::Recent { n })
         }
+        // `/find <keyword>`：所有 arg 作 keyword（含空格也保留 — 让 "/find
+        // 整理 Downloads" 命中标题含"整理 Downloads"的 task）。空 keyword
+        // 由 handler 走 missing-argument。
+        "find" => Some(TgCommand::Find { keyword: title }),
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -821,6 +833,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
+        "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1327,6 +1340,68 @@ pub fn format_recent_reply(
             "\n…还有 {} 条更早完成（用 /recent {} 看更多，上限 20）",
             done.len() - shown.len(),
             (done.len()).min(20)
+        ));
+    }
+    out
+}
+
+/// `/find <keyword>` 命令回复文案。pure：在 views（已 chat-scoped 过滤）里
+/// 找 title / raw_description 含 keyword（case-insensitive）的项，至多列
+/// 10 条。空 keyword → missing-argument 反馈。无命中 → "未找到"文案附
+/// keyword 让 owner 一眼确认搜了啥。
+pub fn format_find_reply(
+    views: &[crate::task_queue::TaskView],
+    keyword: &str,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let kw = keyword.trim();
+    if kw.is_empty() {
+        return "🔍 用法：/find <keyword>\n按标题或描述子串搜本聊天派单（不分大小写，至多 10 条）。\n例：/find Downloads / /find 周报".to_string();
+    }
+    let kw_lower = kw.to_lowercase();
+    let mut hits: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| {
+            v.title.to_lowercase().contains(&kw_lower)
+                || v.raw_description.to_lowercase().contains(&kw_lower)
+        })
+        .collect();
+    // pending / error 在前（活跃任务更可能是 owner 当下想找的），其次 done /
+    // cancelled。同状态保留 views 原序（视图层已应用 compare_for_queue 综合
+    // 序）。
+    let status_rank = |s: &TaskStatus| match s {
+        TaskStatus::Pending => 0u8,
+        TaskStatus::Error => 1,
+        TaskStatus::Done => 2,
+        TaskStatus::Cancelled => 3,
+    };
+    hits.sort_by_key(|v| status_rank(&v.status));
+    if hits.is_empty() {
+        return format!(
+            "🔍 没有任务命中「{}」（搜了标题 + description 子串）。\n试试更短的关键词或部分字符；或 /tasks 看清单。",
+            kw
+        );
+    }
+    let cap = 10;
+    let shown = &hits[..hits.len().min(cap)];
+    let mut out = format!(
+        "🔍 命中「{}」{} 条：",
+        kw,
+        hits.len()
+    );
+    for v in shown {
+        let emoji = match v.status {
+            TaskStatus::Pending => "🟢",
+            TaskStatus::Error => "⚠️",
+            TaskStatus::Done => "✅",
+            TaskStatus::Cancelled => "🚫",
+        };
+        out.push_str(&format!("\n{} {}", emoji, v.title));
+    }
+    if hits.len() > cap {
+        out.push_str(&format!(
+            "\n…还有 {} 条命中（关键词太宽？试更精确的词）",
+            hits.len() - cap
         ));
     }
     out
@@ -3375,6 +3450,89 @@ mod tests {
         // done-3 / done-2 / done-1 / done-0 不显（被截断）
         assert!(!s.contains("done-3"), "{s}");
         assert!(s.contains("还有 4 条更早完成"), "overflow hint: {s}");
+    }
+
+    // -------- /find parse + format --------
+
+    #[test]
+    fn find_parses_keyword_arg() {
+        assert_eq!(
+            parse_tg_command("/find Downloads"),
+            Some(TgCommand::Find {
+                keyword: "Downloads".to_string()
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/find 整理 桌面"),
+            Some(TgCommand::Find {
+                keyword: "整理 桌面".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn find_empty_keyword_returns_usage_hint() {
+        let s = format_find_reply(&[], "");
+        assert!(s.contains("用法"), "missing-arg reply: {s}");
+        assert!(s.contains("/find <keyword>"), "{s}");
+    }
+
+    #[test]
+    fn find_no_hits_shows_keyword_in_reply() {
+        let v = view("跑步", 0, None, TaskStatus::Pending, None);
+        let s = format_find_reply(&[v], "周报");
+        assert!(s.contains("没有任务命中「周报」"), "{s}");
+    }
+
+    #[test]
+    fn find_matches_title_case_insensitive() {
+        let v = view("Download 整理", 0, None, TaskStatus::Pending, None);
+        let s = format_find_reply(&[v], "download");
+        assert!(s.contains("命中「download」"), "{s}");
+        assert!(s.contains("Download 整理"), "{s}");
+    }
+
+    #[test]
+    fn find_matches_raw_description_substring() {
+        let mut v = view("跑步", 0, None, TaskStatus::Pending, None);
+        v.raw_description = "[task pri=3] 跑步 #健身 [origin:tg:1] 5km".to_string();
+        let s = format_find_reply(&[v], "健身");
+        assert!(s.contains("跑步"), "{s}");
+    }
+
+    #[test]
+    fn find_orders_pending_before_done() {
+        let mut p = view("pending-cmd", 0, None, TaskStatus::Pending, None);
+        p.updated_at = "2026-05-13T10:00:00+08:00".to_string();
+        let mut d = view("done-cmd", 0, None, TaskStatus::Done, None);
+        d.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+        let s = format_find_reply(&[d, p], "cmd");
+        let pos_pending = s.find("pending-cmd").expect("pending shown");
+        let pos_done = s.find("done-cmd").expect("done shown");
+        assert!(pos_pending < pos_done, "pending before done: {s}");
+    }
+
+    #[test]
+    fn find_caps_at_10_hits_with_overflow_hint() {
+        let mut views = Vec::new();
+        for i in 0..15 {
+            views.push(view(
+                &format!("task-{}", i),
+                0,
+                None,
+                TaskStatus::Pending,
+                None,
+            ));
+        }
+        let s = format_find_reply(&views, "task");
+        // header 显总命中数 15
+        assert!(s.contains("命中「task」15 条"), "{s}");
+        // 只显前 10
+        assert!(s.contains("task-0"), "{s}");
+        assert!(s.contains("task-9"), "{s}");
+        assert!(!s.contains("task-10"), "{s}");
+        // 溢出 hint
+        assert!(s.contains("还有 5 条命中"), "{s}");
     }
 
     // -------- /reset parse + format --------
