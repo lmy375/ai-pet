@@ -43,6 +43,16 @@ const CATEGORY_ORDER = [
   "user_profile",
 ];
 
+/// 镜像到 SQLite 的 category（butler_tasks / todo / ai_insights / task_archive）。
+/// 这些 kind 跨 category 移动会让 queue / archive SQL 表错乱，后端 memory_move_category
+/// 命令拒绝；前端也据此决定要不要显「🏷 改类目」按钮。
+const MIRRORED_CATEGORIES = new Set([
+  "butler_tasks",
+  "todo",
+  "ai_insights",
+  "task_archive",
+]);
+
 // Per-category description placeholder shown in the new/edit modal so the user knows
 // what shape of entry each category expects. butler_tasks gets the most concrete
 // example because it's the newest user-author category and the convention isn't yet
@@ -540,6 +550,27 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  /// 🏷 改类目 popover state：哪个 item 的按钮被点。null = 关。只有
+  /// 非镜像 category 的 item 才显此按钮 + popover，与后端 memory_move_category
+  /// 接受范围一致。outside-click / Esc 关。
+  const [moveCatPicker, setMoveCatPicker] = useState<{
+    catKey: string;
+    title: string;
+  } | null>(null);
+  const [moveCatBusy, setMoveCatBusy] = useState(false);
+  useEffect(() => {
+    if (!moveCatPicker) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+      setMoveCatPicker(null);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [moveCatPicker]);
   /// 每分钟刷一下的"当前时刻" state — butler_tasks 下次触发倒计时 chip
   /// 用。setInterval 60s 而非更短，因 chip 精度只到分钟，60s tick 即足够；
   /// 节省 re-render。setInterval 启动时立即 setTickNow 一次确保挂载后到下
@@ -4796,6 +4827,177 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           📋📄
                         </button>
+                        {/* 🏷 改类目：跨 category 移动 item。仅非镜像
+                            category（general / user_profile / 自定义）显此
+                            按钮；后端拒绝 butler_tasks / todo / ai_insights /
+                            task_archive 跨 kind 移动以保 SQL 镜像不错乱。
+                            popover 列出其它合法目标 cat。 */}
+                        {!MIRRORED_CATEGORIES.has(catKey) && (() => {
+                          const open =
+                            moveCatPicker !== null &&
+                            moveCatPicker.catKey === catKey &&
+                            moveCatPicker.title === item.title;
+                          // 合法目标 = index 中所有非镜像 cat - 当前 cat
+                          const targets = index
+                            ? [
+                                ...CATEGORY_ORDER,
+                                ...Object.keys(index.categories).filter(
+                                  (k) => !CATEGORY_ORDER.includes(k),
+                                ),
+                              ].filter(
+                                (k) =>
+                                  !MIRRORED_CATEGORIES.has(k) &&
+                                  k !== catKey &&
+                                  index.categories[k],
+                              )
+                            : [];
+                          return (
+                            <span
+                              style={{
+                                position: "relative",
+                                display: "inline-block",
+                              }}
+                            >
+                              <button
+                                style={s.btn}
+                                disabled={moveCatBusy}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMoveCatPicker((cur) =>
+                                    cur &&
+                                    cur.catKey === catKey &&
+                                    cur.title === item.title
+                                      ? null
+                                      : { catKey, title: item.title },
+                                  );
+                                }}
+                                title={`改类目：把「${item.title}」从「${catKey}」移到另一个非镜像 category（如 general / user_profile）。butler_tasks / todo / ai_insights / task_archive 等镜像 kind 不可作目标 / 源 — 它们的状态与 SQL 表绑定。`}
+                                aria-label="move item to another category"
+                              >
+                                🏷
+                              </button>
+                              {open && (
+                                <div
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    position: "absolute",
+                                    top: "calc(100% + 4px)",
+                                    right: 0,
+                                    minWidth: 180,
+                                    padding: 4,
+                                    background: "var(--pet-color-card)",
+                                    border: "1px solid var(--pet-color-border)",
+                                    borderRadius: 6,
+                                    boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                                    zIndex: 30,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 2,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      padding: "4px 8px",
+                                      fontSize: 10,
+                                      color: "var(--pet-color-muted)",
+                                    }}
+                                  >
+                                    移到 →
+                                  </div>
+                                  {targets.length === 0 ? (
+                                    <div
+                                      style={{
+                                        padding: "6px 9px",
+                                        fontSize: 11,
+                                        color: "var(--pet-color-muted)",
+                                        fontStyle: "italic",
+                                      }}
+                                    >
+                                      （没有其它非镜像 category）
+                                    </div>
+                                  ) : (
+                                    targets.map((tgt) => {
+                                      const targetLabel =
+                                        (categoryLabels[tgt] ?? "").trim() ||
+                                        index!.categories[tgt]?.label ||
+                                        tgt;
+                                      return (
+                                        <button
+                                          key={tgt}
+                                          type="button"
+                                          disabled={moveCatBusy}
+                                          style={{
+                                            display: "block",
+                                            width: "100%",
+                                            textAlign: "left",
+                                            padding: "5px 9px",
+                                            fontSize: 11,
+                                            border: "none",
+                                            background: "transparent",
+                                            color: "var(--pet-color-fg)",
+                                            cursor: moveCatBusy
+                                              ? "default"
+                                              : "pointer",
+                                            fontFamily: "inherit",
+                                            borderRadius: 4,
+                                          }}
+                                          onMouseOver={(e) => {
+                                            (e.currentTarget as HTMLButtonElement).style.background =
+                                              "var(--pet-color-bg)";
+                                          }}
+                                          onMouseOut={(e) => {
+                                            (e.currentTarget as HTMLButtonElement).style.background =
+                                              "transparent";
+                                          }}
+                                          onClick={async () => {
+                                            setMoveCatPicker(null);
+                                            setMoveCatBusy(true);
+                                            try {
+                                              await invoke<string>(
+                                                "memory_move_category",
+                                                {
+                                                  title: item.title,
+                                                  oldCategory: catKey,
+                                                  newCategory: tgt,
+                                                },
+                                              );
+                                              await loadIndex();
+                                              setMessage(
+                                                `已移到「${targetLabel}」`,
+                                              );
+                                            } catch (err) {
+                                              setMessage(`改类目失败：${err}`);
+                                            } finally {
+                                              setTimeout(
+                                                () => setMessage(""),
+                                                3000,
+                                              );
+                                              setMoveCatBusy(false);
+                                            }
+                                          }}
+                                        >
+                                          {targetLabel}{" "}
+                                          <span
+                                            style={{
+                                              color: "var(--pet-color-muted)",
+                                              fontSize: 9,
+                                              fontFamily:
+                                                "'SF Mono', monospace",
+                                            }}
+                                          >
+                                            ({tgt})
+                                          </span>
+                                        </button>
+                                      );
+                                    })
+                                  )}
+                                </div>
+                              )}
+                            </span>
+                          );
+                        })()}
                         {/* 🔗 复制为 ref token：仅 butler_tasks 段显（其它
                             category 没 task ref 语义）。复制后粘到 chat 自动
                             被识别为 hover-able underline + 双击跳转源。与

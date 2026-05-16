@@ -550,6 +550,127 @@ pub fn memory_rename(
     Ok(format!("Renamed to '{new_trimmed}'."))
 }
 
+/// 给 memory item 跨 category 移动：移 detail.md 文件到新 category 子目录 +
+/// 在 index 里把 item 从源 cat.items 删掉、push 到目标 cat.items。
+///
+/// 限制：仅允许两端都是**非镜像** category（general / user_profile / 自定义）。
+/// butler_tasks / todo / ai_insights / task_archive 是镜像到 SQLite 的，跨
+/// kind 移动会让队列 / 归档表状态错乱（如 butler 移到 todo 需删 butler 行 +
+/// 建 todo 行 + 重置 queue 序号，与 LLM proactive prompt 假设不一致），所以
+/// 拒绝。owner 想做这种迁移走"在新 category 重建 + 老 category 删除"两步。
+///
+/// 同 category 视为 noop（return Ok("No change.")，与 memory_rename 同模式）。
+/// 目标 cat 不存在 / 目标里 title 已被占用 → Err 且不动状态。current_mood
+/// 拒绝（mood 独立存储，不在 index）。
+#[tauri::command]
+pub fn memory_move_category(
+    title: String,
+    old_category: String,
+    new_category: String,
+) -> Result<String, String> {
+    if old_category == new_category {
+        return Ok("No change.".to_string());
+    }
+    if old_category == crate::mood::MOOD_CATEGORY && title == crate::mood::MOOD_TITLE {
+        return Err("current_mood is not movable".to_string());
+    }
+    let is_mirrored = |c: &str| {
+        matches!(
+            c,
+            "butler_tasks" | "todo" | "task_archive" | "ai_insights"
+        )
+    };
+    if is_mirrored(&old_category) {
+        return Err(format!(
+            "Cannot move from mirrored category '{old_category}'. \
+Mirrored kinds (butler_tasks/todo/ai_insights/task_archive) need explicit \
+migration to preserve queue / archive state — use the kind's own delete + \
+new-category create flow instead."
+        ));
+    }
+    if is_mirrored(&new_category) {
+        return Err(format!(
+            "Cannot move into mirrored category '{new_category}'. \
+Use the kind's own create flow (PanelTasks quickAdd / butler_tasks tool / etc.) \
+to add proper headers + queue state."
+        ));
+    }
+
+    let mut index = read_index();
+    let mem_dir = memories_dir()?;
+
+    // Pre-validate （immutable borrows）：源 cat 内有 title、目标 cat 存在
+    // 且无 title 冲突。失败提前返 Err，不动 index。
+    let src_pos = index
+        .categories
+        .get(&old_category)
+        .ok_or_else(|| format!("Unknown source category: {old_category}"))?
+        .items
+        .iter()
+        .position(|i| i.title == title)
+        .ok_or_else(|| format!("Memory not found: '{title}' in {old_category}"))?;
+    if !index.categories.contains_key(&new_category) {
+        return Err(format!("Unknown target category: {new_category}"));
+    }
+    if index
+        .categories
+        .get(&new_category)
+        .unwrap()
+        .items
+        .iter()
+        .any(|i| i.title == title)
+    {
+        return Err(format!(
+            "Title already exists in {new_category}: '{title}'"
+        ));
+    }
+
+    // 计算新 detail_path（同 create 路径用 title_to_filename，碰撞加 _N）
+    let new_filename = title_to_filename(&title);
+    let target_dir = mem_dir.join(&new_category);
+    fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Failed to create target category dir: {e}"))?;
+    let mut new_detail_path = format!("{}/{}.md", new_category, new_filename);
+    let mut new_full_path = mem_dir.join(&new_detail_path);
+    let mut counter = 1u32;
+    while new_full_path.exists() {
+        new_detail_path = format!("{}/{}_{}.md", new_category, new_filename, counter);
+        new_full_path = mem_dir.join(&new_detail_path);
+        counter += 1;
+    }
+
+    // 真正修改 index：先 remove 源条目，再改 detail_path + push 目标
+    let mut item = index
+        .categories
+        .get_mut(&old_category)
+        .unwrap()
+        .items
+        .remove(src_pos);
+    let old_full_path = mem_dir.join(&item.detail_path);
+    if old_full_path.exists() {
+        fs::rename(&old_full_path, &new_full_path).map_err(|e| {
+            format!(
+                "Failed to move detail file from {} to {}: {}",
+                item.detail_path, new_detail_path, e
+            )
+        })?;
+    } else {
+        fs::write(&new_full_path, "")
+            .map_err(|e| format!("Failed to create new detail file: {e}"))?;
+    }
+    item.detail_path = new_detail_path;
+    item.updated_at = now_iso();
+    index
+        .categories
+        .get_mut(&new_category)
+        .unwrap()
+        .items
+        .push(item);
+
+    write_index(&index)?;
+    Ok(format!("Moved to '{new_category}'."))
+}
+
 /// 读 memory item 的 detail.md 内容前缀（默认 600 字符），供 PanelMemory
 /// PanelMemory item 列表行的 "detail X 字" 小灰字指示用 —— 一次性扫
 /// 所有 detail.md 算 Unicode code-point 数（与编辑态 counter 同方法，
