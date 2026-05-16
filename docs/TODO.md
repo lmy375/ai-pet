@@ -8,6 +8,10 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- detail.md 编辑器加 "🔢 显行号 gutter" toggle：textarea 左侧浮行号列，状态持久化 localStorage。
+- PanelChat session 列表加 "🧹 清碎片 session" 按钮：批量删 message count ≤ 3 的"碎片"会话，二次确认。
+- PanelMemory category 段 header 加 "📊 detail 总字数" 灰字：扫该段所有 item 的 detail.md 字数和。
+- pet ctx menu 加 "🎲 摇一摇主动开口" 按钮：绕过 proactive cooldown 立即触发一次主动开口，armed 二次确认。
 
 
 
