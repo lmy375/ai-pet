@@ -149,6 +149,34 @@ export function ChatPanel({ onSend, isLoading }: Props) {
     };
   }, []);
 
+  // ChatMini 选区浮 toolbar 的"🔄 改写"按钮派发的 CustomEvent。把选中
+  // 文字以 `请改写：\n\n[text]` prefill 到输入框，把光标停在末尾让用户能
+  // 在发送前修改意图（"请改写得更精炼" / "请翻译" 等）。已有内容时覆盖
+  // —— 改写动作语义足够强，prefix-保留旧文会污染请求。
+  useEffect(() => {
+    const onRewriteSel = (e: Event) => {
+      const ce = e as CustomEvent<string>;
+      const text = ce.detail;
+      if (typeof text !== "string" || !text.trim()) return;
+      setInput(`请改写：\n\n${text}`);
+      window.setTimeout(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        const len = el.value.length;
+        try {
+          el.setSelectionRange(len, len);
+        } catch {
+          // ignore
+        }
+      }, 0);
+    };
+    window.addEventListener("pet-mini-rewrite-selection", onRewriteSel);
+    return () => {
+      window.removeEventListener("pet-mini-rewrite-selection", onRewriteSel);
+    };
+  }, []);
+
   // ⌘L / Ctrl+L 全局聚焦 textarea。类似 terminal cmd+L 的"快速回输入框"
   // 反射；浏览器 ⌘L 默认是 focus address bar，但 Tauri WKWebView 没地址
   // 栏所以可自由占用。preventDefault 防止偶发默认。
