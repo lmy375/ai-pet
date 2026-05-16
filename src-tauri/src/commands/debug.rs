@@ -325,6 +325,28 @@ pub fn clear_logs(store: State<'_, LogStore>) {
     store.0.lock().unwrap().clear();
 }
 
+/// 在系统文件管理器里打开 logs 目录（~/.config/pet/logs/）。owner 想 grep /
+/// tail / 拖到第三方 viewer 时一键到位，不用记路径。与 `open_pet_data_dir`
+/// 同跨平台模式（macOS `open` / Windows `explorer` / Linux `xdg-open`）。目录
+/// 不存在时先 mkdir 防 Finder 拒绝打开空路径。
+#[tauri::command]
+pub fn open_logs_dir() -> Result<(), String> {
+    let dir = log_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create logs dir: {}", e))?;
+    #[cfg(target_os = "macos")]
+    let cmd_name = "open";
+    #[cfg(target_os = "windows")]
+    let cmd_name = "explorer";
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let cmd_name = "xdg-open";
+    std::process::Command::new(cmd_name)
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open logs dir via `{}`: {}", cmd_name, e))
+}
+
 /// Aggregated tool-cache statistics derived from "Tool cache summary" lines emitted at
 /// the end of each successful LLM turn. Each summary line records one turn; the totals
 /// sum every turn this session has produced so the panel can render an honest cumulative

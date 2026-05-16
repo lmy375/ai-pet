@@ -2079,6 +2079,17 @@ export function PanelDebug() {
         <button onClick={fetchLogs} style={toolBtnStyle}>刷新</button>
         <button onClick={handleClear} style={toolBtnStyle}>清空</button>
         <button
+          onClick={() => {
+            invoke("open_logs_dir").catch((e) =>
+              console.error("open_logs_dir failed:", e),
+            );
+          }}
+          style={toolBtnStyle}
+          title="在系统文件管理器里打开 logs 目录（~/.config/pet/logs/）。owner 想 grep / tail / 拖到第三方 viewer 时一键到位。"
+        >
+          📂 logs 目录
+        </button>
+        <button
           onClick={() => void handleExportDebugMd()}
           style={toolBtnStyle}
           title="把当前 PanelDebug 的 stats / chip / tone / pending review / 工具风险偏好覆盖 / 最近 5 句宠物语 拼成一份 markdown 写到剪贴板，方便贴 issue 或排查时给同事看"

@@ -12,7 +12,6 @@
 - PanelTasks task row 加 "📅 调期" 按钮：popover 显 +1h / +1d / +3d / +1w / +2w preset，click 改 [deadline:] marker。
 - ChatMini 选中文字后浮 mini toolbar：💾 转 task / 📋 复制 / 🔄 给 AI 改写后重发。
 - PanelTasks tag chip 双击 inline rename：跨全表批量改 tag 名（含 raw_description rewrite）。
-- PanelDebug 加 "📂 打开 logs 目录" 按钮：调 reveal-in-finder 打开 ~/Library/Application Support/pet/logs/ 目录。
 
 
 
