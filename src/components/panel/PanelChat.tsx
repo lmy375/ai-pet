@@ -1,6 +1,7 @@
 import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { monthKeyFromIso, monthLabelOf } from "../../utils/monthGroup";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { TaskProposalCard, parseTaskProposal } from "./TaskProposalCard";
 import { SlashCommandMenu } from "./SlashCommandMenu";
@@ -88,6 +89,11 @@ interface PanelChatProps {
   /// 命中（或找不到也算消费）后回调清空 pendingChatMatch，避免 stale
   /// 值在用户后续切 session / 滚动后又触发。
   onConsumePendingChatMatch?: () => void;
+  /// PanelTasks 「🧠 ask LLM about selection」 按钮触发：把封装好的
+  /// "关于「<excerpt>」 " 串推到 textarea 让 owner 立刻问。挂载 / 更新
+  /// 时 effect 消费 → setInput + focus + 清空 prop。
+  pendingChatPrefill?: string | null;
+  onConsumePendingChatPrefill?: () => void;
 }
 
 /// 把 data URL 图片用 canvas 缩到 maxSize 短边内、JPEG 0.7 质量重编码，
@@ -129,32 +135,8 @@ function formatLocalStamp(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/// session 下拉 + 跨会话搜索结果通用的「月份分组 key」。返回 4 档：
-/// - `_thisMonth` / `_lastMonth`：本月 / 上月（与 `now` 比较）
-/// - `YYYY-MM`：更早月份的具体 ISO
-/// - `older`：无效 / 空 timestamp 兜底（旧迁移期数据）
-/// `now` 作参数让 IIFE 一次性算出再传，避免每条 item 重 new Date()，也便于
-/// 测试（不依赖 wall clock）。
-export function monthKeyFromIso(iso: string, now: Date): string {
-  if (iso.length < 7) return "older";
-  const yyyymm = iso.slice(0, 7);
-  const curYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  if (yyyymm === curYm) return "_thisMonth";
-  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const prevYm = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
-  if (yyyymm === prevYm) return "_lastMonth";
-  return yyyymm;
-}
-
-/// 月份 key → 中文 label。`_pinned` 虚拟 key 是 session 下拉专用（pinned 段
-/// 不归月份），其它 key 与 `monthKeyFromIso` 对偶。
-export function monthLabelOf(key: string): string {
-  if (key === "_pinned") return "📌 钉住";
-  if (key === "_thisMonth") return "本月";
-  if (key === "_lastMonth") return "上月";
-  if (key === "older") return "更早";
-  return key; // "YYYY-MM"
-}
+// monthKeyFromIso / monthLabelOf 已提到 `src/utils/monthGroup.ts` 共享给
+// session 下拉 + 跨会话搜索 + PanelMemory items 三处复用。
 
 /// `@` 提及触发判定：cursor 前方是否有"未被空白打断的 @<chars>"段。命中
 /// 返回 `{ start, query }`（start = `@` 在 input 中的索引，query = @ 后到
@@ -329,6 +311,8 @@ export function PanelChat({
   onRequestFocusTask,
   pendingChatMatch,
   onConsumePendingChatMatch,
+  pendingChatPrefill,
+  onConsumePendingChatPrefill,
 }: PanelChatProps = {}) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
@@ -623,6 +607,39 @@ export function PanelChat({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openTaskPicker]);
+
+  /// 全局 ⌘N / Ctrl+N 热键：新建会话。与 IDE / 浏览器 ⌘N = "新建文件 /
+  /// 标签页"直觉一致。让位条件与 ⌘K 同 —— 输入控件聚焦时让那些控件处理
+  /// （即便它们当前没有 ⌘N handler，也避免我们抢走可能的未来扩展）。
+  /// textarea 自己的 onKeyDown 也有一份（line ~2890），让 power user 从输入
+  /// 框敲也能触发；这里仅覆盖"消息区 / 侧栏 / chip 区"等非输入焦点位置。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        !(e.metaKey || e.ctrlKey) ||
+        e.shiftKey ||
+        e.altKey ||
+        e.key.toLowerCase() !== "n"
+      ) {
+        return;
+      }
+      const ae = document.activeElement;
+      if (
+        ae instanceof HTMLInputElement ||
+        ae instanceof HTMLTextAreaElement ||
+        (ae instanceof HTMLElement && ae.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      void handleNewSession();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // handleNewSession 每 render 重建但内部只读 stable setters + invoke，故
+    // 不放进 deps（避免 N 次 re-subscribe）。ESLint 提示忽略 —— 行为正确。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const insertTaskRef = useCallback(
     (title: string) => {
       // 插入格式 `「title」` —— 全角直角引号，宠物侧 prompt 处理时易抓出
@@ -690,6 +707,55 @@ export function PanelChat({
   const [sessionTitleQuery, setSessionTitleQuery] = useState("");
   useEffect(() => {
     if (!showSessionList) setSessionTitleQuery("");
+  }, [showSessionList]);
+  /// session 下拉行 hover 1s 浮 "最近 3 条" preview：lazy load_session 后
+  /// cache last-3 items 到 previewCache，给 owner 跨 session 选择时不必先
+  /// click 即可瞄一眼"这条 session 最后聊了什么"。timer / cache 与下拉
+  /// 关闭一起 reset 避免脏 state；非当前 session 才显（当前 session 已在
+  /// 主聊天区可见，preview 冗余）。
+  const [previewSessionId, setPreviewSessionId] = useState<string | null>(null);
+  const previewSessionTimerRef = useRef<number | null>(null);
+  const [previewCache, setPreviewCache] = useState<Record<string, ChatItem[]>>(
+    {},
+  );
+  const handleSessionPreviewEnter = useCallback(
+    (sid: string) => {
+      if (previewSessionTimerRef.current !== null) return;
+      if (sid === sessionId) return; // 当前 session 不显
+      previewSessionTimerRef.current = window.setTimeout(async () => {
+        previewSessionTimerRef.current = null;
+        if (!previewCache[sid]) {
+          try {
+            const session = await invoke<Session>("load_session", { id: sid });
+            const last3 = (session.items ?? []).slice(-3);
+            setPreviewCache((prev) => ({ ...prev, [sid]: last3 }));
+          } catch (e) {
+            console.error("session preview load failed:", e);
+            return;
+          }
+        }
+        setPreviewSessionId(sid);
+      }, 1000);
+    },
+    [sessionId, previewCache],
+  );
+  const handleSessionPreviewLeave = useCallback(() => {
+    if (previewSessionTimerRef.current !== null) {
+      window.clearTimeout(previewSessionTimerRef.current);
+      previewSessionTimerRef.current = null;
+    }
+    setPreviewSessionId(null);
+  }, []);
+  useEffect(() => {
+    // 下拉关闭 → reset preview state 不让脏值跨开关闪现。cache 保留 ——
+    // 下次开下拉同一 session hover 仍可命中。
+    if (!showSessionList) {
+      if (previewSessionTimerRef.current !== null) {
+        window.clearTimeout(previewSessionTimerRef.current);
+        previewSessionTimerRef.current = null;
+      }
+      setPreviewSessionId(null);
+    }
   }, [showSessionList]);
   /// 非当前 session 的"已读时间戳"：sessionId → ISO timestamp（用户上次
   /// 浏览此 session 时的时间）。session list 渲染时与 s.updated_at 比，
@@ -1410,6 +1476,28 @@ export function PanelChat({
     onConsumePendingChatMatch?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingChatMatch, items.length]);
+
+  /// pendingChatPrefill 消费：PanelTasks 🧠 按钮触发后，本 effect 拿到
+  /// 预填字符串 → setInput + focus textarea + select-from-end 让 owner
+  /// 直接在 prefix 后输入。一次性消费后 setNull 防 stale。
+  useEffect(() => {
+    if (!pendingChatPrefill) return;
+    setInput(pendingChatPrefill);
+    // 下一帧 focus textarea + 把 caret 移到末尾（owner 直接在 prefix 后敲问题）
+    window.setTimeout(() => {
+      const ta = composeTextareaRef.current;
+      if (ta) {
+        ta.focus();
+        const end = ta.value.length;
+        try {
+          ta.setSelectionRange(end, end);
+        } catch {
+          // 极个别 webview 不支持 setSelectionRange；忽略，至少 focus 已成
+        }
+      }
+    }, 0);
+    onConsumePendingChatPrefill?.();
+  }, [pendingChatPrefill, onConsumePendingChatPrefill]);
 
   // 切到目标会话后把目标 item scrollIntoView + 短暂高亮（1.5s 后清掉）。
   // 通过 data-item-idx 选择器找到 DOM 节点；找不到就当作 noop。
@@ -2908,6 +2996,19 @@ export function PanelChat({
       }
       return;
     }
+    // ⌘N / Ctrl+N → 新建会话。与 IDE / 浏览器 ⌘N = "新建"直觉一致。也有
+    // 全局监听同效果（line ~602 useEffect），这里 textarea 内独立分支让事
+    // 件流单一明确（与 ⌘K / ⌘B 同模式 —— 在输入框内键盘党更快）。
+    if (
+      (e.metaKey || e.ctrlKey) &&
+      !e.shiftKey &&
+      !e.altKey &&
+      e.key.toLowerCase() === "n"
+    ) {
+      e.preventDefault();
+      void handleNewSession();
+      return;
+    }
     // `@` 提及菜单可见时：↑↓ 选 / Enter / Tab 填入 / Esc 关。优先级高于
     // image / slash / Enter 提交 — `@<query>` 形态下用户的意图就是 mention，
     // 让其它分支抢键会破坏体验。Esc 仅退出 picker（清掉 `@<query>` 段）。
@@ -3678,7 +3779,11 @@ export function PanelChat({
             )}
           </div>
         )}
-        <button onClick={handleNewSession} style={newSessionBtnStyle} title="新建会话">
+        <button
+          onClick={handleNewSession}
+          style={newSessionBtnStyle}
+          title="新建会话（也可按 ⌘N / Ctrl+N）"
+        >
           + 新会话
         </button>
       </div>
@@ -4309,16 +4414,35 @@ export function PanelChat({
                 })()}
               <div
                 className="pet-session-row"
+                onMouseEnter={() => handleSessionPreviewEnter(s.id)}
+                onMouseLeave={handleSessionPreviewLeave}
+                onContextMenu={(e) => {
+                  // 与顶 tab bar session 同 ctx menu（既有 sessionTabCtxMenu），
+                  // 让 dropdown 行也能右键 pin / rename / 复制标题 / 复制 ID /
+                  // 重写标题。owner 在长 session 列表里就近右键比"先 click
+                  // 进 tab → 右键 tab" 两步顺。
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSessionTabCtxMenu({
+                    id: s.id,
+                    title: s.title,
+                    pinned: !!s.pinned,
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }}
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
+                  flexDirection: "column",
+                  alignItems: "stretch",
+                  gap: "4px",
                   padding: "8px 12px",
                   cursor: "pointer",
                   background: s.id === sessionId ? "var(--pet-tint-blue-bg)" : "transparent",
                   borderBottom: "1px solid var(--pet-color-border)",
                 }}
               >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <div
                   style={{ flex: 1, minWidth: 0 }}
                   onClick={() => {
@@ -4501,6 +4625,82 @@ export function PanelChat({
                     {pendingDeleteId === s.id ? "确定？" : "删除"}
                   </button>
                 )}
+              </div>
+              {/* hover 1s 浮的"最近 3 条" preview 段：role glyph + 文字段
+                  fixed 3 行高度，避免 layout 抖动；为空时显灰字"(空会话)"
+                  让 owner 看出确实是空而非加载中。preview cache 命中即时
+                  显，未命中显加载中态。仅非当前 session 显（当前 session
+                  主聊天区已可见，preview 冗余）。 */}
+              {previewSessionId === s.id && s.id !== sessionId && (
+                <div
+                  onClick={(e) => {
+                    // preview 段 click → 直接切到该 session（与外层标题区
+                    // 同 switchSession 路径）。让 owner 看完 preview 决策切
+                    // 不必再移到上方标题区。renamingId === s.id 时不切（与
+                    // 标题区同 gate）。stopPropagation 防止本 click 被外层
+                    // row 二次接收（虽然外层 column flex 容器无 onClick，
+                    // 但守一道防回归）。
+                    e.stopPropagation();
+                    if (renamingId !== s.id) void switchSession(s.id);
+                  }}
+                  title="点击切到此 session（与点上方标题区同语义）"
+                  style={{
+                    marginTop: 4,
+                    padding: "4px 6px",
+                    background: "var(--pet-color-bg)",
+                    border: "1px dashed var(--pet-color-border)",
+                    borderRadius: 4,
+                    fontSize: 10,
+                    color: "var(--pet-color-muted)",
+                    lineHeight: 1.45,
+                    cursor: "pointer",
+                  }}
+                >
+                  {(() => {
+                    const cached = previewCache[s.id];
+                    if (!cached) return "加载预览中...";
+                    if (cached.length === 0) return "（空会话）";
+                    return cached.map((it, i) => {
+                      const glyph =
+                        it.type === "user"
+                          ? "🧑"
+                          : it.type === "assistant"
+                            ? "🐾"
+                            : it.type === "tool"
+                              ? "🛠"
+                              : "⚠";
+                      const txt = (it.content ?? "")
+                        .replace(/\s+/g, " ")
+                        .trim();
+                      const snip =
+                        txt.length > 80 ? txt.slice(0, 80) + "…" : txt;
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            display: "flex",
+                            gap: 6,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          <span style={{ flexShrink: 0 }}>{glyph}</span>
+                          <span
+                            style={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {snip || <em>（无文字内容）</em>}
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              )}
               </div>
               </Fragment>
             ));
@@ -5486,6 +5686,34 @@ export function PanelChat({
             onSelect={handleSelectSlashCommand}
           />
         )}
+        {/* 输入历史浏览态 idx / total hint：仅 historyCursor 非空（owner
+            按 ↑ 进入 history browse mode）时显。让 owner 看到 "我在历史
+            第几条 / 共 N 条" 不迷路。位置同 SlashCommandMenu 锚位（form
+            relative + bottom: 100% 偏上），但更小更 muted。 */}
+        {historyCursor !== null && messageHistory.length > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "calc(100% + 4px)",
+              right: 16,
+              fontSize: 10,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              color: "var(--pet-color-muted)",
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 4,
+              padding: "2px 8px",
+              boxShadow: "var(--pet-shadow-sm)",
+              opacity: 0.85,
+              pointerEvents: "none",
+              userSelect: "none",
+              zIndex: 5,
+            }}
+            aria-hidden
+          >
+            ↕ 历史 {historyCursor + 1} / {messageHistory.length} · Esc 退出
+          </div>
+        )}
         {/* `@` 提及浮窗：与 SlashCommandMenu 同锚位（form 的 relative 容器 +
             bottom:100%）。无 task 命中 → 显空态提示 + 用户敲字 / Esc 自然退。 */}
         {mentionMenuVisible && mentionContext && (
@@ -5922,7 +6150,7 @@ export function PanelChat({
             ingestImageBlobs(blobs);
           }}
           onKeyDown={handleInputKeyDown}
-          placeholder='输入消息（Enter 发送 / Shift+Enter 换行；可粘贴图片；"/" 触发命令面板；"@" / ⌘K 召唤 task ref；⌘B 切上一会话）'
+          placeholder='输入消息（Enter 发送 / Shift+Enter 换行；可粘贴图片；"/" 触发命令面板；"@" / ⌘K 召唤 task ref；⌘B 切上一会话；⌘N 新建会话）'
           rows={Math.max(
             1,
             Math.min(5, (input.match(/\n/g)?.length ?? 0) + 1),
@@ -6291,6 +6519,30 @@ export function PanelChat({
               }}
             >
               📋 复制标题
+            </button>
+            {/* 🔑 复制会话 ID：debug / 上报 issue 时常需要 session id 定位
+                到具体会话文件 / 后端日志。session.id 是 uuid 形态字符串，
+                ~36 字符。复用 exportToast 通道反馈，错误透传 navigator.clipboard
+                可能抛的权限错。 */}
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={hoverIn}
+              onMouseOut={hoverOut}
+              onClick={async () => {
+                setSessionTabCtxMenu(null);
+                try {
+                  await navigator.clipboard.writeText(m.id);
+                  setExportToast(`已复制会话 ID：${m.id.slice(0, 8)}…`);
+                  setTimeout(() => setExportToast(""), 2500);
+                } catch (e) {
+                  setExportToast(`复制失败：${e}`);
+                  setTimeout(() => setExportToast(""), 3000);
+                }
+              }}
+              title={`把会话 ID 复制到剪贴板（用于 debug / 上报 issue 时定位具体会话文件）。完整 ID：${m.id}`}
+            >
+              🔑 复制会话 ID
             </button>
             {/* "重写标题"按钮：调 regenerate_session_title 走非流式 LLM 调用，
                 让 LLM 看尾部 ~10 条 turn 给 ≤ 10 字概括。LLM 调用有延迟 +

@@ -136,6 +136,28 @@ export function PanelApp() {
   /// items 找最近 substr 命中，scrollIntoView + 1.5s 高亮。consume 后由
   /// PanelChat 回调清空。
   const [pendingChatMatch, setPendingChatMatch] = useState<string | null>(null);
+  /// PanelTasks detail 编辑器选段 "🧠 ask LLM about selection" 按钮触发：把
+  /// 选段封装成 "关于「<excerpt>」..." 预填到 PanelChat textarea + 切到聊天
+  /// tab。PanelChat 内 effect 消费后 setPendingChatPrefill(null)。
+  const [pendingChatPrefill, setPendingChatPrefill] = useState<string | null>(
+    null,
+  );
+  /// 桌面 ChatMini "💾 转 task" 按钮 → 跨窗口 deeplink → PanelTasks quickAdd
+  /// modal 预填 body。PanelTasks 在 mount 后 effect 读 prop → setBody + setTitle
+  /// (default = body 前 30 字) + setQuickAddOpen(true) → 调 onConsume 清空。
+  const [pendingQuickAddBody, setPendingQuickAddBody] = useState<string | null>(
+    null,
+  );
+  const requestChatPrefillFromSelection = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    // 50 字以内的 selection 直接全文做 prefix；> 50 字截断 + "…" 防 prefix
+    // 比正文还长。换行归一空格让 prefix 单行。
+    const excerpt = trimmed.replace(/\s+/g, " ").slice(0, 50);
+    const ellipsis = trimmed.length > 50 ? "…" : "";
+    setPendingChatPrefill(`关于「${excerpt}${ellipsis}」 `);
+    setActiveTab("聊天");
+  };
   const consumePanelDeeplink = useCallback(() => {
     let raw: string | null = null;
     try {
@@ -161,6 +183,8 @@ export function PanelApp() {
       dueFilter?: unknown;
       ts?: unknown;
       chatMatch?: unknown;
+      taskFocusTitle?: unknown;
+      quickAddBody?: unknown;
     };
     // TTL: 10s 内才认；防过期 deeplink 在用户后续手动打开 panel 时误触发
     if (typeof p.ts !== "number" || Date.now() - p.ts > 10_000) return;
@@ -174,6 +198,18 @@ export function PanelApp() {
       p.dueFilter === "createdToday"
     ) {
       setPendingDueFilter(p.dueFilter);
+    }
+    // taskFocusTitle：来自 ChatMini 双击「title」ref；走既有 requestFocusTask
+    // pipeline（切「任务」tab + setPendingTaskFocusTitle → PanelTasks 消费）。
+    // 与 tab/dueFilter 字段同 deeplink 体可并存。
+    if (typeof p.taskFocusTitle === "string" && p.taskFocusTitle.trim()) {
+      requestFocusTask(p.taskFocusTitle.trim());
+    }
+    // quickAddBody：来自 ChatMini "💾 转 task" 按钮；推到 PanelTasks 让其
+    // 在 mount 时 setBody + setTitle (前 30 字 default) + setQuickAddOpen(true)。
+    if (typeof p.quickAddBody === "string" && p.quickAddBody.trim()) {
+      setPendingQuickAddBody(p.quickAddBody.trim());
+      setActiveTab("任务");
     }
     if (
       p.chatMatch &&
@@ -654,6 +690,10 @@ export function PanelApp() {
               onRequestFocusTask={requestFocusTask}
               pendingChatMatch={pendingChatMatch}
               onConsumePendingChatMatch={() => setPendingChatMatch(null)}
+              pendingChatPrefill={pendingChatPrefill}
+              onConsumePendingChatPrefill={() =>
+                setPendingChatPrefill(null)
+              }
             />
           )}
           {activeTab === "任务" && (
@@ -662,6 +702,11 @@ export function PanelApp() {
               onConsumeFocus={() => setPendingTaskFocusTitle(null)}
               pendingDueFilter={pendingDueFilter}
               onConsumePendingDueFilter={() => setPendingDueFilter(null)}
+              onAskLLMAbout={requestChatPrefillFromSelection}
+              pendingQuickAddBody={pendingQuickAddBody}
+              onConsumePendingQuickAddBody={() =>
+                setPendingQuickAddBody(null)
+              }
             />
           )}
           {activeTab === "记忆" && (

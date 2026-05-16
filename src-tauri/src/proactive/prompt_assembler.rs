@@ -135,6 +135,13 @@ pub struct PromptInputs<'a> {
     /// 简短报喜 / 确认产物，避免任务执行落 done 后用户那边毫无反馈。
     /// Built by `build_task_completion_hint`.
     pub task_completion_hint: &'a str,
+    /// 最近 24h 完成的 butler_tasks 全集（rolling window）。与
+    /// `task_completion_hint` 互补：前者只覆盖"自上一 tick 起新转 done"瞬时
+    /// 增量，本字段是"过去 24h 总览"——让 LLM 在 proactive turn 看到 owner /
+    /// pet 一天的 accomplishments 景观，可用作"咱昨天搞定的 X 怎么样了"等
+    /// 连贯关怀的抓手。空 = 24h 内无 done（或刚启动 / 系统空闲一天）。
+    /// Built by `build_recent_completion_hint`.
+    pub recent_completion_hint: &'a str,
     /// Iter Cυ: owner's display name from settings.user_name. Empty when not set —
     /// builder skips the line and the LLM keeps using 「你」. Non-empty: a short
     /// "你的主人是「X」" line is pushed near the top of the prompt so the LLM
@@ -402,6 +409,7 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     push_if_nonempty(&mut s, inputs.butler_tasks_hint);
     push_if_nonempty(&mut s, inputs.task_heartbeat_hint);
     push_if_nonempty(&mut s, inputs.task_completion_hint);
+    push_if_nonempty(&mut s, inputs.recent_completion_hint);
     push_if_nonempty(&mut s, inputs.deadline_hint);
     s.push(String::new());
     s.push(

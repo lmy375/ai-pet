@@ -161,6 +161,25 @@ export function PanelSettings() {
   // 搜索框状态：仅在 form 模式生效。空 query = 全展；非空 = 按标题 + 关键字
   // 子串（大小写不敏感）过滤 section。
   const [searchQuery, setSearchQuery] = useState("");
+  /// 搜索 input ref — ⌘F / Ctrl+F 全局聚焦本框。raw YAML 模式下不渲染本
+  /// input；ref 留空安全（focus() 调用兜底 ?. 链）。
+  const settingsSearchInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key !== "f" && e.key !== "F") return;
+      // 仅 PanelSettings 自身可见 + form 模式时抢用 —— raw YAML 模式没
+      // input，应让原生 ⌘F 浏览器查找走（虽然 webview 默认查找未必很
+      // 有用，但不抢更安全）。ref.current 仅 form 模式 mount 时存在。
+      if (!settingsSearchInputRef.current) return;
+      e.preventDefault();
+      settingsSearchInputRef.current.focus();
+      settingsSearchInputRef.current.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // 工具风险面板：name + level + note 是后端静态 metadata（一次性加载）；
   // mode 反映 form.tool_review_overrides 当前编辑状态（不存盘也即时生效）。
   const [toolRiskRows, setToolRiskRows] = useState<{ name: string; level: string; note: string }[]>([]);
@@ -876,6 +895,7 @@ export function PanelSettings() {
           只在 form 模式下渲染；raw 模式是单 YAML textarea 不适用。 */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         <input
+          ref={settingsSearchInputRef}
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -884,7 +904,7 @@ export function PanelSettings() {
             // 让"按 Esc 退出过滤态"成为整个 panel 的肌肉记忆。
             if (e.key === "Escape") setSearchQuery("");
           }}
-          placeholder="搜索设置（按标题或关键字过滤；如 api / mute / regex / 工具）"
+          placeholder="搜索设置（按标题或关键字过滤；如 api / mute / regex / 工具）· ⌘F 聚焦"
           style={{ ...inputStyle, flex: 1 }}
         />
         {searchQuery && (

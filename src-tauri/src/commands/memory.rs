@@ -732,3 +732,130 @@ pub fn memory_reveal_detail_in_finder(detail_path: String) -> Result<(), String>
             .map_err(|e| format!("Failed to open parent dir via xdg-open: {}", e))
     }
 }
+
+/// 把 detail_path（相对 memories_dir 的相对路径）拼成绝对路径字符串。让
+/// 前端 PanelTasks 右键 "🔗 复制 detail.md path" 一键复制到剪贴板 → owner
+/// 直接 paste 进 IDE / Finder bar / shell `open` 打开 detail.md。与
+/// `memory_reveal_detail_in_finder` 同安全检查（`..` / 绝对路径拒；
+/// canonicalize 后必须落在 memories_dir 内）。文件不存在时也仍返拼接好的
+/// path（让 owner 在 detail.md 还没存盘时也能拿到目标 path，先开 IDE）。
+#[tauri::command]
+pub fn memory_detail_abs_path(detail_path: String) -> Result<String, String> {
+    let trimmed = detail_path.trim();
+    if trimmed.is_empty() {
+        return Err("detail_path is empty".to_string());
+    }
+    if trimmed.contains("..") || trimmed.starts_with('/') {
+        return Err("invalid detail_path".to_string());
+    }
+    let mem_dir = memories_dir()?;
+    let full = mem_dir.join(trimmed);
+    // 文件存在 → 走 canonicalize 加固（resolve symlink 等）；不存在直接拼。
+    // 后者让"detail.md 还没被宠物写过"的 task 也能拿到 "未来会落地"path。
+    if full.exists() {
+        let mem_canon = fs::canonicalize(&mem_dir)
+            .map_err(|e| format!("Failed to resolve memories_dir: {e}"))?;
+        let full_canon = fs::canonicalize(&full)
+            .map_err(|e| format!("Failed to canonicalize detail.md: {e}"))?;
+        if !full_canon.starts_with(&mem_canon) {
+            return Err("detail_path escaped memories_dir".to_string());
+        }
+        return Ok(full_canon.to_string_lossy().into_owned());
+    }
+    Ok(full.to_string_lossy().into_owned())
+}
+
+/// PanelMemory 类目卡 header 上的 7 天 churn sparkline 数据源。每类目返回
+/// 7 个桶（index 0 = 6 天前，index 6 = 今日），桶值 = 该日 updated_at 落在
+/// 当地日期内的 item 个数。"churn" 简化为"items 在当日有 update 行为"——
+/// 不区分 add / edit / rename（updated_at 都会更新）。让 owner 一眼看哪些
+/// 类目最近最活跃，哪些已半年没动。N=7 = 一周，足够看 ambient 节奏又不
+/// 至于横向占太宽。
+///
+/// 实现说明：复用 memory_list 读 index.yaml，再 inline 解析 updated_at —— 不
+/// 再起额外审计文件。`updated_at` 由 now_iso 写为 `%Y-%m-%dT%H:%M:%S%:z`
+/// (例 `2026-05-16T17:25:12+08:00`)，parse_from_rfc3339 完全兼容。
+#[tauri::command]
+pub fn memory_category_churn_7d() -> Result<BTreeMap<String, [u32; 7]>, String> {
+    let index = memory_list(None)?;
+    let today = chrono::Local::now().date_naive();
+    let mut out: BTreeMap<String, [u32; 7]> = BTreeMap::new();
+    for (key, cat) in &index.categories {
+        let mut buckets = [0u32; 7];
+        for item in &cat.items {
+            if item.updated_at.is_empty() {
+                continue;
+            }
+            let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&item.updated_at)
+            else {
+                continue;
+            };
+            let local_date = dt.with_timezone(&chrono::Local).date_naive();
+            let delta = (today - local_date).num_days();
+            if (0..7).contains(&delta) {
+                // delta=0 → today → idx 6；delta=6 → 6 天前 → idx 0
+                let idx = (6 - delta) as usize;
+                buckets[idx] = buckets[idx].saturating_add(1);
+            }
+        }
+        out.insert(key.clone(), buckets);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod churn_tests {
+    use super::*;
+    use chrono::{Duration, Local};
+
+    #[test]
+    fn churn_buckets_distribute_by_local_date() {
+        // 构造 3 个 item：今日 1 + 3 天前 1 + 8 天前 1（应被滤）
+        let today = Local::now();
+        let today_iso = today.format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let three_ago_iso = (today - Duration::days(3))
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
+        let eight_ago_iso = (today - Duration::days(8))
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
+
+        let mut cat = CategoryData {
+            label: "test".to_string(),
+            items: vec![],
+        };
+        for (title, ts) in [
+            ("a", today_iso.clone()),
+            ("b", three_ago_iso.clone()),
+            ("c", eight_ago_iso.clone()),
+        ] {
+            cat.items.push(MemoryItem {
+                title: title.to_string(),
+                description: String::new(),
+                detail_path: String::new(),
+                created_at: ts.clone(),
+                updated_at: ts,
+            });
+        }
+
+        // 内联模拟 memory_category_churn_7d 对一个 cat 的处理逻辑（避开实际
+        // memory_list 读盘）—— 确认日期换算 + bucket idx 正确。
+        let today_date = today.date_naive();
+        let mut buckets = [0u32; 7];
+        for item in &cat.items {
+            let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&item.updated_at)
+            else {
+                continue;
+            };
+            let local_date = dt.with_timezone(&Local).date_naive();
+            let delta = (today_date - local_date).num_days();
+            if (0..7).contains(&delta) {
+                let idx = (6 - delta) as usize;
+                buckets[idx] += 1;
+            }
+        }
+        assert_eq!(buckets[6], 1, "today should land at idx 6");
+        assert_eq!(buckets[3], 1, "3 days ago should land at idx 3");
+        assert_eq!(buckets.iter().sum::<u32>(), 2, "8-days-ago item filtered out");
+    }
+}

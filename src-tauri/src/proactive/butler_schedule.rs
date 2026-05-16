@@ -10,6 +10,8 @@
 //! stays in `proactive.rs`, mirroring how `build_reminders_hint` was kept there
 //! during QG5a — pure formatters move, env-touching functions stay.
 
+use chrono::Datelike;
+
 /// Cap on how many `butler_tasks` entries to surface in the proactive prompt. Above
 /// this the block dominates the prompt; the LLM can still call `memory_list` to see
 /// the full backlog if it needs to triage.
@@ -45,27 +47,52 @@ pub fn format_butler_tasks_block(
         .collect();
     let blocked_map = crate::task_queue::unresolved_blockers(&pairs);
     let snooze_map = crate::task_queue::snoozed_until_map(&pairs, now);
+    // [silent] marker：owner 显式标"不要在 proactive cycle 主动选择"。与
+    // blockedBy / snooze 同 filter 层级（不可 actionable）。`silent` 没有时
+    // 间维度 —— 只有 owner remove marker 才退出 silent 态。
+    let silent_set: std::collections::HashSet<String> = items
+        .iter()
+        .filter(|(_, d, _)| crate::task_queue::parse_silent(d))
+        .map(|(t, _, _)| t.clone())
+        .collect();
     let blocked_count = blocked_map.len();
     let snoozed_count = snooze_map.len();
+    let silent_count = silent_set.len();
     let filtered_items: Vec<&(String, String, String)> = items
         .iter()
         .filter(|(t, _, _)| {
-            !blocked_map.contains_key(t) && !snooze_map.contains_key(t)
+            !blocked_map.contains_key(t)
+                && !snooze_map.contains_key(t)
+                && !silent_set.contains(t)
         })
         .collect();
     if filtered_items.is_empty() {
-        // 全部被 blocker / snooze 卡住的极端情况：仍输出一行说明，避免 LLM
-        // 完全不知道还有任务存在。max_items == 0 fast-path 已在上面 return。
-        let reason = match (blocked_count, snoozed_count) {
-            (b, 0) => format!("全部被 [blockedBy: …] 依赖卡住（共 {} 条）", b),
-            (0, s) => format!("全部处于 [snooze: …] 暂停期（共 {} 条）", s),
-            (b, s) => format!(
-                "全部不可用（{} 条 [blockedBy: …] 卡住、{} 条 [snooze: …] 暂停）",
-                b, s
-            ),
+        // 全部被 blocker / snooze / silent 卡住的极端情况：仍输出一行说明，
+        // 避免 LLM 完全不知道还有任务存在。max_items == 0 fast-path 已在
+        // 上面 return。
+        let mut parts: Vec<String> = Vec::with_capacity(3);
+        if blocked_count > 0 {
+            parts.push(format!("{} 条 [blockedBy: …] 卡住", blocked_count));
+        }
+        if snoozed_count > 0 {
+            parts.push(format!("{} 条 [snooze: …] 暂停", snoozed_count));
+        }
+        if silent_count > 0 {
+            parts.push(format!("{} 条 [silent] owner 标静默", silent_count));
+        }
+        let reason = if parts.len() == 1 {
+            // 单一原因：用更口语化的旧表述
+            match (blocked_count, snoozed_count, silent_count) {
+                (b, 0, 0) => format!("全部被 [blockedBy: …] 依赖卡住（共 {} 条）", b),
+                (0, s, 0) => format!("全部处于 [snooze: …] 暂停期（共 {} 条）", s),
+                (0, 0, x) => format!("全部被 owner 标 [silent]（共 {} 条），不在主动 cycle 里出现", x),
+                _ => parts.join("、"),
+            }
+        } else {
+            format!("全部不可用（{}）", parts.join("、"))
         };
         return format!(
-            "用户委托给你的管家任务：{}，等先决条件解决 / 时刻到达后再出现。",
+            "用户委托给你的管家任务：{}，等先决条件解决 / 时刻到达 / [silent] marker 移除后再出现。",
             reason
         );
     }
@@ -123,19 +150,23 @@ pub fn format_butler_tasks_block(
         )
     };
     lines.push(header);
-    if blocked_count > 0 || snoozed_count > 0 {
-        // 透明告知有任务被 blocker / snooze 卡住 —— 让 LLM 知道队列里还有
-        // "沉睡"的工作，但当前不该 pick。数字是 cap 前总过滤数，不会因
-        // max_items 截断失真。
-        let mut parts: Vec<String> = Vec::with_capacity(2);
+    if blocked_count > 0 || snoozed_count > 0 || silent_count > 0 {
+        // 透明告知有任务被 blocker / snooze / silent 卡住 —— 让 LLM 知道队列
+        // 里还有"沉睡"的工作，但当前不该 pick。数字是 cap 前总过滤数，不会
+        // 因 max_items 截断失真。silent 是 owner 主动标"不要选"，与 blocked /
+        // snooze（被动 / 时间） 维度不同，独立列出。
+        let mut parts: Vec<String> = Vec::with_capacity(3);
         if blocked_count > 0 {
             parts.push(format!("{} 条被 [blockedBy: …] 依赖卡住", blocked_count));
         }
         if snoozed_count > 0 {
             parts.push(format!("{} 条处于 [snooze: …] 暂停期", snoozed_count));
         }
+        if silent_count > 0 {
+            parts.push(format!("{} 条被 owner 标 [silent] 不选", silent_count));
+        }
         lines.push(format!(
-            "（另有 {}，先决条件解决 / 时刻到达后才会出现在本列表。）",
+            "（另有 {}，先决条件解决 / 时刻到达 / [silent] marker 移除后才会出现在本列表。）",
             parts.join("、")
         ));
     }
@@ -194,10 +225,69 @@ pub fn has_butler_error(desc: &str) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ButlerSchedule {
     /// Daily recurring at HH:MM local. Implicit window — see `is_butler_due` for how it
-    /// resolves "already executed today".
+    /// resolves "已经执行过当天的".
     Every(u8, u8),
+    /// Weekday-restricted recurring at HH:MM local. `mask` 是 7 位 bitmask，bit 0 =
+    /// Monday, bit 6 = Sunday；只有 mask 命中当前 weekday 才视为"今日要 fire"。覆盖
+    /// "工作日 standup" (mask = 0b0011111) / "周末整理" (mask = 0b1100000) 等场景。
+    EveryOnWeekdays(u8, u8, u8),
     /// Single-fire at the absolute moment.
     Once(chrono::NaiveDateTime),
+}
+
+/// 工作日 mask 常量（Mon-Fri = bits 0-4）。导出供 parser / 测试 / 前端镜像复用。
+pub const WEEKDAY_MASK_WORKDAYS: u8 = 0b0011111;
+/// 周末 mask 常量（Sat-Sun = bits 5-6）。
+pub const WEEKDAY_MASK_WEEKEND: u8 = 0b1100000;
+
+/// 把单个 weekday 关键词（中/英）映射到 weekday mask（7 位中的一位）。返
+/// 回 None 表示不识别。识别集合：
+/// - 周一 / 星期一 / mon / monday → bit 0
+/// - 周二 / 星期二 / tue / tuesday → bit 1
+/// - … 周日 / 星期日 / sun / sunday → bit 6
+pub fn parse_single_weekday_keyword(s: &str) -> Option<u8> {
+    let lower = s.trim().to_lowercase();
+    match lower.as_str() {
+        "mon" | "monday" => return Some(1 << 0),
+        "tue" | "tuesday" => return Some(1 << 1),
+        "wed" | "wednesday" => return Some(1 << 2),
+        "thu" | "thursday" => return Some(1 << 3),
+        "fri" | "friday" => return Some(1 << 4),
+        "sat" | "saturday" => return Some(1 << 5),
+        "sun" | "sunday" => return Some(1 << 6),
+        _ => {}
+    }
+    match s.trim() {
+        "周一" | "星期一" | "礼拜一" => Some(1 << 0),
+        "周二" | "星期二" | "礼拜二" => Some(1 << 1),
+        "周三" | "星期三" | "礼拜三" => Some(1 << 2),
+        "周四" | "星期四" | "礼拜四" => Some(1 << 3),
+        "周五" | "星期五" | "礼拜五" => Some(1 << 4),
+        "周六" | "星期六" | "礼拜六" => Some(1 << 5),
+        "周日" | "周天" | "星期日" | "星期天" | "礼拜日" | "礼拜天" => Some(1 << 6),
+        _ => None,
+    }
+}
+
+/// 把 `[every:` 内 HH:MM 之前的可选 weekday-set 关键词解析为 mask。返回 None 表示不识别。
+/// 支持的关键词：
+/// - "工作日" / "周一到周五" / "weekday" / "weekdays" → 工作日 mask (Mon-Fri)
+/// - "周末" / "weekend" / "weekends" → 周末 mask (Sat-Sun)
+/// - 单 weekday "周一" / "monday" 等 → 该单天 mask
+pub fn parse_weekday_set_keyword(s: &str) -> Option<u8> {
+    let raw = s.trim();
+    let lower = raw.to_lowercase();
+    match lower.as_str() {
+        "weekday" | "weekdays" => return Some(WEEKDAY_MASK_WORKDAYS),
+        "weekend" | "weekends" => return Some(WEEKDAY_MASK_WEEKEND),
+        _ => {}
+    }
+    match raw {
+        "工作日" | "周一到周五" | "工作日子" => return Some(WEEKDAY_MASK_WORKDAYS),
+        "周末" | "双休" => return Some(WEEKDAY_MASK_WEEKEND),
+        _ => {}
+    }
+    parse_single_weekday_keyword(raw)
 }
 
 /// Parse a schedule prefix from a butler_tasks description. Conventions:
@@ -215,6 +305,27 @@ pub fn parse_butler_schedule_prefix(desc: &str) -> Option<(ButlerSchedule, Strin
         if topic.is_empty() {
             return None;
         }
+        // 尝试 weekday-set 路径：split 末 token 当 HH:MM，前面 token 当
+        // weekday-set 关键词。inside 内含空白说明有 weekday-set 前缀。
+        if let Some(space_idx) = inside.rfind(char::is_whitespace) {
+            let (left, right) = inside.split_at(space_idx);
+            let weekday_keyword = left.trim();
+            let time_part = right.trim();
+            if !weekday_keyword.is_empty() && !time_part.is_empty() {
+                let (hh, mm) = time_part.split_once(':')?;
+                let hour: u8 = hh.trim().parse().ok()?;
+                let minute: u8 = mm.trim().parse().ok()?;
+                if hour > 23 || minute > 59 {
+                    return None;
+                }
+                let mask = parse_weekday_set_keyword(weekday_keyword)?;
+                return Some((
+                    ButlerSchedule::EveryOnWeekdays(mask, hour, minute),
+                    topic,
+                ));
+            }
+        }
+        // 纯 HH:MM 路径（既有行为）
         let (hh, mm) = inside.split_once(':')?;
         let hour: u8 = hh.trim().parse().ok()?;
         let minute: u8 = mm.trim().parse().ok()?;
@@ -423,7 +534,54 @@ pub fn is_butler_due(
                 None => true, // never updated → due (will need first execution)
             }
         }
+        ButlerSchedule::EveryOnWeekdays(mask, h, m) => {
+            // 最近一次 fire = "now 之前最近 weekday ∈ mask 的那天 + HH:MM"。
+            // 算法：从今天起向回看 ≤ 7 天，找首个 mask 命中的日期；今日命中且
+            // 时刻未到时再往前找一天。mask == 0 → 永远不 fire（返 false 而非
+            // 死循环）。
+            if *mask == 0 {
+                return false;
+            }
+            let now_weekday_bit = weekday_bit_from_chrono(now.date().weekday());
+            // step1：找候选 fire date —— 从今日开始向回扫 7 天
+            let target_today = match now.date().and_hms_opt(*h as u32, *m as u32, 0) {
+                Some(t) => t,
+                None => return false,
+            };
+            let candidate_today_match =
+                (mask & now_weekday_bit) != 0 && now >= target_today;
+            let mut fire_date_offset_back: i64 = if candidate_today_match {
+                0
+            } else {
+                1 // 从昨日向回找
+            };
+            let mut fire_at: Option<chrono::NaiveDateTime> = None;
+            while fire_date_offset_back <= 7 {
+                let cand_date = now.date() - chrono::Duration::days(fire_date_offset_back);
+                let cand_bit = weekday_bit_from_chrono(cand_date.weekday());
+                if (mask & cand_bit) != 0 {
+                    if let Some(t) = cand_date.and_hms_opt(*h as u32, *m as u32, 0) {
+                        fire_at = Some(t);
+                        break;
+                    }
+                }
+                fire_date_offset_back += 1;
+            }
+            let Some(most_recent_fire) = fire_at else {
+                return false; // 8 天内无 mask 命中（理论上 mask != 0 时不会发生）
+            };
+            match last {
+                Some(u) => u < most_recent_fire,
+                None => true,
+            }
+        }
     }
+}
+
+/// `chrono::Weekday` → 7-bit mask 位号（bit 0 = Mon）。pub for `is_butler_due`
+/// + parser tests + 前端 mirror 文档对照。
+pub fn weekday_bit_from_chrono(wd: chrono::Weekday) -> u8 {
+    1 << wd.num_days_from_monday()
 }
 
 /// Iter Cλ: pure decider — given a butler task's description, updated_at, current
@@ -476,7 +634,11 @@ pub fn is_completed_once(
     };
     let target = match sched {
         ButlerSchedule::Once(dt) => dt,
-        ButlerSchedule::Every(_, _) => return false,
+        // recurring schedule（Every / EveryOnWeekdays）按定义再次 fire，永远
+        // 不算"完成可清理"。is_completed_once 仅给 [once:] 任务用。
+        ButlerSchedule::Every(_, _) | ButlerSchedule::EveryOnWeekdays(..) => {
+            return false;
+        }
     };
     let Some(last) = parse_updated_at_local(last_updated) else {
         return false;
@@ -538,6 +700,52 @@ mod tests {
             out.contains("1 条被 [blockedBy: …] 依赖卡住"),
             "header 应透明告知有任务被卡：{out}"
         );
+    }
+
+    #[test]
+    fn format_butler_tasks_block_filters_silent_tasks() {
+        // [silent] 任务从主 list 消失但 header 透明告知 owner 标了 N 条
+        let items = vec![
+            (
+                "活跃任务".into(),
+                "[task pri=3] 该做的".into(),
+                "2026-04-02T10:00:00+08:00".into(),
+            ),
+            (
+                "静默任务".into(),
+                "[silent] 知道但不要选".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("活跃任务"));
+        assert!(!out.contains("静默任务"), "silent 任务不该出现在主 list");
+        assert!(
+            out.contains("1 条被 owner 标 [silent] 不选"),
+            "header 应透明告知 silent 计数：{out}"
+        );
+    }
+
+    #[test]
+    fn format_butler_tasks_block_all_silent_returns_special_msg() {
+        // 全部任务都被 owner 标 [silent] → 不挂主 list，仅告知 LLM "有任务但全静默"
+        let items = vec![
+            (
+                "X".into(),
+                "[silent] A".into(),
+                "2026-04-01T10:00:00+08:00".into(),
+            ),
+            (
+                "Y".into(),
+                "[silent] B".into(),
+                "2026-04-02T10:00:00+08:00".into(),
+            ),
+        ];
+        let out = format_butler_tasks_block(&items, 6, 100, fixed_now());
+        assert!(out.contains("全部被 owner 标 [silent]"));
+        assert!(out.contains("共 2 条"));
+        assert!(!out.contains("X"), "silent 任务 title 不该出现");
+        assert!(!out.contains("Y"), "silent 任务 title 不该出现");
     }
 
     #[test]
@@ -935,6 +1143,80 @@ mod tests {
         let (sched, topic) = parse_butler_schedule_prefix("[every: 09:00] write today.md").unwrap();
         assert_eq!(sched, ButlerSchedule::Every(9, 0));
         assert_eq!(topic, "write today.md");
+    }
+
+    #[test]
+    fn parse_weekday_set_keyword_basic() {
+        // 工作日 / 周末（中英）
+        assert_eq!(parse_weekday_set_keyword("工作日"), Some(WEEKDAY_MASK_WORKDAYS));
+        assert_eq!(parse_weekday_set_keyword("周一到周五"), Some(WEEKDAY_MASK_WORKDAYS));
+        assert_eq!(parse_weekday_set_keyword("weekday"), Some(WEEKDAY_MASK_WORKDAYS));
+        assert_eq!(parse_weekday_set_keyword("WEEKDAYS"), Some(WEEKDAY_MASK_WORKDAYS));
+        assert_eq!(parse_weekday_set_keyword("周末"), Some(WEEKDAY_MASK_WEEKEND));
+        assert_eq!(parse_weekday_set_keyword("双休"), Some(WEEKDAY_MASK_WEEKEND));
+        assert_eq!(parse_weekday_set_keyword("Weekend"), Some(WEEKDAY_MASK_WEEKEND));
+        // 单 weekday（中英）
+        assert_eq!(parse_weekday_set_keyword("周一"), Some(1 << 0));
+        assert_eq!(parse_weekday_set_keyword("星期三"), Some(1 << 2));
+        assert_eq!(parse_weekday_set_keyword("周日"), Some(1 << 6));
+        assert_eq!(parse_weekday_set_keyword("Friday"), Some(1 << 4));
+        assert_eq!(parse_weekday_set_keyword("Sat"), Some(1 << 5));
+        // 不识别
+        assert_eq!(parse_weekday_set_keyword(""), None);
+        assert_eq!(parse_weekday_set_keyword("noday"), None);
+        assert_eq!(parse_weekday_set_keyword("后天"), None);
+    }
+
+    #[test]
+    fn parse_butler_schedule_prefix_parses_every_weekday_set() {
+        let (sched, topic) =
+            parse_butler_schedule_prefix("[every: 工作日 09:00] standup").unwrap();
+        assert_eq!(
+            sched,
+            ButlerSchedule::EveryOnWeekdays(WEEKDAY_MASK_WORKDAYS, 9, 0)
+        );
+        assert_eq!(topic, "standup");
+        let (sched2, _) =
+            parse_butler_schedule_prefix("[every: 周末 10:00] 整理桌面").unwrap();
+        assert_eq!(
+            sched2,
+            ButlerSchedule::EveryOnWeekdays(WEEKDAY_MASK_WEEKEND, 10, 0)
+        );
+        let (sched3, _) =
+            parse_butler_schedule_prefix("[every: 周一 09:00] mon-standup").unwrap();
+        assert_eq!(
+            sched3,
+            ButlerSchedule::EveryOnWeekdays(1 << 0, 9, 0)
+        );
+    }
+
+    #[test]
+    fn parse_butler_schedule_prefix_rejects_invalid_weekday() {
+        // weekday-set 识别失败 → 整段 None（不退化为纯 HH:MM 解释 "后天 09:00"）
+        assert!(parse_butler_schedule_prefix("[every: 后天 09:00] x").is_none());
+    }
+
+    #[test]
+    fn is_butler_due_every_weekday_set() {
+        // 2026-05-04 周一 10:00 —— 工作日 mask + 09:00 触发：今日 mask 命中 + 时刻已过
+        let mon_10am = chrono::NaiveDate::from_ymd_opt(2026, 5, 4).unwrap()
+            .and_hms_opt(10, 0, 0).unwrap();
+        let workdays_9am = ButlerSchedule::EveryOnWeekdays(WEEKDAY_MASK_WORKDAYS, 9, 0);
+        assert!(is_butler_due(&workdays_9am, mon_10am, ""), "周一 10:00 工作日 09:00 fire 过应 due");
+        // 上次更新在今日 fire 之后 → 不 due
+        assert!(!is_butler_due(&workdays_9am, mon_10am, "2026-05-04T09:30:00+08:00"));
+
+        // 2026-05-09 周六 10:00 —— 工作日 mask 不命中今日 → 看回最近周五 09:00
+        let sat_10am = chrono::NaiveDate::from_ymd_opt(2026, 5, 9).unwrap()
+            .and_hms_opt(10, 0, 0).unwrap();
+        // 上次更新在周五 fire 之前 → 还 due（周五的 fire 还没人做）
+        assert!(is_butler_due(&workdays_9am, sat_10am, "2026-05-08T08:00:00+08:00"));
+        // 上次更新在周五 fire 之后 → 不 due
+        assert!(!is_butler_due(&workdays_9am, sat_10am, "2026-05-08T15:00:00+08:00"));
+
+        // 周末 mask + 周一 10:00 → 看回最近周日 10:00 → due if not done
+        let weekend_10am = ButlerSchedule::EveryOnWeekdays(WEEKDAY_MASK_WEEKEND, 10, 0);
+        assert!(is_butler_due(&weekend_10am, mon_10am, ""), "周一 10:00 周末 10:00 fire 看周日 应 due");
     }
 
     #[test]

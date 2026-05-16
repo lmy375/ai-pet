@@ -51,6 +51,16 @@ interface Props {
   /// 确认（与桌面 ChatPanel 顶部「清空」按钮同模式），单次误点不会丢历史。
   /// 不传则 chip 仅显信息无 reset 按钮（兜底降级）。
   onResetContext?: () => void;
+  /// 双击气泡内的 `「title」` ref token → 跳到 PanelTasks 该任务行。
+  /// selection-based 检测：双击命中点向左找「，向右找」，提取 title 传出。
+  /// 与 PanelChat 内同名 onRefDoubleClick 同 pipeline；ChatMini 通过 deeplink
+  /// + openPanel 跨窗口送过去，PanelApp 端接受 taskFocusTitle 字段消费。
+  /// 不传 → 双击气泡走 onOpenPanel fallback（既有行为）。
+  onRefDoubleClick?: (title: string) => void;
+  /// hover bubble 时浮的 "💾 转 task" 按钮触发：把本条消息文本作为 task
+  /// body 传出，由 App.tsx 写跨窗口 deeplink + 开 panel + 弹 quickAdd modal
+  /// 预填。让 owner 觉得"宠物说了好东西，存为 task" 一键搞定。
+  onSaveAsTask?: (text: string) => void;
 }
 
 /// 最近 N 条的硬上限。窗口很小，DOM 太长既不好读也耗渲染。
@@ -137,6 +147,15 @@ const MINI_CHAT_STYLES = `
 .pet-mini-row:hover .pet-mini-row-time {
   opacity: 0.55;
 }
+/* 底相对时间小角标：与 .pet-mini-row-time 顶时钟同 hover-reveal 模式。
+   信号优先级比顶时钟还低（相对时间是 ambient），默认透明 + hover 升 0.45。 */
+.pet-mini-row .pet-mini-row-rel {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.pet-mini-row:hover .pet-mini-row-rel {
+  opacity: 0.5;
+}
 /* streaming 时的"宠物在思考"脉冲：opacity 0.4→1→0.4 循环 1.4s；首 chunk 到
    达前唯一可视提示，到达后与 streaming bubble 并列继续脉冲让用户感到"还在
    流"。reduced-motion 媒体查询下退化为常亮，避免对眩晕症用户挑战。 */
@@ -182,6 +201,62 @@ function formatBubbleTimestamp(ts: string | undefined): string {
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `[${hh}:${mm}]`;
+}
+
+/// 完整时间戳：`YYYY-MM-DD HH:MM:SS 周X (今天/昨天/N 天前)`。给 ts label
+/// hover tooltip 用 —— 折叠后的 `[HH:MM]` 没日期 / 没秒级精度，owner 想精确
+/// 看时间需要这个 fuller variant。`now` 注入便于测试（缺省取系统时钟）。
+/// 无 ts / 解析失败返空串 —— caller 应 fallback 不挂 title。
+function formatFullTimestamp(ts: string | undefined, now: Date = new Date()): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  const wd = weekdays[d.getDay()];
+  // 相对天数：与 now 比较 0=今天 / 1=昨天 / 2+=N 天前 / -1=明天（罕见，
+  // 由 ts 早于现在不超过 1 天但跨午夜出现）。
+  const startOfDay = (dt: Date) =>
+    new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+  const diffDays = Math.round(
+    (startOfDay(now) - startOfDay(d)) / (24 * 60 * 60 * 1000),
+  );
+  let rel: string;
+  if (diffDays === 0) rel = "今天";
+  else if (diffDays === 1) rel = "昨天";
+  else if (diffDays === -1) rel = "明天";
+  else if (diffDays > 1 && diffDays < 30) rel = `${diffDays} 天前`;
+  else if (diffDays < -1 && diffDays > -30) rel = `${-diffDays} 天后`;
+  else rel = "";
+  return `${y}-${mo}-${day} ${hh}:${mm}:${ss} ${wd}${rel ? ` · ${rel}` : ""}`;
+}
+
+/// Bubble 底部 hover chip 用的相对时间格式。短串：刚刚 / N 分前 / N 时前 /
+/// 昨天 / N 天前。与顶部 [HH:MM] 时钟 chip 对偶 —— 顶给绝对时刻 / 底给"距
+/// 现在多久"。`now` 注入便于测试。无 ts / 解析失败返空串。
+///
+/// 与 PanelMemory `formatRelativeAgeBuckets` 思路一致但单位更短（适合
+/// chip 紧凑显示）：去掉 "分钟前" 改 "分前"，"小时前" 改 "时前"。
+function formatBubbleRelative(ts: string | undefined, now: Date = new Date()): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  const ageMs = now.getTime() - d.getTime();
+  if (ageMs < 60_000) return "刚刚";
+  if (ageMs < 3_600_000) return `${Math.floor(ageMs / 60_000)} 分前`;
+  if (ageMs < 86_400_000) return `${Math.floor(ageMs / 3_600_000)} 时前`;
+  // 跨日判定：用 startOfDay 比对，相邻日历日就是"昨天"而非"24+ 时前"
+  const startOfDay = (dt: Date) =>
+    new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  if (diffDays === 1) return "昨天";
+  if (diffDays >= 2) return `${diffDays} 天前`;
+  return ""; // 未来时刻：罕见 / 系统时钟回拨，不显
 }
 
 /// 把 ts 转成"YYYY-MM-DD" 日期键，给"跨日分隔条" 分组用。无效 / 缺失返
@@ -232,6 +307,8 @@ export function ChatMini({
   nowTasks,
   sessionTokens,
   onResetContext,
+  onRefDoubleClick,
+  onSaveAsTask,
 }: Props) {
   // armed-confirm: 第一次点击进 "再点确认" 态 + 3s 内不点就回 idle，防误触。
   // 与桌面 ChatPanel 顶部「清空」按钮 / 任务面板「清结束」按钮同模式。
@@ -270,6 +347,12 @@ export function ChatMini({
   // 单条 bubble 复制反馈：刚被复制的 visibleItems idx，1.5s 自动清。
   // 与 copyToast（⌘+C 复制最近一条）分开，让两套语义各自独立显视觉反馈。
   const [bubbleCopyIdx, setBubbleCopyIdx] = useState<number | null>(null);
+  /// 顶 ts chip click 复制 ISO timestamp 后的"✓ 已复制"短暂 visual feedback
+  /// 状态。同 bubbleCopyIdx 模式：1.5s 自清。null = 无；非空 = 显 ✓ 的 idx。
+  const [tsCopyIdx, setTsCopyIdx] = useState<number | null>(null);
+  /// 底 ⏱ 相对时间 chip click 复制 "N 分前 / 昨天 / N 天前" 串后的 ✓ 反馈
+  /// 状态。与 tsCopyIdx 同模板。
+  const [relCopyIdx, setRelCopyIdx] = useState<number | null>(null);
   /// 右键菜单状态：聚合"复制 / 带时间戳复制 / 针对这条再问 / 在 Panel 打开"
   /// 几个原本散在双击 / 小按钮里的动作到一个发现入口。idx 是 visibleItems
   /// 下标；x/y 是 viewport 坐标（fixed 定位）。null = 关闭。
@@ -472,6 +555,40 @@ export function ChatMini({
         setSearchOpen(true);
         window.setTimeout(() => searchInputRef.current?.focus(), 0);
       }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [visible]);
+
+  /// ⌘C / Ctrl+C 快捷复制最近一条消息（user 或 assistant）。让位条件：
+  /// - 选区非空：用户在拷选区内文本 → 走 browser native copy，不抢键
+  /// - 输入控件聚焦：textarea / input / contentEditable 内 ⌘C 是 native copy
+  ///   textarea 选区文本，不该被覆盖
+  /// - ChatMini 不 visible（panel 模式 / pet hidden）：disable 监听
+  /// copyRecentN 每 render 重建但读 messages 等 props，用 ref 避免空 deps 闭包
+  /// 拿到旧 messages。
+  const copyRecentNRef = useRef(copyRecentN);
+  useEffect(() => {
+    copyRecentNRef.current = copyRecentN;
+  }, [copyRecentN]);
+  useEffect(() => {
+    if (!visible) return;
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "c") return;
+      const sel = window.getSelection();
+      if (sel && sel.toString().length > 0) return;
+      const ae = document.activeElement;
+      if (
+        ae instanceof HTMLInputElement ||
+        ae instanceof HTMLTextAreaElement ||
+        (ae instanceof HTMLElement && ae.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      copyRecentNRef.current(1);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -1020,7 +1137,7 @@ export function ChatMini({
               e.stopPropagation();
               onOpenPanel();
             }}
-            title="在面板中打开聊天（看完整历史 / 多会话切换）"
+            title="在面板中打开聊天（看完整历史 / 多会话切换）— 也可按 ⌘O / Ctrl+O"
             aria-label="open panel chat"
             style={{
               position: "absolute",
@@ -1217,6 +1334,30 @@ export function ChatMini({
                 💭
               </button>
             ) : null;
+          /// 💾 转 task：bubble 内 text 非空时显，hover row 才浮起（与 copyBtn
+          /// 同 pet-mini-row-copy 透明度类）。点击调 onSaveAsTask 让 App.tsx
+          /// 写跨窗口 deeplink + 开 panel + 弹 quickAdd modal 预填 body。owner
+          /// 觉得"宠物说了好东西，存为 task 防忘" 一键搞定。
+          const saveAsTaskBtn =
+            text && onSaveAsTask ? (
+              <button
+                type="button"
+                className="pet-mini-row-copy"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSaveAsTask(text);
+                }}
+                title="把本条消息转为新 task（跨窗口开 Panel + quickAdd modal 预填 body）"
+                aria-label="save this message as task"
+                style={{
+                  alignSelf: "flex-end",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
+                }}
+              >
+                💾
+              </button>
+            ) : null;
           return (
             <Fragment key={`${m.role}-${idx}-${text.length}-${imgs.length}`}>
               {showDateDivider && (
@@ -1280,36 +1421,238 @@ export function ChatMini({
                   连续 < 60s 同 role 消息中间的 ts 标签合并为"仅首末显"，
                   让密集对话不被时间戳切碎；hover bubble 自身的 title attr 仍
                   能拿到完整时间。 */}
-              {hasValidTime && !hiddenTimestampIdx.has(idx) && (
-                <span
-                  className="pet-mini-row-time"
-                  style={{
-                    position: "absolute",
-                    top: -12,
-                    [m.role === "user" ? "right" : "left"]: 8,
-                    fontSize: 9,
-                    color: "var(--pet-color-muted)",
-                    fontFamily: "'SF Mono', 'Menlo', monospace",
-                    whiteSpace: "nowrap",
-                    pointerEvents: "none",
-                    background: "var(--pet-color-card)",
-                    padding: "0 4px",
-                    borderRadius: 3,
-                    lineHeight: "12px",
-                  }}
-                >
-                  {timeLabel}
-                </span>
-              )}
+              {hasValidTime && !hiddenTimestampIdx.has(idx) && (() => {
+                const isTsCopied = tsCopyIdx === idx;
+                return (
+                  <span
+                    className="pet-mini-row-time"
+                    title={`${formatFullTimestamp(m.ts)} · 点击复制完整 ISO timestamp 到剪贴板`}
+                    onClick={(e) => {
+                      // 点击复制 raw ISO timestamp（m.ts）—— debug / 报错 /
+                      // 跨工具时常用精确时间。stopPropagation 防 bubble 内
+                      // ⌘+click 复制 / dblclick ref 跳等其它 click 路径误
+                      // 触发。1.5s ✓ 视觉反馈与 bubbleCopyIdx 同模板。
+                      e.stopPropagation();
+                      if (!m.ts) return;
+                      navigator.clipboard
+                        .writeText(m.ts)
+                        .then(() => {
+                          setTsCopyIdx(idx);
+                          window.setTimeout(
+                            () =>
+                              setTsCopyIdx((cur) =>
+                                cur === idx ? null : cur,
+                              ),
+                            1500,
+                          );
+                        })
+                        .catch((err) =>
+                          console.error("ts chip copy failed:", err),
+                        );
+                    }}
+                    style={{
+                      position: "absolute",
+                      top: -12,
+                      [m.role === "user" ? "right" : "left"]: 8,
+                      fontSize: 9,
+                      color: isTsCopied
+                        ? "var(--pet-tint-green-fg)"
+                        : "var(--pet-color-muted)",
+                      fontWeight: isTsCopied ? 600 : undefined,
+                      fontFamily: "'SF Mono', 'Menlo', monospace",
+                      whiteSpace: "nowrap",
+                      // pointerEvents 默认 auto —— 让 hover 触发 title 的 native
+                      // tooltip 显完整时间戳（YYYY-MM-DD HH:MM:SS 周X · 相对天）。
+                      // 折叠后 [HH:MM] 没日期 / 秒级精度，hover full ts 补全。
+                      background: "var(--pet-color-card)",
+                      padding: "0 4px",
+                      borderRadius: 3,
+                      lineHeight: "12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {isTsCopied ? "✓ " : ""}{timeLabel}
+                  </span>
+                );
+              })()}
+              {/* bubble 底相对时间 chip：与顶 [HH:MM] 时钟 chip 对偶 ——
+                  顶给绝对时刻、底给"距现在多久"。row hover 才显（pet-mini-
+                  row-rel CSS 类透明度 0 → 0.5），存在感比顶 chip 还低
+                  （ambient 信号）。user 行靠右底 / assistant 行靠左底，与 bubble
+                  对齐方向同侧。relText 解析失败时不渲染（无 ts / 未来时刻）。
+                  hiddenTimestampIdx 折叠时跳过（与顶 chip 同 gate）—— 密集
+                  burst 中间也合并。 */}
+              {hasValidTime &&
+                !hiddenTimestampIdx.has(idx) &&
+                (() => {
+                  const rel = formatBubbleRelative(m.ts);
+                  if (!rel) return null;
+                  const isRelCopied = relCopyIdx === idx;
+                  return (
+                    <span
+                      className="pet-mini-row-rel"
+                      title={`相对时间 · ${formatFullTimestamp(m.ts)} · 点击复制 "${rel}"`}
+                      onClick={(e) => {
+                        // 点击复制相对时间字符串（"5 分前" / "昨天" / "3 天前"
+                        // 等），与顶 ts chip 复制 ISO 对偶。stopPropagation 防
+                        // bubble ⌘+click 复制全文 / dblclick ref 跳等其它路径
+                        // 误触发。1.5s ✓ 视觉反馈与 tsCopyIdx 同模板。
+                        e.stopPropagation();
+                        navigator.clipboard
+                          .writeText(rel)
+                          .then(() => {
+                            setRelCopyIdx(idx);
+                            window.setTimeout(
+                              () =>
+                                setRelCopyIdx((cur) =>
+                                  cur === idx ? null : cur,
+                                ),
+                              1500,
+                            );
+                          })
+                          .catch((err) =>
+                            console.error("rel chip copy failed:", err),
+                          );
+                      }}
+                      style={{
+                        position: "absolute",
+                        bottom: -10,
+                        [m.role === "user" ? "right" : "left"]: 8,
+                        fontSize: 9,
+                        color: isRelCopied
+                          ? "var(--pet-tint-green-fg)"
+                          : "var(--pet-color-muted)",
+                        fontWeight: isRelCopied ? 600 : undefined,
+                        fontFamily: "'SF Mono', 'Menlo', monospace",
+                        whiteSpace: "nowrap",
+                        background: "var(--pet-color-card)",
+                        padding: "0 4px",
+                        borderRadius: 3,
+                        lineHeight: "12px",
+                        pointerEvents: "auto",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {isRelCopied ? "✓ " : ""}⏱ {rel}
+                    </span>
+                  );
+                })()}
               {/* user 右对齐 → 复制按钮在 bubble 左侧 */}
+              {m.role === "user" && saveAsTaskBtn}
               {m.role === "user" && copyBtn}
               <div
-                onDoubleClick={() => onOpenPanel?.()}
+                onClick={(e) => {
+                  // ⌘/Ctrl + click 复制本条 bubble 文本：与既有 ⌘C copy
+                  // last + 角标 copy 按钮 + ctx menu 复制项 形成"键盘党
+                  // 精准复制中段消息"路径。无 modifier 时 onClick 不抢用
+                  // （让选区 / drag / 普通单击行为照旧）。⌥ / ⇧ 同按时不
+                  // 触发避免与系统级 modifier 冲突。
+                  if (!(e.metaKey || e.ctrlKey)) return;
+                  if (e.altKey || e.shiftKey) return;
+                  if (!text) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleBubbleCopy(idx, text);
+                }}
+                onDoubleClick={(e) => {
+                  // 先尝试 ref-token 跳转：dblclick 命中点 selection 起点向左
+                  // 找「，向右找」，命中 → onRefDoubleClick；否则 fallback 走
+                  // onOpenPanel（双击 bubble 既有行为）。
+                  if (onRefDoubleClick) {
+                    const sel = window.getSelection();
+                    if (sel && sel.rangeCount > 0) {
+                      const range = sel.getRangeAt(0);
+                      const node = range.startContainer;
+                      // text node 才走 ref 探测；element 节点 dblclick（如点击 emoji
+                      // span 边界）走 fallback
+                      if (node.nodeType === Node.TEXT_NODE) {
+                        const text = node.textContent ?? "";
+                        const start = range.startOffset;
+                        const end = range.endOffset;
+                        // 向左 / 右扫，碰另一边引号 / 换行先停 = 不命中（双击点
+                        // 已离开 ref token 区）
+                        let lb = -1;
+                        for (let i = start - 1; i >= 0; i--) {
+                          const ch = text[i];
+                          if (ch === "「") {
+                            lb = i;
+                            break;
+                          }
+                          if (ch === "」" || ch === "\n") break;
+                        }
+                        if (lb >= 0) {
+                          let rb = -1;
+                          for (let i = end; i < text.length; i++) {
+                            const ch = text[i];
+                            if (ch === "」") {
+                              rb = i;
+                              break;
+                            }
+                            if (ch === "「" || ch === "\n") break;
+                          }
+                          if (rb > lb) {
+                            const title = text.slice(lb + 1, rb).trim();
+                            if (title) {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              // 触发前播一声轻量 200ms beep（Web Audio API
+                              // oscillator，无 audio asset 依赖）。让 owner
+                              // 听觉确认"ref 跳转触发了" —— 跨窗口 deeplink
+                              // 视觉切到 PanelTasks 有延迟时尤其有用。catch
+                              // 容忍 AudioContext 不可用 / 无声效环境，silent
+                              // 退化不破坏跳转主流程。
+                              try {
+                                const AC =
+                                  window.AudioContext ||
+                                  (window as unknown as {
+                                    webkitAudioContext?: typeof AudioContext;
+                                  }).webkitAudioContext;
+                                if (AC) {
+                                  const ac = new AC();
+                                  const osc = ac.createOscillator();
+                                  const gain = ac.createGain();
+                                  osc.type = "sine";
+                                  osc.frequency.value = 880; // A5
+                                  gain.gain.setValueAtTime(
+                                    0.06,
+                                    ac.currentTime,
+                                  );
+                                  gain.gain.exponentialRampToValueAtTime(
+                                    0.0001,
+                                    ac.currentTime + 0.15,
+                                  );
+                                  osc.connect(gain).connect(ac.destination);
+                                  osc.start();
+                                  osc.stop(ac.currentTime + 0.16);
+                                  // 关 AudioContext 释放 ：300ms 后（够 stop 完整）
+                                  window.setTimeout(() => ac.close(), 300);
+                                }
+                              } catch {
+                                // 静默退化 —— 跳转主流程仍走。
+                              }
+                              onRefDoubleClick(title);
+                              return;
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  onOpenPanel?.();
+                }}
                 title={
-                  // hover tooltip 把时间戳 + 双击 hint 拼在一起。两条信息合
-                  // 并到 title attr —— 原生 tooltip 只能挂一条，分多个不好。
+                  // hover tooltip 把时间戳 + 多个交互 hint 拼一起。原生
+                  // tooltip 只能挂一条 → 分多个不好。
                   `${formatBubbleTimestamp(m.ts)}${
-                    onOpenPanel ? " · 双击进入面板聊天（看完整历史 / 多会话切换）" : ""
+                    text ? " · ⌘+点击 复制本条文本" : ""
+                  }${
+                    onRefDoubleClick
+                      ? " · 双击「title」跳任务面板该卡片"
+                      : ""
+                  }${
+                    onOpenPanel
+                      ? " · 双击气泡空白处进入面板聊天（看完整历史 / 多会话切换）"
+                      : ""
                   }`
                 }
                 style={{
@@ -1358,8 +1701,9 @@ export function ChatMini({
                 )}
                 {text && parseMarkdown(text)}
               </div>
-              {/* assistant 左对齐 → 复制 + 再回应按钮在 bubble 右侧 */}
+              {/* assistant 左对齐 → 复制 + 再回应 + 存 task 按钮在 bubble 右侧 */}
               {m.role === "assistant" && respondBtn}
+              {m.role === "assistant" && saveAsTaskBtn}
               {m.role === "assistant" && copyBtn}
               {isLast && isAssistant && showFeedbackOnLast && (
                 <div

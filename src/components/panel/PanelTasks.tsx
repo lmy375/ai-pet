@@ -412,6 +412,48 @@ export function formatTaskAsMarkdown(t: TaskView, detail?: TaskDetail): string {
   return lines.join("\n");
 }
 
+/** 把任务格式化为 markdown blockquote —— 与 `formatTaskAsMarkdown`（H2 + bullets
+ * 完整段）形成"简短 quote" vs "完整 block" 双选项。粘到 detail.md / chat /
+ * 别的 task 描述时直接显成引用块，比一整段 H2 更轻量。
+ *
+ * 形式：
+ * ```
+ * > ✓ **标题** (P3 · ⏰ 2026-05-20 18:00 · #tag1 #tag2)
+ * >
+ * > 描述内容（裁剪到 200 字）
+ * ```
+ *
+ * 规则：
+ * - 第 1 行：status emoji + 加粗标题 + (paren 内 meta 串)；meta 为空时省略 paren
+ * - 描述 body 非空时：空 `>` 隔开，每行加 `> ` 前缀；> 200 字裁剪 + `…`
+ * - body 内换行保留（多行也每行加前缀），让代码 / 列表结构不被破坏
+ *
+ * 纯字符串拼装，幂等 —— 同一 task 永远产出同一段。 */
+export function formatTaskAsBlockquote(t: TaskView): string {
+  const STATUS_EMOJI: Record<TaskStatus, string> = {
+    pending: "📋",
+    done: "✅",
+    error: "❌",
+    cancelled: "🚫",
+  };
+  const emoji = STATUS_EMOJI[t.status] ?? "📋";
+  const meta: string[] = [];
+  meta.push(`P${t.priority}`);
+  if (t.due) meta.push(`⏰ ${formatDue(t.due)}`);
+  for (const tag of t.tags) meta.push(`#${tag}`);
+  const metaStr = meta.length > 0 ? ` (${meta.join(" · ")})` : "";
+  const lines: string[] = [`> ${emoji} **${t.title}**${metaStr}`];
+  const body = t.body.trim();
+  if (body) {
+    const preview = body.length > 200 ? body.slice(0, 200) + "…" : body;
+    lines.push(">");
+    for (const ln of preview.split("\n")) {
+      lines.push(ln.length > 0 ? `> ${ln}` : ">");
+    }
+  }
+  return lines.join("\n");
+}
+
 /** 判定 markdown image 语法里的 url 是否真的是图片：data:image/... 或 http(s)
  * 后缀 png/jpg/jpeg/gif/webp/svg/bmp。非图链接 → 当普通 markdown 渲（避免误把
  * `![logo](https://x.com/some-page)` 这种文档链接渲成 broken img）。 */
@@ -497,19 +539,125 @@ function formatBytes(n: number): string {
   return `${n} B`;
 }
 
-/** detail.md 行内 bare https/http 链接的 chip 卡片。比 parseMarkdown 里的纯
- * 蓝色下划线 UrlLink 更显眼："📎 hostname"形态让 detail.md 里的引用链接看起
- * 来像附件而非散文里的 URL。点击调 plugin-opener 打开默认浏览器（与 UrlLink
- * 同后端）。`title` attr 显完整 URL 让 owner 可 hover 验证地址。
- *
- * 域名解析失败（无效 URL）→ 退化用 URL 本身做 label，避免渲染空字符串。 */
-function LinkCard({ url }: { url: string }) {
-  let label = url;
-  try {
-    label = new URL(url).hostname;
-  } catch {
-    // 不合法 URL（regex 误命中）→ 保留原文，至少能识别
+/// 根据 heading 计数（1-indexed，按 emit 顺序，与 parseMarkdown 内的
+/// headingCounter 同源）从 markdown 提取该节：从第 N 个 heading 开始，到下一
+/// 个同级或更高级别 heading 之前（exclusive）。找不到返空串。
+///
+/// 例：
+///   ## A         ← counter=1，level=2
+///   text...
+///   ### B        ← counter=2，level=3（A 的子节）
+///   ...          ← B 的内容
+///   ## C         ← counter=3，level=2（结束 A）
+/// extractSection(md, 1) → "## A\ntext...\n### B\n..."
+/// extractSection(md, 2) → "### B\n..."
+function extractSectionFromMarkdown(md: string, counter: number): string {
+  const lines = md.split("\n");
+  let seen = 0;
+  let startIdx = -1;
+  let startLevel = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,3})\s+/);
+    if (m) {
+      seen += 1;
+      if (seen === counter) {
+        startIdx = i;
+        startLevel = m[1].length;
+        break;
+      }
+    }
   }
+  if (startIdx < 0) return "";
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,3})\s+/);
+    if (m && m[1].length <= startLevel) {
+      endIdx = i;
+      break;
+    }
+  }
+  return lines.slice(startIdx, endIdx).join("\n").trimEnd();
+}
+
+/// detail.md textarea 中文 typography 配对表。仅 Chinese 全角 / typography
+/// 字符 —— 不含 ASCII `(` / `[` / `{`，那些容易误触（用户写代码 / 数学表达式
+/// 时不期待自动配对）。中文场景下「」『』（）等是 owner 明确想成对出现的
+/// 引用 / 引号符号，自动配可大幅省手。
+const BRACKET_PAIRS: Record<string, string> = {
+  "「": "」",
+  "『": "』",
+  "（": "）",
+  "【": "】",
+  "《": "》",
+  "“": "”",
+  "‘": "’",
+};
+
+/** 域名 → emoji 映射表。匹配按"完全相等"或"以 `.<key>` 结尾"双语义 ——
+ * 让 `gist.github.com` 也能命中 github.com 的 🐙。常用引用源（dev / docs /
+ * video / social / package）覆盖到。未命中 → 📎 通用附件 emoji。
+ *
+ * 顺序无关：Map iteration 顺序按插入序，但匹配逻辑取首个命中即返回；同一
+ * URL 不会命中多 key 因为子域名收敛规则唯一。 */
+const DOMAIN_EMOJI_MAP: Record<string, string> = {
+  "github.com": "🐙",
+  "gitlab.com": "🦊",
+  "linear.app": "📐",
+  "figma.com": "🎨",
+  "notion.so": "📓",
+  "notion.site": "📓",
+  "youtube.com": "▶️",
+  "youtu.be": "▶️",
+  "docs.google.com": "📄",
+  "drive.google.com": "🗂️",
+  "twitter.com": "🐦",
+  "x.com": "🐦",
+  "stackoverflow.com": "📚",
+  "npmjs.com": "📦",
+  "news.ycombinator.com": "🟧",
+  "reddit.com": "👽",
+  "arxiv.org": "📜",
+  "wikipedia.org": "🌐",
+  "medium.com": "✍️",
+};
+
+/// pure：取 URL 的"语义 host"（去 `www.` 前缀）+ 选 emoji。invalid URL 返
+/// `{ emoji: 📎, label: 原文 }`。完整 hostname 匹配优先；不命中再走"以
+/// `.<key>` 结尾"判断让子域名也命中（如 `api.github.com` / `gist.github.com`
+/// 都算 🐙）。
+function pickLinkEmojiAndLabel(url: string): { emoji: string; label: string } {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return { emoji: "📎", label: url };
+  }
+  const cleaned = host.startsWith("www.") ? host.slice(4) : host;
+  // 完全相等优先（"github.com" 命中 "github.com"）
+  const direct = DOMAIN_EMOJI_MAP[cleaned];
+  if (direct) return { emoji: direct, label: cleaned };
+  // 子域名 fallback："gist.github.com" / "api.github.com" 命中 "github.com"
+  for (const key of Object.keys(DOMAIN_EMOJI_MAP)) {
+    if (cleaned.endsWith("." + key)) {
+      return { emoji: DOMAIN_EMOJI_MAP[key], label: cleaned };
+    }
+  }
+  return { emoji: "📎", label: cleaned };
+}
+
+/** detail.md 行内 bare https/http 链接的 chip 卡片。比 parseMarkdown 里的纯
+ * 蓝色下划线 UrlLink 更显眼：emoji + hostname 形态让 detail.md 里的引用链接
+ * 看起来像附件而非散文里的 URL。点击调 plugin-opener 打开默认浏览器（与
+ * UrlLink 同后端）。`title` attr 显完整 URL 让 owner 可 hover 验证地址。
+ *
+ * 域名特化 emoji（DOMAIN_EMOJI_MAP）让常用引用源（GitHub 🐙 / Linear 📐 /
+ * Figma 🎨 / Notion 📓 / YouTube ▶️ / docs.google 📄 / Twitter / X 🐦 等）
+ * 一眼可分。未命中域名退化 📎 通用 emoji。
+ *
+ * 解析失败（无效 URL）→ pickLinkEmojiAndLabel 兜底返 📎 + 原文 URL 作 label，
+ * 避免渲染空字符串。 */
+function LinkCard({ url }: { url: string }) {
+  const { emoji, label } = pickLinkEmojiAndLabel(url);
   return (
     <a
       href={url}
@@ -538,32 +686,166 @@ function LinkCard({ url }: { url: string }) {
         textOverflow: "ellipsis",
       }}
     >
-      📎 {label}
+      {emoji} {label}
     </a>
   );
 }
 
-/** detail.md 文本段：把 bare https/http URL 切出来用 LinkCard 渲，其它子段
- * 交给 parseMarkdown。negative lookbehind `(?<!\]\()` 排除 markdown 链接
- * `[text](url)` 里的 url —— 那种已经有显式锚文本，渲染为 LinkCard 反而丢失
- * 用户表达。trailing 标点（句号 / 逗号 / 引号）会被 char 范围排除自然落到
- * 后续文本里，与既有 parseUrls 路径同思路。 */
+/** task 状态 → 视觉 emoji。pending 默认（不渲 emoji）/ done ✅ / error ❌ /
+ * cancelled 🚫。与 PanelMemory / TG `/tasks` 同 status 字符对偶语义。 */
+function statusEmojiForTask(status: string | undefined): string {
+  switch (status) {
+    case "done":
+      return "✅ ";
+    case "error":
+      return "❌ ";
+    case "cancelled":
+      return "🚫 ";
+    default:
+      return "📋 "; // pending / unknown
+  }
+}
+
+/** detail.md 行内 `[task: 标题]` 语法的 chip 卡片。让 owner 在 detail.md 引用
+ * 其它 task 时一眼看到对方的 status emoji + title，点击切换焦点过去（与 chat
+ * 里 `「标题」` ref token 同 cross-link 思路）。
+ *
+ * - taskInfo === null（lookup 失败）→ muted 灰底 + "(未找到)" 后缀；click 仍
+ *   触发 onClick 让 owner 知道是 typo（也可能 owner 删了 task 留了引用）。
+ * - taskInfo === undefined（无 lookup callback）→ 与 null 同视觉但 click no-op
+ *   （仅展示态）。
+ *
+ * 视觉风格与 LinkCard 同 chip 集群：inline-flex / borderRadius 6 / 行内浮起
+ * 仍可读。`flexShrink: 0` + `maxWidth: 240` ellipsis 防长 title 撑爆 layout。 */
+function TaskRefChip({
+  title,
+  taskInfo,
+  onClick,
+}: {
+  title: string;
+  taskInfo: { status: string; pinned?: boolean } | null | undefined;
+  onClick?: (title: string) => void;
+}) {
+  const found = taskInfo !== null && taskInfo !== undefined;
+  const emoji = found ? statusEmojiForTask(taskInfo!.status) : "❓ ";
+  const pinPrefix = found && taskInfo!.pinned ? "📌 " : "";
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onClick) onClick(title);
+      }}
+      title={
+        found
+          ? `跳到任务「${title}」（status: ${taskInfo!.status}${taskInfo!.pinned ? " · pinned" : ""}）`
+          : `引用了任务「${title}」，但未在当前 task 列表找到（可能已删除 / typo）`
+      }
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 2,
+        padding: "1px 7px",
+        margin: "0 2px",
+        borderRadius: 6,
+        background: found
+          ? "var(--pet-tint-blue-bg)"
+          : "color-mix(in srgb, var(--pet-color-muted) 12%, transparent)",
+        border: found
+          ? "1px solid color-mix(in srgb, var(--pet-tint-blue-fg) 30%, transparent)"
+          : "1px dashed color-mix(in srgb, var(--pet-color-muted) 35%, transparent)",
+        color: found ? "var(--pet-tint-blue-fg)" : "var(--pet-color-muted)",
+        fontSize: "0.92em",
+        fontFamily: "inherit",
+        textDecoration: "none",
+        cursor: onClick && found ? "pointer" : "default",
+        whiteSpace: "nowrap",
+        maxWidth: 240,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      {pinPrefix}
+      {emoji}
+      {title}
+      {!found && (
+        <span style={{ marginLeft: 4, fontStyle: "italic" }}>(未找到)</span>
+      )}
+    </button>
+  );
+}
+
+/** detail.md 文本段：把 bare https/http URL 切出来用 LinkCard 渲，把
+ * `[task: 标题]` 语法切出来用 TaskRefChip 渲，其它子段交给 parseMarkdown。
+ *
+ * negative lookbehind `(?<!\]\()` 排除 markdown 链接 `[text](url)` 里的 url —
+ * 那种已经有显式锚文本，渲染为 LinkCard 反而丢失用户表达。trailing 标点（句
+ * 号 / 逗号 / 引号）会被 char 范围排除自然落到后续文本里，与既有 parseUrls
+ * 路径同思路。
+ *
+ * `[task: ...]` 与 task header `[task pri=...]` 不冲突 —— description 里的
+ * marker 不出现在 detail.md body，且 `[task:` 要求**冒号后立刻一个空格**
+ * 才匹配，与 `[task pri=...]` 形态错开。 */
 function renderDetailTextWithLinkCards(
   text: string,
   keyPrefix: string,
+  /// 非 URL 子段的渲染模式：
+  /// - `"markdown"`（默认）：走 parseMarkdown，渲 **bold** / `code` / lists 等
+  ///   富格式 —— 用于 detail.md 展开 / preview 模式的正式渲染。
+  /// - `"raw"`：保持原文文本（newline 由父级 `pre-wrap` 处理）—— 用于行
+  ///   hover preview 这种轻量场景：要 LinkCard chip 化但不希望 hover 闪动时
+  ///   重跑 markdown 引擎，也避免改变既有"raw markdown 字面"视觉。
+  textMode: "markdown" | "raw" = "markdown",
+  /// task ref 查表 callback。`[task: 标题]` 命中时调用拿 status + pinned 等
+  /// 信息。返回 null = 未找到（chip 走 muted 态）；不传 = 不识别 `[task:]`
+  /// 语法整体（保持原文本走 parseMarkdown）。
+  taskLookup?: (title: string) => { status: string; pinned?: boolean } | null,
+  /// task chip 点击 callback。仅 lookup 命中时才挂；用于 cross-link 跳焦点。
+  /// 不传时 chip 视觉同但 click 无副作用。
+  onTaskClick?: (title: string) => void,
 ): ReactNode[] {
-  const URL_RE = /(?<!\]\()https?:\/\/[^\s)\]<>"']+/g;
+  // URL 与 task ref 并行匹配：alternation 单次扫描定位所有特殊段。
+  // group 1 (`[task: x]` 的内 title 段) 命中时本 match 是 task ref；
+  // 否则当 URL 处理。
+  const COMBINED_RE = taskLookup
+    ? /(?<!\]\()https?:\/\/[^\s)\]<>"']+|\[task:\s+([^\]]+?)\]/g
+    : /(?<!\]\()https?:\/\/[^\s)\]<>"']+/g;
+  const renderChunk = (s: string, key: string): ReactNode =>
+    textMode === "markdown" ? (
+      <Fragment key={key}>{parseMarkdown(s)}</Fragment>
+    ) : (
+      <Fragment key={key}>{s}</Fragment>
+    );
   const out: ReactNode[] = [];
   let lastIdx = 0;
   let urlKey = 0;
+  let taskKey = 0;
   let m: RegExpExecArray | null;
-  while ((m = URL_RE.exec(text)) !== null) {
+  while ((m = COMBINED_RE.exec(text)) !== null) {
     if (m.index > lastIdx) {
       out.push(
-        <Fragment key={`${keyPrefix}-pre-${m.index}`}>
-          {parseMarkdown(text.slice(lastIdx, m.index))}
-        </Fragment>,
+        renderChunk(
+          text.slice(lastIdx, m.index),
+          `${keyPrefix}-pre-${m.index}`,
+        ),
       );
+    }
+    // group 1 命中 → 本 match 是 `[task: title]` task ref（caller 注了 lookup
+    // 时 alternation 才生效）；否则当 URL 处理。
+    const taskTitle = m[1];
+    if (taskTitle !== undefined && taskLookup) {
+      const trimmed = taskTitle.trim();
+      out.push(
+        <TaskRefChip
+          key={`${keyPrefix}-task-${taskKey++}`}
+          title={trimmed}
+          taskInfo={taskLookup(trimmed)}
+          onClick={onTaskClick}
+        />,
+      );
+      lastIdx = m.index + m[0].length;
+      continue;
     }
     // 剥句末标点（与 parseUrls 同 trail-trim 思路）：让 "看这里 https://a.com。"
     // 不把"。"吃进 URL。
@@ -585,15 +867,11 @@ function renderDetailTextWithLinkCards(
     lastIdx = m.index + m[0].length;
   }
   if (lastIdx < text.length) {
-    out.push(
-      <Fragment key={`${keyPrefix}-tail`}>
-        {parseMarkdown(text.slice(lastIdx))}
-      </Fragment>,
-    );
+    out.push(renderChunk(text.slice(lastIdx), `${keyPrefix}-tail`));
   }
-  // 全无 URL 时退化到原 parseMarkdown 路径（避免 splice 空白 ReactNode）。
+  // 全无 URL 时退化到 markdown / raw 单条 path（避免 splice 空白 ReactNode）。
   if (out.length === 0) {
-    return [parseMarkdown(text)];
+    return textMode === "markdown" ? [parseMarkdown(text)] : [text];
   }
   return out;
 }
@@ -609,6 +887,11 @@ function renderDetailTextWithLinkCards(
 function parseDetailMdWithImages(
   md: string,
   onOpenImage: (src: string) => void,
+  /// 可选：task ref `[task: 标题]` 查表 callback。同 renderDetailTextWithLinkCards
+  /// 的同名参数；不传则不识别 task ref 语法。
+  taskLookup?: (title: string) => { status: string; pinned?: boolean } | null,
+  /// 可选：task ref chip click callback。
+  onTaskClick?: (title: string) => void,
 ): ReactNode[] {
   const out: ReactNode[] = [];
   // url 部分用 [^)\s] 限制不含右括号 / 空白，避免吃过界
@@ -623,6 +906,9 @@ function parseDetailMdWithImages(
           {renderDetailTextWithLinkCards(
             md.slice(lastIdx, m.index),
             `txt-${m.index}`,
+            "markdown",
+            taskLookup,
+            onTaskClick,
           )}
         </Fragment>,
       );
@@ -646,7 +932,13 @@ function parseDetailMdWithImages(
   if (lastIdx < md.length) {
     out.push(
       <Fragment key={`txt-tail`}>
-        {renderDetailTextWithLinkCards(md.slice(lastIdx), "txt-tail")}
+        {renderDetailTextWithLinkCards(
+          md.slice(lastIdx),
+          "txt-tail",
+          "markdown",
+          taskLookup,
+          onTaskClick,
+        )}
       </Fragment>,
     );
   }
@@ -882,6 +1174,13 @@ interface PanelTasksProps {
   /// 清空 → 用户后续手改 filter 不会被 stale 值反复覆盖。
   pendingDueFilter?: "all" | "today" | "overdue" | "createdToday" | null;
   onConsumePendingDueFilter?: () => void;
+  /// detail.md 编辑器选段 → "🧠 ask LLM about <selection>" 按钮触发：把
+  /// 选段送到 PanelApp 上层，由那里 prefill PanelChat textarea + 切 tab。
+  onAskLLMAbout?: (text: string) => void;
+  /// 桌面 ChatMini "💾 转 task" 按钮 → 跨窗口 deeplink → 在本 mount 时
+  /// setBody + setTitle (前 30 字 default) + setQuickAddOpen(true)。
+  pendingQuickAddBody?: string | null;
+  onConsumePendingQuickAddBody?: () => void;
 }
 
 export function PanelTasks({
@@ -889,6 +1188,9 @@ export function PanelTasks({
   onConsumeFocus,
   pendingDueFilter,
   onConsumePendingDueFilter,
+  onAskLLMAbout,
+  pendingQuickAddBody,
+  onConsumePendingQuickAddBody,
 }: PanelTasksProps = {}) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   /// 任务依赖未解决映射：title → 仍卡着的 blocker title 列表。tasks 变化时
@@ -1277,9 +1579,213 @@ export function PanelTasks({
   /// 栏算"行 N / 共 M"。0 = 无 / 编辑器未打开 / cursor 在文首。两个 textarea
   /// （edit / split 模式）共用一个 state —— 互斥编辑保证不竞争。
   const [detailCursorPos, setDetailCursorPos] = useState<number>(0);
-  // 编辑器关闭 → 重置 cursor pos，避免下次打开新任务沿用旧值闪烁。
+  /// detail.md textarea selection 终点（selectionEnd UTF-16 offset）。配合
+  /// detailCursorPos = selectionStart 算选区长度。`end > start` 时字数 chip
+  /// 切到 "选 N 字 · 〜M 词" 显示，与 IDE / Pages 同 selection-aware UX。
+  /// 无选区时（start == end）chip 显总字数。事件来源与 cursor pos 同 4 路：
+  /// onChange / onSelect / onKeyUp / onClick。
+  const [detailSelectionEnd, setDetailSelectionEnd] = useState<number>(0);
+  /// dirty badge "● 未保存" stale tracking：记录 dirty 起始时刻，超 60s 仍未
+  /// 保存时把 badge 染红 + 微 pulse 提醒 owner 该 ⌘S。content 回到 original /
+  /// 编辑器关闭都清状态。`dirtyTickKey` 周期性 +1 触发重渲染让 elapsedSec 推
+  /// 进；不存 elapsed 进 state 避免每 5s 多余 render（只读 ref + tick key 让
+  /// 重渲发生即可，badge 内部读 ref 算最新值）。
+  const dirtySinceRef = useRef<number | null>(null);
+  const [dirtyTickKey, setDirtyTickKey] = useState(0);
   useEffect(() => {
-    if (editingDetailTitle === null) setDetailCursorPos(0);
+    const dirty = editingDetailContent !== editingDetailOriginalRef.current;
+    if (dirty) {
+      if (dirtySinceRef.current === null) dirtySinceRef.current = Date.now();
+    } else {
+      dirtySinceRef.current = null;
+    }
+  }, [editingDetailContent]);
+  useEffect(() => {
+    if (editingDetailTitle === null) {
+      dirtySinceRef.current = null;
+      return;
+    }
+    const id = window.setInterval(() => setDirtyTickKey((k) => k + 1), 5000);
+    return () => window.clearInterval(id);
+  }, [editingDetailTitle]);
+
+  /// 自动草稿：每 60s 把当前 editingDetailContent 写到 localStorage 防意外关
+  /// 闭丢内容。key 形如 `pet-detail-draft-${title}` —— task 标题已 unique 唯
+  /// 一，重名不可能进 butler_tasks。draft 仅在 dirty 时写（content 与磁盘版
+  /// 一致时无意义）。值是 `{content, ts}` JSON。
+  /// 编辑器打开时 handleEnterEditDetail 检查 draft；存在且与文件版本不同时
+  /// 弹"恢复 / 忽略"banner。保存成功 → 删 draft；取消 / 关掉 panel → 留 draft
+  /// 给下次开同任务时恢复。
+  const DRAFT_AUTO_INTERVAL_MS = 60_000;
+  const draftKeyFor = (taskTitle: string) =>
+    `pet-detail-draft-${taskTitle}`;
+  /// banner state：存"上次保存的 draft 时间戳 + 内容"。null = 无 draft 待恢复。
+  const [pendingDraft, setPendingDraft] = useState<{
+    title: string;
+    content: string;
+    ts: number;
+  } | null>(null);
+  useEffect(() => {
+    if (editingDetailTitle === null) return;
+    const id = window.setInterval(() => {
+      const dirty =
+        editingDetailContent !== editingDetailOriginalRef.current;
+      if (!dirty) return;
+      try {
+        window.localStorage.setItem(
+          draftKeyFor(editingDetailTitle),
+          JSON.stringify({ content: editingDetailContent, ts: Date.now() }),
+        );
+      } catch (e) {
+        // 配额满 / 私密模式：静默失败 —— 自动草稿是 backup safety net，主
+        // 路径（⌘S / 关闭二次确认）仍能保数据。
+        console.error("detail draft autosave failed:", e);
+      }
+    }, DRAFT_AUTO_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [editingDetailTitle, editingDetailContent]);
+
+  /// detail.md 大纲浮窗开关。split / preview 模式下 view-mode 行 📑 按钮 toggle；
+  /// 仅 1 个浮窗共用 state（同时只展开一个任务的 detail 编辑器，互斥保证）。
+  /// 编辑器关闭 → 自动关浮窗（与 cursor pos 重置同模式）。
+  const [detailOutlineOpen, setDetailOutlineOpen] = useState(false);
+  useEffect(() => {
+    if (editingDetailTitle === null) setDetailOutlineOpen(false);
+  }, [editingDetailTitle]);
+
+  /// 大纲浮窗 active heading 跟踪：IntersectionObserver 监听 preview pane 渲
+  /// 染的所有 `pet-detail-${title}-h${counter}` 元素，把"当前最靠上可见"的
+  /// heading 高亮在浮窗对应 item 上，让 owner 滚 preview 时一眼知道"我在哪节"。
+  /// rootMargin `-70%` 让观察区缩到视口顶部 30% —— 只有 heading 滚进顶部 30%
+  /// 才算 active（更稳定 + 避免视口尾部的多个 heading 同时算 active）。
+  const [activeHeadingCounter, setActiveHeadingCounter] = useState<number | null>(null);
+  useEffect(() => {
+    if (!detailOutlineOpen || !editingDetailTitle) {
+      setActiveHeadingCounter(null);
+      return;
+    }
+    if (detailViewMode === "edit") {
+      // edit 模式没 preview pane 渲染 heading（id 不存在）；跳过观察。
+      setActiveHeadingCounter(null);
+      return;
+    }
+    const prefix = `pet-detail-${editingDetailTitle}-h`;
+    const elements: HTMLElement[] = [];
+    let counter = 1;
+    while (true) {
+      const el = document.getElementById(`${prefix}${counter}`);
+      if (!el) break;
+      elements.push(el);
+      counter += 1;
+    }
+    if (elements.length === 0) return;
+    const visibility = new Map<number, number>();
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const m = entry.target.id.match(/-h(\d+)$/);
+          if (!m) continue;
+          const n = parseInt(m[1], 10);
+          if (entry.isIntersecting) {
+            visibility.set(n, entry.intersectionRatio);
+          } else {
+            visibility.delete(n);
+          }
+        }
+        if (visibility.size === 0) return;
+        // 取最小 counter（emit 顺序最早 = DOM 中最靠上）作 active —— 与 IDE
+        // 通用 "topmost visible heading" 模式一致。
+        let minCounter = Infinity;
+        for (const k of visibility.keys()) {
+          if (k < minCounter) minCounter = k;
+        }
+        if (Number.isFinite(minCounter)) {
+          setActiveHeadingCounter(minCounter);
+        }
+      },
+      {
+        rootMargin: "0px 0px -70% 0px",
+        threshold: [0, 0.1, 0.5, 1],
+      },
+    );
+    for (const el of elements) obs.observe(el);
+    return () => obs.disconnect();
+  }, [
+    detailOutlineOpen,
+    editingDetailTitle,
+    editingDetailContent,
+    detailViewMode,
+  ]);
+
+  /// detail.md 内 `[task: 标题]` 语法 → TaskRefChip 的查表 callback。读
+  /// 当前 tasks state，命中返 { status, pinned }；未命中返 null（chip 显
+  /// muted "(未找到)"）。useCallback 让 chip 渲染稳定不触发不必要重渲。
+  const taskLookupForRefs = useCallback(
+    (title: string) => {
+      const found = tasks.find((t) => t.title === title);
+      if (!found) return null;
+      return { status: found.status, pinned: !!found.pinned };
+    },
+    [tasks],
+  );
+
+  /// task ref chip 点击 → 复用既有 pendingTitleFocus 路径：清 filter / 显
+  /// finished / 写 title → 下一帧 effect 找到 row → scrollIntoView + focus。
+  /// 与"完成小卡 click title 跳行"同一条 jump-to-task pipeline，UX 一致。
+  const handleTaskRefClick = useCallback(
+    (title: string) => {
+      // 命中检查：找不到的 task ref 点击仍可走 jump-to 但 setPendingTitleFocus
+      // 会在下一帧失败（找不到 idx）—— 静默 no-op，无副作用。
+      setSearch("");
+      setSelectedTags(new Set());
+      setDueFilter("all");
+      setPriorityFilter(new Set());
+      setOriginFilter(new Set());
+      setPinnedFilter(false);
+      setShowFinished(true);
+      setPendingTitleFocus(title);
+    },
+    [],
+  );
+
+  /// preview / split 模式 heading 旁的 📋 复制本节 callback。parseMarkdown opts
+  /// 传入 —— heading 计数同 parseMarkdown 内部 counter，extractSectionFromMarkdown
+  /// 走同算法定位起止行。复用 setBulkResultMsg toast channel（与 📋 复制全文
+  /// / 📤 export 同 UI）。
+  const handleCopyHeadingSection = useCallback(
+    (counter: number) => {
+      const section = extractSectionFromMarkdown(
+        editingDetailContent,
+        counter,
+      );
+      if (!section) {
+        setBulkResultMsg("未找到节内容");
+        window.setTimeout(() => setBulkResultMsg(""), 3000);
+        return;
+      }
+      void navigator.clipboard
+        .writeText(section)
+        .then(() => {
+          setBulkResultMsg(
+            `已复制本节 markdown（${section.length} 字符）`,
+          );
+        })
+        .catch((e: unknown) => {
+          setBulkResultMsg(`复制失败：${e}`);
+        })
+        .finally(() => {
+          window.setTimeout(() => setBulkResultMsg(""), 4000);
+        });
+    },
+    [editingDetailContent],
+  );
+  // 编辑器关闭 → 重置 cursor pos + selection end，避免下次打开新任务沿用
+  // 旧值闪烁。
+  useEffect(() => {
+    if (editingDetailTitle === null) {
+      setDetailCursorPos(0);
+      setDetailSelectionEnd(0);
+    }
   }, [editingDetailTitle]);
 
   /// preview 模式下点击 `- [ ]` / `- [x]` 复选框时切换源 description 该行的
@@ -1314,6 +1820,11 @@ export function PanelTasks({
   // priority badge 行内 picker 的目标 task title。null = 关闭。同时只允许一个
   // picker 浮起 —— 多 popover 同屏分散注意力。
   const [priorityPickerTitle, setPriorityPickerTitle] = useState<string | null>(null);
+  /// 💤 snooze chip click 弹的 mini popover state：哪个 task 的 chip 被点。
+  /// null = 关。与 priorityPickerTitle 同 outside-click-close + Esc 模式（在
+  /// 既有 useEffect 内 union close）。复用 task_set_snooze preset 入参（与
+  /// /snooze tonight / monday 等 backend 同源）。
+  const [snoozePickerTitle, setSnoozePickerTitle] = useState<string | null>(null);
   // status badge 行内 picker。与 priority 同模式但只在 pending 行可点（done /
   // cancelled 暂无回退路径；error 走既有"重试"按钮）。
   const [statusPickerTitle, setStatusPickerTitle] = useState<string | null>(null);
@@ -1407,12 +1918,20 @@ export function PanelTasks({
   // 外部 click 关 picker：与 ChatMini 顶部 📋 弹框同模式。统一关四类 picker
   // （priority / status badge 行内 picker + 右键菜单 + tag 调色板）。
   useEffect(() => {
-    if (!priorityPickerTitle && !statusPickerTitle && !taskCtxMenu && !tagColorPicker) return;
+    if (
+      !priorityPickerTitle &&
+      !statusPickerTitle &&
+      !taskCtxMenu &&
+      !tagColorPicker &&
+      !snoozePickerTitle
+    )
+      return;
     const close = () => {
       setPriorityPickerTitle(null);
       setStatusPickerTitle(null);
       setTaskCtxMenu(null);
       setTagColorPicker(null);
+      setSnoozePickerTitle(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -1420,6 +1939,7 @@ export function PanelTasks({
         setStatusPickerTitle(null);
         setTaskCtxMenu(null);
         setTagColorPicker(null);
+        setSnoozePickerTitle(null);
       }
     };
     window.addEventListener("mousedown", close);
@@ -1428,7 +1948,7 @@ export function PanelTasks({
       window.removeEventListener("mousedown", close);
       window.removeEventListener("keydown", onKey);
     };
-  }, [priorityPickerTitle, statusPickerTitle, taskCtxMenu, tagColorPicker]);
+  }, [priorityPickerTitle, statusPickerTitle, taskCtxMenu, tagColorPicker, snoozePickerTitle]);
 
   // ⌘N / Ctrl+N 打开 quick-add 模态。Tauri WKWebView 没原生"新窗口"
   // 默认行为可吃，preventDefault 兜底。Esc 关闭。input / textarea 内
@@ -1644,6 +2164,244 @@ export function PanelTasks({
       cur.focus();
     });
   }, []);
+  /// detail.md textarea 中文 typography 配对处理。返回 true 表示本事件已处理
+  /// （caller 应 early-return 跳过 ⌘S / Esc 等后续分支）。规则：
+  /// - 仅 BRACKET_PAIRS 已知 open 字符触发；其它键直接返 false。
+  /// - IME composing 期间不响应（让输入法自处理；e.nativeEvent.isComposing
+  ///   是 React SyntheticEvent 不暴露的 native flag）。
+  /// - 空选区：插入 open + close，光标落 inner（pair 中间）。
+  /// - 非空选区：把选区包裹为 open + selection + close，selection 仍是 inner
+  ///   content（让用户能继续 typing / 嵌套包裹）。
+  const handleDetailBracketPair = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      const close = BRACKET_PAIRS[e.key];
+      if (!close) return false;
+      // IME composing：let the input method 自处理，不抢键。React 不直接暴露
+      // `isComposing`；走 nativeEvent 取。
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      e.preventDefault();
+      const value = ta.value;
+      const selected = value.slice(start, end);
+      const inserted = e.key + selected + close;
+      const next = value.slice(0, start) + inserted + value.slice(end);
+      setEditingDetailContent(next);
+      // 同步 cursor pos state（行号 status chip 实时跟上）。
+      const innerStart = start + e.key.length;
+      const innerEnd = innerStart + selected.length;
+      setDetailCursorPos(innerStart);
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = innerStart;
+        cur.selectionEnd = innerEnd;
+      });
+      return true;
+    },
+    [],
+  );
+
+  /// detail.md textarea ⌘D / Ctrl+D 复制当前行（或选区）。Sublime / JetBrains
+  /// 通用 IDE 行为：
+  /// - 选区非空：在选区之后立即重复一份选中文本，新副本仍 selected 让 owner
+  ///   可继续 ⌘D 累积粘多份。
+  /// - 选区空：把光标所在行复制一份插到下一行，光标落到新行的同 column 位置
+  ///   （column = 原行 selectionStart - lineStart 的偏移）。
+  /// 任何 shift / alt 修饰 → 不响应让位给未来扩展（⌘⇧D 删除当前行 / ⌘⌥D 复
+  /// 制到上一行等可后续加）。IME composing 跳过。preventDefault 吃浏览器默认
+  /// ⌘D（"Add bookmark"）—— Tauri webview 通常不弹书签栏，但兜底安全。
+  const handleDetailDuplicateLine = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "d") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      e.preventDefault();
+      if (start !== end) {
+        // 选区非空：在选区末尾插一份相同文本，新副本 selected
+        const selected = value.slice(start, end);
+        const next = value.slice(0, end) + selected + value.slice(end);
+        const newSelEnd = end + selected.length;
+        setEditingDetailContent(next);
+        setDetailCursorPos(end);
+        requestAnimationFrame(() => {
+          const t = detailEditorRef.current;
+          if (!t) return;
+          t.focus();
+          t.selectionStart = end;
+          t.selectionEnd = newSelEnd;
+        });
+        return true;
+      }
+      // 空选区：复制光标所在整行到下一行。光标落到新行的相对 column。
+      const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const lineEnd = value.indexOf("\n", start);
+      const lineEndIdx = lineEnd === -1 ? value.length : lineEnd;
+      const lineText = value.slice(lineStart, lineEndIdx);
+      const insertion = `\n${lineText}`;
+      const next =
+        value.slice(0, lineEndIdx) + insertion + value.slice(lineEndIdx);
+      // 新光标位置 = 原 lineEnd + 1（跳过换行）+ 原 column offset
+      const colOffset = start - lineStart;
+      const newCursor = lineEndIdx + 1 + colOffset;
+      setEditingDetailContent(next);
+      setDetailCursorPos(newCursor);
+      requestAnimationFrame(() => {
+        const t = detailEditorRef.current;
+        if (!t) return;
+        t.focus();
+        t.selectionStart = t.selectionEnd = newCursor;
+      });
+      return true;
+    },
+    [],
+  );
+
+  /// detail.md textarea Enter 自动续列表前缀。识别行首 list marker：
+  ///   - `- text` / `* text` / `+ text`：无序列表
+  ///   - `- [ ] text` / `- [x] text`：GFM checklist（新行总是 `- [ ] `，让 owner
+  ///     自己改 done 状态）
+  ///   - `<N>. text`：有序列表（N+1 自动递增）
+  ///   - `> text`：blockquote
+  /// 命中 + 当前行非空 → 阻止默认 + 插入 `\n` + 同 marker（含原 indent）。
+  /// 命中 + 当前行**仅有 marker 无文本** → 阻止默认 + 删掉该 marker（escape
+  /// list 语义，与 VSCode / Obsidian / Notion 同模式）。
+  /// 任何 modifier 按下（shift / meta / ctrl / alt）→ 不响应，让 Shift+Enter
+  /// soft 换行 / ⌘Enter 等其它语义不被抢。
+  /// IME composing 期间不响应，与 bracket pair 同 guard。
+  const handleDetailListContinue = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (e.key !== "Enter") return false;
+      if (e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      // 选区非空：让 native Enter（替换选区为 \n）走，不抢
+      if (start !== end) return false;
+      const value = ta.value;
+      const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const lineEnd = value.indexOf("\n", start);
+      const cur = value.slice(lineStart, lineEnd === -1 ? value.length : lineEnd);
+      // GFM checklist 必须放 unordered 前判（- [ ] 也匹配 `- ` regex）
+      let match = cur.match(/^(\s*)(- \[[ xX]\] )(.*)$/);
+      if (match) {
+        const [, indent, , content] = match;
+        const isEmpty = content.length === 0;
+        if (isEmpty) {
+          // 退出 list：删掉 indent + marker（保留 lineStart 之前 + lineEnd 之后）
+          const next =
+            value.slice(0, lineStart) +
+            value.slice(lineStart + indent.length + match[2].length);
+          const cursorPos = lineStart;
+          e.preventDefault();
+          setEditingDetailContent(next);
+          setDetailCursorPos(cursorPos);
+          requestAnimationFrame(() => {
+            const t = detailEditorRef.current;
+            if (!t) return;
+            t.focus();
+            t.selectionStart = t.selectionEnd = cursorPos;
+          });
+          return true;
+        }
+        // 续行：插入 `\n` + 同 indent + `- [ ] `（新条 default unchecked）
+        const inserted = `\n${indent}- [ ] `;
+        const next = value.slice(0, start) + inserted + value.slice(end);
+        const cursorPos = start + inserted.length;
+        e.preventDefault();
+        setEditingDetailContent(next);
+        setDetailCursorPos(cursorPos);
+        requestAnimationFrame(() => {
+          const t = detailEditorRef.current;
+          if (!t) return;
+          t.focus();
+          t.selectionStart = t.selectionEnd = cursorPos;
+        });
+        return true;
+      }
+      // 有序列表 `<digit>. `
+      match = cur.match(/^(\s*)(\d+)(\. )(.*)$/);
+      if (match) {
+        const [, indent, numStr, dot, content] = match;
+        const isEmpty = content.length === 0;
+        if (isEmpty) {
+          const next =
+            value.slice(0, lineStart) +
+            value.slice(lineStart + indent.length + numStr.length + dot.length);
+          const cursorPos = lineStart;
+          e.preventDefault();
+          setEditingDetailContent(next);
+          setDetailCursorPos(cursorPos);
+          requestAnimationFrame(() => {
+            const t = detailEditorRef.current;
+            if (!t) return;
+            t.focus();
+            t.selectionStart = t.selectionEnd = cursorPos;
+          });
+          return true;
+        }
+        const nextNum = parseInt(numStr, 10) + 1;
+        const inserted = `\n${indent}${nextNum}. `;
+        const next = value.slice(0, start) + inserted + value.slice(end);
+        const cursorPos = start + inserted.length;
+        e.preventDefault();
+        setEditingDetailContent(next);
+        setDetailCursorPos(cursorPos);
+        requestAnimationFrame(() => {
+          const t = detailEditorRef.current;
+          if (!t) return;
+          t.focus();
+          t.selectionStart = t.selectionEnd = cursorPos;
+        });
+        return true;
+      }
+      // 无序列表 `- ` / `* ` / `+ ` + blockquote `> `
+      match = cur.match(/^(\s*)([-*+] |> )(.*)$/);
+      if (match) {
+        const [, indent, marker, content] = match;
+        const isEmpty = content.length === 0;
+        if (isEmpty) {
+          const next =
+            value.slice(0, lineStart) +
+            value.slice(lineStart + indent.length + marker.length);
+          const cursorPos = lineStart;
+          e.preventDefault();
+          setEditingDetailContent(next);
+          setDetailCursorPos(cursorPos);
+          requestAnimationFrame(() => {
+            const t = detailEditorRef.current;
+            if (!t) return;
+            t.focus();
+            t.selectionStart = t.selectionEnd = cursorPos;
+          });
+          return true;
+        }
+        const inserted = `\n${indent}${marker}`;
+        const next = value.slice(0, start) + inserted + value.slice(end);
+        const cursorPos = start + inserted.length;
+        e.preventDefault();
+        setEditingDetailContent(next);
+        setDetailCursorPos(cursorPos);
+        requestAnimationFrame(() => {
+          const t = detailEditorRef.current;
+          if (!t) return;
+          t.focus();
+          t.selectionStart = t.selectionEnd = cursorPos;
+        });
+        return true;
+      }
+      return false;
+    },
+    [],
+  );
   // detail.md / 完整描述段的阅读行宽 cap，跨 session 记忆。range slider 限
   // [600, 1200] —— 600 紧凑、800 中文 60-80 字推荐、1200 已贴近超宽屏极限。
   // 解析失败 / 越界 / null → default 800。
@@ -1933,6 +2691,35 @@ export function PanelTasks({
     editingDetailOriginalRef.current = currentMd;
     setEditDetailErr("");
     setCancelEditArmed(false);
+    // 检查 localStorage 是否有未恢复的 auto-draft（上次没 ⌘S 就关掉 panel /
+    // Esc 取消等情况下被自动写入的）。draft.content 与 currentMd（磁盘版）
+    // 不同时弹"恢复"banner 让 owner 决策。相同则静默清掉（无意义残留）。
+    try {
+      const raw = window.localStorage.getItem(`pet-detail-draft-${taskTitle}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { content?: unknown; ts?: unknown };
+        if (
+          typeof parsed.content === "string" &&
+          typeof parsed.ts === "number" &&
+          parsed.content !== currentMd
+        ) {
+          setPendingDraft({
+            title: taskTitle,
+            content: parsed.content,
+            ts: parsed.ts,
+          });
+        } else {
+          // 与磁盘版一致 / 格式坏 → 清掉 stale
+          window.localStorage.removeItem(`pet-detail-draft-${taskTitle}`);
+          setPendingDraft(null);
+        }
+      } else {
+        setPendingDraft(null);
+      }
+    } catch {
+      // 解析失败 / localStorage 不可用 → 静默
+      setPendingDraft(null);
+    }
     // 自动滚到最新 `- [x]` 行：打开 detail 时若末尾含完成行，让 owner 一眼看到
     // "最近一次动作"。光标落到该行末尾，按 Enter 即起新一行接着记。无 done
     // 行时不动 cursor / scroll，让用户从文首开始读 / 写。rAF 等 React 提交 +
@@ -1991,6 +2778,14 @@ export function PanelTasks({
       setEditDetailErr("");
       try {
         await invoke("task_save_detail", { title: taskTitle, content: editingDetailContent });
+        // 保存成功 → 清掉 auto-draft（磁盘已是真相，draft 不再有恢复价值）
+        try {
+          window.localStorage.removeItem(`pet-detail-draft-${taskTitle}`);
+        } catch {
+          // 私密 / 配额满 → noop（下次进编辑器时检测 stale draft 自动判定
+          // 与 currentMd 相同后清掉）
+        }
+        setPendingDraft(null);
         // 先 patch detail_md 让阅读态 UI 无 flicker；保存路径不动 history /
         // updated_at —— 那两项 task_save_detail 在后端会推进，下面 refetch
         // 把它们对齐。同时 hover preview 也读 detailMap → 刷完后 hover
@@ -2107,17 +2902,18 @@ export function PanelTasks({
     setCustomTemplates((prev) => prev.filter((c) => c.label !== label));
   };
 
-  const handleCreate = async () => {
+  const handleCreate = async (openDetailAfter: boolean = false) => {
     setErrMsg("");
     if (!title.trim()) {
       setErrMsg("标题不能为空");
       return;
     }
     setCreating(true);
+    const titleTrimmed = title.trim();
     try {
       await invoke<string>("task_create", {
         args: {
-          title: title.trim(),
+          title: titleTrimmed,
           body: body.trim(),
           priority,
           // datetime-local 输入若为空 string 视作 null，让后端按"无 due"对待
@@ -2132,6 +2928,13 @@ export function PanelTasks({
       // 成功后顺手关闭 quick-add modal（如果开着）— 让用户立即看到队列
       // 更新；保留 PanelSettings 模式 / 折叠表单不变（同 state 不冲突）。
       setQuickAddOpen(false);
+      // ⌘⇧Enter 路径：建完立即打开 detail.md 编辑器空白态，让 owner 进
+      // "写进度笔记" 流。task_create 后端默认不写 detail.md，初始 ""。
+      // setPendingTitleFocus 顺带把焦点滚到新行 + scrollIntoView。
+      if (openDetailAfter) {
+        handleEnterEditDetail(titleTrimmed, "");
+        setPendingTitleFocus(titleTrimmed);
+      }
     } catch (e) {
       setErrMsg(`创建失败：${e}`);
     } finally {
@@ -2142,13 +2945,15 @@ export function PanelTasks({
   // R120: 创建表单内 ⌘Enter / Ctrl+Enter 提交。仅在 input/textarea focus
   // 时触发（scoped 到 4 个表单字段的 onKeyDown），不挂全局；creating 守卫
   // 防 race 重复创建；preventDefault 让 textarea 内按 ⌘Enter 不换行。
+  // ⌘⇧Enter / Ctrl+⇧+Enter：建完立即打开 detail.md 编辑器（键盘党"建+
+  // 编辑" 一键 flow）；⌘Enter 仅创建（既有行为保留）。
   const handleFormKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       if (creating) return;
-      void handleCreate();
+      void handleCreate(e.shiftKey);
     }
   };
 
@@ -2503,12 +3308,23 @@ export function PanelTasks({
       const source = tasks.find((t) => t.title === sourceTitle);
       if (!target || !source) return;
       if (target.priority === source.priority) return;
+      const oldPri = source.priority;
+      const newPri = target.priority;
       try {
         await invoke<void>("task_set_priority", {
           title: sourceTitle,
-          priority: target.priority,
+          priority: newPri,
         });
         await reload();
+        // 1.5s toast 反馈让 owner 看到具体值变更 —— 拖拽是空间操作，没数字
+        // 反馈时 owner 不确定"我刚拖到哪个 priority 上了"。bulkResultMsg
+        // 也用作 inline-edit P pill click 等其它 priority 改动反馈，UX 一
+        // 致；含箭头方向让"升 / 降"显式。
+        const arrow = newPri > oldPri ? "↑ 升" : "↓ 降";
+        setBulkResultMsg(
+          `🎯 拖动「${sourceTitle}」P${oldPri} → P${newPri}（${arrow}）`,
+        );
+        window.setTimeout(() => setBulkResultMsg(""), 1500);
       } catch (e) {
         setActionErr(`拖拽改 priority 失败：${e}`);
       }
@@ -2695,6 +3511,159 @@ export function PanelTasks({
       return tb - ta;
     });
   const visibleTasks = [...sortedUnfinished, ...sortedFinished];
+
+  /// detail 编辑器 ↑ / ↓ 上一条 / 下一条任务导航。让 owner 连续 review 多 task
+  /// 不必关 detail → click 下条 → 再开 detail 三步。dirty 内容 sync-flush 进
+  /// draft localStorage（与 60s autosave 同 key），避免切走前 dirty 未持久化
+  /// 丢内容（autosave 60s tick 可能还没跑到）。target detail 优先读 detailMap
+  /// 缓存，未命中走 task_get_detail。target 切换后调 setPendingTitleFocus 让
+  /// 既有"清 filter / 显 finished / scrollIntoView" pipeline 把目标 row 滚进
+  /// 视野（与"完成小卡跳行" / task ref chip click 同 jump-to pipeline）。
+  const handleNavigateDetail = useCallback(
+    async (direction: "prev" | "next") => {
+      const curTitle = editingDetailTitle;
+      if (!curTitle) return;
+      const curIdx = visibleTasks.findIndex((t) => t.title === curTitle);
+      if (curIdx === -1) return;
+      const targetIdx = direction === "prev" ? curIdx - 1 : curIdx + 1;
+      if (targetIdx < 0 || targetIdx >= visibleTasks.length) return;
+      const target = visibleTasks[targetIdx];
+      // 1. dirty 内容 sync flush 到 draft（防 autosave 60s tick 没跑到丢内容）
+      const dirty =
+        editingDetailContent !== editingDetailOriginalRef.current;
+      if (dirty) {
+        try {
+          window.localStorage.setItem(
+            `pet-detail-draft-${curTitle}`,
+            JSON.stringify({
+              content: editingDetailContent,
+              ts: Date.now(),
+            }),
+          );
+        } catch (e) {
+          console.error("flush draft on navigate failed:", e);
+        }
+      }
+      // 2. 拉 target detail —— detailMap 缓存命中直接用；未命中走 IO。
+      let targetMd: string;
+      const cached = detailMap[target.title];
+      if (cached) {
+        targetMd = cached.detail_md;
+      } else {
+        try {
+          const fresh = await invoke<TaskDetail>("task_get_detail", {
+            title: target.title,
+          });
+          targetMd = fresh.detail_md;
+          setDetailMap((prev) => ({ ...prev, [target.title]: fresh }));
+        } catch (e) {
+          console.error("task_get_detail on navigate failed:", e);
+          targetMd = "";  // 拉失败用空内容开，让 owner 能写新内容
+        }
+      }
+      // 3. 切换编辑器 + 滚 target row 进视野
+      handleEnterEditDetail(target.title, targetMd);
+      setPendingTitleFocus(target.title);
+    },
+    [
+      editingDetailTitle,
+      editingDetailContent,
+      visibleTasks,
+      detailMap,
+      handleEnterEditDetail,
+    ],
+  );
+
+  /// detail.md 编辑器 ⌘[ / ⌘] 快捷键：与 ↑/↓ 按钮同 handler。仅
+  /// editingDetailTitle 非空（即正在编辑某 task 的 detail）时挂；textarea
+  /// focused 时也响应（⌘[ 不冲突 textarea 内默认行为；macOS 系统级 ⌘[ 通常
+  /// 用于"后退"，PanelTasks 非浏览器视图 → 这里抢用合理）。preventDefault
+  /// 阻止任何潜在系统行为。Windows / Linux 走 Ctrl+[ / Ctrl+]（e.metaKey ||
+  /// e.ctrlKey）。
+  useEffect(() => {
+    if (editingDetailTitle === null) return;
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key === "[") {
+        e.preventDefault();
+        void handleNavigateDetail("prev");
+      } else if (e.key === "]") {
+        e.preventDefault();
+        void handleNavigateDetail("next");
+      } else if (e.key === "k" || e.key === "K") {
+        // ⌘K 唤起 task quick-find palette。仅 editingDetailTitle 非空（在编
+        // 辑 detail）时挂监听；与既有 ⌘[ / ⌘] 同 effect，共享 dependency。
+        e.preventDefault();
+        setTaskPaletteOpen(true);
+        setPaletteQuery("");
+        setPaletteSelectedIdx(0);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [editingDetailTitle, handleNavigateDetail]);
+
+  /// task quick-find palette 状态：⌘K 在 detail.md 编辑器内唤起。fuzzy
+  /// 匹配 visibleTasks（含 filter / sort 后的视图），Enter 跳到选中 task 的
+  /// detail.md 编辑器（复用 handleNavigateDetail-style 切换 pipeline）。
+  /// Esc 关闭，↑↓ 移动 selectedIdx。
+  const [taskPaletteOpen, setTaskPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteSelectedIdx, setPaletteSelectedIdx] = useState(0);
+  const paletteInputRef = useRef<HTMLInputElement>(null);
+  /// 一次切到任意 target title 的 detail 编辑器 helper：复用 handleNavigateDetail
+  /// 的"dirty flush draft + detailMap cache / IO fallback + handleEnterEditDetail
+  /// + setPendingTitleFocus" 五步链路，仅 target idx 取法不同（palette 是
+  /// owner select，nav 是 prev/next）。
+  const switchToTaskDetail = useCallback(
+    async (targetTitle: string) => {
+      const curTitle = editingDetailTitle;
+      if (!curTitle || curTitle === targetTitle) return;
+      const target = visibleTasks.find((t) => t.title === targetTitle);
+      if (!target) return;
+      const dirty =
+        editingDetailContent !== editingDetailOriginalRef.current;
+      if (dirty) {
+        try {
+          window.localStorage.setItem(
+            `pet-detail-draft-${curTitle}`,
+            JSON.stringify({
+              content: editingDetailContent,
+              ts: Date.now(),
+            }),
+          );
+        } catch (e) {
+          console.error("flush draft on palette switch failed:", e);
+        }
+      }
+      let targetMd: string;
+      const cached = detailMap[target.title];
+      if (cached) {
+        targetMd = cached.detail_md;
+      } else {
+        try {
+          const fresh = await invoke<TaskDetail>("task_get_detail", {
+            title: target.title,
+          });
+          targetMd = fresh.detail_md;
+          setDetailMap((prev) => ({ ...prev, [target.title]: fresh }));
+        } catch (e) {
+          console.error("task_get_detail on palette switch failed:", e);
+          targetMd = "";
+        }
+      }
+      handleEnterEditDetail(target.title, targetMd);
+      setPendingTitleFocus(target.title);
+    },
+    [
+      editingDetailTitle,
+      editingDetailContent,
+      visibleTasks,
+      detailMap,
+      handleEnterEditDetail,
+    ],
+  );
 
   /// 把当前 visibleTasks（应用了搜索 / tag / due / priority 过滤之后的列表）
   /// 全部导出为 markdown，不依赖 selected 选中态。复盘 / 周回顾用例：用户调
@@ -2932,6 +3901,17 @@ export function PanelTasks({
     }
     return [...m.entries()].sort((a, b) => a[0] - b[0]);
   }, [tasks]);
+  /// 🎯 紧迫任务（P0-P2 未完成）计数：高优先级 backlog 信号。tasks 全集
+  /// （活动态）走过滤；done / cancelled 不计。0 时不渲染 chip。priorityCounts
+  /// 已经按 priority 升序排好；reduce 前 3 档求和即得。
+  const urgentTopPriorityCount = useMemo(() => {
+    let n = 0;
+    for (const t of tasks) {
+      if (isFinished(t.status)) continue;
+      if (t.priority <= 2) n += 1;
+    }
+    return n;
+  }, [tasks]);
 
   // R89: 完成率"流量计"。only `done`（cancelled 是放弃，不算产出）。
   // 今日 = 本地午夜起；近 7 天 = rolling 7×24h。配合 R87 created_at 相对值
@@ -3046,6 +4026,25 @@ export function PanelTasks({
     setDueFilter(pendingDueFilter);
     onConsumePendingDueFilter?.();
   }, [pendingDueFilter, onConsumePendingDueFilter]);
+
+  /// 跨窗口 deeplink：pet 窗 ChatMini "💾 转 task" 按钮把 body 推过来。挂
+  /// 载后立即 setTitle (前 30 字 default 让 owner 可改) + setBody (全文) +
+  /// setQuickAddOpen(true) + consume 清。前 30 字作 title 让 owner ⌘Enter
+  /// 即创建；若觉得 default 不合适在 modal 内手改。
+  useEffect(() => {
+    if (!pendingQuickAddBody) return;
+    const body = pendingQuickAddBody;
+    // title default: 第一行（防换行 / markdown noise），cap 30 字符（与 backend
+    // task title input 上限对齐）。trim 前导空白
+    const titleDefault = body
+      .split("\n")[0]
+      .replace(/^\s+/, "")
+      .slice(0, 30);
+    setTitle(titleDefault);
+    setBody(body);
+    setQuickAddOpen(true);
+    onConsumePendingQuickAddBody?.();
+  }, [pendingQuickAddBody, onConsumePendingQuickAddBody]);
 
   // 完成小卡展开后外部 click / Esc 关闭。点 popover 内部的 title 也会冒泡到
   // window —— 那条路径自己 setCompletedListExpanded(false)，先发生的是 title
@@ -3512,8 +4511,16 @@ export function PanelTasks({
           0%, 100% { transform: scale(1); opacity: 1; }
           50%      { transform: scale(1.06); opacity: 0.85; }
         }
+        /* detail.md "● 未保存" badge 持续 dirty > 60s 时的脉冲。柔和不抢
+           主视觉但让 owner 余光能瞄到 —— 解决"写到一半切走没 ⌘S 丢内容"
+           的真实痛点。 */
+        @keyframes pet-detail-dirty-pulse {
+          0%, 100% { opacity: 1; }
+          50%      { opacity: 0.55; }
+        }
         @media (prefers-reduced-motion: reduce) {
           [style*="pet-task-now-pulse"] { animation: none !important; }
+          [style*="pet-detail-dirty-pulse"] { animation: none !important; }
         }
       `}</style>
       <div style={s.section}>
@@ -3522,14 +4529,67 @@ export function PanelTasks({
           onClick={() => setCreateFormExpanded((v) => !v)}
           title={
             createFormExpanded
-              ? "点击折叠新建任务表单（节省垂直空间，跨 session 记忆）"
-              : "点击展开新建任务表单"
+              ? "点击折叠新建任务表单（节省垂直空间，跨 session 记忆） · ⌘N 任意时刻弹快速建任务 modal"
+              : "点击展开新建任务表单 · ⌘N 任意时刻弹快速建任务 modal"
           }
         >
           <span style={{ width: 10, fontFamily: "monospace", color: "var(--pet-color-muted)" }}>
             {createFormExpanded ? "▾" : "▸"}
           </span>
           <span>新建任务</span>
+          {/* ⌘N hint chip：与 ⌘F / ⌘[ 等 PanelTasks 内既有快捷键一致的 hint
+              style。让 owner 一眼发现 ⌘N 可以全局唤起 quickAdd modal（不必
+              先点本 section header）。fontSize 10 / muted color 不喧宾夺
+              主；只在 createFormExpanded === false 时显，展开时该 section
+              下面已有大 input 区，hotkey hint 显得多余。 */}
+          {!createFormExpanded && (
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                fontWeight: 400,
+                marginLeft: 4,
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                background: "var(--pet-color-border)",
+                borderRadius: 4,
+                padding: "1px 5px",
+                opacity: 0.7,
+              }}
+              title="按 ⌘N（macOS）/ Ctrl+N（Windows/Linux）随时弹快速建任务 modal —— 无需先展开本 section"
+            >
+              ⌘N
+            </span>
+          )}
+          {/* 队列健康 chip：collapsed 时显当前 🔴 逾期 + ❌ 失败计数。让
+              owner 想"先加一条新 task"前一眼看到队列 backlog 健康 —— "先
+              清掉旧任务还是先派新单"。两者都为 0 时 chip 不显（不打扰
+              clean state）。点击不抢 createFormExpanded toggle —— 仅信息
+              性显示，e.stopPropagation 防 click 触发 section 折叠 / 展开。 */}
+          {!createFormExpanded && (overdueCount > 0 || errorTaskCount > 0) && (
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                marginLeft: 4,
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                background: overdueCount > 0
+                  ? "var(--pet-tint-red-bg)"
+                  : "var(--pet-tint-orange-bg)",
+                color: overdueCount > 0
+                  ? "var(--pet-tint-red-fg)"
+                  : "var(--pet-tint-orange-fg)",
+                borderRadius: 4,
+                padding: "1px 6px",
+                whiteSpace: "nowrap",
+              }}
+              onClick={(e) => e.stopPropagation()}
+              title={`队列里还有未处理任务：${overdueCount > 0 ? `${overdueCount} 条逾期` : ""}${overdueCount > 0 && errorTaskCount > 0 ? " · " : ""}${errorTaskCount > 0 ? `${errorTaskCount} 条失败` : ""}。先看 backlog 再加新单 / 看一眼队列健康再决定。`}
+            >
+              {overdueCount > 0 && `🔴 ${overdueCount}`}
+              {overdueCount > 0 && errorTaskCount > 0 && " · "}
+              {errorTaskCount > 0 && `❌ ${errorTaskCount}`}
+            </span>
+          )}
         </div>
         {createFormExpanded && (
         <div style={s.formCard}>
@@ -3829,9 +4889,9 @@ export function PanelTasks({
           </div>
           <button
             style={creating || !title.trim() ? s.btnDisabled : s.btnPrimary}
-            onClick={handleCreate}
+            onClick={() => void handleCreate(false)}
             disabled={creating || !title.trim()}
-            title="创建任务（⌘Enter / Ctrl+Enter 等价）"
+            title="创建任务（⌘Enter / Ctrl+Enter 等价）。按 ⌘⇧Enter / Ctrl+⇧+Enter 创建并立即打开 detail.md 编辑器（键盘党'建+编辑'一键流）。"
           >
             {creating ? "创建中..." : "创建任务"}
           </button>
@@ -4178,7 +5238,7 @@ export function PanelTasks({
             📋 导出 MD ({visibleTasks.length})
           </button>
         </div>
-        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0) && (
+        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
             {/* 一键重试所有 error 任务 chip。> 0 时显，红底突出。点击调
                 handleRetryAllErrors 顺序 invoke task_retry；bulkBusy 期间
@@ -4260,6 +5320,46 @@ export function PanelTasks({
                   setDueFilter((prev) => (prev === "overdue" ? "all" : "overdue"))
                 }
               />
+            )}
+            {/* 🎯 P0-P2 紧迫 chip：高优先级未完成 backlog。amber tint 视
+                觉 = "需要注意" 介于 red overdue / blue stats 间。0 时不显。
+                informational 不接 filter（既有 priority chip 已能逐档点 filter；
+                此 chip 是 "高优先级总览" 信号）。 */}
+            {urgentTopPriorityCount > 0 && (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: "2px 8px",
+                  borderRadius: 8,
+                  background: "var(--pet-tint-amber-bg, var(--pet-tint-yellow-bg))",
+                  color: "var(--pet-tint-amber-fg, var(--pet-tint-yellow-fg))",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+                title={`高优先级 (P0-P2) 未完成任务 ${urgentTopPriorityCount} 条。owner 应优先处理这些；queue 顶有积压时考虑暂缓低优先级。`}
+              >
+                🎯 紧迫 {urgentTopPriorityCount}
+              </span>
+            )}
+            {/* ✓ 今日已完成 N 绿 chip：与 🔴 逾期 / 📅 今日到期 chip 同行
+                显，让 owner 看到 "今天完成多少条" momentum。0 时不显（与
+                其它计数 chip 同稀疏模板）。informational 不接 filter（点
+                击不切 view —— 仅信息性显示）。 */}
+            {completionStats.today > 0 && (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: "2px 8px",
+                  borderRadius: 8,
+                  background: "var(--pet-tint-green-bg)",
+                  color: "var(--pet-tint-green-fg)",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+                title={`今日完成 ${completionStats.today} 条任务${completionStats.week > completionStats.today ? `（近 7 天累计 ${completionStats.week} 条）` : ""}`}
+              >
+                ✓ 今日完成 {completionStats.today}
+              </span>
             )}
             {dueTodayCount > 0 && (
               <DueChip
@@ -4893,9 +5993,9 @@ export function PanelTasks({
                   applyTaskTemplate(0);
                   setQuickAddOpen(true);
                 }}
-                title="点击打开新建表单，用一个具体任务范例预填"
+                title="点击打开新建表单，用一个具体任务范例预填 · 任意时刻 ⌘N 也可弹空白 modal"
               >
-                📋 用范例预填一条
+                📋 用范例预填一条 (⌘N 弹空白)
               </button>
             )}
           </EmptyState>
@@ -5017,6 +6117,33 @@ export function PanelTasks({
                     : {}),
                 }}
               >
+                {/* 行 idx / total hover 角标：长队列时 owner 看到当前
+                    行在第几位 / 全队列多大。仅 hover 该行时显（pointerEvents
+                    none 让 click 穿透到行 hit area）。右上角 absolute 浮
+                    layout 无 reflow。idx +1 一基（display friendly），与
+                    visibleTasks 顺序一致（含 filter / sort 后视图）。 */}
+                {taskPreviewHoverTitle === t.title && visibleTasks.length > 5 && (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: 4,
+                      right: 6,
+                      fontSize: 9,
+                      color: "var(--pet-color-muted)",
+                      fontFamily: "'SF Mono', 'Menlo', monospace",
+                      background: "var(--pet-color-card)",
+                      padding: "0 4px",
+                      borderRadius: 3,
+                      lineHeight: "12px",
+                      opacity: 0.6,
+                      pointerEvents: "none",
+                      zIndex: 5,
+                    }}
+                    aria-hidden
+                  >
+                    {idx + 1} / {visibleTasks.length}
+                  </span>
+                )}
                 {!expanded &&
                   taskPreviewHoverTitle === t.title &&
                   detailMap[t.title] &&
@@ -5229,13 +6356,87 @@ export function PanelTasks({
                                     : "none",
                               }}
                             >
-                              📄 {t.detail_path}
+                              {/* hover preview 容器自己挂 pointerEvents:none
+                                  让 hover area 不抢 row 主 onClick；这条 chip
+                                  显式 override 为 auto 让 click 仍 reach 这里
+                                  调 memory_reveal_detail_in_finder 跳系统文件
+                                  管理器。其它 hover preview 内容仍透明穿透。 */}
+                              <button
+                                type="button"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (!t.detail_path) return;
+                                  try {
+                                    await invoke<void>(
+                                      "memory_reveal_detail_in_finder",
+                                      { detailPath: t.detail_path },
+                                    );
+                                  } catch (err) {
+                                    setActionErr(
+                                      `在 Finder 打开失败：${err}（detail.md 可能尚未保存到磁盘）`,
+                                    );
+                                    window.setTimeout(
+                                      () => setActionErr(""),
+                                      3500,
+                                    );
+                                  }
+                                }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                title={`在系统文件管理器里显示 detail.md（路径：memories/${t.detail_path}）。macOS Finder 会高亮选中文件，方便拖入附件 / git add / 用其它编辑器打开 / 重命名。`}
+                                style={{
+                                  pointerEvents: "auto",
+                                  background: "transparent",
+                                  border: "none",
+                                  color: "var(--pet-color-muted)",
+                                  fontFamily: "inherit",
+                                  fontSize: "inherit",
+                                  padding: 0,
+                                  cursor: "pointer",
+                                  textAlign: "left",
+                                  textDecoration: "underline dotted",
+                                  textUnderlineOffset: 2,
+                                }}
+                              >
+                                📄 {t.detail_path}
+                              </button>
                             </div>
                             <div style={{ whiteSpace: "pre-wrap" }}>
-                              {detailSnippet}
+                              {/* hover preview 走 LinkCard "raw" 模式：保留原
+                                  "pre-wrap markdown 字面" 视觉，但 bare https
+                                  URL chip 化 emoji + hostname。让 owner hover
+                                  时一眼分辨"这条 detail 引用了 GitHub / Linear
+                                  / Figma" 等 —— 与展开详情段的 LinkCard 体验
+                                  同源、视觉同源、性能更轻（不重跑 parseMarkdown）。 */}
+                              {renderDetailTextWithLinkCards(
+                                detailSnippet,
+                                `hover-${t.title}`,
+                                "raw",
+                                taskLookupForRefs,
+                                handleTaskRefClick,
+                              )}
                             </div>
                           </>
                         )}
+                        {/* 右键操作 onboarding hint：与 PanelMemory item hover
+                            底脚 ✏️ hint 同模板（iter #201）。dashed-top divider
+                            + fontSize 9 + opacity 0.7 italic muted，让"右键
+                            查看所有操作 (mark done / 改 priority / snooze /
+                            pin / silent / 复制 / ...)" 这条隐藏交互可被首次
+                            用户发现。任何 hover 都显，老 owner 一行噪音可
+                            忽略。 */}
+                        <div
+                          style={{
+                            marginTop: 6,
+                            paddingTop: 4,
+                            borderTop: "1px dashed var(--pet-color-border)",
+                            fontSize: 9,
+                            color: "var(--pet-color-muted)",
+                            fontStyle: "italic",
+                            opacity: 0.7,
+                          }}
+                        >
+                          🖱️ 右键查看所有操作（done / 改 priority / snooze / pin / silent / 复制 / ...）· 点击行 折叠/展开
+                        </div>
                       </div>
                     );
                   })()}
@@ -5491,28 +6692,169 @@ export function PanelTasks({
                         until.length >= 16
                           ? `${until.slice(5, 10)} ${until.slice(11, 16)}`
                           : until;
+                      const open = snoozePickerTitle === t.title;
                       return (
                         <span
-                          title={`本任务已 [snooze:] 暂停，至 ${until.replace("T", " ")} 之前不会出现在 proactive 选单`}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 2,
-                            padding: "1px 7px",
-                            fontSize: 10,
-                            fontWeight: 600,
-                            lineHeight: 1.4,
-                            letterSpacing: 0.2,
-                            borderRadius: 999,
-                            background: "var(--pet-tint-purple-bg)",
-                            color: "var(--pet-tint-purple-fg)",
-                            border:
-                              "1px solid color-mix(in srgb, var(--pet-tint-purple-fg) 30%, transparent)",
-                            whiteSpace: "nowrap",
-                          }}
-                          aria-label="暂停至"
+                          style={{ position: "relative", display: "inline-block" }}
                         >
-                          💤 至 {short}
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSnoozePickerTitle((cur) =>
+                                cur === t.title ? null : t.title,
+                              );
+                            }}
+                            title={`本任务已 [snooze:] 暂停，至 ${until.replace("T", " ")} 之前不会出现在 proactive 选单。点击改 / 解除`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 2,
+                              padding: "1px 7px",
+                              fontSize: 10,
+                              fontWeight: 600,
+                              lineHeight: 1.4,
+                              letterSpacing: 0.2,
+                              borderRadius: 999,
+                              background: "var(--pet-tint-purple-bg)",
+                              color: "var(--pet-tint-purple-fg)",
+                              border:
+                                "1px solid color-mix(in srgb, var(--pet-tint-purple-fg) 30%, transparent)",
+                              whiteSpace: "nowrap",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                            aria-label="暂停至"
+                          >
+                            💤 至 {short}
+                          </button>
+                          {/* mini popover: 4 个 preset (30m / 今晚 / 明早 /
+                              下周一) + 解除。click outside / Esc 关。复用
+                              task_set_snooze backend preset 入参（iter
+                              #200 加 EN/CJK 关键词解析）。busyTitle 守。 */}
+                          {open && (
+                            <div
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                position: "absolute",
+                                top: "calc(100% + 4px)",
+                                left: 0,
+                                minWidth: 160,
+                                padding: 4,
+                                background: "var(--pet-color-card)",
+                                border: "1px solid var(--pet-color-border)",
+                                borderRadius: 6,
+                                boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                                zIndex: 30,
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 2,
+                              }}
+                            >
+                              {[
+                                { key: "30m", label: "💤 暂停 30 分" },
+                                { key: "tonight", label: "💤 至今晚 18:00" },
+                                { key: "tomorrow", label: "💤 至明早 09:00" },
+                                { key: "monday", label: "💤 至下周一 09:00" },
+                              ].map((p) => (
+                                <button
+                                  key={p.key}
+                                  type="button"
+                                  style={{
+                                    display: "block",
+                                    width: "100%",
+                                    textAlign: "left",
+                                    padding: "5px 9px",
+                                    fontSize: 11,
+                                    border: "none",
+                                    background: "transparent",
+                                    color: "var(--pet-color-fg)",
+                                    cursor: "pointer",
+                                    fontFamily: "inherit",
+                                    borderRadius: 4,
+                                  }}
+                                  onMouseOver={(e) => {
+                                    (e.currentTarget as HTMLButtonElement).style.background =
+                                      "var(--pet-color-bg)";
+                                  }}
+                                  onMouseOut={(e) => {
+                                    (e.currentTarget as HTMLButtonElement).style.background =
+                                      "transparent";
+                                  }}
+                                  onClick={async () => {
+                                    setSnoozePickerTitle(null);
+                                    setActionErr("");
+                                    setBusyTitle(t.title);
+                                    try {
+                                      await invoke<void>("task_set_snooze", {
+                                        title: t.title,
+                                        until: p.key,
+                                      });
+                                      await reload();
+                                    } catch (e) {
+                                      setActionErr(`设 snooze 失败：${e}`);
+                                    } finally {
+                                      setBusyTitle(null);
+                                    }
+                                  }}
+                                >
+                                  {p.label}
+                                </button>
+                              ))}
+                              <div
+                                style={{
+                                  height: 1,
+                                  background: "var(--pet-color-border)",
+                                  margin: "2px 0",
+                                }}
+                              />
+                              <button
+                                type="button"
+                                style={{
+                                  display: "block",
+                                  width: "100%",
+                                  textAlign: "left",
+                                  padding: "5px 9px",
+                                  fontSize: 11,
+                                  border: "none",
+                                  background: "transparent",
+                                  color: "var(--pet-color-accent)",
+                                  cursor: "pointer",
+                                  fontFamily: "inherit",
+                                  borderRadius: 4,
+                                  fontWeight: 600,
+                                }}
+                                onMouseOver={(e) => {
+                                  (e.currentTarget as HTMLButtonElement).style.background =
+                                    "var(--pet-color-bg)";
+                                }}
+                                onMouseOut={(e) => {
+                                  (e.currentTarget as HTMLButtonElement).style.background =
+                                    "transparent";
+                                }}
+                                onClick={async () => {
+                                  setSnoozePickerTitle(null);
+                                  setActionErr("");
+                                  setBusyTitle(t.title);
+                                  try {
+                                    await invoke<void>("task_set_snooze", {
+                                      title: t.title,
+                                      until: null,
+                                    });
+                                    await reload();
+                                  } catch (e) {
+                                    setActionErr(`解除 snooze 失败：${e}`);
+                                  } finally {
+                                    setBusyTitle(null);
+                                  }
+                                }}
+                              >
+                                ☀️ 解除暂停
+                              </button>
+                            </div>
+                          )}
                         </span>
                       );
                     })()}
@@ -5910,6 +7252,35 @@ export function PanelTasks({
                       </span>
                     );
                   })()}
+                  {/* ⏰ 还 N 分钟 倒计时 chip：仅 pending / error 状态 + due
+                      在未来 ≤ 60 分钟时浮。让 owner 看长列表时一眼看到
+                      "立即到期"急迫信号 —— 比"截止 YYYY-MM-DD HH:MM"更直觉。
+                      红色 tint 表示"剩时间不多"。终态行不显（done / cancelled
+                      没"还剩多久"语义）。 */}
+                  {t.due &&
+                    !isFinished(t.status) &&
+                    (() => {
+                      const ts = Date.parse(t.due);
+                      if (Number.isNaN(ts)) return null;
+                      const diffMs = ts - nowMs;
+                      if (diffMs <= 0 || diffMs > 3_600_000) return null;
+                      const mins = Math.ceil(diffMs / 60_000);
+                      return (
+                        <span
+                          style={{
+                            background: "var(--pet-tint-red-bg)",
+                            color: "var(--pet-tint-red-fg)",
+                            padding: "1px 6px",
+                            borderRadius: 999,
+                            fontWeight: 600,
+                            fontFamily: "'SF Mono', 'Menlo', monospace",
+                          }}
+                          title={`due 在 ${mins} 分钟后到期 — 立即处理。`}
+                        >
+                          ⏰ 还 {mins} 分
+                        </span>
+                      );
+                    })()}
                   <span>
                     创建于 {t.created_at.slice(0, 16).replace("T", " ")}
                     {(() => {
@@ -6310,6 +7681,98 @@ export function PanelTasks({
                           </div>
                           {editingDetailTitle === t.title ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              {/* 草稿恢复 banner：editor 上次没 ⌘S 关掉时
+                                  autosave 把 content 写进 localStorage；本次
+                                  进入时检测 draft.content !== currentMd 弹
+                                  此条让 owner 选择恢复（覆盖到 textarea）/
+                                  忽略（删 draft key）。两个 action 都立即
+                                  setPendingDraft(null) 让 banner 隐藏。 */}
+                              {pendingDraft && pendingDraft.title === t.title && (
+                                <div
+                                  style={{
+                                    padding: "8px 12px",
+                                    border: "1px solid var(--pet-tint-amber-fg, #d97706)",
+                                    background: "var(--pet-tint-amber-bg, #fef3c7)",
+                                    color: "var(--pet-tint-amber-fg, #92400e)",
+                                    borderRadius: 6,
+                                    fontSize: 11,
+                                    lineHeight: 1.4,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
+                                  }}
+                                >
+                                  <span style={{ flex: 1 }}>
+                                    📝 检测到上次未保存的草稿（
+                                    {(() => {
+                                      const ageMs = Date.now() - pendingDraft.ts;
+                                      if (ageMs < 60_000) return "刚刚";
+                                      if (ageMs < 3_600_000)
+                                        return `${Math.floor(ageMs / 60_000)} 分钟前`;
+                                      if (ageMs < 86_400_000)
+                                        return `${Math.floor(ageMs / 3_600_000)} 小时前`;
+                                      return `${Math.floor(ageMs / 86_400_000)} 天前`;
+                                    })()}
+                                    ）—— 与磁盘版差{" "}
+                                    {Math.abs(
+                                      pendingDraft.content.length -
+                                        editingDetailContent.length,
+                                    )}{" "}
+                                    字符
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingDetailContent(pendingDraft.content);
+                                      setPendingDraft(null);
+                                    }}
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      padding: "2px 8px",
+                                      border:
+                                        "1px solid var(--pet-tint-amber-fg, #d97706)",
+                                      borderRadius: 4,
+                                      background:
+                                        "var(--pet-tint-amber-fg, #d97706)",
+                                      color: "#fff",
+                                      cursor: "pointer",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                    title="把 localStorage 里的草稿 content 灌回 textarea（你仍然可以 ⌘S 真保存或 Esc 再次取消）"
+                                  >
+                                    🔄 恢复
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      try {
+                                        window.localStorage.removeItem(
+                                          `pet-detail-draft-${t.title}`,
+                                        );
+                                      } catch {
+                                        // noop
+                                      }
+                                      setPendingDraft(null);
+                                    }}
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      padding: "2px 8px",
+                                      border:
+                                        "1px solid color-mix(in srgb, var(--pet-tint-amber-fg, #d97706) 40%, transparent)",
+                                      borderRadius: 4,
+                                      background: "var(--pet-color-card)",
+                                      color: "var(--pet-tint-amber-fg, #92400e)",
+                                      cursor: "pointer",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                    title="删掉 localStorage 草稿，本次不恢复"
+                                  >
+                                    ✕ 忽略
+                                  </button>
+                                </div>
+                              )}
                               {/* R117: edit / split / preview 三态切换。preview
                                   用既有 parseMarkdown render；split 左 textarea
                                   / 右 preview 并排。textarea state 三态共享，
@@ -6394,23 +7857,245 @@ export function PanelTasks({
                                     📋
                                   </button>
                                 )}
+                                {/* 📤 导出整体 markdown：与既有 bulk 复制为 MD
+                                    （handleBulkCopyAsMd）/ PanelMemory 📝 同思
+                                    路 —— 但聚焦"当前编辑这条任务"的完整快照。
+                                    复用 formatTaskAsMarkdown(t, detail) 拼 H2
+                                    title + meta + body + detail.md + result 段；
+                                    history 段单独追加（formatTaskAsMarkdown 不含）
+                                    让 owner 把 share / issue / 周末复盘所需的
+                                    所有元数据一键打包。detail.md 用 editing
+                                    state（未保存改动也带上）。 */}
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    setBulkResultMsg("📤 正在拼 markdown…");
+                                    // detail 走当前编辑值 + 已加载 history。
+                                    // history 优先从既有 detailMap 缓存读；
+                                    // 没缓存时 task_get_detail 走一次 IO。
+                                    let history: TaskDetail["history"] = [];
+                                    let historyIoError = false;
+                                    const cached = detailMap[t.title];
+                                    if (cached) {
+                                      history = cached.history;
+                                      historyIoError = !!cached.history_io_error;
+                                    } else if (t.detail_path) {
+                                      try {
+                                        const fresh = await invoke<TaskDetail>(
+                                          "task_get_detail",
+                                          { title: t.title },
+                                        );
+                                        history = fresh.history;
+                                        historyIoError = !!fresh.history_io_error;
+                                      } catch (e) {
+                                        console.error(
+                                          "task_get_detail failed:",
+                                          e,
+                                        );
+                                        // history 拉不到也继续 export；至少 detail.md
+                                        // + meta 仍写得出。
+                                      }
+                                    }
+                                    // 构造 synthetic TaskDetail 让 formatter
+                                    // 把当前 editing 值（含未保存）作 detail.md
+                                    // body —— owner 期望"导出我现在看到的"。
+                                    const detailForFormat: TaskDetail = {
+                                      title: t.title,
+                                      raw_description: t.raw_description,
+                                      detail_path: t.detail_path || "",
+                                      detail_md: editingDetailContent,
+                                      created_at: t.created_at,
+                                      updated_at: t.updated_at,
+                                      history,
+                                      detail_md_io_error: false,
+                                      history_io_error: historyIoError,
+                                    };
+                                    const lines = [
+                                      formatTaskAsMarkdown(t, detailForFormat),
+                                    ];
+                                    if (history.length > 0) {
+                                      lines.push("", "### 历史事件", "");
+                                      for (const ev of history) {
+                                        const ts =
+                                          ev.timestamp
+                                            ?.slice(0, 16)
+                                            .replace("T", " ") ?? "?";
+                                        const snippet =
+                                          ev.snippet?.trim() || "(空)";
+                                        lines.push(
+                                          `- \`${ts}\` ${ev.action}：${snippet}`,
+                                        );
+                                      }
+                                    }
+                                    const md = lines.join("\n");
+                                    try {
+                                      await navigator.clipboard.writeText(md);
+                                      setBulkResultMsg(
+                                        `已导出整体 markdown 到剪贴板（${md.length} 字符）`,
+                                      );
+                                    } catch (e) {
+                                      setBulkResultMsg(`导出失败：${e}`);
+                                    }
+                                    window.setTimeout(
+                                      () => setBulkResultMsg(""),
+                                      4000,
+                                    );
+                                  }}
+                                  style={{
+                                    fontSize: 11,
+                                    padding: "2px 8px",
+                                    border: "1px solid var(--pet-color-border)",
+                                    borderRadius: 4,
+                                    background: "var(--pet-color-card)",
+                                    color: "var(--pet-color-muted)",
+                                    cursor: "pointer",
+                                  }}
+                                  title="导出本任务完整 markdown 到剪贴板：title + 状态 / 优先级 / 截止 / 标签 / 时间戳 + body + detail.md（含未保存）+ result + 历史事件。便于 share / issue / 周末复盘。"
+                                  aria-label="export task as markdown"
+                                >
+                                  📤
+                                </button>
+                                {/* ↑ ↓ 上 / 下一条任务导航：让 owner 连续 review
+                                    多 task 不必关 detail。dirty 时切换前 sync-
+                                    flush 进 draft localStorage 防丢内容；target
+                                    detail 缓存命中即用、未命中走 task_get_detail。
+                                    在 visibleTasks 头 / 尾时对应方向 disabled。 */}
+                                {(() => {
+                                  const curIdx = visibleTasks.findIndex(
+                                    (vt) => vt.title === t.title,
+                                  );
+                                  const hasPrev = curIdx > 0;
+                                  const hasNext =
+                                    curIdx !== -1 &&
+                                    curIdx < visibleTasks.length - 1;
+                                  const navBtnStyle = (
+                                    enabled: boolean,
+                                  ): React.CSSProperties => ({
+                                    fontSize: 11,
+                                    padding: "2px 8px",
+                                    border: "1px solid var(--pet-color-border)",
+                                    borderRadius: 4,
+                                    background: "var(--pet-color-card)",
+                                    color: enabled
+                                      ? "var(--pet-color-muted)"
+                                      : "var(--pet-color-border)",
+                                    cursor: enabled ? "pointer" : "default",
+                                    opacity: enabled ? 1 : 0.5,
+                                  });
+                                  return (
+                                    <>
+                                      <button
+                                        type="button"
+                                        disabled={!hasPrev}
+                                        onClick={() =>
+                                          void handleNavigateDetail("prev")
+                                        }
+                                        style={navBtnStyle(hasPrev)}
+                                        title={
+                                          hasPrev
+                                            ? `跳到上一条任务（visibleTasks 顺序 #${curIdx} → #${curIdx - 1}） · ⌘[。dirty 时自动 flush 进草稿不丢内容。`
+                                            : "已是第一条"
+                                        }
+                                        aria-label="previous task detail"
+                                      >
+                                        ↑
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={!hasNext}
+                                        onClick={() =>
+                                          void handleNavigateDetail("next")
+                                        }
+                                        style={navBtnStyle(hasNext)}
+                                        title={
+                                          hasNext
+                                            ? `跳到下一条任务（visibleTasks 顺序 #${curIdx} → #${curIdx + 1}） · ⌘]。dirty 时自动 flush 进草稿不丢内容。`
+                                            : "已是最后一条"
+                                        }
+                                        aria-label="next task detail"
+                                      >
+                                        ↓
+                                      </button>
+                                    </>
+                                  );
+                                })()}
+                                {/* 📑 大纲：仅 split / preview 模式渲染（edit 模
+                                    式下没 preview pane，scrollIntoView 找不到
+                                    heading id）。toggle 浮窗：扫 H1-H3 显锚点
+                                    清单，点击 getElementById 跳节。content 含
+                                    headings 才显（无 heading 时浮窗空，按钮
+                                    存在感低，gate 去掉避免噪音）。 */}
+                                {(detailViewMode === "split" ||
+                                  detailViewMode === "preview") &&
+                                  /^#{1,3}\s+/m.test(editingDetailContent) && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDetailOutlineOpen((v) => !v)
+                                      }
+                                      style={{
+                                        fontSize: 11,
+                                        padding: "2px 8px",
+                                        border: `1px solid ${detailOutlineOpen ? "var(--pet-color-accent)" : "var(--pet-color-border)"}`,
+                                        borderRadius: 4,
+                                        background: detailOutlineOpen
+                                          ? "var(--pet-tint-blue-bg)"
+                                          : "var(--pet-color-card)",
+                                        color: detailOutlineOpen
+                                          ? "var(--pet-tint-blue-fg)"
+                                          : "var(--pet-color-muted)",
+                                        cursor: "pointer",
+                                        fontWeight: detailOutlineOpen ? 600 : 400,
+                                      }}
+                                      title="切换大纲浮窗：扫 H1-H3 标题列出锚点，点击跳到对应位置。长 detail.md 用。"
+                                      aria-label="toggle detail.md outline"
+                                    >
+                                      📑
+                                    </button>
+                                  )}
                                 {/* R141: dirty marker — content !== original 时
                                     显 "● 未保存"；marginLeft: auto 在字数 counter
-                                    上，dirty marker 紧贴字数左侧（gap 4 分隔）。 */}
+                                    上，dirty marker 紧贴字数左侧（gap 4 分隔）。
+                                    持续 dirty > 60s 时染红 + pulse 提醒 owner
+                                    该 ⌘S（防长编辑场景下忘保存丢内容）。
+                                    dirtyTickKey 仅是 trigger 重渲染，read ref
+                                    取最新 elapsed 而非 state（省 5s 一次 state
+                                    set）。 */}
                                 {editingDetailContent !==
-                                  editingDetailOriginalRef.current && (
-                                  <span
-                                    style={{
-                                      marginLeft: "auto",
-                                      fontSize: 10,
-                                      color: "var(--pet-color-muted)",
-                                      fontFamily: "'SF Mono', 'Menlo', monospace",
-                                    }}
-                                    title="textarea 内容已改但未保存（⌘S 保存 / Esc 取消触发 dirty 二次确认）"
-                                  >
-                                    ● 未保存
-                                  </span>
-                                )}
+                                  editingDetailOriginalRef.current && (() => {
+                                  const since = dirtySinceRef.current;
+                                  const elapsedSec = since
+                                    ? Math.floor((Date.now() - since) / 1000)
+                                    : 0;
+                                  const stale = elapsedSec > 60;
+                                  // 引用一下 dirtyTickKey 让 ESLint 看到 hook 关联，
+                                  // 也防 dead-code elimination 不渲（实际值不用）。
+                                  void dirtyTickKey;
+                                  return (
+                                    <span
+                                      style={{
+                                        marginLeft: "auto",
+                                        fontSize: 10,
+                                        color: stale
+                                          ? "var(--pet-tint-red-fg)"
+                                          : "var(--pet-color-muted)",
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                        fontWeight: stale ? 600 : 400,
+                                        animation: stale
+                                          ? "pet-detail-dirty-pulse 1.8s ease-in-out infinite"
+                                          : undefined,
+                                      }}
+                                      title={
+                                        stale
+                                          ? `textarea 内容已改但未保存超 ${elapsedSec}s ⚠️ —— 按 ⌘S 保存 / 关掉编辑器走 Esc 二次确认`
+                                          : "textarea 内容已改但未保存（⌘S 保存 / Esc 取消触发 dirty 二次确认）"
+                                      }
+                                    >
+                                      ● 未保存{stale ? ` ${elapsedSec}s` : ""}
+                                    </span>
+                                  );
+                                })()}
                                 {/* 行号状态栏：「行 N / 共 M」与 IDE 状态栏同体
                                     验。仅在编辑模式（textarea 存在 → 光标存在）
                                     显；preview 纯渲染态下无 cursor 概念省略。
@@ -6447,6 +8132,56 @@ export function PanelTasks({
                                       title="当前光标所在行号 / 文档总行数（与 IDE 状态栏同源）。调试 markdown 时方便对照。"
                                     >
                                       行 {line} / 共 {total}
+                                    </span>
+                                  );
+                                })()}
+                                {/* 📅 创建 X 前 · 🔄 更新 Y 前 时间段：与
+                                    PanelMemory item hover tooltip 同源信号。
+                                    编辑长 task 时 owner 一眼看到任务年龄 +
+                                    最近改动；与底部既有"行 N/M" + "☑ done/total"
+                                    + 字数 chip 形成完整 status bar。created /
+                                    updated ≤ 60s 视为同动作合并；解析失败
+                                    跳整段不渲染空白。 */}
+                                {(() => {
+                                  const nowMs = Date.now();
+                                  const cMs = t.created_at
+                                    ? Date.parse(t.created_at)
+                                    : NaN;
+                                  const uMs = t.updated_at
+                                    ? Date.parse(t.updated_at)
+                                    : NaN;
+                                  const fmt = (ms: number) => {
+                                    const age = nowMs - ms;
+                                    return age < 60_000
+                                      ? "刚刚"
+                                      : formatRelativeAgeBuckets(age);
+                                  };
+                                  const parts: string[] = [];
+                                  if (!Number.isNaN(cMs)) {
+                                    parts.push(`📅 ${fmt(cMs)}创建`);
+                                  }
+                                  if (
+                                    !Number.isNaN(uMs) &&
+                                    (Number.isNaN(cMs) ||
+                                      Math.abs(uMs - cMs) > 60_000)
+                                  ) {
+                                    parts.push(`🔄 ${fmt(uMs)}改`);
+                                  }
+                                  if (parts.length === 0) return null;
+                                  return (
+                                    <span
+                                      style={{
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                      }}
+                                      title={
+                                        `created_at: ${t.created_at || "（缺）"}\n` +
+                                        `updated_at: ${t.updated_at || "（缺）"}`
+                                      }
+                                    >
+                                      {parts.join(" · ")}
                                     </span>
                                   );
                                 })()}
@@ -6500,6 +8235,46 @@ export function PanelTasks({
                                   const editCount = Array.from(editingDetailContent).length;
                                   const longish = editCount > 2000;
                                   const danger = editCount > 5000;
+                                  // 选区感知：detailSelectionEnd > detailCursorPos
+                                  // 时切到选区子串。selection 的字数 / 词数 独立
+                                  // 算 —— 让 owner 在 IDE / Pages-style "选 N 字"
+                                  // 即时反馈下知道选了多少。颜色 / 配色 / 阈值
+                                  // 仍按文档全体的 editCount 走（避免选了 100 字
+                                  // 就跳红 banner 这种误导）。
+                                  const selStart = Math.min(
+                                    detailCursorPos,
+                                    detailSelectionEnd,
+                                  );
+                                  const selEnd = Math.max(
+                                    detailCursorPos,
+                                    detailSelectionEnd,
+                                  );
+                                  const hasSelection =
+                                    selEnd > selStart &&
+                                    selStart >= 0 &&
+                                    selEnd <= editingDetailContent.length &&
+                                    detailViewMode !== "preview";
+                                  const countSource = hasSelection
+                                    ? editingDetailContent.slice(selStart, selEnd)
+                                    : editingDetailContent;
+                                  // 词数 heuristic：CJK 字符（中日韩 ideograph
+                                  // 范围 U+3400-U+9FFF）每个算 1 词；非 CJK 段
+                                  // split 非-字母数字 取 token 数。纯 CJK 文本
+                                  // wordCount === charCount → 仅显字数避免冗
+                                  // 余；混排 / 英文文本时多显一段 〜M 词 给
+                                  // owner 看实际 token 数量。
+                                  const charCount = Array.from(countSource).length;
+                                  const cjkCount = (
+                                    countSource.match(/[㐀-鿿]/g) || []
+                                  ).length;
+                                  const stripped = countSource.replace(
+                                    /[㐀-鿿]/g,
+                                    " ",
+                                  );
+                                  const enWords = stripped
+                                    .split(/[^a-zA-Z0-9_'-]+/)
+                                    .filter(Boolean).length;
+                                  const wordCount = cjkCount + enWords;
                                   // marginLeft auto 由更早的 chip 抢占（dirty ●
                                   // 或 行号 chip）；只有 preview 模式 + clean 时
                                   // 字数 chip 自己成为"右推 spacer"。多 auto chip
@@ -6508,22 +8283,38 @@ export function PanelTasks({
                                     detailViewMode === "preview" &&
                                     editingDetailContent ===
                                       editingDetailOriginalRef.current;
+                                  // 仅 word count 与 char count 不同时追加 ·〜M 词，
+                                  // 纯 CJK 文本两者相等避免重复显示。
+                                  const showWord =
+                                    wordCount > 0 && wordCount !== charCount;
+                                  const prefix = hasSelection ? "选 " : "";
                                   return (
                                     <span
                                       style={{
                                         marginLeft: spacerOnSelf ? "auto" : undefined,
                                         fontSize: 10,
-                                        color: danger
-                                          ? "var(--pet-tint-red-fg)"
-                                          : longish
-                                            ? "var(--pet-tint-yellow-fg)"
-                                            : "var(--pet-color-muted)",
-                                        fontWeight: danger ? 600 : undefined,
+                                        color: hasSelection
+                                          ? "var(--pet-color-accent)"
+                                          : danger
+                                            ? "var(--pet-tint-red-fg)"
+                                            : longish
+                                              ? "var(--pet-tint-yellow-fg)"
+                                              : "var(--pet-color-muted)",
+                                        fontWeight:
+                                          hasSelection || danger ? 600 : undefined,
                                         fontFamily: "'SF Mono', 'Menlo', monospace",
                                       }}
-                                      title="当前笔记字符数（Unicode code points 计；含换行 / 空白）"
+                                      title={
+                                        (hasSelection
+                                          ? `选区 ${charCount} 字 / 共 ${editCount} 字（Unicode code points 计）`
+                                          : `${charCount} 字（Unicode code points 计；含换行 / 空白）`) +
+                                        (showWord
+                                          ? `\n${wordCount} 词（CJK 字符各算 1 词 + 非 CJK 段 split 标点 token 数；heuristic 估算）`
+                                          : "")
+                                      }
                                     >
-                                      {editCount} 字
+                                      {prefix}{charCount} 字
+                                      {showWord && ` · 〜${wordCount} 词`}
                                     </span>
                                   );
                                 })()}
@@ -6700,8 +8491,381 @@ export function PanelTasks({
                                       📂
                                     </button>
                                   )}
+                                  {/* 📤 复制 LLM consume 段：复用既有
+                                      formatTaskAsMarkdown(t, detail) 拼 H2
+                                      标题 + 状态/优先级/截止/标签 bullet 元数据
+                                      + body + ### 进度笔记 (detail.md 当前
+                                      编辑态内容) + ### 产物。让 owner 在编辑
+                                      中想"把这条 task 完整上下文喂给外部
+                                      LLM (ChatGPT / Claude / 其它)"时不必先
+                                      关编辑 + 走 row 右键 + 复制为 Markdown
+                                      三步。detail_md 用当前 editingDetailContent
+                                      （而非磁盘版）让"边写边复制"反映最新。 */}
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      setActionErr("");
+                                      const stub: TaskDetail = {
+                                        title: t.title,
+                                        raw_description: t.raw_description,
+                                        detail_path: t.detail_path ?? "",
+                                        detail_md: editingDetailContent,
+                                        created_at: t.created_at,
+                                        updated_at: t.updated_at,
+                                        history: [],
+                                        detail_md_io_error: false,
+                                        history_io_error: false,
+                                      };
+                                      const md = formatTaskAsMarkdown(t, stub);
+                                      try {
+                                        await navigator.clipboard.writeText(md);
+                                        setBulkResultMsg(
+                                          `已复制「${t.title}」完整 markdown（含当前 detail.md 编辑态）`,
+                                        );
+                                      } catch (e) {
+                                        setActionErr(`复制失败：${e}`);
+                                      }
+                                      window.setTimeout(
+                                        () => setBulkResultMsg(""),
+                                        3000,
+                                      );
+                                    }}
+                                    title="复制本任务的「LLM 喂养段」：H2 标题 + 状态/优先级/截止/标签 bullet 元数据 + body + ### 进度笔记 (含当前编辑器内容，不必先 ⌘S) + ### 产物，整段 markdown 进剪贴板。粘到 ChatGPT / Claude / Cursor / 别的 LLM 即作完整上下文。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    📤
+                                  </button>
+                                  {/* 📋 选区 → 新 task：detail.md 编辑器中
+                                      owner 选中一段（通常某个具体子项 / 待办
+                                      / 思考片段），click 提取选区到 quickAdd
+                                      modal 预填（首行 80 字符当 title，全段
+                                      当 body）。让 "在长 detail 写到一半发现
+                                      这段值得独立任务" 流不必先离开编辑器。
+                                      仅 selection 长度 > 0 时 enabled。 */}
+                                  {(() => {
+                                    const selStart = Math.min(
+                                      detailCursorPos,
+                                      detailSelectionEnd,
+                                    );
+                                    const selEnd = Math.max(
+                                      detailCursorPos,
+                                      detailSelectionEnd,
+                                    );
+                                    const hasSel =
+                                      selEnd > selStart &&
+                                      selStart >= 0 &&
+                                      selEnd <= editingDetailContent.length;
+                                    return (
+                                      <button
+                                        type="button"
+                                        disabled={!hasSel}
+                                        onClick={() => {
+                                          if (!hasSel) return;
+                                          const text = editingDetailContent
+                                            .slice(selStart, selEnd)
+                                            .trim();
+                                          if (!text) return;
+                                          // title: 首行（去掉常见 markdown
+                                          // 前缀 - * `> ` `- [ ] ` 等）+ cap
+                                          // 80 chars 防 backend title 上限
+                                          // (max 30 char in title input)；过
+                                          // 长由 owner 在 modal 内手动缩。
+                                          const firstLine = text.split("\n")[0]
+                                            .replace(/^\s*(?:[-*+]\s+|\d+\.\s+|>\s+|\[[ xX]?\]\s+|-\s*\[[ xX]?\]\s+)/, "")
+                                            .slice(0, 80);
+                                          setTitle(firstLine);
+                                          setBody(text);
+                                          setQuickAddOpen(true);
+                                          setBulkResultMsg(
+                                            `📋 已把选中 ${text.length} 字带到新建任务（quickAdd modal 已展开）`,
+                                          );
+                                          window.setTimeout(
+                                            () => setBulkResultMsg(""),
+                                            3000,
+                                          );
+                                        }}
+                                        title={
+                                          hasSel
+                                            ? `把选区 ${selEnd - selStart} 字带到「新建任务」modal 预填（首行作 title / 全段作 body）。让"长 detail 里看到值得独立的子项" 一键拆出新 task。`
+                                            : "无选区。先在编辑器选一段文字"
+                                        }
+                                        style={{
+                                          ...mdToolbarBtnStyle,
+                                          opacity: hasSel ? 1 : 0.4,
+                                          cursor: hasSel ? "pointer" : "default",
+                                        }}
+                                      >
+                                        📋➕
+                                      </button>
+                                    );
+                                  })()}
+                                  {/* 📑 复制大纲：扫 detail.md H1-H3 拼成
+                                      markdown 缩进列表（H1 = 0 indent / H2 =
+                                      2 spaces / H3 = 4 spaces，前缀 "- "）+
+                                      复制到剪贴板。让 owner 把任务的大纲
+                                      作 TOC / 思维导图 root / 检查清单顶 paste
+                                      到其它地方。无 heading 时按钮 disabled。 */}
+                                  {(() => {
+                                    const lines =
+                                      editingDetailContent.split("\n");
+                                    const headings: Array<{
+                                      level: number;
+                                      text: string;
+                                    }> = [];
+                                    for (const line of lines) {
+                                      const m = line.match(
+                                        /^(#{1,3})\s+(.*)$/,
+                                      );
+                                      if (m) {
+                                        headings.push({
+                                          level: m[1].length,
+                                          text: m[2].trim(),
+                                        });
+                                      }
+                                    }
+                                    const hasHeadings = headings.length > 0;
+                                    return (
+                                      <button
+                                        type="button"
+                                        disabled={!hasHeadings}
+                                        onClick={async () => {
+                                          if (!hasHeadings) return;
+                                          const indent = (lv: number) =>
+                                            "  ".repeat(Math.max(0, lv - 1));
+                                          const outline = headings
+                                            .map(
+                                              (h) =>
+                                                `${indent(h.level)}- ${h.text}`,
+                                            )
+                                            .join("\n");
+                                          try {
+                                            await navigator.clipboard.writeText(
+                                              outline,
+                                            );
+                                            setBulkResultMsg(
+                                              `📑 已复制大纲（${headings.length} 条 heading）`,
+                                            );
+                                          } catch (e) {
+                                            setActionErr(`复制失败：${e}`);
+                                          }
+                                          window.setTimeout(
+                                            () => setBulkResultMsg(""),
+                                            3000,
+                                          );
+                                        }}
+                                        title={
+                                          hasHeadings
+                                            ? `扫 H1-H3 标题（共 ${headings.length} 条）拼缩进 markdown 列表复制到剪贴板，作 TOC / 思维导图根 / 检查清单顶。`
+                                            : "无 heading（H1-H3）。先在编辑器加 # / ## / ### 标题"
+                                        }
+                                        style={{
+                                          ...mdToolbarBtnStyle,
+                                          opacity: hasHeadings ? 1 : 0.4,
+                                          cursor: hasHeadings
+                                            ? "pointer"
+                                            : "default",
+                                        }}
+                                      >
+                                        📑📋
+                                      </button>
+                                    );
+                                  })()}
+                                  {/* 🧠 ask LLM about selection：textarea 选
+                                      中一段 → click 把选段封装成 "关于「...」"
+                                      预填到 PanelChat textarea + 切到聊天
+                                      tab。让 owner 在写 detail 时看到值得
+                                      问 LLM 的段直接发问，不必离开编辑器
+                                      手动复制 + 切 tab + 拼 prompt。无选区
+                                      时按钮 disabled。仅 onAskLLMAbout 传入
+                                      时显（PanelApp 端 wire；其它 caller 不
+                                      显冗余 UI）。 */}
+                                  {onAskLLMAbout && (() => {
+                                    const selStart = Math.min(
+                                      detailCursorPos,
+                                      detailSelectionEnd,
+                                    );
+                                    const selEnd = Math.max(
+                                      detailCursorPos,
+                                      detailSelectionEnd,
+                                    );
+                                    const hasSel =
+                                      selEnd > selStart &&
+                                      selStart >= 0 &&
+                                      selEnd <= editingDetailContent.length;
+                                    return (
+                                      <button
+                                        type="button"
+                                        disabled={!hasSel}
+                                        onClick={() => {
+                                          if (!hasSel) return;
+                                          const text = editingDetailContent
+                                            .slice(selStart, selEnd)
+                                            .trim();
+                                          if (!text) return;
+                                          onAskLLMAbout(text);
+                                          setBulkResultMsg(
+                                            `🧠 已切到聊天 tab + 预填 "关于「...」" 让你立刻问 LLM`,
+                                          );
+                                          window.setTimeout(
+                                            () => setBulkResultMsg(""),
+                                            3000,
+                                          );
+                                        }}
+                                        title={
+                                          hasSel
+                                            ? `把选区 ${selEnd - selStart} 字封装成 "关于「<excerpt 50 字>」 " 预填到 PanelChat textarea + 切到聊天 tab。owner 写 detail 时一键问 LLM 解释 / 评论 / 给建议这段。`
+                                            : "无选区。先在编辑器选一段文字"
+                                        }
+                                        style={{
+                                          ...mdToolbarBtnStyle,
+                                          opacity: hasSel ? 1 : 0.4,
+                                          cursor: hasSel
+                                            ? "pointer"
+                                            : "default",
+                                        }}
+                                      >
+                                        🧠
+                                      </button>
+                                    );
+                                  })()}
                                 </div>
                               )}
+                              {/* 📑 大纲浮窗：扫 H1-H3 显锚点列表 + click 跳节。
+                                  仅 detailOutlineOpen 且 split / preview 模式
+                                  渲染。inline panel（不浮 absolute），让 layout
+                                  推开主编辑区一段；avoiding overlay coverage 让
+                                  长 detail 选锚点时无视觉冲突。 */}
+                              {detailOutlineOpen &&
+                                (detailViewMode === "split" ||
+                                  detailViewMode === "preview") &&
+                                (() => {
+                                  const lines = editingDetailContent.split("\n");
+                                  const headings: Array<{
+                                    level: number;
+                                    text: string;
+                                    counter: number;
+                                  }> = [];
+                                  let cnt = 0;
+                                  for (const line of lines) {
+                                    const m = line.match(/^(#{1,3})\s+(.*)$/);
+                                    if (m) {
+                                      cnt += 1;
+                                      headings.push({
+                                        level: m[1].length,
+                                        text: m[2].trim(),
+                                        counter: cnt,
+                                      });
+                                    }
+                                  }
+                                  if (headings.length === 0) {
+                                    // 无 heading → 按钮 gate 已挡，这里防御
+                                    return null;
+                                  }
+                                  return (
+                                    <div
+                                      style={{
+                                        padding: "8px 10px",
+                                        border:
+                                          "1px solid var(--pet-color-border)",
+                                        borderRadius: 6,
+                                        background: "var(--pet-color-card)",
+                                        boxShadow: "var(--pet-shadow-sm)",
+                                        fontSize: 11,
+                                        lineHeight: 1.4,
+                                        maxHeight: 200,
+                                        overflowY: "auto",
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontSize: 10,
+                                          fontWeight: 600,
+                                          color: "var(--pet-color-muted)",
+                                          marginBottom: 4,
+                                          letterSpacing: 0.3,
+                                        }}
+                                      >
+                                        📑 大纲（{headings.length} 节）
+                                      </div>
+                                      {headings.map((h) => {
+                                        const isActive =
+                                          h.counter === activeHeadingCounter;
+                                        return (
+                                        <button
+                                          key={h.counter}
+                                          type="button"
+                                          onClick={() => {
+                                            const id = `pet-detail-${t.title}-h${h.counter}`;
+                                            const el =
+                                              document.getElementById(id);
+                                            if (el) {
+                                              el.scrollIntoView({
+                                                behavior: "smooth",
+                                                block: "start",
+                                              });
+                                            }
+                                          }}
+                                          style={{
+                                            display: "block",
+                                            width: "100%",
+                                            textAlign: "left",
+                                            // active = IntersectionObserver 跟
+                                            // 踪到的"最靠上可见"heading；tint
+                                            // 蓝 bg + 加粗让 owner 滚 preview
+                                            // 时一眼知道大纲里"我在哪节"。
+                                            background: isActive
+                                              ? "var(--pet-tint-blue-bg)"
+                                              : "transparent",
+                                            border: "none",
+                                            padding: `2px 4px 2px ${(h.level - 1) * 12 + 4}px`,
+                                            fontSize: 11,
+                                            color: isActive
+                                              ? "var(--pet-tint-blue-fg)"
+                                              : "var(--pet-color-fg)",
+                                            fontWeight: isActive ? 600 : 400,
+                                            cursor: "pointer",
+                                            fontFamily: "inherit",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                            whiteSpace: "nowrap",
+                                            borderRadius: 3,
+                                          }}
+                                          onMouseOver={(e) => {
+                                            // hover 颜色仅在非 active 时覆盖
+                                            // —— active tint 已显眼，再 hover
+                                            // 覆盖会丢"我在哪节"信号。
+                                            if (isActive) return;
+                                            (
+                                              e.currentTarget as HTMLButtonElement
+                                            ).style.background =
+                                              "var(--pet-color-bg)";
+                                          }}
+                                          onMouseOut={(e) => {
+                                            if (isActive) return;
+                                            (
+                                              e.currentTarget as HTMLButtonElement
+                                            ).style.background = "transparent";
+                                          }}
+                                          title={`跳到「${h.text}」（H${h.level}）${isActive ? " · 当前节" : ""}`}
+                                        >
+                                          <span
+                                            style={{
+                                              color: "var(--pet-color-muted)",
+                                              marginRight: 4,
+                                              fontFamily:
+                                                "'SF Mono', 'Menlo', monospace",
+                                              fontSize: 10,
+                                            }}
+                                          >
+                                            {"#".repeat(h.level)}
+                                          </span>
+                                          {h.text || "（空标题）"}
+                                        </button>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })()}
                               {/* edit / split / preview 三态渲染。split 用
                                   flex 行让 textarea 与 preview 各占一半，
                                   preview pane 复用同一 JSX 不重写。 */}
@@ -6720,20 +8884,22 @@ export function PanelTasks({
                                 onChange={(e) => {
                                   setEditingDetailContent(e.target.value);
                                   setDetailCursorPos(e.target.selectionStart);
+                                  setDetailSelectionEnd(e.target.selectionEnd);
                                 }}
-                                onSelect={(e) =>
-                                  setDetailCursorPos(
-                                    (e.target as HTMLTextAreaElement).selectionStart,
-                                  )
-                                }
-                                onKeyUp={(e) =>
-                                  setDetailCursorPos(e.currentTarget.selectionStart)
-                                }
-                                onClick={(e) =>
-                                  setDetailCursorPos(
-                                    (e.target as HTMLTextAreaElement).selectionStart,
-                                  )
-                                }
+                                onSelect={(e) => {
+                                  const ta = e.target as HTMLTextAreaElement;
+                                  setDetailCursorPos(ta.selectionStart);
+                                  setDetailSelectionEnd(ta.selectionEnd);
+                                }}
+                                onKeyUp={(e) => {
+                                  setDetailCursorPos(e.currentTarget.selectionStart);
+                                  setDetailSelectionEnd(e.currentTarget.selectionEnd);
+                                }}
+                                onClick={(e) => {
+                                  const ta = e.target as HTMLTextAreaElement;
+                                  setDetailCursorPos(ta.selectionStart);
+                                  setDetailSelectionEnd(ta.selectionEnd);
+                                }}
                                 onPaste={(e) => {
                                   // 粘贴板里抓 image/* 文件 → preventDefault
                                   // 阻止默认（不会把 file 路径文本错粘进 textarea）
@@ -6773,12 +8939,43 @@ export function PanelTasks({
                                   void insertImageBlobsIntoDetail(blobs);
                                 }}
                                 onKeyDown={(e) => {
+                                  // Enter 自动续列表前缀（无序 / GFM checklist /
+                                  // 有序 / blockquote）。优先级在 bracket 之前
+                                  // —— Enter 不是 bracket pair 触发字符，互不
+                                  // 冲突，但放第一防未来某 modifier+Enter 引入
+                                  // 时的歧义。
+                                  if (handleDetailListContinue(e)) return;
+                                  // 中文 typography 配对（「『（【《""'）：成对
+                                  // 自动插 close，光标落 inner。优先级最高 —
+                                  // 字符级 intercept 不该让 ⌘S / Esc 抢走。
+                                  if (handleDetailBracketPair(e)) return;
+                                  // ⌘D 复制当前行 / 选区：Sublime / JetBrains 通用
+                                  // IDE 行为。放在 ⌘S 之前 —— 二者不冲突但保
+                                  // 一致 modifier handler 集群。
+                                  if (handleDetailDuplicateLine(e)) return;
                                   // ⌘S/Ctrl+S 触发保存：与按钮等价。preventDefault
                                   // 吃掉 webview 默认"另存为页面"行为；savingDetail
                                   // 守卫防止保存进行中重复发请求。
                                   if (
                                     (e.metaKey || e.ctrlKey) &&
                                     e.key.toLowerCase() === "s"
+                                  ) {
+                                    e.preventDefault();
+                                    if (savingDetail) return;
+                                    handleSaveDetail(t.title);
+                                    return;
+                                  }
+                                  // ⌘⇧Enter / Ctrl+⇧+Enter 保存并关闭（即
+                                  // "完成本轮编辑"）。与 iter #215 新建表单
+                                  // ⌘⇧Enter "建并打开 detail" 对偶 —— "⌘⇧Enter
+                                  // = 一键完成本轮工作"心智一致。handleSaveDetail
+                                  // 内部本就 setEditingDetailTitle(null) 关编
+                                  // 辑器，复用即可。无 ⇧ 时是 textarea 原生
+                                  // 换行，不抢。
+                                  if (
+                                    (e.metaKey || e.ctrlKey) &&
+                                    e.shiftKey &&
+                                    e.key === "Enter"
                                   ) {
                                     e.preventDefault();
                                     if (savingDetail) return;
@@ -6793,7 +8990,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -6843,6 +9040,8 @@ export function PanelTasks({
                                           lineOffset: 0,
                                           onToggle: toggleEditChecklistLine,
                                         },
+                                        headingIdPrefix: `pet-detail-${t.title}`,
+                                        onHeadingCopySection: handleCopyHeadingSection,
                                       })
                                     )}
                                   </div>
@@ -6876,6 +9075,8 @@ export function PanelTasks({
                                         lineOffset: 0,
                                         onToggle: toggleEditChecklistLine,
                                       },
+                                      headingIdPrefix: `pet-detail-${t.title}`,
+                                      onHeadingCopySection: handleCopyHeadingSection,
                                     })
                                   )}
                                 </div>
@@ -6886,20 +9087,22 @@ export function PanelTasks({
                                 onChange={(e) => {
                                   setEditingDetailContent(e.target.value);
                                   setDetailCursorPos(e.target.selectionStart);
+                                  setDetailSelectionEnd(e.target.selectionEnd);
                                 }}
-                                onSelect={(e) =>
-                                  setDetailCursorPos(
-                                    (e.target as HTMLTextAreaElement).selectionStart,
-                                  )
-                                }
-                                onKeyUp={(e) =>
-                                  setDetailCursorPos(e.currentTarget.selectionStart)
-                                }
-                                onClick={(e) =>
-                                  setDetailCursorPos(
-                                    (e.target as HTMLTextAreaElement).selectionStart,
-                                  )
-                                }
+                                onSelect={(e) => {
+                                  const ta = e.target as HTMLTextAreaElement;
+                                  setDetailCursorPos(ta.selectionStart);
+                                  setDetailSelectionEnd(ta.selectionEnd);
+                                }}
+                                onKeyUp={(e) => {
+                                  setDetailCursorPos(e.currentTarget.selectionStart);
+                                  setDetailSelectionEnd(e.currentTarget.selectionEnd);
+                                }}
+                                onClick={(e) => {
+                                  const ta = e.target as HTMLTextAreaElement;
+                                  setDetailCursorPos(ta.selectionStart);
+                                  setDetailSelectionEnd(ta.selectionEnd);
+                                }}
                                 onPaste={(e) => {
                                   const items = e.clipboardData?.items;
                                   if (!items) return;
@@ -6935,9 +9138,24 @@ export function PanelTasks({
                                   void insertImageBlobsIntoDetail(blobs);
                                 }}
                                 onKeyDown={(e) => {
+                                  if (handleDetailListContinue(e)) return;
+                                  if (handleDetailBracketPair(e)) return;
+                                  if (handleDetailDuplicateLine(e)) return;
                                   if (
                                     (e.metaKey || e.ctrlKey) &&
                                     e.key.toLowerCase() === "s"
+                                  ) {
+                                    e.preventDefault();
+                                    if (savingDetail) return;
+                                    handleSaveDetail(t.title);
+                                    return;
+                                  }
+                                  // ⌘⇧Enter / Ctrl+⇧+Enter 保存并关闭，与 edit
+                                  // 模式 textarea 同 handler。
+                                  if (
+                                    (e.metaKey || e.ctrlKey) &&
+                                    e.shiftKey &&
+                                    e.key === "Enter"
                                   ) {
                                     e.preventDefault();
                                     if (savingDetail) return;
@@ -6949,7 +9167,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -7037,6 +9255,8 @@ export function PanelTasks({
                                 ? parseDetailMdWithImages(
                                     detail.detail_md,
                                     setDetailLightboxSrc,
+                                    taskLookupForRefs,
+                                    handleTaskRefClick,
                                   )
                                 : detail.detail_md}
                             </div>
@@ -7863,9 +10083,9 @@ export function PanelTasks({
             <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center" }}>
               <button
                 style={creating || !title.trim() ? s.btnDisabled : s.btnPrimary}
-                onClick={handleCreate}
+                onClick={() => void handleCreate(false)}
                 disabled={creating || !title.trim()}
-                title="创建任务（⌘Enter / Ctrl+Enter 等价）"
+                title="创建任务（⌘Enter / Ctrl+Enter 等价）。⌘⇧Enter 创建并打开 detail 编辑器。"
               >
                 {creating ? "创建中..." : "创建任务"}
               </button>
@@ -8105,6 +10325,203 @@ export function PanelTasks({
           </div>
         )}
       </Modal>
+      {/* ⌘K task quick-find palette：detail.md 编辑器内任意时刻按 ⌘K 唤
+          起。input 即时 fuzzy filter visibleTasks（含 filter/sort 后视图），
+          ↑↓ 移动选中 idx，Enter 切换到该 task 的 detail 编辑器（复用
+          switchToTaskDetail pipeline），Esc / outside-click 关。fixed 顶层
+          浮卡，与 row hover preview / ctx menu 同 viewport-clamp 思路。 */}
+      {taskPaletteOpen && (() => {
+        const q = paletteQuery.trim().toLowerCase();
+        const filtered =
+          q === ""
+            ? visibleTasks.slice(0, 30) // 空 query 时显前 30 条
+            : visibleTasks
+                .filter((t) => t.title.toLowerCase().includes(q))
+                .slice(0, 30);
+        const safeIdx = Math.max(
+          0,
+          Math.min(paletteSelectedIdx, filtered.length - 1),
+        );
+        return (
+          <div
+            onMouseDown={(e) => {
+              // 点 backdrop（target === currentTarget）关；点内部 palette 不关
+              if (e.target === e.currentTarget) {
+                setTaskPaletteOpen(false);
+              }
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.3)",
+              zIndex: 200,
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              paddingTop: "10vh",
+            }}
+          >
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{
+                width: 480,
+                maxWidth: "90vw",
+                background: "var(--pet-color-card)",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 8,
+                boxShadow: "var(--pet-shadow-md)",
+                padding: 8,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <input
+                ref={paletteInputRef}
+                type="text"
+                autoFocus
+                value={paletteQuery}
+                onChange={(e) => {
+                  setPaletteQuery(e.target.value);
+                  setPaletteSelectedIdx(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setTaskPaletteOpen(false);
+                    return;
+                  }
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setPaletteSelectedIdx((i) =>
+                      filtered.length === 0
+                        ? 0
+                        : Math.min(i + 1, filtered.length - 1),
+                    );
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setPaletteSelectedIdx((i) => Math.max(0, i - 1));
+                    return;
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const target = filtered[safeIdx];
+                    if (!target) return;
+                    setTaskPaletteOpen(false);
+                    void switchToTaskDetail(target.title);
+                    return;
+                  }
+                }}
+                placeholder={`fuzzy 找 task （共 ${visibleTasks.length}）· ↑↓ 选 · Enter 切 · Esc 关`}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 13,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  background: "var(--pet-color-bg)",
+                  color: "var(--pet-color-fg)",
+                  fontFamily: "inherit",
+                  outline: "none",
+                }}
+              />
+              <div
+                style={{
+                  maxHeight: 360,
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                }}
+              >
+                {filtered.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "12px",
+                      fontSize: 12,
+                      color: "var(--pet-color-muted)",
+                      fontStyle: "italic",
+                      textAlign: "center",
+                    }}
+                  >
+                    {q === ""
+                      ? "（无任务）"
+                      : `没有标题含「${paletteQuery}」的任务`}
+                  </div>
+                ) : (
+                  filtered.map((t, i) => {
+                    const active = i === safeIdx;
+                    const isCurrent = t.title === editingDetailTitle;
+                    return (
+                      <button
+                        key={t.title}
+                        type="button"
+                        onMouseEnter={() => setPaletteSelectedIdx(i)}
+                        onClick={() => {
+                          setTaskPaletteOpen(false);
+                          void switchToTaskDetail(t.title);
+                        }}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          border: "none",
+                          background: active
+                            ? "var(--pet-tint-blue-bg)"
+                            : "transparent",
+                          color: active
+                            ? "var(--pet-tint-blue-fg)"
+                            : isCurrent
+                              ? "var(--pet-color-muted)"
+                              : "var(--pet-color-fg)",
+                          fontWeight: active ? 600 : 400,
+                          cursor: isCurrent ? "default" : "pointer",
+                          opacity: isCurrent ? 0.5 : 1,
+                          borderRadius: 4,
+                          textAlign: "left",
+                          fontFamily: "inherit",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                        }}
+                        disabled={isCurrent}
+                        title={
+                          isCurrent
+                            ? "当前已在编辑此 task"
+                            : `切到「${t.title}」detail 编辑器`
+                        }
+                      >
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            flex: 1,
+                          }}
+                        >
+                          {t.title}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "var(--pet-color-muted)",
+                            fontFamily: "'SF Mono', monospace",
+                            flexShrink: 0,
+                          }}
+                        >
+                          P{t.priority}
+                          {isCurrent ? " · 当前" : ""}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {taskCtxMenu && (() => {
         // viewport 右 / 下越界时把菜单往回挪；menu 实际宽度 / 高度由内容定，
         // 这里用经验值 180 / 320 做夹紧足够（带 priority 子面板时纵向 +60）。
@@ -8234,6 +10651,50 @@ export function PanelTasks({
             >
               {t?.pinned ? "📌 取消钉住" : "📌 钉住"}
             </button>
+            {/* 🔇 silent toggle：与 📌 钉住 同模板。从 raw_description 里
+                inline regex 探 `[silent]` 字面量；调 task_set_silent
+                atomic add / strip marker。silent 任务从 LLM proactive cycle
+                pick 队列消失（在 format_butler_tasks_block filter 同
+                blockedBy / snooze union pipeline）；面板 / 手动触发不受影响。 */}
+            {(() => {
+              const isSilent = !!t?.raw_description?.includes("[silent]");
+              return (
+                <button
+                  type="button"
+                  style={{
+                    ...itemBtn,
+                    color: isSilent
+                      ? "var(--pet-color-accent)"
+                      : "var(--pet-color-muted)",
+                  }}
+                  onMouseOver={itemBtnHoverIn}
+                  onMouseOut={itemBtnHoverOut}
+                  onClick={async () => {
+                    setTaskCtxMenu(null);
+                    setActionErr("");
+                    setBusyTitle(m.title);
+                    try {
+                      await invoke<void>("task_set_silent", {
+                        title: m.title,
+                        silent: !isSilent,
+                      });
+                      await reload();
+                    } catch (e) {
+                      setActionErr(`silent 切换失败：${e}`);
+                    } finally {
+                      setBusyTitle(null);
+                    }
+                  }}
+                  title={
+                    isSilent
+                      ? "已标 [silent] —— 点击解除（剥 marker）让 LLM proactive cycle 重新看到此任务"
+                      : "标 [silent] —— LLM 在 proactive cycle 不再主动选此任务（仍在面板可见 / 仍可手动触发）"
+                  }
+                >
+                  {isSilent ? "🔇 解除 silent" : "🔇 标 silent"}
+                </button>
+              );
+            })()}
             {/* ✨ LLM 重写标题：与 PanelChat session ctx menu 的"LLM 重写标题"
                 按钮同模板。调用一次非流式 chat/completions（30s timeout /
                 temperature 0.3 / max_tokens 30），让 LLM 看任务 title + 描述 +
@@ -8481,6 +10942,80 @@ export function PanelTasks({
               </button>
             )}
             {sep}
+            {/* ✦ +1 / ✦ -1 priority 微调按钮：邻近 priority submenu 之前。
+                免开 submenu 单 click 升 / 降一档；clamp [0, PRIORITY_MAX]
+                时禁用对应方向按钮 + opacity 视觉降级。复用 handleInlineSetPriority
+                既有 backend pipeline（与 priority submenu 单 click 相同 IPC）。 */}
+            {(() => {
+              const canInc = m.priority < PRIORITY_MAX;
+              const canDec = m.priority > 0;
+              return (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 4,
+                    padding: "0 4px",
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={!canDec}
+                    style={{
+                      ...itemBtn,
+                      flex: 1,
+                      textAlign: "center",
+                      padding: "4px 8px",
+                      opacity: canDec ? 1 : 0.4,
+                      cursor: canDec ? "pointer" : "default",
+                    }}
+                    onMouseOver={(e) => {
+                      if (canDec) itemBtnHoverIn(e);
+                    }}
+                    onMouseOut={itemBtnHoverOut}
+                    onClick={() => {
+                      if (!canDec) return;
+                      setTaskCtxMenu(null);
+                      void handleInlineSetPriority(m.title, m.priority - 1);
+                    }}
+                    title={
+                      canDec
+                        ? `把优先级从 P${m.priority} 降到 P${m.priority - 1}（更不紧急）`
+                        : "已是最低 P0，无法再降"
+                    }
+                  >
+                    ✦ -1 (→P{Math.max(0, m.priority - 1)})
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canInc}
+                    style={{
+                      ...itemBtn,
+                      flex: 1,
+                      textAlign: "center",
+                      padding: "4px 8px",
+                      opacity: canInc ? 1 : 0.4,
+                      cursor: canInc ? "pointer" : "default",
+                    }}
+                    onMouseOver={(e) => {
+                      if (canInc) itemBtnHoverIn(e);
+                    }}
+                    onMouseOut={itemBtnHoverOut}
+                    onClick={() => {
+                      if (!canInc) return;
+                      setTaskCtxMenu(null);
+                      void handleInlineSetPriority(m.title, m.priority + 1);
+                    }}
+                    title={
+                      canInc
+                        ? `把优先级从 P${m.priority} 升到 P${m.priority + 1}（更紧急）`
+                        : `已是最高 P${PRIORITY_MAX}，无法再升`
+                    }
+                  >
+                    ✦ +1 (→P{Math.min(PRIORITY_MAX, m.priority + 1)})
+                  </button>
+                </div>
+              );
+            })()}
             <button
               type="button"
               style={itemBtn}
@@ -8606,6 +11141,63 @@ export function PanelTasks({
                 }}
               >
                 📑 复制为 Markdown
+              </button>
+            )}
+            {/* 🔗 复制 detail.md 绝对路径：调后端 memory_detail_abs_path
+                把相对路径拼出绝对路径，写剪贴板。owner 可 paste 进 IDE 文件
+                打开框（VSCode ⌘P 接受绝对 path）/ Finder bar / shell `open`
+                直奔 detail.md 本地文件。仅 t.detail_path 非空时浮（任务还没
+                writeDetail 过则没 path 可复制）。 */}
+            {t && t.detail_path && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={async () => {
+                  setTaskCtxMenu(null);
+                  try {
+                    const abs = await invoke<string>(
+                      "memory_detail_abs_path",
+                      { detailPath: t.detail_path },
+                    );
+                    await navigator.clipboard.writeText(abs);
+                    setBulkResultMsg(`已复制 detail.md 绝对路径`);
+                  } catch (e) {
+                    setBulkResultMsg(`复制 path 失败：${e}`);
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 3000);
+                }}
+                title="把 detail.md 的绝对路径（含 ~/.config/pet/memories/... 前缀）复制到剪贴板。粘到 VSCode ⌘P / IntelliJ ⇧⌘O / Finder ⇧⌘G / shell `open` 都能直接打开本地文件，比走「📂 在 Finder 显示」少一次定位点击。"
+              >
+                🔗 复制 detail.md 绝对路径
+              </button>
+            )}
+            {/* 复制为 markdown 引用块 (> ...)：与 📑 完整段不同，blockquote
+                轻量 quote 形态，适合 paste 到 detail.md / chat / 别的 task 描述
+                里作为 "ref 到此任务" 一段。emoji + title + meta 单行 + 描述
+                前 200 字。 */}
+            {t && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={async () => {
+                  setTaskCtxMenu(null);
+                  try {
+                    await navigator.clipboard.writeText(
+                      formatTaskAsBlockquote(t),
+                    );
+                    setBulkResultMsg(`已复制 "${t.title}" 为引用块`);
+                  } catch (e) {
+                    setBulkResultMsg(`复制失败：${e}`);
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 3000);
+                }}
+                title="把任务复制为 markdown blockquote（> 起头）—— 适合 paste 进 detail.md / chat / 别的任务描述。比 「📑 完整段」 简短，比 「🔗 ref token」 多带状态 / 优先级 / due / tags / 描述预览。"
+              >
+                💬 复制为引用块（&gt; ）
               </button>
             )}
           </div>

@@ -460,6 +460,17 @@ function App() {
     -1,
   );
 
+  /// 今天宠物主动开口次数。60s 轮一次（与 chip 顶部其它 ambient 数同节奏）。
+  /// > 0 时桌面 Live2D 区右上 ✦ 陪伴天数 chip 左侧渲一个 🐾 chip，让 owner
+  /// 一眼看到"今天宠物来找我了多少次"。`-1` fallback 兜未抓到 → chip 不显
+  /// （避免空 chip 占视觉位）。轮询节奏与 companionshipDays 同（10min）—
+  /// proactive 一天最多 ~10 次，60s 轮太频繁；600s 足以让 chip 跟得上变化。
+  const { data: todaySpeechCount } = usePollingState(
+    () => invoke<number>("get_today_speech_count"),
+    600_000,
+    -1,
+  );
+
   /// 当前 session 上下文 token 量。60 秒轮一次（变化频率与 user 聊天节奏一致；
   /// 更频会浪费 IPC，更稀疏会漏报"刚刚才聊几句就过线"）。> 4000 时 ChatMini
   /// 顶部浮出"该 /reset 一下" chip，与 DebugApp 统计 tab 同源信号 +
@@ -481,7 +492,128 @@ function App() {
     0,
   );
 
+  /// pet 主区 hover 3s 浮 ambient 微卡片：聚合「今日 / 本周 / 累计」三段
+  /// 主动开口数 + ✦ 陪伴天数 一瞥全景。3s = 让"路过 cursor 经过"不触发
+  /// （区分"真的停在 pet 上端详"）。lazy fetch：只在 3s 计时器到点才发
+  /// 3 个 IPC（首次显卡片可能闪 ~50ms 等三命令返回，但避免 owner 从不
+  /// hover 的人白白持续轮询）。mouseleave 立刻清，下次 hover 重新启 3s
+  /// 重新发请求 = 数据始终新鲜。pointerEvents none 让卡片不接 hover，
+  /// 移到卡片上 cursor 实际仍在 wrapper 内 → 不触发 mouseleave。
+  const [ambientStats, setAmbientStats] = useState<
+    { today: number; week: number; lifetime: number } | null
+  >(null);
+  const petHoverTimerRef = useRef<number | null>(null);
+  const handlePetAmbientEnter = useCallback(() => {
+    if (petHoverTimerRef.current !== null) return;
+    if (ambientStats !== null) return;
+    petHoverTimerRef.current = window.setTimeout(async () => {
+      petHoverTimerRef.current = null;
+      try {
+        const [today, week, lifetime] = await Promise.all([
+          invoke<number>("get_today_speech_count"),
+          invoke<number>("get_week_speech_count"),
+          invoke<number>("get_lifetime_speech_count"),
+        ]);
+        setAmbientStats({ today, week, lifetime });
+      } catch (e) {
+        console.error("ambient stats fetch failed:", e);
+      }
+    }, 3000);
+  }, [ambientStats]);
+  const handlePetAmbientLeave = useCallback(() => {
+    if (petHoverTimerRef.current !== null) {
+      window.clearTimeout(petHoverTimerRef.current);
+      petHoverTimerRef.current = null;
+    }
+    setAmbientStats(null);
+  }, []);
+  useEffect(
+    () => () => {
+      if (petHoverTimerRef.current !== null) {
+        window.clearTimeout(petHoverTimerRef.current);
+      }
+    },
+    [],
+  );
+
   /// 任务完成庆祝 sparkle：done_today 计数从 prev → cur 单调上升时，触发
+  /// pet 右键 "⏰ 设倒计时 N 分" 启动的 timeout id 集合。每次 ctx menu 点击
+  /// 加一个 setTimeout；到点 push 一条 appendAssistant 软提醒；unmount 时
+  /// 清全部防 timer 漏。Set 而非 Map：timer id 是 caller 唯一标识，cancel
+  /// 在本 iter 范围外（owner 想取消可重启 pet 或忽略）；future iter 加显式
+  /// 取消 UI 时再 lift 到 Map<id, {minutes, startedAt}>。
+  const countdownTimersRef = useRef<Set<number>>(new Set());
+  useEffect(
+    () => () => {
+      for (const tid of countdownTimersRef.current) {
+        window.clearTimeout(tid);
+      }
+      countdownTimersRef.current.clear();
+    },
+    [],
+  );
+  const startCountdownNudge = useCallback(
+    (minutes: number) => {
+      if (minutes <= 0) return;
+      appendAssistant(`⏰ 已设 ${minutes} 分倒计时（到点会浮一条提醒）`);
+      const id = window.setTimeout(
+        () => {
+          appendAssistant(`⏰ ${minutes} 分倒计时到了 — 该回来看看了 🐾`);
+          countdownTimersRef.current.delete(id);
+        },
+        minutes * 60_000,
+      );
+      countdownTimersRef.current.add(id);
+    },
+    [appendAssistant],
+  );
+
+  /// butler_task `[reminderMin: N]` 软提醒：60s 轮询 butler_tasks，找到点
+  /// 前 N 分钟内未触发过的项 → appendAssistant 软提醒（不打开 Live2D 主动
+  /// 模式）。dedup Set 用 `${title}::${fireTimeIso}` —— 同 fire-cycle 同 task
+  /// 只触发一次；every 类型跨日产生新 fireTimeIso 自动允许下次。Set 仅活在
+  /// 进程内（重启后 fresh）—— 重启就重新提醒一次也是可接受的（owner 重启
+  /// 频率低 + 重启时多半正在用电脑）。
+  const reminderFiredRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const tick = async () => {
+      try {
+        const tasks = await invoke<
+          Array<{ title: string; description: string; status: string }>
+        >("db_butler_tasks_list");
+        // pending 才提醒 —— done / error / cancelled 任务 fire 时刻已过 / 无意义
+        const pending = tasks.filter((t) => t.status === "pending");
+        const { findRemindersToFire } = await import("./utils/butlerReminder");
+        const toFire = findRemindersToFire(
+          pending,
+          new Date(),
+          reminderFiredRef.current,
+        );
+        for (const r of toFire) {
+          reminderFiredRef.current.add(r.dedupKey);
+          const remainMin = Math.max(
+            1,
+            Math.round((new Date(r.fireTimeIso).getTime() - Date.now()) / 60_000),
+          );
+          appendAssistant(
+            `🔔 提醒：「${r.title}」将在约 ${remainMin} 分钟后到点（reminderMin=${r.reminderMin}）`,
+          );
+        }
+        // GC：dedup Set 不会无限增长 —— 一天 every 类型最多多一个 key；
+        // once / deadline 一旦 fire 过 fireTime 就不再命中。但为了保险，
+        // 若 Set 超过 200 项时清空（极端 ages-running pet 时止血）。
+        if (reminderFiredRef.current.size > 200) {
+          reminderFiredRef.current.clear();
+        }
+      } catch (e) {
+        console.error("butler reminder tick failed:", e);
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 60_000);
+    return () => window.clearInterval(id);
+  }, [appendAssistant]);
+
   /// 一次 ~1.5s ✨ 飘飞动画覆盖 Live2D 区。首次观测仅作 baseline 不点燃
   /// （初始 0 → 真实 N 不是"刚完成"信号）；午夜回到 0 也不触发（cur > prev
   /// 条件兜住）。多次连发用 key 自增让 React remount 动画从头跑。
@@ -626,6 +758,19 @@ function App() {
   /// 长到给一次动作播完的时间。settings.motion_mapping 仍生效，让用户
   /// 自定义模型也能命中 happy 等价的 group 名。
   const lastTapAtRef = useRef<number>(0);
+  /// 双击 happy 后偶尔（30%）push 一句鼓励 line 到 ChatMini，让"双击 pet"
+  /// 不只是动作还伴随宠物 mini reaction。30% 概率防每次双击都触发 → 过密噪
+  /// 音。lines 是文学短句库，2-3 字 emoji 起头 + 7-12 字主体，与 ChatMini
+  /// 既有 systemNote 风格短消息一致。
+  const happyLinesRef = useRef([
+    "🐾 嘿，你看到我啦 ✨",
+    "✨ 摸摸我会让我心情更好的～",
+    "🐾 双击我也是一种问候呢",
+    "💫 看你心情不错的样子",
+    "🌸 想我啦？我也想你",
+    "🐾 谢谢你来打个招呼",
+    "✨ 难得你这么主动找我玩",
+  ]);
   const handlePetDoubleClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       // 状态 pill / MoodWidget / 收起按钮等绝对定位子元素自身已挂 onMouseDown
@@ -636,8 +781,14 @@ function App() {
       if (now - lastTapAtRef.current < 600) return;
       lastTapAtRef.current = now;
       playPetMotion(modelRef.current, "Tap", settings.motion_mapping);
+      // ~30% 概率 push 鼓励 line；不每次都 push 防过密噪音。
+      if (Math.random() < 0.3) {
+        const lines = happyLinesRef.current;
+        const line = lines[Math.floor(Math.random() * lines.length)];
+        appendAssistant(line);
+      }
     },
-    [settings.motion_mapping],
+    [settings.motion_mapping, appendAssistant],
   );
 
   /// 桌面输入路由：先 parse 看是否 slash 命令。当前桌面仅支持 /image / /image -h，
@@ -768,6 +919,43 @@ function App() {
     };
   }, [petCtxMenu]);
 
+  /// ChatMini 气泡内双击「title」ref → 跨窗口跳到 PanelTasks 该任务行。
+  /// 走既有 pet-panel-deeplink localStorage 通道：tab=任务 + taskFocusTitle +
+  /// ts。PanelApp 端 consumePanelDeeplink 接受 taskFocusTitle 字段 →
+  /// requestFocusTask(title) 既有 pipeline。失败静默 console（既然写不进
+  /// storage 至少把 panel 打开让 owner 手动找）。
+  const handleMiniRefDoubleClick = useCallback((title: string) => {
+    try {
+      window.localStorage.setItem(
+        "pet-panel-deeplink",
+        JSON.stringify({ tab: "任务", taskFocusTitle: title, ts: Date.now() }),
+      );
+    } catch (e) {
+      console.error("write pet-panel-deeplink failed:", e);
+    }
+    invoke("open_panel").catch(console.error);
+  }, []);
+
+  /// ChatMini 气泡 "💾 转 task" 按钮：把本条消息文本作为 task body 传过去
+  /// 跨窗口写 deeplink + 开 panel + 让 PanelApp 推到 PanelTasks 弹 quickAdd
+  /// modal 预填。让 owner 把宠物刚说的好内容"存为 task 防忘" 一键搞定。
+  /// body 字段会被前 30 字 → title default 让 owner 进 modal 后直接 ⌘Enter
+  /// 创建。
+  const handleMiniSaveAsTask = useCallback((text: string) => {
+    const body = text.trim();
+    if (!body) return;
+    try {
+      window.localStorage.setItem(
+        "pet-panel-deeplink",
+        JSON.stringify({ tab: "任务", quickAddBody: body, ts: Date.now() }),
+      );
+    } catch (e) {
+      console.error("write pet-panel-deeplink quickAddBody failed:", e);
+    }
+    invoke("open_panel").catch(console.error);
+    appendAssistant("💾 已把这条消息发去 Panel → 任务面板 quickAdd 预填");
+  }, [appendAssistant]);
+
   const openPanel = () => {
     invoke("open_panel").catch(console.error);
     // 跨窗口"刚从桌面跳过来"信号：panel 聊天 tab 上线后给当前 session bar
@@ -788,6 +976,32 @@ function App() {
       // 事件总线失败不影响主流程（panel 已经 invoke 打开）
     });
   };
+
+  /// ⌘O / Ctrl+O 全局打开面板快捷键：与 Esc 收起对偶 —— Esc 走，⌘O 来。
+  /// 替代鼠标点 mini chat ⛶ / 底部 💬 / 右键菜单"打开面板"三条路径之一。
+  /// 让位条件与 Esc 同：输入控件聚焦时让它们自己处理（textarea 中 ⌘O 可能
+  /// 是浏览器默认"打开文件"行为—我们让它继续走默认；用户敲消息时不该被
+  /// 抢键）。已 hidden 时仍允许触发 —— owner 可能想从 collapse 态直接打开
+  /// panel；invoke("open_panel") 与 hidden 互不依赖。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "o") return;
+      const ae = document.activeElement;
+      if (
+        ae instanceof HTMLInputElement ||
+        ae instanceof HTMLTextAreaElement ||
+        (ae instanceof HTMLElement && ae.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      openPanel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openPanel]);
 
   if (!loaded) return null;
 
@@ -942,6 +1156,8 @@ function App() {
           <div
             style={{ position: "relative", flexShrink: 0, height: "220px" }}
             onDoubleClick={handlePetDoubleClick}
+            onMouseEnter={handlePetAmbientEnter}
+            onMouseLeave={handlePetAmbientLeave}
             onContextMenu={(e) => {
               // 仅在 Live2D 主区域响应；子级浮标（pill / chip / 按钮）右键时
               // 不抢菜单，让用户对那些 hit area 仍可走系统默认 / 子元素自定义。
@@ -1095,6 +1311,58 @@ function App() {
                 空心情 → 不渲染（避免占视觉位）。motion → emoji 取自 PanelPersona
                 的 MOTION_META 简化版；心情文字 trunc 到 ~24 字符。 */}
             <MoodWidget />
+            {/* 今日主动开口 🐾 N chip：钉在 ✦ 陪伴 chip 左侧。todaySpeechCount
+                = 后端 `get_today_speech_count` 仅数 proactive 主动开口次数（不
+                含 user-initiated chat 回复）。> 0 才渲染 —— 等于 0 时（刚起或
+                还没主动开口的清晨）chip 显 "🐾 0" 反成噪音。点击同 ✦ chip 跳
+                Persona tab（含 speech stats 详情）。位置 `right: 76px` 给 ✦ chip
+                的 36px + ~40px chip 宽留出空间。 */}
+            {todaySpeechCount > 0 && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  try {
+                    window.localStorage.setItem(
+                      "pet-panel-deeplink",
+                      JSON.stringify({ tab: "人格", ts: Date.now() }),
+                    );
+                  } catch {
+                    // localStorage 不可用 → 至少打开面板
+                  }
+                  openPanel();
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                title={`今天宠物主动来找你 ${todaySpeechCount} 次（不含你主动开口）。点开「人格」tab 看完整 speech 统计。`}
+                style={{
+                  position: "absolute",
+                  top: "8px",
+                  right: "76px",
+                  padding: "3px 9px",
+                  borderRadius: "12px",
+                  background: "var(--pet-color-card)",
+                  border: "1px solid var(--pet-color-border)",
+                  color: "var(--pet-color-muted)",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  cursor: "pointer",
+                  zIndex: 60,
+                  boxShadow: "var(--pet-shadow-sm)",
+                  opacity: 0.6,
+                  transition: "opacity 120ms ease-out",
+                  userSelect: "none",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseOver={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.opacity = "1";
+                }}
+                onMouseOut={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.opacity = "0.6";
+                }}
+              >
+                🐾 {todaySpeechCount}
+              </div>
+            )}
             {/* 陪伴天数 ✦ N chip：紧贴收起按钮左侧。默认 opacity 0.6 让它
                 半透不抢戏；hover 上去满灰度。companionshipDays === -1 = 未
                 fetch / 失败兜底 → 不渲染。点击跳到 Panel 「人格」tab（用户
@@ -1147,6 +1415,97 @@ function App() {
                 }}
               >
                 ✦ {companionshipDays}
+              </div>
+            )}
+            {/* Ambient 微卡片：pet 主区 hover 3s 后浮出。聚合 今日 / 本周 /
+                累计 主动开口数 + ✦ 陪伴天数 4 段一行（陪伴 -1 = 未抓到时
+                少一段）。pointerEvents none = 不挡 Live2D 拖动 / 双击 / 收起按钮
+                hover；cursor 移到卡片实际仍在 wrapper 内 → mouseLeave 不
+                误触发。底居中：避开顶部已挂的任务 pill / 🐾 / ✦ / ▶| chip
+                + 右下心情 widget，居中下方是 pet 视觉留白区。lifetime 大数
+                自动 1.2k 简化避免占位过宽。 */}
+            {ambientStats !== null && (
+              <div
+                style={{
+                  position: "absolute",
+                  bottom: "10px",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  padding: "4px 10px",
+                  borderRadius: "10px",
+                  background: "var(--pet-color-card)",
+                  border: "1px solid var(--pet-color-border)",
+                  color: "var(--pet-color-fg)",
+                  fontSize: "11px",
+                  lineHeight: 1.3,
+                  zIndex: 55,
+                  boxShadow: "var(--pet-shadow-sm)",
+                  opacity: 0.92,
+                  pointerEvents: "none",
+                  userSelect: "none",
+                  whiteSpace: "nowrap",
+                  display: "flex",
+                  gap: "8px",
+                  alignItems: "center",
+                }}
+              >
+                <span>
+                  <span style={{ color: "var(--pet-color-muted)" }}>今日</span>{" "}
+                  🐾 {ambientStats.today}
+                </span>
+                <span style={{ color: "var(--pet-color-border)" }}>·</span>
+                <span>
+                  <span style={{ color: "var(--pet-color-muted)" }}>本周</span>{" "}
+                  {ambientStats.week}
+                </span>
+                <span style={{ color: "var(--pet-color-border)" }}>·</span>
+                <span>
+                  <span style={{ color: "var(--pet-color-muted)" }}>累计</span>{" "}
+                  {ambientStats.lifetime >= 10000
+                    ? `${(ambientStats.lifetime / 1000).toFixed(0)}k`
+                    : ambientStats.lifetime >= 1000
+                      ? `${(ambientStats.lifetime / 1000).toFixed(1)}k`
+                      : ambientStats.lifetime}
+                </span>
+                {companionshipDays >= 0 && (
+                  <>
+                    <span style={{ color: "var(--pet-color-border)" }}>·</span>
+                    <span>✦ {companionshipDays} 天</span>
+                  </>
+                )}
+                {/* 🌐 本机时区 chip：HH:MM + IANA timezone short label。
+                    远程办公 / 时区切换场景给 owner ambient 锚定 "我现在
+                    几点 / 在哪个时区"。Intl.DateTimeFormat 取 IANA TZ
+                    （fallback 用 offset 串）。本字段是 pet hover 3s 卡片
+                    最右侧加一段，与既有 4 段 (今日/本周/累计/✦) 同行排列。 */}
+                <span style={{ color: "var(--pet-color-border)" }}>·</span>
+                <span
+                  style={{ color: "var(--pet-color-muted)" }}
+                  title={`本机时间 + 时区。Intl.DateTimeFormat 取系统 IANA 时区；远程办公 / 跨时区时 ambient 锚定。`}
+                >
+                  🌐{" "}
+                  {(() => {
+                    const now = new Date();
+                    const hh = String(now.getHours()).padStart(2, "0");
+                    const mm = String(now.getMinutes()).padStart(2, "0");
+                    const tz =
+                      (() => {
+                        try {
+                          return Intl.DateTimeFormat().resolvedOptions().timeZone;
+                        } catch {
+                          // fallback：拿数字 offset (-480 → "+08:00")
+                          const off = -now.getTimezoneOffset();
+                          const sign = off >= 0 ? "+" : "-";
+                          const oh = String(Math.floor(Math.abs(off) / 60)).padStart(2, "0");
+                          const om = String(Math.abs(off) % 60).padStart(2, "0");
+                          return `UTC${sign}${oh}:${om}`;
+                        }
+                      })();
+                    // IANA tz like "Asia/Shanghai" 简化为最后一段 "Shanghai"
+                    const tzShort = tz.split("/").pop() ?? tz;
+                    return `${hh}:${mm} ${tzShort}`;
+                  })()}
+                </span>
               </div>
             )}
             {/* 收起按钮：钉在 Live2D 区右上角；调 useAutoHide.collapse 把窗口
@@ -1204,6 +1563,8 @@ function App() {
             nowTasks={nowTasks}
             sessionTokens={sessionTokens}
             onResetContext={resetContext}
+            onRefDoubleClick={handleMiniRefDoubleClick}
+            onSaveAsTask={handleMiniSaveAsTask}
           />
           <ChatPanel onSend={handleSend} isLoading={isLoading} />
         </>
@@ -1215,9 +1576,9 @@ function App() {
           // 边距。mousedown e.stopPropagation 防菜单内部点击被 useEffect outside-
           // close 误关。
           const W = 180;
-          // H 经验值 ~ 7 个 button (button ≈ 26px) + 3 个 separator (≈ 9px) +
-          // 8px padding ≈ 217；加点余量到 270 给字体放大 / 不同主题边距浮动。
-          const H = 270;
+          // H 经验值 ~ 13 个 button (button ≈ 26px) + 6 个 separator (≈ 9px) +
+          // 8px padding ≈ 400；加点余量到 470 给字体放大 / 不同主题边距浮动。
+          const H = 470;
           const left = Math.max(8, Math.min(petCtxMenu.x, window.innerWidth - W - 8));
           const top = Math.max(8, Math.min(petCtxMenu.y, window.innerHeight - H - 8));
           const itemStyle: React.CSSProperties = {
@@ -1289,6 +1650,7 @@ function App() {
                   setPetCtxMenu(null);
                   openPanel();
                 }}
+                title="打开 Panel（完整聊天 / 任务 / 记忆 / 设置）— 全局快捷键 ⌘O / Ctrl+O"
               >
                 📋 打开面板
               </button>
@@ -1361,6 +1723,94 @@ function App() {
                 title="解除 mute（minutes=0 撤销 proactive 暂停）"
               >
                 ☀️ 解除 mute
+              </button>
+              {sep}
+              {/* 倒计时 nudge presets：与 mute 邻近因都涉及"时间软控制"，
+                  但语义反向 —— mute 让宠物安静、倒计时让宠物提醒。四档
+                  覆盖典型场景：5 分子段微歇 / 15 分短番茄 / 25 分标准番茄
+                  / 30 分半小时块。多个并存 OK，timer id Set 在 unmount 时
+                  一次 clear 防漏。 */}
+              {[5, 15, 25, 30].map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  style={itemStyle}
+                  onMouseOver={itemHoverIn}
+                  onMouseOut={itemHoverOut}
+                  onClick={() => {
+                    setPetCtxMenu(null);
+                    startCountdownNudge(m);
+                  }}
+                  title={`设 ${m} 分钟倒计时，到点 ChatMini 浮一条 "⏰ ${m} 分倒计时到了" 软提醒（不打开 Live2D 主动模式）。多个倒计时可并存。`}
+                >
+                  ⏰ 倒计时 {m} 分
+                </button>
+              ))}
+              {sep}
+              {/* 📋 复制当前 mood：调 get_current_mood 拿到当前文本 + motion，
+                  format 成 "心情：X · 动作：Y · 时间：..." 字符串复制到剪
+                  贴板。让 owner 想"抄给别人 / 写日记" 时一键 export 宠物
+                  当前情绪。失败用 toast 替代而非 throw —— mood file 缺失
+                  / 老 session 都是常见 OK 边界。 */}
+              <button
+                type="button"
+                style={itemStyle}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={async () => {
+                  setPetCtxMenu(null);
+                  try {
+                    const m = await invoke<CurrentMood>("get_current_mood");
+                    if (!m || (!m.text?.trim() && !m.motion)) {
+                      appendAssistant("📋 当前 mood 为空，无可复制");
+                      return;
+                    }
+                    const parts: string[] = [];
+                    if (m.text?.trim()) parts.push(`心情：${m.text.trim()}`);
+                    if (m.motion) parts.push(`动作：${m.motion}`);
+                    const text = parts.join(" · ");
+                    await navigator.clipboard.writeText(text);
+                    appendAssistant(`📋 已复制当前 mood：${text}`);
+                  } catch (e) {
+                    appendAssistant(`📋 复制 mood 失败：${e}`);
+                  }
+                }}
+                title="把宠物当前 mood (text + motion) 复制到剪贴板，方便 owner 抄给别人 / 写日记 / 上 issue 截图配文等。"
+              >
+                📋 复制当前 mood
+              </button>
+              {sep}
+              {/* 📡 ping LLM: 调后端 ping_llm command 测 settings.api_base
+                  /models 端点连通 + 延迟。结果 push 到 ChatMini 让 owner
+                  立刻看到（✅ 通 / ⚠ 通但 status N / ❌ 不通）+ api_base /
+                  model echo / elapsed_ms。owner "宠物不回应" 排查时第一步。 */}
+              <button
+                type="button"
+                style={itemStyle}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={async () => {
+                  setPetCtxMenu(null);
+                  appendAssistant("📡 ping LLM...");
+                  try {
+                    const r = await invoke<{
+                      ok: boolean;
+                      elapsed_ms: number;
+                      status_code: number;
+                      api_base: string;
+                      model: string;
+                    }>("ping_llm");
+                    const icon = r.ok ? "✅" : "⚠️";
+                    appendAssistant(
+                      `${icon} ping ${r.api_base} → HTTP ${r.status_code} · ${r.elapsed_ms}ms · model=${r.model}`,
+                    );
+                  } catch (e) {
+                    appendAssistant(`❌ ping LLM 失败：${e}`);
+                  }
+                }}
+                title="测当前 model.api_base 连通 + 延迟 (ms)。owner 排查'宠物不回应'时第一步：看是网络挂了 / api_base 错了 / api_key 错了。"
+              >
+                📡 ping LLM
               </button>
               {sep}
               <button

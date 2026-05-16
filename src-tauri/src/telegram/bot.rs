@@ -452,6 +452,8 @@ async fn handle_tg_command(
         | TgCommand::Unsnooze { ref title }
         | TgCommand::Pin { ref title }
         | TgCommand::Unpin { ref title }
+        | TgCommand::Silent { ref title }
+        | TgCommand::Unsilent { ref title }
             if title.trim().is_empty() =>
         {
             format_missing_argument(cmd.name())
@@ -625,6 +627,38 @@ async fn handle_tg_command(
                 Err(msg) => format_command_error(&msg),
             }
         }
+        TgCommand::Silent { title } => {
+            // 与 /pin 同模板：三层 resolve + atomic task_set_silent + 反向命令
+            // 提示。silent 让 LLM proactive cycle 不主动 pick；面板 / 手动触发
+            // 不受影响。
+            let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                Some(t) => Ok(t),
+                None => resolve_tg_task_title(&title),
+            };
+            match actual {
+                Ok(t) => match crate::commands::task::task_set_silent(t.clone(), true) {
+                    Ok(()) => format!(
+                        "🔇 已标 silent「{}」\nLLM 不再主动选；如需恢复发 /unsilent {}",
+                        t, t
+                    ),
+                    Err(e) => format_command_error(&e),
+                },
+                Err(msg) => format_command_error(&msg),
+            }
+        }
+        TgCommand::Unsilent { title } => {
+            let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                Some(t) => Ok(t),
+                None => resolve_tg_task_title(&title),
+            };
+            match actual {
+                Ok(t) => match crate::commands::task::task_set_silent(t.clone(), false) {
+                    Ok(()) => format!("🔇 已解除 silent「{}」", t),
+                    Err(e) => format_command_error(&e),
+                },
+                Err(msg) => format_command_error(&msg),
+            }
+        }
         TgCommand::Task { title, priority } => {
             // 直接落 butler_tasks，不经 LLM。`priority` 由 `parse_task_prefix`
             // 预解析：默认 3（与桌面 PanelTasks 默认一致）/ `!!` 5 / `!!!` 7。
@@ -687,6 +721,31 @@ async fn handle_tg_command(
                 .filter(|v| v.pinned)
                 .collect();
             crate::telegram::commands::format_pinned_tasks_list(&views)
+        }
+        TgCommand::Silenced => {
+            // 与 /pinned 同模板：read_tg_chat_task_views + raw_description 含
+            // [silent] marker 过滤。format_silenced_tasks_list 分状态分组渲染。
+            let views: Vec<crate::task_queue::TaskView> = read_tg_chat_task_views(chat_id.0)
+                .into_iter()
+                .filter(|v| {
+                    crate::task_queue::parse_silent(&v.raw_description)
+                })
+                .collect();
+            crate::telegram::commands::format_silenced_tasks_list(&views)
+        }
+        TgCommand::Markers => {
+            // /markers 同时考虑 pinned + silent 两 markers，所以 caller 把
+            // 全 union 也都传进 format helper 内部再分两段渲染。即 caller
+            // 不过滤；read 路径就 chat-scoped。
+            let views: Vec<crate::task_queue::TaskView> =
+                read_tg_chat_task_views(chat_id.0)
+                    .into_iter()
+                    .filter(|v| {
+                        v.pinned
+                            || crate::task_queue::parse_silent(&v.raw_description)
+                    })
+                    .collect();
+            crate::telegram::commands::format_markers_list(&views)
         }
         TgCommand::Mood => {
             // 心情是宠物全局状态（与 MoodWidget 同 mood state 文件），不分 chat
