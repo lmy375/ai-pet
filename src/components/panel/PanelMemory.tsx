@@ -4748,6 +4748,29 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           🚀
                         </button>
+                        {/* 📂 在 Finder 显示 detail.md：与 🚀（外部打开）不
+                            同 —— 这里调 memory_reveal_detail_in_finder 让
+                            Finder 高亮选中文件而不是直接进编辑器，适合 owner
+                            想 git add / 拖到 chat / 用其他工具操作的场景。
+                            与 PanelTasks 行内 📂 reveal 按钮对偶。 */}
+                        <button
+                          style={s.btn}
+                          onClick={async () => {
+                            try {
+                              await invoke<void>(
+                                "memory_reveal_detail_in_finder",
+                                { detailPath: item.detail_path },
+                              );
+                            } catch (e) {
+                              setMessage(`在 Finder 显示失败：${e}`);
+                              setTimeout(() => setMessage(""), 4000);
+                            }
+                          }}
+                          title={`在系统文件管理器里高亮 ${item.detail_path}（macOS Finder / Windows Explorer）。与「🚀 外部打开」不同，这是定位文件而不是用 .md 编辑器打开它。`}
+                          aria-label="reveal detail.md in finder"
+                        >
+                          📂
+                        </button>
                         {/* 🔗 复制 detail.md 绝对路径：与 PanelTasks 行右
                             键「🔗 复制 detail.md 绝对路径」对偶（iter
                             #191 加 memory_detail_abs_path Tauri 命令）。

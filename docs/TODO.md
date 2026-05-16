@@ -8,6 +8,10 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- detail.md 编辑器底部状态栏加 "✏️ 上次编辑距今 X" 灰字 hint：让 owner 知道这条 detail 多久没动过。
+- ChatMini 顶部加 "🌐 当前时区" mini chip：tz 缩写 + UTC 偏移；click 复制到剪贴板。
+- PanelChat 历史消息 hover 浮 "🔍 在当前 session 找类似" 按钮：用此消息文本作 query 预填顶部 search。
+- PanelTasks 顶部加 "📊 按 tag 分组" sort toggle：替代当前 queue / priority / due 排序，按 primary tag 把 task 分段显。
 
 
 
