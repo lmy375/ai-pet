@@ -3119,6 +3119,42 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 <span style={s.badge} title={previewTip}>
                   {cat.items.length}
                 </span>
+                {/* 📊 本段总字数 chip：扫 cat.items 的 description 长度 +
+                    detailSizes（detail.md unicode 字符数）总和。仅 > 1000 字时
+                    显（< 1k 是噪音；owner 能从条目数判断）。owner 一眼掂量
+                    类目总规模 / 是否值得 consolidate。tooltip 拆分两类，让
+                    "detail 多 / 描述多" 各自感知。 */}
+                {(() => {
+                  let descChars = 0;
+                  let detailChars = 0;
+                  for (const it of cat.items) {
+                    descChars += Array.from(it.description).length;
+                    detailChars += detailSizes[it.detail_path] ?? 0;
+                  }
+                  const total = descChars + detailChars;
+                  if (total < 1000) return null;
+                  const fmt = (n: number) =>
+                    n >= 10_000
+                      ? `${(n / 1000).toFixed(0)}k`
+                      : `${(n / 1000).toFixed(1)}k`;
+                  return (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        background: "var(--pet-color-bg)",
+                        color: "var(--pet-color-muted)",
+                        fontFamily: "'SF Mono', monospace",
+                        fontWeight: 400,
+                        userSelect: "none",
+                      }}
+                      title={`本段共 ${total.toLocaleString()} 字（描述 ${descChars.toLocaleString()} + detail.md ${detailChars.toLocaleString()}）· 帮你掂量 consolidate 时机`}
+                    >
+                      📊 {fmt(total)} 字
+                    </span>
+                  );
+                })()}
                 {/* 🔇 silent / 💤 snooze 计数 chip：butler_tasks 专属（其它
                     cat 这两 marker 无语义）。silent 严格字面 `[silent]`；
                     snooze 解析 `[snooze: YYYY-MM-DD HH:MM]` 并仅算未过点
