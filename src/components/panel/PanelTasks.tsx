@@ -4192,6 +4192,45 @@ export function PanelTasks({
     weekList.sort((a, b) => b.ts - a.ts);
     return { today, week, todayList, weekList };
   }, [tasks, nowMs]);
+  /// 7 天任务流：按本地日期分桶，每天的 new（按 created_at 落桶）+ done
+  /// （按 status==='done' 且 updated_at 落桶）双计数。day 0 = 6 天前，day 6 =
+  /// 今日 —— 与 sparkline 视觉的"最旧 → 最新"左到右顺序一致。
+  const flow7d = useMemo(() => {
+    const buckets: { date: string; label: string; newCount: number; doneCount: number }[] = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const days: { ms: number; date: string; label: string }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today.getTime() - i * 86_400_000);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const da = String(d.getDate()).padStart(2, "0");
+      const date = `${y}-${m}-${da}`;
+      days.push({ ms: d.getTime(), date, label: `${m}-${da}` });
+      buckets.push({ date, label: `${m}-${da}`, newCount: 0, doneCount: 0 });
+    }
+    const firstMs = days[0].ms;
+    const lastEndMs = days[days.length - 1].ms + 86_400_000;
+    const idxOfMs = (ms: number) => {
+      if (ms < firstMs || ms >= lastEndMs) return -1;
+      return Math.floor((ms - firstMs) / 86_400_000);
+    };
+    for (const t of tasks) {
+      const cMs = Date.parse(t.created_at);
+      if (!Number.isNaN(cMs)) {
+        const idx = idxOfMs(cMs);
+        if (idx >= 0) buckets[idx].newCount += 1;
+      }
+      if (t.status === "done") {
+        const uMs = Date.parse(t.updated_at);
+        if (!Number.isNaN(uMs)) {
+          const idx = idxOfMs(uMs);
+          if (idx >= 0) buckets[idx].doneCount += 1;
+        }
+      }
+    }
+    return buckets;
+  }, [tasks]);
   /// 完成统计小卡展开态。点小卡 toggle；点 title 触发定位后自动关闭。
   const [completedListExpanded, setCompletedListExpanded] = useState(false);
   /// 跨 render 定位 by title：点 title 后 setShowFinished + 清 filter，下一帧
@@ -5258,6 +5297,83 @@ export function PanelTasks({
                   <span style={{ marginLeft: 4 }}>{completedListExpanded ? "▾" : "▸"}</span>
                 )}
               </button>
+              {/* 📈 7-day 任务流 sparkline：每天双 stack bar — 上段 new
+                  （绿）/ 下段 done（蓝）。max 跨"新建 vs 完成"两类共
+                  归一化（max 任一一天的最大值即满高度），保证两类比例
+                  可比。空 bar 留 1px 灰底让 owner 知道"这天有 record 框
+                  但没 task"。hover 每天 column 显日期 + 详细计数。 */}
+              {(() => {
+                const maxAny = Math.max(
+                  1,
+                  ...flow7d.map((d) => Math.max(d.newCount, d.doneCount)),
+                );
+                const totalNew = flow7d.reduce((s, d) => s + d.newCount, 0);
+                const totalDone = flow7d.reduce((s, d) => s + d.doneCount, 0);
+                return (
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "flex-end",
+                      gap: 2,
+                      marginLeft: 8,
+                      padding: "2px 6px",
+                      border: "1px dashed var(--pet-color-border)",
+                      borderRadius: 4,
+                      cursor: "default",
+                      verticalAlign: "middle",
+                    }}
+                    title={`📈 7 天任务流（最旧 → 最新）· 新建 ${totalNew} · 完成 ${totalDone}\n每天 column：上段绿=new / 下段蓝=done；hover 单 column 看详情。`}
+                  >
+                    {flow7d.map((d) => {
+                      const BAR_MAX_PX = 14;
+                      const newH = Math.max(
+                        d.newCount === 0 ? 1 : 2,
+                        Math.round((d.newCount / maxAny) * BAR_MAX_PX),
+                      );
+                      const doneH = Math.max(
+                        d.doneCount === 0 ? 1 : 2,
+                        Math.round((d.doneCount / maxAny) * BAR_MAX_PX),
+                      );
+                      return (
+                        <div
+                          key={d.date}
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "stretch",
+                            gap: 1,
+                            width: 6,
+                          }}
+                          title={`${d.date}：新建 ${d.newCount} · 完成 ${d.doneCount}`}
+                        >
+                          <div
+                            style={{
+                              height: newH,
+                              background:
+                                d.newCount === 0
+                                  ? "var(--pet-color-border)"
+                                  : "var(--pet-tint-green-fg)",
+                              opacity: d.newCount === 0 ? 0.4 : 0.85,
+                              borderRadius: 1,
+                            }}
+                          />
+                          <div
+                            style={{
+                              height: doneH,
+                              background:
+                                d.doneCount === 0
+                                  ? "var(--pet-color-border)"
+                                  : "var(--pet-tint-blue-fg)",
+                              opacity: d.doneCount === 0 ? 0.4 : 0.85,
+                              borderRadius: 1,
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
               {completedListExpanded && completionStats.week > 0 && (
                 <div
                   style={{
