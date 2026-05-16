@@ -248,6 +248,7 @@ pub fn run() {
             commands::task::task_list,
             commands::task::task_retry,
             commands::task::task_mark_done,
+            commands::task::task_undo_done,
             commands::task::task_cancel,
             commands::task::task_get_detail,
             commands::task::task_set_priority,

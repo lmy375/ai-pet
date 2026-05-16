@@ -307,6 +307,52 @@ pub fn task_mark_done_inner(
     Ok(())
 }
 
+/// `task_undo_done`：把 status == Done 的 task 还原为 Pending — 剥 description
+/// 里的 `[done]` / `[result: ...]` marker，写回 butler_tasks。owner 误标 done
+/// 撤销用：与 `task_mark_done` 对偶（同 marker，反向操作）。
+///
+/// 校验：找不到任务 / 任务非 Done 状态 → 返回 Err（让前端给明确反馈而非
+/// 静默 noop）。被剥的 marker 仅限本 task 的"完成" — 保留 schedule / tag /
+/// pinned / silent / snooze / blockedBy / detail.md 等 owner-intent 状态。
+/// 不重写 detail.md — 保留 done 时 LLM 可能写的 [result: ...] 在 detail 段
+/// 的扩展笔记（与 `task_retry` 同保留语义）。
+#[tauri::command]
+pub fn task_undo_done(
+    title: String,
+    decisions: tauri::State<'_, DecisionLogStore>,
+) -> Result<(), String> {
+    task_undo_done_inner(title, decisions.inner().clone())
+}
+
+pub fn task_undo_done_inner(
+    title: String,
+    decisions: DecisionLogStore,
+) -> Result<(), String> {
+    let title_trimmed = title.trim();
+    if title_trimmed.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trimmed)
+        .ok_or_else(|| format!("task not found: {}", title_trimmed))?;
+    let (status, _) = classify_status(&item.description);
+    if status != TaskStatus::Done {
+        return Err(format!(
+            "only done tasks can be undone (current status: {:?})",
+            status
+        ));
+    }
+    let cleaned = crate::task_queue::strip_done_markers(&item.description);
+    memory::memory_edit(
+        "update".to_string(),
+        "butler_tasks".to_string(),
+        item.title.clone(),
+        Some(cleaned),
+        None,
+    )?;
+    decisions.push("TaskUndoDone", item.title.clone());
+    Ok(())
+}
+
 /// 给「任务」标签头部红点徽章用：返回当前已过期未完成（pending / error 且
 /// `due < now`）的任务数。
 ///
