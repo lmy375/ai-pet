@@ -214,6 +214,7 @@ pub fn run() {
             commands::session::create_session,
             commands::session::get_active_session_context_stats,
             commands::session::delete_session,
+            commands::session::purge_fragment_sessions,
             commands::session::search_sessions,
             commands::session::set_session_pinned,
             commands::session::list_sessions_with_images,
