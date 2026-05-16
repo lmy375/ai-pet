@@ -799,6 +799,13 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_find_reply(&views, &keyword)
         }
+        TgCommand::Blocked => {
+            // 被 blockedBy 锁住的 active task 清单。reuse 同 read path；
+            // formatter 内部把 chat-scoped views 当 active 集 + 交集计算
+            // unresolved blockers。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_blocked_reply(&views)
+        }
         TgCommand::Version => {
             // app_version 走编译期 env，schema_version 走 _migrations 最大 version。
             // 单 SQL 查不引入新 Tauri 命令；读失败 → 0（format 时省略 schema 行）。
