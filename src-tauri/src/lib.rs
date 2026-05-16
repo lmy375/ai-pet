@@ -229,6 +229,7 @@ pub fn run() {
             commands::memory::memory_search,
             commands::memory::memory_edit,
             commands::memory::memory_rename,
+            commands::memory::memory_move_category,
             commands::memory::memory_read_detail,
             commands::memory::memory_read_detail_full,
             commands::memory::memory_reveal_detail_in_finder,
