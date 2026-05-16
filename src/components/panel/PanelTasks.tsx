@@ -1277,7 +1277,7 @@ export function PanelTasks({
   // 排序模式：默认 "queue"（沿用 backend compare_for_queue 综合序），切到
   // "due" 按 due 升序（无 due 排末尾），切到 "priority"（R107）按优先级降
   // 序（数值大 = 优先级高，与后端 compare_for_queue 方向一致）。重启即默认。
-  const [sortMode, setSortMode] = useState<"queue" | "due" | "priority">(
+  const [sortMode, setSortMode] = useState<"queue" | "due" | "priority" | "tag">(
     "queue",
   );
   const [search, setSearch] = useState("");
@@ -3673,6 +3673,20 @@ export function PanelTasks({
       // JS sort stable —— 同 priority 保持原 queue 综合序，让"P3 内部"仍是
       // backend 推荐处理顺序。
       sorted = unf.slice().sort((a, b) => b.priority - a.priority);
+    } else if (sortMode === "tag") {
+      // 按 primary tag（t.tags[0]）字典升序分段；空 tag → "无 tag" sentinel
+      // 排到末尾（empty string > 任何真实 tag 字符的 sort 序）。同 tag 内
+      // 保留 queue 综合序（stable sort）。section header 在 render 阶段按
+      // 相邻 boundary 注入。
+      const primaryTag = (t: TaskView) =>
+        t.tags.length > 0 ? t.tags[0] : "￿";
+      sorted = unf.slice().sort((a, b) => {
+        const pa = primaryTag(a);
+        const pb = primaryTag(b);
+        if (pa < pb) return -1;
+        if (pa > pb) return 1;
+        return 0;
+      });
     } else {
       sorted = unf;
     }
@@ -5194,7 +5208,9 @@ export function PanelTasks({
                 ? "（按宠物处理顺序）"
                 : sortMode === "due"
                   ? "（按 due 升序）"
-                  : "（按优先级降序，高 → 低）"}
+                  : sortMode === "priority"
+                    ? "（按优先级降序，高 → 低）"
+                    : "（按 primary tag 分段）"}
             </div>
             <div
               style={{ position: "relative", marginTop: 2 }}
@@ -5311,8 +5327,8 @@ export function PanelTasks({
               )}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 4, alignItems: "center" }} title="切换排序模式：默认综合 / 按截止时间升序 / 按优先级降序（priority 模式下可拖卡片改 P）">
-            {(["queue", "due", "priority"] as const).map((mode) => {
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }} title="切换排序模式：默认综合 / 按截止时间升序 / 按优先级降序（priority 模式下可拖卡片改 P）/ 按 primary tag 分段">
+            {(["queue", "due", "priority", "tag"] as const).map((mode) => {
               const active = sortMode === mode;
               return (
                 <button
@@ -5330,8 +5346,23 @@ export function PanelTasks({
                     cursor: active ? "default" : "pointer",
                     fontWeight: active ? 600 : 400,
                   }}
+                  title={
+                    mode === "queue"
+                      ? "默认综合排序（按宠物推荐处理顺序）"
+                      : mode === "due"
+                        ? "按 due 时间升序（早到期在前）"
+                        : mode === "priority"
+                          ? "按优先级降序（P9 → P0）· 可拖卡片改 P"
+                          : "按 primary tag (t.tags[0]) 字典升序分段，无 tag 段排末尾"
+                  }
                 >
-                  {mode === "queue" ? "队列" : mode === "due" ? "due ↑" : "P ↓"}
+                  {mode === "queue"
+                    ? "队列"
+                    : mode === "due"
+                      ? "due ↑"
+                      : mode === "priority"
+                        ? "P ↓"
+                        : "📊 tag"}
                 </button>
               );
             })}
@@ -6249,6 +6280,26 @@ export function PanelTasks({
                     )
                   : null;
               showBucketHeader = curBucket !== prevBucket;
+            }
+            // sortMode === "tag" 时给 unfinished 段按 primary tag 分组插
+            // header。与 finished 段的 bucketHeader 互斥（前者只在 unfinished
+            // 上跑，后者只在 finished 上跑），同 render loop 共存。
+            const curTagGroup =
+              sortMode === "tag" && !isFin
+                ? t.tags.length > 0
+                  ? t.tags[0]
+                  : ""
+                : null;
+            let showTagHeader = false;
+            if (sortMode === "tag" && !isFin) {
+              const prev = idx > 0 ? visibleTasks[idx - 1] : null;
+              const prevTagGroup =
+                prev && !isFinished(prev.status)
+                  ? prev.tags.length > 0
+                    ? prev.tags[0]
+                    : ""
+                  : null;
+              showTagHeader = curTagGroup !== prevTagGroup;
             }
             // 拖拽 priority 改：仅 priority sort 模式启用。其他 sort 下拖
             // 卡片"位置 → priority"映射不直观（按 due 排时拖卡片改 priority
@@ -10069,6 +10120,13 @@ export function PanelTasks({
                   <div style={s.bucketHeader}>
                     <span>{BUCKET_LABELS[curBucket]}</span>
                     <span style={s.bucketCount}>{bucketCounts[curBucket]}</span>
+                  </div>
+                )}
+                {showTagHeader && (
+                  <div style={s.bucketHeader}>
+                    <span>
+                      {curTagGroup === "" ? "🏷 无 tag" : `# ${curTagGroup}`}
+                    </span>
                   </div>
                 )}
                 {taskCard}
