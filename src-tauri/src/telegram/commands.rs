@@ -75,6 +75,11 @@ pub enum TgCommand {
     /// 与今日已完成 (done+updated_at 在今天) 的任务标题清单。与 `/stats`
     /// 数字汇总互补 —— /today 看具体清单。
     Today,
+    /// `/recent [N]` —— 列出本 chat 派单中最近 N 条 done 任务标题（按
+    /// updated_at 倒序）。N 缺省 5，clamp 到 1..=20。owner 在 TG 上想"我最
+    /// 近完成了什么"扫读 — 比 /today 更宽（不限今日 ）；比 /tasks 更聚焦
+    /// （只 done 段）。
+    Recent { n: u32 },
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -108,6 +113,7 @@ impl TgCommand {
             TgCommand::Silenced => "silenced",
             TgCommand::Markers => "markers",
             TgCommand::Today => "today",
+            TgCommand::Recent { .. } => "recent",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help => "help",
@@ -137,6 +143,7 @@ impl TgCommand {
             | TgCommand::Mood
             | TgCommand::Whoami
             | TgCommand::Today
+            | TgCommand::Recent { .. }
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help
@@ -207,6 +214,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mood", "Show the pet's current mood"),
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
+            ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -230,6 +238,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mood", "查看宠物当前心情"),
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
+            ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -534,6 +543,17 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "markers" => Some(TgCommand::Markers),
         // `/today` 同上无参语义
         "today" => Some(TgCommand::Today),
+        // `/recent [N]`：N 缺省 5，clamp 1..=20。非数字尾部一律忽略走默认（与
+        // /tasks since:7d 同前向兼容策略 —— 不让奇怪后缀走 Unknown）。
+        "recent" => {
+            let n = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 20))
+                .unwrap_or(5);
+            Some(TgCommand::Recent { n })
+        }
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -800,6 +820,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/mood  —  查看宠物当前心情".to_string(),
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
+        "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1263,6 +1284,51 @@ pub fn format_today_reply(
     };
     render_bucket(&mut out, "今日到期", &due_today);
     render_bucket(&mut out, "今日已完成", &done_today);
+    out
+}
+
+/// `/recent <N>` 命令回复文案。pure：接收已过滤到本 chat 的 views + n cap，
+/// 输出最近 N 条 done 任务标题清单（按 updated_at 倒序）。空 → "暂无完成
+/// 记录"。format：`✅ HH:MM · title`，每行一条；末尾追加 grand total 兜底。
+pub fn format_recent_reply(
+    views: &[crate::task_queue::TaskView],
+    n: u32,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let mut done: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Done))
+        .collect();
+    // updated_at 是 ISO `YYYY-MM-DDThh:mm[:ss]±TZ` 字典序与时间序一致 — 倒
+    // 序拿"最新完成在前"。
+    done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    if done.is_empty() {
+        return "✨ 本聊天派单暂无完成记录。\n做完一条后 /done <标题> 标记，再来 /recent 看清单。".to_string();
+    }
+    let take_n = (n as usize).max(1);
+    let shown = &done[..done.len().min(take_n)];
+    let mut out = String::new();
+    out.push_str(&format!(
+        "✅ 最近 {} 条完成（共 {}）：",
+        shown.len(),
+        done.len()
+    ));
+    for v in shown {
+        // updated_at 截 MM-DD HH:MM；解析失败兜原串前 16 字符
+        let when = if v.updated_at.len() >= 16 {
+            format!("{} {}", &v.updated_at[5..10], &v.updated_at[11..16])
+        } else {
+            v.updated_at.clone()
+        };
+        out.push_str(&format!("\n· {} · {}", when, v.title));
+    }
+    if done.len() > shown.len() {
+        out.push_str(&format!(
+            "\n…还有 {} 条更早完成（用 /recent {} 看更多，上限 20）",
+            done.len() - shown.len(),
+            (done.len()).min(20)
+        ));
+    }
     out
 }
 
@@ -3221,6 +3287,94 @@ mod tests {
         assert!(!s.contains("写周报"), "today reply: {s}");
         assert!(!s.contains("洗碗"), "today reply: {s}");
         assert!(!s.contains("今日队列清爽"), "today reply: {s}");
+    }
+
+    // -------- /recent parse + format --------
+
+    #[test]
+    fn recent_parses_default_5_when_no_arg() {
+        assert_eq!(parse_tg_command("/recent"), Some(TgCommand::Recent { n: 5 }));
+        assert_eq!(parse_tg_command("/recent  "), Some(TgCommand::Recent { n: 5 }));
+    }
+
+    #[test]
+    fn recent_parses_explicit_n() {
+        assert_eq!(parse_tg_command("/recent 10"), Some(TgCommand::Recent { n: 10 }));
+        assert_eq!(parse_tg_command("/recent 1"), Some(TgCommand::Recent { n: 1 }));
+    }
+
+    #[test]
+    fn recent_clamps_to_1_20_range() {
+        assert_eq!(parse_tg_command("/recent 0"), Some(TgCommand::Recent { n: 1 }));
+        assert_eq!(parse_tg_command("/recent 21"), Some(TgCommand::Recent { n: 20 }));
+        assert_eq!(parse_tg_command("/recent 9999"), Some(TgCommand::Recent { n: 20 }));
+    }
+
+    #[test]
+    fn recent_garbage_arg_falls_back_to_default() {
+        // 非数字 → 默认 5（与 /tasks since:7d 同前向兼容策略）
+        assert_eq!(
+            parse_tg_command("/recent abc"),
+            Some(TgCommand::Recent { n: 5 })
+        );
+    }
+
+    #[test]
+    fn recent_reply_empty_done_says_no_records() {
+        let s = format_recent_reply(&[], 5);
+        assert!(s.contains("✨"), "recent reply: {s}");
+        assert!(s.contains("暂无完成记录"), "recent reply: {s}");
+    }
+
+    #[test]
+    fn recent_reply_orders_by_updated_at_desc() {
+        let mut a = view("早的任务", 0, None, TaskStatus::Done, None);
+        a.updated_at = "2026-05-13T10:00:00+08:00".to_string();
+        let mut b = view("最新的任务", 0, None, TaskStatus::Done, None);
+        b.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+        let mut c = view("中间的任务", 0, None, TaskStatus::Done, None);
+        c.updated_at = "2026-05-14T09:00:00+08:00".to_string();
+        let views = vec![a, b, c];
+        let s = format_recent_reply(&views, 3);
+        // "最新的任务" 在 "中间的任务" 之前；"早的任务" 在最后
+        let pos_latest = s.find("最新的任务").expect("latest present");
+        let pos_middle = s.find("中间的任务").expect("middle present");
+        let pos_early = s.find("早的任务").expect("early present");
+        assert!(pos_latest < pos_middle, "order: {s}");
+        assert!(pos_middle < pos_early, "order: {s}");
+        assert!(s.contains("共 3"), "header: {s}");
+        assert!(s.contains("05-14 11:00"), "ts format: {s}");
+    }
+
+    #[test]
+    fn recent_reply_skips_non_done_status() {
+        let mut p = view("pending 的", 0, None, TaskStatus::Pending, None);
+        p.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+        let mut d = view("done 的", 0, None, TaskStatus::Done, None);
+        d.updated_at = "2026-05-14T10:00:00+08:00".to_string();
+        let s = format_recent_reply(&vec![p, d], 5);
+        assert!(s.contains("done 的"), "done present: {s}");
+        assert!(!s.contains("pending 的"), "pending skipped: {s}");
+    }
+
+    #[test]
+    fn recent_reply_truncates_to_n_and_shows_remaining_count() {
+        let mut views = Vec::new();
+        for i in 0..7 {
+            let mut v = view(&format!("done-{}", i), 0, None, TaskStatus::Done, None);
+            // 升序 ts → 最高 idx 最新（formatter 倒序后 done-6 在前）
+            v.updated_at = format!("2026-05-14T1{}:00:00+08:00", i);
+            views.push(v);
+        }
+        let s = format_recent_reply(&views, 3);
+        assert!(s.contains("最近 3 条完成（共 7）"), "header: {s}");
+        // 倒序应显 done-6 / done-5 / done-4
+        assert!(s.contains("done-6"), "{s}");
+        assert!(s.contains("done-5"), "{s}");
+        assert!(s.contains("done-4"), "{s}");
+        // done-3 / done-2 / done-1 / done-0 不显（被截断）
+        assert!(!s.contains("done-3"), "{s}");
+        assert!(s.contains("还有 4 条更早完成"), "overflow hint: {s}");
     }
 
     // -------- /reset parse + format --------
