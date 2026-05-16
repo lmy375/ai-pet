@@ -10,7 +10,6 @@
 
 - detail.md 编辑器加 "🔢 显行号 gutter" toggle：textarea 左侧浮行号列，状态持久化 localStorage。
 - PanelChat session 列表加 "🧹 清碎片 session" 按钮：批量删 message count ≤ 3 的"碎片"会话，二次确认。
-- pet ctx menu 加 "🎲 摇一摇主动开口" 按钮：绕过 proactive cooldown 立即触发一次主动开口，armed 二次确认。
 
 
 
