@@ -540,6 +540,34 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  /// 跨 cat memory quick-find palette：⌘K 唤起。input 即时 fuzzy 过滤所有
+  /// category 的 item（title + description 都参与），Enter 跳到目标 item 行
+  /// （展开其 cat + 清当前 search + scrollIntoView + 短暂高亮闪烁）。模板
+  /// 复用自 iter #240 PanelTasks ⌘K palette。Esc / outside-click 关。
+  const [memPaletteOpen, setMemPaletteOpen] = useState(false);
+  const [memPaletteQuery, setMemPaletteQuery] = useState("");
+  const [memPaletteSelectedIdx, setMemPaletteSelectedIdx] = useState(0);
+  const memPaletteInputRef = useRef<HTMLInputElement>(null);
+  /// Enter 跳转后该 item 闪烁 1.6s 的 key（`${catKey}::${title}`）。让 owner 视觉
+  /// 上锁定到底跳到了哪条 — 长 cat 滚动到屏中间后没高亮容易迷失。
+  const [memFlashKey, setMemFlashKey] = useState<string | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "k"
+      ) {
+        e.preventDefault();
+        setMemPaletteOpen(true);
+        setMemPaletteQuery("");
+        setMemPaletteSelectedIdx(0);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // R140: 全局记忆总数。搜索结果 badge 显 N/M，让用户感知搜词命中率。
   // 复用 R98 导出 helper 同款 reduce sum 模式；依赖 index，index 切换时
   // 自动重算。
@@ -566,6 +594,79 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     return n;
   }, [index]);
 
+  /// ⌘K palette 用的扁平 item 列表：跨 cat 按 CATEGORY_ORDER 顺序 flatten，
+  /// 保留 catKey / catLabel 供 hint 行显示。index 变化时重算。
+  const allMemoryItems = useMemo(() => {
+    if (!index) return [] as {
+      catKey: string;
+      catLabel: string;
+      title: string;
+      description: string;
+    }[];
+    const out: {
+      catKey: string;
+      catLabel: string;
+      title: string;
+      description: string;
+    }[] = [];
+    const orderedKeys = [
+      ...CATEGORY_ORDER,
+      ...Object.keys(index.categories).filter(
+        (k) => !CATEGORY_ORDER.includes(k),
+      ),
+    ];
+    for (const catKey of orderedKeys) {
+      const cat = index.categories[catKey];
+      if (!cat) continue;
+      for (const it of cat.items) {
+        out.push({
+          catKey,
+          catLabel: cat.label,
+          title: it.title,
+          description: it.description,
+        });
+      }
+    }
+    return out;
+  }, [index]);
+
+  /// ⌘K palette → Enter 跳到某 item 的协调：关 palette + 清搜索（不然
+  /// searchResults gate 会把整 cat 树藏掉）+ 展开 cat（持久化到 localStorage
+  /// 与既有切换路径一致）+ scrollIntoView + 1.6s 闪烁。setTimeout 50ms 等
+  /// React 渲染完 expandedCategories 后再查 DOM。
+  const jumpToMemoryItem = useCallback(
+    (catKey: string, title: string) => {
+      setMemPaletteOpen(false);
+      setSearchKeyword("");
+      setSearchResults(null);
+      setExpandedCategories((prev) => {
+        if (prev.has(catKey)) return prev;
+        const next = new Set(prev);
+        next.add(catKey);
+        try {
+          window.localStorage.setItem(
+            "pet-memory-expanded-cats",
+            JSON.stringify([...next]),
+          );
+        } catch {
+          // 私密浏览 / 配额满 — 本次仍生效，下次启动丢
+        }
+        return next;
+      });
+      const key = `${catKey}::${title}`;
+      window.setTimeout(() => {
+        const el = document.querySelector(
+          `[data-mem-key="${CSS.escape(key)}"]`,
+        ) as HTMLElement | null;
+        if (el) {
+          el.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+        setMemFlashKey(key);
+        window.setTimeout(() => setMemFlashKey(null), 1600);
+      }, 50);
+    },
+    [],
+  );
 
   const loadIndex = async () => {
     try {
@@ -3871,7 +3972,18 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     })()}
                   <div
                     className="pet-memory-item"
-                    style={{ ...s.item, position: "relative" }}
+                    data-mem-key={`${catKey}::${item.title}`}
+                    style={{
+                      ...s.item,
+                      position: "relative",
+                      ...(memFlashKey === `${catKey}::${item.title}`
+                        ? {
+                            outline: "2px solid var(--pet-tint-yellow-fg)",
+                            outlineOffset: 2,
+                            transition: "outline-color 0.4s ease-out",
+                          }
+                        : {}),
+                    }}
                     onMouseEnter={() => startPreviewHover(item.detail_path)}
                     onMouseLeave={endPreviewHover}
                   >
@@ -5052,6 +5164,196 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
             </div>
           );
         })}
+      {/* ⌘K 跨 cat memory quick-find palette：input fuzzy 过滤所有 cat 的 item
+          （title + description），↑↓ 选 / Enter 跳到该 item（展开 cat +
+          scrollIntoView + 1.6s 黄边闪烁）/ Esc 关 / backdrop 点击关。模板与
+          iter #240 PanelTasks ⌘K 同款。 */}
+      {memPaletteOpen && (() => {
+        const q = memPaletteQuery.trim().toLowerCase();
+        const filtered =
+          q === ""
+            ? allMemoryItems.slice(0, 30)
+            : allMemoryItems
+                .filter(
+                  (it) =>
+                    it.title.toLowerCase().includes(q) ||
+                    it.description.toLowerCase().includes(q),
+                )
+                .slice(0, 30);
+        const safeIdx = Math.max(
+          0,
+          Math.min(memPaletteSelectedIdx, filtered.length - 1),
+        );
+        return (
+          <div
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setMemPaletteOpen(false);
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.3)",
+              zIndex: 200,
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              paddingTop: "10vh",
+            }}
+          >
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{
+                width: 520,
+                maxWidth: "90vw",
+                background: "var(--pet-color-card)",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 8,
+                boxShadow: "var(--pet-shadow-md)",
+                padding: 8,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <input
+                ref={memPaletteInputRef}
+                type="text"
+                autoFocus
+                value={memPaletteQuery}
+                onChange={(e) => {
+                  setMemPaletteQuery(e.target.value);
+                  setMemPaletteSelectedIdx(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMemPaletteOpen(false);
+                    return;
+                  }
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setMemPaletteSelectedIdx((i) =>
+                      filtered.length === 0
+                        ? 0
+                        : Math.min(i + 1, filtered.length - 1),
+                    );
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setMemPaletteSelectedIdx((i) => Math.max(0, i - 1));
+                    return;
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const target = filtered[safeIdx];
+                    if (!target) return;
+                    jumpToMemoryItem(target.catKey, target.title);
+                    return;
+                  }
+                }}
+                placeholder={`fuzzy 跨 cat 找 memory（共 ${allMemoryItems.length}）· ↑↓ 选 · Enter 跳 · Esc 关`}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 13,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  background: "var(--pet-color-bg)",
+                  color: "var(--pet-color-fg)",
+                  fontFamily: "inherit",
+                  outline: "none",
+                }}
+              />
+              <div
+                style={{
+                  maxHeight: 360,
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                }}
+              >
+                {filtered.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "12px",
+                      fontSize: 12,
+                      color: "var(--pet-color-muted)",
+                      fontStyle: "italic",
+                      textAlign: "center",
+                    }}
+                  >
+                    {q === ""
+                      ? "（无记忆）"
+                      : `没有命中「${memPaletteQuery}」的 memory`}
+                  </div>
+                ) : (
+                  filtered.map((it, i) => {
+                    const active = i === safeIdx;
+                    const customLabel = categoryLabels[it.catKey];
+                    const catDisplay =
+                      customLabel && customLabel.trim()
+                        ? customLabel
+                        : it.catLabel;
+                    return (
+                      <button
+                        key={`${it.catKey}::${it.title}`}
+                        type="button"
+                        onMouseEnter={() => setMemPaletteSelectedIdx(i)}
+                        onClick={() =>
+                          jumpToMemoryItem(it.catKey, it.title)
+                        }
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          border: "none",
+                          background: active
+                            ? "var(--pet-tint-blue-bg)"
+                            : "transparent",
+                          color: active
+                            ? "var(--pet-tint-blue-fg)"
+                            : "var(--pet-color-fg)",
+                          fontWeight: active ? 600 : 400,
+                          cursor: "pointer",
+                          borderRadius: 4,
+                          textAlign: "left",
+                          fontFamily: "inherit",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                        }}
+                        title={`跳到「${catDisplay}」/「${it.title}」`}
+                      >
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            flex: 1,
+                          }}
+                        >
+                          {it.title}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "var(--pet-color-muted)",
+                            fontFamily: "'SF Mono', monospace",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {catDisplay}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
