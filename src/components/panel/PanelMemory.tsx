@@ -540,6 +540,15 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  /// 每分钟刷一下的"当前时刻" state — butler_tasks 下次触发倒计时 chip
+  /// 用。setInterval 60s 而非更短，因 chip 精度只到分钟，60s tick 即足够；
+  /// 节省 re-render。setInterval 启动时立即 setTickNow 一次确保挂载后到下
+  /// 一次 tick 之间也是新鲜值。
+  const [tickNow, setTickNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setTickNow(new Date()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
   /// 跨 cat memory quick-find palette：⌘K 唤起。input 即时 fuzzy 过滤所有
   /// category 的 item（title + description 都参与），Enter 跳到目标 item 行
   /// （展开其 cat + 清当前 search + scrollIntoView + 短暂高亮闪烁）。模板
@@ -4364,14 +4373,16 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             ✏️
                           </button>
                         )}
-                        {/* ⏰ 下次触发：X 后 / 已过 X：让用户扫读一眼到
-                            "这条还多久会跑"。仅有 parsed schedule 的 butler
-                            任务才显。every 下次 = 今 / 明 HH:MM，once /
-                            deadline 取绝对时间。inline 小灰字与 chip 同行
-                            不抢眼。 */}
+                        {/* ⏰ 下次触发倒计时 chip：每分钟刷一下显距离 next
+                            fire 还有多久（tickNow 每 60s 自增）。仅有 parsed
+                            schedule 的 butler 任务才显。every 下次 = 今 / 明
+                            HH:MM；every_weekdays 向前扫 ≤ 7 天找命中日；once
+                            / deadline 取绝对时间。chip 风格（背景 + 圆角 + 内
+                            边距）与 scheduleLabel 同高度对齐；已过点用 orange
+                            tint 区分，未到时用 muted 灰底。 */}
                         {catKey === "butler_tasks" && parsed && (() => {
                           const s = parsed.schedule;
-                          const now = new Date();
+                          const now = tickNow;
                           let target: Date;
                           if (s.kind === "every") {
                             target = new Date(
@@ -4456,6 +4467,11 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             <span
                               style={{
                                 fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                background: isPast
+                                  ? "var(--pet-tint-orange-bg)"
+                                  : "var(--pet-color-border)",
                                 color: isPast
                                   ? "var(--pet-tint-orange-fg)"
                                   : "var(--pet-color-muted)",
