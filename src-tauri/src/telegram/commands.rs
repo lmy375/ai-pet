@@ -84,6 +84,11 @@ pub enum TgCommand {
     /// 串，case-insensitive），返回最多 10 条命中行（status emoji + 标题 +
     /// 命中点 hint）。空 keyword 由 handler 走 missing-argument。
     Find { keyword: String },
+    /// `/blocked` —— 列出本 chat 派单中被 `[blockedBy: ...]` 锁住的 active
+    /// task（pending / error 状态）+ 每条仍未解决的 blocker 标题列表。无参；
+    /// 多余尾部忽略（与 /tasks / /today 同容忍策略）。给 owner audit "我哪
+    /// 些任务卡住了 / 卡在等什么" 用。
+    Blocked,
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -119,6 +124,7 @@ impl TgCommand {
             TgCommand::Today => "today",
             TgCommand::Recent { .. } => "recent",
             TgCommand::Find { .. } => "find",
+            TgCommand::Blocked => "blocked",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help => "help",
@@ -150,6 +156,7 @@ impl TgCommand {
             | TgCommand::Whoami
             | TgCommand::Today
             | TgCommand::Recent { .. }
+            | TgCommand::Blocked
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help
@@ -222,6 +229,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("today", "Today's due / done task titles"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
+            ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -247,6 +255,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("today", "今日到期 / 已完成的任务标题清单"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
+            ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -566,6 +575,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 整理 Downloads" 命中标题含"整理 Downloads"的 task）。空 keyword
         // 由 handler 走 missing-argument。
         "find" => Some(TgCommand::Find { keyword: title }),
+        // `/blocked`：无参；多余尾部忽略（与 /tasks / /today 同容忍策略）。
+        "blocked" => Some(TgCommand::Blocked),
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -834,6 +845,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
+        "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1403,6 +1415,59 @@ pub fn format_find_reply(
             "\n…还有 {} 条命中（关键词太宽？试更精确的词）",
             hits.len() - cap
         ));
+    }
+    out
+}
+
+/// `/blocked` 命令回复文案。pure：接收已 chat-scoped 过滤的 views，
+/// 1) 算 active 集合 = pending / error 状态的 title 集（done / cancelled 视
+///    作"已解决"不阻塞依赖）；2) 对每条 view，把 `blocked_by` 与 active
+///    集合求交集 = 仍未解决的 blocker；3) 仅当本条 view 也是 active 且未
+///    解决 blocker 非空时列出。
+///
+/// 与 `task_queue::unresolved_blockers` 同算法（独立实现保 formatter 纯函
+/// 数）。无命中 → "本聊天派单暂无被卡的 task"。
+pub fn format_blocked_reply(views: &[crate::task_queue::TaskView]) -> String {
+    use crate::task_queue::TaskStatus;
+    let active: std::collections::HashSet<&str> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Pending | TaskStatus::Error))
+        .map(|v| v.title.as_str())
+        .collect();
+    let mut rows: Vec<(&str, Vec<&str>, &TaskStatus)> = Vec::new();
+    for v in views {
+        if !matches!(v.status, TaskStatus::Pending | TaskStatus::Error) {
+            continue;
+        }
+        if v.blocked_by.is_empty() {
+            continue;
+        }
+        let unresolved: Vec<&str> = v
+            .blocked_by
+            .iter()
+            .filter(|b| active.contains(b.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        if unresolved.is_empty() {
+            continue;
+        }
+        rows.push((v.title.as_str(), unresolved, &v.status));
+    }
+    if rows.is_empty() {
+        return "✅ 本聊天派单暂无被卡的 task（所有 active task 的 blockedBy 都解锁了）。".to_string();
+    }
+    let mut out = format!("🔒 被卡的 task {} 条：", rows.len());
+    for (title, blockers, status) in &rows {
+        let icon = match status {
+            TaskStatus::Pending => "🟢",
+            TaskStatus::Error => "⚠️",
+            // unreachable per filter above, but keep arms exhaustive
+            _ => "·",
+        };
+        out.push_str(&format!("\n{} {}", icon, title));
+        for b in blockers {
+            out.push_str(&format!("\n   └ 等：{}", b));
+        }
     }
     out
 }
@@ -3533,6 +3598,87 @@ mod tests {
         assert!(!s.contains("task-10"), "{s}");
         // 溢出 hint
         assert!(s.contains("还有 5 条命中"), "{s}");
+    }
+
+    // -------- /blocked parse + format --------
+
+    #[test]
+    fn blocked_parses_no_arg() {
+        assert_eq!(parse_tg_command("/blocked"), Some(TgCommand::Blocked));
+        assert_eq!(parse_tg_command("/blocked  "), Some(TgCommand::Blocked));
+        assert_eq!(parse_tg_command("/blocked now"), Some(TgCommand::Blocked));
+    }
+
+    #[test]
+    fn blocked_reply_empty_views_friendly() {
+        let s = format_blocked_reply(&[]);
+        assert!(s.contains("✅"), "{s}");
+        assert!(s.contains("暂无被卡的 task"), "{s}");
+    }
+
+    #[test]
+    fn blocked_reply_no_active_blockers_friendly() {
+        // 有 task 但都没 blockedBy
+        let a = view("a", 0, None, TaskStatus::Pending, None);
+        let b = view("b", 0, None, TaskStatus::Done, None);
+        let s = format_blocked_reply(&[a, b]);
+        assert!(s.contains("暂无被卡的 task"), "{s}");
+    }
+
+    #[test]
+    fn blocked_reply_lists_blocker_with_active_dependency() {
+        let mut a = view("写决策文档", 0, None, TaskStatus::Pending, None);
+        a.blocked_by = vec!["调研竞品".to_string()];
+        let b = view("调研竞品", 0, None, TaskStatus::Pending, None);
+        let s = format_blocked_reply(&[a, b]);
+        assert!(s.contains("被卡的 task 1 条"), "header: {s}");
+        assert!(s.contains("🟢 写决策文档"), "{s}");
+        assert!(s.contains("等：调研竞品"), "{s}");
+    }
+
+    #[test]
+    fn blocked_reply_skips_when_blocker_already_done() {
+        // blockedBy 引用了一条 done 的任务 — 视作"已解决"，不显
+        let mut a = view("写决策文档", 0, None, TaskStatus::Pending, None);
+        a.blocked_by = vec!["调研竞品".to_string()];
+        let b = view("调研竞品", 0, None, TaskStatus::Done, None);
+        let s = format_blocked_reply(&[a, b]);
+        assert!(s.contains("暂无被卡的 task"), "{s}");
+    }
+
+    #[test]
+    fn blocked_reply_skips_done_task_even_with_unresolved_blocker() {
+        // 自己已 done 的 task 不算"被卡" — 即使它的 blockedBy 还指向 active task
+        let mut a = view("写决策文档", 0, None, TaskStatus::Done, None);
+        a.blocked_by = vec!["调研竞品".to_string()];
+        let b = view("调研竞品", 0, None, TaskStatus::Pending, None);
+        let s = format_blocked_reply(&[a, b]);
+        assert!(s.contains("暂无被卡的 task"), "{s}");
+    }
+
+    #[test]
+    fn blocked_reply_multi_blockers_per_task_listed() {
+        let mut a = view("写文档", 0, None, TaskStatus::Pending, None);
+        a.blocked_by = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let av = view("A", 0, None, TaskStatus::Pending, None);
+        let bv = view("B", 0, None, TaskStatus::Pending, None);
+        // C 不在列表（typo / 已删 — 视作已解决，宽容语义）
+        let s = format_blocked_reply(&[a, av, bv]);
+        assert!(s.contains("被卡的 task 1 条"), "{s}");
+        assert!(s.contains("等：A"), "{s}");
+        assert!(s.contains("等：B"), "{s}");
+        // C 视作已解决，不出现
+        assert!(!s.contains("等：C"), "{s}");
+    }
+
+    #[test]
+    fn blocked_reply_error_state_also_blocks() {
+        // 一条 error task 的 blockedBy 引用了 active task — 也算被卡
+        let mut a = view("写文档", 0, None, TaskStatus::Error, Some("LLM 拒"));
+        a.blocked_by = vec!["调研".to_string()];
+        let b = view("调研", 0, None, TaskStatus::Pending, None);
+        let s = format_blocked_reply(&[a, b]);
+        assert!(s.contains("⚠️ 写文档"), "{s}");
     }
 
     // -------- /reset parse + format --------
