@@ -3703,6 +3703,7 @@ export function PanelTasks({
         // 辑 detail）时挂监听；与既有 ⌘[ / ⌘] 同 effect，共享 dependency。
         e.preventDefault();
         setTaskPaletteOpen(true);
+        setTaskPaletteMode("jump");
         setPaletteQuery("");
         setPaletteSelectedIdx(0);
       }
@@ -3715,10 +3716,40 @@ export function PanelTasks({
   /// 匹配 visibleTasks（含 filter / sort 后的视图），Enter 跳到选中 task 的
   /// detail.md 编辑器（复用 handleNavigateDetail-style 切换 pipeline）。
   /// Esc 关闭，↑↓ 移动 selectedIdx。
+  /// mode === "jump"（默认 ⌘K 路径）：Enter switchToTaskDetail。
+  /// mode === "insertRef"（toolbar 「」按钮路径）：Enter 把 `「title」` 插
+  /// 到 textarea 光标处，不切 task。同一 palette UI 双用例分流。
   const [taskPaletteOpen, setTaskPaletteOpen] = useState(false);
+  const [taskPaletteMode, setTaskPaletteMode] = useState<"jump" | "insertRef">(
+    "jump",
+  );
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSelectedIdx, setPaletteSelectedIdx] = useState(0);
   const paletteInputRef = useRef<HTMLInputElement>(null);
+  /// 把 `「title」` 全角直角引号 ref token 插到 detail.md textarea 当前光标
+  /// 位置（或替换选区）。光标落 token 末尾让 owner 接着敲。token 形态与
+  /// renderContentWithTaskRefs / `🔗 拼为 ref` 同协议。
+  const insertTaskRefAtCursor = useCallback(
+    (title: string) => {
+      const ta = detailEditorRef.current;
+      if (!ta) return;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const token = `「${title}」`;
+      const before = editingDetailContent.slice(0, start);
+      const after = editingDetailContent.slice(end);
+      const next = `${before}${token}${after}`;
+      setEditingDetailContent(next);
+      window.requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        const pos = start + token.length;
+        cur.focus();
+        cur.setSelectionRange(pos, pos);
+      });
+    },
+    [editingDetailContent],
+  );
   /// 一次切到任意 target title 的 detail 编辑器 helper：复用 handleNavigateDetail
   /// 的"dirty flush draft + detailMap cache / IO fallback + handleEnterEditDetail
   /// + setPendingTitleFocus" 五步链路，仅 target idx 取法不同（palette 是
@@ -8741,6 +8772,24 @@ export function PanelTasks({
                                   >
                                     ✓
                                   </button>
+                                  {/* 🔗 插 task ref：复用 ⌘K palette 但 mode
+                                      = insertRef。fuzzy 选其他 task 后在光标
+                                      位置插 `「title」`，token 与 bulk
+                                      "🔗 拼为 ref" 协议同 — chat / detail
+                                      渲染时 hover 显状态 / 双击跳源 task。 */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setTaskPaletteOpen(true);
+                                      setTaskPaletteMode("insertRef");
+                                      setPaletteQuery("");
+                                      setPaletteSelectedIdx(0);
+                                    }}
+                                    title="插 task ref token「title」。弹 task picker → 选要 ref 的 task → 自动在光标位置插入 `「title」`（chat / detail 渲染时是 hover-able / 双击跳源任务的 ref）。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    「」
+                                  </button>
                                   {/* 📂 在 Finder 显示 detail.md：让 owner 能在
                                       系统文件管理器里操作（拖图 / git add /
                                       用其它编辑器打开等）。macOS 用 `open -R`
@@ -10693,11 +10742,19 @@ export function PanelTasks({
                     const target = filtered[safeIdx];
                     if (!target) return;
                     setTaskPaletteOpen(false);
-                    void switchToTaskDetail(target.title);
+                    if (taskPaletteMode === "insertRef") {
+                      insertTaskRefAtCursor(target.title);
+                    } else {
+                      void switchToTaskDetail(target.title);
+                    }
                     return;
                   }
                 }}
-                placeholder={`fuzzy 找 task （共 ${visibleTasks.length}）· ↑↓ 选 · Enter 切 · Esc 关`}
+                placeholder={
+                  taskPaletteMode === "insertRef"
+                    ? `fuzzy 选 task 插 ref token「title」（共 ${visibleTasks.length}）· ↑↓ 选 · Enter 插 · Esc 关`
+                    : `fuzzy 找 task （共 ${visibleTasks.length}）· ↑↓ 选 · Enter 切 · Esc 关`
+                }
                 style={{
                   padding: "6px 10px",
                   fontSize: 13,
@@ -10736,6 +10793,11 @@ export function PanelTasks({
                   filtered.map((t, i) => {
                     const active = i === safeIdx;
                     const isCurrent = t.title === editingDetailTitle;
+                    // insertRef 模式允许插当前 task 的 ref（自引并不常见但合
+                    // 法 —— 比如把已完成子任务列回主任务自身的 detail），
+                    // 仅 jump 模式 disable current。
+                    const disabled =
+                      taskPaletteMode === "jump" && isCurrent;
                     return (
                       <button
                         key={t.title}
@@ -10743,7 +10805,11 @@ export function PanelTasks({
                         onMouseEnter={() => setPaletteSelectedIdx(i)}
                         onClick={() => {
                           setTaskPaletteOpen(false);
-                          void switchToTaskDetail(t.title);
+                          if (taskPaletteMode === "insertRef") {
+                            insertTaskRefAtCursor(t.title);
+                          } else {
+                            void switchToTaskDetail(t.title);
+                          }
                         }}
                         style={{
                           padding: "6px 10px",
@@ -10754,12 +10820,12 @@ export function PanelTasks({
                             : "transparent",
                           color: active
                             ? "var(--pet-tint-blue-fg)"
-                            : isCurrent
+                            : disabled
                               ? "var(--pet-color-muted)"
                               : "var(--pet-color-fg)",
                           fontWeight: active ? 600 : 400,
-                          cursor: isCurrent ? "default" : "pointer",
-                          opacity: isCurrent ? 0.5 : 1,
+                          cursor: disabled ? "default" : "pointer",
+                          opacity: disabled ? 0.5 : 1,
                           borderRadius: 4,
                           textAlign: "left",
                           fontFamily: "inherit",
@@ -10768,11 +10834,13 @@ export function PanelTasks({
                           justifyContent: "space-between",
                           gap: 8,
                         }}
-                        disabled={isCurrent}
+                        disabled={disabled}
                         title={
-                          isCurrent
-                            ? "当前已在编辑此 task"
-                            : `切到「${t.title}」detail 编辑器`
+                          taskPaletteMode === "insertRef"
+                            ? `插入 ref「${t.title}」到光标位置`
+                            : isCurrent
+                              ? "当前已在编辑此 task"
+                              : `切到「${t.title}」detail 编辑器`
                         }
                       >
                         <span

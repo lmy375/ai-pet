@@ -8,6 +8,11 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- PanelMemory butler_tasks item 加 "下次 N 分 / N 时" 倒计时 chip：每分钟刷新显距离 next fire 还有多久。
+- PanelTasks task row 加 "📅 调期" 按钮：popover 显 +1h / +1d / +3d / +1w / +2w preset，click 改 [deadline:] marker。
+- ChatMini 选中文字后浮 mini toolbar：💾 转 task / 📋 复制 / 🔄 给 AI 改写后重发。
+- PanelTasks tag chip 双击 inline rename：跨全表批量改 tag 名（含 raw_description rewrite）。
+- PanelDebug 加 "📂 打开 logs 目录" 按钮：调 reveal-in-finder 打开 ~/Library/Application Support/pet/logs/ 目录。
 
 
 
