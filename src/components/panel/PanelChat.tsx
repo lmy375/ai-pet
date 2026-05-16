@@ -917,6 +917,58 @@ export function PanelChat({
     }
   }, []);
 
+  /// 清碎片 session：item_count ≤ 3 且非 pinned 非 active 的会话一键扫掉。
+  /// armed 二次确认与 clearAll 同 5s 自动 disarm 模板。`fragCount` 是按当前
+  /// sessionList 实时算的"可清掉"条数，让 owner 在按下前知道会清多少。
+  const [purgeFragArmed, setPurgeFragArmed] = useState(false);
+  const purgeFragArmTimerRef = useRef<number | null>(null);
+  const handlePurgeFragmentSessions = useCallback(async () => {
+    const fragCount = sessionList.filter(
+      (s) => (s.item_count ?? 0) <= 3 && !s.pinned && s.id !== sessionId,
+    ).length;
+    if (!purgeFragArmed) {
+      if (fragCount === 0) {
+        setExportToast(
+          "没有碎片 session 可清（碎片 = item_count ≤ 3、未钉住、非当前激活）。",
+        );
+        setTimeout(() => setExportToast(""), 4000);
+        return;
+      }
+      setPurgeFragArmed(true);
+      if (purgeFragArmTimerRef.current !== null) {
+        window.clearTimeout(purgeFragArmTimerRef.current);
+      }
+      purgeFragArmTimerRef.current = window.setTimeout(() => {
+        setPurgeFragArmed(false);
+        purgeFragArmTimerRef.current = null;
+      }, 5000);
+      setExportToast(
+        `⚠ 再点一次确认清掉 ${fragCount} 个碎片 session（5 秒内）。pinned / 当前会话保留。`,
+      );
+      setTimeout(() => setExportToast(""), 5000);
+      return;
+    }
+    if (purgeFragArmTimerRef.current !== null) {
+      window.clearTimeout(purgeFragArmTimerRef.current);
+      purgeFragArmTimerRef.current = null;
+    }
+    setPurgeFragArmed(false);
+    try {
+      const deleted = await invoke<number>("purge_fragment_sessions");
+      const index = await invoke<SessionIndex>("list_sessions");
+      setSessionList(index.sessions);
+      setExportToast(
+        deleted === 0
+          ? "没有碎片 session 被清（可能刚被其它窗口清掉了）"
+          : `已清 ${deleted} 个碎片 session`,
+      );
+      setTimeout(() => setExportToast(""), 4000);
+    } catch (e) {
+      setExportToast(`清碎片失败: ${e}`);
+      setTimeout(() => setExportToast(""), 4000);
+    }
+  }, [purgeFragArmed, sessionList, sessionId]);
+
   /// 全量清空 sessions：armed 二次确认。第一次点 → 显"再点确认清空 N 个 session"
   /// + 5s 自动 disarm；二次点 → invoke clear_all_sessions + 刷 sessionList +
   /// 切到新建的空 session。只清聊天历史，不动 memory / SOUL / config。
@@ -4149,11 +4201,54 @@ export function PanelChat({
             {/* 全清按钮：armed 红填充 + 二次确认。让用户彻底重置聊天历史
                 （不动 memory / SOUL / config）。marginLeft auto 推到行末与
                 上面 export/import 区分语义（清除性 vs 迁移性）。 */}
+            {/* 🧹 清碎片：item_count ≤ 3 + 非 pinned + 非 active 的会话一键
+                扫掉。owner 多次 /reset 后会积累一堆 1-2 条对话就放弃的碎片。
+                armed 二次确认同 🗑 全清模板，5s 自动 disarm。 */}
+            {(() => {
+              const fragCount = sessionList.filter(
+                (s) =>
+                  (s.item_count ?? 0) <= 3 &&
+                  !s.pinned &&
+                  s.id !== sessionId,
+              ).length;
+              return (
+                <button
+                  type="button"
+                  onClick={() => void handlePurgeFragmentSessions()}
+                  disabled={fragCount === 0 && !purgeFragArmed}
+                  style={{
+                    marginLeft: "auto",
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                    border: `1px solid ${purgeFragArmed ? "var(--pet-tint-red-fg)" : "var(--pet-color-border)"}`,
+                    background: purgeFragArmed
+                      ? "var(--pet-tint-red-fg)"
+                      : "var(--pet-color-card)",
+                    color: purgeFragArmed ? "#fff" : "var(--pet-color-muted)",
+                    cursor:
+                      fragCount === 0 && !purgeFragArmed
+                        ? "default"
+                        : "pointer",
+                    opacity: fragCount === 0 && !purgeFragArmed ? 0.5 : 1,
+                    fontWeight: purgeFragArmed ? 700 : 400,
+                  }}
+                  title={
+                    fragCount === 0
+                      ? "没有碎片 session 可清（碎片 = item_count ≤ 3 + 未钉住 + 非当前激活）"
+                      : `清掉 ${fragCount} 个碎片 session（item_count ≤ 3 + 未钉住 + 非当前激活）。第一次点弹确认；5 秒内再点真清。`
+                  }
+                >
+                  {purgeFragArmed
+                    ? `⚠ 确认清 ${fragCount}？`
+                    : `🧹 清碎片${fragCount > 0 ? ` (${fragCount})` : ""}`}
+                </button>
+              );
+            })()}
             <button
               type="button"
               onClick={() => void handleClearAllSessions()}
               style={{
-                marginLeft: "auto",
                 fontSize: 11,
                 padding: "2px 8px",
                 borderRadius: 4,

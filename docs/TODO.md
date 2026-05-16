@@ -9,7 +9,6 @@
 >
 
 - detail.md 编辑器加 "🔢 显行号 gutter" toggle：textarea 左侧浮行号列，状态持久化 localStorage。
-- PanelChat session 列表加 "🧹 清碎片 session" 按钮：批量删 message count ≤ 3 的"碎片"会话，二次确认。
 
 
 

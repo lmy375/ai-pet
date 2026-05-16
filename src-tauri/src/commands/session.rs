@@ -644,6 +644,45 @@ pub fn clear_all_sessions() -> Result<u32, String> {
     Ok(deleted)
 }
 
+/// 清碎片 session：扫 index 找 item_count ≤ 3 且非 pinned 且非 active 的
+/// session，删文件 + 从 index 移除。返回被清掉的条数让前端反馈。owner 多
+/// 次 /reset 或起新 session 后会积累一堆"只有 1-2 条对话就放弃"的碎片；
+/// 此命令一键扫掉留有意义的会话。
+///
+/// 不动 pinned：owner 显式钉过的会话即使 item_count 低也是关键会话（如
+/// "周末项目"刚开 2 条）。
+/// 不动 active：清掉当前激活 session 会让 PanelChat 失去显示锚点。
+///
+/// 失败的单条 rm 计入 console；不阻塞主流程 — 后端尽力删多少算多少。
+#[tauri::command]
+pub fn purge_fragment_sessions() -> Result<u32, String> {
+    let mut index = read_index();
+    let active_id = index.active_id.clone();
+    let mut deleted = 0u32;
+    let to_purge: Vec<String> = index
+        .sessions
+        .iter()
+        .filter(|m| m.item_count <= 3 && !m.pinned && m.id != active_id)
+        .map(|m| m.id.clone())
+        .collect();
+    for id in &to_purge {
+        if let Ok(path) = session_path(id) {
+            if path.exists() && fs::remove_file(&path).is_err() {
+                // 单条删除失败 → 跳过；index 仍保留该条目，下次再清
+                continue;
+            }
+            deleted += 1;
+        }
+    }
+    if deleted > 0 {
+        let purged_set: std::collections::HashSet<String> =
+            to_purge.iter().cloned().collect();
+        index.sessions.retain(|m| !purged_set.contains(&m.id));
+        write_index(&index)?;
+    }
+    Ok(deleted)
+}
+
 #[tauri::command]
 pub fn delete_session(id: String) -> Result<(), String> {
     // Remove file
