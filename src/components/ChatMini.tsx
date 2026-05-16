@@ -378,6 +378,85 @@ export function ChatMini({
       window.removeEventListener("keydown", onKey);
     };
   }, [ctxMenu]);
+  /// 选中文字浮 mini toolbar 状态：scrollRef 内有非空 selection 时浮起，含
+  /// text + viewport 坐标（x = 选区中心 / y = 选区上沿）。点 toolbar 内
+  /// 按钮触发动作（💾 转 task / 📋 复制 / 🔄 让 AI 改写）。选区清空 / 滚动
+  /// / Esc 关。
+  const [selectionToolbar, setSelectionToolbar] = useState<{
+    text: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  /// selection toolbar 内 📋 复制后的 ✓ 反馈，1.5s 自清。
+  const [selectionCopyOk, setSelectionCopyOk] = useState(false);
+  /// 选区监听：mouseup（鼠标松开时一次性 settle）+ selectionchange（清空 /
+  /// 滚动 / 点空白时同步关）。仅在 visible 时挂；scrollRef 限定到 chat 列表
+  /// 区，避免捕获其它窗口区域（如输入框）的选区。
+  useEffect(() => {
+    if (!visible) return;
+    const computeToolbar = () => {
+      const sel = window.getSelection?.();
+      if (!sel || sel.rangeCount === 0) {
+        setSelectionToolbar(null);
+        return;
+      }
+      const text = sel.toString().trim();
+      if (text.length === 0) {
+        setSelectionToolbar(null);
+        return;
+      }
+      const range = sel.getRangeAt(0);
+      const container = scrollRef.current;
+      if (!container) {
+        setSelectionToolbar(null);
+        return;
+      }
+      // commonAncestorContainer 在 chat list 区域内才显 toolbar；input /
+      // 顶部 chip 区域的选区不弹（与 ⌘C 同模式 — 仅 chat 内容相关）。
+      if (!container.contains(range.commonAncestorContainer)) {
+        setSelectionToolbar(null);
+        return;
+      }
+      const rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        setSelectionToolbar(null);
+        return;
+      }
+      setSelectionToolbar({
+        text,
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+      });
+    };
+    const onMouseUp = () => {
+      // mouseup 时 selection 已 settle；用 setTimeout 0 等 onSelectionChange
+      // 先跑完（顺序无强保证，简单稳妥）
+      window.setTimeout(computeToolbar, 0);
+    };
+    const onSelChange = () => {
+      // selection 被清掉时同步关，避免 toolbar 卡在屏幕上
+      const sel = window.getSelection?.();
+      if (!sel || sel.toString().trim().length === 0) {
+        setSelectionToolbar(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && selectionToolbar) {
+        setSelectionToolbar(null);
+      }
+    };
+    const onScroll = () => setSelectionToolbar(null);
+    document.addEventListener("mouseup", onMouseUp);
+    document.addEventListener("selectionchange", onSelChange);
+    window.addEventListener("keydown", onKey);
+    scrollRef.current?.addEventListener("scroll", onScroll);
+    return () => {
+      document.removeEventListener("mouseup", onMouseUp);
+      document.removeEventListener("selectionchange", onSelChange);
+      window.removeEventListener("keydown", onKey);
+      scrollRef.current?.removeEventListener("scroll", onScroll);
+    };
+  }, [visible, selectionToolbar]);
   // 静默淡出：N 秒无新消息 & 无 hover 时，整段聊天列表淡到半透明，让
   // Live2D 宠物在桌面成为视觉焦点；hover / 新消息 / streaming 立即回满。
   // 60s 是经验值：长到不会在用户看消息时偷偷淡掉，短到"放置一会儿"就生效。
@@ -2063,6 +2142,108 @@ export function ChatMini({
                 ⛶ 在 Panel 中定位本条
               </button>
             )}
+          </div>
+        );
+      })()}
+      {/* 选区浮 mini toolbar：text 非空 + selection 落在 chat 列表区时显，
+          fixed 定位浮在 selection 上方。3 个按钮：💾 转 task（如有
+          onSaveAsTask） / 📋 复制 / 🔄 让 AI 改写后重发（dispatch
+          pet-mini-rewrite-selection 让 ChatPanel 在输入框预填）。viewport
+          clamp 防超边缘。 */}
+      {selectionToolbar && (() => {
+        const TOOLBAR_W = 132;
+        const TOOLBAR_H = 32;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 800;
+        const vh = typeof window !== "undefined" ? window.innerHeight : 600;
+        // 默认浮在 selection 上方；上方空间不够时翻到下方
+        const desiredX = selectionToolbar.x - TOOLBAR_W / 2;
+        const clampedX = Math.max(4, Math.min(desiredX, vw - TOOLBAR_W - 4));
+        const aboveY = selectionToolbar.y - TOOLBAR_H - 6;
+        const clampedY = aboveY < 4 ? selectionToolbar.y + 24 : aboveY;
+        const finalY = Math.max(4, Math.min(clampedY, vh - TOOLBAR_H - 4));
+        const btnStyle: React.CSSProperties = {
+          fontSize: 12,
+          padding: "3px 8px",
+          background: "transparent",
+          border: "none",
+          color: "var(--pet-color-fg)",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          whiteSpace: "nowrap",
+        };
+        return (
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: "fixed",
+              left: clampedX,
+              top: finalY,
+              height: TOOLBAR_H,
+              display: "flex",
+              alignItems: "center",
+              gap: 0,
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 8,
+              boxShadow: "var(--pet-shadow-md)",
+              padding: "0 2px",
+              zIndex: 95,
+              fontFamily: "inherit",
+            }}
+          >
+            {onSaveAsTask && (
+              <button
+                type="button"
+                style={btnStyle}
+                title="把这段选中文字转为新 task（开 Panel + quickAdd 预填）"
+                onClick={() => {
+                  const text = selectionToolbar.text;
+                  setSelectionToolbar(null);
+                  onSaveAsTask(text);
+                }}
+              >
+                💾
+              </button>
+            )}
+            <button
+              type="button"
+              style={{
+                ...btnStyle,
+                color: selectionCopyOk
+                  ? "var(--pet-tint-green-fg)"
+                  : btnStyle.color,
+              }}
+              title="复制选中文字到剪贴板"
+              onClick={async () => {
+                const text = selectionToolbar.text;
+                try {
+                  await navigator.clipboard.writeText(text);
+                  setSelectionCopyOk(true);
+                  window.setTimeout(() => setSelectionCopyOk(false), 1500);
+                } catch (e) {
+                  console.error("clipboard write failed:", e);
+                }
+              }}
+            >
+              {selectionCopyOk ? "✓" : "📋"}
+            </button>
+            <button
+              type="button"
+              style={btnStyle}
+              title="让 AI 改写这段（输入框预填「请改写：...」让你确认 / 微调后发送）"
+              onClick={() => {
+                const text = selectionToolbar.text;
+                setSelectionToolbar(null);
+                window.dispatchEvent(
+                  new CustomEvent("pet-mini-rewrite-selection", {
+                    detail: text,
+                  }),
+                );
+              }}
+            >
+              🔄
+            </button>
           </div>
         );
       })()}
