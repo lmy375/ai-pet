@@ -332,6 +332,8 @@ export function ChatMini({
   const [copyToast, setCopyToast] = useState<"none" | "done" | "err">("none");
   // 顶部 📋 复制最近 N 条按钮的弹出菜单状态。
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
+  // 🌐 时区 chip click 复制 IANA 名后的 ✓ 1.5s 反馈态。
+  const [tzCopyOk, setTzCopyOk] = useState(false);
   // 复制 N 条时是否带 [HH:MM] 时间前缀。开启后老消息（没 ts）显 "[?]"，提
   // 醒用户那条是 session 加载回来的旧条。
   const [copyIncludeTime, setCopyIncludeTime] = useState(false);
@@ -1242,6 +1244,66 @@ export function ChatMini({
             ⛶
           </button>
         )}
+        {/* 🌐 当前时区 mini chip：跨时区出差 / 远程 owner 想知道"宠物记下的
+            时间是哪个 tz" 时一眼可见。click 把 IANA 名（"Asia/Shanghai"）
+            复制到剪贴板，方便在 task description / chat 里写绝对时区
+            （"明天 14:00（Asia/Shanghai）"）。位置在 ⛶ / 📋 之左。 */}
+        {(() => {
+          const tzName =
+            Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+          const offsetMin = -new Date().getTimezoneOffset();
+          const sign = offsetMin >= 0 ? "+" : "-";
+          const absMin = Math.abs(offsetMin);
+          const hr = Math.floor(absMin / 60);
+          const min = absMin % 60;
+          const offsetShort =
+            min === 0 ? `${sign}${hr}` : `${sign}${hr}:${String(min).padStart(2, "0")}`;
+          const offsetFull = `UTC${sign}${String(hr).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+          return (
+            <button
+              type="button"
+              className="pet-mini-maxbtn"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={async (e) => {
+                e.stopPropagation();
+                try {
+                  await navigator.clipboard.writeText(tzName);
+                  setTzCopyOk(true);
+                  window.setTimeout(() => setTzCopyOk(false), 1500);
+                } catch (err) {
+                  console.error("tz chip copy failed:", err);
+                }
+              }}
+              title={`本机当前时区：${tzName}（${offsetFull}）· 点击复制 IANA 名到剪贴板`}
+              aria-label="copy current timezone IANA name"
+              style={{
+                position: "absolute",
+                top: "14px",
+                right: onOpenPanel ? "76px" : "48px",
+                height: "20px",
+                padding: "0 6px",
+                borderRadius: 10,
+                border: "1px solid var(--pet-color-border)",
+                background: "var(--pet-color-card)",
+                color: tzCopyOk
+                  ? "var(--pet-tint-green-fg)"
+                  : "var(--pet-color-muted)",
+                fontSize: "10px",
+                lineHeight: 1,
+                cursor: "pointer",
+                zIndex: 12,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 2,
+                boxShadow: "var(--pet-shadow-sm)",
+                fontFamily: "inherit",
+              }}
+            >
+              {tzCopyOk ? "✓" : `🌐${offsetShort}`}
+            </button>
+          );
+        })()}
         <div
           className="pet-mini-chat"
           ref={scrollRef}
