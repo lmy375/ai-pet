@@ -3099,6 +3099,52 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         >
           💾 .md
         </button>
+        {/* 📋 index 概览 chip：跨 cat 元数据 snap — copy 「N cats · M items
+            · K detail.md」一行。给 owner 想发同事 / 写日记 / paste 到
+            doc 时拿到本 PanelMemory 当前状态摘要。轻量 alt 入口 — 比
+            「📋 单段…」全 dump 紧凑得多，比 cat header 单段 📊 概览 chip
+            广（跨所有 cat）。 */}
+        <button
+          style={s.btn}
+          onClick={async () => {
+            if (!index) return;
+            const cats = Object.values(index.categories);
+            const nonEmpty = cats.filter((c) => c.items.length > 0);
+            const totalItems = cats.reduce(
+              (sum, c) => sum + c.items.length,
+              0,
+            );
+            // detail.md 文件数：用 detailSizes 命中数（cache 里 >= 0 即
+            // 算「曾被加载 / 存在」，前端粗 proxy）；fallback 数 items
+            // 中 detail_path 非空者
+            const withDetail = cats.reduce((sum, c) => {
+              return (
+                sum +
+                c.items.filter((it) => {
+                  if (it.detail_path.length === 0) return false;
+                  const size = detailSizes[it.detail_path];
+                  return size !== undefined && size > 0;
+                }).length
+              );
+            }, 0);
+            const line = `${nonEmpty.length} cats · ${totalItems} items · ${withDetail} detail.md（${cats.length - nonEmpty.length === 0 ? "全段非空" : `${cats.length - nonEmpty.length} 空段`}）`;
+            try {
+              await navigator.clipboard.writeText(line);
+              setMessage(`📋 已复制 index 概览：${line}`);
+            } catch (e: any) {
+              setMessage(`复制失败：${e}`);
+            }
+            setTimeout(() => setMessage(""), 3000);
+          }}
+          disabled={!index}
+          title={
+            index
+              ? `复制一行 PanelMemory index 摘要 — ${Object.values(index.categories).filter((c) => c.items.length > 0).length} 非空 cats · 总 ${Object.values(index.categories).reduce((s, c) => s + c.items.length, 0)} items · 含 detail.md 的数量。粘到 chat / 日记 / 同事 ping。`
+              : "等待 index 加载完成"
+          }
+        >
+          📋 概览
+        </button>
         {/* 📥 import .md：与 💾 导出的往返通路 — 粘 markdown 文本，按 H2=cat
             / H3=item parse 一次性塞回。catKey 不命中兜底到 general；title
             已存在跳过不覆盖。 */}
