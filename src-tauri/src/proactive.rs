@@ -973,6 +973,12 @@ pub fn set_mute_minutes(minutes: i64) -> String {
     if let Ok(mut g) = MUTE_UNTIL.lock() {
         *g = new_until;
     }
+    // 记录"今日 engage mute"的次数：仅 minutes > 0 路径（即真正启用静默）
+    // 进 counter；clear（minutes <= 0）不计。前端 ChatMini「🔕 今日 mute」
+    // chip 读 mute_count::get_today_mute_count 显该计数。
+    if minutes > 0 {
+        crate::mute_count::record_mute_engaged();
+    }
     new_until
         .map(|t| t.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
         .unwrap_or_default()

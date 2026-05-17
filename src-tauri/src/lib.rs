@@ -11,6 +11,7 @@ mod log_rotation;
 mod mcp;
 mod mood;
 mod mood_history;
+mod mute_count;
 mod proactive;
 mod speech_history;
 mod task_heartbeat;
@@ -196,6 +197,7 @@ pub fn run() {
             mood_history::get_mood_entries_for_date,
             proactive::get_tone_snapshot,
             proactive::set_mute_minutes,
+            mute_count::get_today_mute_count,
             proactive::get_mute_until,
             proactive::set_transient_note,
             proactive::get_transient_note,
