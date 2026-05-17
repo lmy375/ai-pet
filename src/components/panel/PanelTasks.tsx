@@ -2709,6 +2709,47 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘⇧K / Ctrl+⇧+K 删除当前行：VS Code "Delete Line"
+  /// 习惯。选区跨多行 → 删第一行行首到最后一行行尾 + 含末尾 `\n`（整段
+  /// 行集合都删）。仅 shift 修饰 + 不带 alt — 让位 ⌘⌥K / ⌘⇧⌥K 等未来扩
+  /// 展。IME composing 跳过。preventDefault 吃浏览器默认 ⌘⇧K（chrome
+  /// "Move tab to new window" — Tauri webview 无 tab 但兜底安全）。
+  /// 与既有 ⌘D 复制行 / ⌘L 选中行 IDE 行操作集群同 modifier-family。
+  const handleDetailDeleteLine = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "k") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      // 第一行行首 = 上一个 `\n` 之后；首行兜底 0
+      const firstLineStart = value.lastIndexOf("\n", start - 1) + 1;
+      // 最后一行行尾后 = 下一个 `\n` 之后一位；末行兜底 value.length。
+      // 删除时 inclusive 行尾换行（让删完后行数真减；否则会留空行）。
+      const nextNl = value.indexOf("\n", end);
+      const deleteUntil =
+        nextNl === -1 ? value.length : nextNl + 1;
+      e.preventDefault();
+      const next = value.slice(0, firstLineStart) + value.slice(deleteUntil);
+      // 新光标落到原 firstLineStart（删后这位是"下一行"行首；如果删的是
+      // 末行 → 落到 value 末尾 / 行尾，与 VS Code 同模式）。
+      const newCursor = Math.min(firstLineStart, next.length);
+      setEditingDetailContent(next);
+      setDetailCursorPos(newCursor);
+      requestAnimationFrame(() => {
+        const t = detailEditorRef.current;
+        if (!t) return;
+        t.focus();
+        t.selectionStart = t.selectionEnd = newCursor;
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea Enter 自动续列表前缀。识别行首 list marker：
   ///   - `- text` / `* text` / `+ text`：无序列表
   ///   - `- [ ] text` / `- [x] text`：GFM checklist（新行总是 `- [ ] `，让 owner
@@ -11289,6 +11330,10 @@ export function PanelTasks({
                                   // 两个 IDE-like 行操作在一起便于 owner 心智
                                   // 建立。
                                   if (handleDetailSelectLine(e)) return;
+                                  // ⌘⇧K 删除当前行：VS Code "Delete Line" 习惯。
+                                  // 与 ⌘D 复制 / ⌘L 选中 同 IDE 行操作集群 —
+                                  // owner 心智 "⌘+shift 修饰 = 重操作"。
+                                  if (handleDetailDeleteLine(e)) return;
                                   // ⌘S/Ctrl+S 触发保存：与按钮等价。preventDefault
                                   // 吃掉 webview 默认"另存为页面"行为；savingDetail
                                   // 守卫防止保存进行中重复发请求。
@@ -11326,7 +11371,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -11684,7 +11729,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -13991,6 +14036,7 @@ export function PanelTasks({
                   ["⌘⇧Enter", "保存并关闭"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
                   ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
+                  ["⌘⇧K", "删除当前行（VS Code「Delete Line」）"],
                   ["⌘[ / ⌘]", "上 / 下一条 task detail"],
                   ["Esc", "取消编辑（dirty 时 armed 二次确认）"],
                   ["Enter", "续 list marker（- / * / 1. / > 等）"],
