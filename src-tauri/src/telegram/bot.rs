@@ -1462,6 +1462,33 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Peek { title } => {
+            // resolve 同 /show 三层（数字 index → fuzzy → 错误候选）。命中后查
+            // view 拿 raw_description + status 给 formatter — 不读 detail.md
+            // （紧凑视图不需要，省一次 IO）。
+            if title.trim().is_empty() {
+                format_missing_argument("peek")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        match views.iter().find(|v| v.title == t) {
+                            Some(v) => crate::telegram::commands::format_peek_reply(
+                                &v.title,
+                                &v.raw_description,
+                                v.status,
+                            ),
+                            None => format_command_error(&format!("找不到 task「{}」", t)),
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Timeline { title } => {
             // 与 Show 同 resolve 三层。命中后调 task_get_detail 拿 history（已
             // newest-first 排好），扫 markers 算 entries（旧→新 + 去重无变化
