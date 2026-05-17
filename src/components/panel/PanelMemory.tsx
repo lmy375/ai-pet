@@ -6230,7 +6230,8 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             既有 helper（共享 PanelTasks / PanelChat 同算法）。
                             created_at === updated_at（item 未被改过）时简化
                             为单段 "📅 创建 X 前（未改动过）"，少重复信息。
-                            解析失败 / 字段为空时跳过对应段，不渲染空行。 */}
+                            解析失败 / 字段为空时跳过对应段，不渲染空行。
+                            click 复制对应 ISO（与 PanelTasks ts chip 同入口） */}
                         {(() => {
                           const nowMs = Date.now();
                           const createdMs = item.created_at
@@ -6245,19 +6246,37 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                               ? "刚刚"
                               : formatRelativeAgeBuckets(age);
                           };
-                          const parts: string[] = [];
-                          if (!Number.isNaN(createdMs)) {
-                            parts.push(`📅 创建 ${fmt(createdMs)}`);
-                          }
-                          if (
+                          const showUpdated =
                             !Number.isNaN(updatedMs) &&
                             (Number.isNaN(createdMs) ||
-                              Math.abs(updatedMs - createdMs) > 60_000)
+                              Math.abs(updatedMs - createdMs) > 60_000);
+                          if (
+                            Number.isNaN(createdMs) &&
+                            !showUpdated
                           ) {
-                            // 与 created_at 差 ≤ 60s 视为同一动作，不重复显
-                            parts.push(`🔄 更新 ${fmt(updatedMs)}`);
+                            return null;
                           }
-                          if (parts.length === 0) return null;
+                          const copyIso = async (
+                            iso: string,
+                            field: string,
+                          ) => {
+                            try {
+                              await navigator.clipboard.writeText(iso);
+                              setMessage(`📋 已复制 ${field} ISO: ${iso}`);
+                            } catch (err: any) {
+                              setMessage(`复制失败：${err}`);
+                            }
+                            setTimeout(() => setMessage(""), 2500);
+                          };
+                          const chipStyle: React.CSSProperties = {
+                            cursor: "pointer",
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            color: "inherit",
+                            font: "inherit",
+                            fontFamily: "inherit",
+                          };
                           return (
                             <div
                               style={{
@@ -6267,10 +6286,37 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                               }}
                               title={
                                 `created_at: ${item.created_at || "（缺）"}\n` +
-                                `updated_at: ${item.updated_at || "（缺）"}`
+                                `updated_at: ${item.updated_at || "（缺）"}\n` +
+                                `点击 chip 复制 ISO 到剪贴板`
                               }
                             >
-                              {parts.join(" · ")}
+                              {!Number.isNaN(createdMs) && (
+                                <button
+                                  type="button"
+                                  style={chipStyle}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void copyIso(item.created_at, "created_at");
+                                  }}
+                                  title={`复制 created_at ISO：${item.created_at}`}
+                                >
+                                  📅 创建 {fmt(createdMs)}
+                                </button>
+                              )}
+                              {!Number.isNaN(createdMs) && showUpdated && " · "}
+                              {showUpdated && (
+                                <button
+                                  type="button"
+                                  style={chipStyle}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void copyIso(item.updated_at, "updated_at");
+                                  }}
+                                  title={`复制 updated_at ISO：${item.updated_at}`}
+                                >
+                                  🔄 更新 {fmt(updatedMs)}
+                                </button>
+                              )}
                             </div>
                           );
                         })()}
