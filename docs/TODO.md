@@ -11,7 +11,6 @@
 - detail.md 编辑器加「📏 wrap ruler」: 当前行超 80 字时行号染黄 — code-like 写作辅助。
 - PanelMemory 加「📥 import .md」按钮：粘 markdown 文本 → parse H2 为 cat / H3 为 item 一次导入。
 - ChatMini bubble 右键加「🔗 复制 task ref」: 把 bubble 内提到的「title」token 当 inline ref 复制。
-- TG bot `/active_recent [N]` 命令：列最近 N 条创建的 active task — 与 /recent done 反向。
 - PanelDebug 加「📜 复制 raw logs」按钮：把 LogStore 内容拼成 markdown 表复制 — 与既有 snapshot 互补。
 
 

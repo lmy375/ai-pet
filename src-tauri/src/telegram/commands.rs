@@ -277,6 +277,12 @@ pub enum TgCommand {
     /// 反向（recent = 最新 done；oldest_n = 最老 pending），让 owner 看
     /// 哪些 task 长期没动 — 决定是否 /pri / /cancel / 重组优先级。
     OldestN { n: u32 },
+    /// `/active_recent [N]` —— 列本 chat 最近 N 条新创建的 active（pending /
+    /// error）task — 与 /recent done 反向。N 缺省 5，clamp 1..=20。按
+    /// created_at 倒序（最新创建在前），让 owner 在 TG 上扫读「我最近塞
+    /// 了哪些活到队列」— 比 /last 多看几条；比 /tasks 更聚焦（只活动段
+    /// 且按创建时序而非 compare_for_queue）。
+    ActiveRecent { n: u32 },
     /// `/find <keyword>` —— 在本 chat 派单中搜 keyword（命中标题 / 描述子
     /// 串，case-insensitive），返回最多 10 条命中行（status emoji + 标题 +
     /// 命中点 hint）。空 keyword 由 handler 走 missing-argument。
@@ -562,6 +568,7 @@ impl TgCommand {
             TgCommand::Today => "today",
             TgCommand::Recent { .. } => "recent",
             TgCommand::OldestN { .. } => "oldest_n",
+            TgCommand::ActiveRecent { .. } => "active_recent",
             TgCommand::Find { .. } => "find",
             TgCommand::Blocked => "blocked",
             TgCommand::Forks { .. } => "forks",
@@ -655,6 +662,7 @@ impl TgCommand {
             | TgCommand::Today
             | TgCommand::Recent { .. }
             | TgCommand::OldestN { .. }
+            | TgCommand::ActiveRecent { .. }
             | TgCommand::Blocked
             | TgCommand::Snoozed
             | TgCommand::Mute { .. }
@@ -778,6 +786,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("oldest_n", "List oldest N pending tasks (created_at asc) — audit longest-stale backlog"),
+            ("active_recent", "List most recently created N active tasks (pending / error, created_at desc) — reverse of /recent"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
             ("show", "Show full raw description (with markers) + detail.md preview of a task"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
@@ -846,6 +855,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("oldest_n", "本 chat 最老 N 条 pending（created_at asc）— audit「堆积最久的活」（默认 5，上限 20）"),
+            ("active_recent", "本 chat 最近 N 条新建 active task（pending / error，created_at desc）— 与 /recent done 反向（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
             ("show", "显单条任务完整 raw description（含 markers）+ detail.md 预览"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
@@ -1340,6 +1350,17 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 .unwrap_or(5);
             Some(TgCommand::OldestN { n })
         }
+        // `/active_recent [N]`：与 /recent / /oldest_n 同 clamp 1..=20，缺省 5。
+        // snake_case 命名避开 dash drift-defense。
+        "active_recent" => {
+            let n = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 20))
+                .unwrap_or(5);
+            Some(TgCommand::ActiveRecent { n })
+        }
         // `/find <keyword>`：所有 arg 作 keyword（含空格也保留 — 让 "/find
         // 整理 Downloads" 命中标题含"整理 Downloads"的 task）。空 keyword
         // 由 handler 走 missing-argument。
@@ -1776,7 +1797,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "silenced", "silent_all", "markers", "tags", "tag", "tags_for", "touch", "mood",
     "whoami", "today", "today_done", "yesterday", "streak", "now",
     "aware", "here",
-    "last", "random", "sleep", "quick", "due", "recent", "oldest_n", "recent_chats",
+    "last", "random", "sleep", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
     "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "show", "timeline",
@@ -1916,7 +1937,8 @@ pub fn format_help_for_topic(
         "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）；/oldest_n（反向：最老 pending）。",
-        "oldest_n" => "⌛ /oldest_n [N]\n\n用法：列本 chat 派单中最老 N 条 pending（按 created_at 升序，最早创建在前），audit「堆积最久的活」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  ⌛ 最老 N 条 pending（共 M，按 created_at 升序）：\n  · MM-DD HH:MM · <title> · N 天前\n  · ...\n\n与 /recent 反向 — recent 看「最新 done」（产出感），oldest_n 看「最老 pending」（积压感）。让 owner 觉察「我哪些活儿挂得最久 → 是否该 /pri 拉到高优 / /cancel 砍掉 / 重组」。\n\n仅 pending — error 不算（error retry 还在 active 池但属「试过失败」非「挂着没动」，语义偏弱）。\n\n示例：\n  /oldest_n\n  /oldest_n 10\n\n相关：/tasks（全状态清单）；/recent（最新 done）；/pri / /promote（重组优先级）；/cancel（砍掉）。",
+        "oldest_n" => "⌛ /oldest_n [N]\n\n用法：列本 chat 派单中最老 N 条 pending（按 created_at 升序，最早创建在前），audit「堆积最久的活」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  ⌛ 最老 N 条 pending（共 M，按 created_at 升序）：\n  · MM-DD HH:MM · <title> · N 天前\n  · ...\n\n与 /recent 反向 — recent 看「最新 done」（产出感），oldest_n 看「最老 pending」（积压感）。让 owner 觉察「我哪些活儿挂得最久 → 是否该 /pri 拉到高优 / /cancel 砍掉 / 重组」。\n\n仅 pending — error 不算（error retry 还在 active 池但属「试过失败」非「挂着没动」，语义偏弱）。\n\n示例：\n  /oldest_n\n  /oldest_n 10\n\n相关：/tasks（全状态清单）；/recent（最新 done）；/active_recent（反向：最新创建的 active）；/pri / /promote（重组优先级）；/cancel（砍掉）。",
+        "active_recent" => "🆕 /active_recent [N]\n\n用法：列本 chat 派单中最近 N 条新创建的 active（pending / error）task（按 created_at 倒序，最新创建在前）。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  🆕 最近 N 条新建 active（共 M，按 created_at 降序）：\n  · MM-DD HH:MM · <emoji> <title> · N 天前\n  · ...\n\n与 /recent 反向 — recent 看「最新 done」（产出感），active_recent 看「最新创建的活」（输入感）。让 owner 在 TG 上扫读「我最近塞了哪些活到队列」，比 /last（单条）多看几条，比 /tasks（全表 + compare_for_queue 排序）更聚焦活动段 + 创建时序。\n\nactive = pending + error（与 /tasks 同；error 也算「正在跑的轨道」 — 与 /oldest_n 仅 pending 不同 — 因为这里看的是「创建时序」非「堆积时长」）。\n\n示例：\n  /active_recent\n  /active_recent 10\n\n相关：/recent（最新 done — 反向）；/oldest_n（最老 pending — 创建时序反向）；/last（最近 1 条）；/tasks（全状态清单 + 智能排序）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
         "edit" => "✏️ /edit <title> :: <new desc>\n\n用法：全量覆写指定 butler_task 的 description。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。\n\n示例：\n  /edit 整理 Downloads :: 整理 Downloads [task pri=5 due=2026-05-20] [pinned]\n  /edit 写周报 :: 完整新 body 一段\n\n注意：**全量覆写**语义 — 新 desc 完全替换旧描述。想保留 `[task pri=...]` `[every: ...]` `[pinned]` 等 markers 请自行写进新 desc（命令不会自动续 markers）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "edit_due" => "📅 /edit_due <title> <preset>\n\n用法：免手敲 ISO 日期改任务 due — preset 接友好词。preset 是 last whitespace token，剩余作 title（与 /pri / /promote / /demote 同 parser 模板，含空格 / 中文 title 也保）。复用 task_set_due 后端 — 与 ✏️ /edit 全量覆写正交，仅改 due 字段不动其它 markers。\n\nPreset 名单：\n\n  时刻类：\n    · tonight / 今晚 — 今晚 18:00（已过则明晚同点）\n    · tomorrow / 明天 / morning / 早上 / tmr — 明早 09:00\n    · monday..sunday / 周一..周日 / mon..sun — 本周（或下周如已过）该 weekday 09:00\n    · next_monday..next_sunday / 下周一..下周日 / next-mon..next-sun — 下周 weekday 09:00\n\n  相对类：\n    · +Nm — now + N 分钟\n    · +Nh — now + N 小时\n    · +Nd — N 天后 09:00（落次日早上而非「几天后此刻」避免午夜反直觉）\n\n  清除：\n    · clear / none / 0 / 清除 / 取消 — 清掉 due\n\n示例：\n  /edit_due 整理 Downloads tonight\n  /edit_due 写周报 next_friday\n  /edit_due 跑步 +30m\n  /edit_due 旧任务 clear\n\n相关：/pri <title> <N>（改 priority）；/promote / /demote（priority +/-1）；/snooze（暂停而非改 due）。",
@@ -2003,6 +2025,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/oldest_n [N]  —  本 chat 最老 N 条 pending（created_at asc）— audit「堆积最久的活」".to_string(),
+        "/active_recent [N]  —  本 chat 最近 N 条新建 active（pending / error，created_at desc）— 与 /recent done 反向".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
         "/show <title>  —  显单条任务完整 raw description（含 markers）+ detail.md 预览".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
@@ -2820,6 +2843,80 @@ pub fn format_oldest_n_reply(
             "\n…还有 {} 条更老 pending（用 /oldest_n {} 看更多，上限 20）",
             pending.len() - shown.len(),
             (pending.len()).min(20)
+        ));
+    }
+    out
+}
+
+/// `/active_recent <N>` 命令回复文案。pure：filter active（pending +
+/// error）— 与 /tasks active 段同 status 集；sort by created_at desc
+/// （最新创建在前），take N。
+///
+/// 与 /recent 反向 — recent 看「最新 done」（产出感），active_recent
+/// 看「最新创建的活」（输入感）。让 owner 在 TG 上扫读「我最近塞了哪
+/// 些活到队列」 — 比 /last（单条）多看几条；比 /tasks（全表 +
+/// compare_for_queue 智能排序）更聚焦活动段 + 创建时序。
+///
+/// 与 /oldest_n 对偶：那个 created_at asc 看「堆积最久」，本命令
+/// created_at desc 看「最新塞入」。/oldest_n 仅 pending（语义偏「挂着
+/// 没动」），本命令含 error（语义偏「创建时序」 — error 仍是「正在
+/// 跑的轨道」上的条目）。
+///
+/// 时间戳显示格式 `MM-DD HH:MM`（与 /recent / /oldest_n 一致）+
+/// status emoji（🟢 pending / ⚠️ error）+ 「N 天前」相对 age。caller
+/// 传 now 让单测稳定（与 /oldest_n / /streak / /yesterday 同 inject
+/// 模板）。
+pub fn format_active_recent_reply(
+    views: &[crate::task_queue::TaskView],
+    n: u32,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let mut active: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Pending | TaskStatus::Error))
+        .collect();
+    // created_at ISO 字典序 = 时间序，降序拿"最新创建在前"
+    active.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    if active.is_empty() {
+        return "✨ 本聊天派单暂无 active 任务 — 没有 pending / error 的活儿。\n用 /task 新建 / /recent 看最近完成。".to_string();
+    }
+    let take_n = (n as usize).max(1);
+    let shown = &active[..active.len().min(take_n)];
+    let mut out = format!(
+        "🆕 最近 {} 条新建 active（共 {}，按 created_at 降序）：",
+        shown.len(),
+        active.len()
+    );
+    for v in shown {
+        let when = if v.created_at.len() >= 16 {
+            format!("{} {}", &v.created_at[5..10], &v.created_at[11..16])
+        } else {
+            v.created_at.clone()
+        };
+        let emoji = match v.status {
+            TaskStatus::Pending => "🟢",
+            TaskStatus::Error => "⚠️",
+            _ => "·",
+        };
+        let age_label = chrono::DateTime::parse_from_rfc3339(&v.created_at)
+            .ok()
+            .map(|created| (now - created).num_days())
+            .map(|days| {
+                if days >= 1 {
+                    format!(" · {} 天前", days)
+                } else {
+                    String::new()
+                }
+            })
+            .unwrap_or_default();
+        out.push_str(&format!("\n· {} · {} {}{}", when, emoji, v.title, age_label));
+    }
+    if active.len() > shown.len() {
+        out.push_str(&format!(
+            "\n…还有 {} 条更早创建 active（用 /active_recent {} 看更多，上限 20）",
+            active.len() - shown.len(),
+            (active.len()).min(20)
         ));
     }
     out
@@ -5633,7 +5730,7 @@ mod tests {
             "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent",
             "unsilent", "silenced", "markers", "tags", "mood", "whoami", "today",
             "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "recent", "oldest_n", "digest", "edit", "pri", "swap_priority", "promote", "demote",
+            "due", "recent", "oldest_n", "active_recent", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find",
@@ -6108,7 +6205,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "show", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "active_recent", "show", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -7627,6 +7724,148 @@ mod tests {
         assert!(!s.contains("做完的"), "done excluded: {s}");
         assert!(!s.contains("取消的"), "cancelled excluded: {s}");
         assert!(s.contains("共 1"), "count reflects filter: {s}");
+    }
+
+    // -------- /active_recent parse + format --------
+
+    fn fixed_now_for_active_recent(
+        y: i32,
+        mo: u32,
+        d: u32,
+        h: u32,
+        mi: u32,
+    ) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339(&format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:00+08:00",
+            y, mo, d, h, mi
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn active_recent_parses_default_5_when_no_arg() {
+        assert_eq!(
+            parse_tg_command("/active_recent"),
+            Some(TgCommand::ActiveRecent { n: 5 })
+        );
+        assert_eq!(
+            parse_tg_command("/active_recent  "),
+            Some(TgCommand::ActiveRecent { n: 5 })
+        );
+    }
+
+    #[test]
+    fn active_recent_parses_explicit_n() {
+        assert_eq!(
+            parse_tg_command("/active_recent 10"),
+            Some(TgCommand::ActiveRecent { n: 10 })
+        );
+        assert_eq!(
+            parse_tg_command("/active_recent 1"),
+            Some(TgCommand::ActiveRecent { n: 1 })
+        );
+    }
+
+    #[test]
+    fn active_recent_clamps_to_1_20_range() {
+        assert_eq!(
+            parse_tg_command("/active_recent 0"),
+            Some(TgCommand::ActiveRecent { n: 1 })
+        );
+        assert_eq!(
+            parse_tg_command("/active_recent 21"),
+            Some(TgCommand::ActiveRecent { n: 20 })
+        );
+        assert_eq!(
+            parse_tg_command("/active_recent 9999"),
+            Some(TgCommand::ActiveRecent { n: 20 })
+        );
+    }
+
+    #[test]
+    fn active_recent_garbage_arg_falls_back_to_default() {
+        assert_eq!(
+            parse_tg_command("/active_recent abc"),
+            Some(TgCommand::ActiveRecent { n: 5 })
+        );
+    }
+
+    #[test]
+    fn active_recent_reply_empty_active_says_no_records() {
+        let now = fixed_now_for_active_recent(2026, 5, 17, 18, 0);
+        let s = format_active_recent_reply(&[], 5, now);
+        assert!(s.contains("✨"), "active_recent reply: {s}");
+        assert!(s.contains("暂无 active 任务"), "active_recent reply: {s}");
+    }
+
+    #[test]
+    fn active_recent_reply_orders_by_created_at_desc() {
+        let now = fixed_now_for_active_recent(2026, 5, 17, 18, 0);
+        let mut old = view("最老的活", 0, None, TaskStatus::Pending, None);
+        old.created_at = "2026-05-10T10:00:00+08:00".to_string();
+        let mut newest = view("最新的活", 0, None, TaskStatus::Pending, None);
+        newest.created_at = "2026-05-17T11:00:00+08:00".to_string();
+        let mut mid = view("中间的活", 0, None, TaskStatus::Pending, None);
+        mid.created_at = "2026-05-15T09:00:00+08:00".to_string();
+        let s = format_active_recent_reply(&vec![old, newest, mid], 3, now);
+        let pos_newest = s.find("最新的活").expect("newest present");
+        let pos_mid = s.find("中间的活").expect("mid present");
+        let pos_old = s.find("最老的活").expect("old present");
+        assert!(pos_newest < pos_mid, "order: {s}");
+        assert!(pos_mid < pos_old, "order: {s}");
+        assert!(s.contains("共 3"), "header: {s}");
+        assert!(s.contains("05-17 11:00"), "ts format: {s}");
+    }
+
+    #[test]
+    fn active_recent_reply_includes_pending_and_error_skips_terminal() {
+        let now = fixed_now_for_active_recent(2026, 5, 17, 18, 0);
+        let mut pending = view("活的", 3, None, TaskStatus::Pending, None);
+        pending.created_at = "2026-05-15T10:00:00+08:00".to_string();
+        let mut error = view("出错的", 3, None, TaskStatus::Error, Some("err"));
+        error.created_at = "2026-05-14T10:00:00+08:00".to_string();
+        let mut done = view("做完的", 3, None, TaskStatus::Done, Some("ok"));
+        done.created_at = "2026-05-16T10:00:00+08:00".to_string();
+        let mut cancelled = view("取消的", 3, None, TaskStatus::Cancelled, Some("drop"));
+        cancelled.created_at = "2026-05-16T11:00:00+08:00".to_string();
+        let s = format_active_recent_reply(&vec![pending, error, done, cancelled], 5, now);
+        assert!(s.contains("活的"), "pending kept: {s}");
+        assert!(s.contains("出错的"), "error kept: {s}");
+        assert!(!s.contains("做完的"), "done excluded: {s}");
+        assert!(!s.contains("取消的"), "cancelled excluded: {s}");
+        assert!(s.contains("共 2"), "count reflects filter: {s}");
+        // status emoji 区分
+        assert!(s.contains("🟢"), "pending emoji: {s}");
+        assert!(s.contains("⚠️"), "error emoji: {s}");
+    }
+
+    #[test]
+    fn active_recent_reply_truncates_to_n_with_overflow_hint() {
+        let now = fixed_now_for_active_recent(2026, 5, 17, 18, 0);
+        let mut views = Vec::new();
+        for i in 0..7 {
+            let mut v = view(&format!("塞 {}", i), 0, None, TaskStatus::Pending, None);
+            // 升序 created_at → 索引 6 最新（formatter 倒序后在前）
+            v.created_at = format!("2026-05-0{}T10:00:00+08:00", i + 1);
+            views.push(v);
+        }
+        let s = format_active_recent_reply(&views, 3, now);
+        assert!(s.contains("最近 3 条新建 active（共 7"), "header: {s}");
+        // 倒序应显 塞 6 / 塞 5 / 塞 4
+        assert!(s.contains("塞 6"), "{s}");
+        assert!(s.contains("塞 5"), "{s}");
+        assert!(s.contains("塞 4"), "{s}");
+        assert!(!s.contains("塞 3"), "{s}");
+        assert!(s.contains("还有 4 条更早创建 active"), "overflow hint: {s}");
+    }
+
+    #[test]
+    fn active_recent_reply_includes_age_label() {
+        let now = fixed_now_for_active_recent(2026, 5, 17, 18, 0);
+        let mut old = view("挂 7 天的活", 3, None, TaskStatus::Pending, None);
+        old.created_at = "2026-05-10T18:00:00+08:00".to_string();
+        let s = format_active_recent_reply(&vec![old], 1, now);
+        assert!(s.contains("7 天前"), "age label: {s}");
     }
 
     #[test]
