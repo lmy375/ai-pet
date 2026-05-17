@@ -89,6 +89,12 @@ interface PanelChatProps {
   /// 命中（或找不到也算消费）后回调清空 pendingChatMatch，避免 stale
   /// 值在用户后续切 session / 滚动后又触发。
   onConsumePendingChatMatch?: () => void;
+  /// 跨窗口 deeplink: ChatMini bubble 右键「🔍 search this session」
+  /// 触发 → 写 pet-panel-deeplink.chatSearch.keyword → PanelApp 消
+  /// 费后切聊天 tab + 推 keyword 到本 prop。effect 开 search mode +
+  /// scope=current + 填 query。consume 后 onConsume 清空。
+  pendingChatSearch?: string | null;
+  onConsumePendingChatSearch?: () => void;
   /// PanelTasks 「🧠 ask LLM about selection」 按钮触发：把封装好的
   /// "关于「<excerpt>」 " 串推到 textarea 让 owner 立刻问。挂载 / 更新
   /// 时 effect 消费 → setInput + focus + 清空 prop。
@@ -311,6 +317,8 @@ export function PanelChat({
   onRequestFocusTask,
   pendingChatMatch,
   onConsumePendingChatMatch,
+  pendingChatSearch,
+  onConsumePendingChatSearch,
   pendingChatPrefill,
   onConsumePendingChatPrefill,
 }: PanelChatProps = {}) {
@@ -1623,6 +1631,19 @@ export function PanelChat({
     onConsumePendingChatMatch?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingChatMatch, items.length]);
+
+  // 跨窗口 deeplink chatSearch 消费：ChatMini bubble 右键「🔍 search this
+  // session」触发 → keyword 推到本 prop → 开 search bar + scope=current
+  // + 填 query。consume 后 onConsume 清空。与 chatMatch 区别：那个滚到
+  // 命中行（单点定位），本入口开搜索循环让 owner 看所有命中（多点 audit）。
+  useEffect(() => {
+    if (!pendingChatSearch) return;
+    setSearchMode(true);
+    setSearchScope("current");
+    setSearchQuery(pendingChatSearch);
+    onConsumePendingChatSearch?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChatSearch]);
 
   /// pendingChatPrefill 消费：PanelTasks 🧠 按钮触发后，本 effect 拿到
   /// 预填字符串 → setInput + focus textarea + select-from-end 让 owner

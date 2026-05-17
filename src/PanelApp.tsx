@@ -136,6 +136,14 @@ export function PanelApp() {
   /// items 找最近 substr 命中，scrollIntoView + 1.5s 高亮。consume 后由
   /// PanelChat 回调清空。
   const [pendingChatMatch, setPendingChatMatch] = useState<string | null>(null);
+  /// ChatMini bubble 右键「🔍 search this session」触发：把消息文本片段
+  /// （≤ 80 字 keyword）通过 deeplink.chatSearch.keyword 字段送来，
+  /// PanelChat 收到后开 search bar + scope=current + 填 query 让 owner
+  /// 看本会话所有命中（与 chatMatch 单点定位互补：那个滚到 1 处，本入
+  /// 口开搜索循环）。consume 后由 PanelChat 回调清空。
+  const [pendingChatSearch, setPendingChatSearch] = useState<string | null>(
+    null,
+  );
   /// PanelTasks detail 编辑器选段 "🧠 ask LLM about selection" 按钮触发：把
   /// 选段封装成 "关于「<excerpt>」..." 预填到 PanelChat textarea + 切到聊天
   /// tab。PanelChat 内 effect 消费后 setPendingChatPrefill(null)。
@@ -222,6 +230,20 @@ export function PanelApp() {
         // 已显式传 tab 的不动（保留 caller 意图）。
         if (typeof p.tab !== "string") setActiveTab("聊天");
         setPendingChatMatch(excerpt);
+      }
+    }
+    // chatSearch：来自 ChatMini 右键菜单「🔍 search this session」。与
+    // chatMatch 同 deeplink body 字段并存（caller 二选一即可）。
+    const ps = parsed as { chatSearch?: unknown };
+    if (
+      ps.chatSearch &&
+      typeof ps.chatSearch === "object" &&
+      typeof (ps.chatSearch as { keyword?: unknown }).keyword === "string"
+    ) {
+      const keyword = (ps.chatSearch as { keyword: string }).keyword.trim();
+      if (keyword) {
+        if (typeof p.tab !== "string") setActiveTab("聊天");
+        setPendingChatSearch(keyword);
       }
     }
   }, []);
@@ -690,6 +712,8 @@ export function PanelApp() {
               onRequestFocusTask={requestFocusTask}
               pendingChatMatch={pendingChatMatch}
               onConsumePendingChatMatch={() => setPendingChatMatch(null)}
+              pendingChatSearch={pendingChatSearch}
+              onConsumePendingChatSearch={() => setPendingChatSearch(null)}
               pendingChatPrefill={pendingChatPrefill}
               onConsumePendingChatPrefill={() =>
                 setPendingChatPrefill(null)
