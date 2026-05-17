@@ -9,7 +9,6 @@
 >
 
 - PanelToneStrip 加「✍️ 写 transient_note」按钮 + 弹小输入框 + 时长 chip（15m/30m/1h/2h）：当前只显示不可写，从 UI 写一条临时指令给宠物。
-- TG bot 加 `/transient <text> [minutes]` 命令：手机端一键设 transient_note 给宠物（与现 /note 写 general memory 区分，不存盘只挂当前会话）。
 - detail.md 编辑器 ⌘K 链接快速插入 popover：有选区当 label 只输 url；无选区弹 url + label 双框 — 键盘党比当前 🔗 按钮快。
 - PanelMemory butler_tasks 段加「⏸ 全部 silent 1h」批量按钮：临时静音不关全局 — 开会 / 集中写 1 小时用。
 

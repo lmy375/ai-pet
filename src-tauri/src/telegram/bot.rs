@@ -1142,6 +1142,33 @@ async fn handle_tg_command(
                 crate::telegram::commands::format_feedback_reply(&text)
             }
         }
+        TgCommand::Transient { text, minutes } => {
+            // 写 in-memory transient_note：复用 proactive::set_transient_note。
+            // 空 text 由 formatter 走 usage hint，不调 backend。
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                crate::telegram::commands::format_transient_reply(&text, minutes, None)
+            } else {
+                let until_iso = crate::proactive::set_transient_note(
+                    trimmed.to_string(),
+                    minutes,
+                );
+                // until_iso 形如 "2026-05-17T18:45:00+08:00"。parse 回
+                // DateTime<Local> 给 formatter 渲染 "HH:MM"；解析失败
+                // （理论不会，但 defensive）→ None fallback。
+                let until_local = chrono::DateTime::parse_from_str(
+                    &until_iso,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Local));
+                crate::telegram::commands::format_transient_reply(
+                    &text,
+                    minutes,
+                    until_local,
+                )
+            }
+        }
         TgCommand::Pri { title, priority } => {
             // 单改 priority — 走 task_set_priority 同后端（保 due / body /
             // 其它 markers 不动）。空 title / 无 priority → formatter usage

@@ -158,6 +158,16 @@ pub enum TgCommand {
     /// 看到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。空
     /// text → missing-arg hint。
     Feedback { text: String },
+    /// `/transient <text> [minutes]` —— 写一条 N 分钟有效的 transient_note
+    /// 给宠物（owner 临时上下文如"我在开会"、"集中写文档不要打扰"、
+    /// "今晚 9 点后回我"等）。与 /note（写 general memory 永久存盘）/
+    /// /reflect（ai_insights）/ /feedback（feedback_history.log 改行为）
+    /// 三个写入命令对偶 —— 本命令**不存盘**，只挂当前 in-memory，到时
+    /// 自动清除（复用 proactive::set_transient_note）。minutes 缺省 60；
+    /// clamp 1..=10080（≤ 7 天）。空 text → missing-arg hint。
+    /// 与 /mute 区别：/mute 直接静音 proactive；/transient 不阻塞，只
+    /// 加上下文让 pet 开口时读到这条 [临时指示]。
+    Transient { text: String, minutes: i64 },
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -289,6 +299,7 @@ impl TgCommand {
             TgCommand::Streak => "streak",
             TgCommand::Pri { .. } => "pri",
             TgCommand::Feedback { .. } => "feedback",
+            TgCommand::Transient { .. } => "transient",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
@@ -319,6 +330,7 @@ impl TgCommand {
             | TgCommand::Quick { text: title }
             | TgCommand::Pri { title, .. }
             | TgCommand::Feedback { text: title }
+            | TgCommand::Transient { text: title, .. }
             | TgCommand::Promote { title }
             | TgCommand::Demote { title } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
@@ -425,6 +437,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("streak", "Consecutive done-days streak + 7d / 30d done totals"),
             ("pri", "Set a task's priority (0..=9) without rewriting the rest"),
             ("feedback", "Send owner feedback to feedback_history (influences pet's next proactive turn)"),
+            ("transient", "Set a transient note for N minutes — in-memory only context for the pet (default 60m, cap 7d)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
@@ -472,6 +485,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("streak", "连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数"),
             ("pri", "单改任务 priority（0..=9）不走 /edit 全量覆写"),
             ("feedback", "给 pet 留反馈（写 feedback_history，影响下次 proactive turn）"),
+            ("transient", "设 N 分钟有效的临时上下文给 pet（不存盘 in-memory；缺省 60m，上限 7 天）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
@@ -905,6 +919,37 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 写到 feedback_history.log（FeedbackKind::Comment）。空 text 由
         // handler 走 missing-arg。
         "feedback" => Some(TgCommand::Feedback { text: title }),
+        // `/transient <text> [minutes]`：末 whitespace token 若 parse 为
+        // i64 ∈ 1..=10080 → minutes；否则 default 60。剩余 / 全部 text。
+        // 仅 1 个 token 时全部当 text（与 /pri 同模板）。空 text 由 handler
+        // 走 missing-arg hint。
+        "transient" => {
+            let s = title.trim();
+            if s.is_empty() {
+                Some(TgCommand::Transient {
+                    text: String::new(),
+                    minutes: 60,
+                })
+            } else {
+                let (text_out, mins_out) = match s.rfind(char::is_whitespace) {
+                    Some(pos) => {
+                        let left = s[..pos].trim();
+                        let right = s[pos..].trim();
+                        match right.parse::<i64>() {
+                            Ok(n) if (1..=10080).contains(&n) => {
+                                (left.to_string(), n)
+                            }
+                            _ => (s.to_string(), 60),
+                        }
+                    }
+                    None => (s.to_string(), 60),
+                };
+                Some(TgCommand::Transient {
+                    text: text_out,
+                    minutes: mins_out,
+                })
+            }
+        }
         // `/cancel-all-error [confirm]`：带 "confirm" 才执行。case-insensitive
         // trim 后 == "confirm" 才算确认；任何其它 trailing token 都视作
         // 未确认（owner 误敲 `/cancel-all-error yes` 不该被算作确认）。
@@ -1209,8 +1254,8 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
     "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
     "digest", "edit", "pri", "promote", "demote", "reflect", "feedback",
-    "cancel_all_error", "find", "show", "blocked", "snoozed", "reset",
-    "version", "help",
+    "transient", "cancel_all_error", "find", "show", "blocked", "snoozed",
+    "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1325,6 +1370,7 @@ pub fn format_help_for_topic(
         "streak" => "🔥 /streak\n\n用法：显本聊天 done 完成节奏数据：连续完成天数 + 近 7 天 / 30 天 done 总数。无参。owner audit 「最近完成节奏怎么样 / 有没有 streak 在保」时用。streak 末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。\n\n示例：\n  /streak\n\n相关：/today（今日切片）；/yesterday（昨日产出）；/stats（pending / overdue 等汇总）。",
         "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
+        "transient" => "📝 /transient <text> [minutes]\n\n用法：写一条 N 分钟有效的临时上下文给宠物（owner 当前状态如「在开会」「集中写文档」「今晚 9 点后回我」等）。**不存盘**，只挂当前 in-memory，到时自动清除（与桌面 PanelToneStrip 显示的 [临时指示] 同源）。minutes 末 whitespace token 解析；缺省 60；clamp 1..=10080（≤ 7 天）。\n\n示例：\n  /transient 在开会，半小时别打扰我 30\n  /transient 集中写文档不要主动开口 90\n  /transient 今晚 9 点后再 ping 我 240\n  /transient 心情不好别活泼  （默认 60 分钟）\n\n对比：/note（→ general memory 永久存盘）；/reflect（→ ai_insights 永久存盘）；/feedback（写 feedback_history 改 pet 行为）；/mute（直接静音不开口）。本命令是「给 pet 临时上下文，但不阻塞它说话」— pet 仍会主动开口，只是开口时读到这条调整语气 / 选择。",
         "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
         "promote" => "🎯 /promote <title>\n\n用法：把任务 priority 升 +1（clamp 9 — 已是 P9 时不动 + 友好 reply）。一步操作不必算具体 P 值（与 /pri <title> <N> 互补 — pri 是绝对值，promote 是相对值）。保留所有其它 markers / due / body 不动（复用 task_set_priority 后端）。\n\n示例：\n  /promote 整理 Downloads\n  /promote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/demote（-1 反方向）。",
         "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
@@ -1390,6 +1436,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/streak  —  连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数（audit 完成节奏）".to_string(),
         "/pri <title> <N>  —  单改 priority（0..=9）— 不走 /edit 全量覆写".to_string(),
         "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
+        "/transient <text> [minutes]  —  设 N 分钟有效的临时上下文（不存盘 in-memory；缺省 60m，上限 7 天）".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
@@ -2553,6 +2600,59 @@ pub fn format_feedback_reply(text: &str) -> String {
     )
 }
 
+/// `/transient <text> [minutes]` 命令回复文案。pure：
+/// - text 空 → usage hint（含示例 + 与 /note / /mute 区别说明）
+/// - 正常 set → "📝 已设 transient_note：「<preview>」N 分钟有效（到 HH:MM 自动清除）"
+/// - until 缺失（极少见，set_transient_note 内部异常）→ 简化 reply
+pub const TRANSIENT_PREVIEW_CHARS: usize = 60;
+pub fn format_transient_reply(
+    text: &str,
+    minutes: i64,
+    until_local: Option<chrono::DateTime<chrono::Local>>,
+) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "📝 用法：/transient <text> [minutes]\n\n写一条 N 分钟有效的临时指示给宠物 — 不存盘，只挂当前 in-memory，到时自动清除。pet 开口时会读到这条 [临时指示] 调整语气 / 选择。minutes 缺省 60；上限 10080（7 天）。\n\n例：/transient 在开会，半小时别打扰我 30\n例：/transient 集中写文档不要主动开口 90\n例：/transient 今晚 9 点后再 ping 我 240\n例：/transient 心情不好别活泼  （默认 60 分钟）\n\n对比 /note（杂项 → general memory 存盘）/ /reflect（反思 → ai_insights 存盘）/ /feedback（写 feedback_history 改 pet 行为）/ /mute（直接静音不开口）：本命令是「给 pet 临时上下文，但不阻塞它说话」的快速通道。".to_string();
+    }
+    let preview: String = if trimmed.chars().count() > TRANSIENT_PREVIEW_CHARS {
+        let head: String = trimmed.chars().take(TRANSIENT_PREVIEW_CHARS).collect();
+        format!("{}…", head)
+    } else {
+        trimmed.to_string()
+    };
+    let nice = if minutes < 60 {
+        format!("{} 分钟", minutes)
+    } else if minutes < 60 * 24 {
+        let h = minutes / 60;
+        let m = minutes % 60;
+        if m == 0 {
+            format!("{} 小时", h)
+        } else {
+            format!("{} 小时 {} 分钟", h, m)
+        }
+    } else {
+        let d = minutes / (60 * 24);
+        let h = (minutes % (60 * 24)) / 60;
+        if h == 0 {
+            format!("{} 天", d)
+        } else {
+            format!("{} 天 {} 小时", d, h)
+        }
+    };
+    match until_local {
+        Some(t) => format!(
+            "📝 已设 transient_note（{} 有效）\n\n{}\n\n到 {} 自动清除。pet 开口时会读到这条 [临时指示]。",
+            nice,
+            preview,
+            t.format("%H:%M")
+        ),
+        None => format!(
+            "📝 已设 transient_note（{} 有效）\n\n{}\n\npet 开口时会读到这条 [临时指示]。",
+            nice, preview
+        ),
+    }
+}
+
 /// `/pri <title> <N>` 命令回复文案。pure：
 /// - title 空 → usage hint
 /// - priority None（解析失败 / 缺失）→ usage hint with examples
@@ -3706,8 +3806,8 @@ mod tests {
             "silenced", "markers", "tags", "mood", "whoami", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
-            "reflect", "feedback", "cancel_all_error", "find", "show",
-            "blocked", "snoozed", "reset", "version", "help",
+            "reflect", "feedback", "transient", "cancel_all_error",
+            "find", "show", "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4174,7 +4274,8 @@ mod tests {
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
-            "cancel_all_error", "show", "tags", "reset", "version", "help",
+            "transient", "cancel_all_error", "show", "tags", "reset",
+            "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -6289,6 +6390,162 @@ mod tests {
         let long = "啰".repeat(100);
         let s = format_feedback_reply(&long);
         assert!(s.contains("…"), "long text should be truncated: {s}");
+    }
+
+    // -------- /transient parse + format --------
+
+    #[test]
+    fn transient_parses_text_with_minutes() {
+        assert_eq!(
+            parse_tg_command("/transient 在开会别打扰 30"),
+            Some(TgCommand::Transient {
+                text: "在开会别打扰".to_string(),
+                minutes: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn transient_parses_text_without_minutes_defaults_60() {
+        assert_eq!(
+            parse_tg_command("/transient 心情不好别活泼"),
+            Some(TgCommand::Transient {
+                text: "心情不好别活泼".to_string(),
+                minutes: 60,
+            })
+        );
+    }
+
+    #[test]
+    fn transient_parses_single_token_as_text() {
+        // 单 token 不解析为 minutes — 当 text 默认 60。owner 想"我累了"等单
+        // 词指示也应被接受为 text，不应被吞为"数字"。
+        assert_eq!(
+            parse_tg_command("/transient 累"),
+            Some(TgCommand::Transient {
+                text: "累".to_string(),
+                minutes: 60,
+            })
+        );
+        // 单 token 是数字也按 text 处理 — 与 /pri 同模板（避免漏 title 时
+        // 误把 N 当 priority 写入）。
+        assert_eq!(
+            parse_tg_command("/transient 30"),
+            Some(TgCommand::Transient {
+                text: "30".to_string(),
+                minutes: 60,
+            })
+        );
+    }
+
+    #[test]
+    fn transient_parses_minutes_out_of_range_falls_back() {
+        // > 10080 (7 天) 越界 → 整段当 text, default 60
+        assert_eq!(
+            parse_tg_command("/transient 长会议 99999"),
+            Some(TgCommand::Transient {
+                text: "长会议 99999".to_string(),
+                minutes: 60,
+            })
+        );
+        // 0 / 负数也越界（1..=10080）→ 整段当 text
+        assert_eq!(
+            parse_tg_command("/transient 测试 0"),
+            Some(TgCommand::Transient {
+                text: "测试 0".to_string(),
+                minutes: 60,
+            })
+        );
+    }
+
+    #[test]
+    fn transient_parses_empty_text() {
+        assert_eq!(
+            parse_tg_command("/transient"),
+            Some(TgCommand::Transient {
+                text: String::new(),
+                minutes: 60,
+            })
+        );
+    }
+
+    #[test]
+    fn transient_parses_max_minutes() {
+        // 10080 (7 天) 上限合法
+        assert_eq!(
+            parse_tg_command("/transient 长出差 10080"),
+            Some(TgCommand::Transient {
+                text: "长出差".to_string(),
+                minutes: 10080,
+            })
+        );
+    }
+
+    #[test]
+    fn transient_reply_empty_shows_usage_hint() {
+        let s = format_transient_reply("", 60, None);
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/transient <text>"), "{s}");
+        assert!(s.contains("不存盘"), "强调 in-memory 而非永久存盘: {s}");
+        // 让 owner 一眼看到与其它写入命令的区别
+        assert!(s.contains("/note"), "{s}");
+        assert!(s.contains("/mute"), "{s}");
+    }
+
+    #[test]
+    fn transient_reply_with_until_shows_clear_time() {
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 21, 30, 0)
+            .unwrap();
+        let s = format_transient_reply("在开会别打扰", 30, Some(until));
+        assert!(s.contains("已设 transient_note"), "{s}");
+        assert!(s.contains("在开会别打扰"), "{s}");
+        assert!(s.contains("30 分钟"), "{s}");
+        assert!(s.contains("21:30"), "show clear time: {s}");
+    }
+
+    #[test]
+    fn transient_reply_hour_label() {
+        // 90 分钟 → "1 小时 30 分钟"
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 22, 0, 0)
+            .unwrap();
+        let s = format_transient_reply("写文档", 90, Some(until));
+        assert!(s.contains("1 小时 30 分钟"), "{s}");
+        // 120 分钟 → "2 小时"（无余数）
+        let s = format_transient_reply("写文档", 120, Some(until));
+        assert!(s.contains("2 小时"), "{s}");
+        assert!(!s.contains("2 小时 0 分钟"), "no zero remainder: {s}");
+    }
+
+    #[test]
+    fn transient_reply_day_label() {
+        // 60 * 24 = 1440 → "1 天"
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 18, 18, 0, 0)
+            .unwrap();
+        let s = format_transient_reply("出差三天", 4320, Some(until));
+        assert!(s.contains("3 天"), "{s}");
+    }
+
+    #[test]
+    fn transient_reply_long_text_truncates_preview() {
+        let long = "在".repeat(100);
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 21, 30, 0)
+            .unwrap();
+        let s = format_transient_reply(&long, 60, Some(until));
+        assert!(s.contains("…"), "long text should be truncated: {s}");
+    }
+
+    #[test]
+    fn transient_reply_without_until_fallback() {
+        // until=None defensive fallback — 不应崩，依旧给可读 reply
+        let s = format_transient_reply("测试", 30, None);
+        assert!(s.contains("已设 transient_note"), "{s}");
+        assert!(s.contains("测试"), "{s}");
+        // 不能含 HH:MM 占位
+        assert!(!s.contains("到 — 自动清除"), "no placeholder: {s}");
     }
 
     // -------- /pri parse + format --------
