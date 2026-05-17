@@ -4858,6 +4858,45 @@ export function PanelTasks({
     weekList.sort((a, b) => b.ts - a.ts);
     return { today, week, todayList, weekList };
   }, [tasks, nowMs]);
+
+  /// 🔥 streak 连续完成天数：与 TG `/streak` 桌面对偶。算法走 done 任务
+  /// updated_at 当日（toLocaleDateString('sv-SE') 拿本地 ISO YYYY-MM-DD），
+  /// streak 末端：今日有 → today；否则若昨日有 → yesterday；否则 0。从末
+  /// 端往前数连续。与后端 compute_done_streak 同语义。
+  const doneStreak = useMemo(() => {
+    const doneDates = new Set<string>();
+    for (const t of tasks) {
+      if (t.status !== "done") continue;
+      const ts = Date.parse(t.updated_at);
+      if (Number.isNaN(ts)) continue;
+      const d = new Date(ts).toLocaleDateString("sv-SE");
+      doneDates.add(d);
+    }
+    if (doneDates.size === 0) return 0;
+    const today = new Date().toLocaleDateString("sv-SE");
+    const yesterdayDate = new Date(Date.now() - 86_400_000);
+    const yesterday = yesterdayDate.toLocaleDateString("sv-SE");
+    let anchor: string;
+    if (doneDates.has(today)) {
+      anchor = today;
+    } else if (doneDates.has(yesterday)) {
+      anchor = yesterday;
+    } else {
+      return 0;
+    }
+    let count = 1;
+    let cursor = new Date(`${anchor}T00:00:00`);
+    while (true) {
+      cursor = new Date(cursor.getTime() - 86_400_000);
+      const cur = cursor.toLocaleDateString("sv-SE");
+      if (doneDates.has(cur)) {
+        count += 1;
+      } else {
+        break;
+      }
+    }
+    return count;
+  }, [tasks]);
   /// 7 天任务流：按本地日期分桶，每天的 new（按 created_at 落桶）+ done
   /// （按 status==='done' 且 updated_at 落桶）双计数。day 0 = 6 天前，day 6 =
   /// 今日 —— 与 sparkline 视觉的"最旧 → 最新"左到右顺序一致。
@@ -6046,6 +6085,31 @@ export function PanelTasks({
                   <span style={{ marginLeft: 4 }}>{completedListExpanded ? "▾" : "▸"}</span>
                 )}
               </button>
+              {/* 🔥 streak chip：与 TG /streak 桌面对偶 — 显本聊天连续有
+                  done 完成天数。算法与后端 compute_done_streak 同语义 —
+                  末端 today / yesterday，从末端往前数连续。> 0 才浮，
+                  rose tint 与 streaks 应用 burn 视觉一致；0 时不显避免噪
+                  音（owner 的"还没 streak"信号通过缺位表达）。 */}
+              {doneStreak > 0 && (
+                <span
+                  style={{
+                    marginLeft: 8,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    background: "var(--pet-tint-rose-bg, #ffe4e6)",
+                    color: "var(--pet-tint-rose-fg, #9f1239)",
+                    fontWeight: 600,
+                    border:
+                      "1px solid color-mix(in srgb, var(--pet-tint-rose-fg, #e11d48) 30%, transparent)",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={`连续 ${doneStreak} 天有 done 完成（与 TG /streak 同算法）。末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。`}
+                  aria-label={`done streak ${doneStreak} days`}
+                >
+                  🔥 streak {doneStreak} 天
+                </span>
+              )}
               {/* 📈 7-day 任务流 sparkline：每天双 stack bar — 上段 new
                   （绿）/ 下段 done（蓝）。max 跨"新建 vs 完成"两类共
                   归一化（max 任一一天的最大值即满高度），保证两类比例

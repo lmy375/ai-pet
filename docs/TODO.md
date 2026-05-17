@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelTasks 列表头加「🔥 streak N 天」chip：与 TG /streak 桌面对偶 — 让 owner 在 panel 也看到完成节奏数字。
 - PanelMemory 加 sort-by-字数 toggle：找哪些 memory item content 最重，决策 consolidate 优先级。
 - detail.md 选区 toolbar 加「📋 copy as blockquote」：textarea 选区 → button → 复制 `> <text>` 到剪贴板（每行加 `> ` 前缀）。
 - ChatMini 选区 toolbar 加「💬 推到 ChatPanel」：选区 → 切聊天 tab + 预填 "关于「...」"，让继续提问不必离开 mini。
