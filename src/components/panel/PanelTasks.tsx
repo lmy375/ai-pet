@@ -7041,6 +7041,73 @@ export function PanelTasks({
                 </span>
               );
             })()}
+            {/* 💤 全选 P0-P3 进 multi-select：与 ☑️ 全选 P7+ 对偶低优批量
+                管理。owner 想批量"过期低优一次性 cancel"、"低优全部加
+                #later tag"、"低优批量降到 P0" 等清理动作的入口。
+                源数据走完整 tasks（priority <= 3 && status === pending），
+                跨当前视图选区。toggle 行为：再次点击且选区正好等于 P0-P3
+                集合时清空。仅在确有 P0-P3 pending 时渲染。muted/slate tint
+                与"低优 / 休眠"语义对应（vs P7+ rose tint 的高警示色）。 */}
+            {priorityBands[2].pending > 0 && (() => {
+              const lowTitles = tasks
+                .filter((t) => t.priority <= 3 && t.status === "pending")
+                .map((t) => t.title);
+              const matchesLow =
+                lowTitles.length > 0 &&
+                selected.size === lowTitles.length &&
+                lowTitles.every((tt) => selected.has(tt));
+              const handle = () => {
+                if (lowTitles.length === 0) return;
+                if (matchesLow) {
+                  setSelected(new Set());
+                  setBulkResultMsg("已清除 P0-P3 选区");
+                } else {
+                  setSelected(new Set(lowTitles));
+                  setBulkResultMsg(
+                    `已选中 ${lowTitles.length} 条 P0-P3 进 multi-select`,
+                  );
+                }
+                window.setTimeout(() => setBulkResultMsg(""), 2500);
+              };
+              return (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={handle}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handle();
+                    }
+                  }}
+                  aria-pressed={matchesLow}
+                  title={
+                    matchesLow
+                      ? `选区正好是当前 ${lowTitles.length} 条 P0-P3 pending。再点清空选区。`
+                      : `把全部 ${lowTitles.length} 条 P0-P3 pending 压进选区进入 multi-select 模式（跨当前视图筛选）— 之后可批量 cancel / 加 #later tag / 降 priority 清理低优堆积。与 ☑️ 全选 P7+ 对偶。`
+                  }
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    cursor: "pointer",
+                    userSelect: "none",
+                    background: matchesLow
+                      ? "var(--pet-color-muted)"
+                      : "color-mix(in srgb, var(--pet-color-muted) 12%, transparent)",
+                    color: matchesLow ? "#fff" : "var(--pet-color-muted)",
+                    border: matchesLow
+                      ? "1px solid var(--pet-color-muted)"
+                      : "1px dashed color-mix(in srgb, var(--pet-color-muted) 40%, transparent)",
+                  }}
+                >
+                  💤 全选 P0-P3
+                </span>
+              );
+            })()}
             {/* R104: priority 多选 chip 行。OR 命中（任一进集合即通过）；
                 P0 保留 "💡 idea 抽屉" glyph 让老用户直觉不变，其它走 P{n}
                 朴素文案。slate / gray 中性色与 dueFilter 同色族让 priority
