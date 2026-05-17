@@ -98,6 +98,11 @@ pub enum TgCommand {
     /// "⚙️ mute" 按钮等价。让 owner 在 TG 上"嘿宠物先安静半小时"一句话搞定。
     /// clamp 0..=10080（≤ 7 天）。
     Mute { minutes: i64 },
+    /// `/note <text>` —— 把任意文本作 general memory item 存（owner 在外
+    /// 面随手"记一笔"）。title 自动生成 `note-YYYY-MM-DDTHH-MM-SS`（秒级
+    /// 唯一）；description = trim 后的 text。空 text → missing-arg friendly
+    /// hint。与 桌面 PanelMemory "新建 general item" 同后端，状态一致。
+    Note { text: String },
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -142,6 +147,7 @@ impl TgCommand {
             TgCommand::Blocked => "blocked",
             TgCommand::Snoozed => "snoozed",
             TgCommand::Mute { .. } => "mute",
+            TgCommand::Note { .. } => "note",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -162,7 +168,8 @@ impl TgCommand {
             | TgCommand::Unpin { title }
             | TgCommand::Silent { title }
             | TgCommand::Unsilent { title }
-            | TgCommand::Find { keyword: title } => title.as_str(),
+            | TgCommand::Find { keyword: title }
+            | TgCommand::Note { text: title } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
             | TgCommand::Pinned
@@ -251,6 +258,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
+            ("note", "Save arbitrary text as a general memory item (quick brain-dump)"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -279,6 +287,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
+            ("note", "把任意文本作 general memory item 存（owner 随手记一笔）"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -614,6 +623,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 .unwrap_or(30);
             Some(TgCommand::Mute { minutes })
         }
+        // `/note <text>`：所有 arg 当 text（含空格保留）。空 text 由
+        // handler 走 missing-arg 反馈。
+        "note" => Some(TgCommand::Note { text: title }),
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -952,6 +964,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
+        "/note <text>  —  把任意文本作 general memory item 存（随手记一笔）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1694,6 +1707,33 @@ pub fn format_mute_reply(
         "🔕 已静音 proactive {}（到 {} 自动解除）。期间宠物不主动开口；用 /mute 0 立刻解除。",
         nice, when
     )
+}
+
+/// `/note <text>` 命令回复文案。pure：
+/// - 空 / 全空白 text → usage hint
+/// - save_result == Some(title) → "📝 已记到 general/<title>"，附复制
+///   预览（前 60 字 + …）让 owner 在 TG 看到"我刚记了啥"
+/// - save_result == Err(msg) → 失败反馈含原 err
+pub fn format_note_reply(text: &str, save_result: Result<&str, &str>) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "📝 用法：/note <text>\n\n把任意一段文本作 general memory item 存盘（随手记一笔；进 PanelMemory → 通用 段查看 / 整理）。\n\n例：/note 周末跑 5km 后腿酸；下次先热身\n例：/note 想试试 sourdough 起子培养".to_string();
+    }
+    match save_result {
+        Ok(title) => {
+            let preview = if trimmed.chars().count() > 60 {
+                let s: String = trimmed.chars().take(60).collect();
+                format!("{}…", s)
+            } else {
+                trimmed.to_string()
+            };
+            format!(
+                "📝 已记到 general/{}\n\n{}",
+                title, preview
+            )
+        }
+        Err(e) => format!("📝 保存失败：{}", e),
+    }
 }
 
 /// `/reset` 命令固定回复文案。caller 负责真正清空 session_messages（仅保留
@@ -4160,6 +4200,74 @@ mod tests {
         // 3 天 = 4320 分钟
         let s = format_mute_reply(4320, Some(until));
         assert!(s.contains("3 天"), "{s}");
+    }
+
+    // -------- /note parse + format --------
+
+    #[test]
+    fn note_parses_text_arg() {
+        assert_eq!(
+            parse_tg_command("/note 周末跑 5km"),
+            Some(TgCommand::Note {
+                text: "周末跑 5km".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn note_parses_empty_text() {
+        assert_eq!(
+            parse_tg_command("/note"),
+            Some(TgCommand::Note {
+                text: String::new()
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/note   "),
+            Some(TgCommand::Note {
+                text: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn note_reply_empty_shows_usage_hint() {
+        let s = format_note_reply("", Ok(""));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/note <text>"), "{s}");
+        assert!(s.contains("general memory item"), "{s}");
+    }
+
+    #[test]
+    fn note_reply_whitespace_treated_as_empty() {
+        let s = format_note_reply("   \t\n  ", Ok(""));
+        assert!(s.contains("用法"), "{s}");
+    }
+
+    #[test]
+    fn note_reply_success_shows_title_and_preview() {
+        let s = format_note_reply(
+            "周末跑 5km 后腿酸；下次先热身",
+            Ok("note-2026-05-17T10-30-15"),
+        );
+        assert!(s.contains("📝"), "{s}");
+        assert!(s.contains("general/note-2026-05-17T10-30-15"), "{s}");
+        assert!(s.contains("周末跑 5km"), "preview: {s}");
+    }
+
+    #[test]
+    fn note_reply_long_text_truncates_preview() {
+        let long = "x".repeat(100);
+        let s = format_note_reply(&long, Ok("note-test"));
+        // preview cap 60 chars
+        assert!(s.contains("…"), "should truncate: {s}");
+    }
+
+    #[test]
+    fn note_reply_save_failure_shows_error() {
+        let s = format_note_reply("test note", Err("disk full"));
+        assert!(s.contains("保存失败"), "{s}");
+        assert!(s.contains("disk full"), "{s}");
     }
 
     // -------- /reset parse + format --------
