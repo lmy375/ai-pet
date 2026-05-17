@@ -1223,6 +1223,29 @@ export function PanelTasks({
   const [sparklineBuckets, setSparklineBuckets] = useState<
     Record<string, number[]>
   >({});
+  /// 顶部「📈 24h 活跃曲线」chip 数据：butler_history.log 全文按近 24
+  /// 小时 hourly bucket（24 个 u32），不按 title 过滤的 global view。让
+  /// owner 一眼看「今天哪几小时密集活动」高峰期。null = 未加载 / 加载
+  /// 失败；空数组 / 全 0 不渲 chip 避免视觉噪音。mount 时 fetch + 每 5
+  /// 分钟 refresh（不必精确实时；24h 视野下分钟级延迟无影响）。
+  const [hourly24h, setHourly24h] = useState<number[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const buckets = await invoke<number[]>("task_history_24h_hourly");
+        if (!cancelled) setHourly24h(buckets);
+      } catch (e) {
+        console.warn("task_history_24h_hourly failed (non-fatal):", e);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   /// 任务依赖未解决映射：title → 仍卡着的 blocker（含 status）列表。tasks
   /// 变化时 O(n) 计算一次；行渲染时 .has(title) 决定是否显 🔒 chip。useMemo
   /// 让 tasks 不变时引用稳定，避免每次 re-render 都重算 Map（虽然 n 通常
@@ -6920,6 +6943,85 @@ export function PanelTasks({
               {errorTaskCount > 0 && `❌ ${errorTaskCount}`}
             </span>
           )}
+          {/* 📈 24h 全局事件 sparkline chip：butler_history.log 按近 24
+              小时 hourly bucket（24 bar）— 让 owner 一眼看「今天哪几小
+              时密集活动 / 现在是高峰还是空闲」节奏感。与行内「📊 单
+              task 30 天 sparkline」互补 — 那个看单 task 长期；本 chip
+              看 chat 全局短期。collapsed 状态显（与 ⌘N / 队列健康同
+              位）；全 0 / null 不渲（避免视觉噪音）。 */}
+          {!createFormExpanded && hourly24h && hourly24h.some((c) => c > 0) && (() => {
+            const total = hourly24h.reduce((a, b) => a + b, 0);
+            const max = Math.max(...hourly24h, 1);
+            const peakIdx = hourly24h.indexOf(max);
+            // hours_ago = 23 - peakIdx；peak 时段 = now - (hours_ago) h
+            const peakHoursAgo = 23 - peakIdx;
+            const peakWhen =
+              peakHoursAgo === 0
+                ? "近 1 小时"
+                : peakHoursAgo < 1
+                  ? "刚刚"
+                  : `${peakHoursAgo}h 前`;
+            // tooltip：列每 bucket 计数（仅 > 0 行，避免 24 行噪音）
+            const lines: string[] = [
+              `📈 近 24h 事件（共 ${total} 条；按小时桶，最老在左，最新在右）`,
+              `峰值：bucket ${peakIdx + 1}/24 = ${max} 条（${peakWhen}）`,
+            ];
+            for (let i = 0; i < hourly24h.length; i++) {
+              if (hourly24h[i] === 0) continue;
+              const hAgo = 23 - i;
+              const label =
+                hAgo === 0
+                  ? "近 1 小时"
+                  : `${hAgo}h 前`;
+              lines.push(`  ${label}: ${hourly24h[i]} 条`);
+            }
+            return (
+              <span
+                onClick={(e) => e.stopPropagation()}
+                title={lines.join("\n")}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "flex-end",
+                  gap: 1,
+                  marginLeft: 6,
+                  height: 14,
+                  padding: "0 4px",
+                  border: "1px dashed var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: "transparent",
+                  cursor: "help",
+                  verticalAlign: "middle",
+                }}
+                aria-label={`24h 事件 ${total} 条`}
+              >
+                {hourly24h.map((c, i) => (
+                  <span
+                    key={i}
+                    style={{
+                      display: "inline-block",
+                      width: 2,
+                      height: c === 0 ? 1 : Math.max(2, Math.round((c / max) * 12)),
+                      background:
+                        c === 0
+                          ? "var(--pet-color-border)"
+                          : "var(--pet-color-accent)",
+                      borderRadius: 1,
+                    }}
+                  />
+                ))}
+                <span
+                  style={{
+                    fontSize: 9,
+                    marginLeft: 3,
+                    color: "var(--pet-color-muted)",
+                    fontFamily: "'SF Mono', 'Menlo', monospace",
+                  }}
+                >
+                  📈 {total}
+                </span>
+              </span>
+            );
+          })()}
         </div>
         {createFormExpanded && (
         <div style={s.formCard}>
