@@ -101,6 +101,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     isNew: boolean;
   } | null>(null);
   const [message, setMessage] = useState("");
+  /// 📑 复制副本按钮 busy 状态：避免双击重复创建 -copy- 副本。key =
+  /// `${catKey}::${title}`；async create 期间 disable 按钮 + 显灰色。
+  /// 与既有 alarmBusy / renameMemoryBusy 同模式。
+  const [copyingItemKey, setCopyingItemKey] = useState<string | null>(null);
   // 双击 inline 改 memory title。同时只允许一条 item 处于改名（多 input
   // 分散注意力）；key 用 `${catKey}::${oldTitle}` 跨 category 唯一。复用
   // 后端 memory_rename 命令（与 PanelTasks 改名同源）。
@@ -7330,6 +7334,78 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             📋
                           </button>
                         )}
+                        {/* 📑 复制副本：clone 当前 item description + detail.md
+                            到新 item「<title> -copy[-N]」。冲突时 N 自增（2/3
+                            /...）让模板复刻 / fork 场景一键完成 —— 与上方 📋
+                            （复制 detail.md 到剪贴板）互补：那个外发，这个内
+                            创建新 item。复用既有 memory_edit("create") 同
+                            后端；空 detail.md item 仍可副本（detail_content
+                            传空 → 新 .md 也空）。 */}
+                        {(() => {
+                          const itemKey = `${catKey}::${item.title}`;
+                          const busy = copyingItemKey === itemKey;
+                          return (
+                            <button
+                              style={s.btn}
+                              disabled={busy}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                setCopyingItemKey(itemKey);
+                                try {
+                                  let detailContent = "";
+                                  if (item.detail_path) {
+                                    try {
+                                      detailContent = await invoke<string>(
+                                        "memory_read_detail_full",
+                                        { detailPath: item.detail_path },
+                                      );
+                                    } catch {
+                                      detailContent = "";
+                                    }
+                                  }
+                                  const existing = new Set(
+                                    (
+                                      index?.categories[catKey]?.items ?? []
+                                    ).map((i) => i.title),
+                                  );
+                                  let candidate = `${item.title} -copy`;
+                                  if (existing.has(candidate)) {
+                                    let n = 2;
+                                    while (
+                                      existing.has(
+                                        `${item.title} -copy-${n}`,
+                                      )
+                                    ) {
+                                      n++;
+                                    }
+                                    candidate = `${item.title} -copy-${n}`;
+                                  }
+                                  await invoke("memory_edit", {
+                                    action: "create",
+                                    category: catKey,
+                                    title: candidate,
+                                    description: item.description,
+                                    detailContent: detailContent || null,
+                                  });
+                                  setMessage(`📑 已复制为「${candidate}」`);
+                                  await loadIndex();
+                                } catch (e) {
+                                  setMessage(`复制副本失败：${e}`);
+                                } finally {
+                                  setCopyingItemKey(null);
+                                  window.setTimeout(
+                                    () => setMessage(""),
+                                    3000,
+                                  );
+                                }
+                              }}
+                              title={`复制 description + detail.md 到新 item「${item.title} -copy[-N]」(冲突时自增 N) — 模板复刻 / fork 场景。`}
+                              aria-label="duplicate memory item as -copy- variant"
+                            >
+                              {busy ? "…" : "📑"}
+                            </button>
+                          );
+                        })()}
                         {/* 📜 detail.md 历史快照：与 PanelTasks 📜 popover
                             对偶，让 PanelMemory 任一 cat 都能查 .history 快
                             照。点击拉最近 5 份 ts + 内容前缀，click 任一
