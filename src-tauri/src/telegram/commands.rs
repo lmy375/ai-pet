@@ -107,6 +107,14 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/edit <title> :: <new desc>` —— 覆写指定 butler_task 的 description
+    /// 整段。`::` 是必填 separator —— 让 title 含空格 / 全角符号 / 中文标点
+    /// 仍能精确切（与单空白切相比歧义最少；owner 外面想加 marker / 改 body
+    /// 时单条命令搞定）。任一端 trim 后为空 → handler 走 missing-arg
+    /// hint。**全量覆写**语义：新 desc 完全替换旧描述，既有 `[task pri=...]`
+    /// `[every: ...]` 等 markers owner 自己负责保留 / 重写（与桌面 ✏️ 改
+    /// schedule modal 不同 — 那个只改 prefix；本命令是 textarea 等价）。
+    Edit { title: String, new_desc: String },
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -153,6 +161,7 @@ impl TgCommand {
             TgCommand::Mute { .. } => "mute",
             TgCommand::Note { .. } => "note",
             TgCommand::Digest { .. } => "digest",
+            TgCommand::Edit { .. } => "edit",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -175,6 +184,7 @@ impl TgCommand {
             | TgCommand::Unsilent { title }
             | TgCommand::Find { keyword: title }
             | TgCommand::Note { text: title } => title.as_str(),
+            TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
             | TgCommand::Pinned
@@ -266,6 +276,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
             ("note", "Save arbitrary text as a general memory item (quick brain-dump)"),
             ("digest", "Recent N done tasks with [result:] summary one-liner (default 5, cap 20)"),
+            ("edit", "Overwrite a butler task's description: /edit <title> :: <new desc>"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -296,6 +307,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
             ("note", "把任意文本作 general memory item 存（owner 随手记一笔）"),
             ("digest", "最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）"),
+            ("edit", "覆写 butler task 描述：/edit <title> :: <new desc>"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -634,6 +646,19 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/note <text>`：所有 arg 当 text（含空格保留）。空 text 由
         // handler 走 missing-arg 反馈。
         "note" => Some(TgCommand::Note { text: title }),
+        // `/edit <title> :: <new desc>`：first-occurrence `::` 切分；任一端
+        // trim 后为空 → handler 走 missing-arg。新 desc 是全量覆写（与
+        // 桌面 detail.md textarea save 等价）。
+        "edit" => {
+            let (t, d) = match title.split_once("::") {
+                Some((lhs, rhs)) => (lhs.trim().to_string(), rhs.trim().to_string()),
+                None => (title, String::new()),
+            };
+            Some(TgCommand::Edit {
+                title: t,
+                new_desc: d,
+            })
+        }
         // `/digest [N]`：与 /recent 同 N 处理 — 缺省 5，clamp 1..=20，
         // 非数字尾部 fallback 默认。
         "digest" => {
@@ -933,6 +958,7 @@ pub fn format_help_for_topic(
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
+        "edit" => "✏️ /edit <title> :: <new desc>\n\n用法：全量覆写指定 butler_task 的 description。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。\n\n示例：\n  /edit 整理 Downloads :: 整理 Downloads [task pri=5 due=2026-05-20] [pinned]\n  /edit 写周报 :: 完整新 body 一段\n\n注意：**全量覆写**语义 — 新 desc 完全替换旧描述。想保留 `[task pri=...]` `[every: ...]` `[pinned]` 等 markers 请自行写进新 desc（命令不会自动续 markers）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）。",
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
@@ -986,6 +1012,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
         "/note <text>  —  把任意文本作 general memory item 存（随手记一笔）".to_string(),
         "/digest [N]  —  最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）".to_string(),
+        "/edit <title> :: <new desc>  —  覆写 butler task 描述（全量替换，markers 需自己写进 new desc）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1817,6 +1844,35 @@ pub fn format_note_reply(text: &str, save_result: Result<&str, &str>) -> String 
     }
 }
 
+/// `/edit <title> :: <new desc>` 命令回复文案。pure：
+/// - title 或 new_desc trim 后任一空 → usage hint（与 missing-arg 同模板
+///   但带 `::` separator 例子，避免 owner 看完不懂怎么写）
+/// - save_result == Ok(()) → "✏️ 已覆写「<title>」"+ 新 desc 前 80 字预览
+/// - save_result == Err(msg) → 失败反馈含原 err
+pub fn format_edit_reply(
+    title: &str,
+    new_desc: &str,
+    save_result: Result<(), &str>,
+) -> String {
+    let t = title.trim();
+    let d = new_desc.trim();
+    if t.is_empty() || d.is_empty() {
+        return "✏️ 用法：/edit <title> :: <new desc>\n\n覆写指定 butler task 的 description 整段。`::` 是必填 separator（让 title 含空格 / 中文标点也能精确切）。\n\n例：/edit 整理 Downloads :: 整理 Downloads [task pri=5 due=2026-05-20] [pinned]\n例：/edit 写周报 :: 完整新 body 一段\n\n注意：新 desc 完全覆写旧描述。想保留 [task pri=...] [every: ...] [pinned] 等 markers 请自行写进新 desc。".to_string();
+    }
+    match save_result {
+        Ok(()) => {
+            let preview = if d.chars().count() > 80 {
+                let s: String = d.chars().take(80).collect();
+                format!("{}…", s)
+            } else {
+                d.to_string()
+            };
+            format!("✏️ 已覆写「{}」\n\n{}", t, preview)
+        }
+        Err(e) => format!("✏️ 覆写失败：{}", e),
+    }
+}
+
 /// `/reset` 命令固定回复文案。caller 负责真正清空 session_messages（仅保留
 /// system / 人设），本函数只生成给 TG 用户看的反馈。
 pub fn format_reset_reply() -> String {
@@ -2503,7 +2559,7 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "mood", "whoami", "today", "recent",
-            "digest", "find", "blocked", "snoozed", "reset", "version",
+            "digest", "edit", "find", "blocked", "snoozed", "reset", "version",
             "help",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -2969,7 +3025,7 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "reset", "version", "help",
+            "edit", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -4350,6 +4406,106 @@ mod tests {
         let s = format_note_reply("test note", Err("disk full"));
         assert!(s.contains("保存失败"), "{s}");
         assert!(s.contains("disk full"), "{s}");
+    }
+
+    // -------- /edit parse + format --------
+
+    #[test]
+    fn edit_parses_title_and_desc_split_on_double_colon() {
+        assert_eq!(
+            parse_tg_command("/edit 整理 Downloads :: 新的 description 一段"),
+            Some(TgCommand::Edit {
+                title: "整理 Downloads".to_string(),
+                new_desc: "新的 description 一段".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn edit_splits_on_first_double_colon() {
+        // 新 desc 本身含 `::` 不能被吞掉 — split_once 只切首个。
+        assert_eq!(
+            parse_tg_command("/edit task A :: body has :: inside"),
+            Some(TgCommand::Edit {
+                title: "task A".to_string(),
+                new_desc: "body has :: inside".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn edit_no_separator_yields_empty_desc() {
+        // 没 `::` separator → 整体当 title，new_desc 空让 handler 走 usage hint
+        assert_eq!(
+            parse_tg_command("/edit 写周报"),
+            Some(TgCommand::Edit {
+                title: "写周报".to_string(),
+                new_desc: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn edit_empty_title_or_desc_after_split() {
+        // 仅 `::` → 两端都空
+        assert_eq!(
+            parse_tg_command("/edit ::"),
+            Some(TgCommand::Edit {
+                title: String::new(),
+                new_desc: String::new(),
+            })
+        );
+        // title 空 desc 有
+        assert_eq!(
+            parse_tg_command("/edit :: 新 body"),
+            Some(TgCommand::Edit {
+                title: String::new(),
+                new_desc: "新 body".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn edit_reply_missing_arg_shows_usage_hint() {
+        let s = format_edit_reply("", "", Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/edit"), "{s}");
+        assert!(s.contains("::"), "must show separator: {s}");
+        assert!(s.contains("全量覆写") || s.contains("覆写"), "{s}");
+    }
+
+    #[test]
+    fn edit_reply_partial_missing_arg_also_shows_hint() {
+        // 仅 title 给了，desc 空 → usage hint
+        let s = format_edit_reply("写周报", "", Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        // 仅 desc 给了，title 空 → usage hint
+        let s2 = format_edit_reply("", "新 body", Ok(()));
+        assert!(s2.contains("用法"), "{s2}");
+    }
+
+    #[test]
+    fn edit_reply_success_shows_title_and_preview() {
+        let s = format_edit_reply("写周报", "完整新 body 一段 abc", Ok(()));
+        assert!(s.contains("✏️"), "{s}");
+        assert!(s.contains("已覆写"), "{s}");
+        assert!(s.contains("写周报"), "{s}");
+        assert!(s.contains("完整新 body 一段 abc"), "preview: {s}");
+    }
+
+    #[test]
+    fn edit_reply_long_desc_truncates_preview() {
+        let long = "x".repeat(120);
+        let s = format_edit_reply("t", &long, Ok(()));
+        // preview cap 80 chars
+        assert!(s.contains("…"), "should truncate: {s}");
+    }
+
+    #[test]
+    fn edit_reply_save_failure_shows_error() {
+        let s = format_edit_reply("t", "new body", Err("not found"));
+        assert!(s.contains("覆写失败"), "{s}");
+        assert!(s.contains("not found"), "{s}");
     }
 
     // -------- /digest parse + format --------

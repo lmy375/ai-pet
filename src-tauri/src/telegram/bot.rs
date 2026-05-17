@@ -837,6 +837,48 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_digest_reply(&views, n)
         }
+        TgCommand::Edit { title, new_desc } => {
+            // 空 title / 空 new_desc → formatter 走 usage hint 路径，不真改。
+            if title.trim().is_empty() || new_desc.trim().is_empty() {
+                crate::telegram::commands::format_edit_reply(
+                    &title,
+                    &new_desc,
+                    Ok(()),
+                )
+            } else {
+                // resolve 与 /done / /cancel 同三层：数字 index → fuzzy → 错误候选。
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        // 全量覆写描述：memory_edit("update") 在 butler_tasks
+                        // category 内查 title → 写 description → 同步 SQLite
+                        // mirror + butler_history 由调用链下游 hook 自动跟进。
+                        match crate::commands::memory::memory_edit(
+                            "update".to_string(),
+                            "butler_tasks".to_string(),
+                            t.clone(),
+                            Some(new_desc.clone()),
+                            None,
+                        ) {
+                            Ok(_) => crate::telegram::commands::format_edit_reply(
+                                &t,
+                                &new_desc,
+                                Ok(()),
+                            ),
+                            Err(e) => crate::telegram::commands::format_edit_reply(
+                                &t,
+                                &new_desc,
+                                Err(&e),
+                            ),
+                        }
+                    }
+                    Err(msg) => crate::telegram::commands::format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Note { text } => {
             // 空 text → formatter 走 usage hint 路径，不真创建。
             let trimmed = text.trim();
