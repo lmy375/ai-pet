@@ -9,7 +9,6 @@
 >
 
 - PanelMemory 加 sort-by-字数 toggle：找哪些 memory item content 最重，决策 consolidate 优先级。
-- detail.md 选区 toolbar 加「📋 copy as blockquote」：textarea 选区 → button → 复制 `> <text>` 到剪贴板（每行加 `> ` 前缀）。
 
 
 
