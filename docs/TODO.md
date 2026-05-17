@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- ChatMini ⌘` 弹 transient_note 快速 popover：写文本 + 选时长一键挂 transient（不发消息给 pet 留临时上下文）。
 - PanelTasks task 行加「📊 history sparkline」chip：扫 butler_history 显近 30 天 update 频率 10-bar 分布。
 - PanelMemory item 加「📋 复制副本」按钮：复 description + detail.md 到 auto -copy- title，模板复刻场景。
 - PanelDebug 加「⏱ ping TG bot」按钮：发 /version 计时往返延迟，一行式测链路健康（与 /now 类似带 ms 数）。
