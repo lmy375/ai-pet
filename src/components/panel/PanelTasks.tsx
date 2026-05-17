@@ -10600,6 +10600,69 @@ export function PanelTasks({
                           </span>
                         );
                       })()}
+                    {/* ⏰ reminderMin hover chip：仅 active task + hover 时
+                        显当前 reminderMin 值（或 "off"）。点击直接弹既有
+                        taskCtxMenu 同位置并展 reminderSubmenu — 复用全套
+                        preset 5/15/30/60/移除 UI 不重写 popover。比右键
+                        ctx menu 入口少一步右键 + 找子项，键盘党 / 鼠标
+                        小白都友好。
+                        正则与既有 handleSetReminderMin / 右键 submenu 同
+                        源 — 改格式只需改 strip pattern 一处。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      !isFinished(t.status) &&
+                      (() => {
+                        const m = t.raw_description.match(
+                          /\[reminderMin:\s*(\d+)\s*\]/,
+                        );
+                        const cur = m ? Number(m[1]) : 0;
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setTaskCtxMenu({
+                                title: t.title,
+                                status: t.status,
+                                priority: t.priority,
+                                x: e.clientX,
+                                y: e.clientY,
+                                prioritySubmenu: false,
+                                reminderSubmenu: true,
+                                dueInMinSubmenu: false,
+                              });
+                            }}
+                            title={
+                              cur > 0
+                                ? `当前 reminderMin = ${cur} 分（到点前软提醒）。点击弹快速编辑 popover — 复用右键菜单 ⏰ 子项 5/15/30/60/移除。`
+                                : `未设 reminderMin。点击弹快速设到点前 N 分软提醒 popover（5/15/30/60 预设）。`
+                            }
+                            aria-label="quick-edit reminderMin"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border: "1px solid var(--pet-color-border)",
+                              borderRadius: 3,
+                              background:
+                                cur > 0
+                                  ? "var(--pet-tint-blue-bg)"
+                                  : "transparent",
+                              color:
+                                cur > 0
+                                  ? "var(--pet-tint-blue-fg)"
+                                  : "var(--pet-color-muted)",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                              cursor: "pointer",
+                            }}
+                          >
+                            ⏰ {cur > 0 ? `${cur}m` : "off"}
+                          </button>
+                        );
+                      })()}
                     {/* 📊 30 天 sparkline chip：10 bar 显近 30 天 butler_history
                         事件桶分布（最老在左，最新在右）。仅总和 > 0 时显
                         — 从未 touch 过的 task 不显避免视觉噪音。max 归一
