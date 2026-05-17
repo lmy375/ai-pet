@@ -624,6 +624,33 @@ export function PanelChat({
     return () => window.removeEventListener("keydown", onKey);
   }, [openTaskPicker]);
 
+  /// 全局 ⌘F / Ctrl+F 热键：唤起搜索 messages bar（聚焦本 session）。与
+  /// 浏览器 / IDE / Finder 的"⌘F = 在当前视图找"直觉一致。跨 input 工作
+  /// （compose textarea / 其它 input focus 时也响应）—— owner 在写到一半
+  /// 时按 ⌘F 是明确"先搜历史"意图，应让搜索抢焦点（与 ⌘K / ⌘N 让位
+  /// input 不同 — F 是 view-level 动作不是命令）。preventDefault 吃掉
+  /// 浏览器默认"find in page"。autoFocus 在 search input 渲染时把焦点
+  /// 拉过来。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        !(e.metaKey || e.ctrlKey) ||
+        e.shiftKey ||
+        e.altKey ||
+        e.key.toLowerCase() !== "f"
+      ) {
+        return;
+      }
+      e.preventDefault();
+      // 默认 scope 走 current — ⌘F 直觉是"在这里找"。owner 想跨 session
+      // 仍能在 search bar 内手动切 scope chip。
+      setSearchScope("current");
+      setSearchMode(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   /// 全局 ⌘N / Ctrl+N 热键：新建会话。与 IDE / 浏览器 ⌘N = "新建文件 /
   /// 标签页"直觉一致。让位条件与 ⌘K 同 —— 输入控件聚焦时让那些控件处理
   /// （即便它们当前没有 ⌘N handler，也避免我们抢走可能的未来扩展）。
