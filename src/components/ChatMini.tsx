@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { bubbleStyle } from "./panel/panelChatBits";
 import { EmptyState } from "./panel/EmptyState";
@@ -484,6 +484,52 @@ export function ChatMini({
       window.removeEventListener("keydown", onKey);
     };
   }, [ctxMenu]);
+  /// ⌘` 弹 transient_note 快速 popover：让 owner 不必发消息就能给 pet 留
+  /// 临时上下文（如「半小时别打扰」「集中写文档」）。复用既有
+  /// onSetTransientNote callback（同 set_transient_note Tauri 后端）。
+  /// 与既有 ChatBubble 右键「📝 用此话设 transient_note」对偶 — 那个把
+  /// 既有 pet 文本复用，本 popover 是 owner 写「全新文本」入口。
+  const [transientPopoverOpen, setTransientPopoverOpen] = useState(false);
+  const [transientPopoverDraft, setTransientPopoverDraft] = useState("");
+  const transientPopoverInputRef = useRef<HTMLTextAreaElement>(null);
+  /// ⌘` 全局快捷键：可见时切换 popover。\` 与 Esc 同 / 数字 / J/K 等已被各
+  /// 处占用的键不冲突；macOS 上 ⌘\` 默认是「下一窗口」但 ChatMini webview
+  /// 内不会触发系统级 — 在 webview 焦点内安全劫持。
+  useEffect(() => {
+    if (!visible) return;
+    if (!onSetTransientNote) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key !== "`") return;
+      e.preventDefault();
+      setTransientPopoverOpen((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, onSetTransientNote]);
+  /// 打开后聚焦 textarea + 选中既有内容（让连续 ⌘\` 弹起可立即重写）。
+  useEffect(() => {
+    if (!transientPopoverOpen) return;
+    const id = window.setTimeout(() => {
+      transientPopoverInputRef.current?.focus();
+      transientPopoverInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [transientPopoverOpen]);
+  /// 提交：调 onSetTransientNote + 清 draft + 关 popover。空 trim 拒绝
+  /// （避免给 pet 注水空 transient_note）。
+  const submitTransientPopover = useCallback(
+    (minutes: number) => {
+      const body = transientPopoverDraft.trim();
+      if (!body) return;
+      onSetTransientNote?.(body, minutes);
+      setTransientPopoverDraft("");
+      setTransientPopoverOpen(false);
+    },
+    [transientPopoverDraft, onSetTransientNote],
+  );
+
   /// 选中文字浮 mini toolbar 状态：scrollRef 内有非空 selection 时浮起，含
   /// text + viewport 坐标（x = 选区中心 / y = 选区上沿）。点 toolbar 内
   /// 按钮触发动作（💾 转 task / 📋 复制 / 🔄 让 AI 改写）。选区清空 / 滚动
@@ -2864,6 +2910,181 @@ export function ChatMini({
           </div>
         );
       })()}
+      {/* ⌘` 弹 transient_note popover：fixed 居中浮窗 + textarea + 4 个时
+          长按钮。owner 写文本 → 选时长 → 一键挂 transient_note 给 pet
+          临时上下文。Esc / 点 outside / 关按钮 都关；写时 Enter 是换行
+          （文本可能多行），⌘Enter 用默认 60m 提交。 */}
+      {transientPopoverOpen && onSetTransientNote && (
+        <div
+          onMouseDown={(e) => {
+            // outside-click 关：内部 mousedown stopPropagation 防自关
+            if (e.target === e.currentTarget) {
+              setTransientPopoverOpen(false);
+            }
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "color-mix(in srgb, var(--pet-color-bg) 40%, transparent)",
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              minWidth: 320,
+              maxWidth: 420,
+              padding: 12,
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 8,
+              background: "var(--pet-color-card)",
+              boxShadow: "var(--pet-shadow-md)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--pet-color-fg)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              📝 设 transient_note
+              <span
+                style={{
+                  fontSize: 10,
+                  color: "var(--pet-color-muted)",
+                  fontWeight: 400,
+                }}
+              >
+                · 给 pet 写一段临时上下文（不发消息）
+              </span>
+            </div>
+            <textarea
+              ref={transientPopoverInputRef}
+              value={transientPopoverDraft}
+              onChange={(e) => setTransientPopoverDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setTransientPopoverOpen(false);
+                  return;
+                }
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  submitTransientPopover(60);
+                }
+              }}
+              placeholder="比如：在开会，半小时别打扰 / 集中写文档别活泼 / 今晚 9 点后再 ping 我"
+              rows={3}
+              style={{
+                padding: "6px 8px",
+                fontSize: 12,
+                lineHeight: 1.5,
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 4,
+                background: "var(--pet-color-bg)",
+                color: "var(--pet-color-fg)",
+                fontFamily: "inherit",
+                resize: "vertical",
+                outline: "none",
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                gap: 6,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--pet-color-muted)",
+                  marginRight: 4,
+                }}
+              >
+                时长：
+              </span>
+              {[
+                { mins: 30, label: "30m" },
+                { mins: 60, label: "1h" },
+                { mins: 120, label: "2h" },
+                { mins: 360, label: "6h" },
+              ].map(({ mins, label }) => {
+                const disabled = !transientPopoverDraft.trim();
+                return (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => submitTransientPopover(mins)}
+                    disabled={disabled}
+                    title={
+                      disabled
+                        ? "请先在上方输入框写 transient_note 文本"
+                        : `挂 ${label} 后自动清除（复用既有 set_transient_note 后端）`
+                    }
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      border: "1px solid var(--pet-color-border)",
+                      borderRadius: 4,
+                      background: disabled
+                        ? "var(--pet-color-bg)"
+                        : "var(--pet-tint-blue-bg)",
+                      color: disabled
+                        ? "var(--pet-color-muted)"
+                        : "var(--pet-tint-blue-fg)",
+                      cursor: disabled ? "default" : "pointer",
+                      fontFamily: "inherit",
+                      fontWeight: 600,
+                      opacity: disabled ? 0.5 : 1,
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              <span style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={() => setTransientPopoverOpen(false)}
+                title="关闭（Esc）"
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 4,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                lineHeight: 1.4,
+              }}
+            >
+              快捷键：⌘` 切换浮窗 · ⌘Enter 提交（默认 1h） · Esc 关
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
