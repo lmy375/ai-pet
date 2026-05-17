@@ -199,11 +199,26 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
         return;
       }
       const list = visibleTasksRef.current;
-      if (e.key === "ArrowDown") {
+      // j / k vim-style 移焦点：与 ↑↓ 同语义。plain key 无 modifier — 与
+      // 既有 d / r / p / n 单键 plain-key 集群一致。tagName 守卫已挡 INPUT
+      // / TEXTAREA / SELECT / BUTTON 焦点时不触发。
+      const isVimDown =
+        e.key === "j" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey;
+      const isVimUp =
+        e.key === "k" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey;
+      if (e.key === "ArrowDown" || isVimDown) {
         if (list.length === 0) return;
         e.preventDefault();
         setFocusedIdx((prev) => (prev === null ? 0 : Math.min(prev + 1, list.length - 1)));
-      } else if (e.key === "ArrowUp") {
+      } else if (e.key === "ArrowUp" || isVimUp) {
         if (list.length === 0) return;
         e.preventDefault();
         setFocusedIdx((prev) => (prev === null ? 0 : Math.max(0, prev - 1)));

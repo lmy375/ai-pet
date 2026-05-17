@@ -14157,7 +14157,7 @@ export function PanelTasks({
               {
                 title: "📋 任务列表（focused row 时）",
                 items: [
-                  ["↑ / ↓", "上 / 下移焦点"],
+                  ["↑ / ↓ 或 j / k", "上 / 下移焦点（vim 风格 j/k 同 ↑/↓）"],
                   ["Home / End", "跳首 / 末任务"],
                   ["Space", "toggle 选中焦点行"],
                   ["Enter", "展开 / 折叠任务详情"],
