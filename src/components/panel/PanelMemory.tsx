@@ -832,6 +832,33 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return next;
     });
   };
+  /// 📌 仅 pinned 全局 toggle：true 时把每段 pool 收窄到本段 pinned items
+  /// （catKey::title 命中 pinnedKeys）— "总览：我钉了哪些"。与排序 toggle
+  /// 正交（仍按 sortByRecent / sortByCreated / sortByCharCount /
+  /// sortBulterByNextFire 排）。空 pinned 的段走既有 EmptyState branch（📭
+  /// "本段还没有条目"）— 视觉上一眼看出 "这个 cat 没钉的"。持久化到
+  /// localStorage：owner 切到全 pinned 视图后下次打开保留。
+  const [pinnedOnly, setPinnedOnly] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-memory-pinned-only") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const togglePinnedOnly = () => {
+    setPinnedOnly((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          "pet-memory-pinned-only",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
   /// butler_tasks 段「⏰ next-fire 升序」专属 toggle：true 时段内非 pinned
   /// items 按下次触发时刻升序（最近会 fire 的浮顶），让 owner 一眼看
   /// "接下来 N 分钟 / 小时会 fire 的 N 条" 优先处理。无法解析 schedule
@@ -3197,6 +3224,33 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         >
           🔀 {sortByCreated ? "按创建" : "创建 -"}
         </button>
+        {/* 📌 仅 pinned toggle：全局视图，true 时各 cat 仅显本段 pinned 命中
+            的 item，0 钉的 cat 整段隐藏 — 「总览：我钉了哪些」入口。与
+            sortBy* 排序 toggle 正交（仍按当前排序排），与 fuzzy / silent /
+            today-updated 过滤 AND 叠加。底色染 tint-yellow（与 📌 emoji
+            语义一致：黄色高亮 "我标记的"）让 "现在处于 pinned-only 视图"
+            一眼可识别。标签括号显总 pinned 数（pinnedKeys.size），让 owner
+            切换前预估视图密度。 */}
+        <button
+          style={
+            pinnedOnly
+              ? {
+                  ...s.btn,
+                  background: "var(--pet-tint-yellow-bg, color-mix(in srgb, #f59e0b 12%, transparent))",
+                  color: "var(--pet-tint-yellow-fg, #b45309)",
+                  borderColor: "var(--pet-tint-yellow-fg, #b45309)",
+                }
+              : s.btn
+          }
+          onClick={togglePinnedOnly}
+          title={
+            pinnedOnly
+              ? `现仅显 pinned items（共 ${pinnedKeys.size} 钉，0 钉的 cat 整段隐藏）。点击切回全显。`
+              : `切到「仅 pinned 视图」— 全 cat 仅显已钉的 item（当前共 ${pinnedKeys.size} 钉）。0 钉的 cat 整段隐藏。「总览：我钉了哪些」入口。`
+          }
+        >
+          📌 {pinnedOnly ? `仅钉(${pinnedKeys.size})` : `钉 -`}
+        </button>
       </div>
 
       {/* 批量删除 action bar：仅 selectedMemKeys 非空时浮出；
@@ -4492,6 +4546,17 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         })().map((catKey) => {
           const cat = index.categories[catKey];
           if (!cat) return null;
+          // 📌 仅 pinned 全局 toggle：若本 cat 无任何 pinned 命中 — 整段跳过
+          // 不渲染（不只是空 body）。"总览：我钉了哪些" UX 需要的就是 "无关
+          // cat 直接消失"，而不是 N 个空段堆叠。注意：与 cat.items.length===0
+          // EmptyState 不同 —— 那个是真空段（无任何 item）；本 gate 是有
+          // item 但 0 钉，仅在 pinned-only 视图下隐藏。
+          if (pinnedOnly) {
+            const hasAnyPinned = cat.items.some((it) =>
+              pinnedKeys.has(`${catKey}::${it.title}`),
+            );
+            if (!hasAnyPinned) return null;
+          }
           // Iter Cκ: compute how many butler tasks are overdue past the threshold
           // so the section header can offer a manual fire button when at least one
           // is stale. Cheap — items are ≤6 in practice.
@@ -6090,6 +6155,16 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 // "every" 等于"今日要执行 OR 每天类"。
                 const scheduleFilteredItems = (() => {
                   let pool = cat.items;
+                  // 📌 仅 pinned 全局 toggle：先收窄 pool 到本段 pinned items —
+                  // 「总览：我钉了哪些」入口。与下面所有 filter（fuzzy / today
+                  // /silent / today-updated / schedule kind）AND 叠加；与排序
+                  // toggle 正交（仍按 sortByRecent / sortByCreated 等排）。空
+                  // pinned 的段后续走 cat.items.length === 0 EmptyState branch。
+                  if (pinnedOnly) {
+                    pool = pool.filter((it) =>
+                      pinnedKeys.has(`${catKey}::${it.title}`),
+                    );
+                  }
                   // 🔍 段内 fuzzy 过滤（live as you type）：searchKeyword 非空
                   // 且未触发 backend search（searchResults===null）时，把 pool
                   // 收窄到 title 或 description 含 keyword 的 item（case-
