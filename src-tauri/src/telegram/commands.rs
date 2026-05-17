@@ -189,6 +189,13 @@ pub enum TgCommand {
     /// 1..=20。按 target 升序排（最近 fire 在前）；已过期 entry
     /// 也显（"已逾期 N 分"）便于 owner 知道哪些被 LLM 错过。
     Alarms { n: u32 },
+    /// `/recent_chats [N]` —— 列最近 N 条 active session 内 user ↔
+    /// pet 聊天往返（user / assistant items，过滤 tool calls）。手机
+    /// 端回顾上下文 — owner 想"我刚才让 pet 做啥来着" 不必回桌面
+    /// 滚 ChatMini。N 缺省 5，clamp 1..=20。session 级 updated_at 一
+    /// 起呈现（per-item ts 不在后端 schema 里，session 级时刻是最接
+    /// 近的"何时活跃过"信号）。
+    RecentChats { n: u32 },
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -324,6 +331,7 @@ impl TgCommand {
             TgCommand::FeedbackHistory { .. } => "feedback_history",
             TgCommand::SilentAll { .. } => "silent_all",
             TgCommand::Alarms { .. } => "alarms",
+            TgCommand::RecentChats { .. } => "recent_chats",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
@@ -376,6 +384,7 @@ impl TgCommand {
             | TgCommand::FeedbackHistory { .. }
             | TgCommand::SilentAll { .. }
             | TgCommand::Alarms { .. }
+            | TgCommand::RecentChats { .. }
             | TgCommand::Due { .. }
             | TgCommand::Now
             | TgCommand::Last
@@ -468,6 +477,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("feedback_history", "List recent N feedback_history.log entries (replied / liked / comment / ignored / dismissed / puzzled; default 5, cap 20)"),
             ("silent_all", "Bulk-silence all butler_tasks for N minutes — auto-releases on timer (default 60m; 0 = release now)"),
             ("alarms", "List recent N pending reminders in the todo category with target time + remaining minutes (default 5, cap 20)"),
+            ("recent_chats", "List recent N user ↔ pet chat exchanges from the active session (default 5, cap 20)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
@@ -519,6 +529,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("feedback_history", "列最近 N 条 feedback 记录（回复 / 点赞 / 评论 / 忽略 / 点掉 / 困惑；缺省 5，上限 20）"),
             ("silent_all", "批量给所有 butler_tasks 加 [silent] N 分钟，到期 backend timer 自动撤回（缺省 60；0 = 立即解除）"),
             ("alarms", "列最近 N 条 todo 段 pending reminders 含目标时间 + 剩余分钟（缺省 5，上限 20）"),
+            ("recent_chats", "列最近 N 条 active session 内 user ↔ pet 聊天往返（缺省 5，上限 20）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
@@ -1053,6 +1064,17 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 .unwrap_or(5);
             Some(TgCommand::Alarms { n })
         }
+        // `/recent_chats [N]`：与 /alarms / /digest 同 clamp 模板。
+        // N 缺省 5，clamp 1..=20。非数字走默认。
+        "recent_chats" => {
+            let n = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 20))
+                .unwrap_or(5);
+            Some(TgCommand::RecentChats { n })
+        }
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -1320,10 +1342,10 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "silent_all", "markers", "tags", "mood", "whoami",
     "today", "yesterday", "streak", "now", "last", "random", "sleep",
-    "quick", "due", "recent", "digest", "alarms", "edit", "pri",
-    "promote", "demote", "reflect", "feedback", "feedback_history",
-    "transient", "cancel_all_error", "find", "show", "blocked",
-    "snoozed", "reset", "version", "help",
+    "quick", "due", "recent", "recent_chats", "digest", "alarms",
+    "edit", "pri", "promote", "demote", "reflect", "feedback",
+    "feedback_history", "transient", "cancel_all_error", "find",
+    "show", "blocked", "snoozed", "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1442,6 +1464,7 @@ pub fn format_help_for_topic(
         "feedback_history" => "📜 /feedback_history [N]\n\n用法：列最近 N 条 feedback_history.log 条目，含 owner 主动写的 /feedback comment + 系统自动记录的隐性反馈（回复 / 主动点掉 bubble / 👍 点赞 / 沉默忽略 / 🤔 困惑反馈）。让 owner audit 「我给 pet 留过什么 / pet 接收了哪些信号」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · HH:MM <emoji> <kind> | <excerpt>\n\nkind emoji 映射：\n  ✅ replied · 👍 liked · 💬 comment · 🙉 ignored · 👋 dismissed · 🤔 puzzled\n\n示例：\n  /feedback_history\n  /feedback_history 10\n  /feedback_history 20\n\n相关：/feedback（写新条目）；R7 cooldown adapter / R28 chip 用 feedback_history 调整 pet 主动开口频率与语气 — 本命令是回看 pet 接收的训练信号。",
         "silent_all" => "⏸ /silent_all [minutes]\n\n用法：批量给所有 butler_tasks pending 任务加 [silent] marker N 分钟，N 后 backend tokio timer 自动撤回。让 owner 开会 / 集中写文档 1 小时挡住 task picker — pet 仍可主动聊天，只是不会主动派任务（如「我看你 Downloads 该整理了」之类）。minutes 缺省 60；0 = 立即解除当前 active 窗口（与 /mute 0 同协议）；clamp 0..=10080（≤ 7 天）。\n\n示例：\n  /silent_all       （默认 60 分钟）\n  /silent_all 30    （半小时）\n  /silent_all 120   （2 小时）\n  /silent_all 0     （立即解除）\n\n对比：/mute（让 pet 整体不开口）；/silent <title>（单条 silent）；本命令是批量临时 + 自动撤回。\n\n限制：app restart 会丢 timer，markers 留在原地 —— 重启后用 /silent_all 重启窗口或 /silent_all 0 手动清理（实现注：与桌面 PanelMemory「⏸ 全部 silent 1h」按钮使用 frontend timer 路径独立，两个 surface 不共享状态）。",
         "alarms" => "⏰ /alarms [N]\n\n用法：列最近 N 条 todo 段 pending reminders（含 `[remind: HH:MM]` / `[remind: YYYY-MM-DD HH:MM]` 协议条目），含目标时刻 + 剩余分钟 / 已逾期分钟。按 target 升序排（最近 fire 在前）。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · MM-DD HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n\n示例：\n  /alarms\n  /alarms 10\n\n如何创建 alarm：\n  · 桌面 PanelMemory 任意 item ⏰ chip → 选 5/15/30 min preset（iter #372）\n  · 直接 /task `[remind: 18:00] 准备会议材料`（写入 todo 类目）\n  · LLM 用 todo_edit 工具自动创建（owner 说「30 分钟后提醒我喝水」时）\n\n触发后：proactive 扫到 due → ChatMini 软提醒；Absolute 条目 24h 后 consolidate sweep 自动清扫 stale。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「我设了哪些 alarm，何时到点」audit 入口。",
+        "recent_chats" => "💬 /recent_chats [N]\n\n用法：列最近 N 条 active session 内 user ↔ pet 聊天往返（仅 user / assistant items，跳过 tool_call / 系统行）。手机端回顾上下文 — owner 想「我刚才让 pet 做啥来着」一句话查回桌面 ChatMini 滚动太累时用。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  💬 最近 N 条 chat · 会话「<title>」最近活动 MM-DD HH:MM：\n  🧑 <user excerpt>\n  🐾 <pet excerpt>\n  ...\n\nexcerpt cap 80 字；超长 + …。\n\n注：per-msg ts 不在后端 schema 里，仅 session 级 updated_at 一并呈现（「最近活动」信号）。pet 桌面 reset session 时本命令也会看到新空 session 提示。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「最近 chat 上下文」audit 入口。",
         "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
         "promote" => "🎯 /promote <title>\n\n用法：把任务 priority 升 +1（clamp 9 — 已是 P9 时不动 + 友好 reply）。一步操作不必算具体 P 值（与 /pri <title> <N> 互补 — pri 是绝对值，promote 是相对值）。保留所有其它 markers / due / body 不动（复用 task_set_priority 后端）。\n\n示例：\n  /promote 整理 Downloads\n  /promote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/demote（-1 反方向）。",
         "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
@@ -1511,6 +1534,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/feedback_history [N]  —  列最近 N 条 feedback 记录（含 /feedback 写的 + 系统记录的隐性信号；缺省 5，上限 20）".to_string(),
         "/silent_all [minutes]  —  批量 silent butler_tasks N 分钟，自动撤回（缺省 60；0 = 立即解除）".to_string(),
         "/alarms [N]  —  列 todo 段 pending reminders（含目标时间 + 剩余分钟，按 target 升序；缺省 5，上限 20）".to_string(),
+        "/recent_chats [N]  —  列最近 N 条 active session 内 user ↔ pet 聊天往返（缺省 5，上限 20）".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
@@ -2713,6 +2737,82 @@ fn format_target_short(target: &crate::proactive::ReminderTarget) -> String {
             dt.format("%m-%d %H:%M").to_string()
         }
     }
+}
+
+/// `/recent_chats [N]` 命令回复文案。pure。
+///
+/// 入参：
+/// - `items`: `(role, excerpt)` 二元组，按聊天顺序（最早在前），caller
+///   已 cap N + truncate excerpt 至 EXCERPT_CHARS。
+/// - `session_title` / `session_updated_at`: 当前 active session 元数据；
+///   formatter 在 header 里呈现一次（per-msg ts 不在后端 schema，所以
+///   只能给"会话级"时刻信号）。
+/// - `n`: clamp 后的 N 值；用于"还有 M 条更早" overflow hint 算法。
+/// - `total`: 当前 session 内 user/assistant 总条数（含 N 之外的旧 items），
+///   formatter 用 `total - items.len()` 算 overflow 数。
+///
+/// 输出态：
+/// - active session 不存在 / 空 → 友好兜底
+/// - 有 items → header（"💬 最近 N 条 chat · 会话「title」更新 HH:MM"）+
+///   逐行 `<role glyph> <excerpt>` + overflow hint（如有）
+///
+/// role glyph：🧑 user / 🐾 assistant — 与桌面 ChatPanel export markdown
+/// 同视觉锚（panelChatBits.tsx export 路径用同 emoji）。
+pub const RECENT_CHATS_EXCERPT_CHARS: usize = 80;
+pub fn format_recent_chats_reply(
+    items: &[(String, String)],
+    session_title: &str,
+    session_updated_at: &str,
+    n: u32,
+    total: usize,
+) -> String {
+    if items.is_empty() {
+        return "💬 暂无聊天记录。\n\n用 ChatMini 或 ChatPanel 跟 pet 聊一句，再 /recent_chats 看回顾。".to_string();
+    }
+    // session_updated_at: "2026-05-17T18:30:00.000" → 切 "MM-DD HH:MM"
+    let when = if session_updated_at.len() >= 16 {
+        format!(
+            "{} {}",
+            &session_updated_at[5..10],
+            &session_updated_at[11..16]
+        )
+    } else {
+        session_updated_at.to_string()
+    };
+    let title_short = if session_title.chars().count() > 24 {
+        let head: String = session_title.chars().take(24).collect();
+        format!("{}…", head)
+    } else {
+        session_title.to_string()
+    };
+    let mut out = format!(
+        "💬 最近 {} 条 chat · 会话「{}」最近活动 {}：",
+        items.len(),
+        if title_short.is_empty() {
+            "（无标题）".to_string()
+        } else {
+            title_short
+        },
+        when
+    );
+    for (role, excerpt) in items {
+        let glyph = match role.as_str() {
+            "user" => "🧑",
+            "assistant" => "🐾",
+            _ => "·",
+        };
+        out.push_str(&format!("\n{} {}", glyph, excerpt));
+    }
+    let _ = n;
+    let overflow = total.saturating_sub(items.len());
+    if overflow > 0 {
+        out.push_str(&format!(
+            "\n…还有 {} 条更早消息（/recent_chats {} 看更多，上限 20）",
+            overflow,
+            total.min(20)
+        ));
+    }
+    out
 }
 
 /// `/note <text>` 命令回复文案。pure：
@@ -4113,8 +4213,8 @@ mod tests {
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
-            "silent_all", "alarms", "cancel_all_error", "find", "show",
-            "blocked", "snoozed", "reset", "version", "help",
+            "silent_all", "alarms", "recent_chats", "cancel_all_error",
+            "find", "show", "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4582,7 +4682,8 @@ mod tests {
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
             "feedback_history", "transient", "silent_all", "alarms",
-            "cancel_all_error", "show", "tags", "reset", "version", "help",
+            "recent_chats", "cancel_all_error", "show", "tags", "reset",
+            "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -7229,6 +7330,132 @@ mod tests {
         let s = format_alarms_reply(&rows, now, 5);
         assert!(s.contains("14:30"), "{s}");
         assert!(s.contains("剩 1 小时"), "90 min → 1 小时 bucket: {s}");
+    }
+
+    // -------- /recent_chats parse + format --------
+
+    #[test]
+    fn recent_chats_parses_default_5() {
+        assert_eq!(
+            parse_tg_command("/recent_chats"),
+            Some(TgCommand::RecentChats { n: 5 })
+        );
+    }
+
+    #[test]
+    fn recent_chats_parses_explicit_n() {
+        assert_eq!(
+            parse_tg_command("/recent_chats 10"),
+            Some(TgCommand::RecentChats { n: 10 })
+        );
+    }
+
+    #[test]
+    fn recent_chats_clamps_high_and_zero() {
+        assert_eq!(
+            parse_tg_command("/recent_chats 999"),
+            Some(TgCommand::RecentChats { n: 20 })
+        );
+        assert_eq!(
+            parse_tg_command("/recent_chats 0"),
+            Some(TgCommand::RecentChats { n: 1 })
+        );
+    }
+
+    #[test]
+    fn recent_chats_non_numeric_falls_back() {
+        assert_eq!(
+            parse_tg_command("/recent_chats foo"),
+            Some(TgCommand::RecentChats { n: 5 })
+        );
+    }
+
+    #[test]
+    fn recent_chats_reply_empty_shows_bootstrap() {
+        let s = format_recent_chats_reply(&[], "", "", 5, 0);
+        assert!(s.contains("暂无聊天记录"), "{s}");
+        assert!(s.contains("ChatMini"), "show creation path: {s}");
+    }
+
+    #[test]
+    fn recent_chats_reply_renders_role_glyphs() {
+        let items = vec![
+            ("user".to_string(), "怎么整理 Downloads".to_string()),
+            ("assistant".to_string(), "建议按修改时间归档".to_string()),
+        ];
+        let s = format_recent_chats_reply(
+            &items,
+            "整理桌面对话",
+            "2026-05-17T18:30:00.000",
+            5,
+            2,
+        );
+        assert!(s.contains("最近 2 条 chat"), "{s}");
+        assert!(s.contains("整理桌面对话"), "show session title: {s}");
+        assert!(s.contains("05-17 18:30"), "show session updated_at MM-DD HH:MM: {s}");
+        assert!(s.contains("🧑"), "user glyph: {s}");
+        assert!(s.contains("🐾"), "assistant glyph: {s}");
+        assert!(s.contains("怎么整理 Downloads"), "{s}");
+        assert!(s.contains("建议按修改时间归档"), "{s}");
+    }
+
+    #[test]
+    fn recent_chats_reply_truncates_long_title() {
+        let items = vec![("user".to_string(), "hello".to_string())];
+        let long_title = "这是一个非常非常非常非常非常非常非常非常长的会话标题超过24字";
+        let s = format_recent_chats_reply(
+            &items,
+            long_title,
+            "2026-05-17T18:30:00.000",
+            5,
+            1,
+        );
+        assert!(s.contains("…"), "long title should be truncated: {s}");
+    }
+
+    #[test]
+    fn recent_chats_reply_overflow_hint_when_total_exceeds() {
+        let items = vec![
+            ("user".to_string(), "q1".to_string()),
+            ("assistant".to_string(), "a1".to_string()),
+            ("user".to_string(), "q2".to_string()),
+        ];
+        // total 10 / shown 3 → overflow 7
+        let s = format_recent_chats_reply(
+            &items,
+            "session",
+            "2026-05-17T18:30:00.000",
+            3,
+            10,
+        );
+        assert!(s.contains("最近 3 条 chat"), "{s}");
+        assert!(s.contains("还有 7 条更早"), "overflow hint: {s}");
+    }
+
+    #[test]
+    fn recent_chats_reply_no_overflow_when_total_matches() {
+        let items = vec![("user".to_string(), "q1".to_string())];
+        let s = format_recent_chats_reply(
+            &items,
+            "session",
+            "2026-05-17T18:30:00.000",
+            5,
+            1,
+        );
+        assert!(!s.contains("更早消息"), "no overflow hint: {s}");
+    }
+
+    #[test]
+    fn recent_chats_reply_empty_title_fallback() {
+        let items = vec![("user".to_string(), "hello".to_string())];
+        let s = format_recent_chats_reply(
+            &items,
+            "",
+            "2026-05-17T18:30:00.000",
+            5,
+            1,
+        );
+        assert!(s.contains("（无标题）"), "empty title fallback: {s}");
     }
 
     #[test]

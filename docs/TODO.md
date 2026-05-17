@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot 加 `/recent_chats [N]` 命令：列最近 N 条 user ↔ pet 聊天往返（含 timestamp + 谁说 + 截 80 字 excerpt），手机端回顾上下文。
 
 
 
