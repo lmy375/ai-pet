@@ -139,6 +139,12 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/random` —— 从本 chat 派单的 active 任务（pending / error）里随机抽
+    /// 一条让宠物推荐 — 给 owner "选择困难" 时让 pet 决定下一步。pure 实现
+    /// 走调用方传入的 `index_seed: usize` 模 candidate.len() 索引，便于
+    /// 单测稳定；bot.rs 端用 system time nanos 当 seed 拿到非确定性体验。
+    /// 无 active 任务 → 兜底文案。无参；多余尾部忽略。
+    Random,
     /// `/last` —— 显本 chat 派单中最近创建的一条 task：title + status emoji +
     /// 相对创建时间 + raw_description 前 200 字符预览。让 owner 在 TG 端
     /// 闪查"我刚 enqueue 的那条对不对"，不必走 /tasks 全表扫。无参；多
@@ -230,6 +236,7 @@ impl TgCommand {
             TgCommand::Show { .. } => "show",
             TgCommand::Now => "now",
             TgCommand::Last => "last",
+            TgCommand::Random => "random",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -273,6 +280,7 @@ impl TgCommand {
             | TgCommand::Due { .. }
             | TgCommand::Now
             | TgCommand::Last
+            | TgCommand::Random
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -346,6 +354,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("today", "Today's due / done task titles"),
             ("now", "One-line status check: time + tz + companionship days + mood emoji"),
             ("last", "Show the most recently created task (this chat) with raw description preview"),
+            ("random", "Pick a random active (pending / error) task — for owner's choice paralysis moments"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -383,6 +392,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("today", "今日到期 / 已完成的任务标题清单"),
             ("now", "一句话快速状态：当前时间 + 时区 + 陪伴天数 + 心情 emoji"),
             ("last", "显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的"),
+            ("random", "随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -707,6 +717,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "now" => Some(TgCommand::Now),
         // `/last` 无参；多余尾部忽略
         "last" => Some(TgCommand::Last),
+        // `/random` 无参；多余尾部忽略
+        "random" => Some(TgCommand::Random),
         // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
         // 时存 raw_arg 让 handler usage hint 时回显（preset 标 None 表示
         // "无效"）。preset 名单：tomorrow / thisweek / nextweek 含中英 alias。
@@ -1054,8 +1066,8 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "markers", "tags", "mood", "whoami", "today", "now",
-    "last", "due", "recent", "digest", "edit", "reflect", "find", "show",
-    "blocked", "snoozed", "reset", "version", "help",
+    "last", "random", "due", "recent", "digest", "edit", "reflect", "find",
+    "show", "blocked", "snoozed", "reset", "version", "help",
 ];
 
 pub fn format_help_for_topic(
@@ -1109,6 +1121,7 @@ pub fn format_help_for_topic(
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）；/due（更远视角 — tomorrow / thisweek / nextweek）。",
         "now" => "🐾 /now\n\n用法：一句话快速状态 check — 当前本地时间 + tz 偏移 + 陪伴天数 + 心情 emoji + 心情文本。无参。比 /whoami 多行画像简短，适合 owner 在 TG 想「现在几点 / 宠物啥状态」闪查。\n\n示例：\n  /now\n\n相关：/whoami（多行画像）；/mood（心情详情）。",
         "last" => "🆕 /last\n\n用法：显本聊天派单中最近 created_at 的一条 task — title + status emoji + 相对创建时间 + raw_description 前 200 字符预览。无参。owner 想「我刚 /task 创的那条对不对」闪查时用 — 不必走 /tasks 全表扫。\n\n示例：\n  /last\n\n相关：/show <title>（看完整 raw + detail）；/recent（最近 N 条 done）；/tasks（全状态清单）。",
+        "random" => "🎲 /random\n\n用法：从本聊天派单的 active 任务（pending / error）里随机抽 1 条让宠物推荐 — 给 owner「选择困难」/「不知道先做哪个」时让 pet 决定下一步。无参；多次调用会得到不同 task。无 active 任务时给兜底文案。\n\n示例：\n  /random\n\n相关：/tasks（看全清单）；/blocked（被锁住的）；/today（今日到期）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1164,6 +1177,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
         "/now  —  一句话快速状态：当前时间 + 时区 + 陪伴 + 心情 emoji（与 /whoami 多行画像互补）".to_string(),
         "/last  —  显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的对不对".to_string(),
+        "/random  —  随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定下一步".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2209,6 +2223,50 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
     out
 }
 
+/// `/random` 命令回复文案。pure：从 views 里过滤 pending / error active
+/// 任务，按 `index_seed % candidates.len()` 选一条；空 candidate → 兜底。
+/// caller (bot.rs) 传 system time nanos 当 seed 拿非确定性体验，单测
+/// 传固定 seed 拿确定行为。
+pub const RANDOM_RAW_DESC_PREVIEW_CHARS: usize = 200;
+pub fn format_random_reply(
+    views: &[crate::task_queue::TaskView],
+    index_seed: usize,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let candidates: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Pending | TaskStatus::Error))
+        .collect();
+    if candidates.is_empty() {
+        return "🎲 /random\n\n本聊天暂无 active 任务（pending / error）可抽。\n用 /task <title> 创一条 / /tasks 看 done & cancelled。".to_string();
+    }
+    let chosen = candidates[index_seed % candidates.len()];
+    let status_emoji = match chosen.status {
+        TaskStatus::Pending => "⏳",
+        TaskStatus::Error => "⚠️",
+        _ => "?",
+    };
+    let mut out = format!(
+        "🎲 抽中 {} 「{}」（共 {} 条 active）",
+        status_emoji,
+        chosen.title,
+        candidates.len()
+    );
+    let raw = chosen.raw_description.trim();
+    if !raw.is_empty() {
+        let preview: String = if raw.chars().count() > RANDOM_RAW_DESC_PREVIEW_CHARS {
+            let head: String = raw.chars().take(RANDOM_RAW_DESC_PREVIEW_CHARS).collect();
+            format!("{}…", head)
+        } else {
+            raw.to_string()
+        };
+        out.push_str("\n\n");
+        out.push_str(&preview);
+    }
+    out.push_str("\n\n—— 选择困难？就先做这条吧。");
+    out
+}
+
 /// `/last` 命令回复文案。pure：扫 views 按 created_at desc 拿首条，输出
 /// `🆕 title` header + status emoji + 相对时间 + raw_description 前 200
 /// 字符预览。views 空 → 友好兜底。caller 传 `now` 让相对时间单测稳定。
@@ -3114,8 +3172,8 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today", "now",
-            "last", "due", "recent", "digest", "edit", "reflect", "find",
-            "show", "blocked", "snoozed", "reset", "version", "help",
+            "last", "random", "due", "recent", "digest", "edit", "reflect",
+            "find", "show", "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3580,8 +3638,8 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "now", "last", "due", "edit", "reflect", "show", "tags", "reset",
-            "version", "help",
+            "now", "last", "random", "due", "edit", "reflect", "show", "tags",
+            "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5383,6 +5441,105 @@ mod tests {
         cancelled.status = TaskStatus::Cancelled;
         let s = format_tags_reply(&[active, done, cancelled]);
         assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
+    }
+
+    // -------- /random parse + format --------
+
+    #[test]
+    fn random_parses_no_args() {
+        assert_eq!(parse_tg_command("/random"), Some(TgCommand::Random));
+        assert_eq!(parse_tg_command("/random pick one"), Some(TgCommand::Random));
+        assert_eq!(parse_tg_command("/RANDOM"), Some(TgCommand::Random));
+    }
+
+    #[test]
+    fn random_reply_empty_actives_shows_friendly_hint() {
+        // 全是 done / cancelled → 没 active 任务
+        let mut done = view("做完的", 3, None, TaskStatus::Done, Some("结果"));
+        done.created_at = "2026-05-15T10:00:00+08:00".to_string();
+        let mut cancelled = view("取消的", 3, None, TaskStatus::Cancelled, Some("不做了"));
+        cancelled.created_at = "2026-05-16T10:00:00+08:00".to_string();
+        let s = format_random_reply(&[done, cancelled], 0);
+        assert!(s.contains("暂无 active 任务"), "{s}");
+        assert!(s.contains("/task <title>"), "should hint how to create: {s}");
+    }
+
+    #[test]
+    fn random_reply_picks_pending_only() {
+        let pending = view("待做", 3, None, TaskStatus::Pending, None);
+        let done = view("做完", 3, None, TaskStatus::Done, Some("ok"));
+        let cancelled = view("取消", 3, None, TaskStatus::Cancelled, None);
+        // seed=0 → 第 0 个 candidate（filter 后是 pending 那条）
+        let s = format_random_reply(&[done, pending.clone(), cancelled], 0);
+        assert!(s.contains("待做"), "should pick pending: {s}");
+        assert!(!s.contains("做完"), "{s}");
+        assert!(!s.contains("取消"), "{s}");
+    }
+
+    #[test]
+    fn random_reply_includes_error_in_actives() {
+        let mut err = view("error 了", 3, None, TaskStatus::Error, Some("失败原因"));
+        err.created_at = "2026-05-17T10:00:00+08:00".to_string();
+        let s = format_random_reply(&[err], 0);
+        assert!(s.contains("error 了"), "should include error: {s}");
+        assert!(s.contains("⚠️"), "should show error emoji: {s}");
+    }
+
+    #[test]
+    fn random_reply_seed_indexes_deterministically() {
+        // 3 个 candidates；seed 0/1/2 应该索引到 candidates[0/1/2]
+        let a = view("A", 3, None, TaskStatus::Pending, None);
+        let b = view("B", 3, None, TaskStatus::Pending, None);
+        let c = view("C", 3, None, TaskStatus::Pending, None);
+        let views = vec![a, b, c];
+        let s0 = format_random_reply(&views, 0);
+        let s1 = format_random_reply(&views, 1);
+        let s2 = format_random_reply(&views, 2);
+        assert!(s0.contains("「A」"), "seed=0 → A: {s0}");
+        assert!(s1.contains("「B」"), "seed=1 → B: {s1}");
+        assert!(s2.contains("「C」"), "seed=2 → C: {s2}");
+        // seed=3 wraps back to candidates[0]
+        let s3 = format_random_reply(&views, 3);
+        assert!(s3.contains("「A」"), "seed=3 wraps to A: {s3}");
+    }
+
+    #[test]
+    fn random_reply_shows_active_count() {
+        let p1 = view("p1", 3, None, TaskStatus::Pending, None);
+        let p2 = view("p2", 3, None, TaskStatus::Pending, None);
+        let done = view("done", 3, None, TaskStatus::Done, Some("ok"));
+        let s = format_random_reply(&[p1, p2, done], 0);
+        assert!(s.contains("共 2 条 active"), "{s}");
+    }
+
+    #[test]
+    fn random_reply_truncates_long_raw_description() {
+        let mut v = view("long", 3, None, TaskStatus::Pending, None);
+        v.raw_description = "x".repeat(RANDOM_RAW_DESC_PREVIEW_CHARS + 50);
+        let s = format_random_reply(&[v], 0);
+        assert!(s.contains("…"), "should truncate: {s}");
+    }
+
+    #[test]
+    fn random_reply_omits_raw_when_empty() {
+        let mut v = view("t", 3, None, TaskStatus::Pending, None);
+        v.raw_description = "".to_string();
+        let s = format_random_reply(&[v], 0);
+        // 头 + 尾鼓励语都在，中间 raw 段省略
+        assert!(s.contains("抽中"), "{s}");
+        assert!(s.contains("选择困难"), "{s}");
+        // 验证没产生 "preview...\n\n"-then-tail 的空段
+        let lines: Vec<&str> = s.split('\n').collect();
+        // 空 line 数量应该 ≤ 1（仅 tail 前那一个）
+        let blank_count = lines.iter().filter(|l| l.is_empty()).count();
+        assert!(blank_count <= 1, "extra blank from empty raw: {s:?}");
+    }
+
+    #[test]
+    fn random_reply_tail_has_encouragement() {
+        let v = view("t", 3, None, TaskStatus::Pending, None);
+        let s = format_random_reply(&[v], 0);
+        assert!(s.contains("选择困难？就先做这条吧"), "tail: {s}");
     }
 
     // -------- /last parse + format --------
