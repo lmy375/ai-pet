@@ -9,7 +9,6 @@
 >
 
 - TG bot `/digest_yesterday [N]` 命令：昨日 done task 标题 + [result:] 一行式 — /digest 的昨日对偶。
-- TG bot `/mute_today` 命令：静音到本地午夜（替代手算分钟数）— 与 /mute N / /sleep_until 互补。
 - TG bot `/search_today <kw>` 命令：限定今日 updated_at 的 task 内 fuzzy 搜 — 与 /find（全量）/ /touched_today（无 kw）互补。
 - detail.md 编辑器「⌘⇧I 插入 ISO timestamp」快捷键：在光标插完整 ISO 8601 时间戳（含秒）— 比 ⌘⇧D MM-DD HH:MM 精确。
 - PanelMemory 顶部 toolbar 「📋 index 概览」chip：一行复制「N cats · M items · K detail.md」综合统计 — 跨 cat 元数据 snap。
