@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot `/find_speech <keyword>` 命令：在 speech_history.log 搜 keyword — 与 /find / /find_in_detail 同搜索族但搜 pet 说过的话。
 - PanelDebug 加「⏰ 下次 consolidate」chip：显下次 sweep 预计本地时刻 + 剩余分钟 — audit cron 节奏入口。
 
 
