@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot 加 `/mute [N]` 命令：临时静音 proactive N 分钟（默认 30；0 = 解除），调既有 set_mute_minutes — owner 外面让宠物先安静。
 - PanelMemory butler_tasks 行 reminderMin chip click 弹 mini popover：选 5/15/30/自定义 直接改 marker，不必走"编辑" textarea。
 - ChatMini bubble ts chip 双击复制 "MM-DD HH:MM" 友好格式：现 click 复制 ISO 太长，双击拿短格式。
 - PanelTasks 顶部 sortMode 加 Tab 键循环切换：panel 焦点不在 input 时按 Tab 在 queue / due ↑ / P ↓ / 📊 tag 顺序循环。
