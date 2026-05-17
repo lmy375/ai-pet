@@ -542,6 +542,13 @@ pub enum TgCommand {
     /// detail 互补 — owner 想"快瞄一眼这条状态"用 /peek，要看完整内容走
     /// /show。空 title 走 missing-arg；title resolve 三层与 /show 同源。
     Peek { title: String },
+    /// `/dup <title>` —— 复制 task 为新 P3 实例，新 title 自动加 `(副本)`
+    /// 后缀（unique-filename 兜底由 memory_edit 处理 — 多次 dup 同源会
+    /// 变 `_1` / `_2`）。继承 schedule / pinned / silent / blockedBy /
+    /// reminderMin / tags；剥 done / error / result / cancelled / snooze /
+    /// origin terminal-state markers — 副本回 pending。priority + due 继承
+    /// 源 task。
+    Dup { title: String },
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -644,6 +651,7 @@ impl TgCommand {
             TgCommand::Due { .. } => "due",
             TgCommand::Show { .. } => "show",
             TgCommand::Peek { .. } => "peek",
+            TgCommand::Dup { .. } => "dup",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -705,6 +713,7 @@ impl TgCommand {
             | TgCommand::Reflect { text: title }
             | TgCommand::Show { title }
             | TgCommand::Peek { title }
+            | TgCommand::Dup { title }
             | TgCommand::Timeline { title }
             | TgCommand::Forks { title }
             | TgCommand::BlockedBy { title }
@@ -871,6 +880,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find_speech", "Search speech_history.log by keyword — pet's past proactive utterances; complements /find / /find_in_detail"),
             ("show", "Show full raw description (with markers) + detail.md preview of a task"),
             ("peek", "One-line compact view: status + schedule + key markers (complements /show full detail)"),
+            ("dup", "Duplicate a task to a new pending instance (preserves schedule / pinned / silent / tags; strips terminal markers)"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -949,6 +959,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find_speech", "按 keyword 搜 speech_history.log — 搜 pet 说过的话（含命中点 snippet，至多 8 条）"),
             ("show", "显单条任务完整 raw description（含 markers）+ detail.md 预览"),
             ("peek", "一行紧凑视图：status + 标题 + schedule + 关键 markers（与 /show 完整视图互补）"),
+            ("dup", "复制 task 为新 pending 实例（保 schedule / pinned / silent / tags；剥终态 markers）"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1223,6 +1234,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 走 missing-argument。pure formatter 在 handler 端只读 raw_description
         // + status，不读 detail.md（紧凑视图不需要）。
         "peek" => Some(TgCommand::Peek { title }),
+        // `/dup <title>`：与 /show 同 single-title 模板。空 title 由 handler
+        // 走 missing-argument。复制成新 P3 task，title 加 `(副本)` 后缀。
+        "dup" => Some(TgCommand::Dup { title }),
         // `/timeline <title>`：与 /show 同 single-title 模板。空 title 由
         // handler 走 missing-argument 反馈。butler_history.log 扫描在
         // handler 端做（IO），parser 仅切 title。
@@ -1963,7 +1977,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2117,6 +2131,7 @@ pub fn format_help_for_topic(
         "find_speech" => "🗣 /find_speech <keyword>\n\n用法：在 speech_history.log 内搜 keyword（case-insensitive 子串），返回最多 8 条命中（ts MM-DD HH:MM + 命中点附近 60 字 snippet）。与 /find / /find_in_detail 同搜索族但 scope 是 **pet 说过的话**。\n\n输出格式：\n  🗣 speech 命中「<kw>」N 条：\n  · MM-DD HH:MM · …<snippet>…\n  · MM-DD HH:MM · …\n  ...\n\nsnippet 取 keyword 命中点附近 60 字 context；超长前后 + …。\n\n场景：owner 想「pet 之前提过 X 吗」/「pet 上次怎么说这件事」 audit — 比 /last_speech（仅最近 1 条）覆盖更广。\n\n示例：\n  /find_speech 周报\n  /find_speech rebase\n  /find_speech 心情\n\n相关：/last_speech（最近一条主动开口）；/find（任务标题 / 描述）；/find_in_detail（detail.md 内容）；/recent_chats（user ↔ pet 对话）。",
         "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
         "peek" => "👀 /peek <title>\n\n用法：一行紧凑视图 — status emoji + 标题 + schedule（every / once / deadline 摘要）+ 关键 markers（📌 pinned / 🔇 silent / 💤 snoozed / 🔒 blockedBy）+ P{priority}。与 /show 显完整 raw + detail.md 预览互补 — owner 想「快瞄一眼这条状态」用 /peek，要看完整 description 走 /show。\n\nTitle resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  ⏳ 「<title>」 · 🕐 every 09:00 · 📌 🔇 💤 · P3\n\nschedule 段：[every: HH:MM] / [once: YYYY-MM-DD HH:MM] / [deadline: ...] / [every: 工作日 HH:MM] 等都识别；无 schedule 前缀 → 省略。\n\nmarkers 段：仅显非空 — 没钉不显 📌；没 snoozed 不显 💤。整条 markers 都没 → 段省略。\n\nP{n}：从 [task pri=N] 提取，缺省（无 pri marker）→ 省略。\n\n示例：\n  /peek 整理 Downloads\n  /peek 1  （/tasks 输出第 1 条）\n\n相关：/show <title>（完整 raw + detail）；/tasks（清单视图）；/timeline（历史演化）。",
+        "dup" => "📑 /dup <title>\n\n用法：复制一条 task 为新 pending 实例 — title 加「(副本)」后缀，priority + due 继承源 task。owner 想「以这条为模板建一条相似的」时一键完成，免「复制 raw → 编辑去掉终态 markers → /task 重建」三步。\n\n继承的：[every:] / [once:] / [deadline:] / [reminderMin:] schedule + [pinned] / [silent] / [blockedBy:] markers + #tags + priority + due + body 文本。\n\n剥掉的：[done] / [result:] / [error:] / [cancelled:] / [archived:] / [snooze:] / [origin:tg:] — 这些是「原 task 实例」专属信号，副本应回 pending 重新起跑。\n\nTitle 冲突兜底：memory_edit 内置 unique-filename — 同 title 重复 dup 会变 `<src>_(副本)_1` / `_2` ...自动加序号。\n\n空 title → usage hint；title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /dup 整理 Downloads          → 「整理 Downloads (副本)」\n  /dup 1                        （/tasks 输出第 1 条）\n  /dup 写周报                   → 「写周报 (副本)」（继承 every + reminderMin + #work）\n\n输出格式：\n  📑 已复制「<src>」→「<new>」\n  · 继承 schedule / markers / tags / priority / due\n  · 剥终态 markers（done / result / snooze / origin 等）\n\n相关：/edit <title> :: <new desc>（覆写而非复制）；/show 看 raw 验证 markers；/tasks 看新 task 入列。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）；/forks <title>（反向：哪些 task 在等这条解锁）。",
         "forks" => "🔱 /forks <title>\n\n用法：反向 audit — 列出本 chat 派单中所有 active task（pending / error）的 description 含 `[blockedBy: <title>]` marker 的，让 owner 知道「这条 task 解锁后会让谁动起来」。与 /blocked（列被卡的）对偶。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /forks 整理 Downloads\n  /forks 1  （/tasks 输出第 1 条）\n\n输出格式：\n  🔱 解锁「<title>」会松开 N 条 task：\n  🟢 fork_a\n  ⚠️ fork_b\n\n无引用 → 「解锁这条不会影响其它 task」友好兜底。让 owner 在决定是否优先做某条 blocker 时，看到「这条做完会让谁动起来」做出更明智的优先级判断。\n\n相关：/blocked_by <title>（反向 — 我在等谁）。",
@@ -2207,6 +2222,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/find_speech <keyword>  —  搜 speech_history.log（pet 说过的话，含命中点 snippet，至多 8 条；与 /last_speech 单条对偶）".to_string(),
         "/show <title>  —  显单条任务完整 raw description（含 markers）+ detail.md 预览".to_string(),
         "/peek <title>  —  一行紧凑视图：status + schedule + 关键 markers（与 /show 完整视图互补 — 快瞄场景用）".to_string(),
+        "/dup <title>  —  复制 task 为新 P3 pending 实例，title 加「(副本)」后缀 — 保 schedule / pinned / silent / tags，剥终态 markers".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -5541,6 +5557,18 @@ pub fn format_peek_reply(
     out
 }
 
+/// `/dup <title>` 命令成功回复文案。pure：
+/// - 一行标题映射：`📑 已复制「<src>」→「<new>」`
+/// - 注脚两行：继承 / 剥落 markers 说明，让 owner 一眼看清楚副本继承
+///   了什么、丢了什么 — 比 silent success 更有 audit 价值
+pub fn format_dup_reply(src_title: &str, new_title: &str) -> String {
+    format!(
+        "📑 已复制「{}」→「{}」\n· 继承 schedule / markers / tags / priority / due\n· 剥终态 markers（done / result / snooze / origin 等）",
+        src_title.trim(),
+        new_title.trim(),
+    )
+}
+
 /// `/timeline` 中一行事件条目。`markers` 是该事件 snippet 内扫出的「状态
 /// 变化」marker token 列表（保 `[done]` / `[result: 已发送]` 等完整原文），
 /// 顺序保持 snippet 内出现顺序。
@@ -6482,7 +6510,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "dup", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -6953,7 +6981,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -13075,6 +13103,52 @@ mod tests {
         // 无 [task pri=N] → 不显 P 段
         let s = format_peek_reply("t", "free-form body", TaskStatus::Pending);
         assert!(!s.contains(" · P"), "no pri marker → no P label: {s}");
+    }
+
+    // -------- /dup parse + format_dup_reply --------
+
+    #[test]
+    fn dup_parser_takes_all_args_as_title() {
+        assert_eq!(
+            parse_tg_command("/dup 整理 Downloads"),
+            Some(TgCommand::Dup {
+                title: "整理 Downloads".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn dup_parser_empty_title_yields_empty_string() {
+        assert_eq!(
+            parse_tg_command("/dup"),
+            Some(TgCommand::Dup {
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn dup_reply_shows_src_and_new_titles() {
+        let s = format_dup_reply("整理 Downloads", "整理 Downloads (副本)");
+        assert!(s.contains("📑"), "{s}");
+        assert!(s.contains("「整理 Downloads」"), "src in 「」: {s}");
+        assert!(s.contains("「整理 Downloads (副本)」"), "new in 「」: {s}");
+    }
+
+    #[test]
+    fn dup_reply_notes_inheritance_and_strip_summary() {
+        let s = format_dup_reply("a", "a (副本)");
+        // 注脚说明两类 markers — 让 owner 看清楚副本继承了什么 / 丢了什么
+        assert!(s.contains("继承"), "should note what's inherited: {s}");
+        assert!(s.contains("剥"), "should note what's stripped: {s}");
+    }
+
+    #[test]
+    fn dup_reply_handles_unique_filename_suffix() {
+        // memory_edit 同 title 重复时返回 `<title>_1` / `_2`；formatter 透
+        // 显新 title 不做特殊处理
+        let s = format_dup_reply("整理", "整理 (副本)_1");
+        assert!(s.contains("「整理 (副本)_1」"), "{s}");
     }
 
     #[test]

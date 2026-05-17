@@ -1489,6 +1489,68 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Dup { title } => {
+            // resolve 同 /show /peek 三层。命中后取 view 拿 raw_description，
+            // parse_task_header 抽 priority / due / body，strip_for_dup 去除
+            // 终态 markers，task_create 写新 task。
+            //
+            // 标题冲突由 memory_edit 内置 unique-filename 兜底（自动加 _N
+            // 后缀） — 不在前端去重。
+            //
+            // due 透传 ISO 字符串：原 view 的 due 是 NaiveDateTime，
+            // task_create 接 `YYYY-MM-DDThh:mm` 字符串，本地 format 即可。
+            if title.trim().is_empty() {
+                format_missing_argument("dup")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(src) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        let view_opt = views.iter().find(|v| v.title == src).cloned();
+                        match view_opt {
+                            None => format_command_error(&format!("找不到 task「{}」", src)),
+                            Some(view) => {
+                                // 解析源 raw_description：拿 priority / due / body
+                                let parsed = crate::task_queue::parse_task_header(
+                                    &view.raw_description,
+                                );
+                                let (priority, due, body_raw) = match parsed {
+                                    Some(h) => (h.priority, h.due, h.body),
+                                    // 无 header 兜底 — 整段当 body，P3 默认
+                                    None => (3, None, view.raw_description.clone()),
+                                };
+                                let cleaned_body =
+                                    crate::task_queue::strip_for_dup(&body_raw);
+                                let new_title = format!("{} (副本)", src);
+                                let due_iso =
+                                    due.map(|d| d.format("%Y-%m-%dT%H:%M").to_string());
+                                let create_result = crate::commands::task::task_create(
+                                    crate::commands::task::TaskCreateArgs {
+                                        title: new_title.clone(),
+                                        body: cleaned_body,
+                                        priority,
+                                        due: due_iso,
+                                    },
+                                );
+                                match create_result {
+                                    Ok(actual_new_title) => {
+                                        crate::telegram::commands::format_dup_reply(
+                                            &src,
+                                            &actual_new_title,
+                                        )
+                                    }
+                                    Err(e) => format_command_error(&e),
+                                }
+                            }
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Timeline { title } => {
             // 与 Show 同 resolve 三层。命中后调 task_get_detail 拿 history（已
             // newest-first 排好），扫 markers 算 entries（旧→新 + 去重无变化

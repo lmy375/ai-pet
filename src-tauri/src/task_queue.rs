@@ -266,6 +266,34 @@ pub fn strip_done_markers(description: &str) -> String {
     collapse_whitespace(&cleaned)
 }
 
+/// 给 /dup 命令用：复制一条 task 时剥掉只属于 "原 task 实例" 的 markers，
+/// 保留可继承的元数据。剥的：
+/// - `[done]` / `[result:` / `[error:` / `[cancelled:` / `[archived:`：终
+///   态信号，副本应回到 pending
+/// - `[snooze:`：原 task 的暂停时间到点对副本无意义
+/// - `[origin:tg:`：副本是新 instance，origin chain 应重新打（caller
+///   决定 — handler 可加 `[origin:tg:<chat>]` 或保空）
+///
+/// 保留的：`[every:]` / `[once:]` / `[deadline:]` / `[reminderMin:]` /
+/// `[pinned]` / `[silent]` / `[blockedBy:]` / `#tag`. 让 owner "克隆模板"
+/// 不必手动再设 schedule / 提醒 / 标签。
+pub fn strip_for_dup(description: &str) -> String {
+    let cleaned = remove_bracketed_segments(
+        description,
+        &[
+            "[done",
+            "[result",
+            "[error",
+            "[cancelled",
+            "[archived:",
+            "[archived",
+            "[snooze",
+            "[origin:tg",
+        ],
+    );
+    collapse_whitespace(&cleaned)
+}
+
 /// 把归档条目的 description 还原为 pending butler_task 形态：剥 `[archived:`
 /// `[done]` / `[cancelled:` / `[error:` / `[result:` 全套终态 marker。保留
 /// `[task pri=...]` header、`[every:]` / `[once:]` / `[deadline:]` schedule
@@ -1309,6 +1337,60 @@ mod tests {
             "整理 [result: 第一轮] 中间笔记 [done] [result: 第二轮 final]",
         );
         assert_eq!(cleaned, "整理 中间笔记");
+    }
+
+    // ---------------- strip_for_dup ----------------
+
+    #[test]
+    fn strip_for_dup_removes_terminal_state_markers() {
+        let cleaned = strip_for_dup(
+            "整理 Downloads [done] [result: 挪了 30 个文件]",
+        );
+        assert!(!cleaned.contains("[done]"), "should strip [done]: {cleaned}");
+        assert!(!cleaned.contains("[result:"), "should strip [result:]: {cleaned}");
+    }
+
+    #[test]
+    fn strip_for_dup_removes_snooze_and_origin() {
+        let cleaned = strip_for_dup(
+            "整理 [snooze: 2026-05-20 09:00] [origin:tg:12345] body",
+        );
+        assert!(!cleaned.contains("[snooze:"), "should strip snooze: {cleaned}");
+        assert!(!cleaned.contains("[origin:tg"), "should strip tg origin: {cleaned}");
+    }
+
+    #[test]
+    fn strip_for_dup_keeps_inheritable_markers() {
+        let cleaned = strip_for_dup(
+            "[every: 09:00] [reminderMin: 15] [pinned] [silent] [blockedBy: A] #工作 整理 [done]",
+        );
+        // 可继承的全保
+        assert!(cleaned.contains("[every: 09:00]"), "{cleaned}");
+        assert!(cleaned.contains("[reminderMin: 15]"), "{cleaned}");
+        assert!(cleaned.contains("[pinned]"), "{cleaned}");
+        assert!(cleaned.contains("[silent]"), "{cleaned}");
+        assert!(cleaned.contains("[blockedBy: A]"), "{cleaned}");
+        assert!(cleaned.contains("#工作"), "{cleaned}");
+        assert!(cleaned.contains("整理"), "{cleaned}");
+        // 终态 marker 剥
+        assert!(!cleaned.contains("[done]"), "{cleaned}");
+    }
+
+    #[test]
+    fn strip_for_dup_removes_error_and_cancelled_and_archived() {
+        let cleaned = strip_for_dup(
+            "整理 [error: timeout] [cancelled: 不需要了] [archived: 2026-04-01]",
+        );
+        assert!(!cleaned.contains("[error:"), "{cleaned}");
+        assert!(!cleaned.contains("[cancelled:"), "{cleaned}");
+        assert!(!cleaned.contains("[archived:"), "{cleaned}");
+    }
+
+    #[test]
+    fn strip_for_dup_is_noop_on_clean_pending_body() {
+        let raw = "[every: 09:00] [pinned] 写周报 #work";
+        let cleaned = strip_for_dup(raw);
+        assert_eq!(cleaned, raw);
     }
 
     // ---------------- append_cancelled_marker ----------------
