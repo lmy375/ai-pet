@@ -1229,6 +1229,57 @@ async fn handle_tg_command(
             };
             crate::telegram::commands::format_mute_reply(minutes, until_local)
         }
+        TgCommand::SleepUntil { raw } => {
+            // 解析 HH:MM → 算"到 target 还剩多少分钟"→ 复用 set_mute_minutes。
+            // target ≤ now → 落到明日同时刻（owner 凌晨 1 点说"到 8 点"视为
+            // 今早 8:00 反直觉，所以这里只是把今日 8:00 已过的情况推到明日）。
+            // 实际上 chrono.with_time(...) 拿"今日 8:00" 时若已过 now，则 +1d
+            // 让 target 永远 > now。
+            let parsed =
+                crate::telegram::commands::parse_sleep_until_time(&raw);
+            match parsed {
+                None => crate::telegram::commands::format_sleep_until_reply(
+                    &raw, None, 0, None, false,
+                ),
+                Some((h, m)) => {
+                    use chrono::{Datelike, Local, TimeZone};
+                    let now = Local::now();
+                    let today_target = Local
+                        .with_ymd_and_hms(
+                            now.year(),
+                            now.month(),
+                            now.day(),
+                            h as u32,
+                            m as u32,
+                            0,
+                        )
+                        .single();
+                    let target = match today_target {
+                        Some(t) if t > now => t,
+                        Some(t) => t + chrono::Duration::days(1),
+                        None => {
+                            // 极端 DST 边界 — fallback to "now + 1h" 兜底，
+                            // 让命令至少不无响应
+                            now + chrono::Duration::hours(1)
+                        }
+                    };
+                    let crosses_midnight = today_target
+                        .map(|t| t <= now)
+                        .unwrap_or(false);
+                    let minutes =
+                        (target - now).num_minutes().clamp(1, 10080);
+                    let _ = crate::proactive::set_mute_minutes(minutes);
+                    let until_local = Some(target);
+                    crate::telegram::commands::format_sleep_until_reply(
+                        &raw,
+                        Some((h, m)),
+                        minutes,
+                        until_local,
+                        crosses_midnight,
+                    )
+                }
+            }
+        }
         TgCommand::Digest { n } => {
             // 最近 done 任务标题 + result 摘要清单。reuse 同 read path（与
             // /recent / /tasks / /today 同源），formatter 内部 sort updated_at
