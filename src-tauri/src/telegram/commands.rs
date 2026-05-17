@@ -498,6 +498,11 @@ pub enum TgCommand {
     /// 当前 mood emoji + 心情文本。比 `/whoami`（多行画像）更简短，适合
     /// owner "现在几点 / 宠物啥状态" 闪查。无参；多余尾部一律忽略。
     Now,
+    /// `/last_speech` —— 显 pet 最近一条主动开口（speech_history.log 末
+    /// 条），含 ts + text + 相对时间（"N 分钟前" / "N 小时前"）。与
+    /// ChatMini 顶部「⏱ pet 沉默 N 分」chip 对偶 — 那个显沉默时长，本
+    /// 命令显具体说了什么。空 history 时友好兜底。无参；多余尾部忽略。
+    LastSpeech,
     /// `/show <title>` —— 显示指定任务的 raw_description（含全部 markers）
     /// + detail.md 内容预览（前 300 字符），让 owner 在 TG 端 audit 单条
     /// 任务详情不必回桌面。空 title 走 missing-arg；title resolve 三层
@@ -604,6 +609,7 @@ impl TgCommand {
             TgCommand::Show { .. } => "show",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
+            TgCommand::LastSpeech => "last_speech",
             TgCommand::Last => "last",
             TgCommand::Random => "random",
             TgCommand::Sleep => "sleep",
@@ -696,6 +702,7 @@ impl TgCommand {
             | TgCommand::RecentChats { .. }
             | TgCommand::Due { .. }
             | TgCommand::Now
+            | TgCommand::LastSpeech
             | TgCommand::Aware
             | TgCommand::Here
             | TgCommand::Last
@@ -782,6 +789,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
             ("now", "One-line status check: time + tz + companionship days + mood emoji"),
+            ("last_speech", "Show pet's most recent proactive utterance + ts — pairs with ChatMini's ⏱ silent chip"),
             ("last", "Show the most recently created task (this chat) with raw description preview"),
             ("random", "Pick a random active (pending / error) task — for owner's choice paralysis moments"),
             ("sleep", "Mute proactive for 8 hours with a friendly good-night reply (= /mute 480)"),
@@ -854,6 +862,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
             ("now", "一句话快速状态：当前时间 + 时区 + 陪伴天数 + 心情 emoji"),
+            ("last_speech", "pet 最近一条主动开口 + ts — 与 ChatMini「⏱ 沉默 N 分」chip 对偶"),
             ("last", "显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的"),
             ("random", "随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定"),
             ("sleep", "一键 mute proactive 8 小时 + 友好「晚安」reply（= /mute 480）"),
@@ -1232,6 +1241,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "today" => Some(TgCommand::Today),
         // `/now` 无参；多余尾部忽略（与 /today / /mood / /version 同容忍）
         "now" => Some(TgCommand::Now),
+        // `/last_speech`：无参；多余尾部一律忽略（与 /now / /aware / /here
+        // 同 "tolerant trailing" 模板）。
+        "last_speech" => Some(TgCommand::LastSpeech),
         // `/aware` 无参；多余尾部一律忽略（与 /now 同模板）
         "aware" => Some(TgCommand::Aware),
         // `/here` 无参；多余尾部一律忽略（与 /aware 同模板）
@@ -1839,7 +1851,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "buckets", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent", "unsilent",
     "silenced", "silent_all", "markers", "tags", "tag", "tags_for", "touch", "mood",
-    "whoami", "today", "today_done", "yesterday", "streak", "now",
+    "whoami", "today", "today_done", "yesterday", "streak", "now", "last_speech",
     "aware", "here",
     "last", "random", "sleep", "sleep_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
@@ -1953,7 +1965,8 @@ pub fn format_help_for_topic(
         "mood" => "🐾 /mood\n\n用法：查看宠物当前心情（与桌面 MoodWidget 同 mood state 文件）。无参。\n\n示例：\n  /mood",
         "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）；/due（更远视角 — tomorrow / thisweek / nextweek）。",
-        "now" => "🐾 /now\n\n用法：一句话快速状态 check — 当前本地时间 + tz 偏移 + 陪伴天数 + 心情 emoji + 心情文本。无参。比 /whoami 多行画像简短，适合 owner 在 TG 想「现在几点 / 宠物啥状态」闪查。\n\n示例：\n  /now\n\n相关：/whoami（多行画像）；/mood（心情详情）。",
+        "now" => "🐾 /now\n\n用法：一句话快速状态 check — 当前本地时间 + tz 偏移 + 陪伴天数 + 心情 emoji + 心情文本。无参。比 /whoami 多行画像简短，适合 owner 在 TG 想「现在几点 / 宠物啥状态」闪查。\n\n示例：\n  /now\n\n相关：/whoami（多行画像）；/mood（心情详情）；/last_speech（pet 最近主动开口）。",
+        "last_speech" => "🗣 /last_speech\n\n用法：显 pet 最近一条主动开口（speech_history.log 末条），含 ts + 文本 + 相对时间「N 分前 / N 小时前 / N 天前」。无参；多余尾部忽略。\n\n与 ChatMini 顶部「⏱ pet 沉默 N 分」chip 对偶 — 那个显沉默时长触发关心；本命令显具体最近说了啥（原话 + 从那时起的分钟数）。\n\n输出格式：\n  🗣 pet 最近主动开口 · MM-DD HH:MM（N 分前）：\n  「<text 前 N 字 cap>」\n\n空 history（pet 还没主动开口过 / 刚 reset） → 友好兜底。\n\n示例：\n  /last_speech\n\n相关：/aware（pet 当前感知）；/here（owner 信号 snapshot）；/feedback_history（pet 接收的反馈）。",
         "last" => "🆕 /last\n\n用法：显本聊天派单中最近 created_at 的一条 task — title + status emoji + 相对创建时间 + raw_description 前 200 字符预览。无参。owner 想「我刚 /task 创的那条对不对」闪查时用 — 不必走 /tasks 全表扫。\n\n示例：\n  /last\n\n相关：/show <title>（看完整 raw + detail）；/recent（最近 N 条 done）；/tasks（全状态清单）。",
         "random" => "🎲 /random\n\n用法：从本聊天派单的 active 任务（pending / error）里随机抽 1 条让宠物推荐 — 给 owner「选择困难」/「不知道先做哪个」时让 pet 决定下一步。无参；多次调用会得到不同 task。无 active 任务时给兜底文案。\n\n示例：\n  /random\n\n相关：/tasks（看全清单）；/blocked（被锁住的）；/today（今日到期）。",
         "sleep" => "🌙 /sleep\n\n用法：一键让宠物 mute proactive 8 小时 + 友好「晚安」reply。无参。比手敲 `/mute 480` 更直觉 — owner 睡前 / 长会议 / 想 deep work 时一句话搞定。\n\n示例：\n  /sleep\n\n相关：/mute [N]（精确控制 N 分钟）；/sleep_until HH:MM（静音到指定时刻）；/mute 0（立刻解除静音）。",
@@ -2044,6 +2057,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
         "/now  —  一句话快速状态：当前时间 + 时区 + 陪伴 + 心情 emoji（与 /whoami 多行画像互补）".to_string(),
+        "/last_speech  —  pet 最近一条主动开口 + ts（与 ChatMini「⏱ 沉默 N 分」chip 对偶 audit）".to_string(),
         "/last  —  显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的对不对".to_string(),
         "/random  —  随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定下一步".to_string(),
         "/sleep  —  一键 mute proactive 8 小时 + 友好「晚安」reply（与 /mute 480 等价但语气温和）".to_string(),
@@ -4875,6 +4889,62 @@ pub fn format_now_reply(
     out
 }
 
+/// `/last_speech` 命令回复文案。pure：caller 已 await
+/// `recent_speeches_with_meta(1)` 拿到最近一条 entry（如有）+ now 时
+/// 间锚点；本函数仅做字符串拼装。
+///
+/// 入参：
+/// - `entry`: Option<(ts_str, text)>；None = speech_history 空 / 读失败
+/// - `now`: 计算相对时间（"N 分前 / N 小时前 / N 天前"）的锚点
+///
+/// 4 态：
+/// - None → 「🗣 pet 还没主动开口过」友好兜底
+/// - parse ts 失败 → 「🗣 pet 最近主动开口：「<text>」（ts 解析失败 — <raw_ts>）」
+/// - 成功 → 「🗣 pet 最近主动开口 · MM-DD HH:MM（N 分前）：\n「<text 前 N 字>」」
+///
+/// text 截 200 字 cap（与 /last 同 preview 上限）+ 末尾 "…" hint。
+pub fn format_last_speech_reply(
+    entry: Option<(&str, &str)>,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    let Some((ts_str, text)) = entry else {
+        return "🗣 pet 还没主动开口过 — speech_history.log 空 / pet 刚启动 / 一直被 mute。\n用 /aware 看 pet 当前感知；/here 看 owner 信号 snapshot。".to_string();
+    };
+    // text 截 200 字 cap + 末尾 …
+    let chars: Vec<char> = text.chars().collect();
+    let preview: String = if chars.len() > 200 {
+        let head: String = chars.iter().take(200).collect();
+        format!("{}…", head)
+    } else {
+        text.to_string()
+    };
+    // parse ts
+    let Ok(when) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+        return format!(
+            "🗣 pet 最近主动开口：\n「{}」\n（ts 解析失败：{}）",
+            preview, ts_str
+        );
+    };
+    let when_local = when.with_timezone(&chrono::Local);
+    let when_label = when_local.format("%m-%d %H:%M").to_string();
+    let diff = now.signed_duration_since(when_local);
+    let rel = if diff.num_seconds() < 0 {
+        "刚刚".to_string()
+    } else if diff.num_minutes() < 1 {
+        "刚刚".to_string()
+    } else if diff.num_hours() < 1 {
+        format!("{} 分前", diff.num_minutes())
+    } else if diff.num_days() < 1 {
+        format!("{} 小时前", diff.num_hours())
+    } else {
+        format!("{} 天前", diff.num_days())
+    };
+    format!(
+        "🗣 pet 最近主动开口 · {}（{}）：\n「{}」",
+        when_label, rel, preview
+    )
+}
+
 /// `/aware` 命令回复文案。pure。
 ///
 /// 入参（caller 在 bot handler 抓齐传入，让 formatter 可单元测试）：
@@ -5998,7 +6068,7 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent",
             "unsilent", "silenced", "markers", "tags", "mood", "whoami", "today",
-            "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "sleep_until", "quick",
+            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "quick",
             "due", "recent", "oldest_n", "active_recent", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
@@ -6470,7 +6540,7 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "buckets", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned",
             "pinned_due", "today",
-            "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "sleep_until", "quick",
+            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "quick",
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
@@ -11316,6 +11386,110 @@ mod tests {
         let now = fixed_dt(2026, 5, 17, 14, 42, -5);
         let s = format_now_reply(now, Some(7), None);
         assert!(s.contains("-05:00"), "should render negative tz: {s}");
+    }
+
+    // -------- /last_speech parse + format --------
+
+    #[test]
+    fn last_speech_parses_no_args() {
+        assert_eq!(
+            parse_tg_command("/last_speech"),
+            Some(TgCommand::LastSpeech)
+        );
+        // 多余尾部忽略
+        assert_eq!(
+            parse_tg_command("/last_speech please"),
+            Some(TgCommand::LastSpeech)
+        );
+    }
+
+    fn fixed_local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, mo, d, h, mi, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn last_speech_reply_none_says_no_history() {
+        let now = fixed_local(2026, 5, 17, 14, 42);
+        let s = format_last_speech_reply(None, now);
+        assert!(s.contains("🗣"), "{s}");
+        assert!(s.contains("还没主动开口过"), "{s}");
+    }
+
+    #[test]
+    fn last_speech_reply_renders_text_and_relative_time_minutes() {
+        // ts = now - 30 min（用 Local 本地时区构造 RFC3339 字符串）
+        use chrono::TimeZone;
+        let now = fixed_local(2026, 5, 17, 14, 42);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 14, 12, 0)
+            .unwrap()
+            .to_rfc3339();
+        let s = format_last_speech_reply(
+            Some((ts.as_str(), "今天工作怎么样？")),
+            now,
+        );
+        assert!(s.contains("🗣"), "{s}");
+        assert!(s.contains("今天工作怎么样？"), "{s}");
+        assert!(s.contains("30 分前"), "expects '30 分前': {s}");
+    }
+
+    #[test]
+    fn last_speech_reply_renders_relative_hours_when_over_60min() {
+        use chrono::TimeZone;
+        let now = fixed_local(2026, 5, 17, 18, 0);
+        // 3 小时前
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 15, 0, 0)
+            .unwrap()
+            .to_rfc3339();
+        let s = format_last_speech_reply(Some((ts.as_str(), "hello")), now);
+        assert!(s.contains("3 小时前"), "{s}");
+    }
+
+    #[test]
+    fn last_speech_reply_renders_relative_days_when_over_24h() {
+        use chrono::TimeZone;
+        let now = fixed_local(2026, 5, 17, 18, 0);
+        // 2 天前
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 5, 15, 18, 0, 0)
+            .unwrap()
+            .to_rfc3339();
+        let s = format_last_speech_reply(Some((ts.as_str(), "hi")), now);
+        assert!(s.contains("2 天前"), "{s}");
+    }
+
+    #[test]
+    fn last_speech_reply_truncates_long_text_to_200_with_ellipsis() {
+        use chrono::TimeZone;
+        let now = fixed_local(2026, 5, 17, 14, 42);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 14, 30, 0)
+            .unwrap()
+            .to_rfc3339();
+        let long_text: String = "啊".repeat(250);
+        let s = format_last_speech_reply(
+            Some((ts.as_str(), long_text.as_str())),
+            now,
+        );
+        assert!(s.contains("…"), "expected ellipsis: {s}");
+        // chars count: 200 啊 + 一个 …
+        let inner_chars = s.chars().filter(|&c| c == '啊').count();
+        assert_eq!(inner_chars, 200, "expected 200 chars cap");
+    }
+
+    #[test]
+    fn last_speech_reply_handles_invalid_ts_gracefully() {
+        let now = fixed_local(2026, 5, 17, 14, 42);
+        let s = format_last_speech_reply(
+            Some(("not-a-valid-iso", "fallback text")),
+            now,
+        );
+        assert!(s.contains("ts 解析失败"), "{s}");
+        assert!(s.contains("fallback text"), "still shows text: {s}");
     }
 
     // -------- /aware parse + format --------

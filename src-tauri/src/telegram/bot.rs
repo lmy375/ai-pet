@@ -903,6 +903,18 @@ async fn handle_tg_command(
                 mood_text,
             )
         }
+        TgCommand::LastSpeech => {
+            // 最近一条主动开口：调既有 recent_speeches_with_meta(1) 拿
+            // entry（ts + text）+ now 锚点交给 pure formatter。空 history
+            // → entry=None，formatter 走兜底。
+            let entries =
+                crate::speech_history::recent_speeches_with_meta(1).await;
+            let entry_opt = entries
+                .first()
+                .map(|e| (e.ts.as_str(), e.text.as_str()));
+            let now = chrono::Local::now();
+            crate::telegram::commands::format_last_speech_reply(entry_opt, now)
+        }
         TgCommand::Today => {
             // 今日叙事视图：reuse 与 /tasks /stats 同一 read path；本地 today
             // 日期注入。views 已按 origin==Tg(chat_id) 过滤，与其它命令一致。
