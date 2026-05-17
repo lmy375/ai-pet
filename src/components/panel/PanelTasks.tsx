@@ -10803,6 +10803,84 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* ⏱ 历经 N 天 chip — 仅 done task hover 时显
+                        create_at → updated_at 持续时长。complement 既有
+                        📅 创建 chip（绝对 created）+ 行内 `🔄 更新 X
+                        前` chip（相对 updated）— 本 chip 给「从创建到
+                        完成多少时间」直接量化信号，sprint 复盘 / "这
+                        条 task 拖了多久" audit 用。
+                        gate：hover + status === Done + 有 created_at
+                        + 有 updated_at + duration > 0（防 cancelled
+                        即-create-即-done 的 0 持续误显）。click 复制
+                        「<title> 历经 N（YYYY-MM-DD → YYYY-MM-DD）」一行。
+                        cancelled / error 不显 — 那些是中断态，"历经"
+                        语义不准（owner 通常关心 done 的产出周期）。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      t.status === "done" &&
+                      t.created_at.length > 0 &&
+                      t.updated_at.length > 0 &&
+                      (() => {
+                        const cMs = Date.parse(t.created_at);
+                        const uMs = Date.parse(t.updated_at);
+                        if (isNaN(cMs) || isNaN(uMs)) return null;
+                        const durMs = uMs - cMs;
+                        if (durMs <= 0) return null;
+                        const totalMin = Math.floor(durMs / 60_000);
+                        const days = Math.floor(totalMin / 1440);
+                        const hours = Math.floor((totalMin % 1440) / 60);
+                        const mins = totalMin % 60;
+                        let label: string;
+                        if (days >= 7) {
+                          // ≥ 1 周用整天 — 周级 task 不必精到小时
+                          label = `${days} 天`;
+                        } else if (days > 0) {
+                          // 几天内含小时让 owner 看到 "2 天 6 时" 这种
+                          label = `${days}d ${hours}h`;
+                        } else if (hours > 0) {
+                          label = `${hours}h ${mins}m`;
+                        } else {
+                          label = `${mins}m`;
+                        }
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const line = `「${t.title}」历经 ${label}（${t.created_at.slice(0, 10)} → ${t.updated_at.slice(0, 10)}）`;
+                              try {
+                                await navigator.clipboard.writeText(line);
+                                setBulkResultMsg(`⏱ 已复制：${line}`);
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`task 从创建到完成历经 ${label}（${t.created_at.replace("T", " ")} → ${t.updated_at.replace("T", " ")}）。点击复制「<title> 历经 ${label}（dates）」一行到剪贴板。`}
+                            aria-label="copy task duration"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border:
+                                "1px dashed var(--pet-color-border)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ⏱ 历经 {label}
+                          </button>
+                        );
+                      })()}
                     {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
                         时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
                         audit。complement 既有 dueUrgency 三档（normal /
