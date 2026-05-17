@@ -2528,6 +2528,130 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         </div>
       )}
 
+      {/* 📊 cat 总览 chip 横条：每 cat 一个 chip 显 item 数 + 总字符数
+          （description + detail.md 之和）。复用既有 index + detailSizes
+          数据 — 零新 IO。让 owner 一眼看「哪些 cat item 多 / 字符占用
+          大」决定 consolidate / 拆分；空 cat 不渲染避免视觉噪音。chip
+          click 切到该 cat section（scrollIntoView） — 与既有
+          expandedCategories 协议互补：那个是展开 / 折叠态，本 chip 是
+          quick navigation。 */}
+      {index && (() => {
+        type CatStat = { key: string; label: string; items: number; chars: number };
+        const stats: CatStat[] = [];
+        for (const k of [
+          ...CATEGORY_ORDER,
+          ...Object.keys(index.categories).filter(
+            (k) => !CATEGORY_ORDER.includes(k),
+          ),
+        ]) {
+          const cat = index.categories[k];
+          if (!cat || cat.items.length === 0) continue;
+          let chars = 0;
+          for (const it of cat.items) {
+            chars += Array.from(it.description).length;
+            chars += detailSizes[it.detail_path] ?? 0;
+          }
+          stats.push({
+            key: k,
+            label: cat.label || k,
+            items: cat.items.length,
+            chars,
+          });
+        }
+        if (stats.length === 0) return null;
+        const fmtChars = (n: number) =>
+          n >= 10000
+            ? `${(n / 1000).toFixed(1)}k 字`
+            : `${n} 字`;
+        return (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              padding: "6px 12px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              alignItems: "center",
+              fontSize: 11,
+              background:
+                "color-mix(in srgb, var(--pet-color-card) 50%, var(--pet-color-bg))",
+            }}
+          >
+            <span
+              style={{
+                color: "var(--pet-color-muted)",
+                fontWeight: 600,
+                flexShrink: 0,
+              }}
+              title={`${stats.length} 个非空 category — chip 显 items 数 + 字符数（description + detail.md）。click chip 滚到该 section。`}
+            >
+              📊 总览
+            </span>
+            {stats.map((st) => (
+              <button
+                key={st.key}
+                type="button"
+                onClick={() => {
+                  // 确保该 cat 处于展开态 + scrollIntoView 滚到 section
+                  setExpandedCategories((prev) => {
+                    const next = new Set(prev);
+                    next.add(st.key);
+                    try {
+                      window.localStorage.setItem(
+                        "pet-memory-expanded-cats",
+                        JSON.stringify([...next]),
+                      );
+                    } catch {
+                      // 私密 / 配额满 → session 内仍生效
+                    }
+                    return next;
+                  });
+                  // 等 React 重渲完展开态后再滚（rAF + setTimeout 0
+                  // 防 section 内容尚未挂出 querySelector 落空）
+                  window.setTimeout(() => {
+                    const el = document.querySelector(
+                      `[data-memory-cat="${st.key}"]`,
+                    );
+                    if (el && el instanceof HTMLElement) {
+                      el.scrollIntoView({
+                        block: "start",
+                        behavior: "smooth",
+                      });
+                    }
+                  }, 50);
+                }}
+                title={`${st.label}：${st.items} 条 item · 总字符 ${st.chars}（description + detail.md 之和）— 点击展开该 section + 滚动到位`}
+                style={{
+                  padding: "2px 8px",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 999,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-fg)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                <span>{st.label}</span>
+                <span
+                  style={{
+                    color: "var(--pet-color-muted)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {st.items} · {fmtChars(st.chars)}
+                </span>
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Search */}
       <div style={s.searchRow}>
         <input
@@ -4022,6 +4146,7 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
           return (
             <div
               key={catKey}
+              data-memory-cat={catKey}
               style={{
                 ...s.section,
                 ...(isDragSource ? { opacity: 0.4 } : {}),
