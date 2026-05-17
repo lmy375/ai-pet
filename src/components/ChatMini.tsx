@@ -61,6 +61,10 @@ interface Props {
   /// body 传出，由 App.tsx 写跨窗口 deeplink + 开 panel + 弹 quickAdd modal
   /// 预填。让 owner 觉得"宠物说了好东西，存为 task" 一键搞定。
   onSaveAsTask?: (text: string) => void;
+  /// 选区 toolbar "📝 记到 note" 按钮触发：把选中文字作 general memory
+  /// item 存盘（与 💾 转 task 互补 — task 是要做的事，note 是想记的事）。
+  /// 由 App.tsx 调 memory_edit("create", "general") 同 TG /note 后端。
+  onSaveAsNote?: (text: string) => void;
 }
 
 /// 最近 N 条的硬上限。窗口很小，DOM 太长既不好读也耗渲染。
@@ -309,6 +313,7 @@ export function ChatMini({
   onResetContext,
   onRefDoubleClick,
   onSaveAsTask,
+  onSaveAsNote,
 }: Props) {
   // armed-confirm: 第一次点击进 "再点确认" 态 + 3s 内不点就回 idle，防误触。
   // 与桌面 ChatPanel 顶部「清空」按钮 / 任务面板「清结束」按钮同模式。
@@ -2359,6 +2364,20 @@ export function ChatMini({
                 }}
               >
                 💾
+              </button>
+            )}
+            {onSaveAsNote && (
+              <button
+                type="button"
+                style={btnStyle}
+                title="把这段选中文字作 general memory item 存（与 💾 转 task 互补 — task 是要做的事，note 是想记的事）"
+                onClick={() => {
+                  const text = selectionToolbar.text;
+                  setSelectionToolbar(null);
+                  onSaveAsNote(text);
+                }}
+              >
+                📝
               </button>
             )}
             <button

@@ -982,6 +982,38 @@ function App() {
     appendAssistant("💾 已把这条消息发去 Panel → 任务面板 quickAdd 预填");
   }, [appendAssistant]);
 
+  /// ChatMini 选区 toolbar "📝 记到 note" 按钮：把选中文字作 general
+  /// memory item 存盘。title 自动按本地秒级时间生成（与 TG /note 同模板，
+  /// note-YYYY-MM-DDTHH-MM-SS 唯一防撞）；description = trim 后的 text。
+  /// 与 💾 转 task 互补 — task 是要做的事，note 是想记的事。
+  const handleMiniSaveAsNote = useCallback(
+    async (text: string) => {
+      const body = text.trim();
+      if (!body) return;
+      const now = new Date();
+      const y = now.getFullYear();
+      const mo = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const ss = String(now.getSeconds()).padStart(2, "0");
+      const title = `note-${y}-${mo}-${d}T${hh}-${mm}-${ss}`;
+      try {
+        await invoke<string>("memory_edit", {
+          action: "create",
+          category: "general",
+          title,
+          description: body,
+          detailContent: null,
+        });
+        appendAssistant(`📝 已记到 general/${title}`);
+      } catch (e) {
+        appendAssistant(`📝 记 note 失败：${e}`);
+      }
+    },
+    [appendAssistant],
+  );
+
   const openPanel = () => {
     invoke("open_panel").catch(console.error);
     // 跨窗口"刚从桌面跳过来"信号：panel 聊天 tab 上线后给当前 session bar
@@ -1632,6 +1664,7 @@ function App() {
             onResetContext={resetContext}
             onRefDoubleClick={handleMiniRefDoubleClick}
             onSaveAsTask={handleMiniSaveAsTask}
+            onSaveAsNote={handleMiniSaveAsNote}
           />
           <ChatPanel onSend={handleSend} isLoading={isLoading} />
         </>
