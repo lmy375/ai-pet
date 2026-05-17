@@ -982,6 +982,32 @@ function App() {
     appendAssistant("💾 已把这条消息发去 Panel → 任务面板 quickAdd 预填");
   }, [appendAssistant]);
 
+  /// ChatMini ChatBubble 右键菜单 "📝 用此话设 transient_note"：把
+  /// pet reply 文本作 transient_note（in-memory N 分钟有效上下文，默
+  /// 认 30 分钟）。与 iter #364 PanelToneStrip ✍️ 写 / iter #363 TG
+  /// /transient 同 set_transient_note 后端 — 第三个 surface 让 owner
+  /// "选 pet 这句话直接用" 免再敲字。
+  const handleMiniSetTransientNote = useCallback(
+    async (text: string, minutes: number) => {
+      const body = text.trim();
+      if (!body) return;
+      try {
+        await invoke<string>("set_transient_note", {
+          text: body,
+          minutes,
+        });
+        const preview = body.length > 30 ? body.slice(0, 30) + "…" : body;
+        appendAssistant(
+          `📝 已用此话设 transient_note（${minutes} 分钟有效）：「${preview}」`,
+        );
+      } catch (e) {
+        console.error("set_transient_note failed:", e);
+        appendAssistant(`设 transient_note 失败：${e}`);
+      }
+    },
+    [appendAssistant],
+  );
+
   /// ChatMini 选区 toolbar "📝 记到 note" 按钮：把选中文字作 general
   /// memory item 存盘。title 自动按本地秒级时间生成（与 TG /note 同模板，
   /// note-YYYY-MM-DDTHH-MM-SS 唯一防撞）；description = trim 后的 text。
@@ -1665,6 +1691,7 @@ function App() {
             onRefDoubleClick={handleMiniRefDoubleClick}
             onSaveAsTask={handleMiniSaveAsTask}
             onSaveAsNote={handleMiniSaveAsNote}
+            onSetTransientNote={handleMiniSetTransientNote}
           />
           <ChatPanel onSend={handleSend} isLoading={isLoading} />
         </>

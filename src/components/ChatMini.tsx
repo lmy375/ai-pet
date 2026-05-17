@@ -65,6 +65,12 @@ interface Props {
   /// item 存盘（与 💾 转 task 互补 — task 是要做的事，note 是想记的事）。
   /// 由 App.tsx 调 memory_edit("create", "general") 同 TG /note 后端。
   onSaveAsNote?: (text: string) => void;
+  /// ChatBubble 右键菜单 "📝 设 transient_note" 触发：把 assistant
+  /// 这条 reply 文本作 transient_note（in-memory N 分钟有效上下文）。
+  /// 由 App.tsx 调 set_transient_note Tauri 命令。与 iter #364
+  /// PanelToneStrip ✍️ 写入口 / iter #363 TG /transient 同后端，第三
+  /// 个 surface 让 owner "选 pet 说的这句话直接用" 免再敲字。
+  onSetTransientNote?: (text: string, minutes: number) => void;
 }
 
 /// 最近 N 条的硬上限。窗口很小，DOM 太长既不好读也耗渲染。
@@ -314,6 +320,7 @@ export function ChatMini({
   onRefDoubleClick,
   onSaveAsTask,
   onSaveAsNote,
+  onSetTransientNote,
 }: Props) {
   // armed-confirm: 第一次点击进 "再点确认" 态 + 3s 内不点就回 idle，防误触。
   // 与桌面 ChatPanel 顶部「清空」按钮 / 任务面板「清结束」按钮同模式。
@@ -2254,6 +2261,25 @@ export function ChatMini({
                 }}
               >
                 💭 针对这条再问
+              </button>
+            )}
+            {/* 📝 用此话设 transient_note：把 pet 这条 reply 文本（去
+                markdown 后的 plain）作 30min 临时上下文。与 iter #364
+                PanelToneStrip ✍️ 写 / iter #363 TG /transient 同后端，
+                第三个 surface 让 owner "选 pet 这句话当下轮 context"
+                免再敲字。仅 assistant + hasText + 父级传 callback 时显。 */}
+            {isAssistant && hasText && onSetTransientNote && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  onSetTransientNote(text, 30);
+                }}
+              >
+                📝 用此话设 transient_note 30m
               </button>
             )}
             {onOpenPanel && (
