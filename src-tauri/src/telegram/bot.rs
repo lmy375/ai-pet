@@ -1142,6 +1142,34 @@ async fn handle_tg_command(
                 crate::telegram::commands::format_feedback_reply(&text)
             }
         }
+        TgCommand::Alarms { n } => {
+            // 读 todo memory items → 过滤含 [remind: ...] 协议条目 →
+            // 收集 (target, topic, title) → 按 target 升序排（最近 fire
+            // 在前）→ 传 formatter（cap N + 渲染剩余分钟/逾期）。
+            let items = crate::db::todos_as_memory_items();
+            let mut rows: Vec<(
+                crate::proactive::ReminderTarget,
+                String,
+                String,
+            )> = items
+                .iter()
+                .filter_map(|item| {
+                    crate::proactive::parse_reminder_prefix(&item.description)
+                        .map(|(target, topic)| (target, topic, item.title.clone()))
+                })
+                .collect();
+            let now = chrono::Local::now().naive_local();
+            // sort 按 absolute target 升序。TodayHour 视作"今日 HH:MM"
+            // 落到日期 — 与 formatter 同语义。
+            rows.sort_by_key(|(t, _, _)| match t {
+                crate::proactive::ReminderTarget::Absolute(dt) => *dt,
+                crate::proactive::ReminderTarget::TodayHour(h, m) => now
+                    .date()
+                    .and_hms_opt(*h as u32, *m as u32, 0)
+                    .unwrap_or(now),
+            });
+            crate::telegram::commands::format_alarms_reply(&rows, now, n)
+        }
         TgCommand::SilentAll { minutes } => {
             // minutes == 0 → 仅 release active 窗口（与 /mute 0 同协议）。
             // minutes > 0 → arm 新窗口：先 release prior（如果有），再扫
