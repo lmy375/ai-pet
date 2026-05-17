@@ -54,6 +54,12 @@ pub enum FeedbackKind {
     /// 我没读懂，可以澄清 / 换说法"。aggregate hint 单独展示计数让 LLM 感
     /// 知"我最近表达不清的频率"。
     Puzzled,
+    /// owner 主动通过 TG `/feedback <text>` 写的自由反馈。情感倾向中性 ——
+    /// 文本可能正向（"喜欢"）/ 负向（"太长了"）/ 中性建议。不归入 like /
+    /// dismiss / ignored 任一信号；aggregate hint 单独展示计数 + 让 LLM 看
+    /// 原文调整行为。比被动 Liked / Puzzled 信号更高质量 — owner 主动腾
+    /// 出动作输入文字，明确想让 pet 知道某事。
+    Comment,
 }
 
 impl FeedbackKind {
@@ -64,6 +70,7 @@ impl FeedbackKind {
             FeedbackKind::Dismissed => "dismissed",
             FeedbackKind::Liked => "liked",
             FeedbackKind::Puzzled => "puzzled",
+            FeedbackKind::Comment => "comment",
         }
     }
 }
@@ -112,6 +119,7 @@ pub fn parse_line(line: &str) -> Option<FeedbackEntry> {
         "dismissed" => FeedbackKind::Dismissed,
         "liked" => FeedbackKind::Liked,
         "puzzled" => FeedbackKind::Puzzled,
+        "comment" => FeedbackKind::Comment,
         _ => return None,
     };
     Some(FeedbackEntry {
@@ -355,6 +363,7 @@ pub fn format_feedback_aggregate_hint(entries: &[FeedbackEntry]) -> String {
     let mut ignored = 0;
     let mut dismissed = 0;
     let mut puzzled = 0;
+    let mut comment = 0;
     for e in entries {
         match e.kind {
             FeedbackKind::Replied => replied += 1,
@@ -362,6 +371,7 @@ pub fn format_feedback_aggregate_hint(entries: &[FeedbackEntry]) -> String {
             FeedbackKind::Ignored => ignored += 1,
             FeedbackKind::Dismissed => dismissed += 1,
             FeedbackKind::Puzzled => puzzled += 1,
+            FeedbackKind::Comment => comment += 1,
         }
     }
     // 始终展示 replied / ignored（核心二元对照）；liked / dismissed / puzzled
@@ -371,6 +381,9 @@ pub fn format_feedback_aggregate_hint(entries: &[FeedbackEntry]) -> String {
     let mut parts: Vec<String> = vec![format!("{} 回复", replied)];
     if liked > 0 {
         parts.push(format!("{} 主动点赞", liked));
+    }
+    if comment > 0 {
+        parts.push(format!("{} 留言反馈", comment));
     }
     if puzzled > 0 {
         parts.push(format!("{} 表示困惑", puzzled));
@@ -419,6 +432,10 @@ pub fn format_feedback_hint(entries: &[FeedbackEntry], redact: &dyn Fn(&str) -> 
         ),
         FeedbackKind::Puzzled => format!(
             "上次你说「{}」，用户**表示困惑（🤔）** — 没看懂或没表达清楚。这次开口要么换个角度澄清同件事，要么用更短更具体的话，避免抽象 / 长句。",
+            redacted
+        ),
+        FeedbackKind::Comment => format!(
+            "owner 通过 /feedback 留言：「{}」 — 直接读 owner 原话调整后续行为（可能是正向 / 负向 / 中性建议，按字面 + 上下文判断）。",
             redacted
         ),
     }

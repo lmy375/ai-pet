@@ -984,6 +984,22 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Feedback { text } => {
+            // owner 主动反馈：写 feedback_history.log（FeedbackKind::Comment）。
+            // 空 text 由 formatter 走 usage hint。
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                crate::telegram::commands::format_feedback_reply(&text)
+            } else {
+                // record_event best-effort (写盘失败也不阻塞 reply)
+                crate::feedback_history::record_event(
+                    crate::feedback_history::FeedbackKind::Comment,
+                    trimmed,
+                )
+                .await;
+                crate::telegram::commands::format_feedback_reply(&text)
+            }
+        }
         TgCommand::Pri { title, priority } => {
             // 单改 priority — 走 task_set_priority 同后端（保 due / body /
             // 其它 markers 不动）。空 title / 无 priority → formatter usage
