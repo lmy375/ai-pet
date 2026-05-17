@@ -5672,7 +5672,48 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                           );
                         })()}
                       </div>
-                      <div style={{ display: "flex", gap: 4 }}>
+                      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                        {/* 📅 created N前：与 PanelTasks 行内创建时间 chip 对偶
+                            （PanelTasks.tsx ~8504 「📅 N 分钟前」）。read-only
+                            info chip — no bg / no border / muted → 视觉上不
+                            抢 action buttons。让 owner 一眼 glance memory item
+                            何时建立（"这条 user_profile 是新建的还是 3 个月
+                            前的旧条目？"），不必展开详情看 created_at 头信
+                            息。Date.parse 容错：created_at 非标准 ISO 时
+                            silent skip 不渲（与 expanded "📅 创建 X 前" 同
+                            策略）。< 60s → 刚刚（与 PanelMemory 4770s+ 复
+                            用同 fmt 心智）。 */}
+                        {(() => {
+                          const ts = Date.parse(item.created_at);
+                          if (Number.isNaN(ts)) return null;
+                          const nowMs = Date.now();
+                          const ageMs = Math.max(0, nowMs - ts);
+                          const rel =
+                            ageMs < 60_000
+                              ? "刚刚"
+                              : formatRelativeAgeBuckets(ageMs);
+                          return (
+                            <span
+                              title={`创建于 ${item.created_at
+                                .slice(0, 16)
+                                .replace("T", " ")}（${rel}）— hover info，不可交互。展开详情可看完整 created / updated 元数据。`}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                fontSize: 10,
+                                lineHeight: 1.4,
+                                color: "var(--pet-color-muted)",
+                                opacity: 0.7,
+                                whiteSpace: "nowrap",
+                                fontFamily: "'SF Mono', monospace",
+                                marginRight: 2,
+                              }}
+                              aria-label={`已创建 ${rel}`}
+                            >
+                              📅 {rel}
+                            </span>
+                          );
+                        })()}
                         {(() => {
                           const pinned = pinnedKeys.has(`${catKey}::${item.title}`);
                           return (
