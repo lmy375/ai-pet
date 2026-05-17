@@ -149,6 +149,10 @@ pub enum TgCommand {
     /// 值。已是 P9 时不动 + 友好 reply。复用 task_set_priority 后端。空
     /// title → missing-arg。
     Promote { title: String },
+    /// `/demote <title>` —— priority -1（clamp 0）— 与 /promote 对偶。已是
+    /// P0 时不动 + 友好 reply。复用 task_set_priority 后端保其它 markers
+    /// 不动。
+    Demote { title: String },
     /// `/feedback <text>` —— owner 主动给 pet 写反馈到 feedback_history.log
     /// （FeedbackKind::Comment 中性 kind）。让 LLM 在下次 proactive cycle
     /// 看到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。空
@@ -287,6 +291,7 @@ impl TgCommand {
             TgCommand::Feedback { .. } => "feedback",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
+            TgCommand::Demote { .. } => "demote",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -314,7 +319,8 @@ impl TgCommand {
             | TgCommand::Quick { text: title }
             | TgCommand::Pri { title, .. }
             | TgCommand::Feedback { text: title }
-            | TgCommand::Promote { title } => title.as_str(),
+            | TgCommand::Promote { title }
+            | TgCommand::Demote { title } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
@@ -421,6 +427,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("feedback", "Send owner feedback to feedback_history (influences pet's next proactive turn)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
+            ("demote", "Demote a task's priority by -1 (clamped to 0)"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -467,6 +474,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("feedback", "给 pet 留反馈（写 feedback_history，影响下次 proactive turn）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
+            ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -907,6 +915,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/promote <title>`：priority +1 — title 全段保（含空格 / 标点）。
         // 空 title 由 handler 走 missing-arg。
         "promote" => Some(TgCommand::Promote { title }),
+        // `/demote <title>`：priority -1 — 与 /promote 同模板。
+        "demote" => Some(TgCommand::Demote { title }),
         // `/edit <title> :: <new desc>`：first-occurrence `::` 切分；任一端
         // trim 后为空 → handler 走 missing-arg。新 desc 是全量覆写（与
         // 桌面 detail.md textarea save 等价）。
@@ -1198,7 +1208,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
     "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
-    "digest", "edit", "pri", "promote", "reflect", "feedback",
+    "digest", "edit", "pri", "promote", "demote", "reflect", "feedback",
     "cancel_all_error", "find", "show", "blocked", "snoozed", "reset",
     "version", "help",
 ];
@@ -1317,6 +1327,7 @@ pub fn format_help_for_topic(
         "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
         "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
         "promote" => "🎯 /promote <title>\n\n用法：把任务 priority 升 +1（clamp 9 — 已是 P9 时不动 + 友好 reply）。一步操作不必算具体 P 值（与 /pri <title> <N> 互补 — pri 是绝对值，promote 是相对值）。保留所有其它 markers / due / body 不动（复用 task_set_priority 后端）。\n\n示例：\n  /promote 整理 Downloads\n  /promote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/demote（-1 反方向）。",
+        "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1381,6 +1392,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
+        "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2457,6 +2469,33 @@ pub fn format_cancel_all_error_reply(
     }
     out.push_str("\n用 /tasks 看更新后清单 / /retry <title> 单条重启。");
     out
+}
+
+/// `/demote <title>` 命令回复文案。pure：与 format_promote_reply 对偶 —
+/// 边界态 old == 0（已是 P0）友好 no-op；其它态显 P<old> → P<new>。
+pub fn format_demote_reply(
+    title: &str,
+    old_priority: Option<u8>,
+    save_ok: Result<(), &str>,
+) -> String {
+    let t = title.trim();
+    if t.is_empty() {
+        return "🎯 用法：/demote <title>\n\n把任务 priority 降 -1（clamp 0）— 与 /promote 对偶，「这条不那么急了」一键降。保留 due / body / 其它 markers 不动。\n\n例：/demote 整理 Downloads\n例：/demote 1   （/tasks 输出第 1 条）\n\n相关：/pri <title> <N>（绝对设值）；/promote（+1 反方向）。".to_string();
+    }
+    let Some(old) = old_priority else {
+        return match save_ok {
+            Ok(()) => format!("🎯 已降「{}」", t),
+            Err(e) => format!("🎯 降 priority 失败：{}", e),
+        };
+    };
+    if old == 0 {
+        return format!("🎯 「{}」已是 P0（最低）— 不再降", t);
+    }
+    let new_pri = old - 1;
+    match save_ok {
+        Ok(()) => format!("🎯 已降「{}」P{} → P{}", t, old, new_pri),
+        Err(e) => format!("🎯 降 priority 失败：{}", e),
+    }
 }
 
 /// `/promote <title>` 命令回复文案。pure：caller 已算好 new_priority
@@ -3666,9 +3705,9 @@ mod tests {
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "recent", "digest", "edit", "pri", "promote", "reflect",
-            "feedback", "cancel_all_error", "find", "show", "blocked",
-            "snoozed", "reset", "version", "help",
+            "due", "recent", "digest", "edit", "pri", "promote", "demote",
+            "reflect", "feedback", "cancel_all_error", "find", "show",
+            "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4134,7 +4173,7 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "edit", "pri", "promote", "reflect", "feedback",
+            "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
             "cancel_all_error", "show", "tags", "reset", "version", "help",
         ] {
             assert!(
@@ -6077,6 +6116,67 @@ mod tests {
         assert!(s.contains("已批量 cancel 3"), "{s}");
         assert!(s.contains("2 条 cancel 失败"), "{s}");
         assert!(s.contains("⚠️"), "warning present: {s}");
+    }
+
+    // -------- /demote parse + format --------
+
+    #[test]
+    fn demote_parses_title() {
+        assert_eq!(
+            parse_tg_command("/demote 写周报"),
+            Some(TgCommand::Demote {
+                title: "写周报".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn demote_parses_empty_title() {
+        assert_eq!(
+            parse_tg_command("/demote"),
+            Some(TgCommand::Demote {
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn demote_reply_empty_title_shows_usage() {
+        let s = format_demote_reply("", Some(3), Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/demote <title>"), "{s}");
+        assert!(s.contains("-1"), "{s}");
+        assert!(s.contains("/pri"), "{s}");
+        assert!(s.contains("/promote"), "{s}");
+    }
+
+    #[test]
+    fn demote_reply_p0_shows_already_min() {
+        let s = format_demote_reply("idea 抽屉", Some(0), Ok(()));
+        assert!(s.contains("已是 P0"), "{s}");
+        assert!(s.contains("不再降"), "{s}");
+    }
+
+    #[test]
+    fn demote_reply_success_shows_transition() {
+        let s = format_demote_reply("写周报", Some(5), Ok(()));
+        assert!(s.contains("🎯"), "{s}");
+        assert!(s.contains("已降"), "{s}");
+        assert!(s.contains("P5 → P4"), "{s}");
+    }
+
+    #[test]
+    fn demote_reply_failure_shows_error() {
+        let s = format_demote_reply("写周报", Some(3), Err("backend kaboom"));
+        assert!(s.contains("降 priority 失败"), "{s}");
+        assert!(s.contains("backend kaboom"), "{s}");
+    }
+
+    #[test]
+    fn demote_reply_no_old_priority_fallback() {
+        let s = format_demote_reply("t", None, Ok(()));
+        assert!(s.contains("已降"), "{s}");
+        assert!(!s.contains("P"), "no priority detail in fallback: {s}");
     }
 
     // -------- /promote parse + format --------
