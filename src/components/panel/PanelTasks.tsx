@@ -3069,6 +3069,86 @@ export function PanelTasks({
     });
   }, []);
 
+  /// detail.md textarea ⌘⌥↑ / ⌘⌥↓ 复制当前行（或选区多行）向上 / 向下。
+  /// 与 iter #379 ⌥↑ / ⌥↓ 移动行对偶 — 同字母键不同 modifier 区分复
+  /// 制 vs 移动（VSCode ⌥⇧↑/↓ 风格的本地变体，避开既有 ⌥↑/↓ 移动
+  /// binding 冲突）。
+  ///
+  /// 行为：
+  /// - 找选区覆盖的行范围 [firstLineStart, lastLineEnd]（与
+  ///   handleDetailMoveLines 同算法 — end-1 probe 避免选区止于行起点
+  ///   时误选下一行）
+  /// - ⌘⌥↑：在 firstLineStart 之前插一份 block + "\n"；选区平移 0
+  ///   （新副本占据"原 firstLineStart"位置，原文本下沉）
+  /// - ⌘⌥↓：在 lastLineEnd 之后插 "\n" + block；选区移到新副本（让
+  ///   再按一次 ⌘⌥↓ 继续向下复制连续工作）
+  ///
+  /// 与既有 ⌘D 复制行 / ⌘L 选中行 / ⌘⇧K 删除行 / ⌥↑↓ 移动行 同
+  /// IDE 行操作集群。注意：⌘⌥↓ 与既有 ⌘D 行为近似（都向下复制），
+  /// 但 ⌘D 仅复制当前行（多行选区时只在选区末插同样选区），本路径
+  /// 走"按行"语义（多行选区复制整 line set）— 更接近 Sublime 风。
+  const handleDetailCopyLines = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.altKey || e.shiftKey) return false;
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      const firstLineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const probe = end > start ? end - 1 : end;
+      const nextNl = value.indexOf("\n", probe);
+      const lastLineEnd = nextNl === -1 ? value.length : nextNl;
+      const block = value.slice(firstLineStart, lastLineEnd);
+
+      if (e.key === "ArrowUp") {
+        // 在 firstLineStart 之前插 block + "\n"
+        const before = value.slice(0, firstLineStart);
+        const after = value.slice(firstLineStart);
+        const insertion = block + "\n";
+        const next = before + insertion + after;
+        setEditingDetailContent(next);
+        // 选区落在新副本（原 [firstLineStart, lastLineEnd] 位置）
+        const newStart = firstLineStart + (start - firstLineStart);
+        const newEnd = firstLineStart + (end - firstLineStart);
+        requestAnimationFrame(() => {
+          const cur = detailEditorRef.current;
+          if (!cur) return;
+          cur.focus();
+          cur.selectionStart = newStart;
+          cur.selectionEnd = newEnd;
+          setDetailCursorPos(newStart);
+          setDetailSelectionEnd(newEnd);
+        });
+        return true;
+      }
+      // ArrowDown：在 lastLineEnd 之后插 "\n" + block
+      const before = value.slice(0, lastLineEnd);
+      const after = value.slice(lastLineEnd);
+      const insertion = "\n" + block;
+      const next = before + insertion + after;
+      setEditingDetailContent(next);
+      // 选区移到新副本（落到 "\n" 之后即 lastLineEnd + 1 起）
+      const delta = lastLineEnd + 1 - firstLineStart;
+      const newStart = start + delta;
+      const newEnd = end + delta;
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = newStart;
+        cur.selectionEnd = newEnd;
+        setDetailCursorPos(newStart);
+        setDetailSelectionEnd(newEnd);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea ⌥↑ / ⌥↓ 上下移当前行（或选区多行）。VSCode /
   /// Sublime IDE 通用习惯，与既有 ⌘D 复制行 / ⌘L 选中行 / ⌘⇧K 删除行
   /// 同行操作集群。
@@ -12189,6 +12269,9 @@ export function PanelTasks({
                                   // ⌥↑ / ⌥↓ 上下移当前行（或选区多行）
                                   // — IDE 行操作集群。
                                   if (handleDetailMoveLines(e)) return;
+                                  // ⌘⌥↑ / ⌘⌥↓ 复制当前行（或选区多行）
+                                  // 向上 / 向下 — 与 ⌥↑/⌥↓ 移动行对偶。
+                                  if (handleDetailCopyLines(e)) return;
                                   // Tab / Shift+Tab 多行缩进 / 反缩进：选
                                   // 区覆盖行行首 +/- 2 空格；无选区 Tab 在
                                   // 光标位置插 2 空格 + 阻断 native focus
@@ -12257,7 +12340,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘⌥↑/⌘⌥↓ 复制行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -12591,6 +12674,8 @@ export function PanelTasks({
                                   if (handleDetailDuplicateLine(e)) return;
                                   // ⌥↑ / ⌥↓ 上下移行：与 split 模式同 handler。
                                   if (handleDetailMoveLines(e)) return;
+                                  // ⌘⌥↑ / ⌘⌥↓ 复制行：与 split 模式同 handler。
+                                  if (handleDetailCopyLines(e)) return;
                                   // Tab / Shift+Tab 多行缩进：与 split 模
                                   // 式同 handler。
                                   if (handleDetailTabIndent(e)) return;
@@ -12622,7 +12707,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘⌥↑/⌘⌥↓ 复制行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -15255,6 +15340,7 @@ export function PanelTasks({
                   ["⌘⇧L", "弹链接快速插入 popover（选区当 label 仅输 url；空选区双输入 url + label）"],
                   ["Tab / ⇧Tab", "多行缩进 / 反缩进（选区覆盖行 +/- 2 空格；无选区 Tab 在光标位置插 2 空格）"],
                   ["⌥↑ / ⌥↓", "上下移当前行（或选区多行 — 与 VSCode / Sublime IDE 通用）"],
+                  ["⌘⌥↑ / ⌘⌥↓", "复制当前行（或选区多行）向上 / 向下（Sublime 风 — 与 ⌥↑↓ 移动行同字母键、不同 modifier 区分复制 vs 移动）"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
