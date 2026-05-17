@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 加 ⌘/ 弹快捷键速查 modal：列出全部行内快捷键 + 用途，Esc 关；新 owner / 老用户健忘时一键查。
-- detail.md 历史 popover 加「📁 Finder 打开 .history dir」按钮：让 owner cherry-pick 历史文件 / 备份导出。
 - PanelTasks 行 hover preview 内加 detail.md 字数 + 上次编辑时间 chip：让 owner 在 hover 多看一维 detail metadata。
 
 
