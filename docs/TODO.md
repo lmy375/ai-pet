@@ -9,7 +9,6 @@
 >
 
 - PanelMemory butler_tasks item 加 "🔀 切 every↔once" 按钮：把循环任务改成一次性 / 反之，配 date picker 写 once 时刻。
-- PanelDebug 加 "🚦 LLM 调用耗时直方图"：显近 N 次 LLM call latency 分布，帮 owner 发现"宠物变慢"信号。
 
 
 

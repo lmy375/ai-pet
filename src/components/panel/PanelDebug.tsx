@@ -193,6 +193,37 @@ export function PanelDebug() {
       setLlmToolsMcpFetching(false);
     }
   }, []);
+  /// 🚦 LLM 调用耗时直方图：lazy fetch get_llm_logs 最近 50 条 →
+  /// 提取 total_latency_ms 数组 → bucket 6 段（< 500ms / 500ms-1s /
+  /// 1-2s / 2-5s / 5-10s / 10s+）显条形图 + p50 / p95 / max 统计。
+  /// 帮 owner 在"宠物变慢"主观感知前用数据印证 — bug report 写实证
+  /// 时也能贴一段。
+  const [llmLatencyPanelOpen, setLlmLatencyPanelOpen] = useState(false);
+  const [llmLatencies, setLlmLatencies] = useState<number[] | null>(null);
+  const [llmLatencyFetching, setLlmLatencyFetching] = useState(false);
+  const fetchLlmLatencies = useCallback(async () => {
+    setLlmLatencyFetching(true);
+    try {
+      const lines = await invoke<string[]>("get_llm_logs", { limit: 50 });
+      const ms: number[] = [];
+      for (const l of lines) {
+        try {
+          const raw = JSON.parse(l);
+          if (typeof raw.total_latency_ms === "number") {
+            ms.push(raw.total_latency_ms);
+          }
+        } catch {
+          // 单行解析失败跳过；llm.log 是 JSON-Lines 但偶发部分行可能 corrupt
+        }
+      }
+      setLlmLatencies(ms);
+    } catch (e) {
+      console.error("get_llm_logs (latency) failed:", e);
+      setLlmLatencies([]);
+    } finally {
+      setLlmLatencyFetching(false);
+    }
+  }, []);
   const fetchToolRiskOverview = useCallback(async () => {
     try {
       const rows = await invoke<
@@ -2150,6 +2181,29 @@ export function PanelDebug() {
           {llmToolsPanelOpen ? "▾" : "▸"}
         </button>
         <button
+          onClick={() => {
+            setLlmLatencyPanelOpen((v) => {
+              const next = !v;
+              if (next && llmLatencies === null) {
+                void fetchLlmLatencies();
+              }
+              return next;
+            });
+          }}
+          style={{
+            ...toolBtnStyle,
+            background: llmLatencyPanelOpen
+              ? "var(--pet-tint-blue-bg)"
+              : toolBtnStyle.background,
+            color: llmLatencyPanelOpen
+              ? "var(--pet-tint-blue-fg)"
+              : toolBtnStyle.color,
+          }}
+          title="展开 / 折叠 LLM 调用耗时直方图：近 50 次 LLM call 的 total_latency_ms 分布 + p50/p95/max 统计。帮 owner 在「宠物变慢」主观感知前用数据印证。"
+        >
+          🚦 latency {llmLatencyPanelOpen ? "▾" : "▸"}
+        </button>
+        <button
           onClick={() => void handleExportDebugMd()}
           style={toolBtnStyle}
           title="把当前 PanelDebug 的 stats / chip / tone / pending review / 工具风险偏好覆盖 / 最近 5 句宠物语 拼成一份 markdown 写到剪贴板，方便贴 issue 或排查时给同事看"
@@ -2440,6 +2494,182 @@ export function PanelDebug() {
           + review mode）+ MCP 工具（lazy fetched 第一次打开时拉一次）。
           排查 "宠物为什么没用工具 X" 的现场入口：always_review 的工具不
           会被 LLM auto-call；连不上的 MCP server 自然提供不了 tool。 */}
+      {/* 🚦 LLM 调用耗时直方图面板：6 段 bucket（< 500ms / 500ms-1s / 1-2s /
+          2-5s / 5-10s / 10s+）+ p50 / p95 / max 头部 stats。色按 bucket 区间
+          绿 / amber / red 反映 owner "宠物快 / 慢 / 卡" 主观感知。 */}
+      {llmLatencyPanelOpen && (() => {
+        const ms = llmLatencies ?? [];
+        const buckets: { label: string; lo: number; hi: number; tint: string }[] = [
+          { label: "< 500ms", lo: 0, hi: 500, tint: "var(--pet-tint-green-fg)" },
+          { label: "500ms - 1s", lo: 500, hi: 1000, tint: "var(--pet-tint-green-fg)" },
+          { label: "1 - 2s", lo: 1000, hi: 2000, tint: "var(--pet-tint-amber-fg, #d97706)" },
+          { label: "2 - 5s", lo: 2000, hi: 5000, tint: "var(--pet-tint-amber-fg, #d97706)" },
+          { label: "5 - 10s", lo: 5000, hi: 10000, tint: "var(--pet-tint-red-fg)" },
+          { label: "10s+", lo: 10000, hi: Infinity, tint: "var(--pet-tint-red-fg)" },
+        ];
+        const counts = buckets.map(
+          (b) => ms.filter((v) => v >= b.lo && v < b.hi).length,
+        );
+        const maxCount = Math.max(1, ...counts);
+        // p50 / p95 / max
+        const sorted = [...ms].sort((a, b) => a - b);
+        const pct = (q: number): number => {
+          if (sorted.length === 0) return 0;
+          const idx = Math.min(
+            sorted.length - 1,
+            Math.floor(q * sorted.length),
+          );
+          return sorted[idx];
+        };
+        const p50 = pct(0.5);
+        const p95 = pct(0.95);
+        const max = sorted.length === 0 ? 0 : sorted[sorted.length - 1];
+        const fmt = (n: number) =>
+          n < 1000 ? `${n}ms` : `${(n / 1000).toFixed(1)}s`;
+        return (
+          <div
+            style={{
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-bg)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 8,
+                fontSize: 11,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--pet-color-fg)",
+                }}
+              >
+                🚦 近 {ms.length} 次 LLM call 耗时
+              </span>
+              {ms.length > 0 && (
+                <>
+                  <span
+                    style={{
+                      color: "var(--pet-color-muted)",
+                      fontFamily: "'SF Mono', monospace",
+                    }}
+                  >
+                    p50 {fmt(p50)} · p95 {fmt(p95)} · max {fmt(max)}
+                  </span>
+                </>
+              )}
+              {llmLatencyFetching && (
+                <span style={{ fontSize: 10, color: "var(--pet-color-muted)" }}>
+                  加载中…
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => void fetchLlmLatencies()}
+                disabled={llmLatencyFetching}
+                style={{
+                  fontSize: 10,
+                  padding: "1px 6px",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 3,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: llmLatencyFetching ? "default" : "pointer",
+                  fontFamily: "inherit",
+                  marginLeft: "auto",
+                }}
+                title="重新拉 get_llm_logs 最近 50 条"
+              >
+                🔄 刷新
+              </button>
+            </div>
+            {ms.length === 0 ? (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--pet-color-muted)",
+                  fontStyle: "italic",
+                }}
+              >
+                {llmLatencyFetching
+                  ? "首次加载中…"
+                  : "（log 文件还没 LLM call 记录 — 等宠物开口几次再刷新）"}
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                  fontSize: 11,
+                }}
+              >
+                {buckets.map((b, i) => {
+                  const count = counts[i];
+                  const widthPct = (count / maxCount) * 100;
+                  return (
+                    <div
+                      key={b.label}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 80,
+                          color: "var(--pet-color-muted)",
+                          textAlign: "right",
+                        }}
+                      >
+                        {b.label}
+                      </div>
+                      <div
+                        style={{
+                          flex: 1,
+                          height: 12,
+                          background: "var(--pet-color-card)",
+                          borderRadius: 2,
+                          position: "relative",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${widthPct}%`,
+                            height: "100%",
+                            background: b.tint,
+                            opacity: count === 0 ? 0.2 : 0.85,
+                            transition: "width 200ms ease-out",
+                          }}
+                        />
+                      </div>
+                      <div
+                        style={{
+                          width: 36,
+                          color: "var(--pet-color-fg)",
+                          textAlign: "right",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {count}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {llmToolsPanelOpen && (() => {
         const levelTint = (level: string) => {
           switch (level) {
