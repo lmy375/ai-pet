@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 行加「📅 due 倒计时」hover chip：仅有 due 的 active 行显「N 天 X 小时后」精确倒计 — 紧迫度 audit。
-- PanelMemory item 右键加「📎 复制 [[cat/title]] inline ref」: 与既有 🔗 chip click 对偶 — ctx menu 入口与 inline chip 互补。
 - PanelDebug 加「📊 LLM 错误率」chip：扫近 1h llm.log 算 ok / err 比例 — 与既有「📊 1h tokens」chip 并排 audit。
 - ChatMini 输入框加「📋 paste-as-plain」按钮：粘时 normalize smart quotes / NBSP / 零宽字符 — 去 rich-text 污染。
 
