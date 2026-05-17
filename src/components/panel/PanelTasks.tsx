@@ -2255,15 +2255,26 @@ export function PanelTasks({
   const [detailSearchOpen, setDetailSearchOpen] = useState(false);
   const [detailSearchQuery, setDetailSearchQuery] = useState("");
   const [detailSearchActiveIdx, setDetailSearchActiveIdx] = useState(0);
+  /// ⌘⇧F 打开 replace 半边的开关。⌘F 仅 find（detailReplaceMode = false）；
+  /// ⌘⇧F 同时打 search + 切到 replace mode。也可在 find bar 内点 ↳ 按钮切。
+  /// 关 search bar 时不重置 — 让 owner 再开仍记得在 replace 模式（与 VSCode
+  /// 同行为）。但切到另一 task 时（editingDetailTitle 变）重置（清掉 stale
+  /// state）。
+  const [detailReplaceMode, setDetailReplaceMode] = useState(false);
+  const [detailReplaceText, setDetailReplaceText] = useState("");
   const detailSearchInputRef = useRef<HTMLInputElement>(null);
+  const detailReplaceInputRef = useRef<HTMLInputElement>(null);
   /// 切到不同 task 的 detail 时关搜索 + 清查询（不然旧 query 跨 task 错位）。
   useEffect(() => {
     if (editingDetailTitle === null) {
       setDetailSearchOpen(false);
       setDetailSearchQuery("");
       setDetailSearchActiveIdx(0);
+      setDetailReplaceMode(false);
+      setDetailReplaceText("");
     } else {
-      // 切到另一 task：仅重置 idx（保留 query 让 owner 用同关键词跨 task 搜）
+      // 切到另一 task：仅重置 idx（保留 query / replace text 让 owner 用同
+      // 关键词跨 task 继续搜 / 替换 — 与跨 task 全局任务搜索一致心智）
       setDetailSearchActiveIdx(0);
     }
   }, [editingDetailTitle]);
@@ -2314,6 +2325,104 @@ export function PanelTasks({
     return () =>
       window.removeEventListener("keydown", onKey, { capture: true });
   }, [editingDetailTitle]);
+
+  /// ⌘⇧F 在 detail 编辑器 / 搜索 input / 替换 input 内时 → 打开 search bar
+  /// 同时切到 replace 半边。已开 + 已在 replace 模式时聚焦到 replace input；
+  /// 否则聚焦 search input 让 owner 先填关键词。与 VSCode ⌘⇧F / ⌘H 同
+  /// 行为（VSCode 双绑：⌘F find / ⌘H replace；Web 端用 ⌘⇧F 更直觉）。
+  useEffect(() => {
+    if (editingDetailTitle === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (!e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "f") return;
+      const ae = document.activeElement;
+      const ta = detailEditorRef.current;
+      const si = detailSearchInputRef.current;
+      const ri = detailReplaceInputRef.current;
+      if (ae !== ta && ae !== si && ae !== ri) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setDetailSearchOpen(true);
+      setDetailReplaceMode(true);
+      setDetailSearchActiveIdx(0);
+      // search query 空 → focus search 让 owner 先填 query；非空 → 直接
+      // focus replace 让 owner 填替换文本（query 已就绪走 replace 流）
+      window.setTimeout(() => {
+        if (!detailSearchQuery) {
+          detailSearchInputRef.current?.focus();
+          detailSearchInputRef.current?.select();
+        } else {
+          detailReplaceInputRef.current?.focus();
+          detailReplaceInputRef.current?.select();
+        }
+      }, 0);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, [editingDetailTitle, detailSearchQuery]);
+
+  /// pure：在 content 内单条命中位置 (start, end) 做替换。返回新 content。
+  const replaceMatchInContent = useCallback(
+    (content: string, start: number, end: number, replaceText: string) => {
+      return content.slice(0, start) + replaceText + content.slice(end);
+    },
+    [],
+  );
+
+  /// 替换当前 active match：取活动命中 → splice replaceText → 更新 content。
+  /// activeIdx 不动：matches useMemo 重新算后，原位置上的下一条命中会接班
+  /// （除非 replaceText 含 query 子串 — 那种情况 owner 再按 Enter 推进）。
+  /// 替换后焦点保留在 replace input，让 owner 连按 Enter 连续替换。
+  const handleDetailReplaceCurrent = useCallback(() => {
+    if (detailSearchMatches.length === 0) return;
+    const safeIdx = Math.max(
+      0,
+      Math.min(detailSearchActiveIdx, detailSearchMatches.length - 1),
+    );
+    const m = detailSearchMatches[safeIdx];
+    if (!m) return;
+    const next = replaceMatchInContent(
+      editingDetailContent,
+      m.start,
+      m.end,
+      detailReplaceText,
+    );
+    setEditingDetailContent(next);
+    // 替换完保留焦点在 replace input，让 owner 连按 Enter 推进
+    requestAnimationFrame(() => {
+      detailReplaceInputRef.current?.focus();
+    });
+  }, [
+    detailSearchMatches,
+    detailSearchActiveIdx,
+    editingDetailContent,
+    detailReplaceText,
+    replaceMatchInContent,
+  ]);
+
+  /// 全部替换：从后往前 splice 每条命中（避免前面切换让后面位置漂移）。
+  /// matches 空 / query 空时 noop。完成后 activeIdx 归 0、焦点保 replace
+  /// input，count chip 自然显 "0/0"。
+  const handleDetailReplaceAll = useCallback(() => {
+    if (detailSearchMatches.length === 0) return;
+    let next = editingDetailContent;
+    for (let i = detailSearchMatches.length - 1; i >= 0; i--) {
+      const m = detailSearchMatches[i];
+      next = replaceMatchInContent(next, m.start, m.end, detailReplaceText);
+    }
+    setEditingDetailContent(next);
+    setDetailSearchActiveIdx(0);
+    requestAnimationFrame(() => {
+      detailReplaceInputRef.current?.focus();
+    });
+  }, [
+    detailSearchMatches,
+    editingDetailContent,
+    detailReplaceText,
+    replaceMatchInContent,
+  ]);
 
   /// ⌘/ toggle markdown 注释（`<!-- ... -->`）。capture phase 拦截 —
   /// 与既有全局 ⌘/ 速查 modal 冲突时，detail editor textarea 焦点内本
@@ -10666,14 +10775,21 @@ export function PanelTasks({
                                   <div
                                     style={{
                                       display: "flex",
-                                      alignItems: "center",
-                                      gap: 6,
+                                      flexDirection: "column",
+                                      gap: 4,
                                       padding: "4px 8px",
                                       border:
                                         "1px solid var(--pet-color-border)",
                                       background: "var(--pet-color-card)",
                                       borderRadius: 6,
                                       fontSize: 12,
+                                    }}
+                                  >
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 6,
                                     }}
                                   >
                                     <span style={{ fontSize: 12, opacity: 0.7 }}>
@@ -10802,6 +10918,33 @@ export function PanelTasks({
                                     </button>
                                     <button
                                       type="button"
+                                      onClick={() =>
+                                        setDetailReplaceMode((v) => !v)
+                                      }
+                                      title={
+                                        detailReplaceMode
+                                          ? "收起替换半边（仅保留查找；⌘⇧F 再次展开）"
+                                          : "展开替换半边（⌘⇧F 等价 — VSCode 风 find & replace）"
+                                      }
+                                      style={{
+                                        padding: "2px 6px",
+                                        fontSize: 11,
+                                        border:
+                                          "1px solid var(--pet-color-border)",
+                                        borderRadius: 4,
+                                        background: detailReplaceMode
+                                          ? "var(--pet-tint-blue-bg)"
+                                          : "var(--pet-color-card)",
+                                        color: detailReplaceMode
+                                          ? "var(--pet-tint-blue-fg)"
+                                          : "var(--pet-color-muted)",
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      ↳
+                                    </button>
+                                    <button
+                                      type="button"
                                       onClick={() => {
                                         setDetailSearchOpen(false);
                                         window.setTimeout(() => {
@@ -10822,6 +10965,131 @@ export function PanelTasks({
                                     >
                                       ✕
                                     </button>
+                                  </div>
+                                  {/* Replace 半边：仅 detailReplaceMode 真时显。
+                                      replaceText 可空（删除命中场景）；Enter 单
+                                      次替换 / ⌘Enter 全部替换 / Esc 关 search
+                                      bar。 */}
+                                  {detailReplaceMode && (
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 6,
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          fontSize: 12,
+                                          opacity: 0.7,
+                                          width: 14,
+                                          textAlign: "center",
+                                        }}
+                                      >
+                                        ↳
+                                      </span>
+                                      <input
+                                        ref={detailReplaceInputRef}
+                                        type="text"
+                                        value={detailReplaceText}
+                                        onChange={(e) =>
+                                          setDetailReplaceText(e.target.value)
+                                        }
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Escape") {
+                                            e.preventDefault();
+                                            setDetailSearchOpen(false);
+                                            window.setTimeout(() => {
+                                              detailEditorRef.current?.focus();
+                                            }, 0);
+                                            return;
+                                          }
+                                          if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            if (e.metaKey || e.ctrlKey) {
+                                              handleDetailReplaceAll();
+                                            } else {
+                                              handleDetailReplaceCurrent();
+                                            }
+                                            return;
+                                          }
+                                        }}
+                                        placeholder="替换为…（Enter 单次 · ⌘Enter 全部 · 留空 = 删除命中 · Esc 关）"
+                                        style={{
+                                          flex: 1,
+                                          minWidth: 80,
+                                          padding: "3px 6px",
+                                          fontSize: 12,
+                                          border:
+                                            "1px solid var(--pet-color-border)",
+                                          borderRadius: 4,
+                                          background: "var(--pet-color-bg)",
+                                          color: "var(--pet-color-fg)",
+                                          fontFamily: "inherit",
+                                          outline: "none",
+                                        }}
+                                      />
+                                      <span
+                                        style={{
+                                          fontSize: 10,
+                                          color: "var(--pet-color-muted)",
+                                          fontFamily: "'SF Mono', monospace",
+                                          whiteSpace: "nowrap",
+                                          minWidth: 36,
+                                          textAlign: "right",
+                                        }}
+                                        title="命中计数（与上方 find row 同源 — 仅 layout 占位让 Replace 按钮纵向对齐）"
+                                      >
+                                        {" "}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={handleDetailReplaceCurrent}
+                                        disabled={n === 0}
+                                        title={
+                                          n === 0
+                                            ? "无命中可替换"
+                                            : "替换当前命中（Enter）"
+                                        }
+                                        style={{
+                                          padding: "2px 8px",
+                                          fontSize: 11,
+                                          border:
+                                            "1px solid var(--pet-color-border)",
+                                          borderRadius: 4,
+                                          background: "var(--pet-color-card)",
+                                          color: "var(--pet-color-fg)",
+                                          cursor: n === 0 ? "default" : "pointer",
+                                          opacity: n === 0 ? 0.4 : 1,
+                                        }}
+                                      >
+                                        替换
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={handleDetailReplaceAll}
+                                        disabled={n === 0}
+                                        title={
+                                          n === 0
+                                            ? "无命中可替换"
+                                            : `全部替换 ${n} 处命中（⌘Enter）`
+                                        }
+                                        style={{
+                                          padding: "2px 8px",
+                                          fontSize: 11,
+                                          border:
+                                            "1px solid var(--pet-color-border)",
+                                          borderRadius: 4,
+                                          background: "var(--pet-color-card)",
+                                          color: "var(--pet-color-fg)",
+                                          cursor: n === 0 ? "default" : "pointer",
+                                          opacity: n === 0 ? 0.4 : 1,
+                                        }}
+                                      >
+                                        全部替换
+                                      </button>
+                                    </div>
+                                  )}
                                   </div>
                                 );
                               })()}
