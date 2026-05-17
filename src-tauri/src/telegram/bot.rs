@@ -1112,6 +1112,59 @@ async fn handle_tg_command(
                 )
             }
         }
+        TgCommand::FindSpeech { keyword } => {
+            // 搜 speech_history.log — handler 读全文 + 逐行 case-insensitive
+            // 子串过滤 + 抽 ts + snippet。空 keyword 由 formatter 走 usage
+            // hint。每行格式 "<RFC3339 ts> <text>"；reverse 让最新 hit 在
+            // 前（owner 通常关心近期 utterance）。
+            let kw = keyword.trim().to_string();
+            if kw.is_empty() {
+                crate::telegram::commands::format_find_speech_reply(
+                    &[],
+                    &keyword,
+                )
+            } else {
+                let content =
+                    crate::speech_history::read_history_content().await;
+                let kw_lower = kw.to_lowercase();
+                let mut hits: Vec<(String, String)> = Vec::new();
+                for line in content.lines().rev() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    // 行格式：`<ts> <text>` — strip_timestamp 提供 text；
+                    // ts 部分手动取首段
+                    let Some((ts_str, _)) = line.split_once(' ') else {
+                        continue;
+                    };
+                    let text =
+                        crate::speech_history::strip_timestamp(line);
+                    if !text.to_lowercase().contains(&kw_lower) {
+                        continue;
+                    }
+                    // ts → 本地 MM-DD HH:MM
+                    let ts_label =
+                        chrono::DateTime::parse_from_rfc3339(ts_str)
+                            .map(|t| {
+                                t.with_timezone(&chrono::Local)
+                                    .format("%m-%d %H:%M")
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|_| ts_str.to_string());
+                    let Some(snippet) =
+                        crate::telegram::commands::extract_find_in_detail_snippet(
+                            text, &kw,
+                        )
+                    else {
+                        continue;
+                    };
+                    hits.push((ts_label, snippet));
+                }
+                crate::telegram::commands::format_find_speech_reply(
+                    &hits, &keyword,
+                )
+            }
+        }
         TgCommand::Tag { name } => {
             // 按 #tag exact 等值匹配。reuse 同 read path；空 name 由
             // formatter 内部走 usage hint。

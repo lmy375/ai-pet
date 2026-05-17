@@ -294,6 +294,12 @@ pub enum TgCommand {
     /// 中。返回最多 8 条命中行（status emoji + 标题 + 命中点附近 60 字
     /// snippet）。空 keyword → missing-argument hint。
     FindInDetail { keyword: String },
+    /// `/find_speech <keyword>` —— 在 speech_history.log 内搜 keyword
+    /// （case-insensitive 子串），返回最多 8 条命中（ts MM-DD HH:MM +
+    /// 命中点附近 60 字 snippet）。与 /find（标题 / 描述）/
+    /// /find_in_detail（detail.md 内容）同搜索族 — 本命令搜 pet 说过
+    /// 的话。空 keyword → handler 走 missing-argument hint。
+    FindSpeech { keyword: String },
     /// `/blocked` —— 列出本 chat 派单中被 `[blockedBy: ...]` 锁住的 active
     /// task（pending / error 状态）+ 每条仍未解决的 blocker 标题列表。无参；
     /// 多余尾部忽略（与 /tasks / /today 同容忍策略）。给 owner audit "我哪
@@ -594,6 +600,7 @@ impl TgCommand {
             TgCommand::ActiveRecent { .. } => "active_recent",
             TgCommand::Find { .. } => "find",
             TgCommand::FindInDetail { .. } => "find_in_detail",
+            TgCommand::FindSpeech { .. } => "find_speech",
             TgCommand::Blocked => "blocked",
             TgCommand::Forks { .. } => "forks",
             TgCommand::BlockedBy { .. } => "blocked_by",
@@ -658,6 +665,7 @@ impl TgCommand {
             | TgCommand::Unsilent { title }
             | TgCommand::Find { keyword: title }
             | TgCommand::FindInDetail { keyword: title }
+            | TgCommand::FindSpeech { keyword: title }
             | TgCommand::Tag { name: title }
             | TgCommand::TagsFor { title }
             | TgCommand::Touch { title }
@@ -822,6 +830,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("active_recent", "List most recently created N active tasks (pending / error, created_at desc) — reverse of /recent"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
             ("find_in_detail", "Search this chat's tasks by keyword inside detail.md content (complements /find which scans title/description)"),
+            ("find_speech", "Search speech_history.log by keyword — pet's past proactive utterances; complements /find / /find_in_detail"),
             ("show", "Show full raw description (with markers) + detail.md preview of a task"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
@@ -895,6 +904,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("active_recent", "本 chat 最近 N 条新建 active task（pending / error，created_at desc）— 与 /recent done 反向（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
             ("find_in_detail", "按 keyword 搜本聊天派单的 detail.md 内容（含命中点 snippet，至多 8 条）— 与 /find 互补"),
+            ("find_speech", "按 keyword 搜 speech_history.log — 搜 pet 说过的话（含命中点 snippet，至多 8 条）"),
             ("show", "显单条任务完整 raw description（含 markers）+ detail.md 预览"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
@@ -1411,6 +1421,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 空 keyword 由 handler 走 missing-argument。snake_case 命名避开
         // dash drift-defense（与 /oldest_n / /active_recent 同模板）。
         "find_in_detail" => Some(TgCommand::FindInDetail { keyword: title }),
+        // `/find_speech <keyword>`：所有 arg 作 keyword（含空格保留）。
+        // 空 keyword 由 handler 走 missing-argument。snake_case 命名避
+        // 开 dash drift-defense（与 /find_in_detail 同模板）。
+        "find_speech" => Some(TgCommand::FindSpeech { keyword: title }),
         // `/blocked`：无参；多余尾部忽略（与 /tasks / /today 同容忍策略）。
         "blocked" => Some(TgCommand::Blocked),
         // `/snoozed`：无参；多余尾部忽略（与 /silenced / /pinned 同模板）。
@@ -1856,7 +1870,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "find", "find_in_detail", "show", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "find", "find_in_detail", "find_speech", "show", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2003,7 +2017,8 @@ pub fn format_help_for_topic(
         "edit_due" => "📅 /edit_due <title> <preset>\n\n用法：免手敲 ISO 日期改任务 due — preset 接友好词。preset 是 last whitespace token，剩余作 title（与 /pri / /promote / /demote 同 parser 模板，含空格 / 中文 title 也保）。复用 task_set_due 后端 — 与 ✏️ /edit 全量覆写正交，仅改 due 字段不动其它 markers。\n\nPreset 名单：\n\n  时刻类：\n    · tonight / 今晚 — 今晚 18:00（已过则明晚同点）\n    · tomorrow / 明天 / morning / 早上 / tmr — 明早 09:00\n    · monday..sunday / 周一..周日 / mon..sun — 本周（或下周如已过）该 weekday 09:00\n    · next_monday..next_sunday / 下周一..下周日 / next-mon..next-sun — 下周 weekday 09:00\n\n  相对类：\n    · +Nm — now + N 分钟\n    · +Nh — now + N 小时\n    · +Nd — N 天后 09:00（落次日早上而非「几天后此刻」避免午夜反直觉）\n\n  清除：\n    · clear / none / 0 / 清除 / 取消 — 清掉 due\n\n示例：\n  /edit_due 整理 Downloads tonight\n  /edit_due 写周报 next_friday\n  /edit_due 跑步 +30m\n  /edit_due 旧任务 clear\n\n相关：/pri <title> <N>（改 priority）；/promote / /demote（priority +/-1）；/snooze（暂停而非改 due）。",
         "reflect" => "🪞 /reflect <text>\n\n用法：把任意文本作 ai_insights memory item 存盘（反思 / 自我洞察分类，与 /note 写 general 对偶）。title 自动 `reflect-YYYY-MM-DDTHH-MM-SS`。\n\n示例：\n  /reflect 今天回顾：我对中断接受度过高，应该早点说 no\n  /reflect 观察：长 task 拆细后完成率明显提升\n\n相关：/note 写 general（杂项 brain-dump）；二者按「信号类型」分流避免 ai_insights 段被日常杂项稀释。可在 PanelMemory → AI 洞察 段查看 / 整理。",
         "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/find_in_detail（搜 detail.md 内容）；/tasks（看全表）；/blocked（被锁住的）；/show（看单条详情）。",
-        "find_in_detail" => "🔬 /find_in_detail <keyword>\n\n用法：搜本聊天派单的 detail.md 内容（case-insensitive 子串），至多 8 条命中。与 /find（仅扫标题 / raw_description）互补 — pet 在 detail.md 写过相关进度 / 复盘但标题没体现时本命令命中。\n\n输出格式：\n  🔬 命中「<kw>」N 条（detail.md 内容搜索）：\n  🟢 <title>\n     …<snippet 含 keyword 60 字 context>…\n  ⚠️ <title>\n     …\n  ...\n\nsnippet 取 keyword 命中点附近 60 字 context；超长 + …。\n\n示例：\n  /find_in_detail rebase\n  /find_in_detail TODO\n  /find_in_detail 决策\n\n注：每次命令读所有派单的 detail.md（IO 较重），不必过分频繁。owner 想「快速过一遍标题」走 /find；想「我笔记里写过 X」走本命令。\n\n相关：/find（扫标题 + 描述）；/show <title>（看单条 raw + detail 预览）；/timeline（看历史变化）。",
+        "find_in_detail" => "🔬 /find_in_detail <keyword>\n\n用法：搜本聊天派单的 detail.md 内容（case-insensitive 子串），至多 8 条命中。与 /find（仅扫标题 / raw_description）互补 — pet 在 detail.md 写过相关进度 / 复盘但标题没体现时本命令命中。\n\n输出格式：\n  🔬 命中「<kw>」N 条（detail.md 内容搜索）：\n  🟢 <title>\n     …<snippet 含 keyword 60 字 context>…\n  ⚠️ <title>\n     …\n  ...\n\nsnippet 取 keyword 命中点附近 60 字 context；超长 + …。\n\n示例：\n  /find_in_detail rebase\n  /find_in_detail TODO\n  /find_in_detail 决策\n\n注：每次命令读所有派单的 detail.md（IO 较重），不必过分频繁。owner 想「快速过一遍标题」走 /find；想「我笔记里写过 X」走本命令。\n\n相关：/find（扫标题 + 描述）；/find_speech（搜 pet 说过的话）；/show <title>（看单条 raw + detail 预览）；/timeline（看历史变化）。",
+        "find_speech" => "🗣 /find_speech <keyword>\n\n用法：在 speech_history.log 内搜 keyword（case-insensitive 子串），返回最多 8 条命中（ts MM-DD HH:MM + 命中点附近 60 字 snippet）。与 /find / /find_in_detail 同搜索族但 scope 是 **pet 说过的话**。\n\n输出格式：\n  🗣 speech 命中「<kw>」N 条：\n  · MM-DD HH:MM · …<snippet>…\n  · MM-DD HH:MM · …\n  ...\n\nsnippet 取 keyword 命中点附近 60 字 context；超长前后 + …。\n\n场景：owner 想「pet 之前提过 X 吗」/「pet 上次怎么说这件事」 audit — 比 /last_speech（仅最近 1 条）覆盖更广。\n\n示例：\n  /find_speech 周报\n  /find_speech rebase\n  /find_speech 心情\n\n相关：/last_speech（最近一条主动开口）；/find（任务标题 / 描述）；/find_in_detail（detail.md 内容）；/recent_chats（user ↔ pet 对话）。",
         "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）；/forks <title>（反向：哪些 task 在等这条解锁）。",
@@ -2090,6 +2105,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/active_recent [N]  —  本 chat 最近 N 条新建 active（pending / error，created_at desc）— 与 /recent done 反向".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
         "/find_in_detail <keyword>  —  搜 detail.md 内容（含命中点 snippet，至多 8 条；与 /find 互补 — 「我笔记里写过 X」audit）".to_string(),
+        "/find_speech <keyword>  —  搜 speech_history.log（pet 说过的话，含命中点 snippet，至多 8 条；与 /last_speech 单条对偶）".to_string(),
         "/show <title>  —  显单条任务完整 raw description（含 markers）+ detail.md 预览".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
@@ -3143,6 +3159,46 @@ pub fn extract_find_in_detail_snippet(
         .collect::<Vec<_>>()
         .join(" ");
     Some(flat)
+}
+
+/// `/find_speech <keyword>` 命令回复文案。pure：handler 已扫
+/// speech_history.log 全文 + 按行 case-insensitive 子串过滤 + 抽 snippet。
+/// 本函数仅做字符串拼装。
+///
+/// 输入 hits 是 (ts_local_HH_MM, snippet) tuple — handler 已把 RFC3339
+/// ts 转 `MM-DD HH:MM` 本地串。空 keyword → usage hint；无 hits → 友好
+/// 兜底；有 hits → 拼 list 最多 8 条 + overflow hint。
+pub fn format_find_speech_reply(
+    hits: &[(String, String)],
+    keyword: &str,
+) -> String {
+    let kw = keyword.trim();
+    if kw.is_empty() {
+        return "🗣 用法：/find_speech <keyword>\n按 keyword 搜 speech_history.log（pet 说过的话），返回最多 8 条命中（含 ts + snippet）。\n例：/find_speech 周报 / /find_speech rebase / /find_speech 心情\n\n与 /last_speech（最近 1 条）/ /find / /find_in_detail 互补。".to_string();
+    }
+    if hits.is_empty() {
+        return format!(
+            "🗣 speech_history 内没有命中「{}」的话。\n试更短的关键词；或 /last_speech 看最近一条；或 /recent_chats 看对话往返。",
+            kw
+        );
+    }
+    let cap = 8;
+    let shown = &hits[..hits.len().min(cap)];
+    let mut out = format!(
+        "🗣 speech 命中「{}」{} 条：",
+        kw,
+        hits.len()
+    );
+    for (ts, snippet) in shown {
+        out.push_str(&format!("\n· {} · …{}…", ts, snippet));
+    }
+    if hits.len() > cap {
+        out.push_str(&format!(
+            "\n…还有 {} 条命中（关键词太宽？试更精确的词）",
+            hits.len() - cap
+        ));
+    }
+    out
 }
 
 /// `/tag <name>` 命令回复文案。pure：在 views（已 chat-scoped）里找
@@ -6072,7 +6128,7 @@ mod tests {
             "due", "recent", "oldest_n", "active_recent", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
-            "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail",
+            "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
             "show", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7",
         ] {
@@ -6544,7 +6600,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "active_recent", "find_in_detail", "show", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "active_recent", "find_in_detail", "find_speech", "show", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -8438,6 +8494,77 @@ mod tests {
         assert!(snippet.contains("MATCH"), "{snippet}");
         // 不应含全部 100 chars
         assert!(snippet.len() < text.len(), "{snippet}");
+    }
+
+    // -------- /blocked parse + format --------
+
+    // -------- /find_speech parse + format --------
+
+    #[test]
+    fn find_speech_parses_keyword_arg() {
+        assert_eq!(
+            parse_tg_command("/find_speech 周报"),
+            Some(TgCommand::FindSpeech {
+                keyword: "周报".to_string()
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/find_speech 多 字 关键词"),
+            Some(TgCommand::FindSpeech {
+                keyword: "多 字 关键词".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn find_speech_empty_keyword_returns_usage_hint() {
+        let s = format_find_speech_reply(&[], "");
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/find_speech <keyword>"), "{s}");
+    }
+
+    #[test]
+    fn find_speech_no_hits_shows_keyword_in_reply() {
+        let s = format_find_speech_reply(&[], "周报");
+        assert!(s.contains("speech_history 内没有命中"), "{s}");
+        assert!(s.contains("周报"), "echoes keyword: {s}");
+    }
+
+    #[test]
+    fn find_speech_reply_renders_hits_with_ts_and_snippet() {
+        let hits = vec![
+            (
+                "05-17 14:30".to_string(),
+                "想到要写周报突然慌了".to_string(),
+            ),
+            (
+                "05-16 09:15".to_string(),
+                "周报这事每周都要做".to_string(),
+            ),
+        ];
+        let s = format_find_speech_reply(&hits, "周报");
+        assert!(s.contains("🗣 speech 命中「周报」2 条"), "{s}");
+        assert!(s.contains("05-17 14:30"), "{s}");
+        assert!(s.contains("想到要写周报突然慌了"), "{s}");
+        assert!(s.contains("05-16 09:15"), "{s}");
+        assert!(s.contains("周报这事每周都要做"), "{s}");
+        // 双 ellipsis snippet 框
+        assert!(s.contains("…想到要写周报突然慌了…"), "{s}");
+    }
+
+    #[test]
+    fn find_speech_caps_at_8_with_overflow_hint() {
+        let hits: Vec<(String, String)> = (0..12)
+            .map(|i| (format!("05-{:02} 10:00", i + 1), format!("snip {}", i)))
+            .collect();
+        let s = format_find_speech_reply(&hits, "snip");
+        assert!(s.contains("speech 命中「snip」12 条"), "{s}");
+        // 前 8 应显
+        assert!(s.contains("snip 0"), "{s}");
+        assert!(s.contains("snip 7"), "{s}");
+        assert!(!s.contains("snip 8"), "{s}");
+        // 溢出 hint
+        assert!(s.contains("还有 4 条命中"), "{s}");
     }
 
     // -------- /blocked parse + format --------
