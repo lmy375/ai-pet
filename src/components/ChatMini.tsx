@@ -658,6 +658,47 @@ export function ChatMini({
       });
   };
 
+  /// iter #399: 💾 导出本会话 markdown — 与 PanelChat 既有
+  /// exportSessionAsMarkdown 同格式（# 标题 + > 导出时间 · 共 N 条
+  /// + 每条 ## 🧑/🐾 + content + 空行）。仅 user / assistant 入；
+  /// system / tool 跳。复用 copyToast 反馈 mechanism。
+  const handleExportSessionMarkdown = () => {
+    const slice = messages.filter(
+      (m) => m.role === "user" || m.role === "assistant",
+    );
+    if (slice.length === 0) {
+      setCopyToast("err");
+      window.setTimeout(() => setCopyToast("none"), 1500);
+      return;
+    }
+    const lines: string[] = [];
+    lines.push("# ChatMini Session");
+    lines.push(
+      `> 导出时间: ${new Date().toLocaleString()} · 共 ${slice.length} 条消息`,
+    );
+    lines.push("");
+    for (const m of slice) {
+      const glyph =
+        m.role === "user" ? effectiveUserGlyph : effectiveAssistantGlyph;
+      lines.push(`## ${glyph} ${m.role}`);
+      lines.push("");
+      lines.push(extractText(m.content));
+      lines.push("");
+    }
+    const md = lines.join("\n");
+    navigator.clipboard
+      .writeText(md)
+      .then(() => {
+        setCopyToast("done");
+        window.setTimeout(() => setCopyToast("none"), 1500);
+      })
+      .catch((err) => {
+        console.error("export session markdown failed:", err);
+        setCopyToast("err");
+        window.setTimeout(() => setCopyToast("none"), 1500);
+      });
+  };
+
   // 截到最近 N 条 + 只留 user / assistant。useMemo 防 messages 引用稳定时
   // 不必重算（useChat 在每次 setMessages 时返回新数组所以会变，但中间
   // 没变化的渲染仍命中 memo）。
@@ -1332,6 +1373,44 @@ export function ChatMini({
             )}
           </div>
         )}
+        {/* iter #399: 💾 导出本会话 markdown 按钮 — 与 PanelChat 既有
+            导出对偶；ChatMini 内一键 export 当前 session 到剪贴板。位置
+            在 🌐 时区 chip 之左（顺序 ⛶ → 📋 → 🌐 → 💾，每个 28px 间
+            距），让两 copy/export 入口（📋 / 💾）+ 时区 / 最大化辅助
+            chip 视觉成行。 */}
+        <button
+          type="button"
+          className="pet-mini-maxbtn"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleExportSessionMarkdown();
+          }}
+          title="导出本会话为 markdown 复制到剪贴板（# title + 每条 ## 🧑/🐾 + content，与桌面 PanelChat 既有导出同格式）"
+          aria-label="export session as markdown"
+          style={{
+            position: "absolute",
+            top: "14px",
+            right: onOpenPanel ? "104px" : "76px",
+            width: "20px",
+            height: "20px",
+            borderRadius: "50%",
+            border: "1px solid var(--pet-color-border)",
+            background: "var(--pet-color-card)",
+            color: "var(--pet-color-muted)",
+            fontSize: "10px",
+            lineHeight: 1,
+            cursor: "pointer",
+            zIndex: 13,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            boxShadow: "var(--pet-shadow-sm)",
+          }}
+        >
+          💾
+        </button>
         {/* 「复制最近 N 条」按钮：⛶ 旁边。click 弹小菜单 3/5/10；选中后取
             最近 N 条 user/assistant 拼带角色前缀文本写剪贴板。 */}
         <div
