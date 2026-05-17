@@ -103,6 +103,61 @@ export function PanelDebugLogs() {
     }
   };
 
+  /// 📜 把当前可见 logs（应用 level + keyword 过滤后）拼成 markdown
+  /// 表复制 — 与 PanelDebug 既有 snapshot（全状态 key:value dump）互补。
+  /// snapshot 是"我现在这台机器状态如何"的截面；raw logs 是"最近发生了
+  /// 什么"的时间线。粘到 GitHub issue / Notion 都能渲成表格。
+  ///
+  /// 列：时间（前 14 字符 = MM-DD HH:MM:SS）/ level（ERROR / WARN / INFO） /
+  /// 消息（去掉时间前缀剩余文本）。消息内 `|` 转义为 `\|` 防表格断裂。
+  /// 复制 filteredLogs（owner 已经做的过滤继续生效） — 比 raw logs 更
+  /// 聚焦 owner 想 share 的子集。空 → friendly hint。
+  const handleCopyMarkdown = async () => {
+    if (filteredLogs.length === 0) {
+      console.log("📜 暂无可复制日志");
+      return;
+    }
+    const headerLines: string[] = [
+      `## 应用日志 · ${filteredLogs.length} 条${
+        filteredLogs.length < logs.length ? ` / ${logs.length} total` : ""
+      }`,
+    ];
+    if (logLevels.size > 0 || keyword.trim().length > 0) {
+      const parts: string[] = [];
+      if (logLevels.size > 0) {
+        parts.push(`level=${Array.from(logLevels).join(",")}`);
+      }
+      if (keyword.trim().length > 0) {
+        parts.push(`kw=「${keyword.trim()}」`);
+      }
+      headerLines.push(`- filter: ${parts.join(" · ")}`);
+    }
+    headerLines.push("");
+    headerLines.push("| time | level | message |");
+    headerLines.push("| --- | --- | --- |");
+    for (const line of filteredLogs) {
+      const ts = line.slice(0, 14);
+      const rest = line.slice(14).trimStart();
+      const lvl = rest.startsWith("ERROR")
+        ? "ERROR"
+        : rest.startsWith("WARN")
+          ? "WARN"
+          : "INFO";
+      // 去 level token 后剩余文本作 message；防 pipe 撑断表格 → 转义
+      const msg = rest
+        .replace(/^(ERROR|WARN|INFO)\s*/, "")
+        .replace(/\|/g, "\\|");
+      headerLines.push(`| ${ts} | ${lvl} | ${msg} |`);
+    }
+    const md = headerLines.join("\n");
+    try {
+      await navigator.clipboard.writeText(md);
+      console.log(`📜 已复制 ${filteredLogs.length} 条日志（markdown 表格式）`);
+    } catch (e) {
+      console.error("copy raw logs failed:", e);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* 工具栏：刷新（手动 trigger 一次轮询周期外的同步）/ 清空。 */}
@@ -150,6 +205,27 @@ export function PanelDebugLogs() {
           }}
         >
           清空
+        </button>
+        <button
+          onClick={handleCopyMarkdown}
+          disabled={filteredLogs.length === 0}
+          title={
+            filteredLogs.length === 0
+              ? "暂无可复制日志"
+              : `把当前可见的 ${filteredLogs.length} 条日志拼成 markdown 表复制到剪贴板。列：时间 / level / 消息。可直接粘到 GitHub issue / Notion 渲成表格。与「📸 抓快照 A」全状态 dump 互补 — 那个是截面，本按钮是时间线。`
+          }
+          style={{
+            padding: "6px 12px",
+            borderRadius: 6,
+            border: "1px solid var(--pet-color-border)",
+            background: "var(--pet-color-bg)",
+            color: filteredLogs.length === 0 ? "var(--pet-color-muted)" : "var(--pet-color-fg)",
+            fontSize: 12,
+            cursor: filteredLogs.length === 0 ? "not-allowed" : "pointer",
+            opacity: filteredLogs.length === 0 ? 0.5 : 1,
+          }}
+        >
+          📜 复制 markdown
         </button>
         <span style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, color: "var(--pet-color-muted)" }}>
           {logs.length} 条日志
