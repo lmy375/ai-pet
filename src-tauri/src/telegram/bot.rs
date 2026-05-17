@@ -889,6 +889,45 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_today_reply(&views, today)
         }
+        TgCommand::Here => {
+            // owner 视角信号 dump：transient_note + mute + feedback band。
+            // 与 /aware 对偶 — pet 视角看的 vs owner 输入侧。
+            let (tn_text, tn_until) = crate::proactive::get_transient_note();
+            let now_local = chrono::Local::now();
+            let transient = if tn_text.is_empty() {
+                None
+            } else {
+                let mins = chrono::DateTime::parse_from_str(
+                    &tn_until,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|until| {
+                    let diff = until - now_local.with_timezone(until.offset());
+                    diff.num_minutes()
+                })
+                .unwrap_or(0);
+                Some((tn_text.as_str(), mins))
+            };
+
+            // mute_remaining_seconds → Option<i64>；ceil 到分钟。
+            let mute_remaining_minutes =
+                crate::proactive::mute_remaining_seconds().map(|secs| {
+                    ((secs + 59) / 60).max(1) // round up，clamp 最小 1
+                });
+
+            // feedback band — recent_feedback(20) 作 R7 cooldown 同窗口
+            // （feedback_history 默认 cap），分类返 (&'static str, f64)
+            let entries = crate::feedback_history::recent_feedback(20).await;
+            let (band, _factor) =
+                crate::feedback_history::classify_feedback_band(&entries);
+
+            crate::telegram::commands::format_here_reply(
+                transient,
+                mute_remaining_minutes,
+                band,
+            )
+        }
         TgCommand::Aware => {
             // pet 自述当前感知 snapshot：transient_note + active tasks + mood
             // + 时间 + 陪伴。所有 read 路径都已就绪 — 复用既有 API：

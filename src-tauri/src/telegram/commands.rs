@@ -203,6 +203,13 @@ pub enum TgCommand {
     /// 是"pet 当前感知"snapshot，含 transient_note 这条 /now 不显的
     /// 关键调度信号。无参；多余尾部一律忽略。
     Aware,
+    /// `/here` —— owner 视角 dump：列当前 owner 留下的状态信号
+    /// transient_note + mute 剩余 + 最近 feedback band（high_negative /
+    /// low_negative / mid / insufficient_samples）。与 /aware 对偶 —
+    /// /aware 看 pet 感知到的，/here 看 owner 输入侧。让 owner audit
+    /// "我现在给 pet 什么信号" — 若 high_negative + 还没 mute，可主
+    /// 动决定"让 ta 安静会儿"。无参；多余尾部一律忽略。
+    Here,
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -340,6 +347,7 @@ impl TgCommand {
             TgCommand::Alarms { .. } => "alarms",
             TgCommand::RecentChats { .. } => "recent_chats",
             TgCommand::Aware => "aware",
+            TgCommand::Here => "here",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
@@ -396,6 +404,7 @@ impl TgCommand {
             | TgCommand::Due { .. }
             | TgCommand::Now
             | TgCommand::Aware
+            | TgCommand::Here
             | TgCommand::Last
             | TgCommand::Random
             | TgCommand::Sleep
@@ -488,6 +497,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("alarms", "List recent N pending reminders in the todo category with target time + remaining minutes (default 5, cap 20)"),
             ("recent_chats", "List recent N user ↔ pet chat exchanges from the active session (default 5, cap 20)"),
             ("aware", "Pet's current awareness snapshot: transient_note + active tasks + mood emoji + time + companionship days"),
+            ("here", "Owner-side signals snapshot: transient_note + mute state + recent feedback band (counterpart to /aware)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
@@ -541,6 +551,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("alarms", "列最近 N 条 todo 段 pending reminders 含目标时间 + 剩余分钟（缺省 5，上限 20）"),
             ("recent_chats", "列最近 N 条 active session 内 user ↔ pet 聊天往返（缺省 5，上限 20）"),
             ("aware", "pet 当前感知 snapshot：transient_note + active tasks + mood + 时间 + 陪伴天数"),
+            ("here", "owner 视角信号 snapshot：transient_note + mute 剩余 + 最近 feedback band（与 /aware 对偶）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
@@ -868,6 +879,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "now" => Some(TgCommand::Now),
         // `/aware` 无参；多余尾部一律忽略（与 /now 同模板）
         "aware" => Some(TgCommand::Aware),
+        // `/here` 无参；多余尾部一律忽略（与 /aware 同模板）
+        "here" => Some(TgCommand::Here),
         // `/last` 无参；多余尾部忽略
         "last" => Some(TgCommand::Last),
         // `/random` 无参；多余尾部忽略
@@ -1354,11 +1367,11 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "silent_all", "markers", "tags", "mood", "whoami",
-    "today", "yesterday", "streak", "now", "aware", "last", "random",
-    "sleep", "quick", "due", "recent", "recent_chats", "digest",
-    "alarms", "edit", "pri", "promote", "demote", "reflect", "feedback",
-    "feedback_history", "transient", "cancel_all_error", "find",
-    "show", "blocked", "snoozed", "reset", "version", "help",
+    "today", "yesterday", "streak", "now", "aware", "here", "last",
+    "random", "sleep", "quick", "due", "recent", "recent_chats",
+    "digest", "alarms", "edit", "pri", "promote", "demote", "reflect",
+    "feedback", "feedback_history", "transient", "cancel_all_error",
+    "find", "show", "blocked", "snoozed", "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1477,6 +1490,7 @@ pub fn format_help_for_topic(
         "feedback_history" => "📜 /feedback_history [N]\n\n用法：列最近 N 条 feedback_history.log 条目，含 owner 主动写的 /feedback comment + 系统自动记录的隐性反馈（回复 / 主动点掉 bubble / 👍 点赞 / 沉默忽略 / 🤔 困惑反馈）。让 owner audit 「我给 pet 留过什么 / pet 接收了哪些信号」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · HH:MM <emoji> <kind> | <excerpt>\n\nkind emoji 映射：\n  ✅ replied · 👍 liked · 💬 comment · 🙉 ignored · 👋 dismissed · 🤔 puzzled\n\n示例：\n  /feedback_history\n  /feedback_history 10\n  /feedback_history 20\n\n相关：/feedback（写新条目）；R7 cooldown adapter / R28 chip 用 feedback_history 调整 pet 主动开口频率与语气 — 本命令是回看 pet 接收的训练信号。",
         "silent_all" => "⏸ /silent_all [minutes]\n\n用法：批量给所有 butler_tasks pending 任务加 [silent] marker N 分钟，N 后 backend tokio timer 自动撤回。让 owner 开会 / 集中写文档 1 小时挡住 task picker — pet 仍可主动聊天，只是不会主动派任务（如「我看你 Downloads 该整理了」之类）。minutes 缺省 60；0 = 立即解除当前 active 窗口（与 /mute 0 同协议）；clamp 0..=10080（≤ 7 天）。\n\n示例：\n  /silent_all       （默认 60 分钟）\n  /silent_all 30    （半小时）\n  /silent_all 120   （2 小时）\n  /silent_all 0     （立即解除）\n\n对比：/mute（让 pet 整体不开口）；/silent <title>（单条 silent）；本命令是批量临时 + 自动撤回。\n\n限制：app restart 会丢 timer，markers 留在原地 —— 重启后用 /silent_all 重启窗口或 /silent_all 0 手动清理（实现注：与桌面 PanelMemory「⏸ 全部 silent 1h」按钮使用 frontend timer 路径独立，两个 surface 不共享状态）。",
         "alarms" => "⏰ /alarms [N]\n\n用法：列最近 N 条 todo 段 pending reminders（含 `[remind: HH:MM]` / `[remind: YYYY-MM-DD HH:MM]` 协议条目），含目标时刻 + 剩余分钟 / 已逾期分钟。按 target 升序排（最近 fire 在前）。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · MM-DD HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n\n示例：\n  /alarms\n  /alarms 10\n\n如何创建 alarm：\n  · 桌面 PanelMemory 任意 item ⏰ chip → 选 5/15/30 min preset（iter #372）\n  · 直接 /task `[remind: 18:00] 准备会议材料`（写入 todo 类目）\n  · LLM 用 todo_edit 工具自动创建（owner 说「30 分钟后提醒我喝水」时）\n\n触发后：proactive 扫到 due → ChatMini 软提醒；Absolute 条目 24h 后 consolidate sweep 自动清扫 stale。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「我设了哪些 alarm，何时到点」audit 入口。",
+        "here" => "🧑 /here\n\n用法：owner 视角 dump 当前留给 pet 的状态信号 — transient_note（临时指示）+ mute（静音剩余）+ 最近 feedback band（high_negative / low_negative / mid / insufficient_samples + 当前 cooldown factor）。让 owner audit 「我现在给 pet 什么信号、pet cooldown 会因此被放大 / 缩小多少」— 比如发现 high_negative 但还没 mute 时可主动 /sleep。无参；多余尾部忽略。\n\n输出格式：\n  🧑 当前 owner 信号：\n  📝 transient_note: 「<text>」（剩 N 分钟）/ 未设\n  🔕 mute: 剩 N 分钟 / 未静音\n  💬 最近 feedback band: <label> · <cooldown factor 说明>\n\n示例：\n  /here\n\n对比 /aware：那个看 pet 感知到的（transient + tasks + mood + 时间 + 陪伴），本命令看 owner 输入侧（transient + mute + feedback band） — 两命令配合 audit「我说啥 → pet 看啥 → pet 怎么反应」全链路。\n\n相关：/transient（写 transient_note）；/mute（设静音 / 解除）；/feedback_history（看具体反馈条目，本命令仅显聚合 band）。",
         "aware" => "🐾 /aware\n\n用法：pet 自述当前感知到的上下文 — transient_note（owner 留下的临时指示）+ active butler_tasks 数 + 当前 mood（emoji + 文本）+ 当前时间 + 陪伴天数。无参；多余尾部忽略。一句话 debug 「pet 为啥没主动开口 / 选了那条 task」。\n\n输出格式：\n  🐾 当前感知：\n  📝 transient_note: 「<text>」（剩 N 分钟） / 无\n  📋 active tasks: N 条\n  ☁ mood: <emoji> <text>\n  🕐 当前: YYYY-MM-DD HH:MM (+08:00) · 陪伴 N 天\n\n示例：\n  /aware\n\n对比：/now（仅时间 + mood emoji，最简）；/whoami（多行画像 + 自我介绍长文）；本命令是「pet 当前感知 snapshot」中等粒度，含 transient_note 这条调度关键信号。\n\n相关：/here（owner 视角对偶 — 看 owner 输入了哪些信号）；/transient（写 transient_note）；/feedback_history（看 pet 接收的训练信号）。",
         "recent_chats" => "💬 /recent_chats [N]\n\n用法：列最近 N 条 active session 内 user ↔ pet 聊天往返（仅 user / assistant items，跳过 tool_call / 系统行）。手机端回顾上下文 — owner 想「我刚才让 pet 做啥来着」一句话查回桌面 ChatMini 滚动太累时用。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  💬 最近 N 条 chat · 会话「<title>」最近活动 MM-DD HH:MM：\n  🧑 <user excerpt>\n  🐾 <pet excerpt>\n  ...\n\nexcerpt cap 80 字；超长 + …。\n\n注：per-msg ts 不在后端 schema 里，仅 session 级 updated_at 一并呈现（「最近活动」信号）。pet 桌面 reset session 时本命令也会看到新空 session 提示。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「最近 chat 上下文」audit 入口。",
         "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
@@ -1550,6 +1564,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/alarms [N]  —  列 todo 段 pending reminders（含目标时间 + 剩余分钟，按 target 升序；缺省 5，上限 20）".to_string(),
         "/recent_chats [N]  —  列最近 N 条 active session 内 user ↔ pet 聊天往返（缺省 5，上限 20）".to_string(),
         "/aware  —  pet 当前感知 snapshot（transient_note + active tasks + mood + 时间 + 陪伴）".to_string(),
+        "/here  —  owner 视角信号 snapshot（transient_note + mute + 最近 feedback band，与 /aware 对偶）".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
@@ -3494,6 +3509,69 @@ pub fn format_aware_reply(
     out
 }
 
+/// `/here` 命令回复文案。pure。
+///
+/// 入参（caller 抓齐传入便于 unit test 不依赖运行时全局 mutex）：
+/// - `transient`: Option<(text, remaining_minutes)>；与 /aware 同 shape
+/// - `mute_remaining_minutes`: Option<i64>；None = 未静音；Some(0) →
+///   clamp 显 "剩 1 分钟"（边界过期态）
+/// - `band`: feedback_history::classify_feedback_band 返的 &'static str
+///   （"high_negative" / "low_negative" / "mid" / "insufficient_samples"）
+///
+/// 输出 4 行（标题 + 3 段信号）：
+///   🧑 当前 owner 信号：
+///   📝 transient_note: 「<text>」（剩 N 分钟）/ 未设
+///   🔕 mute: 剩 N 分钟 / 未静音
+///   💬 最近 feedback band: <band-label> · <factor 说明>
+pub fn format_here_reply(
+    transient: Option<(&str, i64)>,
+    mute_remaining_minutes: Option<i64>,
+    band: &str,
+) -> String {
+    let mut out = String::from("🧑 当前 owner 信号：");
+    // transient_note 行 — 复用 /aware 同语义
+    match transient {
+        Some((text, mins)) if !text.trim().is_empty() => {
+            let preview = if text.chars().count() > 60 {
+                let head: String = text.chars().take(60).collect();
+                format!("{}…", head)
+            } else {
+                text.to_string()
+            };
+            let mins_pos = mins.max(1);
+            out.push_str(&format!(
+                "\n📝 transient_note: 「{}」（剩 {} 分钟）",
+                preview, mins_pos
+            ));
+        }
+        _ => out.push_str("\n📝 transient_note: 未设"),
+    }
+    // mute 行
+    match mute_remaining_minutes {
+        Some(mins) => {
+            let mins_pos = mins.max(1);
+            out.push_str(&format!("\n🔕 mute: 剩 {} 分钟", mins_pos));
+        }
+        None => out.push_str("\n🔕 mute: 未静音"),
+    }
+    // feedback band 行 — 带 cooldown factor 说明让 owner 一眼看到"我
+    // 给 pet 的信号让它现在更频繁 / 更克制"
+    let (label, factor_note) = match band {
+        "high_negative" => ("high_negative", "cooldown ×2.0（pet 更克制）"),
+        "low_negative" => ("low_negative", "cooldown ×0.7（pet 更主动）"),
+        "mid" => ("mid", "cooldown ×1.0（中性）"),
+        _ => (
+            "insufficient_samples",
+            "样本不足 — cooldown 走基础值",
+        ),
+    };
+    out.push_str(&format!(
+        "\n💬 最近 feedback band: {} · {}",
+        label, factor_note
+    ));
+    out
+}
+
 /// `/show <title>` 命令回复文案。pure：
 /// - title 行 + status emoji
 /// - raw_description 全量（含 markers），cap 1500 char 防 TG 4096 上限被
@@ -4294,7 +4372,7 @@ mod tests {
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
-            "silent_all", "alarms", "recent_chats", "aware",
+            "silent_all", "alarms", "recent_chats", "aware", "here",
             "cancel_all_error", "find", "show", "blocked", "snoozed",
             "reset", "version", "help",
         ] {
@@ -4764,8 +4842,8 @@ mod tests {
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
             "feedback_history", "transient", "silent_all", "alarms",
-            "recent_chats", "aware", "cancel_all_error", "show", "tags",
-            "reset", "version", "help",
+            "recent_chats", "aware", "here", "cancel_all_error", "show",
+            "tags", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -8396,6 +8474,80 @@ mod tests {
         assert!(s.contains("2026-05-17 18:30"), "{s}");
         assert!(!s.contains("陪伴"), "no companionship tail: {s}");
         assert!(!s.contains("今日初识"), "no init tail: {s}");
+    }
+
+    // -------- /here parse + format --------
+
+    #[test]
+    fn here_parses_no_args() {
+        assert_eq!(parse_tg_command("/here"), Some(TgCommand::Here));
+    }
+
+    #[test]
+    fn here_parses_ignores_trailing() {
+        assert_eq!(parse_tg_command("/here foo bar"), Some(TgCommand::Here));
+    }
+
+    #[test]
+    fn here_reply_all_active_signals() {
+        let s = format_here_reply(
+            Some(("在开会别打扰", 15)),
+            Some(30),
+            "high_negative",
+        );
+        assert!(s.contains("当前 owner 信号"), "{s}");
+        assert!(s.contains("transient_note: 「在开会别打扰"), "{s}");
+        assert!(s.contains("剩 15 分钟"), "{s}");
+        assert!(s.contains("mute: 剩 30 分钟"), "{s}");
+        assert!(s.contains("high_negative"), "{s}");
+        assert!(s.contains("×2.0"), "show factor: {s}");
+    }
+
+    #[test]
+    fn here_reply_no_signals_shows_baselines() {
+        let s = format_here_reply(None, None, "insufficient_samples");
+        assert!(s.contains("transient_note: 未设"), "{s}");
+        assert!(s.contains("mute: 未静音"), "{s}");
+        assert!(s.contains("insufficient_samples"), "{s}");
+        assert!(s.contains("样本不足"), "{s}");
+    }
+
+    #[test]
+    fn here_reply_low_negative_band_says_pet_more_active() {
+        let s = format_here_reply(None, None, "low_negative");
+        assert!(s.contains("low_negative"), "{s}");
+        assert!(s.contains("×0.7"), "{s}");
+        assert!(s.contains("更主动"), "{s}");
+    }
+
+    #[test]
+    fn here_reply_mid_band_says_neutral() {
+        let s = format_here_reply(None, None, "mid");
+        assert!(s.contains("mid"), "{s}");
+        assert!(s.contains("×1.0"), "{s}");
+        assert!(s.contains("中性"), "{s}");
+    }
+
+    #[test]
+    fn here_reply_mute_zero_clamps_to_one() {
+        // 边界过期态：caller 传 mute_minutes=0 → formatter clamp 到 1
+        let s = format_here_reply(None, Some(0), "mid");
+        assert!(s.contains("mute: 剩 1 分钟"), "{s}");
+    }
+
+    #[test]
+    fn here_reply_long_transient_truncates() {
+        let long = "在".repeat(100);
+        let s = format_here_reply(Some((&long, 15)), None, "mid");
+        assert!(s.contains("…"), "long text truncate: {s}");
+    }
+
+    #[test]
+    fn here_reply_unknown_band_falls_back_to_insufficient() {
+        // 未识别的 band 字符串 fallback 到 insufficient_samples 文案
+        let s = format_here_reply(None, None, "unknown_label_xyz");
+        assert!(s.contains("insufficient_samples"), "{s}");
+        assert!(s.contains("样本不足"), "{s}");
     }
 
     // -------- /show parse + format --------
