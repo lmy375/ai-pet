@@ -8506,8 +8506,10 @@ export function PanelTasks({
                     // 描述），让用户 hover 行就能看 [done] / [error: ...] /
                     // [origin:...] / [result:...] / #tag 等 marker，不必展开
                     // detail tab。raw 可能长，控制 max 400 字符避免 tooltip
-                    // 撑爆屏幕（OS 自身也会截断）。
-                    `${expanded ? "点击折叠详情" : "点击展开任务详情（描述 / 进度笔记 / 事件时间线）"}\n\n原始 description：\n${
+                    // 撑爆屏幕（OS 自身也会截断）。 + 提示 hover 0.5s 行内
+                    // 浮 detail.md preview tooltip（discoverability — 隐藏功能
+                    // 第一次接触用户友好提示）。
+                    `${expanded ? "点击折叠详情" : "点击展开任务详情（描述 / 进度笔记 / 事件时间线）"}\n💡 鼠标停留 0.5s 浮 detail.md 进度笔记 + chips + 最近历史 preview\n\n原始 description：\n${
                       t.raw_description.length > 400
                         ? t.raw_description.slice(0, 400) + "…"
                         : t.raw_description
