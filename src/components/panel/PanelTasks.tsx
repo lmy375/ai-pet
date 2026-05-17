@@ -2492,7 +2492,22 @@ export function PanelTasks({
       return;
     }
     const selection = ta.value.slice(start, end);
-    const lines = selection.split("\n");
+    // 剥尾部 empty / 全空白行：triple-click 行选会包含 trailing `\n`；
+    // owner 拖到段末也可能含空白行。否则末行变 `>` 噪音，渲染时多空 quote 行。
+    // 行首 leading empty 行保留 — 那是 owner 显式选择的开头空行。
+    const rawLines = selection.split("\n");
+    let dropTail = 0;
+    for (let i = rawLines.length - 1; i >= 0; i--) {
+      if (rawLines[i].trim() === "") dropTail += 1;
+      else break;
+    }
+    const lines = dropTail > 0 ? rawLines.slice(0, -dropTail) : rawLines;
+    if (lines.length === 0) {
+      // 选区是纯空白 — 拒绝复制空 blockquote
+      setBulkResultMsg("📋 选区仅含空白 — 没有有效 blockquote 内容");
+      window.setTimeout(() => setBulkResultMsg(""), 3500);
+      return;
+    }
     const quoted = lines
       .map((line) => (line.length === 0 ? ">" : `> ${line}`))
       .join("\n");
