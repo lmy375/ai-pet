@@ -8,8 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelTasks 任务行 hover 加「↗ N refs」chip：扫 detailMap.detail_md 内 `[[cat/title]]` token 计数 — 与 iter #414 inline ref 配套消费视图。
-- PanelMemory item 加「📝 N 分钟前」updated_at chip：相对时间派生 — audit 哪些 item 最近改过。
 - detail.md 编辑器加「📑 fold headings」toggle：H2/H3 段一键折叠 / 展开 — 长文阅读姿态。
 - PanelDebug 加「📋 复制调试上下文」按钮：聚合 tone / mood / mute / recent_speeches 成 markdown report — bug 反馈一键拿 context。
 - TG bot `/swap_priority <a> :: <b>` 命令：两 task priority 互换（与 /pri 单改互补，sprint 重组场景）。

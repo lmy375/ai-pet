@@ -9558,6 +9558,50 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* ↗ inline ref 出度 chip：扫 detail.md 内
+                        `[[<cat>/<title>]]` token（iter #414 PanelMemory
+                        🔗 写入约定）+ memory ref `「<title>」` token
+                        （task ref convention）数 — audit 这条 task 有
+                        多少 outgoing 引用。0 时不渲；hover-only 与
+                        ⏱ / 📂 / 📊 chip 同节奏。复用 hover detailMap
+                        缓存零额外 IO。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      (() => {
+                        const detail = detailMap[t.title];
+                        if (!detail) return null;
+                        const text = detail.detail_md ?? "";
+                        if (text.length === 0) return null;
+                        const wikiRefs = (
+                          text.match(/\[\[[^[\]\n]+\]\]/g) ?? []
+                        ).length;
+                        const taskRefs = (
+                          text.match(/「[^「」\n]+」/g) ?? []
+                        ).length;
+                        const total = wikiRefs + taskRefs;
+                        if (total === 0) return null;
+                        return (
+                          <span
+                            title={`detail.md 内含 ${wikiRefs} 条 [[cat/title]] inline ref + ${taskRefs} 条「title」task ref（heuristic） — 这条 task 的 outgoing 引用出度。`}
+                            aria-label={`task ${total} outgoing refs`}
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border: "1px dashed var(--pet-color-border)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-color-muted)",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ↗ {total} refs
+                          </span>
+                        );
+                      })()}
                     {/* 📊 30 天 sparkline chip：10 bar 显近 30 天 butler_history
                         事件桶分布（最老在左，最新在右）。仅总和 > 0 时显
                         — 从未 touch 过的 task 不显避免视觉噪音。max 归一
