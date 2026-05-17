@@ -2956,6 +2956,120 @@ export function PanelTasks({
     });
   }, []);
 
+  /// detail.md textarea Tab / Shift+Tab 多行缩进 / 反缩进。
+  ///
+  /// 行为：
+  /// - **无选区 + Tab**：在光标位置插 2 空格（markdown 缩进；阻止 native
+  ///   focus 跳离 textarea — 长 detail 编辑器内 owner 几乎不会想 Tab 跳焦）
+  /// - **无选区 + Shift+Tab**：本行 leading 2 空格（或 1 tab）削掉；
+  ///   无可削则 noop（光标位置不变）
+  /// - **有选区 + Tab**：选区覆盖的所有行（含部分覆盖行）行首加 2 空格；
+  ///   选区调整 start += 2 (首行加的)，end += 2 * 行数 (总加的)
+  /// - **有选区 + Shift+Tab**：选区覆盖行 leading 2 空格 / 1 tab 削掉；
+  ///   选区调整反向
+  ///
+  /// IDE 通用模式（VSCode / Sublime / JetBrains），与 ⌘B/I / ⌘D / ⌘L /
+  /// ⌘⇧K 同行操作集群。仅普通 Tab — meta/ctrl/alt 修饰一律不响应让位
+  /// 其它快捷键。IME composing 跳过。
+  const handleDetailTabIndent = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (e.key !== "Tab") return false;
+      if (e.metaKey || e.ctrlKey || e.altKey) return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      const INDENT = "  ";
+
+      // 无选区 + Tab → 插 2 空格（一律拦截 native focus 跳走）
+      if (!e.shiftKey && start === end) {
+        e.preventDefault();
+        const next = value.slice(0, start) + INDENT + value.slice(end);
+        setEditingDetailContent(next);
+        const newCursor = start + INDENT.length;
+        requestAnimationFrame(() => {
+          const cur = detailEditorRef.current;
+          if (!cur) return;
+          cur.focus();
+          cur.selectionStart = cur.selectionEnd = newCursor;
+          setDetailCursorPos(newCursor);
+          setDetailSelectionEnd(newCursor);
+        });
+        return true;
+      }
+
+      // 找选区覆盖的行范围：首行行首 + 末行行尾
+      const firstLineStart = value.lastIndexOf("\n", start - 1) + 1;
+      // end > start 时用 end - 1 找下一个 \n：选区末端正好在 line 开头时
+      // 不应该把那条 line 当作选中的（VS Code 同行为）。end === start 时
+      // 直接用 end（仅 shift+tab 单光标路径才走到这里）。
+      const probe = end > start ? end - 1 : end;
+      const nextNl = value.indexOf("\n", probe);
+      const lastLineEnd = nextNl === -1 ? value.length : nextNl;
+      const blockBefore = value.slice(0, firstLineStart);
+      const block = value.slice(firstLineStart, lastLineEnd);
+      const blockAfter = value.slice(lastLineEnd);
+      const lines = block.split("\n");
+
+      let charsDeltaFirst = 0;
+      let charsDeltaTotal = 0;
+      let modifiedLines: string[];
+
+      if (e.shiftKey) {
+        modifiedLines = lines.map((line, i) => {
+          let stripped: string;
+          let delta: number;
+          if (line.startsWith(INDENT)) {
+            stripped = line.slice(INDENT.length);
+            delta = -INDENT.length;
+          } else if (line.startsWith("\t")) {
+            stripped = line.slice(1);
+            delta = -1;
+          } else {
+            stripped = line;
+            delta = 0;
+          }
+          if (i === 0) charsDeltaFirst = delta;
+          charsDeltaTotal += delta;
+          return stripped;
+        });
+        // 全行都没前导可削 → noop（不动 value，不动 selection）
+        if (charsDeltaTotal === 0) {
+          e.preventDefault();
+          return true;
+        }
+      } else {
+        modifiedLines = lines.map((line, i) => {
+          if (i === 0) charsDeltaFirst = INDENT.length;
+          charsDeltaTotal += INDENT.length;
+          return INDENT + line;
+        });
+      }
+
+      e.preventDefault();
+      const newBlock = modifiedLines.join("\n");
+      const newValue = blockBefore + newBlock + blockAfter;
+      setEditingDetailContent(newValue);
+      // 选区调整：start 推首行 delta，end 推总 delta
+      // 反缩进时 newStart 可能 < firstLineStart（如果 start 距首行起点 < 2）
+      // → clamp 到 firstLineStart 防止跳到前一行
+      const newStart = Math.max(firstLineStart, start + charsDeltaFirst);
+      const newEnd = Math.max(newStart, end + charsDeltaTotal);
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = newStart;
+        cur.selectionEnd = newEnd;
+        setDetailCursorPos(newStart);
+        setDetailSelectionEnd(newEnd);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea ⌘B / ⌘I markdown 加粗 / 斜体 wrap：复用既有
   /// `insertMarkdownAtCursor("wrap", "**", "**")` / `("wrap", "*", "*")`
   /// 算法 — 选区 wrap，空选时插模板 + 光标落中间。与既有 markdown
@@ -11870,6 +11984,12 @@ export function PanelTasks({
                                   // 与 ⌘D 复制 / ⌘L 选中 同 IDE 行操作集群 —
                                   // owner 心智 "⌘+shift 修饰 = 重操作"。
                                   if (handleDetailDeleteLine(e)) return;
+                                  // Tab / Shift+Tab 多行缩进 / 反缩进：选
+                                  // 区覆盖行行首 +/- 2 空格；无选区 Tab 在
+                                  // 光标位置插 2 空格 + 阻断 native focus
+                                  // 跳走。markdown 列表层级编辑加速 — 与
+                                  // VSCode / Sublime IDE 习惯一致。
+                                  if (handleDetailTabIndent(e)) return;
                                   // ⌘B 加粗 / ⌘I 斜体：markdown 选区 wrap
                                   // **bold** / *italic*。与 toolbar 同 backend。
                                   if (handleDetailBoldItalic(e)) return;
@@ -11932,7 +12052,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -12264,6 +12384,9 @@ export function PanelTasks({
                                   if (handleDetailListContinue(e)) return;
                                   if (handleDetailBracketPair(e)) return;
                                   if (handleDetailDuplicateLine(e)) return;
+                                  // Tab / Shift+Tab 多行缩进：与 split 模
+                                  // 式同 handler。
+                                  if (handleDetailTabIndent(e)) return;
                                   // ⌘⇧L 弹链接 popover：与 split 模式同 handler。
                                   if (handleDetailLinkPopover(e)) return;
                                   if (
@@ -12292,7 +12415,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -14923,6 +15046,7 @@ export function PanelTasks({
                   ["⌘F", "在 detail.md 内行内搜索（Enter / ↑↓ 切 match · Esc 关）"],
                   ["⌘P", "切到 preview-only 焦点阅读（再按回写作姿态 · VSCode preview-lock 风）"],
                   ["⌘⇧L", "弹链接快速插入 popover（选区当 label 仅输 url；空选区双输入 url + label）"],
+                  ["Tab / ⇧Tab", "多行缩进 / 反缩进（选区覆盖行 +/- 2 空格；无选区 Tab 在光标位置插 2 空格）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
                   ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
