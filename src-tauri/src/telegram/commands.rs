@@ -479,6 +479,13 @@ pub enum TgCommand {
     /// `reflect-YYYY-MM-DDTHH-MM-SS`（秒级唯一）；description = trim 后
     /// 的 text。空 text → missing-arg friendly hint。
     Reflect { text: String },
+    /// `/swap_priority <a> :: <b>` —— 互换两 task 的 priority，与 /pri 单
+    /// 改互补（sprint 重组场景 — owner 想「A 和 B 的优先级换一下」一步
+    /// 完成不必算具体 P 值）。`::` 是必填 separator（让 title 含空格 /
+    /// 中文标点也能精确切，与 /edit 同模板）。任一端 trim 后为空 → handler
+    /// 走 missing-arg；任一 title 找不到 → handler 走错误反馈。复用
+    /// task_set_priority 后端，对称写两次。
+    SwapPriority { title_a: String, title_b: String },
     /// `/edit <title> :: <new desc>` —— 覆写指定 butler_task 的 description
     /// 整段。`::` 是必填 separator —— 让 title 含空格 / 全角符号 / 中文标点
     /// 仍能精确切（与单空白切相比歧义最少；owner 外面想加 marker / 改 body
@@ -539,6 +546,7 @@ impl TgCommand {
             TgCommand::Note { .. } => "note",
             TgCommand::Digest { .. } => "digest",
             TgCommand::Edit { .. } => "edit",
+            TgCommand::SwapPriority { .. } => "swap_priority",
             TgCommand::Reflect { .. } => "reflect",
             TgCommand::Due { .. } => "due",
             TgCommand::Show { .. } => "show",
@@ -601,6 +609,7 @@ impl TgCommand {
             | TgCommand::Promote { title }
             | TgCommand::Demote { title } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
+            TgCommand::SwapPriority { title_a, .. } => title_a.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
             | TgCommand::Pinned
@@ -745,6 +754,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("reflect", "Save arbitrary text as an ai_insights memory item (reflection / self-observation)"),
             ("digest", "Recent N done tasks with [result:] summary one-liner (default 5, cap 20)"),
             ("edit", "Overwrite a butler task's description: /edit <title> :: <new desc>"),
+            ("swap_priority", "Swap priority of two tasks: /swap_priority <a> :: <b> (sprint reorder)"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -808,6 +818,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("reflect", "把任意文本作 ai_insights memory item 存（反思 / 自我洞察）"),
             ("digest", "最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）"),
             ("edit", "覆写 butler task 描述：/edit <title> :: <new desc>"),
+            ("swap_priority", "互换两 task 的 priority：/swap_priority <a> :: <b>（sprint 重组场景）"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -1372,6 +1383,19 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 new_desc: d,
             })
         }
+        // `/swap_priority <a> :: <b>`：first-occurrence `::` 切两 title。
+        // 任一端 trim 后为空 → handler 走 missing-arg（在 formatter 内
+        // 做兜底）。snake_case 命名避开 dash drift-defense。
+        "swap_priority" => {
+            let (a, b) = match title.split_once("::") {
+                Some((lhs, rhs)) => (lhs.trim().to_string(), rhs.trim().to_string()),
+                None => (title, String::new()),
+            };
+            Some(TgCommand::SwapPriority {
+                title_a: a,
+                title_b: b,
+            })
+        }
         // `/digest [N]`：与 /recent 同 N 处理 — 缺省 5，clamp 1..=20，
         // 非数字尾部 fallback 默认。
         "digest" => {
@@ -1697,7 +1721,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "whoami", "today", "today_done", "yesterday", "streak", "now",
     "aware", "here",
     "last", "random", "sleep", "quick", "due", "recent", "oldest_n", "recent_chats",
-    "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote",
+    "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
     "cancel_all_error", "promote_all_p7", "find", "show", "timeline",
     "blocked", "forks", "snoozed", "reset", "version", "help",
@@ -1816,7 +1840,8 @@ pub fn format_help_for_topic(
         "yesterday" => "📅 /yesterday\n\n用法：列本聊天派单中昨日完成的任务标题 + result 摘要（按 updated_at 倒序）。无参。owner 想 audit 「昨天做完了啥」时用。\n\n示例：\n  /yesterday\n\n相关：/today（今日切片）；/today_done（今日 done + result）；/recent（不限日期最近 N）；/digest（含 result 摘要的最近 N）。",
         "today_done" => "📅 /today_done\n\n用法：列今日完成的任务标题 + `[result:]` 摘要一行式（按 updated_at 倒序）。无参；多余尾部忽略。owner 想 audit「我今天做完啥 + 各条产物」一行扫读时用。\n\n输出格式：\n  📅 今日（YYYY-MM-DD）完成 N 条：\n  · ✅ <title> — <result preview 40 字截断>\n  · ✅ ...\n\n对比 /today：那个含 due 段（pending + 今日 due）+ done 段（标题清单无 result）—— 完整今日叙事；本命令是「纯 done 切片 + result 摘要」分流入口，与 /yesterday 同模板但 scope 是今日。\n\n示例：\n  /today_done\n\n相关：/today（含 due 双视图）；/yesterday（昨日 done + result）；/digest [N]（不限日期最近 N done + result）；/streak（连续 done 天数）。",
         "streak" => "🔥 /streak\n\n用法：显本聊天 done 完成节奏数据：连续完成天数 + 近 7 天 / 30 天 done 总数。无参。owner audit 「最近完成节奏怎么样 / 有没有 streak 在保」时用。streak 末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。\n\n示例：\n  /streak\n\n相关：/today（今日切片）；/yesterday（昨日产出）；/stats（pending / overdue 等汇总）。",
-        "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
+        "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/swap_priority（两条互换）；/promote / /demote（±1）。",
+        "swap_priority" => "🔄 /swap_priority <a> :: <b>\n\n用法：互换两 task 的 priority — sprint 重组场景（owner 想「A 和 B 的优先级换一下」一步完成不必算具体 P 值）。`::` 是必填 separator（让 title 含空格 / 中文标点也精确切，与 /edit 同模板）。\n\n两 title 各自走三层 resolve（数字 index → fuzzy → 错误候选）；resolve 失败显具体哪条没找到。复用 task_set_priority 后端：先读两 pre-swap priority → 对称写两次（a → pre_b, b → pre_a）。保留 due / body / 其它 markers 不动。\n\n示例：\n  /swap_priority 整理 Downloads :: 写周报\n  /swap_priority 1 :: 3   （/tasks 输出第 1 与第 3 条互换）\n\n输出格式：\n  🔄 已互换 priority：「A」P3 → P7 · 「B」P7 → P3\n\n部分失败时（极少 — 写盘竞态）显具体哪条失败哪条成功。同一 title `a == b` → 无需互换兜底。\n\n相关：/pri <title> <N>（绝对设值）；/promote / /demote（±1）；/promote_all_p7（紧急批量 +1）。",
         "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
         "transient" => "📝 /transient <text> [minutes]\n\n用法：写一条 N 分钟有效的临时上下文给宠物（owner 当前状态如「在开会」「集中写文档」「今晚 9 点后回我」等）。**不存盘**，只挂当前 in-memory，到时自动清除（与桌面 PanelToneStrip 显示的 [临时指示] 同源）。minutes 末 whitespace token 解析；缺省 60；clamp 1..=10080（≤ 7 天）。\n\n示例：\n  /transient 在开会，半小时别打扰我 30\n  /transient 集中写文档不要主动开口 90\n  /transient 今晚 9 点后再 ping 我 240\n  /transient 心情不好别活泼  （默认 60 分钟）\n\n对比：/note（→ general memory 永久存盘）；/reflect（→ ai_insights 永久存盘）；/feedback（写 feedback_history 改 pet 行为）；/mute（直接静音不开口）。本命令是「给 pet 临时上下文，但不阻塞它说话」— pet 仍会主动开口，只是开口时读到这条调整语气 / 选择。",
         "feedback_history" => "📜 /feedback_history [N]\n\n用法：列最近 N 条 feedback_history.log 条目，含 owner 主动写的 /feedback comment + 系统自动记录的隐性反馈（回复 / 主动点掉 bubble / 👍 点赞 / 沉默忽略 / 🤔 困惑反馈）。让 owner audit 「我给 pet 留过什么 / pet 接收了哪些信号」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · HH:MM <emoji> <kind> | <excerpt>\n\nkind emoji 映射：\n  ✅ replied · 👍 liked · 💬 comment · 🙉 ignored · 👋 dismissed · 🤔 puzzled\n\n示例：\n  /feedback_history\n  /feedback_history 10\n  /feedback_history 20\n\n相关：/feedback（写新条目）；R7 cooldown adapter / R28 chip 用 feedback_history 调整 pet 主动开口频率与语气 — 本命令是回看 pet 接收的训练信号。",
@@ -1898,6 +1923,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/today_done  —  今日 done 任务标题 + result 摘要一行式（/today 的 done 切片 + result 摘要）".to_string(),
         "/streak  —  连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数（audit 完成节奏）".to_string(),
         "/pri <title> <N>  —  单改 priority（0..=9）— 不走 /edit 全量覆写".to_string(),
+        "/swap_priority <a> :: <b>  —  互换两 task 的 priority（sprint 重组场景，与 /pri 单改互补）".to_string(),
         "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
         "/transient <text> [minutes]  —  设 N 分钟有效的临时上下文（不存盘 in-memory；缺省 60m，上限 7 天）".to_string(),
         "/feedback_history [N]  —  列最近 N 条 feedback 记录（含 /feedback 写的 + 系统记录的隐性信号；缺省 5，上限 20）".to_string(),
@@ -3767,6 +3793,67 @@ pub fn format_pri_reply(
     }
 }
 
+/// `/swap_priority <a> :: <b>` 命令回复文案。pure。
+///
+/// 入参（caller resolved titles after fuzzy match）+ pre-swap priorities
+/// + save 结果。状态机：
+/// - 任一 title trim 后空 → usage hint（含 `::` separator 示例）
+/// - title_a == title_b → 「同一条 task 无需互换」兜底
+/// - pre_a / pre_b 任一 None → 「task 不存在」错误（caller resolve 失败）
+/// - swap_a / swap_b 任一 Err → 「互换部分失败」warning + 哪条失败
+/// - 全 ok → 「🔄 已互换 P<a> ↔ P<b>」
+///
+/// 注：caller 先读两 task 的 pre-swap priority，再两次调 task_set_priority
+/// 把 a → pre_b、b → pre_a。formatter 只组装文本。
+pub fn format_swap_priority_reply(
+    title_a: &str,
+    title_b: &str,
+    pre_a: Option<u8>,
+    pre_b: Option<u8>,
+    save_a: Result<(), &str>,
+    save_b: Result<(), &str>,
+) -> String {
+    let ta = title_a.trim();
+    let tb = title_b.trim();
+    if ta.is_empty() || tb.is_empty() {
+        return "🔄 用法：/swap_priority <title_a> :: <title_b>\n\n互换两 task 的 priority（sprint 重组场景 — 不必算具体 P 值）。`::` 是必填 separator，让 title 含空格 / 中文标点也能精确切。\n\n例：/swap_priority 整理 Downloads :: 写周报\n例：/swap_priority 1 :: 3   （/tasks 输出第 1 与第 3 条互换）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。复用 task_set_priority 后端，对称写两次（保留 due / body / markers 不动）。".to_string();
+    }
+    if ta == tb {
+        return format!("🔄 同一条 task 「{}」无需互换 priority。", ta);
+    }
+    let (Some(a_val), Some(b_val)) = (pre_a, pre_b) else {
+        let missing = match (pre_a, pre_b) {
+            (None, None) => format!("「{}」与「{}」", ta, tb),
+            (None, _) => format!("「{}」", ta),
+            (_, None) => format!("「{}」", tb),
+            _ => unreachable!(),
+        };
+        return format!("🔄 互换失败：{} 没找到（resolve 后任务不存在 — 可能已被删 / rename）", missing);
+    };
+    let a_ok = save_a.is_ok();
+    let b_ok = save_b.is_ok();
+    if a_ok && b_ok {
+        return format!(
+            "🔄 已互换 priority：「{}」P{} → P{} · 「{}」P{} → P{}",
+            ta, a_val, b_val, tb, b_val, a_val
+        );
+    }
+    // 部分失败：清晰列哪条出问题
+    let mut out = String::new();
+    out.push_str("🔄 互换部分失败");
+    if let Err(e) = save_a {
+        out.push_str(&format!("\n⚠️ 「{}」改 P 失败：{}", ta, e));
+    } else {
+        out.push_str(&format!("\n✓ 「{}」P{} → P{}", ta, a_val, b_val));
+    }
+    if let Err(e) = save_b {
+        out.push_str(&format!("\n⚠️ 「{}」改 P 失败：{}", tb, e));
+    } else {
+        out.push_str(&format!("\n✓ 「{}」P{} → P{}", tb, b_val, a_val));
+    }
+    out
+}
+
 /// `/edit_due <title> <preset>` 命令回复文案。pure。
 ///
 /// 入参：
@@ -5306,7 +5393,7 @@ mod tests {
             "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent",
             "unsilent", "silenced", "markers", "tags", "mood", "whoami", "today",
             "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "recent", "oldest_n", "digest", "edit", "pri", "promote", "demote",
+            "due", "recent", "oldest_n", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "edit_due", "cancel_all_error", "promote_all_p7", "find",
@@ -5778,7 +5865,7 @@ mod tests {
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned",
             "pinned_due", "today",
             "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "edit", "edit_due", "pri", "promote", "demote", "reflect",
+            "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
             "promote_all_p7", "show", "timeline", "forks", "tags", "tag",
@@ -9161,6 +9248,111 @@ mod tests {
         let s = format_pri_reply("写周报", Some(5), Err("task not found"));
         assert!(s.contains("改 priority 失败"), "{s}");
         assert!(s.contains("task not found"), "{s}");
+    }
+
+    // -------- /swap_priority parse + format --------
+
+    #[test]
+    fn swap_priority_parses_double_colon_separator() {
+        assert_eq!(
+            parse_tg_command("/swap_priority A :: B"),
+            Some(TgCommand::SwapPriority {
+                title_a: "A".to_string(),
+                title_b: "B".to_string(),
+            })
+        );
+        // title with spaces / chinese punctuation
+        assert_eq!(
+            parse_tg_command("/swap_priority 整理 Downloads :: 写周报"),
+            Some(TgCommand::SwapPriority {
+                title_a: "整理 Downloads".to_string(),
+                title_b: "写周报".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn swap_priority_missing_separator_keeps_first_empty_second() {
+        // 无 `::` 时整段作 a，b 为空 → handler 走 usage hint
+        assert_eq!(
+            parse_tg_command("/swap_priority just one title"),
+            Some(TgCommand::SwapPriority {
+                title_a: "just one title".to_string(),
+                title_b: "".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn swap_priority_reply_missing_title_shows_usage() {
+        let s = format_swap_priority_reply("", "B", None, None, Ok(()), Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("`::`"), "show separator: {s}");
+        let s2 = format_swap_priority_reply("A", "", None, None, Ok(()), Ok(()));
+        assert!(s2.contains("用法"), "{s2}");
+    }
+
+    #[test]
+    fn swap_priority_reply_same_title_short_circuits() {
+        let s = format_swap_priority_reply(
+            "A", "A", Some(3), Some(3), Ok(()), Ok(()),
+        );
+        assert!(s.contains("无需互换"), "{s}");
+        assert!(!s.contains("已互换"), "{s}");
+    }
+
+    #[test]
+    fn swap_priority_reply_missing_resolve_shows_which() {
+        let s = format_swap_priority_reply(
+            "A", "B", None, Some(5), Ok(()), Ok(()),
+        );
+        assert!(s.contains("「A」"), "highlights missing A: {s}");
+        assert!(s.contains("没找到"), "{s}");
+        let s2 = format_swap_priority_reply(
+            "A", "B", Some(3), None, Ok(()), Ok(()),
+        );
+        assert!(s2.contains("「B」"), "highlights missing B: {s2}");
+        let s3 = format_swap_priority_reply(
+            "A", "B", None, None, Ok(()), Ok(()),
+        );
+        assert!(s3.contains("「A」"), "{s3}");
+        assert!(s3.contains("「B」"), "{s3}");
+    }
+
+    #[test]
+    fn swap_priority_reply_success_format() {
+        let s = format_swap_priority_reply(
+            "整理 Downloads",
+            "写周报",
+            Some(3),
+            Some(7),
+            Ok(()),
+            Ok(()),
+        );
+        assert!(s.contains("🔄"), "{s}");
+        assert!(s.contains("已互换"), "{s}");
+        // a: 3 → 7
+        assert!(s.contains("整理 Downloads"), "{s}");
+        assert!(s.contains("P3 → P7"), "{s}");
+        // b: 7 → 3
+        assert!(s.contains("写周报"), "{s}");
+        assert!(s.contains("P7 → P3"), "{s}");
+    }
+
+    #[test]
+    fn swap_priority_reply_partial_failure_shows_per_step() {
+        let s = format_swap_priority_reply(
+            "A",
+            "B",
+            Some(3),
+            Some(7),
+            Ok(()),
+            Err("write failed"),
+        );
+        assert!(s.contains("部分失败"), "{s}");
+        assert!(s.contains("✓ 「A」"), "A succeeded: {s}");
+        assert!(s.contains("⚠️ 「B」"), "B failed: {s}");
+        assert!(s.contains("write failed"), "{s}");
     }
 
     // -------- /streak parse + format --------

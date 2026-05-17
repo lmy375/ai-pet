@@ -1628,6 +1628,62 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::SwapPriority { title_a, title_b } => {
+            // 两 title 各自走 try_resolve_by_index + resolve_tg_task_title
+            // 三层 fuzzy；任一端 trim 后空 → formatter 走 usage hint。
+            // resolve 成功后读 pre-swap priority；对称写两次 task_set_priority
+            // (a → pre_b, b → pre_a)。失败 per-step 累计；formatter 渲清晰
+            // 报告。
+            if title_a.trim().is_empty() || title_b.trim().is_empty() {
+                crate::telegram::commands::format_swap_priority_reply(
+                    &title_a, &title_b, None, None, Ok(()), Ok(()),
+                )
+            } else {
+                let actual_a = match try_resolve_by_index(&title_a, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title_a),
+                };
+                let actual_b = match try_resolve_by_index(&title_b, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title_b),
+                };
+                match (actual_a, actual_b) {
+                    (Ok(ta), Ok(tb)) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        let pri_a =
+                            views.iter().find(|v| v.title == ta).map(|v| v.priority);
+                        let pri_b =
+                            views.iter().find(|v| v.title == tb).map(|v| v.priority);
+                        if let (Some(a_val), Some(b_val)) = (pri_a, pri_b) {
+                            // 已是相同 priority 时仍执行写入（无副作用 + 显
+                            // success 让 owner 知道命中），但 formatter 文
+                            // 案体现 "a → b, b → a" 即使值相同。
+                            let save_a = crate::commands::task::task_set_priority(
+                                ta.clone(),
+                                b_val,
+                            );
+                            let save_b = crate::commands::task::task_set_priority(
+                                tb.clone(),
+                                a_val,
+                            );
+                            crate::telegram::commands::format_swap_priority_reply(
+                                &ta,
+                                &tb,
+                                Some(a_val),
+                                Some(b_val),
+                                save_a.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                                save_b.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                            )
+                        } else {
+                            crate::telegram::commands::format_swap_priority_reply(
+                                &ta, &tb, pri_a, pri_b, Ok(()), Ok(()),
+                            )
+                        }
+                    }
+                    (Err(msg), _) | (_, Err(msg)) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Edit { title, new_desc } => {
             // 空 title / 空 new_desc → formatter 走 usage hint 路径，不真改。
             if title.trim().is_empty() || new_desc.trim().is_empty() {
