@@ -521,6 +521,33 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return next;
     });
   };
+  /// butler_tasks 段「⏰ next-fire 升序」专属 toggle：true 时段内非 pinned
+  /// items 按下次触发时刻升序（最近会 fire 的浮顶），让 owner 一眼看
+  /// "接下来 N 分钟 / 小时会 fire 的 N 条" 优先处理。无法解析 schedule
+  /// 的 item / 已过期 item 排序时排到段尾。与 sortByRecent 互斥语义
+  /// —— next-fire 是"未来视角"，updated_at 是"近改视角"。仅 butler_tasks
+  /// 段有 schedule 概念；其它 cat 该 toggle 不渲染。
+  const [sortBulterByNextFire, setSortBulterByNextFire] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-butler-sort-next-fire") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSortBulterByNextFire = () => {
+    setSortBulterByNextFire((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          "pet-butler-sort-next-fire",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
   /// butler_tasks 段 schedule kind 过滤：Set 内值为 "every" / "once" /
   /// "deadline" / "none"（合成 sentinel，含义 "无 schedule 前缀"）。空 Set
   /// = 不过滤；非空 = OR 命中（item.kind 或 "none" 命中则通过）。session 内
@@ -1232,6 +1259,67 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     const fire = mostRecentFire(schedule, now);
     if (!fire) return null;
     return Math.floor((now.getTime() - fire.getTime()) / 60_000);
+  };
+
+  /// 下次触发时刻（绝对 ms）。给「⏰ next-fire 升序」排序 + 倒计时 chip 共用
+  /// 逻辑。kind = every / every_weekdays / once / deadline 全覆盖；解析失败
+  /// 或 mask === 0 → null（caller 把 null 排到尾或不显）。倒计时 chip 内联的
+  /// 同名计算与此函数完全一致 —— 任一处改算法两边都要同步（统一回填至此
+  /// 函数 + 删除 chip 内 inline 副本是 follow-up 整理）。
+  const nextFireMs = (schedule: ButlerSchedule, now: Date): number | null => {
+    if (schedule.kind === "every") {
+      const target = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        schedule.hour,
+        schedule.minute,
+      );
+      if (target.getTime() <= now.getTime()) {
+        target.setDate(target.getDate() + 1);
+      }
+      return target.getTime();
+    }
+    if (schedule.kind === "every_weekdays") {
+      const jsDayToMonBit = (d: number) => 1 << ((d + 6) % 7);
+      if (schedule.mask === 0) return null;
+      const todayTarget = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        schedule.hour,
+        schedule.minute,
+      );
+      const todayBit = jsDayToMonBit(now.getDay());
+      if (
+        (schedule.mask & todayBit) !== 0 &&
+        todayTarget.getTime() > now.getTime()
+      ) {
+        return todayTarget.getTime();
+      }
+      for (let offsetFwd = 1; offsetFwd <= 7; offsetFwd++) {
+        const cand = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() + offsetFwd,
+          schedule.hour,
+          schedule.minute,
+        );
+        if ((schedule.mask & jsDayToMonBit(cand.getDay())) !== 0) {
+          return cand.getTime();
+        }
+      }
+      return null;
+    }
+    // once / deadline：绝对时间。月-day 不合法 / NaN 兜底 null。
+    const t = new Date(
+      schedule.year,
+      schedule.month - 1,
+      schedule.day,
+      schedule.hour,
+      schedule.minute,
+    ).getTime();
+    return Number.isFinite(t) ? t : null;
   };
 
   // Iter Cπ: TS mirror of Rust's `has_butler_error`. Marker is "[error" anywhere
@@ -3418,6 +3506,38 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             💤 {snoozeN}
                           </span>
                         )}
+                        {/* ⏰ next-fire 升序 toggle：butler_tasks 段专属
+                            一键切换 — 按下次触发时刻升序排（最近会 fire
+                            的浮顶），让 owner 看 "接下来 N 分钟 / 小时会
+                            fire 的"top of list。与 sortByRecent (📅 全局
+                            按时间)互斥语义但仅作用 butler 段。激活态走
+                            indigo tint 与其它 chip 配色错开。 */}
+                        <button
+                          type="button"
+                          onClick={toggleSortBulterByNextFire}
+                          style={{
+                            ...chipBase,
+                            border: sortBulterByNextFire
+                              ? "1px solid var(--pet-color-accent)"
+                              : "1px solid transparent",
+                            background: sortBulterByNextFire
+                              ? "var(--pet-tint-indigo-bg, #e0e7ff)"
+                              : "var(--pet-color-border)",
+                            color: sortBulterByNextFire
+                              ? "var(--pet-tint-indigo-fg, #3730a3)"
+                              : "var(--pet-color-muted)",
+                            fontWeight: sortBulterByNextFire ? 600 : 400,
+                            opacity: 0.95,
+                            cursor: "pointer",
+                          }}
+                          title={
+                            sortBulterByNextFire
+                              ? `已按下次触发时刻升序排（最近会 fire 的浮顶）。点击切回默认序。`
+                              : `按下次触发时刻升序排 — 最近会 fire 的浮顶，方便 audit "接下来要发生什么"。pinned items 仍挂头；解析失败 / 无 schedule 的 item 排到段尾。`
+                          }
+                        >
+                          {sortBulterByNextFire ? "✓ " : ""}⏰ next-fire
+                        </button>
                         {/* ✅ 完成率 chip：butler_tasks 段产出率信号。done =
                             items 含 `[done]` marker（与 task_queue 同语义）；
                             total = 整段 items 数（含 every-recurring 永远算
@@ -4144,13 +4264,32 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 //
                 // sortByRecent 开启时：pinned + rest 各自按 updated_at 倒序，
                 // pinned 仍优先（用户主动钉是强信号），但段内"最近钉的"最先看到。
+                //
+                // butler_tasks + sortBulterByNextFire 开启时：pinned + rest 各
+                // 自按 next-fire 升序（最近会 fire 的浮顶；解析失败 / null 排
+                // 段尾）。与 sortByRecent 互斥 —— 同时开 next-fire 优先（更接
+                // 近 "接下来要发生什么" 的 owner 意图）。
                 const pinned: MemoryItem[] = [];
                 const rest: MemoryItem[] = [];
                 for (const it of scheduleFilteredItems) {
                   if (pinnedKeys.has(`${catKey}::${it.title}`)) pinned.push(it);
                   else rest.push(it);
                 }
-                if (sortByRecent) {
+                const useNextFire =
+                  catKey === "butler_tasks" && sortBulterByNextFire;
+                if (useNextFire) {
+                  const now = new Date();
+                  const fireOf = (it: MemoryItem): number => {
+                    const p = parseButlerSchedule(it.description);
+                    if (!p) return Number.POSITIVE_INFINITY;
+                    const ms = nextFireMs(p.schedule, now);
+                    return ms === null ? Number.POSITIVE_INFINITY : ms;
+                  };
+                  const cmpFire = (a: MemoryItem, b: MemoryItem) =>
+                    fireOf(a) - fireOf(b);
+                  pinned.sort(cmpFire);
+                  rest.sort(cmpFire);
+                } else if (sortByRecent) {
                   const cmpRecent = (a: MemoryItem, b: MemoryItem) =>
                     (b.updated_at || "").localeCompare(a.updated_at || "");
                   pinned.sort(cmpRecent);
@@ -4159,7 +4298,7 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 const sortedItems =
                   pinned.length > 0
                     ? [...pinned, ...rest]
-                    : sortByRecent
+                    : useNextFire || sortByRecent
                       ? rest
                       : scheduleFilteredItems;
                 const isLong = sortedItems.length > CATEGORY_FOLD_THRESHOLD;
