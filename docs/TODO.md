@@ -9,7 +9,6 @@
 >
 
 - PanelMemory item description 输 `#` 时弹既有 tag 补全 popover：与 iter #390 PanelTasks 搜索框对偶 — 让 owner 在写 memory 时也享受 tag 自动补全免敲错。
-- TG bot 加 `/edit_due <title> <preset>` 命令：preset 接 tomorrow/tonight/今晚/next_monday/+30m 等友好词 — 手机端免手敲 ISO 日期改 due。
 - ChatMini ambient hint 行 chip click → 跳 PanelDebug 对应卡片：iter #383 hint 只显数字，click 应 deep-link 到详情（开 panel + 切对应 tab + 滚到位）。
 - pet ctx menu 加「🔄 重启 LLM 连接」：调试 LLM 卡死场景一键 reset chat HTTP client（与既有 reconnect_mcp 同模式但针对 chat backend）。
 
