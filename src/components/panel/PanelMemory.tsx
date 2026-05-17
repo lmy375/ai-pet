@@ -956,6 +956,26 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   /// 让 owner 一键回看所有标过 silent 的任务再决定调整 / 解除。不持久化
   /// （filter 是临时 inspect 视图，跨 session 默认全显更符合直觉）。
   const [silentOnlyCats, setSilentOnlyCats] = useState<Set<string>>(new Set());
+
+  /// ⏰ N pending alarms chip 的 popover 开关。打开时显 todo 段所有
+  /// [remind: ...] 协议条目的倒计时清单（target + 剩余/逾期分钟 +
+  /// topic）。与 TG /alarms 同 audit 数据，桌面端就近呈现 — 不必
+  /// 跳 PanelDebug 看 pending_reminders 卡片。outside-click + Esc
+  /// 关；状态不持久化（临时 audit 视图）。
+  const [alarmsPopoverOpen, setAlarmsPopoverOpen] = useState(false);
+  useEffect(() => {
+    if (!alarmsPopoverOpen) return;
+    const close = () => setAlarmsPopoverOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAlarmsPopoverOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [alarmsPopoverOpen]);
   const [pinnedKeys, setPinnedKeys] = useState<Set<string>>(() => {
     try {
       const raw = window.localStorage.getItem("pet-memory-pinned");
@@ -3893,6 +3913,212 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     </span>
                   );
                 })()}
+                {/* ⏰ N pending alarms chip：todo 段专属。扫 cat.items
+                    description 中 `[remind: HH:MM]` / `[remind: YYYY-MM-DD
+                    HH:MM]` 协议条目计数；> 0 时渲。click 弹倒计时清单
+                    popover — 一眼看 alarm 队列 + 剩余/逾期分钟。与 TG
+                    /alarms 同 audit 数据但桌面端就近呈现。注：parse 逻
+                    辑前端简化版（regex 匹配 prefix），与后端
+                    proactive::parse_reminder_prefix 容忍但不严格对齐 —
+                    边界场景（invalid time）前端会多算，但仅影响 count
+                    精度，无副作用。 */}
+                {catKey === "todo" &&
+                  (() => {
+                    const nowMs = now.getTime();
+                    type AlarmEntry = {
+                      title: string;
+                      topic: string;
+                      targetMs: number;
+                      displayWhen: string;
+                    };
+                    const alarms: AlarmEntry[] = [];
+                    // 同后端协议：[remind: HH:MM] 或 [remind: YYYY-MM-DD HH:MM]
+                    const reAbs = /\[remind:\s*(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})\s*\]\s*(.*)/;
+                    const reToday = /\[remind:\s*(\d{1,2}):(\d{1,2})\s*\]\s*(.*)/;
+                    for (const it of cat.items) {
+                      const desc = it.description;
+                      let parsed: { ms: number; topic: string; when: string } | null = null;
+                      const m1 = desc.match(reAbs);
+                      if (m1) {
+                        const d = new Date(
+                          Number(m1[1]),
+                          Number(m1[2]) - 1,
+                          Number(m1[3]),
+                          Number(m1[4]),
+                          Number(m1[5]),
+                        );
+                        if (!Number.isNaN(d.getTime())) {
+                          const mm = String(Number(m1[2])).padStart(2, "0");
+                          const dd = String(Number(m1[3])).padStart(2, "0");
+                          const hh = String(Number(m1[4])).padStart(2, "0");
+                          const mi = String(Number(m1[5])).padStart(2, "0");
+                          parsed = {
+                            ms: d.getTime(),
+                            topic: m1[6].trim() || it.title,
+                            when: `${mm}-${dd} ${hh}:${mi}`,
+                          };
+                        }
+                      } else {
+                        const m2 = desc.match(reToday);
+                        if (m2) {
+                          const h = Number(m2[1]);
+                          const mi = Number(m2[2]);
+                          if (h >= 0 && h < 24 && mi >= 0 && mi < 60) {
+                            const target = new Date(now);
+                            target.setHours(h, mi, 0, 0);
+                            parsed = {
+                              ms: target.getTime(),
+                              topic: m2[3].trim() || it.title,
+                              when: `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`,
+                            };
+                          }
+                        }
+                      }
+                      if (parsed) {
+                        alarms.push({
+                          title: it.title,
+                          topic: parsed.topic,
+                          targetMs: parsed.ms,
+                          displayWhen: parsed.when,
+                        });
+                      }
+                    }
+                    if (alarms.length === 0) return null;
+                    alarms.sort((a, b) => a.targetMs - b.targetMs);
+                    return (
+                      <span
+                        style={{ position: "relative", display: "inline-block" }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAlarmsPopoverOpen((v) => !v);
+                          }}
+                          style={{
+                            fontSize: 11,
+                            padding: "1px 6px",
+                            borderRadius: 8,
+                            fontWeight: 400,
+                            fontFamily: "'SF Mono', monospace",
+                            border: alarmsPopoverOpen
+                              ? "1px solid var(--pet-tint-blue-fg)"
+                              : "1px solid transparent",
+                            background: alarmsPopoverOpen
+                              ? "var(--pet-tint-blue-fg)"
+                              : "var(--pet-tint-blue-bg)",
+                            color: alarmsPopoverOpen
+                              ? "#fff"
+                              : "var(--pet-tint-blue-fg)",
+                            cursor: "pointer",
+                          }}
+                          title={`${alarms.length} 条 pending reminders — click 看倒计时清单。每条到点会触发 ChatMini 软提醒（proactive 扫到 due 时）。`}
+                          aria-label={`view ${alarms.length} pending alarms`}
+                        >
+                          ⏰ {alarms.length}
+                        </button>
+                        {alarmsPopoverOpen && (
+                          <div
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              position: "absolute",
+                              top: "calc(100% + 4px)",
+                              left: 0,
+                              minWidth: 280,
+                              maxWidth: 420,
+                              maxHeight: 320,
+                              overflowY: "auto",
+                              padding: 6,
+                              background: "var(--pet-color-card)",
+                              border: "1px solid var(--pet-color-border)",
+                              borderRadius: 6,
+                              boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                              zIndex: 50,
+                              fontSize: 11,
+                              color: "var(--pet-color-fg)",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 10,
+                                color: "var(--pet-color-muted)",
+                                padding: "2px 4px 6px",
+                              }}
+                            >
+                              ⏰ pending reminders（{alarms.length} 条 · 按目标时刻升序）
+                            </div>
+                            {alarms.map((a) => {
+                              const diffMs = a.targetMs - nowMs;
+                              const absMin = Math.max(
+                                1,
+                                Math.round(Math.abs(diffMs) / 60000),
+                              );
+                              let remainLabel: string;
+                              if (Math.abs(diffMs) < 3_600_000) {
+                                remainLabel =
+                                  diffMs >= 0
+                                    ? `剩 ${absMin} 分`
+                                    : `已逾期 ${absMin} 分`;
+                              } else if (Math.abs(diffMs) < 86_400_000) {
+                                const h = Math.floor(Math.abs(diffMs) / 3_600_000);
+                                remainLabel =
+                                  diffMs >= 0
+                                    ? `剩 ${h} 小时`
+                                    : `已逾期 ${h} 小时`;
+                              } else {
+                                const d = Math.floor(Math.abs(diffMs) / 86_400_000);
+                                remainLabel =
+                                  diffMs >= 0
+                                    ? `剩 ${d} 天`
+                                    : `已逾期 ${d} 天`;
+                              }
+                              const overdue = diffMs < 0;
+                              return (
+                                <div
+                                  key={a.title}
+                                  style={{
+                                    padding: "4px 6px",
+                                    borderRadius: 4,
+                                    background: overdue
+                                      ? "var(--pet-tint-red-bg)"
+                                      : "transparent",
+                                    color: overdue
+                                      ? "var(--pet-tint-red-fg)"
+                                      : "var(--pet-color-fg)",
+                                    marginBottom: 2,
+                                  }}
+                                  title={`Source item title: ${a.title}`}
+                                >
+                                  <span
+                                    style={{
+                                      fontFamily: "'SF Mono', monospace",
+                                      marginRight: 4,
+                                    }}
+                                  >
+                                    {a.displayWhen}
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      color: overdue
+                                        ? "var(--pet-tint-red-fg)"
+                                        : "var(--pet-color-muted)",
+                                      marginRight: 4,
+                                    }}
+                                  >
+                                    ({remainLabel})
+                                  </span>
+                                  <span>{a.topic}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </span>
+                    );
+                  })()}
                 {/* 🔇 silent / 💤 snooze 计数 chip：butler_tasks 专属（其它
                     cat 这两 marker 无语义）。silent 严格字面 `[silent]`；
                     snooze 解析 `[snooze: YYYY-MM-DD HH:MM]` 并仅算未过点
