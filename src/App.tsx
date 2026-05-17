@@ -1703,9 +1703,10 @@ function App() {
           // 边距。mousedown e.stopPropagation 防菜单内部点击被 useEffect outside-
           // close 误关。
           const W = 180;
-          // H 经验值 ~ 13 个 button (button ≈ 26px) + 6 个 separator (≈ 9px) +
-          // 8px padding ≈ 400；加点余量到 470 给字体放大 / 不同主题边距浮动。
-          const H = 470;
+          // H 经验值 ~ 14 个 button (button ≈ 26px) + 6 个 separator (≈ 9px) +
+          // 8px padding ≈ 430；加点余量到 500 给字体放大 / 不同主题边距浮动。
+          // iter #396 加「🔄 重启 LLM 连接」+1 button → 470→500
+          const H = 500;
           const left = Math.max(8, Math.min(petCtxMenu.x, window.innerWidth - W - 8));
           const top = Math.max(8, Math.min(petCtxMenu.y, window.innerHeight - H - 8));
           const itemStyle: React.CSSProperties = {
@@ -1995,6 +1996,32 @@ function App() {
                     : "🎲 摇一摇 主动开口"}
               </button>
               {sep}
+              {/* iter #396: 「🔄 重启 LLM 连接」— 调试 LLM 卡死场景一键
+                  unstick。chat 模块 reqwest::Client::new() 是 per-call
+                  无持久 connection，所以"reset"语义实际是：
+                  1. 走既有 useChat.cancel() soft-cancel UI 任何 in-flight
+                     state（清 cancelledRef + finalize accumulated）
+                  2. appendAssistant 一条 ack 让 owner 看到生效
+
+                  与 reconnect_mcp 对偶但 scope 不同：mcp 有持久 connection
+                  需重连，chat HTTP 是每次新 client — 本菜单仅救 UI 不救
+                  后端在跑的 token。help text 明示 limitation。 */}
+              <button
+                type="button"
+                style={{ ...itemStyle, color: "var(--pet-color-muted)" }}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setPetCtxMenu(null);
+                  cancel();
+                  appendAssistant(
+                    "🔄 已重置 LLM 连接 — UI in-flight 状态已清，下次发消息走全新 reqwest client。（注：后端 stream 若已在跑仍会消耗 token；本操作仅救 UI 卡死场景。）",
+                  );
+                }}
+                title="一键 unstick UI — soft-cancel 任何 in-flight chat state（与 ChatMini ✕ 取消按钮同语义但 ctx menu 入口更易找）。chat 走 per-call 新 reqwest client，无持久 connection 需重连；本操作仅救 UI 卡死，不止后端已跑的 token 消耗。"
+              >
+                🔄 重启 LLM 连接
+              </button>
               <button
                 type="button"
                 style={{ ...itemStyle, color: "var(--pet-color-muted)" }}
