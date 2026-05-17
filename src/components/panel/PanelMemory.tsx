@@ -765,6 +765,62 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       window.removeEventListener("keydown", close);
     };
   }, [moveCatPicker]);
+  /// 📜 detail.md 历史快照 popover：与 PanelTasks 📜 popover 对偶。
+  /// 点 📜 按钮 → 调 `memory_detail_history` 拉最近 5 份 .history 快照，
+  /// 列 ts + 内容前 50 字预览。click 任一行 → 复制全文到剪贴板（不
+  /// 提供 inline restore — PanelMemory 没 textarea，restore 语义只在编
+  /// 辑器内有意义）。outside-click / Esc 关。
+  interface PanelMemoryHistoryEntry {
+    ts: string;
+    content: string;
+  }
+  const [historyPicker, setHistoryPicker] = useState<{
+    catKey: string;
+    title: string;
+    detailPath: string;
+  } | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<
+    PanelMemoryHistoryEntry[]
+  >([]);
+  const [historyCopiedTs, setHistoryCopiedTs] = useState<string | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  useEffect(() => {
+    if (!historyPicker) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+      setHistoryPicker(null);
+      setHistoryEntries([]);
+      setHistoryCopiedTs(null);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [historyPicker]);
+  const openHistoryPicker = useCallback(
+    async (catKey: string, title: string, detailPath: string) => {
+      setHistoryBusy(true);
+      setHistoryPicker({ catKey, title, detailPath });
+      setHistoryCopiedTs(null);
+      try {
+        const list = await invoke<PanelMemoryHistoryEntry[]>(
+          "memory_detail_history",
+          { detailPath },
+        );
+        setHistoryEntries(list);
+      } catch (e) {
+        setMessage(`拉历史失败：${e}`);
+        setTimeout(() => setMessage(""), 3000);
+        setHistoryEntries([]);
+      } finally {
+        setHistoryBusy(false);
+      }
+    },
+    [],
+  );
+
   /// 🔖 加 #tag 快捷 popover：与「🏷 改类目」对偶但语义不同 — 那个是
   /// 跨 cat 移动 item，本入口是给当前 item description 追加 `#name` tag。
   /// 避免 owner 走完整编辑 modal 只为加一个 tag。outside-click / Esc 关
@@ -6079,6 +6135,222 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             📋
                           </button>
                         )}
+                        {/* 📜 detail.md 历史快照：与 PanelTasks 📜 popover
+                            对偶，让 PanelMemory 任一 cat 都能查 .history 快
+                            照。点击拉最近 5 份 ts + 内容前缀，click 任一
+                            行复制全文到剪贴板。"📁 .history" mini button
+                            一键开 Finder。仅 item.detail_path 非空时显
+                            （新建 item 还没存盘前没历史）。 */}
+                        {item.detail_path && (() => {
+                          const open =
+                            historyPicker !== null &&
+                            historyPicker.detailPath === item.detail_path;
+                          return (
+                            <span
+                              style={{
+                                position: "relative",
+                                display: "inline-block",
+                              }}
+                            >
+                              <button
+                                style={s.btn}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (open) {
+                                    setHistoryPicker(null);
+                                    setHistoryEntries([]);
+                                  } else {
+                                    void openHistoryPicker(
+                                      catKey,
+                                      item.title,
+                                      item.detail_path,
+                                    );
+                                  }
+                                }}
+                                title={`查看 detail.md 历史快照（最近 5 份 save 前版本）— click 任一行复制全文到剪贴板`}
+                                aria-label="detail.md history snapshots"
+                              >
+                                📜
+                              </button>
+                              {open && (
+                                <div
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    position: "absolute",
+                                    top: "calc(100% + 4px)",
+                                    right: 0,
+                                    minWidth: 280,
+                                    maxWidth: 380,
+                                    padding: 6,
+                                    background: "var(--pet-color-card)",
+                                    border: "1px solid var(--pet-color-border)",
+                                    borderRadius: 4,
+                                    boxShadow:
+                                      "0 4px 12px rgba(0,0,0,0.18)",
+                                    zIndex: 50,
+                                    fontSize: 11,
+                                    color: "var(--pet-color-fg)",
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 6,
+                                      fontSize: 10,
+                                      color: "var(--pet-color-muted)",
+                                      padding: "2px 6px 6px",
+                                    }}
+                                  >
+                                    <span style={{ flex: 1 }}>
+                                      📜 save 前快照（最新在前 · 点击复制）
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        try {
+                                          await invoke(
+                                            "memory_reveal_history_dir",
+                                            { detailPath: item.detail_path },
+                                          );
+                                        } catch (e) {
+                                          setMessage(`打开失败：${e}`);
+                                          setTimeout(
+                                            () => setMessage(""),
+                                            3000,
+                                          );
+                                        }
+                                      }}
+                                      title="在 Finder / Explorer 打开 .history 目录 — cherry-pick / 备份导出"
+                                      style={{
+                                        fontSize: 10,
+                                        padding: "1px 5px",
+                                        border: "1px solid var(--pet-color-border)",
+                                        borderRadius: 3,
+                                        background: "var(--pet-color-card)",
+                                        color: "var(--pet-color-muted)",
+                                        cursor: "pointer",
+                                        fontFamily: "inherit",
+                                      }}
+                                    >
+                                      📁 .history
+                                    </button>
+                                  </div>
+                                  {historyBusy && (
+                                    <div
+                                      style={{
+                                        padding: "8px 6px",
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        textAlign: "center",
+                                      }}
+                                    >
+                                      拉历史中…
+                                    </div>
+                                  )}
+                                  {!historyBusy && historyEntries.length === 0 && (
+                                    <div
+                                      style={{
+                                        padding: "8px 6px",
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        textAlign: "center",
+                                      }}
+                                    >
+                                      尚无历史快照（save 过该 item 后才会有）
+                                    </div>
+                                  )}
+                                  {!historyBusy &&
+                                    historyEntries.map((entry) => {
+                                      const tsFmt =
+                                        entry.ts.length === 15
+                                          ? `${entry.ts.slice(4, 6)}-${entry.ts.slice(6, 8)} ${entry.ts.slice(9, 11)}:${entry.ts.slice(11, 13)}:${entry.ts.slice(13, 15)}`
+                                          : entry.ts;
+                                      const preview = entry.content
+                                        .replace(/\s+/g, " ")
+                                        .trim()
+                                        .slice(0, 50);
+                                      const copied =
+                                        historyCopiedTs === entry.ts;
+                                      return (
+                                        <button
+                                          key={entry.ts}
+                                          type="button"
+                                          onClick={async () => {
+                                            try {
+                                              await navigator.clipboard.writeText(
+                                                entry.content,
+                                              );
+                                              setHistoryCopiedTs(entry.ts);
+                                              window.setTimeout(
+                                                () =>
+                                                  setHistoryCopiedTs((cur) =>
+                                                    cur === entry.ts
+                                                      ? null
+                                                      : cur,
+                                                  ),
+                                                2500,
+                                              );
+                                            } catch (e) {
+                                              setMessage(`复制失败：${e}`);
+                                              setTimeout(
+                                                () => setMessage(""),
+                                                2500,
+                                              );
+                                            }
+                                          }}
+                                          title={`${entry.ts} — ${entry.content.length} 字符 · 点击复制全文到剪贴板`}
+                                          style={{
+                                            display: "block",
+                                            width: "100%",
+                                            textAlign: "left",
+                                            background: copied
+                                              ? "var(--pet-tint-green-bg)"
+                                              : "transparent",
+                                            color: copied
+                                              ? "var(--pet-tint-green-fg)"
+                                              : "var(--pet-color-fg)",
+                                            border: "none",
+                                            padding: "4px 6px",
+                                            fontSize: 11,
+                                            cursor: "pointer",
+                                            borderRadius: 3,
+                                            fontFamily: "inherit",
+                                          }}
+                                        >
+                                          <div
+                                            style={{
+                                              fontFamily:
+                                                "'SF Mono', monospace",
+                                              fontSize: 10,
+                                              color: copied
+                                                ? "var(--pet-tint-green-fg)"
+                                                : "var(--pet-color-muted)",
+                                            }}
+                                          >
+                                            {copied ? "✓ 已复制 " : ""}
+                                            {tsFmt}
+                                          </div>
+                                          <div
+                                            style={{
+                                              whiteSpace: "nowrap",
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                              opacity: 0.8,
+                                            }}
+                                          >
+                                            {preview || "（空文件）"}
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                </div>
+                              )}
+                            </span>
+                          );
+                        })()}
                         {/* 📝 复制本条整段 markdown：把 item 的 title /
                             description / detail_path / 字数 / 更新时间打包
                             成 H2 段 + meta + body 的 markdown。与 📋 detail
