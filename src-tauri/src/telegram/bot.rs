@@ -786,6 +786,13 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Yesterday => {
+            // 昨日 done 视图：reuse read_tg_chat_task_views（已 chat-scoped）。
+            // formatter 内部从 today 算 yesterday 边界并过滤 + sort。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_yesterday_reply(&views, today)
+        }
         TgCommand::Quick { text } => {
             // 与 /task 同 backend (memory_edit("create", "butler_tasks")) 但
             // priority 始终 P3、reply 极短。空 text 走 formatter usage hint。
