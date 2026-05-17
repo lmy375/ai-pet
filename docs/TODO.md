@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelTasks 行加「🔁 复制 schedule」chip：把 [every:] / [once:] / [deadline:] 字符串复制 — 共用 schedule 场景。
 - TG bot `/snooze_until <title> <HH:MM>` 命令：与 /sleep_until 对偶 — 给 task 设 snooze 到指定时刻。
 - PanelMemory 段标题加「🏃 今日更新」filter chip：仅显 updated_at 在今日的 items — 与既有 sort 对偶 filter 入口。
 - TG bot `/consolidate_now confirm` 命令：与桌面 force consolidate 对偶 — TG 端远程手动触发 sweep。
