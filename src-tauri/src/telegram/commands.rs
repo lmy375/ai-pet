@@ -139,6 +139,11 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/feedback <text>` —— owner 主动给 pet 写反馈到 feedback_history.log
+    /// （FeedbackKind::Comment 中性 kind）。让 LLM 在下次 proactive cycle
+    /// 看到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。空
+    /// text → missing-arg hint。
+    Feedback { text: String },
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -269,6 +274,7 @@ impl TgCommand {
             TgCommand::Yesterday => "yesterday",
             TgCommand::Streak => "streak",
             TgCommand::Pri { .. } => "pri",
+            TgCommand::Feedback { .. } => "feedback",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -294,7 +300,8 @@ impl TgCommand {
             | TgCommand::Reflect { text: title }
             | TgCommand::Show { title }
             | TgCommand::Quick { text: title }
-            | TgCommand::Pri { title, .. } => title.as_str(),
+            | TgCommand::Pri { title, .. }
+            | TgCommand::Feedback { text: title } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
@@ -397,6 +404,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("yesterday", "List yesterday's done tasks with result summaries (complement to /today)"),
             ("streak", "Consecutive done-days streak + 7d / 30d done totals"),
             ("pri", "Set a task's priority (0..=9) without rewriting the rest"),
+            ("feedback", "Send owner feedback to feedback_history (influences pet's next proactive turn)"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -440,6 +448,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("yesterday", "列昨日 done 任务标题 + result 摘要（与 /today 互补）"),
             ("streak", "连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数"),
             ("pri", "单改任务 priority（0..=9）不走 /edit 全量覆写"),
+            ("feedback", "给 pet 留反馈（写 feedback_history，影响下次 proactive turn）"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -866,6 +875,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/reflect <text>`：与 /note 同模板但写入 ai_insights category。
         // 空 text 由 handler 走 missing-arg。
         "reflect" => Some(TgCommand::Reflect { text: title }),
+        // `/feedback <text>`：与 /note / /reflect 同模板。所有 arg 作 text
+        // 写到 feedback_history.log（FeedbackKind::Comment）。空 text 由
+        // handler 走 missing-arg。
+        "feedback" => Some(TgCommand::Feedback { text: title }),
         // `/edit <title> :: <new desc>`：first-occurrence `::` 切分；任一端
         // trim 后为空 → handler 走 missing-arg。新 desc 是全量覆写（与
         // 桌面 detail.md textarea save 等价）。
@@ -1157,8 +1170,8 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
     "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
-    "digest", "edit", "pri", "reflect", "find", "show", "blocked", "snoozed",
-    "reset", "version", "help",
+    "digest", "edit", "pri", "reflect", "feedback", "find", "show", "blocked",
+    "snoozed", "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1272,6 +1285,7 @@ pub fn format_help_for_topic(
         "yesterday" => "📅 /yesterday\n\n用法：列本聊天派单中昨日完成的任务标题 + result 摘要（按 updated_at 倒序）。无参。owner 想 audit 「昨天做完了啥」时用。\n\n示例：\n  /yesterday\n\n相关：/today（今日切片）；/recent（不限日期最近 N）；/digest（含 result 摘要的最近 N）。",
         "streak" => "🔥 /streak\n\n用法：显本聊天 done 完成节奏数据：连续完成天数 + 近 7 天 / 30 天 done 总数。无参。owner audit 「最近完成节奏怎么样 / 有没有 streak 在保」时用。streak 末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。\n\n示例：\n  /streak\n\n相关：/today（今日切片）；/yesterday（昨日产出）；/stats（pending / overdue 等汇总）。",
         "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
+        "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1333,6 +1347,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/yesterday  —  列昨日 done 任务标题 + result 摘要（与 /today 互补 — audit 昨日产出）".to_string(),
         "/streak  —  连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数（audit 完成节奏）".to_string(),
         "/pri <title> <N>  —  单改 priority（0..=9）— 不走 /edit 全量覆写".to_string(),
+        "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2376,6 +2391,29 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
         out.push_str(&format!("\n\n无 #tag 任务：{} 条", untagged));
     }
     out
+}
+
+/// `/feedback <text>` 命令回复文案。pure：
+/// - 空 text → usage hint
+/// - 写盘成功 → "💬 已记到 feedback_history" + preview
+/// - 写盘失败 → caller 应直接显错误（本 helper 不分支 — feedback_history
+///   record_event 是 best-effort 不返 Result）
+pub const FEEDBACK_PREVIEW_CHARS: usize = 60;
+pub fn format_feedback_reply(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "💬 用法：/feedback <text>\n\n给 pet 留反馈到 feedback_history.log — LLM 在下次 proactive cycle 看到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n例：/feedback 你最近说话太啰嗦，请精炼点\n例：/feedback 这次主动选 task 选得很到位\n例：/feedback 周末别那么主动开口，让我休息\n\n对比 /note（杂项 → general）/ /reflect（反思 → ai_insights）：本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。".to_string();
+    }
+    let preview: String = if trimmed.chars().count() > FEEDBACK_PREVIEW_CHARS {
+        let head: String = trimmed.chars().take(FEEDBACK_PREVIEW_CHARS).collect();
+        format!("{}…", head)
+    } else {
+        trimmed.to_string()
+    };
+    format!(
+        "💬 已记到 feedback_history\n\n{}\n\n（pet 在下次主动开口前会读到这条 feedback 调整行为。）",
+        preview
+    )
 }
 
 /// `/pri <title> <N>` 命令回复文案。pure：
@@ -3530,8 +3568,8 @@ mod tests {
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "recent", "digest", "edit", "pri", "reflect", "find",
-            "show", "blocked", "snoozed", "reset", "version", "help",
+            "due", "recent", "digest", "edit", "pri", "reflect", "feedback",
+            "find", "show", "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3997,8 +4035,8 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "edit", "pri", "reflect", "show", "tags", "reset",
-            "version", "help",
+            "due", "edit", "pri", "reflect", "feedback", "show", "tags",
+            "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5867,6 +5905,54 @@ mod tests {
         // "/search done" 前缀 `/` 由 trim_start_matches('/') 去掉后变成 "search done"
         let s = format_help_for_topic("/search done", &[]);
         assert!(s.contains("/done"), "{s}");
+    }
+
+    // -------- /feedback parse + format --------
+
+    #[test]
+    fn feedback_parses_text_arg() {
+        assert_eq!(
+            parse_tg_command("/feedback 你最近说话太啰嗦"),
+            Some(TgCommand::Feedback {
+                text: "你最近说话太啰嗦".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn feedback_parses_empty_text() {
+        assert_eq!(
+            parse_tg_command("/feedback"),
+            Some(TgCommand::Feedback {
+                text: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn feedback_reply_empty_shows_usage_hint() {
+        let s = format_feedback_reply("");
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/feedback <text>"), "{s}");
+        assert!(s.contains("feedback_history"), "{s}");
+        // 对比 /note / /reflect — 让 owner 知道三入口差异
+        assert!(s.contains("/note"), "{s}");
+        assert!(s.contains("/reflect"), "{s}");
+    }
+
+    #[test]
+    fn feedback_reply_success_shows_preview() {
+        let s = format_feedback_reply("这次主动选 task 选得很到位");
+        assert!(s.contains("💬 已记到 feedback_history"), "{s}");
+        assert!(s.contains("这次主动选 task 选得很到位"), "{s}");
+        assert!(s.contains("pet 在下次主动开口前会读到"), "{s}");
+    }
+
+    #[test]
+    fn feedback_reply_long_text_truncates_preview() {
+        let long = "啰".repeat(100);
+        let s = format_feedback_reply(&long);
+        assert!(s.contains("…"), "long text should be truncated: {s}");
     }
 
     // -------- /pri parse + format --------
