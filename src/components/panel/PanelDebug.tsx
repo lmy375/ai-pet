@@ -1075,6 +1075,35 @@ export function PanelDebug() {
     window.setTimeout(() => setDebugExportMsg(""), 3500);
   };
 
+  /// 📊 今日决策 chip：扫 decision_log ring buffer（16 条 cap），
+  /// 过滤 timestamp 起始 = 今日（本机日期 YYYY-MM-DD 前缀），按 kind
+  /// 分桶 Run / Skip / Silent。让 owner audit「pet 自主行为节奏」 —
+  /// Run 比例高 = 活跃；Skip 多 = cooldown 卡；Silent 多 = mute 或
+  /// quiet_hours。
+  ///
+  /// 注：ring buffer 16 条 cap 意味着繁忙日的「今日」是 last-16 子集，
+  /// 不是全天 audit；tooltip 显示这一局限。`decisions` 已有既有 1s
+  /// 轮询，本 useMemo 派生不需新 fetch。
+  const todayDecisions = useMemo(() => {
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, "0");
+    const d = String(today.getDate()).padStart(2, "0");
+    const prefix = `${y}-${m}-${d}`;
+    let run = 0;
+    let skip = 0;
+    let silent = 0;
+    let other = 0;
+    for (const e of decisions) {
+      if (!e.timestamp.startsWith(prefix)) continue;
+      if (e.kind === "Run") run += 1;
+      else if (e.kind === "Skip") skip += 1;
+      else if (e.kind === "Silent") silent += 1;
+      else other += 1;
+    }
+    return { run, skip, silent, other };
+  }, [decisions]);
+
   /// 📊 近 1h tokens chip：调 `get_llm_tokens_recent_secs(3600)` 扫
   /// llm.log 中 done_time 在最近 1 小时内的 round 数 + 估计 token 累计
   /// （4 chars/token 启发式 — 与真实 billing 不完全一致但相对趋势可
@@ -2540,6 +2569,29 @@ export function PanelDebug() {
             🔄 reset ⚙️
           </button>
         )}
+        {/* 📊 今日决策 chip：扫 decision_log（16 cap ring buffer）
+            过滤今日条目按 kind 分桶 — owner audit「pet 自主行为节奏」入
+            口。Run / Skip / Silent 计数；tooltip 解释 ring buffer 局限。
+            仅有命中时显（空 buffer / 跨日重启时不渲）。 */}
+        {todayDecisions &&
+          (todayDecisions.run + todayDecisions.skip + todayDecisions.silent + todayDecisions.other) > 0 && (
+            <span
+              style={{
+                padding: "4px 10px",
+                fontSize: 11,
+                border: "1px dashed var(--pet-color-border)",
+                borderRadius: 6,
+                background: "transparent",
+                color: "var(--pet-color-muted)",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                whiteSpace: "nowrap",
+                cursor: "help",
+              }}
+              title={`今日 proactive 决策（decision_log ring buffer 16 条 cap — 繁忙日仅 last-16 子集）：\n  Run（实际开口 / 写）：${todayDecisions.run}\n  Skip（cooldown / blocked 等跳过）：${todayDecisions.skip}\n  Silent（mute / quiet_hours 等抑制）：${todayDecisions.silent}${todayDecisions.other > 0 ? `\n  其它：${todayDecisions.other}` : ""}\n\n比例视角：Run 高 = 活跃；Skip 高 = cooldown 卡；Silent 高 = 静音 / 安静时段。`}
+            >
+              📊 R{todayDecisions.run}·K{todayDecisions.skip}·S{todayDecisions.silent}
+            </span>
+          )}
         {/* 📊 近 1h tokens chip：扫 llm.log 累计估 token 数（4 chars/
             token 启发式）+ round 数。趋势性 audit「高峰耗用 / sprint
             消耗激增」入口；仅有 round 数 > 0 时显（避免空状态噪音）。
