@@ -11,8 +11,6 @@
 - ChatMini ⌘` 弹 transient_note 快速 popover：写文本 + 选时长一键挂 transient（不发消息给 pet 留临时上下文）。
 - PanelTasks task 行加「📊 history sparkline」chip：扫 butler_history 显近 30 天 update 频率 10-bar 分布。
 - PanelMemory item 加「📋 复制副本」按钮：复 description + detail.md 到 auto -copy- title，模板复刻场景。
-- TG bot `/forks <title>` 命令：列被 `[blockedBy: <this>]` 引用的 task — 与 /blocked 反向 audit 解锁影响。
-- detail.md 编辑器加「📋 复制全文」按钮：一键复 textarea 完整内容到剪贴板，外部归档 / 分享比全选 + ⌘C 快。
 - PanelDebug 加「⏱ ping TG bot」按钮：发 /version 计时往返延迟，一行式测链路健康（与 /now 类似带 ms 数）。
 
 
