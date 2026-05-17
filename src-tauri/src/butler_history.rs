@@ -286,6 +286,83 @@ pub fn filter_history_for_task(content: &str, target_title: &str) -> Vec<(String
     events
 }
 
+/// 单条 task history sparkline 桶宽（天）。30 天 / 10 桶 = 3 天 / 桶 —
+/// 平衡分辨率（看得出"上周 vs 这周"）与信号密度（butler_history.log
+/// cap 100 行，对单 task 平均覆盖率不高，太细就全空了）。
+pub const SPARKLINE_BUCKET_DAYS: i64 = 3;
+/// sparkline 桶数（10 bar）。视觉上短小 chip 友好 + 与既有 PanelTasks
+/// priority distribution chip（10 bar）保持视觉同节奏。
+pub const SPARKLINE_BUCKET_COUNT: usize = 10;
+/// sparkline 覆盖窗口：30 天。
+pub const SPARKLINE_WINDOW_DAYS: i64 = SPARKLINE_BUCKET_DAYS * SPARKLINE_BUCKET_COUNT as i64;
+
+/// pure：把 butler_history 全文按 (title → 10 桶) 聚合，给 PanelTasks
+/// 行内 sparkline chip 用。
+///
+/// 每个 task 一行 = 10 桶事件计数，oldest → newest：
+/// - 桶 0：[`now - 30d`, `now - 27d`)
+/// - 桶 9：[`now -  3d`, `now`)
+///
+/// 早于窗口 / 晚于 now（时钟回拨极端情况）的事件丢弃。time-parse 失
+/// 败的行也丢弃 — 与既有 parse_recent / filter_history_for_task 同
+/// 容忍策略。titles 是输入"我关心哪些 task"过滤集，其它 title 的事
+/// 件不参与；空 titles → 空 map。
+///
+/// 复杂度：O(lines × titles)，但 lines 受 BUTLER_HISTORY_CAP 限制（100），
+/// titles 是当前 active task 数量（典型 < 50）；一次扫描即可。
+pub fn compute_sparkline_buckets(
+    content: &str,
+    titles: &[String],
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> std::collections::HashMap<String, Vec<u32>> {
+    use std::collections::HashMap;
+    let title_set: std::collections::HashSet<&str> =
+        titles.iter().map(|s| s.trim()).collect();
+    let mut out: HashMap<String, Vec<u32>> = title_set
+        .iter()
+        .map(|t| ((*t).to_string(), vec![0u32; SPARKLINE_BUCKET_COUNT]))
+        .collect();
+    for line in content.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((ts_str, _, title, _)) = parse_butler_history_line(line) else {
+            continue;
+        };
+        if !title_set.contains(title) {
+            continue;
+        }
+        let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+            continue;
+        };
+        // 把 ts 与 now 都转 fixed_offset utc 视角下的"秒数差"算 days_ago。
+        // 用秒级差再除而非"now.date - ts.date"是因为后者会忽略小时让靠
+        // 边界的 event 落错 bucket（如 now=10:00 + ts=now-1d 11:00 应该
+        // 落 bucket 9 即"今天"，秒级差视图更准确）。
+        let diff_secs = (now - ts.with_timezone(now.offset())).num_seconds();
+        if diff_secs < 0 {
+            // 时钟回拨 / 异常未来 ts — 当作"今天"
+            let entry = out.entry(title.to_string()).or_insert_with(|| {
+                vec![0u32; SPARKLINE_BUCKET_COUNT]
+            });
+            entry[SPARKLINE_BUCKET_COUNT - 1] = entry[SPARKLINE_BUCKET_COUNT - 1].saturating_add(1);
+            continue;
+        }
+        let days_ago = diff_secs / 86_400;
+        if days_ago >= SPARKLINE_WINDOW_DAYS {
+            continue;
+        }
+        // bucket index：days_ago=0..3 → bucket 9（最新）；days_ago=27..30 →
+        // bucket 0（最老）
+        let bucket_from_newest = (days_ago / SPARKLINE_BUCKET_DAYS) as usize;
+        let bucket = SPARKLINE_BUCKET_COUNT - 1 - bucket_from_newest;
+        if let Some(entry) = out.get_mut(title) {
+            entry[bucket] = entry[bucket].saturating_add(1);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +597,122 @@ also-bad
         let events = filter_history_for_task(dirty, "target");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].2, "命中");
+    }
+
+    // ---------------- compute_sparkline_buckets ----------------
+
+    fn fixed_now(y: i32, m: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339(&format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:00+08:00",
+            y, m, d, h, mi
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn sparkline_empty_titles_returns_empty_map() {
+        let out = compute_sparkline_buckets("any content", &[], fixed_now(2026, 5, 17, 18, 0));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn sparkline_empty_content_returns_zero_buckets_per_title() {
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets("", &titles, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out["写周报"], vec![0u32; SPARKLINE_BUCKET_COUNT]);
+    }
+
+    #[test]
+    fn sparkline_today_event_lands_in_last_bucket() {
+        // event at now-1h → days_ago=0 → bucket 9 (newest)
+        let content = "2026-05-17T17:00:00+08:00 update 写周报 :: x\n";
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        let buckets = &out["写周报"];
+        assert_eq!(buckets[9], 1, "newest bucket: {:?}", buckets);
+        for b in &buckets[..9] {
+            assert_eq!(*b, 0);
+        }
+    }
+
+    #[test]
+    fn sparkline_28_day_old_event_lands_in_first_bucket() {
+        // event at now-28d → days_ago=28 → bucket_from_newest=9 → bucket 0
+        let content = "2026-04-19T18:00:00+08:00 update 写周报 :: x\n";
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        let buckets = &out["写周报"];
+        assert_eq!(buckets[0], 1, "oldest bucket: {:?}", buckets);
+        for b in &buckets[1..] {
+            assert_eq!(*b, 0);
+        }
+    }
+
+    #[test]
+    fn sparkline_older_than_window_dropped() {
+        // event at now-31d → days_ago=31 ≥ SPARKLINE_WINDOW_DAYS=30 → dropped
+        let content = "2026-04-16T18:00:00+08:00 update 写周报 :: x\n";
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out["写周报"], vec![0u32; SPARKLINE_BUCKET_COUNT]);
+    }
+
+    #[test]
+    fn sparkline_filters_to_input_titles_only() {
+        let content = "\
+2026-05-17T17:00:00+08:00 update 写周报 :: x
+2026-05-17T17:00:00+08:00 update 整理 Downloads :: y
+2026-05-17T17:00:00+08:00 update 跑步 :: z
+";
+        let titles = vec!["写周报".to_string(), "跑步".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out.len(), 2, "{:?}", out);
+        assert_eq!(out["写周报"][9], 1);
+        assert_eq!(out["跑步"][9], 1);
+        assert!(!out.contains_key("整理 Downloads"));
+    }
+
+    #[test]
+    fn sparkline_accumulates_multiple_events_in_same_bucket() {
+        let content = "\
+2026-05-17T15:00:00+08:00 update 写周报 :: a
+2026-05-17T16:00:00+08:00 update 写周报 :: b
+2026-05-17T17:00:00+08:00 update 写周报 :: c
+";
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out["写周报"][9], 3);
+    }
+
+    #[test]
+    fn sparkline_skips_malformed_lines() {
+        let content = "\
+bad line no sep
+2026-05-17T17:00:00+08:00 update 写周报 :: ok
+also-bad-format
+";
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out["写周报"][9], 1);
+    }
+
+    #[test]
+    fn sparkline_future_event_clock_skew_lands_in_last_bucket() {
+        // 时钟回拨：event 在 now 之后 1h → days_ago < 0 → 当作 today
+        let content = "2026-05-17T19:00:00+08:00 update 写周报 :: future\n";
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out["写周报"][9], 1);
+    }
+
+    #[test]
+    fn sparkline_three_day_boundary_lands_in_bucket_8() {
+        // event at now - exactly 3 days → days_ago=3 → bucket_from_newest = 1 → bucket 8
+        let content = "2026-05-14T18:00:00+08:00 update 写周报 :: 3d\n";
+        let titles = vec!["写周报".to_string()];
+        let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out["写周报"][8], 1, "{:?}", out["写周报"]);
+        assert_eq!(out["写周报"][9], 0);
     }
 }
