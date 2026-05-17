@@ -1142,6 +1142,15 @@ async fn handle_tg_command(
                 crate::telegram::commands::format_feedback_reply(&text)
             }
         }
+        TgCommand::FeedbackHistory { n } => {
+            // 读取最近 n 条 feedback_history.log 条目（recent_feedback 返
+            // oldest-first），reverse 让"最新一条"在 TG 屏顶。format
+            // helper 接 newest-first slice。clamp 已在 parser 完成 (1..=20)。
+            let mut entries =
+                crate::feedback_history::recent_feedback(n as usize).await;
+            entries.reverse();
+            crate::telegram::commands::format_feedback_history_reply(&entries, n)
+        }
         TgCommand::Transient { text, minutes } => {
             // 写 in-memory transient_note：复用 proactive::set_transient_note。
             // 空 text 由 formatter 走 usage hint，不调 backend。
