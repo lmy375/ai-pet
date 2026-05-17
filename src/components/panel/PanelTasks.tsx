@@ -10593,6 +10593,84 @@ export function PanelTasks({
                           📋 ref
                         </button>
                       )}
+                    {/* 💤 还 N 分后醒 chip — 仅 snoozed active task hover
+                        时显倒计时。与既有 always-visible「💤 至 MM-DD HH:MM」
+                        chip（line ~10942 绝对时刻）互补 — 那个显「醒在何时」
+                        + click 改 preset；本 chip 显「还多久醒」让 owner
+                        即时心算"现在该等还是该 unsnooze"。
+                        gates：hover + !isFinished + 有 snoozed_until + 还未
+                        过点（snoozed_until > now）。click 复制「还 N 分醒」
+                        一行到剪贴板。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      !isFinished(t.status) &&
+                      t.snoozed_until &&
+                      (() => {
+                        const m =
+                          /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(
+                            t.snoozed_until!,
+                          );
+                        if (!m) return null;
+                        const target = new Date(
+                          +m[1],
+                          +m[2] - 1,
+                          +m[3],
+                          +m[4],
+                          +m[5],
+                        );
+                        const deltaMs = target.getTime() - nowMs;
+                        if (deltaMs <= 0) return null; // 已过点不显
+                        const totalMin = Math.floor(deltaMs / 60_000);
+                        const days = Math.floor(totalMin / 1440);
+                        const hours = Math.floor((totalMin % 1440) / 60);
+                        const mins = totalMin % 60;
+                        let label: string;
+                        if (days > 0) {
+                          label = `${days}d ${hours}h`;
+                        } else if (hours > 0) {
+                          label = `${hours}h ${mins}m`;
+                        } else {
+                          label = `${mins}m`;
+                        }
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const line = `「${t.title}」还 ${label} 醒（${t.snoozed_until!.replace("T", " ")}）`;
+                              try {
+                                await navigator.clipboard.writeText(line);
+                                setBulkResultMsg(`💤 已复制：${line}`);
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`还 ${label} 才醒（至 ${t.snoozed_until!.replace("T", " ")}）— 与既有「💤 至 MM-DD HH:MM」绝对时刻 chip 互补。点击复制 「还 N 醒」一行到剪贴板。`}
+                            aria-label="copy snooze countdown"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border:
+                                "1px dashed color-mix(in srgb, var(--pet-tint-purple-fg) 40%, var(--pet-color-border))",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-tint-purple-fg)",
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            💤 还 {label}
+                          </button>
+                        );
+                      })()}
                     {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
                         时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
                         audit。complement 既有 dueUrgency 三档（normal /

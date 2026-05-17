@@ -9,7 +9,6 @@
 >
 
 - TG bot `/oldest_done [N]` 命令：列最早完成的 N 条 done task（按 updated_at asc）— /recent done 反向，看「这条做了多久」。
-- PanelTasks 行 hover 「💤 N 分后醒」chip：snoozed task 显距 wake 倒计时 — 既有 [snooze: HH:MM] marker parse + 倒计。
 - TG bot `/move_to <title> <category>` 命令：跨 memory category 迁移 — 复用既有 `memory_move_category` Tauri 命令。
 - ChatMini ambient row 「📊 今日 N 消息」chip：显当前 session 今日 user+assistant 消息总数 — 活跃度信号。
 - TG bot `/cascade_rename <old> :: <new>` 命令：rename + 自动追踪 detail.md / [blockedBy:] 内 `「<old>」` ref 同步替换 — 与 /edit_title 自动维护选择。
