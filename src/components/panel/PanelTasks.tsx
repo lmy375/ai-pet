@@ -9498,6 +9498,66 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* 📂 detail.md 字数 hover chip：仅 hover + detailMap
+                        已缓存 + 字数 > 0 时显（hover preview 500ms 触发同
+                        路径已 invoke task_get_detail；本 chip 复用缓存零
+                        额外 IO）。audit 哪些 task notes 积累深 — 长 detail
+                        意味着 task 已有充足上下文。空 detail.md / 还未触
+                        发 hover preview 时不渲避免噪音。click 复制字数 +
+                        title 到剪贴板（quick log 场景）。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      (() => {
+                        const detail = detailMap[t.title];
+                        if (!detail) return null;
+                        const chars = Array.from(detail.detail_md ?? "")
+                          .length;
+                        if (chars === 0) return null;
+                        const label =
+                          chars >= 1000
+                            ? `${(chars / 1000).toFixed(1)}k`
+                            : `${chars}`;
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                await navigator.clipboard.writeText(
+                                  `「${t.title}」detail.md ${chars} 字`,
+                                );
+                                setBulkResultMsg(
+                                  `📋 已复制：「${t.title}」detail.md ${chars} 字`,
+                                );
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`这条 task 的 detail.md 含 ${chars} 字符（unicode code points）— audit notes 积累深度。点击复制「<title> detail.md N 字」到剪贴板。`}
+                            aria-label="task detail.md size"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border: "1px dashed var(--pet-color-border)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            📂 {label} 字
+                          </button>
+                        );
+                      })()}
                     {/* 📊 30 天 sparkline chip：10 bar 显近 30 天 butler_history
                         事件桶分布（最老在左，最新在右）。仅总和 > 0 时显
                         — 从未 touch 过的 task 不显避免视觉噪音。max 归一
