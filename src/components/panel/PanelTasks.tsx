@@ -9194,6 +9194,40 @@ export function PanelTasks({
                         ●
                       </span>
                     )}
+                    {/* iter #397: hover 显「✏」rename action chip — 与既
+                        有"双击 title 改名"等价但更易发现。复用既有
+                        taskPreviewHoverTitle 500ms hover state（与 iter
+                        #376 hover preview 同 trigger）。仅 hover + 非
+                        renaming 态显；点击进 inline rename mode 与双击
+                        同后端。stopPropagation 防 click 触发 row expand。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      renamingTaskTitle !== t.title && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenamingTaskTitle(t.title);
+                            setRenameTaskDraft(t.title);
+                          }}
+                          title="改名 task title（与双击 title 等价 — Enter 提交 / Esc 取消）"
+                          aria-label="rename task"
+                          style={{
+                            fontSize: 10,
+                            padding: "0 5px",
+                            marginLeft: 6,
+                            border: "1px dashed var(--pet-color-border)",
+                            borderRadius: 3,
+                            background: "transparent",
+                            color: "var(--pet-color-muted)",
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                            lineHeight: 1.5,
+                            verticalAlign: "middle",
+                          }}
+                        >
+                          ✏
+                        </button>
+                      )}
                     {/* ⚡ NOW 标记：浮顶 + 桌面 nudge 60s 内有效，过期自动消失。 */}
                     {nowMarkedTitles.has(t.title) && (
                       <span
