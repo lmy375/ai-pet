@@ -10,7 +10,6 @@
 
 - PanelTasks 行右键加「⏰ 1h / ⏰ tonight 18:00」preset 组合 menu：与既有「📌+⏰5min」对偶 — 多 preset 单击设 due。
 - TG bot `/last_speech` 命令：显 pet 最近一条主动开口 + ts — 与 ChatMini「⏱ 沉默」chip 对偶 audit。
-- PanelDebug 加「📊 今日决策」chip：扫 decision_log 显今日 ok/error/skip 计数 — audit pet 自主行为节奏。
 
 
 
