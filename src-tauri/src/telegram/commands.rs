@@ -1451,6 +1451,46 @@ pub fn format_mood_reply(parsed: Option<(String, Option<String>)>) -> String {
 ///   空 text → 不渲染
 /// - `persona_summary`：自我画像描述，空 → 不渲染。函数内做首段切分 + 90 字截断
 /// - `top_tools`：`(name, count)` 列表，取前 3 渲染；空 → 不渲染
+/// pure：根据 mood 文本关键词映射 emoji。给 `/whoami` 头部 / 其它显示
+/// mood 的位置加视觉前缀用。case-insensitive 子串匹配 — 优先级按表内
+/// 顺序（命中即返）。无任何关键词命中 → 默认 🐾（paw）兜底，让所有
+/// caller 都能拿到一个 emoji（而非 Option<&str>）减少调用方 if-let。
+pub fn mood_emoji_for(text: &str) -> &'static str {
+    let t = text.to_lowercase();
+    // 按"最具体 → 最泛"的顺序避免歧义（如 "happy" 命中 😊 而非 "love" 的
+    // 兜底）。中英 keywords 同表 — pet 中文 mood 描述常见，英文外语 caller
+    // 走 LLM 输出也可能 hit。
+    const TABLE: &[(&[&str], &str)] = &[
+        // joy / excitement
+        (&["兴奋", "激动", "excited", "thrilled"], "🤩"),
+        (&["开心", "高兴", "happy", "cheerful", "joyful", "快乐"], "😊"),
+        (&["love", "喜欢", "喜爱", "爱"], "🥰"),
+        (&["proud", "骄傲", "自豪"], "😎"),
+        // calm / contemplative
+        (&["平静", "calm", "peaceful", "放松", "舒适"], "😌"),
+        (&["curious", "好奇", "interested", "感兴趣"], "🤔"),
+        // negative
+        (&["sad", "难过", "失落", "沮丧"], "😢"),
+        (&["angry", "生气", "愤怒", "frustrated"], "😠"),
+        (&["worried", "担心", "焦虑", "anxious"], "😰"),
+        (&["tired", "累", "困", "sleepy", "exhausted"], "😴"),
+        (&["bored", "无聊", "boring"], "😑"),
+        (&["shy", "害羞"], "😳"),
+        (&["confused", "困惑", "迷茫"], "😕"),
+        // hunger / physical
+        (&["hungry", "饿"], "🍔"),
+        // 兜底
+    ];
+    for (keys, emoji) in TABLE {
+        for k in *keys {
+            if t.contains(k) {
+                return emoji;
+            }
+        }
+    }
+    "🐾"
+}
+
 pub fn format_whoami_reply(
     user_name: &str,
     companionship_days: Option<u64>,
@@ -1459,7 +1499,16 @@ pub fn format_whoami_reply(
     top_tools: &[(String, u64)],
 ) -> String {
     let mut lines: Vec<String> = Vec::new();
-    lines.push("🪪 /whoami".to_string());
+    // 第一行加 mood emoji 前缀（mood 非空时）让 owner 在 reply 顶端
+    // 视觉化心情 — 不必扫到第三行的 💗 才知道宠物现在什么状态。无 mood
+    // 时仍走纯 🪪 /whoami（保持 backwards-compat）。
+    let header = match &mood {
+        Some((text, _)) if !text.trim().is_empty() => {
+            format!("{} 🪪 /whoami", mood_emoji_for(text))
+        }
+        _ => "🪪 /whoami".to_string(),
+    };
+    lines.push(header);
     let trimmed_name = user_name.trim();
     if !trimmed_name.is_empty() {
         lines.push(format!("🐾 我叫你「{}」。", trimmed_name));
@@ -3700,6 +3749,70 @@ mod tests {
         let long = "abcdefghij".repeat(10);
         let s = format_whoami_reply("", None, None, &long, &[]);
         assert!(s.contains("…"), "long persona should be truncated: {s}");
+    }
+
+    // -------- mood_emoji_for + whoami header prefix --------
+
+    #[test]
+    fn mood_emoji_maps_chinese_keywords() {
+        assert_eq!(mood_emoji_for("今天特别开心"), "😊");
+        assert_eq!(mood_emoji_for("有点难过"), "😢");
+        assert_eq!(mood_emoji_for("好困啊"), "😴");
+        assert_eq!(mood_emoji_for("非常好奇这个问题"), "🤔");
+        assert_eq!(mood_emoji_for("感觉很平静"), "😌");
+    }
+
+    #[test]
+    fn mood_emoji_maps_english_keywords_case_insensitive() {
+        assert_eq!(mood_emoji_for("Feeling HAPPY today"), "😊");
+        assert_eq!(mood_emoji_for("So Excited!!"), "🤩");
+        assert_eq!(mood_emoji_for("kinda Tired"), "😴");
+        assert_eq!(mood_emoji_for("a bit ANGRY"), "😠");
+    }
+
+    #[test]
+    fn mood_emoji_falls_back_to_paw_when_unknown() {
+        assert_eq!(mood_emoji_for(""), "🐾");
+        assert_eq!(mood_emoji_for("blah blah unrelated"), "🐾");
+    }
+
+    #[test]
+    fn whoami_header_includes_mood_emoji_prefix_when_mood_present() {
+        let s = format_whoami_reply(
+            "M",
+            None,
+            Some(("今天特别开心".to_string(), None)),
+            "",
+            &[],
+        );
+        // 第一行应该带 😊 emoji 前缀
+        let first_line = s.lines().next().expect("has first line");
+        assert!(first_line.contains("😊"), "header should prefix mood emoji: {first_line}");
+        assert!(first_line.contains("🪪 /whoami"), "should retain whoami label: {first_line}");
+    }
+
+    #[test]
+    fn whoami_header_uses_paw_fallback_for_unknown_mood() {
+        let s = format_whoami_reply(
+            "M",
+            None,
+            Some(("一种说不清的状态".to_string(), None)),
+            "",
+            &[],
+        );
+        let first_line = s.lines().next().expect("has first line");
+        assert!(
+            first_line.contains("🐾"),
+            "unknown mood text should fall back to 🐾: {first_line}"
+        );
+    }
+
+    #[test]
+    fn whoami_header_plain_when_no_mood() {
+        let s = format_whoami_reply("M", Some(3), None, "", &[]);
+        let first_line = s.lines().next().expect("has first line");
+        // 没 mood → 头部不该混入任何 mood emoji，保持原 plain "🪪 /whoami"
+        assert_eq!(first_line, "🪪 /whoami");
     }
 
     #[test]
