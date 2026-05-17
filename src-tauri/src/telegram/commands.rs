@@ -205,6 +205,12 @@ pub enum TgCommand {
     /// `/stats` —— 一行汇总当前 chat 派出的任务状态计数（待办 / 逾期 /
     /// 今日完成 / 出错 / 今日取消）。无参；对账 / 周末扫盘子的快速入口。
     Stats,
+    /// `/buckets` —— 本 chat 派单中 active task（pending / error）按
+    /// priority 分桶计数 P0..P9 一行式 dump。与 /stats（状态分桶 — 待
+    /// 办 / 逾期 / done / error / 取消）互补 — /buckets 是 priority
+    /// 分桶维度，让 owner 看「我各档高优各有几条」分布。无参；多余尾
+    /// 部忽略。
+    Buckets,
     /// `/mood` —— 查看宠物当前心情。无参；与桌面 MoodWidget 同源（mood
     /// state 文件），让手机端也能感知"宠物现在感觉如何"。
     Mood,
@@ -503,6 +509,7 @@ impl TgCommand {
             TgCommand::Task { .. } => "task",
             TgCommand::Tasks => "tasks",
             TgCommand::Stats => "stats",
+            TgCommand::Buckets => "buckets",
             TgCommand::Mood => "mood",
             TgCommand::Whoami => "whoami",
             TgCommand::Snooze { .. } => "snooze",
@@ -596,6 +603,7 @@ impl TgCommand {
             | TgCommand::Markers
             | TgCommand::Tags
             | TgCommand::Stats
+            | TgCommand::Buckets
             | TgCommand::Mood
             | TgCommand::Whoami
             | TgCommand::Today
@@ -675,6 +683,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("task", "Queue a task (!! P5 / !!! P7)"),
             ("tasks", "List tasks dispatched in this chat"),
             ("stats", "Status counts: pending / overdue / done-today / etc."),
+            ("buckets", "Priority bucket counts (P0..P9) for active tasks — complement to /stats status view"),
             ("done", "Mark a task as done"),
             ("cancel", "Cancel a task"),
             ("retry", "Retry a failed task"),
@@ -736,6 +745,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("task", "把单条任务塞进队列（!! P5 / !!! P7）"),
             ("tasks", "列出本会话派出的任务清单"),
             ("stats", "状态计数：待办 / 逾期 / 今日完成 等"),
+            ("buckets", "active task 按 priority 分桶计数（P0..P9）— /stats 状态维度的 priority 维度对偶"),
             ("done", "把指定任务标 done"),
             ("cancel", "取消指定任务"),
             ("retry", "把失败任务重置回 pending"),
@@ -1070,6 +1080,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "tasks" => Some(TgCommand::Tasks),
         // `/stats` 同 /tasks：无参；多余尾部忽略
         "stats" => Some(TgCommand::Stats),
+        // `/buckets`：无参；多余尾部忽略（与 /stats 同容忍模板）
+        "buckets" => Some(TgCommand::Buckets),
         // `/mood` 同 /tasks：无参；多余尾部忽略（让 "/mood now?" 也能命中）
         "mood" => Some(TgCommand::Mood),
         // `/whoami` 同上：无参；多余尾部忽略（让 "/whoami please" 也能命中）
@@ -1659,7 +1671,7 @@ pub fn format_tasks_no_change() -> String {
 /// defense 测试都引用这同一矩阵，保两侧不漂移。顺序也用于"all"渲染时
 /// 段次序 — 高频创建命令在前、兜底 help 在末，与 /help 全表同节奏。
 pub const ALL_HELP_TOPICS: &[&str] = &[
-    "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
+    "task", "tasks", "stats", "buckets", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent", "unsilent",
     "silenced", "silent_all", "markers", "tags", "tag", "mood",
     "whoami", "today", "today_done", "yesterday", "streak", "now",
@@ -1757,7 +1769,8 @@ pub fn format_help_for_topic(
     let detail = match name.as_str() {
         "task" => "📝 /task <title>\n\n用法：把单条任务塞进队列。\n  · 默认优先级 P3\n  · 前缀 `!!` → P5（紧迫）\n  · 前缀 `!!!` → P7（最高）\n\n示例：\n  /task 整理 Downloads\n  /task !! 写周报\n  /task !!! 修复线上 bug\n\n创建后 chat 自动收到确认 + origin marker [origin:tg:<chat_id>]，桌面 watcher 完成时也回传通知。",
         "tasks" => "📋 /tasks\n\n用法：列出本会话派出的任务清单（按 compare_for_queue 排序 + 按状态分组）。无参；多余尾部忽略。\n\n示例：\n  /tasks\n\n相关：/stats（数字汇总）/ /today（今日切片）/ /recent（近完成）/ /find（关键词搜）。",
-        "stats" => "📊 /stats\n\n用法：一行汇总当前 chat 派单的状态计数 — 待办 / 逾期 / 今日完成 / 出错 / 今日取消。无参。\n\n示例：\n  /stats\n\n与 /tasks 互补：/stats 看数字汇总，/tasks 看具体清单。",
+        "stats" => "📊 /stats\n\n用法：一行汇总当前 chat 派单的状态计数 — 待办 / 逾期 / 今日完成 / 出错 / 今日取消。无参。\n\n示例：\n  /stats\n\n与 /tasks 互补：/stats 看数字汇总，/tasks 看具体清单。相关：/buckets（priority 分桶维度而非状态维度）。",
+        "buckets" => "🎯 /buckets\n\n用法：本 chat active task（pending / error）按 priority 分桶计数 — 与 /stats（按状态分桶 — 待办 / 逾期 / done / error）互补的「priority 维度 dump」。无参；多余尾部忽略。\n\n输出格式：\n  🎯 priority 分桶（N 条 active）\n  P7+: 3 · P5-6: 7 · P3-4: 12 · P1-2: 5 · P0: 2\n\n分组与桌面 PanelTasks priorityBands chip 一致（5 段 — P7+ / P5-6 / P3-4 / P1-2 / P0），让 owner 一眼看「我各档高优各有几条」分布。\n\n示例：\n  /buckets\n\n相关：/stats（状态维度汇总）；/pinned（pinned 单维度）；/pinned_due（pinned + due 交集）。",
         "done" => "✅ /done <title>\n\n用法：把 pending / error 任务标 done。已 done / cancelled 拒绝重复操作。\n\n示例：\n  /done 整理 Downloads\n\n注意：TG 端不支持 `[result: ...]` 摘要；想加 result 回桌面板单条 mark-done dialog。",
         "cancel" => "🚫 /cancel <title>\n\n用法：取消一条 pending / error 任务（终态）。\n\n示例：\n  /cancel 整理 Downloads\n  /cancel 1   （/tasks 输出第 1 条）\n\n相关：/retry 把 error 重置回 pending；二者可来回切。",
         "retry" => "🔄 /retry <title>\n\n用法：把 status==Error 的任务重置为 pending，剥所有 [error: ...] / [done] markers。\n\n示例：\n  /retry 跑步\n\n限制：仅 error 状态可 retry；pending / done / cancelled 拒。",
@@ -1841,6 +1854,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "🤖 可用命令（结果会自动回传，无需轮询 /tasks）：".to_string(),
         "/tasks  —  列出本会话派出的任务清单".to_string(),
         "/stats  —  状态计数：待办 / 逾期 / 今日完成 / 出错 / 今日取消".to_string(),
+        "/buckets  —  active task 按 priority 分桶（P7+ / P5-6 / P3-4 / P1-2 / P0 一行式）".to_string(),
         "/task <title>  —  入队（默认 P3；前缀 !! P5、!!! P7）".to_string(),
         "/done <title> | /cancel <title> | /retry <title>  —  标 done / 取消 / 重试（详细原因 / result 回桌面）".to_string(),
         "/snooze <title> [preset] | /unsnooze <title>  —  暂停 / 解除暂停（preset = 30m / 2h / tonight / tomorrow / monday）".to_string(),
@@ -2234,6 +2248,47 @@ pub fn format_stats_reply(
     out.push_str(&format!("⚠️ 出错：{}\n", error));
     out.push_str(&format!("🗑 今日取消：{}", cancelled_today));
     out
+}
+
+/// `/buckets` 命令回复文案。pure：把 active task（pending / error）按
+/// priority 分到 P0..P9 桶 + 一行式 dump。
+///
+/// 输出格式：
+/// ```
+/// 🎯 priority 分桶（N 条 active）
+/// P7+: 3 · P5-6: 7 · P3-4: 12 · P1-2: 5 · P0: 2
+/// ```
+///
+/// 分组：P7+ / P5-6 / P3-4 / P1-2 / P0 — 与桌面 PanelTasks 既有
+/// priorityBands 同分组（5 段，让 chip 视觉成行不挤）。空 → 友好兜
+/// 底「本 chat 无 active task」。
+pub fn format_buckets_reply(views: &[crate::task_queue::TaskView]) -> String {
+    use crate::task_queue::TaskStatus;
+    let actives: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Pending | TaskStatus::Error))
+        .collect();
+    if actives.is_empty() {
+        return "🎯 本 chat 无 active task — 桶分布无数据。\n用 /tasks 看全状态清单 / /yesterday 看昨日产出。".to_string();
+    }
+    let mut p7_plus = 0u32;
+    let mut p5_6 = 0u32;
+    let mut p3_4 = 0u32;
+    let mut p1_2 = 0u32;
+    let mut p0 = 0u32;
+    for v in &actives {
+        match v.priority {
+            7..=u8::MAX => p7_plus += 1,
+            5..=6 => p5_6 += 1,
+            3..=4 => p3_4 += 1,
+            1..=2 => p1_2 += 1,
+            0 => p0 += 1,
+        }
+    }
+    format!(
+        "🎯 priority 分桶（{} 条 active）\nP7+: {} · P5-6: {} · P3-4: {} · P1-2: {} · P0: {}",
+        actives.len(), p7_plus, p5_6, p3_4, p1_2, p0
+    )
 }
 
 /// `/mood` 命令回复文案。pure：接收 `read_current_mood_parsed()` 的 Option<(text,
@@ -5633,7 +5688,7 @@ mod tests {
         // + 本断言（让"忘加"被测试拦下）。历史上 /whoami / /snooze / /unsnooze
         // 实现但漏注册了几轮才补；本测试就是把这种 silent gap 钉死。
         for expected in [
-            "task", "tasks", "cancel", "retry", "done", "stats", "mood",
+            "task", "tasks", "cancel", "retry", "done", "stats", "buckets", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned",
             "pinned_due", "today",
             "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
@@ -5921,6 +5976,77 @@ mod tests {
         assert!(s.contains("出错：1"), "stats reply: {s}");
         assert!(s.contains("今日取消：1"), "stats reply: {s}");
         assert!(!s.contains("今日很安静"));
+    }
+
+    // -------- /buckets parse + format --------
+
+    #[test]
+    fn buckets_parses_no_args() {
+        assert_eq!(parse_tg_command("/buckets"), Some(TgCommand::Buckets));
+        assert_eq!(parse_tg_command("/buckets  "), Some(TgCommand::Buckets));
+        assert_eq!(
+            parse_tg_command("/buckets now"),
+            Some(TgCommand::Buckets)
+        );
+        assert_eq!(parse_tg_command("/BUCKETS"), Some(TgCommand::Buckets));
+    }
+
+    #[test]
+    fn buckets_reply_empty_shows_friendly_fallback() {
+        let s = format_buckets_reply(&[]);
+        assert!(s.contains("🎯"), "{s}");
+        assert!(s.contains("无 active task"), "{s}");
+        assert!(s.contains("/tasks"), "alt hint /tasks: {s}");
+    }
+
+    #[test]
+    fn buckets_reply_groups_priorities_into_5_bands() {
+        // 测试覆盖所有 5 桶：P0 / P1-2 / P3-4 / P5-6 / P7+
+        let v_p0 = view("p0", 0, None, TaskStatus::Pending, None);
+        let v_p1 = view("p1", 1, None, TaskStatus::Pending, None);
+        let v_p2 = view("p2", 2, None, TaskStatus::Pending, None);
+        let v_p3 = view("p3", 3, None, TaskStatus::Pending, None);
+        let v_p4 = view("p4", 4, None, TaskStatus::Pending, None);
+        let v_p5 = view("p5", 5, None, TaskStatus::Pending, None);
+        let v_p6 = view("p6", 6, None, TaskStatus::Pending, None);
+        let v_p7 = view("p7", 7, None, TaskStatus::Pending, None);
+        let v_p8 = view("p8", 8, None, TaskStatus::Pending, None);
+        let v_p9 = view("p9", 9, None, TaskStatus::Pending, None);
+        let s = format_buckets_reply(&[
+            v_p0, v_p1, v_p2, v_p3, v_p4, v_p5, v_p6, v_p7, v_p8, v_p9,
+        ]);
+        assert!(s.contains("10 条 active"), "total count: {s}");
+        assert!(s.contains("P7+: 3"), "p7+ bucket: {s}");
+        assert!(s.contains("P5-6: 2"), "p5-6 bucket: {s}");
+        assert!(s.contains("P3-4: 2"), "p3-4 bucket: {s}");
+        assert!(s.contains("P1-2: 2"), "p1-2 bucket: {s}");
+        assert!(s.contains("P0: 1"), "p0 bucket: {s}");
+    }
+
+    #[test]
+    fn buckets_reply_filters_to_active_only() {
+        // done / cancelled 不计入 active
+        let pending = view("p", 5, None, TaskStatus::Pending, None);
+        let error = view("e", 3, None, TaskStatus::Error, Some("err"));
+        let done = view("d", 7, None, TaskStatus::Done, Some("ok"));
+        let cancelled = view("c", 5, None, TaskStatus::Cancelled, Some("drop"));
+        let s = format_buckets_reply(&[pending, error, done, cancelled]);
+        assert!(s.contains("2 条 active"), "active count: {s}");
+        assert!(s.contains("P5-6: 1"), "{s}");
+        assert!(s.contains("P3-4: 1"), "{s}");
+        // done P7 不应入桶
+        assert!(s.contains("P7+: 0"), "done excluded from P7+: {s}");
+    }
+
+    #[test]
+    fn buckets_reply_p7_plus_includes_high_priorities() {
+        // P7 / P8 / P9 都进 P7+ 桶
+        let v7 = view("p7", 7, None, TaskStatus::Pending, None);
+        let v8 = view("p8", 8, None, TaskStatus::Pending, None);
+        let v9 = view("p9", 9, None, TaskStatus::Pending, None);
+        let s = format_buckets_reply(&[v7, v8, v9]);
+        assert!(s.contains("P7+: 3"), "{s}");
+        assert!(s.contains("P5-6: 0"), "{s}");
     }
 
     // -------- /mood parse + format --------
