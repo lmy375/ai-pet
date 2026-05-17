@@ -5547,6 +5547,67 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     📋 titles ({cat.items.length})
                   </button>
                 )}
+                {/* 📤 export cat as .md file：与顶部「📋 单段…」剪贴板
+                    export + 「💾 .md」全 cat 文件 export 对偶 —— 本 chip
+                    是「单 cat 文件 export」一键到位（OS Save 对话框）。
+                    blob + a.download 模板与既有 handleExportAllToFile 同。
+                    filename 含 catKey + YYYY-MM-DD 让重复导出不互盖。 */}
+                {cat.items.length > 0 && (
+                  <button
+                    style={{ ...s.btn, marginLeft: 4 }}
+                    onClick={() => {
+                      const label = categoryLabels[catKey] || cat.label;
+                      const lines: string[] = [];
+                      const ts = new Date().toLocaleString();
+                      lines.push(
+                        `# ${label} (${cat.items.length} 条 · ${ts})`,
+                        "",
+                      );
+                      for (const item of cat.items) {
+                        lines.push(`## ${item.title}`);
+                        if (item.updated_at) {
+                          lines.push(
+                            `> 更新于 ${item.updated_at.slice(0, 16).replace("T", " ")}`,
+                          );
+                        }
+                        lines.push("", item.description, "");
+                      }
+                      const md = lines.join("\n");
+                      try {
+                        const blob = new Blob([md], {
+                          type: "text/markdown;charset=utf-8",
+                        });
+                        const url = URL.createObjectURL(blob);
+                        const now = new Date();
+                        const y = now.getFullYear();
+                        const mo = String(now.getMonth() + 1).padStart(2, "0");
+                        const d = String(now.getDate()).padStart(2, "0");
+                        // catKey 含 `_` / ascii 字符（butler_tasks / ai_insights
+                        // 等）— 安全可作文件名一部分，不需 sanitize
+                        const filename = `pet-memory-${catKey}-${y}-${mo}-${d}.md`;
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        window.setTimeout(
+                          () => URL.revokeObjectURL(url),
+                          1500,
+                        );
+                        setMessage(
+                          `已保存「${label}」${cat.items.length} 条到 ${filename}`,
+                        );
+                      } catch (e: any) {
+                        setMessage(`保存失败：${e}`);
+                      }
+                      setTimeout(() => setMessage(""), 4000);
+                    }}
+                    title={`把「${categoryLabels[catKey] || cat.label}」段 ${cat.items.length} 条 item 含 description 保存为本地 .md 文件（文件名 pet-memory-${catKey}-YYYY-MM-DD.md，重复导出不互盖）— 与顶部「📋 单段…」剪贴板 export + 「💾 .md」全 cat 文件 export 对偶，单 cat 文件入口。`}
+                  >
+                    📤 .md
+                  </button>
+                )}
                 {/* 🗑 清空 cat：arm/confirm 二次确认（同
                     handleBulkDeleteMem 模式 — 3s 内同 cat 再点真删）。
                     仅非空 cat 显；执行中 busy 灰。armed 时按钮变红 +
