@@ -1574,6 +1574,53 @@ export function PanelTasks({
       console.error("detailViewMode localStorage save failed:", e);
     }
   }, [detailViewMode]);
+  /// 📐 字数目标 per-task：owner 在 detail.md 编辑器底部 status bar 设目标
+  /// 后，count chip 旁多显 "N/M 进度" + 三档配色（< 30% 红 / 30-90% amber /
+  /// ≥ 90% green / > 150% muted overshoot）。localStorage 持久化 per-title。
+  /// goal = 0 / null = 未设（chip 显"📐 设目标"按钮）。读 / 写 走 helper 函数
+  /// 避免反复 try/catch。
+  const detailGoalKey = (title: string) => `pet-detail-goal-${title}`;
+  const [wordCountGoal, setWordCountGoal] = useState<number | null>(null);
+  const [editingGoal, setEditingGoal] = useState(false);
+  const [goalDraft, setGoalDraft] = useState("");
+  /// editingDetailTitle 切换时 sync goal value 从 localStorage。null / 空
+  /// title 时 reset 为 null（不显 chip）。
+  useEffect(() => {
+    if (!editingDetailTitle) {
+      setWordCountGoal(null);
+      setEditingGoal(false);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(detailGoalKey(editingDetailTitle));
+      if (raw) {
+        const n = parseInt(raw, 10);
+        setWordCountGoal(Number.isFinite(n) && n > 0 ? n : null);
+      } else {
+        setWordCountGoal(null);
+      }
+    } catch {
+      setWordCountGoal(null);
+    }
+    setEditingGoal(false);
+  }, [editingDetailTitle]);
+  const persistWordCountGoal = useCallback(
+    (title: string, goal: number | null) => {
+      try {
+        if (goal === null || goal <= 0) {
+          window.localStorage.removeItem(detailGoalKey(title));
+        } else {
+          window.localStorage.setItem(
+            detailGoalKey(title),
+            String(goal),
+          );
+        }
+      } catch {
+        // 配额满 / 私密 — session 内仍生效
+      }
+    },
+    [],
+  );
   /// "🆎 切纯文本" preview toggle：split / preview 模式下临时关 markdown 渲
   /// 染，把右侧预览段渲成 `<pre>` 原文 — 调 markdown 语法时看 raw（确认到
   /// 底是哪段 syntax 没解析）/ 复制纯文本时直接 ⌘A 一键选中（不带 link
@@ -9456,6 +9503,166 @@ export function PanelTasks({
                                     >
                                       {prefix}{charCount} 字
                                       {showWord && ` · 〜${wordCount} 词`}
+                                    </span>
+                                  );
+                                })()}
+                                {/* 📐 字数目标 chip：editingDetailTitle 在编
+                                    辑态时显；未设 goal → "📐 设目标"按钮；
+                                    设了 → "📐 N/M" + 三档配色（< 30% red /
+                                    30-90% amber / ≥ 90% green / > 150% muted
+                                    overshoot）+ hover ✕ 清除。editingGoal
+                                    on 时显 inline number input。 */}
+                                {editingDetailTitle === t.title && (() => {
+                                  const charCount = Array.from(
+                                    editingDetailContent,
+                                  ).length;
+                                  if (editingGoal) {
+                                    return (
+                                      <span
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 4,
+                                          fontSize: 10,
+                                          fontFamily:
+                                            "'SF Mono', 'Menlo', monospace",
+                                          color: "var(--pet-color-muted)",
+                                        }}
+                                      >
+                                        📐 目标
+                                        <input
+                                          type="number"
+                                          autoFocus
+                                          value={goalDraft}
+                                          min={0}
+                                          step={50}
+                                          placeholder="字数"
+                                          onChange={(e) =>
+                                            setGoalDraft(e.target.value)
+                                          }
+                                          onKeyDown={(e) => {
+                                            e.stopPropagation();
+                                            if (e.key === "Enter") {
+                                              e.preventDefault();
+                                              const n = parseInt(
+                                                goalDraft.trim() || "0",
+                                                10,
+                                              );
+                                              const next =
+                                                Number.isFinite(n) && n > 0
+                                                  ? n
+                                                  : null;
+                                              setWordCountGoal(next);
+                                              persistWordCountGoal(
+                                                t.title,
+                                                next,
+                                              );
+                                              setEditingGoal(false);
+                                            } else if (e.key === "Escape") {
+                                              e.preventDefault();
+                                              setEditingGoal(false);
+                                            }
+                                          }}
+                                          onBlur={() => {
+                                            const n = parseInt(
+                                              goalDraft.trim() || "0",
+                                              10,
+                                            );
+                                            const next =
+                                              Number.isFinite(n) && n > 0
+                                                ? n
+                                                : null;
+                                            setWordCountGoal(next);
+                                            persistWordCountGoal(t.title, next);
+                                            setEditingGoal(false);
+                                          }}
+                                          style={{
+                                            width: 60,
+                                            fontSize: 10,
+                                            fontFamily: "inherit",
+                                            padding: "0 4px",
+                                            border:
+                                              "1px solid var(--pet-color-border)",
+                                            borderRadius: 3,
+                                            background:
+                                              "var(--pet-color-card)",
+                                            color: "var(--pet-color-fg)",
+                                            outline: "none",
+                                          }}
+                                        />
+                                      </span>
+                                    );
+                                  }
+                                  if (wordCountGoal === null) {
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setGoalDraft("");
+                                          setEditingGoal(true);
+                                        }}
+                                        title="设字数目标（如写日记 / 写作打卡用）。Enter 确认；Esc 取消；持久化到 localStorage 跨重启保留 per-task。"
+                                        style={{
+                                          fontSize: 10,
+                                          padding: "0 6px",
+                                          border:
+                                            "1px dashed var(--pet-color-border)",
+                                          borderRadius: 3,
+                                          background: "transparent",
+                                          color: "var(--pet-color-muted)",
+                                          cursor: "pointer",
+                                          fontFamily:
+                                            "'SF Mono', 'Menlo', monospace",
+                                        }}
+                                      >
+                                        📐 设目标
+                                      </button>
+                                    );
+                                  }
+                                  const ratio = charCount / wordCountGoal;
+                                  let bg: string;
+                                  let fg: string;
+                                  if (ratio < 0.3) {
+                                    bg = "var(--pet-tint-red-bg)";
+                                    fg = "var(--pet-tint-red-fg)";
+                                  } else if (ratio < 0.9) {
+                                    bg = "var(--pet-tint-amber-bg, #fef3c7)";
+                                    fg = "var(--pet-tint-amber-fg, #92400e)";
+                                  } else if (ratio <= 1.5) {
+                                    bg = "var(--pet-tint-green-bg)";
+                                    fg = "var(--pet-tint-green-fg)";
+                                  } else {
+                                    bg = "var(--pet-color-bg)";
+                                    fg = "var(--pet-color-muted)";
+                                  }
+                                  return (
+                                    <span
+                                      onDoubleClick={() => {
+                                        setGoalDraft(String(wordCountGoal));
+                                        setEditingGoal(true);
+                                      }}
+                                      title={`字数目标进度 ${charCount} / ${wordCountGoal} (${Math.round(ratio * 100)}%)\n双击改目标 · 右键清除\n配色：< 30% 红（远未到）/ 30-90% amber（差一截）/ 90-150% green（达标）/ > 150% muted（超量）`}
+                                      onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        setWordCountGoal(null);
+                                        persistWordCountGoal(t.title, null);
+                                      }}
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 2,
+                                        fontSize: 10,
+                                        padding: "1px 6px",
+                                        borderRadius: 3,
+                                        background: bg,
+                                        color: fg,
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                        cursor: "pointer",
+                                        userSelect: "none",
+                                      }}
+                                    >
+                                      📐 {charCount}/{wordCountGoal}
                                     </span>
                                   );
                                 })()}
