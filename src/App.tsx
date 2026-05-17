@@ -1040,6 +1040,40 @@ function App() {
     [appendAssistant],
   );
 
+  /// ChatMini 选区 toolbar "📚 加到 ai_insights" 按钮：把选中文字作
+  /// ai_insights memory item 存盘 — 与 /reflect TG 命令 / PanelMemory
+  /// AI 洞察段同后端。title 自动 reflect-YYYY-MM-DDTHH-MM-SS（与
+  /// /reflect 命名约定一致），description = trim 后的 text。与 📝 note
+  /// （general cat）分流 — note 是「杂项 brain-dump」，本入口是「反思
+  /// / 自我洞察」，按信号类型分类避免 ai_insights 段被日常杂项稀释。
+  const handleMiniSaveAsAiInsight = useCallback(
+    async (text: string) => {
+      const body = text.trim();
+      if (!body) return;
+      const now = new Date();
+      const y = now.getFullYear();
+      const mo = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const ss = String(now.getSeconds()).padStart(2, "0");
+      const title = `reflect-${y}-${mo}-${d}T${hh}-${mm}-${ss}`;
+      try {
+        await invoke<string>("memory_edit", {
+          action: "create",
+          category: "ai_insights",
+          title,
+          description: body,
+          detailContent: null,
+        });
+        appendAssistant(`📚 已记到 ai_insights/${title}`);
+      } catch (e) {
+        appendAssistant(`📚 记 ai_insights 失败：${e}`);
+      }
+    },
+    [appendAssistant],
+  );
+
   const openPanel = () => {
     invoke("open_panel").catch(console.error);
     // 跨窗口"刚从桌面跳过来"信号：panel 聊天 tab 上线后给当前 session bar
@@ -1691,6 +1725,7 @@ function App() {
             onRefDoubleClick={handleMiniRefDoubleClick}
             onSaveAsTask={handleMiniSaveAsTask}
             onSaveAsNote={handleMiniSaveAsNote}
+            onSaveAsAiInsight={handleMiniSaveAsAiInsight}
             onSetTransientNote={handleMiniSetTransientNote}
           />
           <ChatPanel onSend={handleSend} isLoading={isLoading} />

@@ -10,7 +10,6 @@
 
 - PanelTasks 任务行右键加「📊 看 history timeline」popover：复用 task_get_detail.history 数据弹小 timeline 视图（与 TG /timeline 对偶）。
 - PanelMemory 加「🗑 批量清空 cat」按钮（带 confirm token 防误触）：empty 整个 cat 的临时项 cleanup。
-- ChatMini 选区 toolbar 加「📚 加到 ai_insights」按钮：选段 → memory_edit("create", "ai_insights") + 自动 title（与 📝 note 同 channel 但分流 ai_insights cat）。
 - detail.md 编辑器加「📋 复制本节 + 子节」chip：H2 段含其下 H3 一并复制（既有 handleCopyHeadingSection 只复单节）。
 - PanelDebug 加「⚙️ shell exit code 分布」chip：扫近 N 条 shell 调用 exit code 累计 — debug LLM shell tool 失败率。
 
