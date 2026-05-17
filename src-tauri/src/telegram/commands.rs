@@ -93,6 +93,11 @@ pub enum TgCommand {
     /// 还多久醒。与 /silenced / /pinned 对偶。无参；多余尾部忽略。owner 想
     /// audit "我哪些任务被暂存了 / 还多久回到队列" 用。
     Snoozed,
+    /// `/mute [N]` —— 临时静音 proactive 主动开口 N 分钟（缺省 30；0 = 解
+    /// 除）。复用 `proactive::set_mute_minutes` 同后端 — 与桌面 PanelDebug
+    /// "⚙️ mute" 按钮等价。让 owner 在 TG 上"嘿宠物先安静半小时"一句话搞定。
+    /// clamp 0..=10080（≤ 7 天）。
+    Mute { minutes: i64 },
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -136,6 +141,7 @@ impl TgCommand {
             TgCommand::Find { .. } => "find",
             TgCommand::Blocked => "blocked",
             TgCommand::Snoozed => "snoozed",
+            TgCommand::Mute { .. } => "mute",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -169,6 +175,7 @@ impl TgCommand {
             | TgCommand::Recent { .. }
             | TgCommand::Blocked
             | TgCommand::Snoozed
+            | TgCommand::Mute { .. }
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -243,6 +250,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
+            ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -270,6 +278,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
+            ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -593,6 +602,18 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "blocked" => Some(TgCommand::Blocked),
         // `/snoozed`：无参；多余尾部忽略（与 /silenced / /pinned 同模板）。
         "snoozed" => Some(TgCommand::Snoozed),
+        // `/mute [N]`：N 缺省 30 分钟；clamp 0..=10080（≤ 7 天）。非数字
+        // 尾部一律忽略走默认（与 /recent / /tasks 同前向兼容策略）。N == 0
+        // → 解除 mute（与桌面 PanelDebug "⚙️ mute" 二次点同语义）。
+        "mute" => {
+            let minutes = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|n| n.clamp(0, 10080))
+                .unwrap_or(30);
+            Some(TgCommand::Mute { minutes })
+        }
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -930,6 +951,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
+        "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1631,6 +1653,49 @@ pub fn format_snoozed_reply(
     out
 }
 
+/// `/mute [N]` 命令回复文案。pure：caller 已经调过 `set_mute_minutes(minutes)`
+/// 实际写后端 MUTE_UNTIL；本函数仅按 minutes 与 caller 注入的 `until_local`
+/// （None = 已清；Some = 解除时刻）生成 owner 友好的反馈：
+/// - minutes > 0 + until Some → "🔕 已静音 N 分钟（到 HH:MM 自动解除）"
+/// - minutes == 0 / until None → "🔊 已解除静音"
+///
+/// `until_local` 由 caller 用 `chrono::Local::now() + Duration::minutes(N)`
+/// 拼出（保 pure 函数 — 不读时钟）。
+pub fn format_mute_reply(
+    minutes: i64,
+    until_local: Option<chrono::DateTime<chrono::Local>>,
+) -> String {
+    if minutes <= 0 {
+        return "🔊 已解除静音（proactive 主动开口恢复）。".to_string();
+    }
+    let when = until_local
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_else(|| "—".to_string());
+    let nice = if minutes < 60 {
+        format!("{} 分钟", minutes)
+    } else if minutes < 60 * 24 {
+        let h = minutes / 60;
+        let m = minutes % 60;
+        if m == 0 {
+            format!("{} 小时", h)
+        } else {
+            format!("{} 小时 {} 分钟", h, m)
+        }
+    } else {
+        let d = minutes / (60 * 24);
+        let h = (minutes % (60 * 24)) / 60;
+        if h == 0 {
+            format!("{} 天", d)
+        } else {
+            format!("{} 天 {} 小时", d, h)
+        }
+    };
+    format!(
+        "🔕 已静音 proactive {}（到 {} 自动解除）。期间宠物不主动开口；用 /mute 0 立刻解除。",
+        nice, when
+    )
+}
+
 /// `/reset` 命令固定回复文案。caller 负责真正清空 session_messages（仅保留
 /// system / 人设），本函数只生成给 TG 用户看的反馈。
 pub fn format_reset_reply() -> String {
@@ -1742,6 +1807,7 @@ fn starts_with_status_emoji(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     // -------- parse_tg_command --------
 
@@ -4008,6 +4074,92 @@ mod tests {
         let pos_sooner = s.find("先醒的").expect("sooner present");
         let pos_later = s.find("后醒的").expect("later present");
         assert!(pos_sooner < pos_later, "sooner first: {s}");
+    }
+
+    // -------- /mute parse + format --------
+
+    #[test]
+    fn mute_parses_default_30_when_no_arg() {
+        assert_eq!(
+            parse_tg_command("/mute"),
+            Some(TgCommand::Mute { minutes: 30 })
+        );
+        assert_eq!(
+            parse_tg_command("/mute   "),
+            Some(TgCommand::Mute { minutes: 30 })
+        );
+    }
+
+    #[test]
+    fn mute_parses_explicit_n() {
+        assert_eq!(
+            parse_tg_command("/mute 60"),
+            Some(TgCommand::Mute { minutes: 60 })
+        );
+        assert_eq!(
+            parse_tg_command("/mute 0"),
+            Some(TgCommand::Mute { minutes: 0 })
+        );
+    }
+
+    #[test]
+    fn mute_clamps_to_0_10080_range() {
+        // 负数 → 0；> 7 天 → 10080
+        assert_eq!(
+            parse_tg_command("/mute -10"),
+            Some(TgCommand::Mute { minutes: 0 })
+        );
+        assert_eq!(
+            parse_tg_command("/mute 99999"),
+            Some(TgCommand::Mute { minutes: 10080 })
+        );
+    }
+
+    #[test]
+    fn mute_garbage_arg_falls_back_to_default() {
+        assert_eq!(
+            parse_tg_command("/mute abc"),
+            Some(TgCommand::Mute { minutes: 30 })
+        );
+    }
+
+    #[test]
+    fn format_mute_reply_zero_says_cleared() {
+        let s = format_mute_reply(0, None);
+        assert!(s.contains("🔊"), "{s}");
+        assert!(s.contains("解除"), "{s}");
+    }
+
+    #[test]
+    fn format_mute_reply_minutes_label() {
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 10, 30, 0)
+            .unwrap();
+        let s = format_mute_reply(45, Some(until));
+        assert!(s.contains("🔕"), "{s}");
+        assert!(s.contains("45 分钟"), "{s}");
+        assert!(s.contains("10:30"), "{s}");
+    }
+
+    #[test]
+    fn format_mute_reply_hours_minutes_label() {
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 12, 30, 0)
+            .unwrap();
+        let s = format_mute_reply(150, Some(until));
+        // 150 分钟 = 2 小时 30 分钟
+        assert!(s.contains("2 小时 30 分钟"), "{s}");
+        assert!(s.contains("12:30"), "{s}");
+    }
+
+    #[test]
+    fn format_mute_reply_days_label() {
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 20, 9, 0, 0)
+            .unwrap();
+        // 3 天 = 4320 分钟
+        let s = format_mute_reply(4320, Some(until));
+        assert!(s.contains("3 天"), "{s}");
     }
 
     // -------- /reset parse + format --------

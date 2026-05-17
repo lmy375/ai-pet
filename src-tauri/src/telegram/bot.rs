@@ -818,6 +818,18 @@ async fn handle_tg_command(
             let now = chrono::Local::now().naive_local();
             crate::telegram::commands::format_snoozed_reply(&views, now)
         }
+        TgCommand::Mute { minutes } => {
+            // 复用 proactive::set_mute_minutes 同后端 — 与桌面 PanelDebug
+            // "⚙️ mute" / pet ctx menu 同入口。set_mute_minutes(minutes > 0)
+            // 内部 hook 也会 record_mute_engaged 让"🔕 今日 mute"chip 计数同步。
+            let _ = crate::proactive::set_mute_minutes(minutes);
+            let until_local = if minutes > 0 {
+                Some(chrono::Local::now() + chrono::Duration::minutes(minutes))
+            } else {
+                None
+            };
+            crate::telegram::commands::format_mute_reply(minutes, until_local)
+        }
         TgCommand::Version => {
             // app_version 走编译期 env，schema_version 走 _migrations 最大 version。
             // 单 SQL 查不引入新 Tauri 命令；读失败 → 0（format 时省略 schema 行）。
