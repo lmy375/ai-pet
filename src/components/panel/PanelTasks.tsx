@@ -2102,6 +2102,40 @@ export function PanelTasks({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [quickAddOpen, title]);
+  /// Tab 键循环切换 sortMode：queue → due → priority → tag → queue。仅
+  /// 在 panel 焦点不在 input / textarea / button / select / contentEditable
+  /// 时响应（让原生 Tab 焦点跳转仍在表单内有效）；任何修饰键也跳过让位
+  /// 给系统 / 浏览器组合键（⇧Tab 反向 / ⌥Tab 等）。preventDefault 吃掉
+  /// 浏览器 / Tauri webview 默认 Tab 焦点行为。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        tag === "BUTTON"
+      )
+        return;
+      if (target?.isContentEditable) return;
+      e.preventDefault();
+      setSortMode((cur) => {
+        const order: Array<"queue" | "due" | "priority" | "tag"> = [
+          "queue",
+          "due",
+          "priority",
+          "tag",
+        ];
+        const idx = order.indexOf(cur);
+        return order[(idx + 1) % order.length];
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // detail.md 编辑器 textarea 引用：粘贴图片时往光标位置插 markdown image。
   // 单 task 编辑互斥（editingDetailTitle 是单值），所以单 ref 够用。
   const detailEditorRef = useRef<HTMLTextAreaElement>(null);
@@ -5927,7 +5961,7 @@ export function PanelTasks({
               )}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 4, alignItems: "center" }} title="切换排序模式：默认综合 / 按截止时间升序 / 按优先级降序（priority 模式下可拖卡片改 P）/ 按 primary tag 分段">
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }} title="切换排序模式：默认综合 / 按截止时间升序 / 按优先级降序（priority 模式下可拖卡片改 P）/ 按 primary tag 分段 · 焦点不在输入框时按 Tab 循环切换">
             {(["queue", "due", "priority", "tag"] as const).map((mode) => {
               const active = sortMode === mode;
               return (
