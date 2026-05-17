@@ -12,7 +12,6 @@
 - TG bot 加 `/timeline <title>` 命令：显单条 task description 中 [done] / [error:] / [snooze:] / [result:] 等 markers 时刻清单 — audit 这条 task 经历了啥。
 - PanelChat 加「📌 bookmark 本条」按钮 + bookmark chip strip：让 owner 标重要 chat message + 顶部 chip click 跳回（与 task pin 对偶但 scope chat）。
 - ChatMini 加「💾 导出本会话 markdown」按钮：与 PanelChat 既有导出对偶 — 小窗 owner 也能一键 export current session 到剪贴板。
-- PanelMemory butler_tasks 段加「📊 schedule 24h 分布」mini bar chip：显各小时 fire 次数让 owner 一眼看分布偏态（早上 9 点扎堆 / 散布等）。
 
 
 
