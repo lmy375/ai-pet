@@ -10,7 +10,6 @@
 
 - detail.md 编辑器加「📑 fold headings」toggle：H2/H3 段一键折叠 / 展开 — 长文阅读姿态。
 - PanelDebug 加「📋 复制调试上下文」按钮：聚合 tone / mood / mute / recent_speeches 成 markdown report — bug 反馈一键拿 context。
-- ChatMini bubble 右键加「↺ 重发本条」item：把 user message 文本预填到输入框 + 自动 send（reroll 场景）。
 
 
 

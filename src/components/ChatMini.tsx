@@ -2984,6 +2984,35 @@ export function ChatMini({
                 💭 针对这条再问
               </button>
             )}
+            {/* ↺ 重发本条：把 user message 原文 dispatch 给 ChatPanel +
+                自动触发 onSend → reroll 场景一键拿一份新 reply（不必先
+                复制再粘贴再 ⌘Enter）。仅 user role + hasText 时显；
+                assistant reply 重发无语义（owner 自己说话不能让 pet
+                "再说一次"）。complement 已存 💭 针对这条再问（prefill
+                only，不自动 send）。 */}
+            {!isAssistant && hasText && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  // pet-mini-resend-message：ChatPanel listener 拿原文
+                  // 直接 onSend(trimmed) — 跳过 textarea state 中转，
+                  // 不污染 user 输入。reroll 场景已 sent 过 → history
+                  // 不再 push（dedup）；多模态附件不复用（原 send 时已
+                  // attached，再 send 已无 stage）。
+                  window.dispatchEvent(
+                    new CustomEvent("pet-mini-resend-message", {
+                      detail: text,
+                    }),
+                  );
+                }}
+              >
+                ↺ 重发本条
+              </button>
+            )}
             {/* 📝 用此话设 transient_note：把 pet 这条 reply 文本（去
                 markdown 后的 plain）作 30min 临时上下文。与 iter #364
                 PanelToneStrip ✍️ 写 / iter #363 TG /transient 同后端，
