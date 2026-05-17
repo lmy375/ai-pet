@@ -9,7 +9,6 @@
 >
 
 - TG bot `/find_speech <keyword>` 命令：在 speech_history.log 搜 keyword — 与 /find / /find_in_detail 同搜索族但搜 pet 说过的话。
-- detail.md 编辑器加「⌘/ markdown 注释行 toggle」shortcut：当前行 / 多行选区首尾切换 `<!-- ... -->` HTML 注释。
 - PanelDebug 加「⏰ 下次 consolidate」chip：显下次 sweep 预计本地时刻 + 剩余分钟 — audit cron 节奏入口。
 
 

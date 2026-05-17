@@ -3314,6 +3314,85 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘/ markdown 注释行 toggle：当前行（无选区）/
+  /// 多行选区每行包 / 剥 `<!-- ... -->` HTML 注释。markdown 渲染器多
+  /// 数 strip HTML comment — 让 owner 临时藏内容不需删（write-only
+  /// safe 草稿 / TODO 标记 / "稍后再放回"等）。
+  ///
+  /// 行为：uniform toggle —— 若所有命中行已全 commented（即首尾匹配
+  /// `<!-- ... -->`） → 全部 uncomment；否则 → 全部 comment（已 commented
+  /// 行保持不变 — 不二次包）。空行跳过 wrap（保 newline 结构不被
+  /// `<!--  -->` 污染）。
+  ///
+  /// 与既有 ⌘D / ⌘L / ⌘⇧K / ⌘⇧X / ⌥↑↓ / ⌘⌥↑↓ IDE 行操作集群同
+  /// boundary 算法（firstLineStart / lastLineEnd）。preventDefault 吃浏
+  /// 览器默认 ⌘/（Chrome "查看快捷键 cheatsheet"）。
+  const handleDetailCommentToggle = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (e.shiftKey || e.altKey) return false;
+      if (e.key !== "/") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      const firstLineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const nextNl = value.indexOf("\n", end);
+      const lastLineEnd = nextNl === -1 ? value.length : nextNl;
+      e.preventDefault();
+      const block = value.slice(firstLineStart, lastLineEnd);
+      const lines = block.split("\n");
+      // 检测 uniform：所有非空行都已 commented？空行不计
+      const commentRe = /^<!--\s?(.*?)\s?-->$/;
+      const nonEmpty = lines.filter((l) => l.length > 0);
+      const allCommented =
+        nonEmpty.length > 0 &&
+        nonEmpty.every((l) => commentRe.test(l));
+      const transformed = lines.map((l) => {
+        if (l.length === 0) return l;
+        if (allCommented) {
+          const m = commentRe.exec(l);
+          return m ? m[1] : l;
+        } else {
+          // 已 commented 的行保持原样（防二次包 → `<!-- <!-- x --> -->`）
+          if (commentRe.test(l)) return l;
+          return `<!-- ${l} -->`;
+        }
+      });
+      const replacement = transformed.join("\n");
+      const next =
+        value.slice(0, firstLineStart) + replacement + value.slice(lastLineEnd);
+      // 光标 / 选区：保整段「first 行首 → last 行尾的新长度」便于继续
+      // 选区操作（重复按 ⌘/ 切换状态）
+      const newFirst = firstLineStart;
+      const newLast = firstLineStart + replacement.length;
+      setEditingDetailContent(next);
+      setDetailCursorPos(newFirst);
+      setDetailSelectionEnd(newLast);
+      requestAnimationFrame(() => {
+        const t = detailEditorRef.current;
+        if (!t) return;
+        t.focus();
+        // 单行（start === end）保 cursor 在原 column；多行选区保整段选
+        if (start === end) {
+          // 单行：cursor 落在原位置相对偏移（行扩 / 缩了对应字符数）
+          const lineDelta = replacement.length - block.length;
+          const newCursor = Math.max(
+            newFirst,
+            Math.min(newLast, start + lineDelta),
+          );
+          t.selectionStart = t.selectionEnd = newCursor;
+        } else {
+          t.selectionStart = newFirst;
+          t.selectionEnd = newLast;
+        }
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md 编辑器 ⌘⇧L 链接快速插入 popover 状态。与 toolbar 「🔗」
   /// (insertLinkAtCursor) 互补 —— 那个直接插模板 + 占位符 pre-select；
   /// 本路径弹小输入框让 owner 一次性输完整 url + label 再插（键盘党想
@@ -14015,6 +14094,10 @@ export function PanelTasks({
                                   // 剪贴板 + 删除）—— 与 ⌘⇧K 删除行
                                   // 互补，复用同 boundary 算法。
                                   if (handleDetailCutLine(e)) return;
+                                  // ⌘/ markdown 注释行 toggle — IDE 标准
+                                  // line-op，与 ⌘D / ⌘L / ⌘⇧K / ⌘⇧X 同
+                                  // boundary 算法集群。
+                                  if (handleDetailCommentToggle(e)) return;
                                   // ⌘L 选中当前行：VS Code / Sublime "select
                                   // line" 习惯。与 ⌘D 同 modifier 集群相邻 ——
                                   // 两个 IDE-like 行操作在一起便于 owner 心智
@@ -14509,6 +14592,10 @@ export function PanelTasks({
                                   // 剪贴板 + 删除）—— 与 ⌘⇧K 删除行
                                   // 互补，复用同 boundary 算法。
                                   if (handleDetailCutLine(e)) return;
+                                  // ⌘/ markdown 注释行 toggle — IDE 标准
+                                  // line-op，与 ⌘D / ⌘L / ⌘⇧K / ⌘⇧X 同
+                                  // boundary 算法集群。
+                                  if (handleDetailCommentToggle(e)) return;
                                   // ⌥↑ / ⌥↓ 上下移行：与 split 模式同 handler。
                                   if (handleDetailMoveLines(e)) return;
                                   // ⌘⌥↑ / ⌘⌥↓ 复制行：与 split 模式同 handler。
