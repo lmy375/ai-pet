@@ -66,6 +66,12 @@ interface Props {
   /// item 存盘（与 💾 转 task 互补 — task 是要做的事，note 是想记的事）。
   /// 由 App.tsx 调 memory_edit("create", "general") 同 TG /note 后端。
   onSaveAsNote?: (text: string) => void;
+  /// 选区 toolbar "📚 加到 ai_insights" 按钮触发：把选中文字作
+  /// ai_insights memory item 存盘 — 与 /reflect / PanelMemory AI 洞察
+  /// 段同后端。与 📝 note（general cat 杂项 brain-dump）分流 — 本入
+  /// 口是「反思 / 自我洞察」按信号类型分类避免 ai_insights 段被日常
+  /// 杂项稀释。由 App.tsx 调 memory_edit("create", "ai_insights")。
+  onSaveAsAiInsight?: (text: string) => void;
   /// ChatBubble 右键菜单 "📝 设 transient_note" 触发：把 assistant
   /// 这条 reply 文本作 transient_note（in-memory N 分钟有效上下文）。
   /// 由 App.tsx 调 set_transient_note Tauri 命令。与 iter #364
@@ -327,6 +333,7 @@ export function ChatMini({
   onRefDoubleClick,
   onSaveAsTask,
   onSaveAsNote,
+  onSaveAsAiInsight,
   onSetTransientNote,
 }: Props) {
   // armed-confirm: 第一次点击进 "再点确认" 态 + 3s 内不点就回 idle，防误触。
@@ -3192,6 +3199,20 @@ export function ChatMini({
                 }}
               >
                 📝
+              </button>
+            )}
+            {onSaveAsAiInsight && (
+              <button
+                type="button"
+                style={btnStyle}
+                title="把这段选中文字作 ai_insights memory item 存 — 反思 / 自我洞察分类，与 📝 note（杂项 brain-dump）分流。同 /reflect TG 命令后端。"
+                onClick={() => {
+                  const text = selectionToolbar.text;
+                  setSelectionToolbar(null);
+                  onSaveAsAiInsight(text);
+                }}
+              >
+                📚
               </button>
             )}
             <button
