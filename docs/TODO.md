@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot 加 `/alarms [N]` 命令：手机端列 todo 段 pending reminders 含目标时间 + 剩余分钟（与 iter #372 桌面 ⏰ alarm chip 对偶 audit）。
 - PanelMemory todo 段头加「⏰ N pending」chip：紧贴 items 数 badge 显当前 active reminder 数，click 弹倒计时清单 popover — 一眼看 alarm 队列。
 - detail.md 编辑器 ⌘/ 切换当前行 / 选区 markdown 注释（`<!-- ... -->`）：VSCode 风行注释，markdown 内"暂时屏蔽段落"等编辑加速。
 - PanelTasks 任务标题 hover 0.5s 后浮 detail.md 前 200 字 preview tooltip：免点 detail panel 即可 skim 进度笔记，与既有 raw_description tooltip 互补。
