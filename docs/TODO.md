@@ -11,7 +11,6 @@
 - TG bot 加 `/feedback <text>` 命令：owner 给 pet 反馈写 feedback_history（喜欢 / 不喜欢的行为），影响后续 proactive cycle。
 - TG bot 加 `/cancel-all-error confirm` 命令：批量 cancel 所有 error 状态任务，必须带 confirm token 防误触。
 - PanelChat 加 ⌘F 行内搜索 messages：长 chat 历史 keyword 命中跳转，长会话查找用。
-- PanelMemory item action row 加 ✏️ rename mini-input：与既有双击 title rename 对偶 — 鼠标党直接按按钮免双击。
 
 
 

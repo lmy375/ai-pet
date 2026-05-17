@@ -5853,6 +5853,24 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           📋📄
                         </button>
+                        {/* ✏️ rename：与既有"双击 title inline rename"对偶
+                            的 mouse-friendly affordance。click 直接进 inline
+                            rename mode（与 setRenamingMemoryKey + 双击同
+                            行为），免 owner 双击 title。mouse 党 / 触屏党 /
+                            发现 double-click 困难的用户 friendly。 */}
+                        <button
+                          style={s.btn}
+                          onClick={() => {
+                            // renameKey 与 title IIFE 内一致 — 重算 inline
+                            // 避免跨 IIFE scope 借用。
+                            setRenamingMemoryKey(`${catKey}::${item.title}`);
+                            setRenameMemoryDraft(item.title);
+                          }}
+                          title={`改名「${item.title}」（与双击 title 同行为，inline rename 模式 — Enter 提交 / Esc 取消）`}
+                          aria-label="rename item"
+                        >
+                          ✏️
+                        </button>
                         {/* 🏷 改类目：跨 category 移动 item。仅非镜像
                             category（general / user_profile / 自定义）显此
                             按钮；后端拒绝 butler_tasks / todo / ai_insights /
