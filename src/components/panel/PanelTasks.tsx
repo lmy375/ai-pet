@@ -3270,6 +3270,50 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘⇧X / Ctrl+⇧+X 行剪切：与 ⌘⇧K 删除行同算法
+  /// 但额外把删除内容（含行尾换行）写到 clipboard。让 owner 把行剪
+  /// 到剪贴板搬到 detail.md 其它位置 / 别的笔记工具 — 比"⌘L 选中行
+  /// + ⌘X 系统剪切"少一步。
+  ///
+  /// 与既有 ⌘D 复制行 / ⌘L 选中行 / ⌘⇧K 删除行 IDE 行操作集群补全
+  /// 「duplicate / select / delete / cut」四象限。clipboard 失败时
+  /// 仍执行删除（保持与 ⌘⇧K 行为接近）— 失败 console.error 不阻断。
+  /// preventDefault 吃浏览器默认 ⌘⇧X — 多数浏览器无此默认；兜底安全。
+  const handleDetailCutLine = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "x") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      const firstLineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const nextNl = value.indexOf("\n", end);
+      const deleteUntil =
+        nextNl === -1 ? value.length : nextNl + 1;
+      e.preventDefault();
+      const cut = value.slice(firstLineStart, deleteUntil);
+      // 写 clipboard — 失败容忍（与 PanelDebug 复制 chip 同 pattern）
+      navigator.clipboard.writeText(cut).catch((err) => {
+        console.error("cut line clipboard write failed:", err);
+      });
+      const next = value.slice(0, firstLineStart) + value.slice(deleteUntil);
+      const newCursor = Math.min(firstLineStart, next.length);
+      setEditingDetailContent(next);
+      setDetailCursorPos(newCursor);
+      requestAnimationFrame(() => {
+        const t = detailEditorRef.current;
+        if (!t) return;
+        t.focus();
+        t.selectionStart = t.selectionEnd = newCursor;
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md 编辑器 ⌘⇧L 链接快速插入 popover 状态。与 toolbar 「🔗」
   /// (insertLinkAtCursor) 互补 —— 那个直接插模板 + 占位符 pre-select；
   /// 本路径弹小输入框让 owner 一次性输完整 url + label 再插（键盘党想
@@ -13962,6 +14006,10 @@ export function PanelTasks({
                                   // IDE 行为。放在 ⌘S 之前 —— 二者不冲突但保
                                   // 一致 modifier handler 集群。
                                   if (handleDetailDuplicateLine(e)) return;
+                                  // ⌘⇧X 行剪切（剪当前行 / 多行选区到
+                                  // 剪贴板 + 删除）—— 与 ⌘⇧K 删除行
+                                  // 互补，复用同 boundary 算法。
+                                  if (handleDetailCutLine(e)) return;
                                   // ⌘L 选中当前行：VS Code / Sublime "select
                                   // line" 习惯。与 ⌘D 同 modifier 集群相邻 ——
                                   // 两个 IDE-like 行操作在一起便于 owner 心智
@@ -14452,6 +14500,10 @@ export function PanelTasks({
                                   if (handleDetailListContinue(e)) return;
                                   if (handleDetailBracketPair(e)) return;
                                   if (handleDetailDuplicateLine(e)) return;
+                                  // ⌘⇧X 行剪切（剪当前行 / 多行选区到
+                                  // 剪贴板 + 删除）—— 与 ⌘⇧K 删除行
+                                  // 互补，复用同 boundary 算法。
+                                  if (handleDetailCutLine(e)) return;
                                   // ⌥↑ / ⌥↓ 上下移行：与 split 模式同 handler。
                                   if (handleDetailMoveLines(e)) return;
                                   // ⌘⌥↑ / ⌘⌥↓ 复制行：与 split 模式同 handler。

@@ -12,7 +12,6 @@
 - TG bot `/last_speech` 命令：显 pet 最近一条主动开口 + ts — 与 ChatMini「⏱ 沉默」chip 对偶 audit。
 - PanelDebug 加「📊 今日决策」chip：扫 decision_log 显今日 ok/error/skip 计数 — audit pet 自主行为节奏。
 - PanelMemory 段标题右键加「📁 reveal cat dir」: 一键 Finder 打开 cat 子目录 — 调试 file structure 入口。
-- detail.md 编辑器加「⌘⇧X 行剪切」shortcut：剪当前行 / 多行选区到剪贴板 + 删除 — 与 ⌘⇧K 删除行互补。
 
 
 
