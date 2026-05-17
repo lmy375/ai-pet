@@ -10,7 +10,6 @@
 
 - TG bot 加 `/silent_all [minutes]` 命令：手机端批量 silent butler_tasks N 分钟（与 iter #366 桌面按钮对偶 — 但 TG 端要把 frontend timer 改成无状态 / 后端定时撤回）。
 - PanelMemory item 加「⏰ 一次性 5/15/30 分钟后提醒」chip：与既有 reminderMin（fire 前 N 分钟）区分 — 一次性 alarm 到点弹 ChatMini 软提醒，不挂 schedule。
-- TG bot 加 `/feedback_history [N]` 命令：列最近 N 条 feedback_history.log 条目（owner 回看自己给 pet 留过什么反馈 / 验证生效）。
 
 
 

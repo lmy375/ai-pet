@@ -168,6 +168,12 @@ pub enum TgCommand {
     /// 与 /mute 区别：/mute 直接静音 proactive；/transient 不阻塞，只
     /// 加上下文让 pet 开口时读到这条 [临时指示]。
     Transient { text: String, minutes: i64 },
+    /// `/feedback_history [N]` —— 列最近 N 条 feedback_history.log 条目
+    /// （含 owner 写过的 /feedback comment + bubble dismiss / 主动点赞
+    /// / 沉默忽略 等系统记录的隐性反馈）。让 owner audit "我给 pet 留
+    /// 过什么 / pet 接收了哪些信号"。与 /feedback（写）对偶。N 缺省
+    /// 5，clamp 1..=20（与 /recent / /digest 同上限）。
+    FeedbackHistory { n: u32 },
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -300,6 +306,7 @@ impl TgCommand {
             TgCommand::Pri { .. } => "pri",
             TgCommand::Feedback { .. } => "feedback",
             TgCommand::Transient { .. } => "transient",
+            TgCommand::FeedbackHistory { .. } => "feedback_history",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
@@ -349,6 +356,7 @@ impl TgCommand {
             | TgCommand::Snoozed
             | TgCommand::Mute { .. }
             | TgCommand::Digest { .. }
+            | TgCommand::FeedbackHistory { .. }
             | TgCommand::Due { .. }
             | TgCommand::Now
             | TgCommand::Last
@@ -438,6 +446,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pri", "Set a task's priority (0..=9) without rewriting the rest"),
             ("feedback", "Send owner feedback to feedback_history (influences pet's next proactive turn)"),
             ("transient", "Set a transient note for N minutes — in-memory only context for the pet (default 60m, cap 7d)"),
+            ("feedback_history", "List recent N feedback_history.log entries (replied / liked / comment / ignored / dismissed / puzzled; default 5, cap 20)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
@@ -486,6 +495,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pri", "单改任务 priority（0..=9）不走 /edit 全量覆写"),
             ("feedback", "给 pet 留反馈（写 feedback_history，影响下次 proactive turn）"),
             ("transient", "设 N 分钟有效的临时上下文给 pet（不存盘 in-memory；缺省 60m，上限 7 天）"),
+            ("feedback_history", "列最近 N 条 feedback 记录（回复 / 点赞 / 评论 / 忽略 / 点掉 / 困惑；缺省 5，上限 20）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
@@ -986,6 +996,17 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 .unwrap_or(5);
             Some(TgCommand::Digest { n })
         }
+        // `/feedback_history [N]`：与 /digest / /recent 同 clamp 模板 —
+        // N 缺省 5，clamp 1..=20。非数字 / 空尾部走默认。
+        "feedback_history" => {
+            let n = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 20))
+                .unwrap_or(5);
+            Some(TgCommand::FeedbackHistory { n })
+        }
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -1254,8 +1275,8 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
     "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
     "digest", "edit", "pri", "promote", "demote", "reflect", "feedback",
-    "transient", "cancel_all_error", "find", "show", "blocked", "snoozed",
-    "reset", "version", "help",
+    "feedback_history", "transient", "cancel_all_error", "find", "show",
+    "blocked", "snoozed", "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1371,6 +1392,7 @@ pub fn format_help_for_topic(
         "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
         "transient" => "📝 /transient <text> [minutes]\n\n用法：写一条 N 分钟有效的临时上下文给宠物（owner 当前状态如「在开会」「集中写文档」「今晚 9 点后回我」等）。**不存盘**，只挂当前 in-memory，到时自动清除（与桌面 PanelToneStrip 显示的 [临时指示] 同源）。minutes 末 whitespace token 解析；缺省 60；clamp 1..=10080（≤ 7 天）。\n\n示例：\n  /transient 在开会，半小时别打扰我 30\n  /transient 集中写文档不要主动开口 90\n  /transient 今晚 9 点后再 ping 我 240\n  /transient 心情不好别活泼  （默认 60 分钟）\n\n对比：/note（→ general memory 永久存盘）；/reflect（→ ai_insights 永久存盘）；/feedback（写 feedback_history 改 pet 行为）；/mute（直接静音不开口）。本命令是「给 pet 临时上下文，但不阻塞它说话」— pet 仍会主动开口，只是开口时读到这条调整语气 / 选择。",
+        "feedback_history" => "📜 /feedback_history [N]\n\n用法：列最近 N 条 feedback_history.log 条目，含 owner 主动写的 /feedback comment + 系统自动记录的隐性反馈（回复 / 主动点掉 bubble / 👍 点赞 / 沉默忽略 / 🤔 困惑反馈）。让 owner audit 「我给 pet 留过什么 / pet 接收了哪些信号」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · HH:MM <emoji> <kind> | <excerpt>\n\nkind emoji 映射：\n  ✅ replied · 👍 liked · 💬 comment · 🙉 ignored · 👋 dismissed · 🤔 puzzled\n\n示例：\n  /feedback_history\n  /feedback_history 10\n  /feedback_history 20\n\n相关：/feedback（写新条目）；R7 cooldown adapter / R28 chip 用 feedback_history 调整 pet 主动开口频率与语气 — 本命令是回看 pet 接收的训练信号。",
         "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
         "promote" => "🎯 /promote <title>\n\n用法：把任务 priority 升 +1（clamp 9 — 已是 P9 时不动 + 友好 reply）。一步操作不必算具体 P 值（与 /pri <title> <N> 互补 — pri 是绝对值，promote 是相对值）。保留所有其它 markers / due / body 不动（复用 task_set_priority 后端）。\n\n示例：\n  /promote 整理 Downloads\n  /promote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/demote（-1 反方向）。",
         "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
@@ -1437,6 +1459,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/pri <title> <N>  —  单改 priority（0..=9）— 不走 /edit 全量覆写".to_string(),
         "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
         "/transient <text> [minutes]  —  设 N 分钟有效的临时上下文（不存盘 in-memory；缺省 60m，上限 7 天）".to_string(),
+        "/feedback_history [N]  —  列最近 N 条 feedback 记录（含 /feedback 写的 + 系统记录的隐性信号；缺省 5，上限 20）".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
@@ -2404,6 +2427,64 @@ pub fn format_digest_reply(
             "\n…还有 {} 条更早完成（/digest {} 看更多，上限 20）",
             done.len() - shown.len(),
             done.len().min(20)
+        ));
+    }
+    out
+}
+
+/// `/feedback_history [N]` 命令回复文案。pure。
+///
+/// 入参 `entries` 必须是 newest-first（caller 用 recent_feedback(n).await
+/// 然后 reverse）— 渲染顺序与入参一致，让"最近一条"显在 TG 屏顶。
+///
+/// - 空 entries → 友好兜底文案 + 引导 /feedback 写第一条
+/// - 非空 → "📜 最近 N 条 feedback：" header + 逐行 `· HH:MM <emoji>
+///   <excerpt>` 列表
+///
+/// kind emoji map 让 owner 一眼分辨"主动正反馈 / 主动负反馈 / 被动
+/// 信号 / 评论"四类。excerpt 来自 feedback_history.log 已 cap 64 字
+/// （FEEDBACK_EXCERPT_CHARS），TG msg 总长 N=20 × ~90 char = 1800
+/// 内 — 远在 4096 limit 内。
+pub fn format_feedback_history_reply(
+    entries: &[crate::feedback_history::FeedbackEntry],
+    n: u32,
+) -> String {
+    if entries.is_empty() {
+        return "📜 暂无 feedback 记录。\n\n用 /feedback <text> 写第一条；或自然交互（回复 / 主动点掉宠物开口 / 👍 给 ✅）— 这些动作自动写 feedback_history.log。"
+            .to_string();
+    }
+    let cap = (n as usize).max(1);
+    let shown_n = entries.len().min(cap);
+    let shown = &entries[..shown_n];
+    let mut out = format!("📜 最近 {} 条 feedback：", shown.len());
+    for e in shown {
+        // timestamp "2026-05-17T18:45:32+08:00" → "HH:MM" 切片
+        let when = if e.timestamp.len() >= 16 {
+            e.timestamp[11..16].to_string()
+        } else {
+            e.timestamp.clone()
+        };
+        let emoji = match e.kind {
+            crate::feedback_history::FeedbackKind::Replied => "✅",
+            crate::feedback_history::FeedbackKind::Liked => "👍",
+            crate::feedback_history::FeedbackKind::Comment => "💬",
+            crate::feedback_history::FeedbackKind::Ignored => "🙉",
+            crate::feedback_history::FeedbackKind::Dismissed => "👋",
+            crate::feedback_history::FeedbackKind::Puzzled => "🤔",
+        };
+        out.push_str(&format!(
+            "\n· {} {} {} | {}",
+            when,
+            emoji,
+            e.kind.as_str(),
+            e.excerpt
+        ));
+    }
+    if entries.len() > shown_n {
+        out.push_str(&format!(
+            "\n…还有 {} 条更早记录（/feedback_history {} 看更多，上限 20）",
+            entries.len() - shown_n,
+            entries.len().min(20)
         ));
     }
     out
@@ -3806,8 +3887,9 @@ mod tests {
             "silenced", "markers", "tags", "mood", "whoami", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
-            "reflect", "feedback", "transient", "cancel_all_error",
-            "find", "show", "blocked", "snoozed", "reset", "version", "help",
+            "reflect", "feedback", "feedback_history", "transient",
+            "cancel_all_error", "find", "show", "blocked", "snoozed",
+            "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4274,8 +4356,8 @@ mod tests {
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
-            "transient", "cancel_all_error", "show", "tags", "reset",
-            "version", "help",
+            "feedback_history", "transient", "cancel_all_error", "show",
+            "tags", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -6546,6 +6628,119 @@ mod tests {
         assert!(s.contains("测试"), "{s}");
         // 不能含 HH:MM 占位
         assert!(!s.contains("到 — 自动清除"), "no placeholder: {s}");
+    }
+
+    // -------- /feedback_history parse + format --------
+
+    #[test]
+    fn feedback_history_parses_default_n_5() {
+        assert_eq!(
+            parse_tg_command("/feedback_history"),
+            Some(TgCommand::FeedbackHistory { n: 5 })
+        );
+    }
+
+    #[test]
+    fn feedback_history_parses_explicit_n() {
+        assert_eq!(
+            parse_tg_command("/feedback_history 10"),
+            Some(TgCommand::FeedbackHistory { n: 10 })
+        );
+    }
+
+    #[test]
+    fn feedback_history_clamps_high() {
+        assert_eq!(
+            parse_tg_command("/feedback_history 999"),
+            Some(TgCommand::FeedbackHistory { n: 20 })
+        );
+    }
+
+    #[test]
+    fn feedback_history_clamps_zero_to_one() {
+        // 0 / 负数 clamp 到下限 1
+        assert_eq!(
+            parse_tg_command("/feedback_history 0"),
+            Some(TgCommand::FeedbackHistory { n: 1 })
+        );
+    }
+
+    #[test]
+    fn feedback_history_non_numeric_falls_back_to_default() {
+        // 非数字 trailing token 走默认 5
+        assert_eq!(
+            parse_tg_command("/feedback_history blah"),
+            Some(TgCommand::FeedbackHistory { n: 5 })
+        );
+    }
+
+    #[test]
+    fn feedback_history_reply_empty_shows_friendly_bootstrap() {
+        let s = format_feedback_history_reply(&[], 5);
+        assert!(s.contains("暂无 feedback 记录"), "{s}");
+        assert!(s.contains("/feedback"), "show write entry hint: {s}");
+    }
+
+    #[test]
+    fn feedback_history_reply_renders_entries_with_emoji() {
+        use crate::feedback_history::{FeedbackEntry, FeedbackKind};
+        let entries = vec![
+            FeedbackEntry {
+                timestamp: "2026-05-17T18:30:00+08:00".to_string(),
+                kind: FeedbackKind::Comment,
+                excerpt: "说话太啰嗦".to_string(),
+            },
+            FeedbackEntry {
+                timestamp: "2026-05-17T18:35:12+08:00".to_string(),
+                kind: FeedbackKind::Liked,
+                excerpt: "感谢提醒".to_string(),
+            },
+        ];
+        let s = format_feedback_history_reply(&entries, 5);
+        assert!(s.contains("最近 2 条 feedback"), "{s}");
+        assert!(s.contains("18:30"), "{s}");
+        assert!(s.contains("18:35"), "{s}");
+        assert!(s.contains("💬"), "comment emoji: {s}");
+        assert!(s.contains("👍"), "liked emoji: {s}");
+        assert!(s.contains("说话太啰嗦"), "{s}");
+        assert!(s.contains("感谢提醒"), "{s}");
+    }
+
+    #[test]
+    fn feedback_history_reply_caps_to_n_with_overflow_hint() {
+        use crate::feedback_history::{FeedbackEntry, FeedbackKind};
+        let mut entries = Vec::new();
+        for i in 0..10 {
+            entries.push(FeedbackEntry {
+                timestamp: format!("2026-05-17T18:{:02}:00+08:00", i),
+                kind: FeedbackKind::Replied,
+                excerpt: format!("entry {}", i),
+            });
+        }
+        let s = format_feedback_history_reply(&entries, 3);
+        assert!(s.contains("最近 3 条 feedback"), "{s}");
+        // overflow hint 该出现，且建议看更多
+        assert!(s.contains("还有 7 条"), "overflow hint: {s}");
+        assert!(s.contains("/feedback_history"), "hint references command: {s}");
+        // 只显前 3 条
+        assert!(s.contains("entry 0"), "{s}");
+        assert!(s.contains("entry 2"), "{s}");
+        assert!(!s.contains("entry 3"), "should be capped: {s}");
+    }
+
+    #[test]
+    fn feedback_history_reply_handles_short_timestamp_fallback() {
+        // 防御：legacy / malformed timestamp 不应 panic
+        use crate::feedback_history::{FeedbackEntry, FeedbackKind};
+        let entries = vec![FeedbackEntry {
+            timestamp: "2026".to_string(), // < 16 chars
+            kind: FeedbackKind::Ignored,
+            excerpt: "test".to_string(),
+        }];
+        let s = format_feedback_history_reply(&entries, 5);
+        assert!(s.contains("2026"), "{s}");
+        assert!(s.contains("🙉"), "ignored emoji: {s}");
+        assert!(s.contains("test"), "{s}");
     }
 
     // -------- /pri parse + format --------
