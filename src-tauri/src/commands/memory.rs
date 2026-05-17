@@ -593,6 +593,93 @@ pub fn memory_edit(
     }
 }
 
+/// Cascade rename：在执行 `memory_rename` 基础上，扫**所有** categories 的
+/// detail.md 文件，把出现的 `「<old_title>」` token 替换为 `「<new_title>」`。
+/// 用于「rename 一条 task 后，detail.md 中既有的 ref token 不变成 stale」
+/// 场景。
+///
+/// 行为：
+/// 1. 先调 `memory_rename(category, old, new)` 做主操作 — 失败立即返 Err
+/// 2. 主操作成功后扫 index 内所有 item 的 detail_path：读文件 → 文本搜
+///    `「<old>」` → 替换为 `「<new_actual>」`（new_actual 可能有
+///    unique-filename `_N` 后缀，由 caller 透显） → 写回
+/// 3. 失败的单文件 IO 不回滚（主 rename 已 sealed），只记 stderr 不计入
+///    成功 count；保 best-effort 语义
+/// 4. 返回 `(actual_new_title, updated_md_count)` 给 caller 渲染
+///
+/// **注意**：blockedBy / dep markers 在 description 而非 detail.md 内 —
+/// 本命令只扫 detail.md。同源 task ref 在 description 内不触及（owner
+/// 通常想保持 description 文本原样）。如未来要扩到 description / markers
+/// scope，需另写命令 — 涉及 memory_edit re-write 路径复杂度。
+///
+/// 安全：path 检查走既有 memories_dir + canonicalize 兜底 — 不允许走出
+/// mem_dir 边界（与 memory_read_detail 同模板）。
+pub fn memory_cascade_rename_in_detail_md(
+    category: String,
+    old_title: String,
+    new_title: String,
+) -> Result<(String, usize), String> {
+    // 主操作
+    let rename_msg = memory_rename(category, old_title.clone(), new_title.clone())?;
+    // memory_rename 返回 "No change." 或 success msg；前者表示 noop（旧 = 新）
+    if rename_msg == "No change." {
+        return Ok((new_title, 0));
+    }
+    // 同源 title 冲突时 memory_rename 已加 _N 后缀写到 index — 但其返回值
+    // 不含 actual title。读 index 找当前实际 title 不可靠（_1 数字未知）。
+    // 简化：返回 caller 传入 new_title — 与 memory_rename 同 trim 后 final
+    // 实际行为一致（_N 后缀仅在 detail_path 文件名上加，title 字段保持
+    // owner 传入值）。grep 验证：memory_rename 内部确实把 new_title trim 后
+    // 作为 index item 的 title 字段，_N 只加在 detail_path filename。
+    let actual_new = new_title.trim().to_string();
+    // 扫所有 categories 的 detail.md 做替换
+    let index = read_index();
+    let mem_dir = memories_dir()?;
+    let mem_canon = match std::fs::canonicalize(&mem_dir) {
+        Ok(p) => p,
+        Err(_) => return Ok((actual_new, 0)),
+    };
+    let old_token = format!("「{}」", old_title.trim());
+    let new_token = format!("「{}」", actual_new);
+    let mut updated = 0usize;
+    for cat in index.categories.values() {
+        for item in &cat.items {
+            if item.detail_path.is_empty() {
+                continue;
+            }
+            // path traversal 防御：cancel canonical 后必须落在 mem_dir 内
+            let full = mem_dir.join(&item.detail_path);
+            let full_canon = match std::fs::canonicalize(&full) {
+                Ok(p) => p,
+                Err(_) => continue, // 文件不存在 / 读不到 - skip
+            };
+            if !full_canon.starts_with(&mem_canon) {
+                continue; // 越界 - skip
+            }
+            let content = match std::fs::read_to_string(&full_canon) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if !content.contains(&old_token) {
+                continue;
+            }
+            let new_content = content.replace(&old_token, &new_token);
+            if new_content == content {
+                continue; // 无替换 - 防御性 skip
+            }
+            if std::fs::write(&full_canon, new_content).is_ok() {
+                updated += 1;
+            } else {
+                eprintln!(
+                    "cascade rename: failed to write {}",
+                    full_canon.display()
+                );
+            }
+        }
+    }
+    Ok((actual_new, updated))
+}
+
 /// 给 memory item 改名：移 detail.md 文件 + 更新 index 里的 title / detail_path。
 /// 命中 ai_insights/current_mood 拒绝（心情不可改名）；目标 new_title 与
 /// 同 category 其它 item 重名拒绝（避免 detail.md 文件覆盖）。trim 空值

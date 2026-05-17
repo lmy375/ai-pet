@@ -839,6 +839,40 @@ async fn handle_tg_command(
                 .unwrap_or_else(|| chrono::Local::now().date_naive());
             crate::telegram::commands::format_touched_yesterday_reply(&views, yesterday)
         }
+        TgCommand::CascadeRename { title, new_title } => {
+            // 与 /edit_title 同 3-layer resolve；backend 走
+            // memory_cascade_rename_in_detail_md（含 memory_rename + 跨 cat
+            // detail.md scan+replace）。失败用 backend 透显 Err（同名 / 空
+            // / 找不到等都由内部拦截）。
+            if title.trim().is_empty() || new_title.trim().is_empty() {
+                format_missing_argument("cascade_rename")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(src) => {
+                        let res = crate::commands::memory::memory_cascade_rename_in_detail_md(
+                            "butler_tasks".to_string(),
+                            src.clone(),
+                            new_title.clone(),
+                        );
+                        match res {
+                            Ok((actual_new, n)) => {
+                                crate::telegram::commands::format_cascade_rename_reply(
+                                    &src,
+                                    &actual_new,
+                                    n,
+                                )
+                            }
+                            Err(e) => format_command_error(&e),
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::EditTitle { title, new_title } => {
             // resolve 同 /done / /cancel / /show 三层。命中后调
             // memory_rename(butler_tasks, old, new)，新 title trim 后空由

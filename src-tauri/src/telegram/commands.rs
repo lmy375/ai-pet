@@ -581,6 +581,15 @@ pub enum TgCommand {
         title: String,
         new_title: String,
     },
+    /// `/cascade_rename <title> :: <new title>` —— 与 /edit_title 同模板但
+    /// 额外扫所有 categories 的 detail.md 文件把 `「<old>」` token 替换为
+    /// `「<new>」`。让 cross-doc task ref 自动跟随 rename，避免 owner 在
+    /// 多份 detail.md 内手动维护引用。reply 含 rename 主操作 + cascade
+    /// 命中文件数。
+    CascadeRename {
+        title: String,
+        new_title: String,
+    },
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -690,6 +699,7 @@ impl TgCommand {
             TgCommand::TouchedYesterday => "touched_yesterday",
             TgCommand::OldestDone { .. } => "oldest_done",
             TgCommand::EditTitle { .. } => "edit_title",
+            TgCommand::CascadeRename { .. } => "cascade_rename",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -767,6 +777,7 @@ impl TgCommand {
             | TgCommand::SnoozeUntil { title, .. } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::EditTitle { title, .. } => title.as_str(),
+            TgCommand::CascadeRename { title, .. } => title.as_str(),
             TgCommand::SwapPriority { title_a, .. } => title_a.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
@@ -931,6 +942,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("edit_title", "Rename a task: /edit_title <old> :: <new> — preserves description / detail.md / markers"),
             ("touched_yesterday", "Yesterday's counterpart to /touched_today — any-status retrospective audit"),
             ("oldest_done", "List oldest N done tasks (updated_at asc) — reverse of /recent; longest-running completions"),
+            ("cascade_rename", "Rename + auto-update 「<old>」 refs in every detail.md across categories"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -1016,6 +1028,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("edit_title", "改 task 标题：/edit_title <old> :: <new> — 不动 description / detail.md / markers"),
             ("touched_yesterday", "/touched_today 的昨日对偶 — 任意状态、昨日 updated_at 命中 task（复盘视角）"),
             ("oldest_done", "最早完成的 N 条 done task（updated_at asc）— /recent 反向；audit「老 backlog 终于完成」"),
+            ("cascade_rename", "改 task 标题 + 自动同步所有 detail.md 内 「<old>」 ref 替换（cross-doc ref 维护）"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1754,6 +1767,19 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 new_title: nt,
             })
         }
+        // `/cascade_rename <title> :: <new title>`：与 /edit_title 同 `::`
+        // 模板。差异在 handler — 额外扫 detail.md 内 `「<old>」` ref token
+        // 同步替换。
+        "cascade_rename" => {
+            let (t, nt) = match title.split_once("::") {
+                Some((lhs, rhs)) => (lhs.trim().to_string(), rhs.trim().to_string()),
+                None => (title, String::new()),
+            };
+            Some(TgCommand::CascadeRename {
+                title: t,
+                new_title: nt,
+            })
+        }
         // `/swap_priority <a> :: <b>`：first-occurrence `::` 切两 title。
         // 任一端 trim 后为空 → handler 走 missing-arg（在 formatter 内
         // 做兜底）。snake_case 命名避开 dash drift-defense。
@@ -2094,7 +2120,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2255,6 +2281,7 @@ pub fn format_help_for_topic(
         "edit_title" => "✏️ /edit_title <title> :: <new title>\n\n用法：仅改 task 标题，不动 description / detail.md / markers。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。前端 PanelTasks 已有 double-click inline rename；本命令是 TG 端对偶。\n\n与 /edit（全量覆写 description）区别：\n- /edit：覆写 description body — markers 需自己写进 new desc\n- /edit_title：只换标题字符串 — 所有 markers / body / detail.md 不动\n\n后端：复用既有 `memory_rename` Tauri 命令 — index 项改 title + .md 文件 move + 同名冲突自动加 `_N` 后缀（与 /dup unique-filename 同 fallback）。\n\nTitle resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  ✏️ 已改标题：「<old>」→「<new>」\n\n注意：rename 后既有 `[task: 「<old>」]` ref / detail.md 内 `「<old>」` token 不自动跟随更新（owner 需手动改）。考虑后续 iter 加 cascade rename。\n\n示例：\n  /edit_title 整理 Downloads :: 清理桌面（更详细名）\n  /edit_title 1 :: 重命名（/tasks 第 1 条）\n  /edit_title 写周报 :: 写 2026-W20 周报\n\n相关：/edit（覆写 description）；/dup（克隆为新 task）；/show（看 rename 后的 raw）。",
         "touched_yesterday" => "📅 /touched_yesterday\n\n用法：/touched_today 的昨日对偶 — 列昨日（本地日历日）updated_at 命中的本聊天派单（任意状态），按时间倒序。复盘视角：「昨天我动过哪些 task」。\n\n场景：早上 standup 前回顾「昨天做了 / 调了 / 推后了哪些」；周末 audit 工作日 backlog 变化；与 /yesterday（仅 done）/ /today_done 三件套形成完整 today-yesterday × 全谱-完成 audit 矩阵。\n\n输出格式：\n  📅 昨日（YYYY-MM-DD）动过 N 条（按时间倒序）：\n  · ⏳ HH:MM 整理 Downloads\n  · ✅ HH:MM 写周报 — done with result\n  · 💤 HH:MM 写报告\n  · ⏳ HH:MM review PR\n\n状态 emoji 同 /touched_today（⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled · 💤 snoozed pending）。\n\n空 → 友好兜底（教学指向 /touched_today / /yesterday / /tasks）。\n\n示例：\n  /touched_yesterday\n\n相关：/touched_today（今日全谱）；/yesterday（昨日 done）；/today_done（今日 done）；/recent_events <title>（单 task TL;DR）。",
         "oldest_done" => "🪦 /oldest_done [N]\n\n用法：列**最早完成**的 N 条 done task（按 updated_at 升序）— 与 /recent done（最近完成）反向。让 owner 看「这些任务我做了多久 / 哪些是 ancient backlog 终于完成」的考古视角。\n\nN 缺省 5；clamp 1..=20（与 /recent / /digest / /show_speech 同协议）。无 done task → 友好兜底教学指向 /done 标完成。\n\n输出格式：\n  🪦 最早完成的 N 条（共 M done）：\n  · YYYY-MM-DD HH:MM · <title>\n  · YYYY-MM-DD HH:MM · <title>\n  ...\n\n（与 /recent 同 line 格式 — 让 owner 切换视角时心智一致）\n\n场景：\n- 「这条 task 我做了多久」考古 — 比对源 create_at（/show 含）vs 最早 done updated_at\n- audit 「最老的 done 是何时」— sprint 复盘 / quarterly review\n- 与 /recent done 形成「最近完成 vs 最早完成」镜像\n\n示例：\n  /oldest_done           （显最早 5 条）\n  /oldest_done 10        （显最早 10 条）\n\n相关：/recent（最近完成 — 与本命令反向）；/oldest_n（最老 pending — pending 维度反向）；/yesterday / /today_done（按日期范围而非「最老/最新」）。",
+        "cascade_rename" => "🔁 /cascade_rename <title> :: <new title>\n\n用法：与 /edit_title 同 `::` 模板，但额外扫所有 categories 的 detail.md 文件，把出现的 `「<old>」` token 替换为 `「<new>」`。让跨 doc task ref 自动跟随 rename — 避免 owner 在多份 detail.md 内手动维护。\n\n与 /edit_title 区别：\n- /edit_title：仅改 task 标题 + .md 文件 move（cross-doc ref 留 stale）\n- /cascade_rename：上述全套 + 扫所有 detail.md 替换 `「<old>」` token\n\n后端：先 `memory_rename(butler_tasks, old, new)` 做主操作；成功后扫 index 内所有 item 的 detail.md 文件，文本搜替 `「<old>」` → `「<new>」` 后 fs::write。失败的单文件 IO 不回滚主 rename（已 sealed），best-effort 语义。\n\n限制：\n- 仅扫 `「<title>」` 全角引号 token — 不触及 `[blockedBy: <title>]` 等 description markers（那些在 description 而非 detail.md，需 memory_edit re-write 路径，未来 iter 扩）\n- 不触及 description 本身的 task ref — owner 通常希望 description 保持原样作历史 snapshot\n\n空 title / new_title → usage hint。Title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  🔁 已改标题：「<old>」→「<new>」\n  · 同步 N 份 detail.md 内的 ref token\n\nN === 0 时说「无 detail.md 需要更新」— owner 知道 cascade 扫了但没找到引用，可手动 grep 验证。\n\n示例：\n  /cascade_rename 写周报 :: 写 W21 周报\n  /cascade_rename 整理 Downloads :: 清理桌面（更详细名）\n  /cascade_rename 1 :: 重命名（/tasks 第 1 条 + cascade）\n\n相关：/edit_title（仅 rename 不 cascade — owner 想保 detail.md ref 不动时用）；/dup（克隆而非 rename）；/show（看 rename 后 raw + detail）。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）；/forks <title>（反向：哪些 task 在等这条解锁）。",
         "forks" => "🔱 /forks <title>\n\n用法：反向 audit — 列出本 chat 派单中所有 active task（pending / error）的 description 含 `[blockedBy: <title>]` marker 的，让 owner 知道「这条 task 解锁后会让谁动起来」。与 /blocked（列被卡的）对偶。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /forks 整理 Downloads\n  /forks 1  （/tasks 输出第 1 条）\n\n输出格式：\n  🔱 解锁「<title>」会松开 N 条 task：\n  🟢 fork_a\n  ⚠️ fork_b\n\n无引用 → 「解锁这条不会影响其它 task」友好兜底。让 owner 在决定是否优先做某条 blocker 时，看到「这条做完会让谁动起来」做出更明智的优先级判断。\n\n相关：/blocked_by <title>（反向 — 我在等谁）。",
@@ -2352,6 +2379,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/edit_title <title> :: <new title>  —  仅改 task 标题（不动 description / detail.md / markers）— 前端 inline rename 的 TG 端对偶".to_string(),
         "/touched_yesterday  —  /touched_today 的昨日对偶 — 任意状态、昨日 updated_at 命中 task（复盘视角）".to_string(),
         "/oldest_done [N]  —  最早完成的 N 条 done task（updated_at asc）— /recent 反向；audit「老 backlog 终于完成」".to_string(),
+        "/cascade_rename <title> :: <new title>  —  改标题 + 自动同步所有 detail.md 内 「<old>」 ref token 替换（cross-doc ref 维护）".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -5139,6 +5167,30 @@ pub fn format_edit_title_reply(old_title: &str, new_title: &str) -> String {
     )
 }
 
+/// `/cascade_rename` 命令成功回复文案。pure：
+/// - 头行 `🔁 已改标题：「<old>」→「<new>」`
+/// - 注脚一行：cascade 命中数（0 时友好提示「无 detail.md 需要更新」）
+pub fn format_cascade_rename_reply(
+    old_title: &str,
+    new_title: &str,
+    updated_md_count: usize,
+) -> String {
+    let mut out = format!(
+        "🔁 已改标题：「{}」→「{}」",
+        old_title.trim(),
+        new_title.trim(),
+    );
+    if updated_md_count == 0 {
+        out.push_str("\n· 无 detail.md 需要更新（未找到 ref token 引用）");
+    } else {
+        out.push_str(&format!(
+            "\n· 同步 {} 份 detail.md 内的 ref token",
+            updated_md_count,
+        ));
+    }
+    out
+}
+
 /// `/touched_today` 命令回复文案。pure：filter views by updated_at 起始
 /// 匹配 `today` 日期前缀，按 updated_at 倒序排（最新动作在前），列状态
 /// emoji + HH:MM + title + 可选 result preview（done task 时）。
@@ -7003,7 +7055,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -7474,7 +7526,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -12213,6 +12265,54 @@ mod tests {
         assert!(s.contains("「a」"), "{s}");
         assert!(s.contains("「b」"), "{s}");
         assert!(!s.contains("  a  "), "{s}");
+    }
+
+    // -------- /cascade_rename parse + format --------
+
+    #[test]
+    fn cascade_rename_parser_splits_on_double_colon() {
+        assert_eq!(
+            parse_tg_command("/cascade_rename old :: new"),
+            Some(TgCommand::CascadeRename {
+                title: "old".to_string(),
+                new_title: "new".to_string(),
+            })
+        );
+        // 前后空白 trim
+        assert_eq!(
+            parse_tg_command("/cascade_rename  写周报  ::  写 W21 周报  "),
+            Some(TgCommand::CascadeRename {
+                title: "写周报".to_string(),
+                new_title: "写 W21 周报".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn cascade_rename_parser_missing_separator_yields_empty_new() {
+        assert_eq!(
+            parse_tg_command("/cascade_rename 整理 Downloads"),
+            Some(TgCommand::CascadeRename {
+                title: "整理 Downloads".to_string(),
+                new_title: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn cascade_rename_reply_shows_old_new_and_count() {
+        let s = format_cascade_rename_reply("写周报", "写 W21 周报", 3);
+        assert!(s.contains("🔁"), "{s}");
+        assert!(s.contains("「写周报」"), "{s}");
+        assert!(s.contains("「写 W21 周报」"), "{s}");
+        assert!(s.contains("同步 3 份"), "count line: {s}");
+    }
+
+    #[test]
+    fn cascade_rename_reply_zero_count_shows_friendly_note() {
+        let s = format_cascade_rename_reply("a", "b", 0);
+        assert!(s.contains("无 detail.md 需要更新"), "{s}");
+        assert!(!s.contains("同步 0"), "shouldn't say '同步 0': {s}");
     }
 
     // -------- /touched_today parse + format --------
