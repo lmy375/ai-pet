@@ -16707,6 +16707,52 @@ export function PanelTasks({
                 📋 复制 raw_description
               </button>
             )}
+            {/* 📋 复制 body（不含 markers）：strip 所有 [bracket] markers
+                + #tags 后只剩纯文本 body。给 owner 想「这条 task 的本
+                意是什么」单文本视图用 — 转外部笔记 / chat / issue
+                标题等场景。空 / 全 markers 时给反馈。与上方「复制
+                raw_description」互补：上者全保 markers（debug 用），本
+                按钮仅保 body（自然语言）。 */}
+            {t && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={async () => {
+                  setTaskCtxMenu(null);
+                  const raw = t.raw_description ?? "";
+                  // 1. strip 所有 `[...]` brackets（贪婪到首个 `]`，
+                  //    与 task_queue marker 协议一致 — markers 不嵌套）
+                  // 2. strip `#tag` tokens（preceded by 起始 / 空白）
+                  // 3. collapse 多空格 + trim
+                  const stripped = raw
+                    .replace(/\[[^\]]*\]/g, "")
+                    .replace(/(^|\s)#\S+/g, "$1")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                  if (stripped.length === 0) {
+                    setBulkResultMsg(
+                      "body 为空 — raw 全是 markers / 无自然语言内容",
+                    );
+                  } else {
+                    try {
+                      await navigator.clipboard.writeText(stripped);
+                      const chars = Array.from(stripped).length;
+                      setBulkResultMsg(
+                        `已复制 body（${chars} 字，不含 markers）`,
+                      );
+                    } catch (e) {
+                      setBulkResultMsg(`复制失败：${e}`);
+                    }
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 3000);
+                }}
+                title="把任务 description 的 body 部分（strip 所有 [bracket] markers + #tags 后剩的纯文本）复制到剪贴板。给「这条 task 的本意是什么」单文本视图 — 转外部笔记 / chat / issue 标题等场景。与「复制 raw_description」（保全 markers，debug 用）互补。"
+              >
+                📋 复制 body（不含 markers）
+              </button>
+            )}
             {/* 💬 推到 chat ref：把 task title 作为 ref token 预填到 ChatPanel
                 textarea (走既有 `onAskLLMAbout` 通道 → 切聊天 tab + 注入
                 "关于「<title>」")。让 owner 立即让 pet 评论 / 提问某 task
