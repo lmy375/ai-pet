@@ -765,6 +765,29 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       window.removeEventListener("keydown", close);
     };
   }, [moveCatPicker]);
+  /// 🆕 今日新增 filter chip：与既有 🌱 今日新增 drill-down chip 互补 ——
+  /// 那个开 modal 列清单，本 chip toggle 让 panel 各 cat 仅显 created_at
+  /// 在今日的 items。让 owner "我今天刚新建了啥" 一键聚焦不必走 modal。
+  /// localStorage 持久（与 sortByRecent / sortBulterByNextFire 同 pattern）。
+  const [todayOnlyFilter, setTodayOnlyFilter] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-memory-today-only") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleTodayOnlyFilter = () => {
+    setTodayOnlyFilter((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem("pet-memory-today-only", next ? "1" : "0");
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
+
   /// 📜 detail.md 历史快照 popover：与 PanelTasks 📜 popover 对偶。
   /// 点 📜 按钮 → 调 `memory_detail_history` 拉最近 5 份 .history 快照，
   /// 列 ts + 内容前 50 字预览。click 任一行 → 复制全文到剪贴板（不
@@ -1989,6 +2012,42 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
               title={`今天新增 ${todayNewCount} 条记忆。点击 drill-down 看具体清单（按类目分组）`}
             >
               🌱 今日新增 {todayNewCount}
+            </button>
+          )}
+          {/* 🆕 仅今日 filter toggle：与 🌱 drill-down chip 互补 — 那个开
+              modal 列清单，本 chip 让 panel 各 cat 仅显 created_at 在今
+              日 items。让 owner "我刚新建了啥" 一键聚焦不必走 modal。
+              localStorage 持久；仅 todayNewCount > 0 时浮（无今日新增
+              则 toggle 无意义）。 */}
+          {todayNewCount > 0 && (
+            <button
+              type="button"
+              onClick={toggleTodayOnlyFilter}
+              style={{
+                fontSize: 11,
+                padding: "1px 6px",
+                borderRadius: 4,
+                border: todayOnlyFilter
+                  ? "1px solid var(--pet-color-accent)"
+                  : "1px solid transparent",
+                background: todayOnlyFilter
+                  ? "var(--pet-tint-blue-bg)"
+                  : "var(--pet-color-border)",
+                color: todayOnlyFilter
+                  ? "var(--pet-tint-blue-fg)"
+                  : "var(--pet-color-muted)",
+                fontWeight: todayOnlyFilter ? 600 : 400,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+              title={
+                todayOnlyFilter
+                  ? `已仅显今日新增 ${todayNewCount} 条 item。点击恢复全部。`
+                  : `仅显 created_at 在今日的 items（共 ${todayNewCount} 条）— 让 owner 一键聚焦"今天刚新建了啥"。`
+              }
+              aria-pressed={todayOnlyFilter}
+            >
+              {todayOnlyFilter ? "✓ " : ""}🆕 仅今日 {todayNewCount}
             </button>
           )}
           <span>
@@ -4361,6 +4420,15 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                       const d = it.description.toLowerCase();
                       return t.includes(inplaceFilter) || d.includes(inplaceFilter);
                     });
+                  }
+                  // 🆕 仅今日 filter：created_at 起始为本地今日 ISO 日期。
+                  // 走 toLocaleDateString("sv-SE") 拿 YYYY-MM-DD（与 todayNewCount
+                  // 计算同算法 — UTC vs 本地午夜不漂移）。AND 关系叠加。
+                  if (todayOnlyFilter) {
+                    const today = new Date().toLocaleDateString("sv-SE");
+                    pool = pool.filter(
+                      (it) => it.created_at && it.created_at.startsWith(today),
+                    );
                   }
                   // 🔇 仅 silent filter（section header chip 点亮时）：把
                   // pool 收窄到仅含 [silent] marker 的 item。与 schedule kind
