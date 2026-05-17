@@ -8281,12 +8281,57 @@ export function PanelTasks({
                       + Esc 关闭模式。 */}
                   {!isFinished(t.status) && (() => {
                     const open = dueShiftPickerTitle === t.title;
-                    const presets: { key: string; label: string; deltaMs: number | null }[] = [
-                      { key: "+1h", label: "📅 现在 +1 小时", deltaMs: 3_600_000 },
-                      { key: "+1d", label: "📅 现在 +1 天", deltaMs: 86_400_000 },
-                      { key: "+3d", label: "📅 现在 +3 天", deltaMs: 3 * 86_400_000 },
-                      { key: "+1w", label: "📅 现在 +1 周", deltaMs: 7 * 86_400_000 },
-                      { key: "+2w", label: "📅 现在 +2 周", deltaMs: 14 * 86_400_000 },
+                    // 每条 preset 用 `compute(now)` 算 due 字符串：相对偏移
+                    // 走 `formatDueInput(now + ms)`；绝对锚点（明早 9:00）走
+                    // 既有 `dueTomorrow(now)`（已 export 自顶层）。clear 用
+                    // null。让 popover 同时支持两类语义：相对推迟 + 锚到
+                    // owner 常用的"次日 morning" 时刻。
+                    const presets: {
+                      key: string;
+                      label: string;
+                      compute: (now: Date) => string | null;
+                    }[] = [
+                      {
+                        key: "+1h",
+                        label: "📅 现在 +1 小时",
+                        compute: (now) =>
+                          formatDueInput(new Date(now.getTime() + 3_600_000)),
+                      },
+                      {
+                        key: "tomorrow9",
+                        label: "🌅 明早 09:00",
+                        compute: (now) => dueTomorrow(now),
+                      },
+                      {
+                        key: "+1d",
+                        label: "📅 现在 +1 天",
+                        compute: (now) =>
+                          formatDueInput(new Date(now.getTime() + 86_400_000)),
+                      },
+                      {
+                        key: "+3d",
+                        label: "📅 现在 +3 天",
+                        compute: (now) =>
+                          formatDueInput(
+                            new Date(now.getTime() + 3 * 86_400_000),
+                          ),
+                      },
+                      {
+                        key: "+1w",
+                        label: "📅 现在 +1 周",
+                        compute: (now) =>
+                          formatDueInput(
+                            new Date(now.getTime() + 7 * 86_400_000),
+                          ),
+                      },
+                      {
+                        key: "+2w",
+                        label: "📅 现在 +2 周",
+                        compute: (now) =>
+                          formatDueInput(
+                            new Date(now.getTime() + 14 * 86_400_000),
+                          ),
+                      },
                     ];
                     return (
                       <span style={{ position: "relative", display: "inline-block" }}>
@@ -8300,7 +8345,7 @@ export function PanelTasks({
                             );
                           }}
                           disabled={busyTitle === t.title}
-                          title="调期 due_at：从现在起 +1h / +1d / +3d / +1w / +2w preset 微调，或清除 due。"
+                          title="调期 due_at：相对增量 +1h / +1d / +3d / +1w / +2w preset 微调 · 也含锚点「🌅 明早 09:00」让常见 reschedule 一步搞定 · 或清除 due。"
                           style={{
                             padding: "1px 7px",
                             fontSize: 10,
@@ -8367,12 +8412,7 @@ export function PanelTasks({
                                   setActionErr("");
                                   setBusyTitle(t.title);
                                   try {
-                                    const dueArg =
-                                      p.deltaMs === null
-                                        ? null
-                                        : formatDueInput(
-                                            new Date(Date.now() + p.deltaMs),
-                                          );
+                                    const dueArg = p.compute(new Date());
                                     await invoke<void>("task_set_due", {
                                       title: t.title,
                                       due: dueArg,
