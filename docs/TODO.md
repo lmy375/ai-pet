@@ -10,7 +10,6 @@
 
 - detail.md 编辑器加 "⏰ 编辑用时 N 分钟" 灰字 hint：进入 editing 后开始计时，让 owner 感知"在这条 task 写了多久"。
 - TG bot 加 `/edit <title> <new desc>` 命令：覆写 task description（owner 外面想加 marker / 改 body）。
-- PanelMemory butler_tasks 段顶加 "✅ 完成率" mini chip：显该段历史 done / total 比例（与 7-day flow 互补 — 那是节奏，这是产出率）。
 
 
 
