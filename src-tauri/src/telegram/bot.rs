@@ -1019,6 +1019,15 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_recent_reply(&views, n)
         }
+        TgCommand::OldestN { n } => {
+            // 最老 pending 清单：reuse 同 read path；formatter 内部 filter
+            // pending + sort created_at asc + n cap。clamp 已在 parser 完成
+            // (1..=20)。inject chrono::Local::now() 让 age label 用本机时区
+            // 算「N 天前」。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let now = chrono::Local::now().fixed_offset();
+            crate::telegram::commands::format_oldest_n_reply(&views, n, now)
+        }
         TgCommand::Find { keyword } => {
             // keyword 搜本 chat 派单。reuse 同 read path；空 keyword 由
             // formatter 内部走 missing-argument 模板。
