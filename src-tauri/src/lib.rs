@@ -231,6 +231,7 @@ pub fn run() {
             commands::telegram::reconnect_telegram,
             commands::telegram::get_tg_startup_warnings,
             commands::telegram::reset_tg_commands,
+            commands::telegram::ping_tg_bot,
             commands::memory::memory_list,
             commands::memory::memory_search,
             commands::memory::memory_edit,

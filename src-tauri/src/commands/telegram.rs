@@ -117,3 +117,47 @@ pub async fn reset_tg_commands() -> Result<(), String> {
         .map_err(|e| format!("set_my_commands 清空失败: {}", e))?;
     Ok(())
 }
+
+/// Telegram bot 链路 ping：调 `getMe` API + 计时往返延迟，让 owner 在
+/// PanelDebug 一行式测「bot 链路当前健康吗 / 延迟多少」。与既有
+/// `reset_tg_commands` 同模式 — 临时 teloxide::Bot 拿 token，HTTP 调
+/// idempotent API，不经 TelegramStore（dispatcher 状态无关）。
+///
+/// 返回 (username, latency_ms)：成功时 username = bot 自我标识（如
+/// `@my_pet_bot`，与 dispatcher 启动期 getMe 同源；让 owner 知道当前
+/// 配置的 token 对应哪个 bot 防误配）；latency_ms 含 DNS + TLS + HTTP
+/// 整往返毫秒数（典型 100-500ms，跨洋 800-2000ms）。
+///
+/// 失败：bot_token 未配置 / 不合法 → Err；网络 / API 错误 → Err 含原
+/// 因（前端 toast 显）。不重试 — 一次失败就报，让 owner 自己再点。
+#[derive(Clone, Serialize)]
+pub struct TgPingResult {
+    pub username: String,
+    pub latency_ms: u64,
+}
+
+#[tauri::command]
+pub async fn ping_tg_bot() -> Result<TgPingResult, String> {
+    let settings = get_settings()?;
+    let token = settings.telegram.bot_token.trim();
+    if token.is_empty() {
+        return Err("Telegram bot_token 未配置".to_string());
+    }
+    use teloxide::prelude::Requester;
+    let bot = teloxide::Bot::new(token);
+    let started = std::time::Instant::now();
+    let me = bot
+        .get_me()
+        .await
+        .map_err(|e| format!("getMe 失败: {}", e))?;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let username = me
+        .username
+        .as_ref()
+        .map(|u| format!("@{}", u))
+        .unwrap_or_else(|| me.first_name.clone());
+    Ok(TgPingResult {
+        username,
+        latency_ms,
+    })
+}

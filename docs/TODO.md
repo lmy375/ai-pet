@@ -9,7 +9,6 @@
 >
 
 - PanelTasks task 行加「📊 history sparkline」chip：扫 butler_history 显近 30 天 update 频率 10-bar 分布。
-- PanelDebug 加「⏱ ping TG bot」按钮：发 /version 计时往返延迟，一行式测链路健康（与 /now 类似带 ms 数）。
 
 
 
