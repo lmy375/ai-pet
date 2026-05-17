@@ -1567,7 +1567,7 @@ export function ChatMini({
                 return (
                   <span
                     className="pet-mini-row-time"
-                    title={`${formatFullTimestamp(m.ts)} · 点击复制完整 ISO timestamp 到剪贴板`}
+                    title={`${formatFullTimestamp(m.ts)} · 单击复制完整 ISO timestamp · 双击复制 "MM-DD HH:MM" 友好短格式`}
                     onClick={(e) => {
                       // 点击复制 raw ISO timestamp（m.ts）—— debug / 报错 /
                       // 跨工具时常用精确时间。stopPropagation 防 bubble 内
@@ -1589,6 +1589,40 @@ export function ChatMini({
                         })
                         .catch((err) =>
                           console.error("ts chip copy failed:", err),
+                        );
+                    }}
+                    onDoubleClick={(e) => {
+                      // 双击复制 "MM-DD HH:MM" 友好短格式（贴日程 / 发同事
+                      // / 写笔记时不要 ISO 那么长）。解析 m.ts → Date 再切
+                      // 切；失败兜底 formatBubbleTimestamp（"[HH:MM]"）让
+                      // owner 至少拿到点东西。stopPropagation 防触发 onClick
+                      // 二次（dblclick 不会自动取消 click — 我们手动拦）。
+                      e.stopPropagation();
+                      e.preventDefault();
+                      if (!m.ts) return;
+                      const d = new Date(m.ts);
+                      const short = isNaN(d.getTime())
+                        ? formatBubbleTimestamp(m.ts).replace(/[\[\]]/g, "")
+                        : `${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+                            d.getDate(),
+                          ).padStart(2, "0")} ${String(d.getHours()).padStart(
+                            2,
+                            "0",
+                          )}:${String(d.getMinutes()).padStart(2, "0")}`;
+                      navigator.clipboard
+                        .writeText(short)
+                        .then(() => {
+                          setTsCopyIdx(idx);
+                          window.setTimeout(
+                            () =>
+                              setTsCopyIdx((cur) =>
+                                cur === idx ? null : cur,
+                              ),
+                            1500,
+                          );
+                        })
+                        .catch((err) =>
+                          console.error("ts chip dblclick copy failed:", err),
                         );
                     }}
                     style={{
