@@ -6666,6 +6666,48 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           📄 {item.detail_path}
                         </div>
+                        {/* 📊 行数 chip — hover preview 内浮，仅 detail.md
+                            行数 ≥ 20 时显（短 doc 不必显，视觉密度优先）。
+                            行数从 previewCache 的内容直接 count `\n`；
+                            previewCache 来自 memory_read_detail（截 600
+                            字）— 若末尾 "…" 表示被截，则只能给下限 "≥ N
+                            行"；否则给精确 "N 行"。
+                            字符级 fast：previewText 已在 closure 里就绪
+                            （上面 ?: 渲染时也用了它），无需额外 IPC。
+                            长 doc audit 信号：owner 一眼看 "这条 detail
+                            500 行 我该 consolidate 还是用 ⌘⇧P 跳转"。 */}
+                        {previewText && previewText.length > 0 && (() => {
+                          const nlCount = (
+                            previewText.match(/\n/g) || []
+                          ).length;
+                          // 末尾 "…" → truncate marker（memory_read_detail
+                          // PREVIEW_MAX=600 触发）。给 "≥" 下限暗示
+                          const truncated = previewText.endsWith("…");
+                          const lines = nlCount + 1; // N 个 \n = N+1 行
+                          if (lines < 20) return null;
+                          const label = truncated
+                            ? `📊 ≥${lines} 行`
+                            : `📊 ${lines} 行`;
+                          return (
+                            <div
+                              title={
+                                truncated
+                                  ? `detail.md 至少 ${lines} 行（hover preview cap 600 字，长 doc 实际行数可能更多）— 长 doc audit / consolidate 决策参考。`
+                                  : `detail.md ${lines} 行 — 长 doc 时考虑 ⌘⇧P heading palette 跳转 / consolidate 拆分。`
+                              }
+                              aria-label={`detail.md ${label}`}
+                              style={{
+                                fontSize: 10,
+                                color: "var(--pet-color-muted)",
+                                marginBottom: 4,
+                                fontFamily: "'SF Mono', 'Menlo', monospace",
+                                userSelect: "none",
+                              }}
+                            >
+                              {label}
+                            </div>
+                          );
+                        })()}
                         {previewText && previewText.length > 0 ? (
                           previewText
                         ) : (

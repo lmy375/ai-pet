@@ -10,7 +10,6 @@
 
 - TG bot `/edit_title <title> :: <new title>` 命令：仅改标题不动 description — 前端 inline rename 已有，TG 端缺。
 - PanelDebug 「📊 24h LLM 调用」chip：copy 「N calls · 平均 Xms · 错 Y%」一行 — 既有 1h chip 的 daily 视角。
-- PanelMemory item hover 「📊 行数」chip：显 detail.md 行数（仅 ≥ 20 行时显）— 长 doc 视觉密度 audit。
 - TG bot `/touched_today` 命令：列 updated_at 今日的 task — audit「我今天动过哪些 task」与 /today_done done-only 互补。
 
 
