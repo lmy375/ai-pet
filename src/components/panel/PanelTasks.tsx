@@ -4198,6 +4198,65 @@ export function PanelTasks({
     }
     return [...m.entries()].sort((a, b) => a[0] - b[0]);
   }, [tasks]);
+  /// 优先级 3 段进度：把 tasks 按 P7+ 高优 / P4-P6 中优 / P0-P3 低优 三段
+  /// 分组，每段计 pending / done / error / cancelled 四类。high number = high
+  /// priority（与 R107 / task_queue::compare_for_queue 同方向）。给顶部进度
+  /// 条用 — owner 一眼看"哪段任务多 / 完成比例如何"。
+  const priorityBands = useMemo(() => {
+    type Band = {
+      label: string;
+      range: string;
+      pending: number;
+      done: number;
+      error: number;
+      cancelled: number;
+    };
+    const bands: { high: Band; mid: Band; low: Band } = {
+      high: {
+        label: "高优",
+        range: "P7-P9",
+        pending: 0,
+        done: 0,
+        error: 0,
+        cancelled: 0,
+      },
+      mid: {
+        label: "中优",
+        range: "P4-P6",
+        pending: 0,
+        done: 0,
+        error: 0,
+        cancelled: 0,
+      },
+      low: {
+        label: "低优",
+        range: "P0-P3",
+        pending: 0,
+        done: 0,
+        error: 0,
+        cancelled: 0,
+      },
+    };
+    for (const t of tasks) {
+      const target =
+        t.priority >= 7 ? bands.high : t.priority >= 4 ? bands.mid : bands.low;
+      switch (t.status) {
+        case "pending":
+          target.pending += 1;
+          break;
+        case "done":
+          target.done += 1;
+          break;
+        case "error":
+          target.error += 1;
+          break;
+        case "cancelled":
+          target.cancelled += 1;
+          break;
+      }
+    }
+    return [bands.high, bands.mid, bands.low];
+  }, [tasks]);
   /// 🎯 紧迫任务（P0-P2 未完成）计数：高优先级 backlog 信号。tasks 全集
   /// （活动态）走过滤；done / cancelled 不计。0 时不渲染 chip。priorityCounts
   /// 已经按 priority 升序排好；reduce 前 3 档求和即得。
@@ -5461,6 +5520,109 @@ export function PanelTasks({
                               borderRadius: 1,
                             }}
                           />
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+              {/* 🎯 优先级 3 段进度条：P7+ 高优 / P4-P6 中优 / P0-P3 低优。
+                  每段一根 64×6 堆叠 bar：pending 蓝 / error 红 / done 绿 /
+                  cancelled 灰，宽度比例 = 各类 / total。total === 0 时段隐
+                  藏。三段都为空整体隐藏避免占位。 */}
+              {(() => {
+                const visible = priorityBands.filter(
+                  (b) =>
+                    b.pending + b.done + b.error + b.cancelled > 0,
+                );
+                if (visible.length === 0) return null;
+                return (
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      marginLeft: 8,
+                      padding: "2px 6px",
+                      border: "1px dashed var(--pet-color-border)",
+                      borderRadius: 4,
+                      verticalAlign: "middle",
+                    }}
+                    title="按 priority 分 3 段统计：每段 pending 蓝 / error 红 / done 绿 / cancelled 灰，比例 = 各类 / 段内总数。高优 = P7-P9（R107 数值大=优先级高）。"
+                  >
+                    {visible.map((b) => {
+                      const total =
+                        b.pending + b.done + b.error + b.cancelled;
+                      const BAR_W = 64;
+                      const pct = (n: number) =>
+                        total === 0 ? 0 : (n / total) * BAR_W;
+                      return (
+                        <div
+                          key={b.range}
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "stretch",
+                            gap: 2,
+                          }}
+                          title={`${b.label}（${b.range}）共 ${total} 条\n· 待办 ${b.pending}\n· 已完成 ${b.done}\n· 失败 ${b.error}\n· 已取消 ${b.cancelled}`}
+                        >
+                          <div
+                            style={{
+                              fontSize: 9,
+                              color: "var(--pet-color-muted)",
+                              lineHeight: 1,
+                              fontFamily: "'SF Mono', monospace",
+                              userSelect: "none",
+                              textAlign: "center",
+                            }}
+                          >
+                            {b.label} {total}
+                          </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              width: BAR_W,
+                              height: 6,
+                              borderRadius: 2,
+                              overflow: "hidden",
+                              background: "var(--pet-color-border)",
+                            }}
+                          >
+                            {b.pending > 0 && (
+                              <div
+                                style={{
+                                  width: pct(b.pending),
+                                  background: "var(--pet-tint-blue-fg)",
+                                }}
+                              />
+                            )}
+                            {b.error > 0 && (
+                              <div
+                                style={{
+                                  width: pct(b.error),
+                                  background: "var(--pet-tint-red-fg)",
+                                }}
+                              />
+                            )}
+                            {b.done > 0 && (
+                              <div
+                                style={{
+                                  width: pct(b.done),
+                                  background: "var(--pet-tint-green-fg)",
+                                }}
+                              />
+                            )}
+                            {b.cancelled > 0 && (
+                              <div
+                                style={{
+                                  width: pct(b.cancelled),
+                                  background: "var(--pet-color-muted)",
+                                  opacity: 0.5,
+                                }}
+                              />
+                            )}
+                          </div>
                         </div>
                       );
                     })}
