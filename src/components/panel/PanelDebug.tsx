@@ -157,6 +157,42 @@ export function PanelDebug() {
   const [toolRiskExpanded, setToolRiskExpanded] = useState(false);
   const [toolRiskBusyName, setToolRiskBusyName] = useState<string | null>(null);
   const [toolRiskMsg, setToolRiskMsg] = useState("");
+  /// 🧪 LLM tools 状态 toggle 面板：toolbar 按钮点开后展开内嵌一张表，
+  /// 列内置工具（toolRiskRows 已有）+ MCP 工具（lazy fetch get_mcp_status）。
+  /// 排查 "为什么宠物没用工具 X" 时一眼看是 risk 太高 / review_mode
+  /// 设了 always_review / MCP server 没连上，省得走 PanelSettings 翻三处。
+  const [llmToolsPanelOpen, setLlmToolsPanelOpen] = useState(false);
+  const [llmToolsMcpStatus, setLlmToolsMcpStatus] = useState<
+    | {
+        name: string;
+        connected: boolean;
+        tool_count: number;
+        tool_names: string[];
+        error: string | null;
+      }[]
+    | null
+  >(null);
+  const [llmToolsMcpFetching, setLlmToolsMcpFetching] = useState(false);
+  const fetchLlmToolsMcp = useCallback(async () => {
+    setLlmToolsMcpFetching(true);
+    try {
+      const status = await invoke<
+        {
+          name: string;
+          connected: boolean;
+          tool_count: number;
+          tool_names: string[];
+          error: string | null;
+        }[]
+      >("get_mcp_status");
+      setLlmToolsMcpStatus(status);
+    } catch (e) {
+      console.error("get_mcp_status failed:", e);
+      setLlmToolsMcpStatus([]);
+    } finally {
+      setLlmToolsMcpFetching(false);
+    }
+  }, []);
   const fetchToolRiskOverview = useCallback(async () => {
     try {
       const rows = await invoke<
@@ -2090,6 +2126,30 @@ export function PanelDebug() {
           📂 logs 目录
         </button>
         <button
+          onClick={() => {
+            setLlmToolsPanelOpen((v) => {
+              const next = !v;
+              if (next && llmToolsMcpStatus === null) {
+                void fetchLlmToolsMcp();
+              }
+              return next;
+            });
+          }}
+          style={{
+            ...toolBtnStyle,
+            background: llmToolsPanelOpen
+              ? "var(--pet-tint-blue-bg)"
+              : toolBtnStyle.background,
+            color: llmToolsPanelOpen
+              ? "var(--pet-tint-blue-fg)"
+              : toolBtnStyle.color,
+          }}
+          title="展开 / 折叠 LLM tools 状态面板：列内置工具的 risk + review mode + MCP server 连接状态 + tool 名。排查「为什么宠物没用工具 X」用。"
+        >
+          🧪 LLM tools{" "}
+          {llmToolsPanelOpen ? "▾" : "▸"}
+        </button>
+        <button
           onClick={() => void handleExportDebugMd()}
           style={toolBtnStyle}
           title="把当前 PanelDebug 的 stats / chip / tone / pending review / 工具风险偏好覆盖 / 最近 5 句宠物语 拼成一份 markdown 写到剪贴板，方便贴 issue 或排查时给同事看"
@@ -2375,6 +2435,288 @@ export function PanelDebug() {
           </span>
         )}
       </div>
+
+      {/* 🧪 LLM tools 状态面板：内置工具（toolRiskRows: name + risk level
+          + review mode）+ MCP 工具（lazy fetched 第一次打开时拉一次）。
+          排查 "宠物为什么没用工具 X" 的现场入口：always_review 的工具不
+          会被 LLM auto-call；连不上的 MCP server 自然提供不了 tool。 */}
+      {llmToolsPanelOpen && (() => {
+        const levelTint = (level: string) => {
+          switch (level) {
+            case "high":
+              return {
+                bg: "var(--pet-tint-red-bg)",
+                fg: "var(--pet-tint-red-fg)",
+              };
+            case "medium":
+              return {
+                bg: "var(--pet-tint-amber-bg, #fef3c7)",
+                fg: "var(--pet-tint-amber-fg, #92400e)",
+              };
+            default:
+              return {
+                bg: "var(--pet-tint-green-bg)",
+                fg: "var(--pet-tint-green-fg)",
+              };
+          }
+        };
+        const modeTint = (mode: string) => {
+          switch (mode) {
+            case "always_review":
+              return {
+                bg: "var(--pet-tint-yellow-bg)",
+                fg: "var(--pet-tint-yellow-fg)",
+                label: "🛂 always_review",
+                hint: "LLM 每次调都要等审核 — 平时不主动 fire",
+              };
+            case "always_approve":
+              return {
+                bg: "var(--pet-tint-blue-bg)",
+                fg: "var(--pet-tint-blue-fg)",
+                label: "✅ always_approve",
+                hint: "LLM 调时直接放行（绕过 risk auto-gate）",
+              };
+            default:
+              return {
+                bg: "var(--pet-color-bg)",
+                fg: "var(--pet-color-muted)",
+                label: "🤖 auto",
+                hint: "按 risk level 自动判断（high → review / low+medium → 放行）",
+              };
+          }
+        };
+        return (
+          <div
+            style={{
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-bg)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--pet-color-fg)",
+                marginBottom: 6,
+              }}
+            >
+              内置工具 ({toolRiskRows.length})
+            </div>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+                marginBottom: 12,
+              }}
+            >
+              {toolRiskRows.map((r) => {
+                const lt = levelTint(r.level);
+                const mt = modeTint(r.mode);
+                return (
+                  <div
+                    key={r.name}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 6px",
+                      border: "1px solid var(--pet-color-border)",
+                      borderRadius: 4,
+                      background: "var(--pet-color-card)",
+                      fontSize: 11,
+                    }}
+                    title={`${r.name} · ${r.note || "(无 note)"}\nrisk: ${r.level}\nreview mode: ${mt.hint}`}
+                  >
+                    <span
+                      style={{
+                        fontFamily: "'SF Mono', 'Menlo', monospace",
+                        color: "var(--pet-color-fg)",
+                      }}
+                    >
+                      {r.name}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 9,
+                        padding: "0 4px",
+                        borderRadius: 3,
+                        background: lt.bg,
+                        color: lt.fg,
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {r.level}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 9,
+                        padding: "0 4px",
+                        borderRadius: 3,
+                        background: mt.bg,
+                        color: mt.fg,
+                      }}
+                    >
+                      {mt.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--pet-color-fg)",
+                marginBottom: 6,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              MCP 工具
+              {llmToolsMcpFetching && (
+                <span style={{ fontSize: 10, color: "var(--pet-color-muted)" }}>
+                  加载中…
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => void fetchLlmToolsMcp()}
+                disabled={llmToolsMcpFetching}
+                style={{
+                  fontSize: 10,
+                  padding: "1px 6px",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 3,
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-muted)",
+                  cursor: llmToolsMcpFetching ? "default" : "pointer",
+                  fontFamily: "inherit",
+                }}
+                title="重新拉 get_mcp_status（owner 在 PanelSettings 改完 MCP server 后回来 refresh）"
+              >
+                🔄 刷新
+              </button>
+            </div>
+            {llmToolsMcpStatus === null ? (
+              <div style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
+                （首次打开后会拉 get_mcp_status）
+              </div>
+            ) : llmToolsMcpStatus.length === 0 ? (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--pet-color-muted)",
+                  fontStyle: "italic",
+                }}
+              >
+                （未配置 MCP server — 在 PanelSettings → MCP 段添加）
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                {llmToolsMcpStatus.map((s) => (
+                  <div
+                    key={s.name}
+                    style={{
+                      padding: "4px 8px",
+                      border: "1px solid var(--pet-color-border)",
+                      borderRadius: 4,
+                      background: "var(--pet-color-card)",
+                      fontSize: 11,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        marginBottom: s.tool_names.length > 0 ? 4 : 0,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: s.connected
+                            ? "var(--pet-tint-green-fg)"
+                            : "var(--pet-tint-red-fg)",
+                        }}
+                      >
+                        {s.connected ? "🟢 连上" : "🔴 断开"}
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: "'SF Mono', 'Menlo', monospace",
+                          fontWeight: 600,
+                          color: "var(--pet-color-fg)",
+                        }}
+                      >
+                        {s.name}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: "var(--pet-color-muted)",
+                        }}
+                      >
+                        {s.tool_count} 个工具
+                      </span>
+                      {s.error && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "var(--pet-tint-red-fg)",
+                            fontStyle: "italic",
+                          }}
+                          title={s.error}
+                        >
+                          ⚠ {s.error.slice(0, 60)}
+                          {s.error.length > 60 ? "…" : ""}
+                        </span>
+                      )}
+                    </div>
+                    {s.tool_names.length > 0 && (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 4,
+                          paddingLeft: 4,
+                        }}
+                      >
+                        {s.tool_names.map((tn) => (
+                          <span
+                            key={tn}
+                            style={{
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              fontSize: 10,
+                              padding: "0 4px",
+                              borderRadius: 3,
+                              background: "var(--pet-color-bg)",
+                              color: "var(--pet-color-fg)",
+                            }}
+                          >
+                            {tn}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* 上次 manual fire 审计行 + 历史 ring（近 5 条）：让用户回顾"我本
           次进程内手动触发过哪几条任务、什么时候、结果如何"。进程重启清空；
