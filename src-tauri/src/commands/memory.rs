@@ -107,6 +107,64 @@ pub fn memory_reveal_history_dir(detail_path: String) -> Result<(), String> {
     }
 }
 
+/// `memory_reveal_cat_dir`：在 Finder / Explorer 打开指定 category 在
+/// `memories/<cat_key>/` 下的子目录。调试 file structure / audit 「这
+/// cat 实际存了哪些 detail.md」入口。与 `memory_reveal_history_dir` 同
+/// open-by-OS 模板 + 同 path-traversal 防御。
+///
+/// cat_key 不能为空 / 含 `..` / 起 `/`（path traversal 防御）。子目录
+/// 不存在 → 友好错误（"cat 还没创建任何 item / 未生成对应目录"）。
+#[tauri::command]
+pub fn memory_reveal_cat_dir(cat_key: String) -> Result<(), String> {
+    let trimmed = cat_key.trim();
+    if trimmed.is_empty() {
+        return Err("cat_key is required".to_string());
+    }
+    if trimmed.contains("..") || trimmed.contains('/') || trimmed.contains('\\')
+    {
+        return Err("invalid cat_key".to_string());
+    }
+    let mem_dir = memories_dir()?;
+    let cat_dir = mem_dir.join(trimmed);
+    if !cat_dir.exists() {
+        return Err(format!(
+            "category 子目录不存在（cat 还没生成 detail.md 文件）：{}",
+            trimmed
+        ));
+    }
+    let canon = fs::canonicalize(&cat_dir)
+        .map_err(|e| format!("Failed to resolve cat dir: {}", e))?;
+    let mem_canon = fs::canonicalize(memories_dir()?)
+        .map_err(|e| format!("Failed to resolve memories_dir: {}", e))?;
+    if !canon.starts_with(&mem_canon) {
+        return Err("cat dir escaped memories_dir".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `open`: {}", e))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `explorer`: {}", e))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `xdg-open`: {}", e))
+    }
+}
+
 #[tauri::command]
 pub fn memory_disk_usage() -> Result<MemoryDiskUsage, String> {
     let dir = memories_dir()?;

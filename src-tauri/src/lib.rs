@@ -254,6 +254,7 @@ pub fn run() {
             commands::memory::detail_history_disk_usage,
             commands::memory::memory_detail_history,
             commands::memory::memory_reveal_history_dir,
+            commands::memory::memory_reveal_cat_dir,
             commands::memory::memory_category_churn_7d,
             commands::memory::memory_detail_abs_path,
             db::db_butler_tasks_list,

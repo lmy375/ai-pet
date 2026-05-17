@@ -4654,7 +4654,24 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                       setRenamingCatKey(catKey);
                       setRenameCatDraft(categoryLabels[catKey] ?? "");
                     }}
-                    title={`双击改显示名（仅本机生效；空 = 用后端默认 "${cat.label}"）`}
+                    onContextMenu={async (e) => {
+                      // 📁 reveal cat dir：右键打开该 cat 在 memories/
+                      // 下的子目录（调试 file structure 入口）。preventDefault
+                      // 吃浏览器默认 ctx menu（Tauri webview 已禁但兜底）；
+                      // stopPropagation 防上层 drag handler 误触。失败
+                      // 通过 setMessage 显原因（subdir 不存在 / IO 错）。
+                      e.preventDefault();
+                      e.stopPropagation();
+                      try {
+                        await invoke("memory_reveal_cat_dir", {
+                          catKey,
+                        });
+                      } catch (err: any) {
+                        setMessage(`📁 打开 cat 目录失败：${err}`);
+                        setTimeout(() => setMessage(""), 3000);
+                      }
+                    }}
+                    title={`双击改显示名 · 右键 → 📁 在 Finder 打开 cat 子目录（memories/${catKey}/）调试 file structure`}
                     style={{ cursor: "text" }}
                   >
                     {categoryLabels[catKey] || cat.label}
