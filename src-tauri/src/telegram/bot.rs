@@ -1182,6 +1182,19 @@ async fn handle_tg_command(
                 &views, today, &keyword,
             )
         }
+        TgCommand::SearchYesterday { keyword } => {
+            // 与 SearchToday 同模板，date - 1 天。pred_opt 跨月跨年 chrono
+            // 自动处理；极端 NaiveDate::MIN 兜底走 today（与 touched_yesterday
+            // / digest_yesterday handler 同 pattern）。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let yesterday = chrono::Local::now()
+                .date_naive()
+                .pred_opt()
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
+            crate::telegram::commands::format_search_yesterday_reply(
+                &views, yesterday, &keyword,
+            )
+        }
         TgCommand::Find { keyword } => {
             // keyword 搜本 chat 派单。reuse 同 read path；空 keyword 由
             // formatter 内部走 missing-argument 模板。

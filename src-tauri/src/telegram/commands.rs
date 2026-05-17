@@ -603,6 +603,9 @@ pub enum TgCommand {
     /// /touched_today（无 kw，列今日全）/ 本命令（今日 + kw）三件套。
     /// 「今天我做的与 X 相关的」精准 audit 入口。
     SearchToday { keyword: String },
+    /// `/search_yesterday <kw>` —— /search_today 的昨日对偶。「昨天我
+    /// 做的与 X 相关的」精准 audit — 早会回顾 / 复盘场景。
+    SearchYesterday { keyword: String },
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -716,6 +719,7 @@ impl TgCommand {
             TgCommand::MuteToday => "mute_today",
             TgCommand::DigestYesterday { .. } => "digest_yesterday",
             TgCommand::SearchToday { .. } => "search_today",
+            TgCommand::SearchYesterday { .. } => "search_yesterday",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -769,6 +773,7 @@ impl TgCommand {
             | TgCommand::Unsilent { title }
             | TgCommand::Find { keyword: title }
             | TgCommand::SearchToday { keyword: title }
+            | TgCommand::SearchYesterday { keyword: title }
             | TgCommand::FindInDetail { keyword: title }
             | TgCommand::FindSpeech { keyword: title }
             | TgCommand::Tag { name: title }
@@ -965,6 +970,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mute_today", "Mute proactive until local midnight — one-shot 'no more pings tonight'"),
             ("digest_yesterday", "Yesterday's done tasks with [result:] summaries (default 5, cap 20) — /digest counterpart"),
             ("search_today", "Search tasks whose updated_at is today by keyword (title / description substring) — narrowed /find"),
+            ("search_yesterday", "Yesterday's counterpart to /search_today — yesterday + keyword intersection audit"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -1054,6 +1060,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mute_today", "静音 proactive 到本地午夜 — 一键「今夜不打扰」预设"),
             ("digest_yesterday", "昨日 done 任务 + [result:] 一行式（默认 5，上限 20）— /digest 的昨日对偶"),
             ("search_today", "限定今日 updated_at 的 task 内 fuzzy 搜 keyword — 「今天我做的与 X 相关的」精准 audit"),
+            ("search_yesterday", "/search_today 的昨日对偶 — 「昨天我做的与 X 相关的」精准 audit（复盘视角）"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1635,6 +1642,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/search_today <keyword>`：与 /find 同 single-arg 模板。空 keyword
         // 由 handler / formatter 走 missing-argument。
         "search_today" => Some(TgCommand::SearchToday { keyword: title }),
+        // `/search_yesterday <keyword>`：与 /search_today 同模板，scope 昨日。
+        "search_yesterday" => Some(TgCommand::SearchYesterday { keyword: title }),
         // `/find_in_detail <keyword>`：所有 arg 作 keyword（含空格保留）。
         // 空 keyword 由 handler 走 missing-argument。snake_case 命名避开
         // dash drift-defense（与 /oldest_n / /active_recent 同模板）。
@@ -2163,7 +2172,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "search_today", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "search_today", "search_yesterday", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2324,6 +2333,7 @@ pub fn format_help_for_topic(
         "edit_title" => "✏️ /edit_title <title> :: <new title>\n\n用法：仅改 task 标题，不动 description / detail.md / markers。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。前端 PanelTasks 已有 double-click inline rename；本命令是 TG 端对偶。\n\n与 /edit（全量覆写 description）区别：\n- /edit：覆写 description body — markers 需自己写进 new desc\n- /edit_title：只换标题字符串 — 所有 markers / body / detail.md 不动\n\n后端：复用既有 `memory_rename` Tauri 命令 — index 项改 title + .md 文件 move + 同名冲突自动加 `_N` 后缀（与 /dup unique-filename 同 fallback）。\n\nTitle resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  ✏️ 已改标题：「<old>」→「<new>」\n\n注意：rename 后既有 `[task: 「<old>」]` ref / detail.md 内 `「<old>」` token 不自动跟随更新（owner 需手动改）。考虑后续 iter 加 cascade rename。\n\n示例：\n  /edit_title 整理 Downloads :: 清理桌面（更详细名）\n  /edit_title 1 :: 重命名（/tasks 第 1 条）\n  /edit_title 写周报 :: 写 2026-W20 周报\n\n相关：/edit（覆写 description）；/dup（克隆为新 task）；/show（看 rename 后的 raw）。",
         "touched_yesterday" => "📅 /touched_yesterday\n\n用法：/touched_today 的昨日对偶 — 列昨日（本地日历日）updated_at 命中的本聊天派单（任意状态），按时间倒序。复盘视角：「昨天我动过哪些 task」。\n\n场景：早上 standup 前回顾「昨天做了 / 调了 / 推后了哪些」；周末 audit 工作日 backlog 变化；与 /yesterday（仅 done）/ /today_done 三件套形成完整 today-yesterday × 全谱-完成 audit 矩阵。\n\n输出格式：\n  📅 昨日（YYYY-MM-DD）动过 N 条（按时间倒序）：\n  · ⏳ HH:MM 整理 Downloads\n  · ✅ HH:MM 写周报 — done with result\n  · 💤 HH:MM 写报告\n  · ⏳ HH:MM review PR\n\n状态 emoji 同 /touched_today（⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled · 💤 snoozed pending）。\n\n空 → 友好兜底（教学指向 /touched_today / /yesterday / /tasks）。\n\n示例：\n  /touched_yesterday\n\n相关：/touched_today（今日全谱）；/yesterday（昨日 done）；/today_done（今日 done）；/recent_events <title>（单 task TL;DR）。",
         "oldest_done" => "🪦 /oldest_done [N]\n\n用法：列**最早完成**的 N 条 done task（按 updated_at 升序）— 与 /recent done（最近完成）反向。让 owner 看「这些任务我做了多久 / 哪些是 ancient backlog 终于完成」的考古视角。\n\nN 缺省 5；clamp 1..=20（与 /recent / /digest / /show_speech 同协议）。无 done task → 友好兜底教学指向 /done 标完成。\n\n输出格式：\n  🪦 最早完成的 N 条（共 M done）：\n  · YYYY-MM-DD HH:MM · <title>\n  · YYYY-MM-DD HH:MM · <title>\n  ...\n\n（与 /recent 同 line 格式 — 让 owner 切换视角时心智一致）\n\n场景：\n- 「这条 task 我做了多久」考古 — 比对源 create_at（/show 含）vs 最早 done updated_at\n- audit 「最老的 done 是何时」— sprint 复盘 / quarterly review\n- 与 /recent done 形成「最近完成 vs 最早完成」镜像\n\n示例：\n  /oldest_done           （显最早 5 条）\n  /oldest_done 10        （显最早 10 条）\n\n相关：/recent（最近完成 — 与本命令反向）；/oldest_n（最老 pending — pending 维度反向）；/yesterday / /today_done（按日期范围而非「最老/最新」）。",
+        "search_yesterday" => "🔎 /search_yesterday <keyword>\n\n用法：/search_today 的昨日对偶 — 在**昨日 updated_at**命中的本聊天派单内 fuzzy 搜 title / raw_description（case-insensitive 子串）。「昨天我做的与 X 相关的」复盘视角。\n\n场景：早会前回顾「昨天处理过的 API 相关 task」/ 周一回顾「上周五碰过的 deploy issue」（注：昨日 = 本地日历日，跨周末取周日为昨日）/ 写日报需要昨天进展时筛 X 相关。\n\n空 keyword → usage hint。无命中 → 友好兜底 + alt 入口（/find / /touched_yesterday）。\n\n输出格式：\n  🔎 昨日（YYYY-MM-DD）命中「<kw>」N 条：\n  🟢 <title>\n  ⚠️ <title>\n  ✅ <title>\n  ...\n\n状态 emoji 同 /search_today / /find：🟢 pending · ⚠️ error · ✅ done · 🚫 cancelled。cap 10 条。\n\n示例：\n  /search_yesterday API\n  /search_yesterday 周报\n  /search_yesterday #健身\n\n相关：/search_today（今日同模板）；/find（全量不限日期）；/touched_yesterday（昨日全谱不限 kw）；/digest_yesterday（昨日 done + result）。",
         "search_today" => "🔎 /search_today <keyword>\n\n用法：在**今日 updated_at**命中的本聊天派单内 fuzzy 搜 title / raw_description（case-insensitive 子串）。「今天我做的与 X 相关的」精准 audit 入口 — /find（全量）vs /touched_today（无 kw，列今日全谱）vs 本命令（今日 + kw）三件套。\n\n场景：早会前回顾「今早处理过的 'API' 相关 task」/ 下午找「今天碰过的 deploy 相关 issue」/ 写日报时筛「今天关于 X 的进度」。\n\n空 keyword → usage hint。无命中 → 友好兜底 + alt 入口（/find / /touched_today）。\n\n输出格式：\n  🔎 今日（YYYY-MM-DD）命中「<kw>」N 条：\n  🟢 <title>\n  ⚠️ <title>\n  ✅ <title>\n  ...\n\n状态 emoji 同 /find：🟢 pending · ⚠️ error · ✅ done · 🚫 cancelled。同状态保 views 原序（compare_for_queue 综合序）。cap 10 条（与 /find 同上限）。\n\n示例：\n  /search_today API\n  /search_today 周报\n  /search_today #健身\n\n相关：/find（不限日期 fuzzy 搜）；/touched_today（今日全谱不限 kw）；/digest_yesterday（昨日 done + result）；/show <title>（看单条 raw + detail）。",
         "digest_yesterday" => "📋 /digest_yesterday [N]\n\n用法：昨日（本地日历日）done task 标题 + [result:] 摘要一行式。与 /digest 的区别：那个按 updated_at 倒序取最近 N 条（可能跨多日 / 今日为主），本命令限定昨日 calendar day — 「昨天我完成了哪些 + 产物是什么」复盘视角。\n\nN 缺省 5，clamp 1..=20（与 /digest / /recent 同协议）。空（昨日无 done）→ 友好兜底教学指向 /digest / /yesterday / /touched_yesterday。\n\n输出格式：\n  📋 昨日（YYYY-MM-DD）完成 N 条（共 M done）：\n  · HH:MM · <title> — <result 前 80 字>\n  · HH:MM · <title> — <result>\n  ...\n\nresult 截 80 字 + …（与 /digest / /yesterday 同 cap）。\n\n场景：早会前看「昨天我做了什么 + 怎么做的」；周五整理本周产出；与 /yesterday（昨日 done 仅标题）/ /touched_yesterday（昨日任意状态全谱）三件套形成完整 yesterday audit 矩阵。\n\n示例：\n  /digest_yesterday        （昨日 done 5 条）\n  /digest_yesterday 10     （昨日 done 10 条）\n\n相关：/digest（按更新时序 N 条 done，不限日期）；/yesterday（昨日 done 仅标题无 result）；/touched_yesterday（昨日任意状态）。",
         "mute_today" => "🌙 /mute_today\n\n用法：一键静音 proactive 到**本地午夜**（次日 00:00），免 owner 算「还多少分钟到午夜」。与 /mute N（任意分钟）/ /sleep_until <HH:MM>（任意目标时刻）互补 — 本命令是「今夜不打扰」的常用预设。\n\n后端：算 `now → 次日 00:00` 的分钟数 → 调 `set_mute_minutes(minutes)` 同既有 /mute 路径。clamp 1..=1440（绝不超过 24h）— 极端 DST 边界兜底。\n\n输出格式：\n  🌙 已静音 proactive 到本地午夜（00:00）— 还 N 分钟（M 小时）\n\n场景：晚上 10 点开始写决策日志 / 看书 / 睡前；想说「今夜别再打扰我」时不必心算「到午夜还几分钟」。\n\n注：到点后 mute 自然解除 — pet 早上首 schedule 仍触发。如想跨天静音走 /mute N 或 /sleep_until 明早时刻。\n\n示例：\n  /mute_today\n\n相关：/mute N（任意 N 分钟）；/sleep_until HH:MM（任意目标时刻，含明日）；/sleep（一键 8h）；/here（看 owner 当前 mute 状态）。",
@@ -2429,6 +2439,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/mute_today  —  静音 proactive 到本地午夜 — 一键「今夜不打扰」预设；与 /mute N / /sleep_until 互补".to_string(),
         "/digest_yesterday [N]  —  昨日 done 任务 + [result:] 一行式（默认 5，上限 20）— /digest 的昨日对偶".to_string(),
         "/search_today <kw>  —  限定今日 updated_at 的 task 内 fuzzy 搜 keyword — 「今天我做的与 X 相关的」精准 audit".to_string(),
+        "/search_yesterday <kw>  —  /search_today 的昨日对偶 — 「昨天我做的与 X 相关的」精准 audit（复盘视角）".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -5408,6 +5419,69 @@ pub fn format_search_today_reply(
     out
 }
 
+/// `/search_yesterday <keyword>` 命令回复文案。pure。clone of
+/// `format_search_today_reply` 结构（filter / status rank / cap / emoji
+/// 完全一致），仅 scope 是 yesterday 日期 + 标题用「昨日」+ 空集兜底
+/// alt 入口指向 /find / /touched_yesterday（避免循环建议 today）。
+pub fn format_search_yesterday_reply(
+    views: &[crate::task_queue::TaskView],
+    yesterday: chrono::NaiveDate,
+    keyword: &str,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let kw = keyword.trim();
+    if kw.is_empty() {
+        return "🔎 用法：/search_yesterday <keyword>\n限定昨日 updated_at 的 task 内 fuzzy 搜 title / description（不分大小写，至多 10 条）。\n例：/search_yesterday API / /search_yesterday 周报\n\n相关：/search_today（今日同模板）；/find（全量不限日期）；/touched_yesterday（昨日全谱）。".to_string();
+    }
+    let t_str = yesterday.format("%Y-%m-%d").to_string();
+    let kw_lower = kw.to_lowercase();
+    let mut hits: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| v.updated_at.starts_with(&t_str))
+        .filter(|v| {
+            v.title.to_lowercase().contains(&kw_lower)
+                || v.raw_description.to_lowercase().contains(&kw_lower)
+        })
+        .collect();
+    let status_rank = |s: &TaskStatus| match s {
+        TaskStatus::Pending => 0u8,
+        TaskStatus::Error => 1,
+        TaskStatus::Done => 2,
+        TaskStatus::Cancelled => 3,
+    };
+    hits.sort_by_key(|v| status_rank(&v.status));
+    if hits.is_empty() {
+        return format!(
+            "🔎 昨日（{}）无任务命中「{}」（搜了标题 + description 子串）。\n试 /find 看全量历史 / /touched_yesterday 看昨日全谱。",
+            t_str, kw,
+        );
+    }
+    let cap = SEARCH_TODAY_MAX_HITS;
+    let shown = &hits[..hits.len().min(cap)];
+    let mut out = format!(
+        "🔎 昨日（{}）命中「{}」{} 条：",
+        t_str,
+        kw,
+        hits.len(),
+    );
+    for v in shown {
+        let emoji = match v.status {
+            TaskStatus::Pending => "🟢",
+            TaskStatus::Error => "⚠️",
+            TaskStatus::Done => "✅",
+            TaskStatus::Cancelled => "🚫",
+        };
+        out.push_str(&format!("\n{} {}", emoji, v.title));
+    }
+    if hits.len() > cap {
+        out.push_str(&format!(
+            "\n…还有 {} 条命中（关键词太宽？试更精确的词）",
+            hits.len() - cap,
+        ));
+    }
+    out
+}
+
 /// `/digest_yesterday <N>` 命令回复文案。pure：与 `format_digest_reply`
 /// 同结构（done filter + result preview），但额外限定 updated_at 起始
 /// 匹配 `yesterday` 日期前缀。caller 已 clamp n 1..=20。
@@ -7267,7 +7341,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -7738,7 +7812,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "search_today", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "search_today", "search_yesterday", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -12569,6 +12643,62 @@ mod tests {
         t.updated_at = "2026-05-17T10:00:00+08:00".to_string();
         let s = format_search_today_reply(&[t], today, "reviewpr");
         assert!(s.contains("ReviewPR"), "case-insensitive match: {s}");
+    }
+
+    // -------- /search_yesterday parse + format --------
+
+    #[test]
+    fn search_yesterday_parser_takes_all_args_as_keyword() {
+        assert_eq!(
+            parse_tg_command("/search_yesterday API"),
+            Some(TgCommand::SearchYesterday {
+                keyword: "API".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/search_yesterday 写 周报"),
+            Some(TgCommand::SearchYesterday {
+                keyword: "写 周报".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn search_yesterday_empty_keyword_shows_usage_hint() {
+        let y = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let s = format_search_yesterday_reply(&[], y, "");
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/search_today"), "should mention alt /search_today: {s}");
+        assert!(s.contains("/touched_yesterday"), "{s}");
+    }
+
+    #[test]
+    fn search_yesterday_no_hits_shows_yesterday_specific_fallback() {
+        let y = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let mut t = view("api unrelated yest", 3, None, TaskStatus::Done, Some("r"));
+        t.updated_at = "2026-05-16T10:00:00+08:00".to_string();
+        let s = format_search_yesterday_reply(&[t], y, "missing-kw");
+        assert!(s.contains("昨日（2026-05-16）无任务命中"), "{s}");
+        // 兜底教学不指 /search_yesterday（循环）— 指 /find / /touched_yesterday
+        assert!(s.contains("/find"), "{s}");
+        assert!(s.contains("/touched_yesterday"), "{s}");
+        assert!(!s.contains("/touched_today"), "loop prevention: {s}");
+    }
+
+    #[test]
+    fn search_yesterday_filters_yesterday_and_keyword() {
+        let y = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let mut y_hit = view("API yesterday", 3, None, TaskStatus::Pending, None);
+        y_hit.updated_at = "2026-05-16T09:00:00+08:00".to_string();
+        let mut y_miss = view("doc cleanup", 3, None, TaskStatus::Pending, None);
+        y_miss.updated_at = "2026-05-16T10:00:00+08:00".to_string();
+        let mut t_hit = view("API today", 3, None, TaskStatus::Done, Some("r"));
+        t_hit.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let s = format_search_yesterday_reply(&[y_hit, y_miss, t_hit], y, "API");
+        assert!(s.contains("命中「API」1 条"), "{s}");
+        assert!(s.contains("API yesterday"), "yesterday hit included: {s}");
+        assert!(!s.contains("doc cleanup"), "yesterday non-hit excluded: {s}");
+        assert!(!s.contains("API today"), "today hit excluded: {s}");
     }
 
     // -------- /digest_yesterday parse + format --------
