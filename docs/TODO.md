@@ -9,7 +9,6 @@
 >
 
 - detail.md 编辑器加 `@` 触发 task title 自动补全 popover：inline picker（与 ⌘K palette 不同——更轻量，键入即筛）。
-- ChatPanel session list 旁加 "📋 复制最近 N 轮" dropdown：1-50 选 N，一键拷最近对话（user+assistant 拼）便于贴 issue / 分享。
 
 
 
