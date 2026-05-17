@@ -7469,9 +7469,9 @@ export function PanelTasks({
                 style={bulkBusy ? s.bulkBtnDisabled : s.bulkBtn}
                 disabled={bulkBusy}
                 onClick={handleBulkCopyTitles}
-                title="复制选中任务的标题清单（一行一个），适合快速贴 todo dump 到聊天"
+                title={`复制选中 ${selected.size} 条任务的标题清单（一行一个）到剪贴板：贴团队 / 周会 todo / 外部 ticket（Linear / Jira / Notion）单条转写等。order 走当前视图顺序。与「复制为 MD」/「🔗 拼为 ref」三种粒度互补 — 这条最朴素只标题。`}
               >
-                复制标题
+                📋 复制标题 ({selected.size})
               </button>
               <button
                 style={bulkBusy ? s.bulkBtnDisabled : s.bulkBtn}
