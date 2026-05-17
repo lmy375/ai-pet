@@ -10671,6 +10671,70 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* 📅 创建于 chip — hover 时显 task 的 created_at + 相对
+                        时间。complement 既有 hover chip 家族中的 ↺ updated /
+                        🔄 sparkline / ⏰ reminderMin / 📅 due / 💤 snooze
+                        等时间维度 chip — 这是「task 这条多老了」直接信号
+                        （task age audit / stale task cleanup 决策点）。
+                        click 复制 「<title> 创建于 YYYY-MM-DD HH:MM（N天前）」
+                        一行（粘 chat 报告 / 写决策日志用）。
+                        gate：hover + 有 created_at（极端兜底，正常 task 都
+                        有）。不分 status — done / cancelled 也显，让复盘场
+                        景看「这条 task 从创建到 done 多少天」。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      t.created_at.length > 0 &&
+                      (() => {
+                        const cMs = Date.parse(t.created_at);
+                        if (isNaN(cMs)) return null;
+                        const ageMs = nowMs - cMs;
+                        if (ageMs < 0) return null; // 防御 clock drift
+                        const rel = formatRelativeAge(t.created_at, nowMs);
+                        // created_at 显紧凑「MM-DD HH:MM」格式（与 hover
+                        // chip 字体节省屏幕空间）
+                        const short =
+                          t.created_at.length >= 16
+                            ? `${t.created_at.slice(5, 10)} ${t.created_at.slice(11, 16)}`
+                            : t.created_at;
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const line = `「${t.title}」创建于 ${t.created_at.replace("T", " ").slice(0, 16)}（${rel}）`;
+                              try {
+                                await navigator.clipboard.writeText(line);
+                                setBulkResultMsg(`📅 已复制：${line}`);
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`task 创建于 ${t.created_at.replace("T", " ")}（${rel}）— 点击复制「<title> 创建于 ... (N天前)」一行到剪贴板。`}
+                            aria-label="copy task created-at info"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border:
+                                "1px dashed var(--pet-color-border)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            📅 创建 {short}
+                          </button>
+                        );
+                      })()}
                     {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
                         时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
                         audit。complement 既有 dueUrgency 三档（normal /
