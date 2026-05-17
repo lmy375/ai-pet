@@ -9726,6 +9726,56 @@ export function PanelTasks({
                         意味着 task 已有充足上下文。空 detail.md / 还未触
                         发 hover preview 时不渲避免噪音。click 复制字数 +
                         title 到剪贴板（quick log 场景）。 */}
+                    {/* ↘ 展开 detail chip：hover 即显，一键展开 detail
+                        段 + 滚动 row 顶端贴 viewport top 让 detail 段紧
+                        随其后可视化。省「点 row → 等加载 → 手动滚」三
+                        步成两动作 inline click。已展开时自动隐藏（chip
+                        无意义）。 */}
+                    {taskPreviewHoverTitle === t.title && !expanded && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleToggleExpand(t.title);
+                          // 让 detail 段渲染完成后滚到顶端 — 双 rAF 等
+                          // React commit + paint 完成（detail 含异步
+                          // task_get_detail，但即使内容还在 loading 也
+                          // 不影响滚 row 头顶到 viewport top — detail
+                          // 加载完后 layout 自动顺延）。block: "start"
+                          // + smooth 让 UX 流畅。
+                          requestAnimationFrame(() => {
+                            requestAnimationFrame(() => {
+                              const el = document.querySelector(
+                                `[data-task-idx="${idx}"]`,
+                              );
+                              el?.scrollIntoView({
+                                block: "start",
+                                behavior: "smooth",
+                              });
+                            });
+                          });
+                        }}
+                        title={`一键展开「${t.title}」detail 段 + 滚动到顶端 — 省「点 row → 等加载 → 手动滚」三步。`}
+                        aria-label="expand detail and scroll to top"
+                        style={{
+                          fontSize: 10,
+                          padding: "0 5px",
+                          marginLeft: 6,
+                          border: "1px dashed var(--pet-color-border)",
+                          borderRadius: 3,
+                          background: "transparent",
+                          color: "var(--pet-color-muted)",
+                          cursor: "pointer",
+                          fontFamily:
+                            "'SF Mono', 'Menlo', monospace",
+                          lineHeight: 1.5,
+                          verticalAlign: "middle",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        ↘ 展开 detail
+                      </button>
+                    )}
                     {taskPreviewHoverTitle === t.title &&
                       (() => {
                         const detail = detailMap[t.title];
