@@ -16462,58 +16462,111 @@ export function PanelTasks({
             >
               {t?.pinned ? "📌 取消钉住" : "📌 钉住"}
             </button>
-            {/* 📌+⏰5min：sprint 突发场景一键组合 — pin 让 task 浮到
-                pinned-chip 视野顶 + 设 due=now+5min 让 task 在 5 分钟
-                内进入 overdue 状态触发 proactive 选单 + due chip 红
-                警示。仅 active 行（pending / error）显 — 终态行设 due
-                无意义。click → 顺序 task_set_pinned(true) + task_set_due
-                + reload，单次错误不阻断另一条。 */}
-            {t && !isFinished(t.status) && (
-              <button
-                type="button"
-                style={{ ...itemBtn, color: "var(--pet-tint-orange-fg)" }}
-                onMouseOver={itemBtnHoverIn}
-                onMouseOut={itemBtnHoverOut}
-                onClick={async () => {
-                  setTaskCtxMenu(null);
-                  setActionErr("");
-                  setBusyTitle(m.title);
-                  const dueArg = formatDueInput(
-                    new Date(Date.now() + 5 * 60_000),
-                  );
-                  let pinErr = "";
-                  let dueErr = "";
-                  if (!t.pinned) {
-                    try {
-                      await invoke<void>("task_set_pinned", {
-                        title: m.title,
-                        pinned: true,
-                      });
-                    } catch (e: any) {
-                      pinErr = String(e);
-                    }
-                  }
+            {/* 📌+⏰ preset 组合：sprint 突发 / 计划性提醒一键 — pin 让
+                task 浮到 pinned-chip 视野顶 + 设 due 让 task 在指定时刻
+                进入 overdue 触发 proactive 选单 + due chip 警示。仅
+                active 行（pending / error）显。
+                三 preset 覆盖典型场景：5min（"中断 5 分钟回来"）/ 1h
+                （"开会一小时后处理"）/ tonight 18:00（"今晚下班前"）。
+                共享 runPinPlusDue 内联 helper — 各按钮仅在 dueArg /
+                label / tooltip 上不同。 */}
+            {t && !isFinished(t.status) && (() => {
+              const runPinPlusDue = async (
+                dueArg: string,
+                presetLabel: string,
+              ) => {
+                setTaskCtxMenu(null);
+                setActionErr("");
+                setBusyTitle(m.title);
+                let pinErr = "";
+                let dueErr = "";
+                if (!t.pinned) {
                   try {
-                    await invoke<void>("task_set_due", {
+                    await invoke<void>("task_set_pinned", {
                       title: m.title,
-                      due: dueArg,
+                      pinned: true,
                     });
                   } catch (e: any) {
-                    dueErr = String(e);
+                    pinErr = String(e);
                   }
-                  if (pinErr || dueErr) {
-                    setActionErr(
-                      `📌+⏰ 部分失败 — ${[pinErr && `pin: ${pinErr}`, dueErr && `due: ${dueErr}`].filter(Boolean).join(" · ")}`,
-                    );
-                  }
-                  await reload();
-                  setBusyTitle(null);
-                }}
-                title="sprint 突发：一键钉住 + 设 due 为 5 分钟后。task 立即浮到 📌 顶；5 min 后进入 overdue 触发 pet proactive 关注。已 pinned 时仅设 due。"
-              >
-                📌+⏰ 5min 提醒
-              </button>
-            )}
+                }
+                try {
+                  await invoke<void>("task_set_due", {
+                    title: m.title,
+                    due: dueArg,
+                  });
+                } catch (e: any) {
+                  dueErr = String(e);
+                }
+                if (pinErr || dueErr) {
+                  setActionErr(
+                    `📌+⏰ ${presetLabel} 部分失败 — ${[pinErr && `pin: ${pinErr}`, dueErr && `due: ${dueErr}`].filter(Boolean).join(" · ")}`,
+                  );
+                }
+                await reload();
+                setBusyTitle(null);
+              };
+              return (
+                <>
+                  <button
+                    type="button"
+                    style={{
+                      ...itemBtn,
+                      color: "var(--pet-tint-orange-fg)",
+                    }}
+                    onMouseOver={itemBtnHoverIn}
+                    onMouseOut={itemBtnHoverOut}
+                    onClick={() => {
+                      void runPinPlusDue(
+                        formatDueInput(new Date(Date.now() + 5 * 60_000)),
+                        "5min",
+                      );
+                    }}
+                    title="sprint 突发：一键钉住 + 设 due 为 5 分钟后。task 立即浮到 📌 顶；5 min 后进入 overdue 触发 pet proactive 关注。已 pinned 时仅设 due。"
+                  >
+                    📌+⏰ 5min 提醒
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...itemBtn,
+                      color: "var(--pet-tint-orange-fg)",
+                    }}
+                    onMouseOver={itemBtnHoverIn}
+                    onMouseOut={itemBtnHoverOut}
+                    onClick={() => {
+                      void runPinPlusDue(
+                        formatDueInput(
+                          new Date(Date.now() + 60 * 60_000),
+                        ),
+                        "1h",
+                      );
+                    }}
+                    title="开会场景：钉住 + 设 due 为 1 小时后。会议结束 / deep work 一段后 task 自然 overdue 让 pet 关注。已 pinned 时仅设 due。"
+                  >
+                    📌+⏰ 1h 提醒
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...itemBtn,
+                      color: "var(--pet-tint-orange-fg)",
+                    }}
+                    onMouseOver={itemBtnHoverIn}
+                    onMouseOut={itemBtnHoverOut}
+                    onClick={() => {
+                      void runPinPlusDue(
+                        dueTonight(new Date()),
+                        "tonight 18:00",
+                      );
+                    }}
+                    title="今晚下班前：钉住 + 设 due 为今晚 18:00（已过则次日 18:00）。计划性「今晚回家前处理」场景。"
+                  >
+                    📌+⏰ tonight 18:00
+                  </button>
+                </>
+              );
+            })()}
             {/* 🔇 silent toggle：与 📌 钉住 同模板。从 raw_description 里
                 inline regex 探 `[silent]` 字面量；调 task_set_silent
                 atomic add / strip marker。silent 任务从 LLM proactive cycle
