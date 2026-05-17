@@ -786,6 +786,14 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Streak => {
+            // 完成节奏 audit：reuse read_tg_chat_task_views（已 chat-scoped）。
+            // formatter 内部 connect compute_done_streak / count_done_in_
+            // window pure helpers + today 注入。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_streak_reply(&views, today)
+        }
         TgCommand::Yesterday => {
             // 昨日 done 视图：reuse read_tg_chat_task_views（已 chat-scoped）。
             // formatter 内部从 today 算 yesterday 边界并过滤 + sort。
