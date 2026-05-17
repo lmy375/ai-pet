@@ -85,6 +85,68 @@ pub struct DetailHistoryEntry {
     pub content: String,
 }
 
+/// 占盘统计返回结构：所有 `.history` 目录的总字节数 + 文件数 + 目录数。
+/// 给 PanelDebug「🗄 detail .history 占盘」chip 用 — 让 owner 看到 safety
+/// net 的磁盘成本，决策"该不该清 / 调小 HISTORY_CAP"。
+#[derive(Debug, Default, serde::Serialize)]
+pub struct DetailHistoryDiskUsage {
+    pub total_bytes: u64,
+    pub file_count: u64,
+    pub dir_count: u64,
+}
+
+/// 递归扫 `mem_dir`，累加所有以 `.history` 结尾的目录内文件大小。返回
+/// `(total_bytes, file_count, dir_count)`。`mem_dir` 不存在 / 不可读 →
+/// 全 0。单 file IO 失败容忍（个别 file metadata 读失败不阻断）。
+pub fn scan_history_disk_usage(mem_dir: &Path) -> DetailHistoryDiskUsage {
+    let mut out = DetailHistoryDiskUsage::default();
+    if !mem_dir.exists() {
+        return out;
+    }
+    let mut stack: Vec<PathBuf> = vec![mem_dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                // 该 dir 是 .history 目录吗？匹配 dir name 后缀 `.history`
+                let is_history_dir = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|n| n.ends_with(".history"))
+                    .unwrap_or(false);
+                if is_history_dir {
+                    out.dir_count += 1;
+                    // 累加目录内所有文件大小（一层；history dir 内不嵌套）
+                    if let Ok(inner) = fs::read_dir(&path) {
+                        for ient in inner.flatten() {
+                            let Ok(ift) = ient.file_type() else {
+                                continue;
+                            };
+                            if ift.is_file() {
+                                if let Ok(meta) = ient.metadata() {
+                                    out.total_bytes = out.total_bytes.saturating_add(meta.len());
+                                    out.file_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    // 不再递归进 history dir
+                } else {
+                    // 普通子目录继续递归找 .history
+                    stack.push(path);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// 列出某 detail.md 的全部 history 条目。最多 cap 份（与 HISTORY_CAP 同），
 /// 倒序返回（最新在前 — UI list 第一条是 owner 最可能想拿回的"上一版"）。
 /// 目录不存在 / 读失败 → 空 Vec。
@@ -224,6 +286,75 @@ mod tests {
         let p = dir.join("nonexistent.md");
         let entries = list_history(&p);
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn scan_disk_usage_empty_dir_returns_zero() {
+        let dir = fresh_temp_dir("disk-empty");
+        let u = scan_history_disk_usage(&dir);
+        assert_eq!(u.total_bytes, 0);
+        assert_eq!(u.file_count, 0);
+        assert_eq!(u.dir_count, 0);
+    }
+
+    #[test]
+    fn scan_disk_usage_missing_dir_returns_zero() {
+        let dir = fresh_temp_dir("disk-missing");
+        let missing = dir.join("does-not-exist");
+        let u = scan_history_disk_usage(&missing);
+        assert_eq!(u.total_bytes, 0);
+        assert_eq!(u.file_count, 0);
+        assert_eq!(u.dir_count, 0);
+    }
+
+    #[test]
+    fn scan_disk_usage_aggregates_history_dirs_only() {
+        let dir = fresh_temp_dir("disk-agg");
+        // 建模拟 mem_dir 结构：
+        //   <mem>/butler_tasks/foo.md.history/<ts1>.md (10B)
+        //                                     /<ts2>.md (20B)
+        //   <mem>/butler_tasks/foo.md          (5B 但不算 — 不是 .history)
+        //   <mem>/general/note.md.history/<ts>.md (8B)
+        //   <mem>/general/note.md              (3B 不算)
+        let cat1 = dir.join("butler_tasks");
+        fs::create_dir(&cat1).unwrap();
+        let hist1 = cat1.join("foo.md.history");
+        fs::create_dir(&hist1).unwrap();
+        fs::write(hist1.join("20260101-000001.md"), "x".repeat(10)).unwrap();
+        fs::write(hist1.join("20260101-000002.md"), "x".repeat(20)).unwrap();
+        fs::write(cat1.join("foo.md"), "x".repeat(5)).unwrap();
+
+        let cat2 = dir.join("general");
+        fs::create_dir(&cat2).unwrap();
+        let hist2 = cat2.join("note.md.history");
+        fs::create_dir(&hist2).unwrap();
+        fs::write(hist2.join("20260101-000003.md"), "x".repeat(8)).unwrap();
+        fs::write(cat2.join("note.md"), "x".repeat(3)).unwrap();
+
+        let u = scan_history_disk_usage(&dir);
+        assert_eq!(u.total_bytes, 10 + 20 + 8, "should only sum .history files");
+        assert_eq!(u.file_count, 3, "should count 3 snapshot files");
+        assert_eq!(u.dir_count, 2, "two .history dirs");
+    }
+
+    #[test]
+    fn scan_disk_usage_does_not_recurse_into_history_dir() {
+        // 防御：若 .history 内某天有 sub-dir 不该被进一步遍历（避免误把
+        // 不相关 file 算进 .history 体积）。当前实现 inner read_dir 仅
+        // is_file() 判断 — sub-dir 内文件不会被加。
+        let dir = fresh_temp_dir("disk-norec");
+        let hist = dir.join("foo.md.history");
+        fs::create_dir(&hist).unwrap();
+        fs::write(hist.join("a.md"), "x".repeat(10)).unwrap();
+        // 创嵌套子目录 + 内部一个文件
+        let inner = hist.join("nested");
+        fs::create_dir(&inner).unwrap();
+        fs::write(inner.join("b.md"), "x".repeat(999)).unwrap();
+
+        let u = scan_history_disk_usage(&dir);
+        // 只算顶层 a.md 的 10 字节，不递归进 nested
+        assert_eq!(u.total_bytes, 10);
+        assert_eq!(u.file_count, 1);
     }
 
     #[test]

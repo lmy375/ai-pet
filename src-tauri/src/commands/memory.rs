@@ -27,6 +27,15 @@ pub struct MemoryDiskUsage {
 /// 递归扫 memories dir 加总字节数 + 文件计数。给 PanelMemory 头部显存储占用
 /// 用，让用户感知"该 consolidate 了"。出错（dir 不存在 / 没权限）→ Err 透传；
 /// 实践中 memories_dir() 上面 create_dir_all 已建好。
+/// `detail_history_disk_usage`：扫所有 `.history` 目录算 safety-net 占
+/// 盘。给 PanelDebug 显「🗄 detail .history 占盘 N KB / M 个 dir」chip
+/// 用。memories_dir 不存在 → 全 0。
+#[tauri::command]
+pub fn detail_history_disk_usage() -> Result<crate::detail_history::DetailHistoryDiskUsage, String> {
+    let dir = memories_dir()?;
+    Ok(crate::detail_history::scan_history_disk_usage(&dir))
+}
+
 #[tauri::command]
 pub fn memory_disk_usage() -> Result<MemoryDiskUsage, String> {
     let dir = memories_dir()?;
