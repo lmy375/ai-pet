@@ -805,6 +805,33 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return next;
     });
   };
+  /// 🔀 按 created_at 倒序：true 时 rest 段按 created_at 倒序排（最新
+  /// 创建在前）。与 sortByRecent（updated_at 倒序）互补 — 那个看"最
+  /// 近被改动的"，本 toggle 看"最近新建的"。owner audit「我什么顺序加
+  /// 的」入口（默认 yaml 序受 pinned / 编辑动作扰动，看不出添加时序）。
+  /// 与 sortByCharCount / sortByRecent / sortBulterByNextFire 四态互斥：
+  /// 优先级 next-fire > 字数 > recent > created > 默认。
+  const [sortByCreated, setSortByCreated] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-memory-sort-created") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSortByCreated = () => {
+    setSortByCreated((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          "pet-memory-sort-created",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
   /// butler_tasks 段「⏰ next-fire 升序」专属 toggle：true 时段内非 pinned
   /// items 按下次触发时刻升序（最近会 fire 的浮顶），让 owner 一眼看
   /// "接下来 N 分钟 / 小时会 fire 的 N 条" 优先处理。无法解析 schedule
@@ -3135,6 +3162,31 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
           }
         >
           📏 {sortByCharCount ? "按字数" : "字数 -"}
+        </button>
+        {/* 🔀 按 created_at 倒序 toggle：与 sortByRecent (updated)/
+            sortByCharCount (字数)/ sortBulterByNextFire 互斥。让 owner
+            audit「我什么顺序加进来的」— 默认 yaml 序受 pinned / 编辑
+            动作扰动看不出添加时序，本 toggle 还原"按创建时间倒序"
+            可读视角。pinned 仍挂头。 */}
+        <button
+          style={
+            sortByCreated
+              ? {
+                  ...s.btn,
+                  background: "var(--pet-tint-blue-bg)",
+                  color: "var(--pet-tint-blue-fg)",
+                  borderColor: "var(--pet-tint-blue-fg)",
+                }
+              : s.btn
+          }
+          onClick={toggleSortByCreated}
+          title={
+            sortByCreated
+              ? "现按 created_at 倒序。点击切回 yaml 文件原序。pinned 仍挂头。"
+              : "切到按 created_at 倒序（最近创建在上）— 「我什么顺序加的」audit。与 📅 按时间（updated）互补。pinned 仍挂头。"
+          }
+        >
+          🔀 {sortByCreated ? "按创建" : "创建 -"}
         </button>
       </div>
 
@@ -6016,11 +6068,21 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     (b.updated_at || "").localeCompare(a.updated_at || "");
                   pinned.sort(cmpRecent);
                   rest.sort(cmpRecent);
+                } else if (sortByCreated) {
+                  // 按 created_at 倒序（ISO 字典序 = 时间序，与 updated
+                  // 同协议）。empty / 缺失 → "" 排末。
+                  const cmpCreated = (a: MemoryItem, b: MemoryItem) =>
+                    (b.created_at || "").localeCompare(a.created_at || "");
+                  pinned.sort(cmpCreated);
+                  rest.sort(cmpCreated);
                 }
                 const sortedItems =
                   pinned.length > 0
                     ? [...pinned, ...rest]
-                    : useNextFire || sortByCharCount || sortByRecent
+                    : useNextFire ||
+                        sortByCharCount ||
+                        sortByRecent ||
+                        sortByCreated
                       ? rest
                       : scheduleFilteredItems;
                 const isLong = sortedItems.length > CATEGORY_FOLD_THRESHOLD;

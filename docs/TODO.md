@@ -12,7 +12,6 @@
 - TG bot `/sleep_until <HH:MM>` 命令：mute 到指定时刻（与 /mute N 互补 — 「安静到 8 点」更自然）。
 - PanelTasks 行右键加「📌+⏰5min 提醒」组合项：钉住 + 5 分钟后软提醒 — sprint 突发场景。
 - ChatMini 顶部加「⏱ pet 沉默 N 分」chip：自上次 pet 主动开口算起 — owner 觉察 pet 卡住入口。
-- PanelMemory 段标题加「🔀 按 created 排」toggle：默认 updated 倒序；切到 created 倒序 — 「我什么顺序加的」audit。
 
 
 
