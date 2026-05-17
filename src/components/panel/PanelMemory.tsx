@@ -1051,6 +1051,141 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   // R118: butler_tasks schedule 模板插入用 ref 拿 textarea 光标位置。仅
   // butler_tasks category 模板按钮可见时使用。
   const descTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  /// iter #394: memory item description 编辑（new/edit modal textarea）
+  /// `#` tag 自动补全 popover — 与 iter #390 PanelTasks 搜索框 # 补全
+  /// 对偶，让 owner 在写 memory description 时也享受 tag 补全免敲错。
+  /// 数据源：扫所有 cat 的 items.description 抽 `#tag`（与 line 6223
+  /// 既有 inline chip 同正则），按全局频次降序排。
+  const [descTagDismissedAt, setDescTagDismissedAt] = useState<number | null>(
+    null,
+  );
+  const [descTagSelectedIdx, setDescTagSelectedIdx] = useState<number>(0);
+  const [descTextareaCursorPos, setDescTextareaCursorPos] = useState<number>(0);
+  /// 全 index 内所有 #tag 频次（across all categories）— useMemo on index 变化
+  const allTagFrequencies = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!index) return counts;
+    const re = /#[A-Za-z0-9_一-龥-]+/g;
+    for (const cat of Object.values(index.categories)) {
+      for (const it of cat.items) {
+        const matches = it.description.match(re) ?? [];
+        const seen = new Set<string>();
+        for (const m of matches) {
+          const t = m.slice(1);
+          if (t.length === 0 || t.length > 30) continue;
+          const key = t.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+      }
+    }
+    return counts;
+  }, [index]);
+  const descTagTrigger = useMemo(() => {
+    if (!editingItem) return null;
+    const text = editingItem.description;
+    const cursor = descTextareaCursorPos;
+    if (cursor === 0 || cursor > text.length) return null;
+    // 与 iter #390 atTrigger 同算法：从 cursor 向回扫 word-boundary `#`
+    let hashPos = -1;
+    for (let i = cursor - 1; i >= 0; i--) {
+      const ch = text[i];
+      if (ch === "#") {
+        if (i === 0 || /\s/.test(text[i - 1])) {
+          hashPos = i;
+        }
+        break;
+      }
+      if (/\s/.test(ch)) break;
+    }
+    if (hashPos < 0) return null;
+    if (descTagDismissedAt === hashPos) return null;
+    const query = text.slice(hashPos + 1, cursor);
+    return { hashPos, query };
+  }, [editingItem, descTextareaCursorPos, descTagDismissedAt]);
+  useEffect(() => {
+    if (descTagDismissedAt === null) return;
+    if (descTagTrigger !== null) return;
+    setDescTagDismissedAt(null);
+  }, [descTagTrigger, descTagDismissedAt]);
+  const descTagSuggestions = useMemo(() => {
+    if (!descTagTrigger) return [] as { tag: string; count: number }[];
+    const q = descTagTrigger.query.toLowerCase();
+    const all = Array.from(allTagFrequencies.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) =>
+        b.count !== a.count ? b.count - a.count : a.tag.localeCompare(b.tag),
+      );
+    const filtered =
+      q.length === 0
+        ? all
+        : all.filter(({ tag }) => tag.toLowerCase().includes(q));
+    return filtered.slice(0, 8);
+  }, [descTagTrigger, allTagFrequencies]);
+  useEffect(() => {
+    setDescTagSelectedIdx(0);
+  }, [descTagTrigger?.query]);
+  const acceptDescTagSuggestion = useCallback(
+    (tag: string) => {
+      if (!descTagTrigger || !editingItem) return;
+      const text = editingItem.description;
+      const cursor = descTextareaCursorPos;
+      const token = `#${tag}`;
+      const before = text.slice(0, descTagTrigger.hashPos);
+      const after = text.slice(cursor);
+      const next = `${before}${token}${after}`;
+      setEditingItem({ ...editingItem, description: next });
+      const newPos = descTagTrigger.hashPos + token.length;
+      setDescTextareaCursorPos(newPos);
+      setDescTagDismissedAt(null);
+      window.requestAnimationFrame(() => {
+        const cur = descTextareaRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.setSelectionRange(newPos, newPos);
+      });
+    },
+    [descTagTrigger, descTextareaCursorPos, editingItem],
+  );
+  const handleDescTagKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!descTagTrigger) return false;
+      if (descTagSuggestions.length === 0 && e.key !== "Escape") return false;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setDescTagSelectedIdx((i) =>
+          descTagSuggestions.length === 0
+            ? 0
+            : Math.min(i + 1, descTagSuggestions.length - 1),
+        );
+        return true;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setDescTagSelectedIdx((i) => Math.max(0, i - 1));
+        return true;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const safe = Math.max(
+          0,
+          Math.min(descTagSelectedIdx, descTagSuggestions.length - 1),
+        );
+        const target = descTagSuggestions[safe];
+        if (target) acceptDescTagSuggestion(target.tag);
+        return true;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDescTagDismissedAt(descTagTrigger.hashPos);
+        return true;
+      }
+      return false;
+    },
+    [descTagTrigger, descTagSuggestions, descTagSelectedIdx, acceptDescTagSuggestion],
+  );
   // 顶部 memory_search input 的 DOM ref —— ⌘F / Ctrl+F 全局快捷键聚焦
   // 用。与 PanelTasks 同款 UX（与 mac Finder / 浏览器 / Notion 直觉一致）。
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -3649,23 +3784,122 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   })()}
                 </div>
               )}
-              <textarea
-                ref={descTextareaRef}
-                style={{ ...s.textarea, minHeight: editingItem.category === "butler_tasks" ? 100 : 60 }}
-                maxLength={300}
-                placeholder={CATEGORY_PLACEHOLDERS[editingItem.category] || ""}
-                value={editingItem.description}
-                onChange={(e) => setEditingItem({ ...editingItem, description: e.target.value })}
-                onKeyDown={(e) => {
-                  // R105: ⌘S/Ctrl+S 触发保存。preventDefault 吃掉 webview
-                  // "另存为页面"默认行为；handleSaveEdit 内部已有 try/catch
-                  // 防 race。仿 PanelTasks 详情 detail.md 编辑同款 pattern。
-                  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-                    e.preventDefault();
-                    void handleSaveEdit();
-                  }
-                }}
-              />
+              <div style={{ position: "relative" }}>
+                <textarea
+                  ref={descTextareaRef}
+                  style={{ ...s.textarea, minHeight: editingItem.category === "butler_tasks" ? 100 : 60 }}
+                  maxLength={300}
+                  placeholder={CATEGORY_PLACEHOLDERS[editingItem.category] || ""}
+                  value={editingItem.description}
+                  onChange={(e) => {
+                    setEditingItem({ ...editingItem, description: e.target.value });
+                    setDescTextareaCursorPos(e.target.selectionStart ?? 0);
+                  }}
+                  onSelect={(e) => {
+                    const el = e.target as HTMLTextAreaElement;
+                    setDescTextareaCursorPos(el.selectionStart ?? 0);
+                  }}
+                  onClick={(e) => {
+                    const el = e.target as HTMLTextAreaElement;
+                    setDescTextareaCursorPos(el.selectionStart ?? 0);
+                  }}
+                  onKeyUp={(e) => {
+                    setDescTextareaCursorPos(e.currentTarget.selectionStart ?? 0);
+                  }}
+                  onKeyDown={(e) => {
+                    // iter #394: # tag popover 激活时拦 ↑↓/Enter/Tab/Esc —
+                    // 与 detail.md @ 补全 / iter #390 PanelTasks # 补全同
+                    // 优先级模式。
+                    if (handleDescTagKeyDown(e)) return;
+                    // R105: ⌘S/Ctrl+S 触发保存。preventDefault 吃掉 webview
+                    // "另存为页面"默认行为；handleSaveEdit 内部已有 try/catch
+                    // 防 race。仿 PanelTasks 详情 detail.md 编辑同款 pattern。
+                    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+                      e.preventDefault();
+                      void handleSaveEdit();
+                    }
+                  }}
+                />
+                {/* iter #394: `#` tag 自动补全 popover — 与 iter #390
+                    PanelTasks 搜索框对偶。绝对定位贴 textarea 底，全
+                    index 内 #tag 频次降序前 8 条；hover / ↑↓ 高亮，
+                    click / Enter / Tab 接受。 */}
+                {descTagTrigger && descTagSuggestions.length > 0 && (
+                  <div
+                    onMouseDown={(e) => e.preventDefault()}
+                    style={{
+                      position: "absolute",
+                      top: "100%",
+                      left: 0,
+                      right: 0,
+                      marginTop: 2,
+                      maxHeight: 220,
+                      overflowY: "auto",
+                      padding: 4,
+                      background: "var(--pet-color-card)",
+                      border: "1px solid var(--pet-color-border)",
+                      borderRadius: 6,
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                      zIndex: 30,
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: "4px 9px 6px",
+                        fontSize: 10,
+                        color: "var(--pet-color-muted)",
+                        borderBottom: "1px dashed var(--pet-color-border)",
+                        marginBottom: 4,
+                      }}
+                    >
+                      #{descTagTrigger.query || "…"} · ↑↓ 选 · Enter / Tab 接受 · Esc 关
+                    </div>
+                    {descTagSuggestions.map(({ tag, count }, i) => {
+                      const active = i === descTagSelectedIdx;
+                      return (
+                        <div
+                          key={tag}
+                          onMouseEnter={() => setDescTagSelectedIdx(i)}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            acceptDescTagSuggestion(tag);
+                          }}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            padding: "4px 9px",
+                            fontSize: 12,
+                            borderRadius: 4,
+                            background: active
+                              ? "var(--pet-tint-purple-bg)"
+                              : "transparent",
+                            color: active
+                              ? "var(--pet-tint-purple-fg)"
+                              : "var(--pet-color-fg)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <span>#{tag}</span>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              color: active
+                                ? "var(--pet-tint-purple-fg)"
+                                : "var(--pet-color-muted)",
+                              opacity: 0.85,
+                              fontFamily: "'SF Mono', 'Menlo', monospace",
+                            }}
+                          >
+                            {count}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               {/* R113: description 字数计数器。三档颜色：< 90% muted / 90-99%
                   amber / 100% red，让用户提前感知 maxLength=300 上限。 */}
               {(() => {
