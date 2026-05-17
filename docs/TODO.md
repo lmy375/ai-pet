@@ -9,7 +9,6 @@
 >
 
 - TG bot `/move_to <title> <category>` 命令：跨 memory category 迁移 — 复用既有 `memory_move_category` Tauri 命令。
-- ChatMini ambient row 「📊 今日 N 消息」chip：显当前 session 今日 user+assistant 消息总数 — 活跃度信号。
 - TG bot `/cascade_rename <old> :: <new>` 命令：rename + 自动追踪 detail.md / [blockedBy:] 内 `「<old>」` ref 同步替换 — 与 /edit_title 自动维护选择。
 
 

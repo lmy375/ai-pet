@@ -437,11 +437,30 @@ export function ChatMini({
     return null;
   }, [messages, silentTick]);
   const showPetSilentChip = petSilentMins !== null && petSilentMins >= 5;
+  /// 今日消息计数：scan `messages` prop 中 ts 落在本地今日的 user +
+  /// assistant 总数。活跃度信号 — owner 想「今天和 pet 聊了多少」时
+  /// ambient chip 给即时数。`messages` 是 raw prop，覆盖比 visibleItems
+  /// 更全（visibleItems 还没在此 scope 声明 — TDZ）。session 切换 / 新
+  /// 消息进来时自然 re-derive；跨午夜时 silentTick 30s 推过自然刷新。
+  /// 仅 ≥ 1 时显（idle 态省垂直空间，与既有 ambient gates 一致）。
+  const messagesToday = useMemo(() => {
+    const todayStr = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD 本地
+    let count = 0;
+    for (const m of messages) {
+      if (!m.ts) continue;
+      const d = new Date(m.ts);
+      if (isNaN(d.getTime())) continue;
+      const itemStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (itemStr === todayStr) count += 1;
+    }
+    return count;
+  }, [messages, silentTick]);
   const ambientHasContent =
     ambientTransient !== null ||
     ambientAlarms > 0 ||
     ambientMuteMins !== null ||
-    showPetSilentChip;
+    showPetSilentChip ||
+    messagesToday > 0;
   // followTail：用户是否处于"自动跟随最新"状态。挂载时默认 true（贴底）。
   // 用 ref 让 auto-scroll effect 拿到最新值而不必加进 deps；同名 state
   // 仅供「跳到底浮标」按钮可见态用。两者由 onScroll 同步更新。
@@ -1423,6 +1442,47 @@ export function ChatMini({
                 </button>
               );
             })()}
+            {/* 📊 今日消息计数 chip：scan messages 中 ts 落在本地今日的
+                user + assistant 总数。活跃度信号 — 与既有 transient /
+                alarms / mute / silent chip 同 ambient pattern。点击复制
+                「今日 N 消息」一行到剪贴板（粘日记 / 同事 ping 场景）。
+                ≥ 1 时浮（≥ 1 才有意义 — gate 与 ambientHasContent 一致
+                避免 0 时单独显占垂直空间）。 */}
+            {messagesToday > 0 && (
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const todayStr = new Date().toLocaleDateString("sv-SE");
+                  const line = `今日（${todayStr}）${messagesToday} 条消息`;
+                  try {
+                    await navigator.clipboard.writeText(line);
+                    console.log(`📊 已复制：${line}`);
+                  } catch (err) {
+                    console.error("copy today msg count failed:", err);
+                  }
+                }}
+                title={`本会话今日（本地日历日）共 ${messagesToday} 条 user + assistant 消息。点击复制「今日 N 消息」一行到剪贴板。`}
+                aria-label="today messages count"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 2,
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                  background:
+                    "color-mix(in srgb, var(--pet-color-fg) 6%, transparent)",
+                  color: "var(--pet-color-muted)",
+                  fontWeight: 500,
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  fontSize: "inherit",
+                }}
+              >
+                📊 今日 {messagesToday}
+              </button>
+            )}
           </div>
         )}
         {/* ⌘F inline 搜索条：浮在 chat 列表顶部，不挤压列表本身（list 的
