@@ -4120,6 +4120,47 @@ export function PanelTasks({
   /// 缓存，未命中走 task_get_detail。target 切换后调 setPendingTitleFocus 让
   /// 既有"清 filter / 显 finished / scrollIntoView" pipeline 把目标 row 滚进
   /// 视野（与"完成小卡跳行" / task ref chip click 同 jump-to pipeline）。
+  /// ⌘⌥Enter "保存并跳下一条 task" 的连续 review 流：save → 等磁盘落盘
+  /// → 直接 enterEditDetail(next)。与 ⌘] 仅切换 + ⌘S 仅保存的组合相比，
+  /// 一键完成"我看完这条，存盘，进下一条" 的常见 audit / review 节奏。
+  /// 末条 task 时退化为"保存并关闭"（与 ⌘⇧Enter 等价），让 owner 看到
+  /// "你已经看到底了" 的自然终态。dirty 内容仍走 handleSaveDetail 内已
+  /// 处理的全套（draft 清 / detailMap patch / history 刷新等）。
+  const handleSaveAndNavigateNext = useCallback(
+    async (curTitle: string) => {
+      // 在 save 之前计算下一条 title — save 内会 setEditingDetailTitle(null)
+      // 关闭编辑器，闭包内的 navigate 会失去 anchor。
+      const curIdx = visibleTasks.findIndex((t) => t.title === curTitle);
+      const hasNext = curIdx !== -1 && curIdx < visibleTasks.length - 1;
+      const nextTask = hasNext ? visibleTasks[curIdx + 1] : null;
+      await handleSaveDetail(curTitle);
+      if (!nextTask) {
+        // 末条：保存后关闭编辑器即终态，与 ⌘⇧Enter 同行为
+        return;
+      }
+      // 拉 next detail：cache 命中直接用；miss 走 IO。失败兜底空内容 —
+      // 与 handleNavigateDetail 同模式。
+      let targetMd = "";
+      const cached = detailMap[nextTask.title];
+      if (cached) {
+        targetMd = cached.detail_md;
+      } else {
+        try {
+          const fresh = await invoke<TaskDetail>("task_get_detail", {
+            title: nextTask.title,
+          });
+          targetMd = fresh.detail_md;
+          setDetailMap((prev) => ({ ...prev, [nextTask.title]: fresh }));
+        } catch (e) {
+          console.error("task_get_detail on save+next failed:", e);
+        }
+      }
+      handleEnterEditDetail(nextTask.title, targetMd);
+      setPendingTitleFocus(nextTask.title);
+    },
+    [visibleTasks, detailMap, handleSaveDetail, handleEnterEditDetail],
+  );
+
   const handleNavigateDetail = useCallback(
     async (direction: "prev" | "next") => {
       const curTitle = editingDetailTitle;
@@ -11400,11 +11441,27 @@ export function PanelTasks({
                                   if (
                                     (e.metaKey || e.ctrlKey) &&
                                     e.shiftKey &&
+                                    !e.altKey &&
                                     e.key === "Enter"
                                   ) {
                                     e.preventDefault();
                                     if (savingDetail) return;
                                     handleSaveDetail(t.title);
+                                    return;
+                                  }
+                                  // ⌘⌥Enter / Ctrl+⌥+Enter 保存并跳下一条 task
+                                  // — 连续 review / 编辑流。末条退化为"保存并
+                                  // 关闭"（与 ⌘⇧Enter 等价）。与既有 ⌘⇧Enter
+                                  // "完成本轮"对偶："⌘⌥ = 继续下一条"心智。
+                                  if (
+                                    (e.metaKey || e.ctrlKey) &&
+                                    e.altKey &&
+                                    !e.shiftKey &&
+                                    e.key === "Enter"
+                                  ) {
+                                    e.preventDefault();
+                                    if (savingDetail) return;
+                                    void handleSaveAndNavigateNext(t.title);
                                     return;
                                   }
                                   // R138: Esc 触发取消编辑。dirty 时由
@@ -11415,7 +11472,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -11773,7 +11830,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -14181,6 +14238,7 @@ export function PanelTasks({
                 items: [
                   ["⌘S", "保存"],
                   ["⌘⇧Enter", "保存并关闭"],
+                  ["⌘⌥Enter", "保存并跳下一条 task（连续 review 流）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
                   ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
                   ["⌘⇧K", "删除当前行（VS Code「Delete Line」）"],
