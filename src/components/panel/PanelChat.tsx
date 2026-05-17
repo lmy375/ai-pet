@@ -901,6 +901,58 @@ export function PanelChat({
   // 单状态串行（同时只显一条），多次点击末次覆盖。
   const [exportToast, setExportToast] = useState("");
 
+  /// 📋 复制最近 N 轮 dropdown：N ∈ {1, 5, 10, 20, 50}。click button → 弹 N
+  /// 选项 popover；click 选项 → 取 items 末 N 条 user/assistant 拼带 glyph
+  /// 前缀的 markdown 写剪贴板。tool / error / systemNote 行不计 — 与"对话
+  /// 复盘"语义对齐。
+  const [copyRecentMenuOpen, setCopyRecentMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!copyRecentMenuOpen) return;
+    const close = () => setCopyRecentMenuOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCopyRecentMenuOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [copyRecentMenuOpen]);
+  const handleCopyRecentN = useCallback(
+    async (n: number) => {
+      setCopyRecentMenuOpen(false);
+      const slice = items
+        .filter(
+          (it) =>
+            (it.type === "user" || it.type === "assistant") &&
+            !it.systemNote &&
+            it.content.trim().length > 0,
+        )
+        .slice(-n);
+      if (slice.length === 0) {
+        setExportToast("当前 session 还没 user/assistant 消息可复制");
+        window.setTimeout(() => setExportToast(""), 3000);
+        return;
+      }
+      const text = slice
+        .map((it) => {
+          const glyph = it.type === "user" ? "🧑" : "🐾";
+          return `${glyph} ${it.content.trim()}`;
+        })
+        .join("\n\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        setExportToast(`已复制最近 ${slice.length} 条 user/assistant`);
+        window.setTimeout(() => setExportToast(""), 3000);
+      } catch (e) {
+        setExportToast(`复制失败: ${e}`);
+        window.setTimeout(() => setExportToast(""), 3000);
+      }
+    },
+    [items],
+  );
+
   /// 全量 sessions 快照导出：base64 写剪贴板，复用 exportToast 通道反馈。
   /// 带安全提示（snapshot 含历史聊天明文，可能有敏感内容）。
   const handleExportSessionsSnapshot = useCallback(async () => {
@@ -3662,6 +3714,100 @@ export function PanelChat({
         >
           🔍
         </button>
+        {/* 📋 复制最近 N 轮 dropdown：click 弹 popover 选 N（1/5/10/20/50），
+            把当前 session 的 user/assistant 消息（过滤 tool/error/systemNote）
+            末 N 条带 glyph 前缀拼成 markdown 写剪贴板。导出对话便于贴 issue /
+            分享。仅 items 非空时显避免空状态无 op。 */}
+        {items.length > 0 && (
+          <span
+            style={{ position: "relative", display: "inline-block" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCopyRecentMenuOpen((v) => !v);
+              }}
+              style={{
+                ...newSessionBtnStyle,
+                color: copyRecentMenuOpen
+                  ? "var(--pet-tint-blue-fg)"
+                  : "var(--pet-color-fg)",
+                background: copyRecentMenuOpen
+                  ? "var(--pet-tint-blue-bg)"
+                  : "var(--pet-color-bg)",
+              }}
+              title="复制最近 N 轮 user/assistant 消息（去 tool / error / systemNote 行）到剪贴板。N=1/5/10/20/50 dropdown 选。"
+              aria-label="copy recent N rounds"
+            >
+              📋
+            </button>
+            {copyRecentMenuOpen && (
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  right: 0,
+                  minWidth: 140,
+                  padding: 4,
+                  background: "var(--pet-color-card)",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                  zIndex: 40,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                }}
+              >
+                <div
+                  style={{
+                    padding: "4px 9px",
+                    fontSize: 10,
+                    color: "var(--pet-color-muted)",
+                    borderBottom: "1px solid var(--pet-color-border)",
+                    marginBottom: 2,
+                  }}
+                >
+                  📋 复制最近 N 条
+                </div>
+                {[1, 5, 10, 20, 50].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => void handleCopyRecentN(n)}
+                    onMouseOver={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.background =
+                        "var(--pet-color-bg)";
+                    }}
+                    onMouseOut={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.background =
+                        "transparent";
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "5px 9px",
+                      fontSize: 11,
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--pet-color-fg)",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      borderRadius: 4,
+                    }}
+                  >
+                    {`最近 ${n} 条`}
+                  </button>
+                ))}
+              </div>
+            )}
+          </span>
+        )}
         {/* "今日 N 个会话 · M 条" chip：sessionList 里 updated_at 在今日
             的会话数 + 它们 item_count 之和。是会话级近似（per-message
             timestamp 不存在），点击不交互；hover 给 caveat。仅 N>0 时显，
