@@ -1551,6 +1551,19 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Snippets => {
+            // 与 /pinned / /silenced 同模板：read_tg_chat_task_views + 含
+            // [snippet] / [snippet: <label>] marker filter。formatter 内部
+            // 渲染（含空集兜底）。
+            let views: Vec<crate::task_queue::TaskView> = read_tg_chat_task_views(chat_id.0)
+                .into_iter()
+                .filter(|v| {
+                    crate::telegram::commands::parse_snippet_marker(&v.raw_description)
+                        .is_some()
+                })
+                .collect();
+            crate::telegram::commands::format_snippets_reply(&views)
+        }
         TgCommand::Timeline { title } => {
             // 与 Show 同 resolve 三层。命中后调 task_get_detail 拿 history（已
             // newest-first 排好），扫 markers 算 entries（旧→新 + 去重无变化

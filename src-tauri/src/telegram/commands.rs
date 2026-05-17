@@ -549,6 +549,11 @@ pub enum TgCommand {
     /// origin terminal-state markers — 副本回 pending。priority + due 继承
     /// 源 task。
     Dup { title: String },
+    /// `/snippets` —— 列含 `[snippet]` / `[snippet: <label>]` marker 的 task
+    /// 一行紧凑视图：title + 可选 label + body 前 80 字预览。让 owner 把
+    /// 可复用片段（prompt 模板 / 决策清单 / 常用回复 / 流程 checklist）
+    /// 标记后集中 audit — 用 /show 看完整内容、/dup 克隆改装。
+    Snippets,
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -652,6 +657,7 @@ impl TgCommand {
             TgCommand::Show { .. } => "show",
             TgCommand::Peek { .. } => "peek",
             TgCommand::Dup { .. } => "dup",
+            TgCommand::Snippets => "snippets",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -734,6 +740,7 @@ impl TgCommand {
             | TgCommand::PinnedDue
             | TgCommand::Silenced
             | TgCommand::Markers
+            | TgCommand::Snippets
             | TgCommand::Tags
             | TgCommand::Stats
             | TgCommand::Buckets
@@ -881,6 +888,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("show", "Show full raw description (with markers) + detail.md preview of a task"),
             ("peek", "One-line compact view: status + schedule + key markers (complements /show full detail)"),
             ("dup", "Duplicate a task to a new pending instance (preserves schedule / pinned / silent / tags; strips terminal markers)"),
+            ("snippets", "List tasks marked [snippet] / [snippet: <label>] — reusable templates / checklists / canned replies"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -960,6 +968,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("show", "显单条任务完整 raw description（含 markers）+ detail.md 预览"),
             ("peek", "一行紧凑视图：status + 标题 + schedule + 关键 markers（与 /show 完整视图互补）"),
             ("dup", "复制 task 为新 pending 实例（保 schedule / pinned / silent / tags；剥终态 markers）"),
+            ("snippets", "列含 [snippet] / [snippet: <label>] marker 的 task — 可复用模板 / 流程 / 常用回复 audit"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1237,6 +1246,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/dup <title>`：与 /show 同 single-title 模板。空 title 由 handler
         // 走 missing-argument。复制成新 P3 task，title 加 `(副本)` 后缀。
         "dup" => Some(TgCommand::Dup { title }),
+        // `/snippets`：无参 — 列含 [snippet] / [snippet: label] marker 的
+        // task。与 /pinned / /silenced 同 chat-scope filter 模板。
+        "snippets" => Some(TgCommand::Snippets),
         // `/timeline <title>`：与 /show 同 single-title 模板。空 title 由
         // handler 走 missing-argument 反馈。butler_history.log 扫描在
         // handler 端做（IO），parser 仅切 title。
@@ -1977,7 +1989,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2132,6 +2144,7 @@ pub fn format_help_for_topic(
         "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
         "peek" => "👀 /peek <title>\n\n用法：一行紧凑视图 — status emoji + 标题 + schedule（every / once / deadline 摘要）+ 关键 markers（📌 pinned / 🔇 silent / 💤 snoozed / 🔒 blockedBy）+ P{priority}。与 /show 显完整 raw + detail.md 预览互补 — owner 想「快瞄一眼这条状态」用 /peek，要看完整 description 走 /show。\n\nTitle resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  ⏳ 「<title>」 · 🕐 every 09:00 · 📌 🔇 💤 · P3\n\nschedule 段：[every: HH:MM] / [once: YYYY-MM-DD HH:MM] / [deadline: ...] / [every: 工作日 HH:MM] 等都识别；无 schedule 前缀 → 省略。\n\nmarkers 段：仅显非空 — 没钉不显 📌；没 snoozed 不显 💤。整条 markers 都没 → 段省略。\n\nP{n}：从 [task pri=N] 提取，缺省（无 pri marker）→ 省略。\n\n示例：\n  /peek 整理 Downloads\n  /peek 1  （/tasks 输出第 1 条）\n\n相关：/show <title>（完整 raw + detail）；/tasks（清单视图）；/timeline（历史演化）。",
         "dup" => "📑 /dup <title>\n\n用法：复制一条 task 为新 pending 实例 — title 加「(副本)」后缀，priority + due 继承源 task。owner 想「以这条为模板建一条相似的」时一键完成，免「复制 raw → 编辑去掉终态 markers → /task 重建」三步。\n\n继承的：[every:] / [once:] / [deadline:] / [reminderMin:] schedule + [pinned] / [silent] / [blockedBy:] markers + #tags + priority + due + body 文本。\n\n剥掉的：[done] / [result:] / [error:] / [cancelled:] / [archived:] / [snooze:] / [origin:tg:] — 这些是「原 task 实例」专属信号，副本应回 pending 重新起跑。\n\nTitle 冲突兜底：memory_edit 内置 unique-filename — 同 title 重复 dup 会变 `<src>_(副本)_1` / `_2` ...自动加序号。\n\n空 title → usage hint；title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /dup 整理 Downloads          → 「整理 Downloads (副本)」\n  /dup 1                        （/tasks 输出第 1 条）\n  /dup 写周报                   → 「写周报 (副本)」（继承 every + reminderMin + #work）\n\n输出格式：\n  📑 已复制「<src>」→「<new>」\n  · 继承 schedule / markers / tags / priority / due\n  · 剥终态 markers（done / result / snooze / origin 等）\n\n相关：/edit <title> :: <new desc>（覆写而非复制）；/show 看 raw 验证 markers；/tasks 看新 task 入列。",
+        "snippets" => "📎 /snippets\n\n用法：列本聊天派单中含 `[snippet]` 或 `[snippet: <label>]` marker 的 task — 「可复用片段」分类清单。owner 用此 marker 标 prompt 模板 / 决策清单 / 常用回复 / 流程 checklist 等想反复用的内容，本命令一眼看「我都标了哪些 snippet」+ label + body 前 80 字预览。\n\nmarker 约定：\n  [snippet]              （无 label，简单标记为「可复用」）\n  [snippet: 模板A]      （含 label — 后续 /show / /dup 时一眼识别用途）\n  [snippet: PR template]（label 可为任意非 `]` 字符）\n\n输出格式：\n  📎 snippets · N 条：\n  🟢 <title> [模板A]\n     <body 前 80 字预览>\n  🟢 <title>\n     <body 前 80 字预览>\n  ...\n\nN === 0 时友好兜底：「本聊天派单还没标 snippet — 在 /edit 中给 task 加 `[snippet]` / `[snippet: <label>]` marker 后回来 audit」+ 教学例。\n\n场景：sprint 整理常用 prompt；/dup 一个 snippet 改装为新任务模板（/dup 保 markers 含 [snippet] — 副本也是 snippet）；写决策日志时回看 last week 我标了哪些可复用的。\n\n示例：\n  /snippets\n\n相关：/show <title>（看完整 raw + detail）；/dup <title>（克隆改装）；/markers（含 pinned + silent 联合视图，未来可扩 snippets 进 markers 矩阵）。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）；/forks <title>（反向：哪些 task 在等这条解锁）。",
         "forks" => "🔱 /forks <title>\n\n用法：反向 audit — 列出本 chat 派单中所有 active task（pending / error）的 description 含 `[blockedBy: <title>]` marker 的，让 owner 知道「这条 task 解锁后会让谁动起来」。与 /blocked（列被卡的）对偶。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /forks 整理 Downloads\n  /forks 1  （/tasks 输出第 1 条）\n\n输出格式：\n  🔱 解锁「<title>」会松开 N 条 task：\n  🟢 fork_a\n  ⚠️ fork_b\n\n无引用 → 「解锁这条不会影响其它 task」友好兜底。让 owner 在决定是否优先做某条 blocker 时，看到「这条做完会让谁动起来」做出更明智的优先级判断。\n\n相关：/blocked_by <title>（反向 — 我在等谁）。",
@@ -2223,6 +2236,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/show <title>  —  显单条任务完整 raw description（含 markers）+ detail.md 预览".to_string(),
         "/peek <title>  —  一行紧凑视图：status + schedule + 关键 markers（与 /show 完整视图互补 — 快瞄场景用）".to_string(),
         "/dup <title>  —  复制 task 为新 P3 pending 实例，title 加「(副本)」后缀 — 保 schedule / pinned / silent / tags，剥终态 markers".to_string(),
+        "/snippets  —  列含 [snippet] / [snippet: <label>] marker 的 task — 可复用模板 / 流程 / 常用回复 audit".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -5569,6 +5583,106 @@ pub fn format_dup_reply(src_title: &str, new_title: &str) -> String {
     )
 }
 
+/// pure：从 task raw_description 抽 `[snippet]` / `[snippet: <label>]` 标记
+/// 的可选 label。
+/// - 无 marker → None
+/// - `[snippet]` 或 `[snippet:]` → Some("")
+/// - `[snippet: <label>]` → Some("<label>".trim())（label 不含两端空白）
+/// - 全角冒号 `[snippet：label]` → 同等支持
+///
+/// 多次出现仅取首个；非 token-boundary 起始（如 `prefix[snippet]`）也算（与
+/// extract_marker_tokens 同行为：`[` 起 + 首 `]` 收口）。
+pub fn parse_snippet_marker(description: &str) -> Option<String> {
+    let bytes = description.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        let rest = &description[i..];
+        let close_rel = rest.find(']')?;
+        let inner = &rest[1..close_rel];
+        if let Some(after_key) = inner.strip_prefix("snippet") {
+            // 后接 `]` (即 inner 仅为 "snippet") / `:` / `：` / ` `
+            // 三类才算命中（防 [snippetXY] 这种碰撞）。
+            if after_key.is_empty() {
+                return Some(String::new());
+            }
+            let first = after_key.chars().next()?;
+            if first == ':' || first == '：' || first == ' ' {
+                let label = after_key
+                    .trim_start_matches([':', '：', ' '])
+                    .trim()
+                    .to_string();
+                return Some(label);
+            }
+        }
+        i += close_rel + 1;
+    }
+    None
+}
+
+/// `/snippets` 命令回复文案。pure：
+/// - 输入 views 已是 chat-scope filtered + 已含 [snippet] marker（caller 过）
+/// - 空 → 友好兜底 + 教学例
+/// - 非空 → `📎 snippets · N 条：` + 每行 status_emoji + title + [label]
+///   （非空时显）+ body 前 80 字预览
+///
+/// body 预览：从 raw_description 提取 — strip [task pri=...] header 后取前
+/// 80 字，flatten 多空白成单空格，超长 + …
+pub const SNIPPET_BODY_PREVIEW_CHARS: usize = 80;
+pub fn format_snippets_reply(views: &[crate::task_queue::TaskView]) -> String {
+    use crate::task_queue::TaskStatus;
+    if views.is_empty() {
+        return "📎 本聊天派单还没标 snippet —— 在 /edit 中给可复用 task 加 `[snippet]` 或 `[snippet: <label>]` marker 后回来 audit。\n\n例：\n  /edit PR 评审模板 :: [snippet: PR template] checklist...\n  /edit 决策日志开头 :: [snippet] 今天的关键决策...\n\n之后再 /snippets 看「我都标了哪些可复用」。配合 /dup 一个 snippet 改装为新任务。".to_string();
+    }
+    let mut out = String::new();
+    out.push_str(&format!("📎 snippets · {} 条：\n", views.len()));
+    for v in views {
+        let status_emoji = match v.status {
+            TaskStatus::Pending => "🟢",
+            TaskStatus::Done => "✅",
+            TaskStatus::Error => "⚠️",
+            TaskStatus::Cancelled => "🚫",
+        };
+        let label = parse_snippet_marker(&v.raw_description).unwrap_or_default();
+        // body 预览：parse_task_header 抽 body，再 strip 所有 [...] markers 让
+        // 预览是「实际内容」而非满屏 markers。collapse_whitespace 单空格化。
+        let body_raw = match crate::task_queue::parse_task_header(&v.raw_description) {
+            Some(h) => h.body,
+            None => v.raw_description.clone(),
+        };
+        let body_clean: String = body_raw
+            .chars()
+            .filter(|_| true)
+            .collect::<String>()
+            // 简化：保 markers 在预览里 — owner 想看完整走 /show；这里
+            // 主要让 owner 一眼能从预览认出 task。不另 strip。
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let body_preview: String = if body_clean.chars().count() > SNIPPET_BODY_PREVIEW_CHARS {
+            let head: String = body_clean
+                .chars()
+                .take(SNIPPET_BODY_PREVIEW_CHARS)
+                .collect();
+            format!("{}…", head)
+        } else {
+            body_clean
+        };
+        if label.is_empty() {
+            out.push_str(&format!("{} {}\n", status_emoji, v.title));
+        } else {
+            out.push_str(&format!("{} {} [{}]\n", status_emoji, v.title, label));
+        }
+        if !body_preview.is_empty() {
+            out.push_str(&format!("   {}\n", body_preview));
+        }
+    }
+    out
+}
+
 /// `/timeline` 中一行事件条目。`markers` 是该事件 snippet 内扫出的「状态
 /// 变化」marker token 列表（保 `[done]` / `[result: 已发送]` 等完整原文），
 /// 顺序保持 snippet 内出现顺序。
@@ -6510,7 +6624,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "dup", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "dup", "snippets", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -6981,7 +7095,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -13149,6 +13263,131 @@ mod tests {
         // 显新 title 不做特殊处理
         let s = format_dup_reply("整理", "整理 (副本)_1");
         assert!(s.contains("「整理 (副本)_1」"), "{s}");
+    }
+
+    // -------- /snippets parse_snippet_marker + format --------
+
+    #[test]
+    fn snippets_parser_no_arg() {
+        assert_eq!(parse_tg_command("/snippets"), Some(TgCommand::Snippets));
+        assert_eq!(parse_tg_command("/SNIPPETS"), Some(TgCommand::Snippets));
+    }
+
+    #[test]
+    fn parse_snippet_marker_returns_none_when_absent() {
+        assert_eq!(parse_snippet_marker("[task pri=3] 普通 task"), None);
+        assert_eq!(parse_snippet_marker(""), None);
+        // [snippetXY] 不该命中（防 token-boundary 碰撞）
+        assert_eq!(parse_snippet_marker("[snippetXY]"), None);
+    }
+
+    #[test]
+    fn parse_snippet_marker_returns_empty_label_for_bare_marker() {
+        assert_eq!(
+            parse_snippet_marker("[task pri=3] [snippet] 模板"),
+            Some(String::new())
+        );
+        assert_eq!(
+            parse_snippet_marker("[snippet:] 空 label"),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn parse_snippet_marker_extracts_label() {
+        assert_eq!(
+            parse_snippet_marker("[snippet: PR template] body"),
+            Some("PR template".to_string())
+        );
+        // 全角冒号
+        assert_eq!(
+            parse_snippet_marker("[snippet：模板A] body"),
+            Some("模板A".to_string())
+        );
+        // 空格分隔（[snippet name] — 不带冒号但有空格）
+        assert_eq!(
+            parse_snippet_marker("[snippet 模板B] body"),
+            Some("模板B".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_snippet_marker_takes_first_occurrence_when_multiple() {
+        assert_eq!(
+            parse_snippet_marker("[snippet: A] body [snippet: B]"),
+            Some("A".to_string())
+        );
+    }
+
+    #[test]
+    fn format_snippets_empty_shows_teaching_hint() {
+        let s = format_snippets_reply(&[]);
+        assert!(s.contains("还没标 snippet"), "{s}");
+        assert!(s.contains("/edit"), "should teach via /edit example: {s}");
+    }
+
+    #[test]
+    fn format_snippets_lists_titles_with_labels_and_preview() {
+        let labeled = crate::task_queue::TaskView {
+            title: "PR review template".to_string(),
+            body: "".to_string(),
+            raw_description: "[task pri=3] [snippet: PR template] 1. 看 diff 2. 跑测试 3. 提评论".to_string(),
+            priority: 3,
+            due: None,
+            status: crate::task_queue::TaskStatus::Pending,
+            error_message: None,
+            tags: vec![],
+            result: None,
+            created_at: "2026-05-04T13:00:00+08:00".to_string(),
+            updated_at: "2026-05-04T13:00:00+08:00".to_string(),
+            detail_path: "".to_string(),
+            blocked_by: vec![],
+            snoozed_until: None,
+            pinned: false,
+        };
+        let bare = crate::task_queue::TaskView {
+            title: "决策日志开头".to_string(),
+            raw_description: "[task pri=3] [snippet] 今天的关键决策".to_string(),
+            ..labeled.clone()
+        };
+        let s = format_snippets_reply(&[labeled, bare]);
+        assert!(s.contains("📎 snippets · 2 条"), "{s}");
+        assert!(s.contains("PR review template"), "{s}");
+        assert!(s.contains("[PR template]"), "label shown in brackets: {s}");
+        assert!(s.contains("决策日志开头"), "{s}");
+        // bare marker → no label brackets shown after title
+        assert!(
+            !s.contains("决策日志开头 ["),
+            "bare snippet should not render empty label brackets: {s}"
+        );
+        // body preview present
+        assert!(s.contains("看 diff"), "body preview: {s}");
+        assert!(s.contains("今天的关键决策"), "{s}");
+    }
+
+    #[test]
+    fn format_snippets_truncates_long_body_preview() {
+        let long_body = "a".repeat(SNIPPET_BODY_PREVIEW_CHARS + 50);
+        let raw = format!("[task pri=3] [snippet] {}", long_body);
+        let v = crate::task_queue::TaskView {
+            title: "long".to_string(),
+            body: "".to_string(),
+            raw_description: raw,
+            priority: 3,
+            due: None,
+            status: crate::task_queue::TaskStatus::Pending,
+            error_message: None,
+            tags: vec![],
+            result: None,
+            created_at: "2026-05-04T13:00:00+08:00".to_string(),
+            updated_at: "2026-05-04T13:00:00+08:00".to_string(),
+            detail_path: "".to_string(),
+            blocked_by: vec![],
+            snoozed_until: None,
+            pinned: false,
+        };
+        let s = format_snippets_reply(&[v]);
+        assert!(s.contains("…"), "should truncate with ellipsis: {s}");
     }
 
     #[test]
