@@ -8,6 +8,13 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- detail.md 编辑器 ⌘⇧F 全文 search & replace popover：既有 ⌘F 只查找，扩 ⌘⇧F 加 replace 半边（VSCode 风：搜框 + 替换框 + Replace / Replace All / ↑↓ 跳）。
+- TG bot 加 `/timeline <title>` 命令：显单条 task description 中 [done] / [error:] / [snooze:] / [result:] 等 markers 时刻清单 — audit 这条 task 经历了啥。
+- PanelChat 加「📌 bookmark 本条」按钮 + bookmark chip strip：让 owner 标重要 chat message + 顶部 chip click 跳回（与 task pin 对偶但 scope chat）。
+- PanelTasks 任务行 hover 0.5s 显「✏」rename action chip：rename 当前藏在双击 title，新 chip 显式更易发现（与既有 hover preview tooltip 互补）。
+- ChatMini 加「💾 导出本会话 markdown」按钮：与 PanelChat 既有导出对偶 — 小窗 owner 也能一键 export current session 到剪贴板。
+- PanelMemory butler_tasks 段加「📊 schedule 24h 分布」mini bar chip：显各小时 fire 次数让 owner 一眼看分布偏态（早上 9 点扎堆 / 散布等）。
+
 
 
 
