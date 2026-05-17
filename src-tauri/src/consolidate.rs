@@ -6,7 +6,7 @@
 //! never modifies memories directly. Default disabled and gated behind a minimum item count
 //! so we don't spend tokens consolidating an empty index.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -17,6 +17,48 @@ use tauri::{AppHandle, Emitter, Manager};
 /// checkpoint 检查它。已进入 LLM stream 内的 token 流不能被打断（pipeline
 /// 没暴露 cancel handle），但落地写盘 / 后续 sweep 都会跳过。
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+
+/// 下次 consolidate sweep 的 Unix epoch 秒。`spawn()` 在每次 sleep 前
+/// `set_next_run_at()` 让 PanelDebug「⏰ 下次 consolidate」chip audit
+/// cron 节奏。0 = 还未初始化（spawn() 启动后 120s 内 / app 刚启）。
+///
+/// 注：本字段反映"loop 下次苏醒时刻"。enabled=false 时 loop 仍 sleep
+/// + continue（不实际跑 consolidation），ETA 仍准；frontend 通过同 API
+/// 拿 enabled 状态决定 chip 提示文案。
+static NEXT_RUN_AT: AtomicI64 = AtomicI64::new(0);
+
+fn set_next_run_at(secs_from_now: u64) {
+    let now_secs = chrono::Local::now().timestamp();
+    NEXT_RUN_AT.store(
+        now_secs.saturating_add(secs_from_now as i64),
+        Ordering::SeqCst,
+    );
+}
+
+/// PanelDebug「⏰ 下次 consolidate」chip 用：返 `(next_eta_unix_secs,
+/// interval_hours, enabled)`。next_eta 是 loop 下次苏醒的 Unix 秒；0
+/// = 还未初始化。interval_hours / enabled 从 settings 直读保 chip 显
+/// 配置上下文。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConsolidateSchedule {
+    pub next_eta_unix_secs: i64,
+    pub interval_hours: u64,
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub fn get_consolidate_schedule() -> ConsolidateSchedule {
+    let eta = NEXT_RUN_AT.load(Ordering::SeqCst);
+    let (interval_hours, enabled) = match get_settings() {
+        Ok(s) => (s.memory_consolidate.interval_hours, s.memory_consolidate.enabled),
+        Err(_) => (0, false),
+    };
+    ConsolidateSchedule {
+        next_eta_unix_secs: eta,
+        interval_hours,
+        enabled,
+    }
+}
 
 /// 进度事件 payload。phase 是用户可读短语；progress / total 给前端进度条
 /// 用（不必严格精确，approximate steps）。
@@ -69,12 +111,14 @@ use crate::tools::ToolContext;
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Delay first run a bit so app startup doesn't include LLM calls.
+        set_next_run_at(120);
         tokio::time::sleep(Duration::from_secs(120)).await;
 
         loop {
             let settings = match get_settings() {
                 Ok(s) => s,
                 Err(_) => {
+                    set_next_run_at(3600);
                     tokio::time::sleep(Duration::from_secs(3600)).await;
                     continue;
                 }
@@ -84,6 +128,7 @@ pub fn spawn(app: AppHandle) {
             let interval_secs = cfg.interval_hours.max(1) * 3600;
 
             if !cfg.enabled {
+                set_next_run_at(interval_secs);
                 tokio::time::sleep(Duration::from_secs(interval_secs)).await;
                 continue;
             }
@@ -103,6 +148,7 @@ pub fn spawn(app: AppHandle) {
                 eprintln!("Consolidate turn failed: {}", e);
             }
 
+            set_next_run_at(interval_secs);
             tokio::time::sleep(Duration::from_secs(interval_secs)).await;
         }
     });

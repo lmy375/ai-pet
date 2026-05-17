@@ -214,6 +214,7 @@ pub fn run() {
             proactive::get_pending_reminders,
             consolidate::trigger_consolidate,
             consolidate::cancel_consolidate,
+            consolidate::get_consolidate_schedule,
             proactive::trigger_proactive_turn,
             proactive::trigger_proactive_turn_for_task,
             proactive::trigger_proactive_turn_with_prompt,

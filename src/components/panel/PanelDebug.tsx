@@ -1135,6 +1135,44 @@ export function PanelDebug() {
     };
   }, []);
 
+  /// ⏰ 下次 consolidate chip：调 `get_consolidate_schedule` Tauri 命令
+  /// 拿 next ETA + interval + enabled。后端在 spawn loop 每次 sleep 前
+  /// 写 NEXT_RUN_AT 静态 — frontend 30s poll 渲染「⏰ HH:MM (N 分后)」
+  /// 让 owner audit cron 节奏。eta=0 表示还未初始化（app 启动 120s 内）—
+  /// chip 仍可 render「⏰ 等待 …」让 owner 知道 cron 即将上线。
+  const [consolidateSched, setConsolidateSched] = useState<{
+    nextEtaUnixSecs: number;
+    intervalHours: number;
+    enabled: boolean;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const sched = await invoke<{
+          next_eta_unix_secs: number;
+          interval_hours: number;
+          enabled: boolean;
+        }>("get_consolidate_schedule");
+        if (!cancelled) {
+          setConsolidateSched({
+            nextEtaUnixSecs: sched.next_eta_unix_secs,
+            intervalHours: sched.interval_hours,
+            enabled: sched.enabled,
+          });
+        }
+      } catch (e) {
+        console.warn("get_consolidate_schedule failed (non-fatal):", e);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   /// 🧹 force consolidate：手动调 `trigger_consolidate` Tauri 命令，
   /// 不等 cron。与 PanelMemory「立即整理」同后端但 debug 入口偏向「不
   /// 离开 debug 视图就能跑一次 sweep」 — 验证 prompt tweak / audit 一
@@ -2617,6 +2655,56 @@ export function PanelDebug() {
             t · {llmTokens1h.turns} round
           </span>
         )}
+        {/* ⏰ 下次 consolidate chip：显 spawn loop 下次 sleep 苏醒时
+            刻 + 剩余分钟 + interval / enabled 状态。让 owner audit cron
+            节奏是否正常运行（如发现 ETA 永远 0 = loop 卡 / 没 spawn）。
+            ETA=0（app 启动 120s 内）显「等待初始化…」。 */}
+        {consolidateSched && (() => {
+          const eta = consolidateSched.nextEtaUnixSecs;
+          const interval = consolidateSched.intervalHours;
+          const enabled = consolidateSched.enabled;
+          const nowSec = Math.floor(Date.now() / 1000);
+          let label: string;
+          let detailedTooltip: string;
+          if (eta === 0) {
+            label = "⏰ 等待初始化…";
+            detailedTooltip = `consolidate loop 启动后 120s 才设首次 ETA — app 刚启动 / loop 未 spawn 时显此状态。间隔配置：每 ${interval}h（${enabled ? "已启用" : "已禁用"}）。`;
+          } else {
+            const remainingSec = eta - nowSec;
+            const remainingMin = Math.max(0, Math.floor(remainingSec / 60));
+            const etaTime = new Date(eta * 1000);
+            const hh = String(etaTime.getHours()).padStart(2, "0");
+            const mm = String(etaTime.getMinutes()).padStart(2, "0");
+            const remainingStr =
+              remainingMin < 60
+                ? `${remainingMin} 分后`
+                : remainingMin < 60 * 24
+                  ? `${Math.floor(remainingMin / 60)} 小时${remainingMin % 60 > 0 ? ` ${remainingMin % 60} 分` : ""}后`
+                  : `${Math.floor(remainingMin / (60 * 24))} 天${(remainingMin % (60 * 24)) > 0 ? ` ${Math.floor((remainingMin % (60 * 24)) / 60)} 小时` : ""}后`;
+            label = `⏰ ${hh}:${mm} (${remainingStr})`;
+            detailedTooltip = `下次 consolidate sweep 预计 ${etaTime.toLocaleString()}（${remainingStr}）。间隔配置：每 ${interval}h（${enabled ? "已启用 — 实际跑 sweep" : "已禁用 — loop 仍 sleep 但 continue 跳过"}）。点击「🧹 force consolidate」手动触发不必等。`;
+          }
+          return (
+            <span
+              style={{
+                padding: "4px 10px",
+                fontSize: 11,
+                border: "1px dashed var(--pet-color-border)",
+                borderRadius: 6,
+                background: "transparent",
+                color: enabled
+                  ? "var(--pet-color-muted)"
+                  : "var(--pet-tint-amber-fg, var(--pet-tint-yellow-fg))",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                whiteSpace: "nowrap",
+                cursor: "help",
+              }}
+              title={detailedTooltip}
+            >
+              {label}
+            </span>
+          );
+        })()}
         {/* 🧹 force consolidate：手动触发一次 consolidate sweep，不
             等 cron 节奏（PanelMemory「立即整理」是更显眼的入口，本按
             钮是 debug 视图就近入口 — 验证 prompt tweak / audit 行为 /
