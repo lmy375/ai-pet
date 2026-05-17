@@ -1112,21 +1112,34 @@ function formatRelativeAge(createdAt: string, now: number): string {
 /** R136: due 距今相对时间。due hover tooltip 用，让用户快速判断紧迫度。
  * 三档：< 1 小时 → "1 小时内 / 刚过期"；< 1 天 → "X 小时后 / 已过 X 小时"；
  * ≥ 1 天 → "X 天后 / 已过 X 天"。无效 ISO 返空串。 */
+/// due 倒计时人话化。output 自带"还有 / 已逾期"语义，调用方拼 tooltip
+/// 时不需再加前缀。分钟级精度让 owner glance 出"急还是不急"——
+/// 「1 小时内到期」太模糊（可能是 5 分钟也可能 59 分钟）。
+///
+/// 阈值表（| diff | 单位）：
+///   < 60s    → 马上到期 / 刚刚过期
+///   < 60min  → 还有 N 分钟到期 / 已逾期 N 分钟
+///   < 24h    → 还有 N 小时到期 / 已逾期 N 小时
+///   ≥ 24h    → 还有 N 天到期 / 已逾期 N 天
 function formatDueRelative(dueIso: string, now: number): string {
   const ts = Date.parse(dueIso);
   if (Number.isNaN(ts)) return "";
   const diffMs = ts - now;
   const absMs = Math.abs(diffMs);
   const future = diffMs >= 0;
+  if (absMs < 60_000) {
+    return future ? "马上到期" : "刚刚过期";
+  }
   if (absMs < 3_600_000) {
-    return future ? "1 小时内到期" : "刚过期";
+    const mins = Math.floor(absMs / 60_000);
+    return future ? `还有 ${mins} 分钟到期` : `已逾期 ${mins} 分钟`;
   }
-  const hours = Math.floor(absMs / 3_600_000);
-  const days = Math.floor(absMs / 86_400_000);
   if (absMs < 86_400_000) {
-    return future ? `${hours} 小时后到期` : `已过 ${hours} 小时`;
+    const hours = Math.floor(absMs / 3_600_000);
+    return future ? `还有 ${hours} 小时到期` : `已逾期 ${hours} 小时`;
   }
-  return future ? `${days} 天后到期` : `已过 ${days} 天`;
+  const days = Math.floor(absMs / 86_400_000);
+  return future ? `还有 ${days} 天到期` : `已逾期 ${days} 天`;
 }
 
 /** R91: 长描述折叠阈值。> 200 字才折叠，折叠时显前 120 字。中文 ~3 char/token，
@@ -8982,17 +8995,12 @@ export function PanelTasks({
                 <div style={s.itemMeta}>
                   {t.due && (() => {
                     const urgency = dueUrgency(t.due, nowMs, t.status);
-                    // R136: tooltip 在 enum-level urgency 之后附精确数字
-                    // (X 小时 / 天 后/前)，让用户判断紧迫度更准。normal urgency
-                    // 也显 relative（之前 undefined 不显，现在统一让 hover 都
-                    // 有信息）。
-                    const relative = formatDueRelative(t.due, nowMs);
-                    const tooltip =
-                      urgency === "overdue"
-                        ? `已过期：${relative}`
-                        : urgency === "soon"
-                          ? `24 小时内到期：${relative}`
-                          : relative;
+                    // R136 + iter #361: tooltip = relative 短语自描述
+                    // ("还有 47 分钟到期" / "已逾期 3 小时")。分钟级精度让
+                    // owner 在 < 1 小时窗口里 glance 真急迫度，原"1 小时内
+                    // 到期"太模糊。formatDueRelative 已自带"还有/已逾期"
+                    // 语义前缀，不需再叠 urgency-level 词。
+                    const tooltip = formatDueRelative(t.due, nowMs);
                     const isUrgent = urgency !== "normal";
                     return (
                       <span
