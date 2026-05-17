@@ -16410,6 +16410,58 @@ export function PanelTasks({
             >
               {t?.pinned ? "📌 取消钉住" : "📌 钉住"}
             </button>
+            {/* 📌+⏰5min：sprint 突发场景一键组合 — pin 让 task 浮到
+                pinned-chip 视野顶 + 设 due=now+5min 让 task 在 5 分钟
+                内进入 overdue 状态触发 proactive 选单 + due chip 红
+                警示。仅 active 行（pending / error）显 — 终态行设 due
+                无意义。click → 顺序 task_set_pinned(true) + task_set_due
+                + reload，单次错误不阻断另一条。 */}
+            {t && !isFinished(t.status) && (
+              <button
+                type="button"
+                style={{ ...itemBtn, color: "var(--pet-tint-orange-fg)" }}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={async () => {
+                  setTaskCtxMenu(null);
+                  setActionErr("");
+                  setBusyTitle(m.title);
+                  const dueArg = formatDueInput(
+                    new Date(Date.now() + 5 * 60_000),
+                  );
+                  let pinErr = "";
+                  let dueErr = "";
+                  if (!t.pinned) {
+                    try {
+                      await invoke<void>("task_set_pinned", {
+                        title: m.title,
+                        pinned: true,
+                      });
+                    } catch (e: any) {
+                      pinErr = String(e);
+                    }
+                  }
+                  try {
+                    await invoke<void>("task_set_due", {
+                      title: m.title,
+                      due: dueArg,
+                    });
+                  } catch (e: any) {
+                    dueErr = String(e);
+                  }
+                  if (pinErr || dueErr) {
+                    setActionErr(
+                      `📌+⏰ 部分失败 — ${[pinErr && `pin: ${pinErr}`, dueErr && `due: ${dueErr}`].filter(Boolean).join(" · ")}`,
+                    );
+                  }
+                  await reload();
+                  setBusyTitle(null);
+                }}
+                title="sprint 突发：一键钉住 + 设 due 为 5 分钟后。task 立即浮到 📌 顶；5 min 后进入 overdue 触发 pet proactive 关注。已 pinned 时仅设 due。"
+              >
+                📌+⏰ 5min 提醒
+              </button>
+            )}
             {/* 🔇 silent toggle：与 📌 钉住 同模板。从 raw_description 里
                 inline regex 探 `[silent]` 字面量；调 task_set_silent
                 atomic add / strip marker。silent 任务从 LLM proactive cycle
