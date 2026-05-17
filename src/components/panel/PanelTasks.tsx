@@ -13624,6 +13624,41 @@ export function PanelTasks({
                 📋 复制 detail.md 全文
               </button>
             )}
+            {/* 📋 复制 raw_description：把 task description 含全部 markers
+                的完整文本（[task pri=...] / [every:] / [pinned] / [silent] /
+                [snooze:] / [blockedBy:] 等）拷到剪贴板。给 debug / 移植到
+                别处用 / 跨任务复用 marker 组合的场景用 — 与「📑 复制为
+                Markdown」（带元数据头）/「📋 复制 detail.md 全文」（仅 detail
+                内容）各自定位互补。空 raw_description（极端）给反馈。 */}
+            {t && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={async () => {
+                  setTaskCtxMenu(null);
+                  const raw = t.raw_description ?? "";
+                  if (raw.trim().length === 0) {
+                    setBulkResultMsg("raw_description 为空 — 没有内容可复制");
+                  } else {
+                    try {
+                      await navigator.clipboard.writeText(raw);
+                      const chars = Array.from(raw).length;
+                      setBulkResultMsg(
+                        `已复制 raw_description（${chars} 字，含 markers）`,
+                      );
+                    } catch (e) {
+                      setBulkResultMsg(`复制失败：${e}`);
+                    }
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 3000);
+                }}
+                title="把任务 description 的原始文本（含 [task pri=...] / [every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] 等全部 markers）复制到剪贴板。给 debug / 移植到别处用 / 跨任务复用 marker 组合用 — 比走「📑 复制为 Markdown」（带元数据头）更精确，比手抄少出错。"
+              >
+                📋 复制 raw_description
+              </button>
+            )}
             {/* 复制为 markdown 引用块 (> ...)：与 📑 完整段不同，blockquote
                 轻量 quote 形态，适合 paste 到 detail.md / chat / 别的 task 描述
                 里作为 "ref 到此任务" 一段。emoji + title + meta 单行 + 描述
