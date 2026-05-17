@@ -5621,6 +5621,32 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     📋 titles ({cat.items.length})
                   </button>
                 )}
+                {/* 📊 cat 概览：一行 metadata 摘要复制 — `<label> · N 条 ·
+                    上次更新 <relative>`。比 📋 titles（含全 title 列表）
+                    更轻，给跨 cat 抽样场景：owner 想发 "memory 各段状态
+                    snap" 给同事 / paste 到 doc，每 cat 走一次即可。
+                    latestTs 已在 cat-loop 顶部算好（line 4577），复用免
+                    重扫。 */}
+                {cat.items.length > 0 && latestTs !== null && (
+                  <button
+                    style={{ ...s.btn, marginLeft: 4 }}
+                    onClick={async () => {
+                      const label = categoryLabels[catKey] || cat.label;
+                      const rel = formatLastUpdated(latestTs!, now.getTime());
+                      const summary = `${label} · ${cat.items.length} 条 · 最近 ${rel}`;
+                      try {
+                        await navigator.clipboard.writeText(summary);
+                        setMessage(`📊 已复制概览：${summary}`);
+                      } catch (e: any) {
+                        setMessage(`复制失败：${e}`);
+                      }
+                      setTimeout(() => setMessage(""), 3000);
+                    }}
+                    title={`复制单行概览「${categoryLabels[catKey] || cat.label} · ${cat.items.length} 条 · 最近 ${formatLastUpdated(latestTs, now.getTime())}」— 给跨 cat 抽样 paste 场景，比 📋 titles 全列轻。`}
+                  >
+                    📊 概览
+                  </button>
+                )}
                 {/* 📤 export cat as .md file：与顶部「📋 单段…」剪贴板
                     export + 「💾 .md」全 cat 文件 export 对偶 —— 本 chip
                     是「单 cat 文件 export」一键到位（OS Save 对话框）。

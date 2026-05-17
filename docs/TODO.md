@@ -13,7 +13,6 @@
 - ChatMini 气泡右键「📌 转 P3 task」菜单项：复用气泡 text 作新 task title — 快速 lift 聊天精华成任务。
 - detail.md 编辑器「⌘⇧F find-replace」modal：弹双输入 find / replace，预览匹配数 + 一键全替换 — 长 doc 批量改名。
 - TG bot `/why <title>` 命令：显该 task 最近 N 条 decision_log 条目（touch / snooze / promote 历史）— 与 /timeline 互补。
-- PanelMemory cat header 「📊 cat 概览」hover chip：copy 「<name> · N 条 · 上次 updated <relative>」一行 — 跨 cat 抽样。
 
 
 
