@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 加 ⌘A 全选 visible 进入 multi-select 模式：批量 cancel / done / pin 不必逐条点。
-- PanelTasks 任务行右键加「💬 推到 chat ref」：把「title」ref token 复制 + 注入 ChatPanel 输入框，让 owner 立即让宠物评论某 task。
 - detail.md 编辑器 ⌘F 改为聚焦行内搜索（不抢 panel 顶搜索框）：长 detail.md 文档内找文本快。
 
 

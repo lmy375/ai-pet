@@ -14094,6 +14094,30 @@ export function PanelTasks({
                 📋 复制 raw_description
               </button>
             )}
+            {/* 💬 推到 chat ref：把 task title 作为 ref token 预填到 ChatPanel
+                textarea (走既有 `onAskLLMAbout` 通道 → 切聊天 tab + 注入
+                "关于「<title>」")。让 owner 立即让 pet 评论 / 提问某 task
+                不必先 ⌘C 复制再切 tab 再粘贴。仅 onAskLLMAbout prop 传入
+                时显（PanelApp wire；其它 caller 不显冗余 UI）。 */}
+            {onAskLLMAbout && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={() => {
+                  setTaskCtxMenu(null);
+                  onAskLLMAbout(m.title);
+                  setBulkResultMsg(
+                    `💬 已切到聊天 tab + 预填 "关于「${m.title}」" 让你立刻问 pet`,
+                  );
+                  window.setTimeout(() => setBulkResultMsg(""), 3000);
+                }}
+                title={`把「${m.title}」推到 ChatPanel textarea 作 "关于「<title>」" prefix + 切到聊天 tab。owner 立即让 pet 评论 / 提问 / 给建议这条 task — 不必 ⌘C 复制 → 切 tab → 粘贴 3 步。`}
+              >
+                💬 推到 chat ref
+              </button>
+            )}
             {/* 复制为 markdown 引用块 (> ...)：与 📑 完整段不同，blockquote
                 轻量 quote 形态，适合 paste 到 detail.md / chat / 别的 task 描述
                 里作为 "ref 到此任务" 一段。emoji + title + meta 单行 + 描述
