@@ -30,6 +30,11 @@ export function PanelDebugLogs() {
   const [logLevels, setLogLevels] = useState<Set<LogLevel>>(() => new Set());
   const [followTail, setFollowTail] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /// 🔍 关键字 substring 过滤：case-insensitive 子串命中。与 level
+  /// chips 是 AND 关系（叠加），让 owner 在长日志（千行）里精确定位
+  /// "task title / error reason / event 名" 等。空 → 不过滤。
+  /// 不持久化 — debug 临时操作，关 tab 复位。
+  const [keyword, setKeyword] = useState("");
 
   // 轮询 logs 列表。1s 节奏让"刚发生的事件"几乎实时反映在视图里，对
   // debug 场景体感够新鲜；过频则全是 IPC 噪音。
@@ -60,16 +65,24 @@ export function PanelDebugLogs() {
   }, [logs, followTail]);
 
   const filteredLogs = useMemo(() => {
-    if (logLevels.size === 0) return logs;
+    const kwLower = keyword.trim().toLowerCase();
+    const levelActive = logLevels.size > 0;
+    if (!levelActive && kwLower.length === 0) return logs;
     return logs.filter((line) => {
-      const lvl: LogLevel = line.includes("ERROR")
-        ? "ERROR"
-        : line.includes("WARN")
-          ? "WARN"
-          : "INFO";
-      return logLevels.has(lvl);
+      if (levelActive) {
+        const lvl: LogLevel = line.includes("ERROR")
+          ? "ERROR"
+          : line.includes("WARN")
+            ? "WARN"
+            : "INFO";
+        if (!logLevels.has(lvl)) return false;
+      }
+      if (kwLower.length > 0 && !line.toLowerCase().includes(kwLower)) {
+        return false;
+      }
+      return true;
     });
-  }, [logs, logLevels]);
+  }, [logs, logLevels, keyword]);
 
   const logLevelCounts = useMemo(() => {
     const counts: Record<LogLevel, number> = { ERROR: 0, WARN: 0, INFO: 0 };
@@ -191,7 +204,72 @@ export function PanelDebugLogs() {
             </button>
           );
         })}
-        {logLevels.size > 0 && (
+        {/* 🔍 keyword substring filter：case-insensitive 子串命中，与
+            level chips AND 叠加。Esc 清空。输入框右侧 ✕ 按钮一键清。 */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 2,
+            marginLeft: 8,
+            position: "relative",
+          }}
+        >
+          <span style={{ fontSize: 10, color: "var(--pet-color-muted)" }}>
+            🔍
+          </span>
+          <input
+            type="text"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setKeyword("");
+              }
+            }}
+            placeholder="过滤关键字（substring）…"
+            style={{
+              fontSize: 11,
+              padding: "2px 22px 2px 6px",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 4,
+              background: "var(--pet-color-card)",
+              color: "var(--pet-color-fg)",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              width: 180,
+              boxSizing: "border-box",
+            }}
+          />
+          {keyword.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setKeyword("")}
+              title="清空关键字（Esc 等价）"
+              style={{
+                position: "absolute",
+                right: 4,
+                top: "50%",
+                transform: "translateY(-50%)",
+                width: 16,
+                height: 16,
+                padding: 0,
+                border: "none",
+                background: "transparent",
+                color: "var(--pet-color-muted)",
+                cursor: "pointer",
+                fontSize: 12,
+                lineHeight: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              ✕
+            </button>
+          )}
+        </div>
+        {(logLevels.size > 0 || keyword.trim().length > 0) && (
           <span
             style={{
               fontSize: 10,
@@ -223,7 +301,8 @@ export function PanelDebugLogs() {
             background: followTail ? "var(--pet-color-card)" : "var(--pet-color-bg)",
             color: followTail ? "var(--pet-color-fg)" : "var(--pet-color-muted)",
             cursor: "pointer",
-            marginLeft: logLevels.size > 0 ? 8 : "auto",
+            marginLeft:
+              logLevels.size > 0 || keyword.trim().length > 0 ? 8 : "auto",
             whiteSpace: "nowrap",
           }}
         >
@@ -257,7 +336,11 @@ export function PanelDebugLogs() {
           <div style={{ color: "#64748b", textAlign: "center", marginTop: "40px" }}>
             {logs.length === 0
               ? "暂无日志。聊天和操作会产生日志。"
-              : "当前 level 过滤无匹配日志"}
+              : keyword.trim().length > 0 && logLevels.size > 0
+                ? `「${keyword.trim()}」+ 当前 level 过滤无匹配日志`
+                : keyword.trim().length > 0
+                  ? `「${keyword.trim()}」无匹配日志`
+                  : "当前 level 过滤无匹配日志"}
           </div>
         ) : (
           filteredLogs.map((line, i) => (
