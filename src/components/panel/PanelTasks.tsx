@@ -1216,6 +1216,13 @@ export function PanelTasks({
   onConsumePendingQuickAddBody,
 }: PanelTasksProps = {}) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
+  /// 行内「📊 sparkline」chip 数据：每 task title → 近 30 天 10 桶（每桶
+  /// 3 天）event 计数。reload 时 batch 拉 task_history_sparklines 一次。
+  /// 缺失 / 全 0 时 chip 不渲；mtv 桶 ≥ 1 才显 chip（避免给从未 touch
+  /// 过的 task 显空 chip）。
+  const [sparklineBuckets, setSparklineBuckets] = useState<
+    Record<string, number[]>
+  >({});
   /// 任务依赖未解决映射：title → 仍卡着的 blocker（含 status）列表。tasks
   /// 变化时 O(n) 计算一次；行渲染时 .has(title) 决定是否显 🔒 chip。useMemo
   /// 让 tasks 不变时引用稳定，避免每次 re-render 都重算 Map（虽然 n 通常
@@ -3788,6 +3795,19 @@ export function PanelTasks({
       // task_list 后清空详情缓存：retry / cancel / 新建都会让 description /
       // detail.md / history 翻新，命中旧缓存会让用户看到陈旧的回溯视图。
       setDetailMap({});
+      // 同步拉行内 📊 sparkline 桶数据：仅传当前 task title 列表，backend
+      // 一次扫 butler_history 全文 + 聚合，避免行内 N 次 IO。失败静默
+      // 用空 map 兜底（chip 自然不渲）。
+      try {
+        const sparks = await invoke<Record<string, number[]>>(
+          "task_history_sparklines",
+          { titles: resp.tasks.map((t) => t.title) },
+        );
+        setSparklineBuckets(sparks);
+      } catch (e) {
+        console.warn("task_history_sparklines failed (non-fatal):", e);
+        setSparklineBuckets({});
+      }
     } catch (e) {
       setErrMsg(`加载失败：${e}`);
     } finally {
@@ -9337,6 +9357,66 @@ export function PanelTasks({
                           ✏
                         </button>
                       )}
+                    {/* 📊 30 天 sparkline chip：10 bar 显近 30 天 butler_history
+                        事件桶分布（最老在左，最新在右）。仅总和 > 0 时显
+                        — 从未 touch 过的 task 不显避免视觉噪音。max 归一
+                        让 bar 高度反映"此 task 自身节奏"而非跨 task 比较。
+                        与 iter #392 priority distribution chip 同视觉风格
+                        （10 bar、3px 宽、flex-end 底对齐）。 */}
+                    {(() => {
+                      const buckets = sparklineBuckets[t.title];
+                      if (!buckets || buckets.length === 0) return null;
+                      const total = buckets.reduce(
+                        (a, b) => a + b,
+                        0,
+                      );
+                      if (total === 0) return null;
+                      const max = Math.max(...buckets, 1);
+                      const tooltipLines: string[] = [
+                        `📊 「${t.title}」近 30 天事件分布（${total} 条；3 天 / 桶；最老在左，最新在右）`,
+                      ];
+                      buckets.forEach((c, i) => {
+                        if (c === 0) return;
+                        // bucket i 覆盖 [now-30d+i*3d, now-30d+(i+1)*3d]
+                        const daysAgoStart = 30 - i * 3;
+                        const daysAgoEnd = 30 - (i + 1) * 3;
+                        const label =
+                          daysAgoEnd === 0
+                            ? `近 3 天`
+                            : `${daysAgoEnd}-${daysAgoStart} 天前`;
+                        tooltipLines.push(`· ${label}：${c} 条`);
+                      });
+                      return (
+                        <span
+                          title={tooltipLines.join("\n")}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "flex-end",
+                            height: 12,
+                            marginLeft: 8,
+                            gap: 1,
+                            verticalAlign: "middle",
+                          }}
+                          aria-label={`task event sparkline (${total} events in last 30 days)`}
+                        >
+                          {buckets.map((count, i) => (
+                            <span
+                              key={i}
+                              style={{
+                                width: 3,
+                                height: `${count > 0 ? Math.max(20, (count / max) * 100) : 12}%`,
+                                background:
+                                  count > 0
+                                    ? "var(--pet-tint-blue-fg)"
+                                    : "var(--pet-color-border)",
+                                borderRadius: 1,
+                                display: "inline-block",
+                              }}
+                            />
+                          ))}
+                        </span>
+                      );
+                    })()}
                     {/* ⚡ NOW 标记：浮顶 + 桌面 nudge 60s 内有效，过期自动消失。 */}
                     {nowMarkedTitles.has(t.title) && (
                       <span

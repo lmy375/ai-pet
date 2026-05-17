@@ -540,6 +540,32 @@ pub fn task_save_detail(title: String, content: String) -> Result<(), String> {
     Ok(())
 }
 
+/// `task_history_sparklines`：给 PanelTasks 行内「📊 sparkline」chip 批量
+/// 算每个 task 近 30 天的 update 频率桶分布（10 bar，oldest → newest）。
+/// 一次性读 butler_history.log + 扫一遍按 title 聚合，避免行内 N 个 task
+/// 各发一次 IO 拖慢面板。结果 = Map<title, [u32; 10]>。
+///
+/// titles 入参 = 当前面板正在显示的 task title 列表 — 让 backend 仅算
+/// owner 看得见的（archive 段不显时不算 archive task 节省 CPU）。
+/// 空 titles → 空 map。读不到 history.log（NotFound / IO 错）→ 空 map
+/// （前端 chip 自然不渲；与既有 task_get_detail history IO error 兜底
+/// 同语义 — 历史信号 best-effort 不阻塞主流程）。
+#[tauri::command]
+pub async fn task_history_sparklines(
+    titles: Vec<String>,
+) -> Result<std::collections::HashMap<String, Vec<u32>>, String> {
+    if titles.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let content = crate::butler_history::read_history_content_strict()
+        .await
+        .unwrap_or_default();
+    let now = chrono::Local::now().fixed_offset();
+    Ok(crate::butler_history::compute_sparkline_buckets(
+        &content, &titles, now,
+    ))
+}
+
 /// `task_detail_history`：列出指定任务 detail.md 的最近 N 个版本快照（最新在
 /// 前）。给「任务详情页」的「📜 历史」chip 用 —— owner 想拿回上一版时一键
 /// 列出 + 选 ts 复制内容。任务不存在 → Err；history 目录不存在 / 空 → Ok([])。
