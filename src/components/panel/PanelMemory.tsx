@@ -266,7 +266,72 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   // 不可重置成 null 让 3s 自动收回；正在 invoke 时 firingProactive 全局阻
   // 塞所有 fire 按钮，避免连点炸 LLM。
   const [fireOneArmedTitle, setFireOneArmedTitle] = useState<string | null>(null);
+  /// "🚀 全部 due 一次跑" armed 二次确认 + 进度状态。armed 期间按钮变红
+  /// 3s 自动 disarm；progress 期间渲 done/failed/total 让 owner 看跑到哪
+  /// 一条。invoke 串行而非并行 — 每次 trigger_proactive_turn_for_task 跑
+  /// 一次 LLM 调用，并行会让 LLM 接到混乱顺序的 prompt（同 chat 内 race）。
+  const [fireAllArmed, setFireAllArmed] = useState(false);
+  const fireAllArmedTimerRef = useRef<number | null>(null);
+  const [fireAllProgress, setFireAllProgress] = useState<{
+    total: number;
+    done: number;
+    failed: number;
+  } | null>(null);
   const fireOneArmedTimer = useRef<number | null>(null);
+  /// 全部 due butler_tasks 一次跑：armed 二次确认 → 串行 invoke
+  /// trigger_proactive_turn_for_task 处理每条。串行而非 Promise.all 避免
+  /// 同 chat 内 LLM 接到混乱顺序的 prompt race。progress 状态 done/failed/
+  /// total 让 owner 看实时进度。
+  const handleFireAllDue = async (titles: string[]) => {
+    if (firingProactive) return;
+    if (titles.length === 0) {
+      setMessage("当前没有 due 任务");
+      window.setTimeout(() => setMessage(""), 3000);
+      return;
+    }
+    if (!fireAllArmed) {
+      setFireAllArmed(true);
+      if (fireAllArmedTimerRef.current !== null) {
+        window.clearTimeout(fireAllArmedTimerRef.current);
+      }
+      fireAllArmedTimerRef.current = window.setTimeout(() => {
+        setFireAllArmed(false);
+        fireAllArmedTimerRef.current = null;
+      }, 3000);
+      return;
+    }
+    setFireAllArmed(false);
+    if (fireAllArmedTimerRef.current !== null) {
+      window.clearTimeout(fireAllArmedTimerRef.current);
+      fireAllArmedTimerRef.current = null;
+    }
+    setFiringProactive(true);
+    setFireAllProgress({ total: titles.length, done: 0, failed: 0 });
+    let done = 0;
+    let failed = 0;
+    for (const title of titles) {
+      try {
+        await invoke<string>("trigger_proactive_turn_for_task", { title });
+        done += 1;
+      } catch (e) {
+        console.error(`fire_all 失败 [${title}]:`, e);
+        failed += 1;
+      }
+      setFireAllProgress({ total: titles.length, done, failed });
+    }
+    setFiringProactive(false);
+    await loadButlerHistory();
+    await loadIndex();
+    setMessage(
+      failed === 0
+        ? `🚀 已批量跑：${done} / ${titles.length} 条`
+        : `🚀 批量跑完：成功 ${done} · 失败 ${failed} · 共 ${titles.length}`,
+    );
+    window.setTimeout(() => {
+      setMessage("");
+      setFireAllProgress(null);
+    }, 6000);
+  };
   const handleFireOneTask = async (title: string) => {
     if (firingProactive) return;
     if (fireOneArmedTitle !== title) {
@@ -3395,6 +3460,60 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         : `立即处理 (${overdueCount})`}
                   </button>
                 )}
+                {/* 🚀 全部 due 一次跑：与「立即处理」不同 — 那是一次 proactive
+                    turn 让 LLM 选一条；本按钮串行 invoke 每条 due 的
+                    trigger_proactive_turn_for_task，N 条 = N 次 LLM 调用。
+                    "morning sweep" 场景：早上 9 点同时 due 三条 every 任务，
+                    一键全跑。armed 二次确认 3s。 */}
+                {catKey === "butler_tasks" &&
+                  (() => {
+                    const now = new Date();
+                    const dueTitles = cat.items
+                      .filter((it) => {
+                        const p = parseButlerSchedule(it.description);
+                        if (!p) return false;
+                        return isButlerDue(p.schedule, it.updated_at, now);
+                      })
+                      .map((it) => it.title);
+                    if (dueTitles.length === 0 && fireAllProgress === null) {
+                      return null;
+                    }
+                    return (
+                      <button
+                        style={{
+                          ...s.btn,
+                          background: firingProactive
+                            ? "var(--pet-color-muted)"
+                            : fireAllArmed
+                              ? "var(--pet-tint-red-bg)"
+                              : "var(--pet-tint-blue-fg)",
+                          color: firingProactive
+                            ? "#fff"
+                            : fireAllArmed
+                              ? "var(--pet-tint-red-fg)"
+                              : "#fff",
+                          borderColor: "transparent",
+                          fontWeight: fireAllArmed ? 600 : undefined,
+                          marginLeft: 6,
+                        }}
+                        onClick={() => void handleFireAllDue(dueTitles)}
+                        disabled={firingProactive}
+                        title={
+                          fireAllProgress
+                            ? `批量跑中：${fireAllProgress.done} / ${fireAllProgress.total}${fireAllProgress.failed > 0 ? `（失败 ${fireAllProgress.failed}）` : ""}`
+                            : fireAllArmed
+                              ? `再次点击启动批量跑：串行 invoke trigger_proactive_turn_for_task 处理全部 ${dueTitles.length} 条 due（每条一次 LLM 调用；3s 内有效）`
+                              : `🚀 一键串行跑所有 ${dueTitles.length} 条 due 任务（与「立即处理」不同 — 那是一次 LLM turn 选一条；本按钮 N 条 = N 次 LLM 调用）。点击后 3s 内需再点确认。`
+                        }
+                      >
+                        {fireAllProgress
+                          ? `跑中 ${fireAllProgress.done}/${fireAllProgress.total}${fireAllProgress.failed > 0 ? ` (失败 ${fireAllProgress.failed})` : ""}`
+                          : fireAllArmed
+                            ? `再点确认 (3s · ${dueTitles.length})`
+                            : `🚀 全部跑 (${dueTitles.length})`}
+                      </button>
+                    );
+                  })()}
                 {/* "📋 今日 todo"：butler_tasks 段顶按钮，把今日要执行任
                     务（every / 今日 once / 今日 deadline）拼成 markdown 复制。
                     每日 work prep / 9am stand-up 复制走人。仅 butler_tasks
