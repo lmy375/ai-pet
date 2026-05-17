@@ -2183,6 +2183,26 @@ export function PanelDebug() {
         >
           📂 logs 目录
         </button>
+        {/* 📋 复制 logs 路径：让 owner 粘到 Finder ⇧⌘G / VSCode ⌘O / shell
+            `cd` / 第三方 log viewer 等。与「📂 logs 目录」互补 — 那个开
+            Finder 反应快，这个传路径给非 Finder 的工具（grep / tail / IDE
+            打开单文件）。复用既有 setBulkResultMsg 风格的本地 message
+            state 反馈（PanelDebug 也用 setLogs 等 — 走 console.log 即可）。 */}
+        <button
+          onClick={async () => {
+            try {
+              const path = await invoke<string>("get_logs_dir_path");
+              await navigator.clipboard.writeText(path);
+              console.log(`已复制 logs 路径：${path}`);
+            } catch (e) {
+              console.error("copy logs path failed:", e);
+            }
+          }}
+          style={toolBtnStyle}
+          title="把 logs 目录绝对路径复制到剪贴板（~/.config/pet/logs/）— 粘到 Finder ⇧⌘G / VSCode ⌘O / shell `cd` / 第三方 log viewer 都能直接打开。比走「📂 logs 目录」打开 Finder 更灵活。"
+        >
+          📋 logs 路径
+        </button>
         {/* 🗄 detail .history 占盘 chip：扫所有 detail.md sibling .history
             目录大小 + dir 数。点击立即刷新（首屏自动拉一次）。让 owner
             知 safety-net 磁盘成本 — 决策"该不该清 / 调小 HISTORY_CAP"。

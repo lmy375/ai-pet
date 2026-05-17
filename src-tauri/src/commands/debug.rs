@@ -325,6 +325,15 @@ pub fn clear_logs(store: State<'_, LogStore>) {
     store.0.lock().unwrap().clear();
 }
 
+/// 返 logs 目录绝对路径字符串。给 PanelDebug「📋 复制 logs 路径」chip
+/// 用 — owner 一键复制路径粘到 Finder ⇧⌘G / VSCode ⌘O / shell `cd` /
+/// 第三方 log viewer 等。lossless to_string 防非 UTF-8 路径丢失（虽然
+/// log_dir() 内部走 PathBuf 拼接，正常情况下都是 UTF-8 合法）。
+#[tauri::command]
+pub fn get_logs_dir_path() -> String {
+    log_dir().to_string_lossy().to_string()
+}
+
 /// 在系统文件管理器里打开 logs 目录（~/.config/pet/logs/）。owner 想 grep /
 /// tail / 拖到第三方 viewer 时一键到位，不用记路径。与 `open_pet_data_dir`
 /// 同跨平台模式（macOS `open` / Windows `explorer` / Linux `xdg-open`）。目录
