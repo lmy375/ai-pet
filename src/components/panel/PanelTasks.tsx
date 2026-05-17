@@ -14160,7 +14160,7 @@ export function PanelTasks({
                   ["↑ / ↓ 或 j / k", "上 / 下移焦点（vim 风格 j/k 同 ↑/↓）"],
                   ["Home / End", "跳首 / 末任务"],
                   ["Space", "toggle 选中焦点行"],
-                  ["Enter", "展开 / 折叠任务详情"],
+                  ["Enter 或 ⌘E", "展开 / 折叠任务详情"],
                   ["Delete / Backspace", "弹取消 reason 输入（pending / error 行）"],
                   ["d", "标 done（pending / error 行）"],
                   ["r", "retry（error 行）"],

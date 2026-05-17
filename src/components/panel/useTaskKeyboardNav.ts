@@ -342,6 +342,25 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
           handleCopyTitleRef.current(item.title);
           return prev;
         });
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "e" &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        // ⌘E / Ctrl+E = 展开 / 折叠焦点行 detail。与 Enter plain-key 同
+        // 语义（既有 Enter 在守卫之后已 toggle expand），但用 modifier 让
+        // 键盘党有"明确意图"按键 — 也方便记 ⌘E = Expand。focusedIdx 非
+        // 空时拦截；无焦点透传默认行为（macOS ⌘E = Use Selection for
+        // Find，webview 内通常无害）。
+        setFocusedIdx((prev) => {
+          if (prev === null) return null;
+          const item = list[prev];
+          if (!item) return prev;
+          e.preventDefault();
+          void handleToggleExpandRef.current(item.title);
+          return prev;
+        });
       }
     };
     window.addEventListener("keydown", onKey);
