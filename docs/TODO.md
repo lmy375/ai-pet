@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 行加「↘ 展开 detail」chip：hover 即显，一键展开 detail 段并滚到顶端，省两步。
-- ChatMini bubble ctx menu 加「💾 转 task」项：把 bubble plain text 当 task description 一键入队（auto-title = 前 30 字）。
 
 
 
