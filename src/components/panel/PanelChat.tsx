@@ -3890,26 +3890,39 @@ export function PanelChat({
             </button>
           );
         })()}
-        {/* "📌 查看全部标记消息"按钮：仅 markedMessages 非空时显，count
-            badge 显当前标记数量。点击 open marks modal 异步加载所有 mark
-            过的 session 内容并展示。 */}
-        {markedMessages.size > 0 && (
-          <button
-            onClick={() => {
-              setShowSessionList(false);
-              void openMarksModal();
-            }}
-            style={{
-              ...newSessionBtnStyle,
-              color: "var(--pet-tint-yellow-fg)",
-              background: "var(--pet-tint-yellow-bg)",
-            }}
-            title={`查看全部 📌 标记的消息（${markedMessages.size} 条）`}
-            aria-label="view all marked messages"
-          >
-            📌 {markedMessages.size}
-          </button>
-        )}
+        {/* "📌 查看全部标记消息"按钮：仅 markedMessages 含可渲染（idx-numeric）
+            条目时显。renderableMarkedCount 排除 ChatMini selection 写的
+            `sel-${ms}` 项（那些是文本标记，PanelChat modal / 横条都只
+            渲染 idx-based 整条消息标记 — sel-* 留给 ChatMini 自己的
+            marks UI 渲）。点击 open marks modal 异步加载所有 mark 过的
+            session 内容并展示。 */}
+        {(() => {
+          let renderableCount = 0;
+          for (const k of markedMessages.keys()) {
+            const sep = k.indexOf("::");
+            if (sep < 0) continue;
+            const idx = parseInt(k.slice(sep + 2), 10);
+            if (!Number.isNaN(idx)) renderableCount += 1;
+          }
+          if (renderableCount === 0) return null;
+          return (
+            <button
+              onClick={() => {
+                setShowSessionList(false);
+                void openMarksModal();
+              }}
+              style={{
+                ...newSessionBtnStyle,
+                color: "var(--pet-tint-yellow-fg)",
+                background: "var(--pet-tint-yellow-bg)",
+              }}
+              title={`查看全部 📌 标记的消息（${renderableCount} 条）`}
+              aria-label="view all marked messages"
+            >
+              📌 {renderableCount}
+            </button>
+          );
+        })()}
         {/* ⑂ Fork 当前 session：弹三档选项（整段 / 近 20 / 近 10）。仅当
             前 session 非空时显（空 session fork = 等同新建空 session）。 */}
         {items.length > 0 && (
@@ -5729,7 +5742,7 @@ export function PanelChat({
               }}
             >
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--pet-color-fg)", flexShrink: 0 }}>
-                📌 全部标记消息 ({markedMessages.size})
+                📌 全部标记消息 ({marksModalEntries?.length ?? "…"})
               </span>
               <input
                 type="text"

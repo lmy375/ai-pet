@@ -2894,6 +2894,72 @@ export function ChatMini({
             <button
               type="button"
               style={btnStyle}
+              title="📌 标记选段：写入 markedMessages localStorage（与 PanelChat bookmark 同 channel — key 形如 sessionId::sel-<ms>）。配 PanelChat 既有 marks 一起 audit。"
+              onClick={async () => {
+                const text = selectionToolbar.text;
+                setSelectionToolbar(null);
+                try {
+                  const idx = await invoke<{ active_id: string }>(
+                    "list_sessions",
+                  );
+                  const sid = idx.active_id?.trim();
+                  if (!sid) {
+                    setCopyToast("err");
+                    window.setTimeout(() => setCopyToast("none"), 1500);
+                    return;
+                  }
+                  // 读既有 marks → append sel-<ms> 项 → 写回。复用与
+                  // PanelChat 同 localStorage key `pet-chat-marked-messages`
+                  // — PanelChat 的 idx-only filter 会跳过 sel-* 不影响其
+                  // 渲染。承载 text snippet（first 120 字符）让未来 ChatMini
+                  // own marks UI 渲它。
+                  const KEY = "pet-chat-marked-messages";
+                  let parsed: Record<string, unknown> = {};
+                  try {
+                    const raw = window.localStorage.getItem(KEY);
+                    if (raw) {
+                      const got = JSON.parse(raw);
+                      if (got && typeof got === "object" && !Array.isArray(got)) {
+                        parsed = got;
+                      } else if (Array.isArray(got)) {
+                        // 旧格式 Array<string>：迁到 Record<key, 0>
+                        for (const s of got) {
+                          if (typeof s === "string") parsed[s] = 0;
+                        }
+                      }
+                    }
+                  } catch {
+                    // 解析失败 → 视作空，覆盖写
+                  }
+                  const ts = Date.now();
+                  const markKey = `${sid}::sel-${ts}`;
+                  // 同 key markedAt 数值（与 PanelChat 同 schema）。text
+                  // snippet 不存（PanelChat read 路径只取 number value）—
+                  // 保 schema 兼容；selection 内容 owner 用复制按钮另
+                  // 走，本 mark 仅作 audit 标记 / count 信号。
+                  parsed[markKey] = ts;
+                  window.localStorage.setItem(KEY, JSON.stringify(parsed));
+                  // 反馈：复用 copyToast 通道（与 📋 同视觉），1.5s 自清
+                  setCopyToast("done");
+                  window.setTimeout(() => setCopyToast("none"), 1500);
+                  // text snippet 让 owner 知道标的是啥（未来要在 ChatMini
+                  // own marks UI 里渲 — 留 console hint 方便调试 + audit）
+                  console.info(
+                    `[ChatMini] 📌 marked selection (${text.length} chars):`,
+                    text.slice(0, 60),
+                  );
+                } catch (e) {
+                  console.error("mark selection failed:", e);
+                  setCopyToast("err");
+                  window.setTimeout(() => setCopyToast("none"), 1500);
+                }
+              }}
+            >
+              📌
+            </button>
+            <button
+              type="button"
+              style={btnStyle}
               title="让 AI 改写这段（输入框预填「请改写：...」让你确认 / 微调后发送）"
               onClick={() => {
                 const text = selectionToolbar.text;
