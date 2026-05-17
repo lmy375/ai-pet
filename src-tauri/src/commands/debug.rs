@@ -2,8 +2,22 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 use tauri::State;
+
+/// 进程启动时刻锚点。`LazyLock<Instant>` 首次访问时锁定当前时刻；调用方
+/// 在 `lib.rs::setup()` 内 `let _ = *BOOT_TIME;` 强制 eval 让锚定贴近实际
+/// 启动点（不到 1ms 误差，对"已运行 N 分/小时/天"语义无影响）。
+///
+/// 用途：`get_process_uptime_secs` Tauri 命令返 `BOOT_TIME.elapsed()` 秒数；
+/// PanelDebug snapshot 顶段 audit「pet 已运行多久」给长跑性能 / 内存追因。
+pub static BOOT_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+#[tauri::command]
+pub fn get_process_uptime_secs() -> u64 {
+    BOOT_TIME.elapsed().as_secs()
+}
 
 /// Maximum number of in-memory log lines retained in `LogStore`. Older lines are dropped
 /// when the buffer overflows. 5000 lines ≈ several hundred LLM turns at typical 10–30

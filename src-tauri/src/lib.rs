@@ -36,6 +36,11 @@ pub fn run() {
     // Ensure log directory exists
     let _ = std::fs::create_dir_all(log_dir());
 
+    // 强制 eval `BOOT_TIME` LazyLock — 让 uptime 锚点贴近 main() 入口而非
+    // 首次 `get_process_uptime_secs` 调用。PanelDebug 「⌚ 已运行」字段
+    // 从此读 elapsed。
+    let _ = *commands::debug::BOOT_TIME;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
@@ -147,6 +152,7 @@ pub fn run() {
             commands::debug::clear_logs,
             commands::debug::open_logs_dir,
             commands::debug::get_logs_dir_path,
+            commands::debug::get_process_uptime_secs,
             commands::debug::get_llm_logs,
             commands::debug::get_cache_stats,
             commands::debug::reset_cache_stats,
