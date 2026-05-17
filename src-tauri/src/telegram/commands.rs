@@ -330,6 +330,12 @@ pub enum TgCommand {
     /// 立即优先。`confirmed` 字段 parser 决定；handler 在 !confirmed 时
     /// 走 usage hint，confirmed 时执行批量 +1 + 返计数 reply。
     PromoteAllP7 { confirmed: bool },
+    /// `/touch_all_p7 confirm` —— 批量 touch 所有 P7+ active task — 让
+    /// pet 立即重新关注高优清单。与 /promote_all_p7 互补：那个升 priority
+    /// 让低优变高优；本命令仅刷 updated_at 让本已 P7+ 的"挂着没动"task
+    /// 重新冒头 proactive 选单。与 /cancel_all_error 同 confirm token
+    /// 防误触模板。已 done / cancelled 跳过；priority < 7 跳过。
+    TouchAllP7 { confirmed: bool },
     /// `/promote <title>` —— priority +1（clamp 9）— 一步操作不必算具体 P
     /// 值。已是 P9 时不动 + 友好 reply。复用 task_set_priority 后端。空
     /// title → missing-arg。
@@ -593,6 +599,7 @@ impl TgCommand {
             TgCommand::EditDue { .. } => "edit_due",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::PromoteAllP7 { .. } => "promote_all_p7",
+            TgCommand::TouchAllP7 { .. } => "touch_all_p7",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
             TgCommand::Reset => "reset",
@@ -668,6 +675,7 @@ impl TgCommand {
             | TgCommand::Streak
             | TgCommand::CancelAllError { .. }
             | TgCommand::PromoteAllP7 { .. }
+            | TgCommand::TouchAllP7 { .. }
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -764,6 +772,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("edit_due", "Edit a task's due time using friendly preset (tonight / tomorrow / monday / next_friday / +30m / +2h / clear ...)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote_all_p7", "Sprint mode: batch +1 priority on all active tasks (clamp 7) — requires `confirm`"),
+            ("touch_all_p7", "Batch touch all P7+ active tasks (refresh updated_at) — requires `confirm`"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
@@ -831,6 +840,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("edit_due", "用友好 preset 改 due（tonight / 明天 / 周一 / next_friday / +30m / +1d / clear ...）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote_all_p7", "紧急 sprint：批量给本聊天 active task priority +1（clamp 7）— 需带 `confirm`"),
+            ("touch_all_p7", "批量 touch 所有 P7+ active task — 刷 updated_at 让高优重新冒头（需带 `confirm`）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
@@ -1404,6 +1414,13 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
             let confirmed = title.trim().eq_ignore_ascii_case("confirm");
             Some(TgCommand::PromoteAllP7 { confirmed })
         }
+        // `/touch_all_p7 [confirm]`：与 /promote_all_p7 同 confirm
+        // 模板。仅 trailing "confirm" token 算确认；其它 trailing
+        // 视作未确认（防误触）。
+        "touch_all_p7" => {
+            let confirmed = title.trim().eq_ignore_ascii_case("confirm");
+            Some(TgCommand::TouchAllP7 { confirmed })
+        }
         // `/promote <title>`：priority +1 — title 全段保（含空格 / 标点）。
         // 空 title 由 handler 走 missing-arg。
         "promote" => Some(TgCommand::Promote { title }),
@@ -1762,7 +1779,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "quick", "due", "recent", "oldest_n", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "find", "show", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "show", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -1893,7 +1910,8 @@ pub fn format_help_for_topic(
         "aware" => "🐾 /aware\n\n用法：pet 自述当前感知到的上下文 — transient_note（owner 留下的临时指示）+ active butler_tasks 数 + 当前 mood（emoji + 文本）+ 当前时间 + 陪伴天数。无参；多余尾部忽略。一句话 debug 「pet 为啥没主动开口 / 选了那条 task」。\n\n输出格式：\n  🐾 当前感知：\n  📝 transient_note: 「<text>」（剩 N 分钟） / 无\n  📋 active tasks: N 条\n  ☁ mood: <emoji> <text>\n  🕐 当前: YYYY-MM-DD HH:MM (+08:00) · 陪伴 N 天\n\n示例：\n  /aware\n\n对比：/now（仅时间 + mood emoji，最简）；/whoami（多行画像 + 自我介绍长文）；本命令是「pet 当前感知 snapshot」中等粒度，含 transient_note 这条调度关键信号。\n\n相关：/here（owner 视角对偶 — 看 owner 输入了哪些信号）；/transient（写 transient_note）；/feedback_history（看 pet 接收的训练信号）。",
         "recent_chats" => "💬 /recent_chats [N]\n\n用法：列最近 N 条 active session 内 user ↔ pet 聊天往返（仅 user / assistant items，跳过 tool_call / 系统行）。手机端回顾上下文 — owner 想「我刚才让 pet 做啥来着」一句话查回桌面 ChatMini 滚动太累时用。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  💬 最近 N 条 chat · 会话「<title>」最近活动 MM-DD HH:MM：\n  🧑 <user excerpt>\n  🐾 <pet excerpt>\n  ...\n\nexcerpt cap 80 字；超长 + …。\n\n注：per-msg ts 不在后端 schema 里，仅 session 级 updated_at 一并呈现（「最近活动」信号）。pet 桌面 reset session 时本命令也会看到新空 session 提示。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「最近 chat 上下文」audit 入口。",
         "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
-        "promote_all_p7" => "🎯 /promote_all_p7 confirm\n\n用法：紧急 sprint 模式 — 批量给本聊天所有 active（pending / error）task priority +1，clamp 7（已 ≥ P7 的不动）。**必须带 `confirm` token** 防误触 — 不带 confirm 时显 usage hint 含可升级 N 条预览。\n\n示例：\n  /promote_all_p7         （查看可升级数 + 提示带 confirm）\n  /promote_all_p7 confirm （执行批量 +1）\n\n场景：deadline 收尾 / 紧急 sprint — 让 LLM 立即优先所有挂着的活儿，把「低优先 dump」暂搁置。\n\n注意：仅本 chat 派单（origin == Tg<chat_id>）；done / cancelled 跳过；已 P7+ 的不动（避免无意义写 + 防把 P9 撞墙）。一次性操作；想精细化走 /pri <title> <N> 单条调。\n\n对比 /cancel_all_error：那个一次性 cancel error 任务（破坏性强 — 终态）；本命令一次性升优先级（重组优先级而非删 — 破坏性更轻）。\n\n相关：/pri <title> <N>（绝对设值）；/promote <title>（单条 +1）；/demote <title>（单条 -1）。",
+        "promote_all_p7" => "🎯 /promote_all_p7 confirm\n\n用法：紧急 sprint 模式 — 批量给本聊天所有 active（pending / error）task priority +1，clamp 7（已 ≥ P7 的不动）。**必须带 `confirm` token** 防误触 — 不带 confirm 时显 usage hint 含可升级 N 条预览。\n\n示例：\n  /promote_all_p7         （查看可升级数 + 提示带 confirm）\n  /promote_all_p7 confirm （执行批量 +1）\n\n场景：deadline 收尾 / 紧急 sprint — 让 LLM 立即优先所有挂着的活儿，把「低优先 dump」暂搁置。\n\n注意：仅本 chat 派单（origin == Tg<chat_id>）；done / cancelled 跳过；已 P7+ 的不动（避免无意义写 + 防把 P9 撞墙）。一次性操作；想精细化走 /pri <title> <N> 单条调。\n\n对比 /cancel_all_error：那个一次性 cancel error 任务（破坏性强 — 终态）；本命令一次性升优先级（重组优先级而非删 — 破坏性更轻）。\n\n相关：/pri <title> <N>（绝对设值）；/promote <title>（单条 +1）；/demote <title>（单条 -1）；/touch_all_p7（已 P7+ 但挂着没动的批量 touch 让其重新冒头）。",
+        "touch_all_p7" => "✨ /touch_all_p7 confirm\n\n用法：批量 touch 所有 P7+ active task — 刷 updated_at 不改内容，让挂着没动的高优 task 重新冒头 proactive 选单。**必须带 `confirm` token** 防误触。\n\n示例：\n  /touch_all_p7         （查看可 touch 数 + 提示带 confirm）\n  /touch_all_p7 confirm （执行批量 touch）\n\n场景：sprint 中段「我的高优 P7+ 都已设好但 pet 没在主动关注」— 一键让 LLM 重新审视全部高优清单。\n\n注意：仅本 chat 派单；done / cancelled 跳过；priority < 7 跳过（不在高优集内）。\n\n对比 /promote_all_p7：那个升 priority（让 P3 → P7）；本命令仅刷 P7+ 的 updated_at（已是 P7+ 但挂着的批量唤醒）。两命令互补 — 升优先级 vs 重新冒头。\n\n相关：/touch <title>（单条 touch）；/promote_all_p7（批量升 priority）；/oldest_n（看堆积最久的活）。",
         "promote" => "🎯 /promote <title>\n\n用法：把任务 priority 升 +1（clamp 9 — 已是 P9 时不动 + 友好 reply）。一步操作不必算具体 P 值（与 /pri <title> <N> 互补 — pri 是绝对值，promote 是相对值）。保留所有其它 markers / due / body 不动（复用 task_set_priority 后端）。\n\n示例：\n  /promote 整理 Downloads\n  /promote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/demote（-1 反方向）。",
         "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
@@ -1979,6 +1997,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/touch <title>  —  刷 task 的 updated_at 不改内容 — 让老 task 重新冒头 proactive 选单".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote_all_p7 confirm  —  紧急 sprint：批量给本聊天 active task priority +1（clamp 7；需带 confirm）".to_string(),
+        "/touch_all_p7 confirm  —  批量 touch 所有 P7+ active task 刷 updated_at（需带 confirm；与 /promote_all_p7 互补）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
@@ -3820,6 +3839,43 @@ pub fn format_promote_all_p7_reply(
     out
 }
 
+/// `/touch_all_p7` 命令回复文案。pure：与 format_promote_all_p7_reply
+/// 同 4 态模板但语义不同 — touch 仅刷 updated_at（让"挂着没动的高
+/// 优"重新冒头 proactive 选单），不改 priority。`targets_before` 是
+/// 处理前候选数（active + priority ≥ 7）；`touched_ok` + `touched_err`
+/// 是执行后计数。calling code 负责 walk 候选 + 调 task_touch_inner。
+pub fn format_touch_all_p7_reply(
+    confirmed: bool,
+    targets_before: u32,
+    touched_ok: u32,
+    touched_err: u32,
+) -> String {
+    if !confirmed {
+        if targets_before == 0 {
+            return "✨ /touch_all_p7 confirm\n\n本聊天暂无 P7+ active task（pending / error 任务都 < P7，或全是 done / cancelled）。".to_string();
+        }
+        return format!(
+            "✨ /touch_all_p7 confirm\n\n本聊天有 {} 条 P7+ active task（priority ≥ 7）可批量 touch。\n**这是批量修改 — 必须带 `confirm` token 才执行**：\n\n  /touch_all_p7 confirm\n\n语义：批量刷 updated_at 不改内容 — 让挂着没动的高优 task 重新冒头 proactive 选单。与 /promote_all_p7 互补（那个升 priority；本命令仅刷时间序）。",
+            targets_before
+        );
+    }
+    if touched_ok == 0 && touched_err == 0 {
+        return "✨ 本聊天暂无 P7+ active task ✨（无可 touch 候选）".to_string();
+    }
+    let mut out = format!(
+        "✨ 已批量 touch {} 条 P7+ active task — updated_at 已刷新，挂着的高优重新冒头",
+        touched_ok
+    );
+    if touched_err > 0 {
+        out.push_str(&format!(
+            "\n⚠️ {} 条 touch 失败（可能并发改了状态）",
+            touched_err
+        ));
+    }
+    out.push_str("\n用 /tasks 看更新后顺序 / /oldest_n 看堆积最久的活。");
+    out
+}
+
 /// `/demote <title>` 命令回复文案。pure：与 format_promote_reply 对偶 —
 /// 边界态 old == 0（已是 P0）友好 no-op；其它态显 P<old> → P<new>。
 pub fn format_demote_reply(
@@ -5580,7 +5636,7 @@ mod tests {
             "due", "recent", "oldest_n", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
-            "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "find",
+            "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find",
             "show", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help",
         ] {
@@ -6052,7 +6108,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "show", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "show", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -8553,6 +8609,69 @@ mod tests {
         assert!(s.contains("已批量升 3 条"), "{s}");
         assert!(s.contains("2 条升级失败"), "{s}");
         assert!(s.contains("⚠️"), "warning present: {s}");
+    }
+
+    // -------- /touch_all_p7 parse + format --------
+
+    #[test]
+    fn touch_all_p7_parses_no_arg_as_unconfirmed() {
+        assert_eq!(
+            parse_tg_command("/touch_all_p7"),
+            Some(TgCommand::TouchAllP7 { confirmed: false })
+        );
+    }
+
+    #[test]
+    fn touch_all_p7_parses_confirm_case_insensitive() {
+        assert_eq!(
+            parse_tg_command("/touch_all_p7 confirm"),
+            Some(TgCommand::TouchAllP7 { confirmed: true })
+        );
+        assert_eq!(
+            parse_tg_command("/touch_all_p7 CONFIRM"),
+            Some(TgCommand::TouchAllP7 { confirmed: true })
+        );
+    }
+
+    #[test]
+    fn touch_all_p7_other_trailing_not_confirmed() {
+        assert_eq!(
+            parse_tg_command("/touch_all_p7 yes"),
+            Some(TgCommand::TouchAllP7 { confirmed: false })
+        );
+    }
+
+    #[test]
+    fn touch_all_p7_reply_unconfirmed_with_zero_targets() {
+        let s = format_touch_all_p7_reply(false, 0, 0, 0);
+        assert!(s.contains("暂无 P7+"), "{s}");
+        assert!(!s.contains("必须带"), "no scolding when nothing to do: {s}");
+    }
+
+    #[test]
+    fn touch_all_p7_reply_unconfirmed_with_targets_demands_confirm() {
+        let s = format_touch_all_p7_reply(false, 4, 0, 0);
+        assert!(s.contains("4 条 P7+"), "preview count: {s}");
+        assert!(s.contains("confirm"), "demands confirm: {s}");
+        assert!(s.contains("/touch_all_p7 confirm"), "{s}");
+    }
+
+    #[test]
+    fn touch_all_p7_reply_confirmed_all_ok() {
+        let s = format_touch_all_p7_reply(true, 3, 3, 0);
+        assert!(s.contains("已批量 touch 3 条"), "{s}");
+        assert!(s.contains("挂着的高优重新冒头"), "explains effect: {s}");
+        assert!(!s.contains("⚠️"), "no warning: {s}");
+        assert!(s.contains("/tasks"), "{s}");
+        assert!(s.contains("/oldest_n"), "{s}");
+    }
+
+    #[test]
+    fn touch_all_p7_reply_confirmed_partial_failure() {
+        let s = format_touch_all_p7_reply(true, 5, 3, 2);
+        assert!(s.contains("已批量 touch 3 条"), "{s}");
+        assert!(s.contains("2 条 touch 失败"), "{s}");
+        assert!(s.contains("⚠️"), "{s}");
     }
 
     // -------- /demote parse + format --------
