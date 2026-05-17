@@ -139,6 +139,12 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/cancel_all_error confirm` —— 批量 cancel 本 chat 所有 error 状态
+    /// 的任务。必须带 `confirm` token 防误触（与 /reset 不同 — reset 走
+    /// 单击但语义轻，本命令一次破坏 N 条 task 状态）。`confirmed` 字段
+    /// 由 parser 据 trailing token 决定；handler 在 !confirmed 时走 usage
+    /// hint 要求 token，confirmed 时执行批量 cancel + 返计数 reply。
+    CancelAllError { confirmed: bool },
     /// `/feedback <text>` —— owner 主动给 pet 写反馈到 feedback_history.log
     /// （FeedbackKind::Comment 中性 kind）。让 LLM 在下次 proactive cycle
     /// 看到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。空
@@ -275,6 +281,7 @@ impl TgCommand {
             TgCommand::Streak => "streak",
             TgCommand::Pri { .. } => "pri",
             TgCommand::Feedback { .. } => "feedback",
+            TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -325,6 +332,7 @@ impl TgCommand {
             | TgCommand::Sleep
             | TgCommand::Yesterday
             | TgCommand::Streak
+            | TgCommand::CancelAllError { .. }
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -405,6 +413,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("streak", "Consecutive done-days streak + 7d / 30d done totals"),
             ("pri", "Set a task's priority (0..=9) without rewriting the rest"),
             ("feedback", "Send owner feedback to feedback_history (influences pet's next proactive turn)"),
+            ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -449,6 +458,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("streak", "连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数"),
             ("pri", "单改任务 priority（0..=9）不走 /edit 全量覆写"),
             ("feedback", "给 pet 留反馈（写 feedback_history，影响下次 proactive turn）"),
+            ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -879,6 +889,13 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 写到 feedback_history.log（FeedbackKind::Comment）。空 text 由
         // handler 走 missing-arg。
         "feedback" => Some(TgCommand::Feedback { text: title }),
+        // `/cancel-all-error [confirm]`：带 "confirm" 才执行。case-insensitive
+        // trim 后 == "confirm" 才算确认；任何其它 trailing token 都视作
+        // 未确认（owner 误敲 `/cancel-all-error yes` 不该被算作确认）。
+        "cancel_all_error" => {
+            let confirmed = title.trim().eq_ignore_ascii_case("confirm");
+            Some(TgCommand::CancelAllError { confirmed })
+        }
         // `/edit <title> :: <new desc>`：first-occurrence `::` 切分；任一端
         // trim 后为空 → handler 走 missing-arg。新 desc 是全量覆写（与
         // 桌面 detail.md textarea save 等价）。
@@ -1170,8 +1187,8 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
     "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
-    "digest", "edit", "pri", "reflect", "feedback", "find", "show", "blocked",
-    "snoozed", "reset", "version", "help",
+    "digest", "edit", "pri", "reflect", "feedback", "cancel_all_error",
+    "find", "show", "blocked", "snoozed", "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1286,6 +1303,7 @@ pub fn format_help_for_topic(
         "streak" => "🔥 /streak\n\n用法：显本聊天 done 完成节奏数据：连续完成天数 + 近 7 天 / 30 天 done 总数。无参。owner audit 「最近完成节奏怎么样 / 有没有 streak 在保」时用。streak 末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。\n\n示例：\n  /streak\n\n相关：/today（今日切片）；/yesterday（昨日产出）；/stats（pending / overdue 等汇总）。",
         "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
+        "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1348,6 +1366,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/streak  —  连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数（audit 完成节奏）".to_string(),
         "/pri <title> <N>  —  单改 priority（0..=9）— 不走 /edit 全量覆写".to_string(),
         "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
+        "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2390,6 +2409,39 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
     if untagged > 0 {
         out.push_str(&format!("\n\n无 #tag 任务：{} 条", untagged));
     }
+    out
+}
+
+/// `/cancel_all_error` 命令回复文案。pure：
+/// - confirmed=false → usage hint with `confirm` token + error count
+/// - confirmed=true + 0 cancelled → "本聊天暂无 error 任务" 兜底
+/// - confirmed=true + N cancelled → "🧹 已 cancel N 条 error 任务" + 失败数
+pub fn format_cancel_all_error_reply(
+    confirmed: bool,
+    error_count_before: u32,
+    cancelled_ok: u32,
+    cancelled_err: u32,
+) -> String {
+    if !confirmed {
+        if error_count_before == 0 {
+            return "🧹 /cancel_all_error confirm\n\n本聊天暂无 error 状态任务，无需批量 cancel。".to_string();
+        }
+        return format!(
+            "🧹 /cancel_all_error confirm\n\n本聊天有 {} 条 error 状态任务等待 cancel。\n**这是破坏性操作 — 必须带 `confirm` token 才执行**：\n\n  /cancel_all_error confirm\n\n仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面任务不动。",
+            error_count_before
+        );
+    }
+    if cancelled_ok == 0 && cancelled_err == 0 {
+        return "🧹 本聊天暂无 error 状态任务可 cancel ✨".to_string();
+    }
+    let mut out = format!(
+        "🧹 已批量 cancel {} 条 error 任务",
+        cancelled_ok
+    );
+    if cancelled_err > 0 {
+        out.push_str(&format!("\n⚠️ {} 条 cancel 失败（可能并发改了状态）", cancelled_err));
+    }
+    out.push_str("\n用 /tasks 看更新后清单 / /retry <title> 单条重启。");
     out
 }
 
@@ -3569,7 +3621,8 @@ mod tests {
             "silenced", "markers", "tags", "mood", "whoami", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "reflect", "feedback",
-            "find", "show", "blocked", "snoozed", "reset", "version", "help",
+            "cancel_all_error", "find", "show", "blocked", "snoozed", "reset",
+            "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4035,8 +4088,8 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "edit", "pri", "reflect", "feedback", "show", "tags",
-            "reset", "version", "help",
+            "due", "edit", "pri", "reflect", "feedback", "cancel_all_error",
+            "show", "tags", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5905,6 +5958,79 @@ mod tests {
         // "/search done" 前缀 `/` 由 trim_start_matches('/') 去掉后变成 "search done"
         let s = format_help_for_topic("/search done", &[]);
         assert!(s.contains("/done"), "{s}");
+    }
+
+    // -------- /cancel_all_error parse + format --------
+
+    #[test]
+    fn cancel_all_error_parses_without_confirm_token() {
+        assert_eq!(
+            parse_tg_command("/cancel_all_error"),
+            Some(TgCommand::CancelAllError { confirmed: false })
+        );
+        // 任何非 "confirm" 尾部都视作未确认
+        assert_eq!(
+            parse_tg_command("/cancel_all_error yes"),
+            Some(TgCommand::CancelAllError { confirmed: false })
+        );
+    }
+
+    #[test]
+    fn cancel_all_error_parses_with_confirm_token() {
+        assert_eq!(
+            parse_tg_command("/cancel_all_error confirm"),
+            Some(TgCommand::CancelAllError { confirmed: true })
+        );
+        // case-insensitive
+        assert_eq!(
+            parse_tg_command("/cancel_all_error CONFIRM"),
+            Some(TgCommand::CancelAllError { confirmed: true })
+        );
+        assert_eq!(
+            parse_tg_command("/cancel_all_error Confirm"),
+            Some(TgCommand::CancelAllError { confirmed: true })
+        );
+    }
+
+    #[test]
+    fn cancel_all_error_reply_unconfirmed_with_zero_errors() {
+        let s = format_cancel_all_error_reply(false, 0, 0, 0);
+        assert!(s.contains("暂无 error"), "{s}");
+        assert!(s.contains("无需批量 cancel"), "{s}");
+    }
+
+    #[test]
+    fn cancel_all_error_reply_unconfirmed_with_errors_demands_confirm() {
+        let s = format_cancel_all_error_reply(false, 5, 0, 0);
+        assert!(s.contains("5 条 error"), "{s}");
+        assert!(s.contains("必须带 `confirm`"), "{s}");
+        assert!(
+            s.contains("/cancel_all_error confirm"),
+            "should show exact command: {s}"
+        );
+    }
+
+    #[test]
+    fn cancel_all_error_reply_confirmed_zero_total_shows_idle() {
+        let s = format_cancel_all_error_reply(true, 0, 0, 0);
+        assert!(s.contains("暂无 error"), "{s}");
+    }
+
+    #[test]
+    fn cancel_all_error_reply_confirmed_all_ok() {
+        let s = format_cancel_all_error_reply(true, 3, 3, 0);
+        assert!(s.contains("已批量 cancel 3"), "{s}");
+        assert!(!s.contains("⚠️"), "no warning when all ok: {s}");
+        assert!(s.contains("/tasks"), "should hint follow-up: {s}");
+        assert!(s.contains("/retry"), "{s}");
+    }
+
+    #[test]
+    fn cancel_all_error_reply_confirmed_partial_failure() {
+        let s = format_cancel_all_error_reply(true, 5, 3, 2);
+        assert!(s.contains("已批量 cancel 3"), "{s}");
+        assert!(s.contains("2 条 cancel 失败"), "{s}");
+        assert!(s.contains("⚠️"), "warning present: {s}");
     }
 
     // -------- /feedback parse + format --------

@@ -984,6 +984,43 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::CancelAllError { confirmed } => {
+            // 扫本 chat 派单中的 error 任务（按 Tg(chat_id) origin 过滤）
+            let views = read_tg_chat_task_views(chat_id.0);
+            let error_titles: Vec<String> = views
+                .iter()
+                .filter(|v| matches!(v.status, crate::task_queue::TaskStatus::Error))
+                .map(|v| v.title.clone())
+                .collect();
+            let total = error_titles.len() as u32;
+            if !confirmed {
+                crate::telegram::commands::format_cancel_all_error_reply(
+                    false, total, 0, 0,
+                )
+            } else {
+                // 逐条 cancel；失败计入 err 不阻断后续。
+                let decisions = state
+                    .app
+                    .state::<crate::decision_log::DecisionLogStore>()
+                    .inner()
+                    .clone();
+                let mut ok = 0u32;
+                let mut err = 0u32;
+                for title in &error_titles {
+                    match crate::commands::task::task_cancel_inner(
+                        title.clone(),
+                        String::new(),
+                        decisions.clone(),
+                    ) {
+                        Ok(()) => ok += 1,
+                        Err(_) => err += 1,
+                    }
+                }
+                crate::telegram::commands::format_cancel_all_error_reply(
+                    true, total, ok, err,
+                )
+            }
+        }
         TgCommand::Feedback { text } => {
             // owner 主动反馈：写 feedback_history.log（FeedbackKind::Comment）。
             // 空 text 由 formatter 走 usage hint。
