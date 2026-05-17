@@ -8583,6 +8583,39 @@ export function PanelTasks({
                         </span>
                       );
                     })()}
+                  {/* 📅 拖了 N 天 / N 小时 chip：仅 pending / error + due 已
+                      过期 ≥ 1 小时时显（< 1 小时由既有 dueUrgency overdue
+                      "已过期" tooltip 覆盖 — chip 噪音）。具体数字让 owner
+                      看到拖延量决定"赶紧做 / 改 due / cancel"。终态不显。
+                      与 ⏰ 还 N 分（未来）色族对称：那个红 tint 表"剩"，
+                      本 chip 红 tint 表"拖"，时序对称视觉一致。 */}
+                  {t.due &&
+                    !isFinished(t.status) &&
+                    (() => {
+                      const ts = Date.parse(t.due);
+                      if (Number.isNaN(ts)) return null;
+                      const overdueMs = nowMs - ts;
+                      if (overdueMs < 3_600_000) return null;
+                      const days = Math.floor(overdueMs / 86_400_000);
+                      const hours = Math.floor(overdueMs / 3_600_000);
+                      const label =
+                        days >= 1 ? `拖了 ${days} 天` : `拖了 ${hours} 小时`;
+                      return (
+                        <span
+                          style={{
+                            background: "var(--pet-tint-red-bg)",
+                            color: "var(--pet-tint-red-fg)",
+                            padding: "1px 6px",
+                            borderRadius: 999,
+                            fontWeight: 600,
+                            fontFamily: "'SF Mono', 'Menlo', monospace",
+                          }}
+                          title={`已过期 ${days >= 1 ? `${days} 天` : `${hours} 小时`} — 拖得越久越易忘 / 该重新评估（赶紧做 / 改 due / cancel）`}
+                        >
+                          📅 {label}
+                        </span>
+                      );
+                    })()}
                   {/* 📅 调期 chip：相对增量 preset 微调 due_at。终态行
                       （done / cancelled）不显——调期对结束态无意义。
                       popover 直接锚 chip 下方；与 💤 snooze 同 outside-click
