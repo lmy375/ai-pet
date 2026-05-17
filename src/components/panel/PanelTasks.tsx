@@ -2310,6 +2310,119 @@ export function PanelTasks({
       window.removeEventListener("keydown", onKey, { capture: true });
   }, [editingDetailTitle]);
 
+  /// ⌘/ toggle markdown 注释（`<!-- ... -->`）。capture phase 拦截 —
+  /// 与既有全局 ⌘/ 速查 modal 冲突时，detail editor textarea 焦点内本
+  /// handler 优先（与 ⌘F editor-scope 拦截同模板）。
+  ///
+  /// 语义：
+  /// - 无选区 → 对当前行整行 toggle：若行 trim 后是 `<!-- xxx -->`
+  ///   形状 → 解注释；否则 → 包裹整行
+  /// - 有选区 → 对选区 toggle：若选区 trim 后是 `<!-- xxx -->` 形状 →
+  ///   解注释；否则 → 包裹选区为单个 block comment（多行也按 block，
+  ///   与 VSCode markdown 一致）
+  /// - 全空行 / 空选区 → noop
+  ///
+  /// 单 modifier check（meta/ctrl + 不带 shift/alt）；IME composing
+  /// 跳过；textarea focus gate（detailEditorRef.current === activeElement）。
+  useEffect(() => {
+    if (editingDetailTitle === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key !== "/") return;
+      const ae = document.activeElement;
+      const ta = detailEditorRef.current;
+      if (ae !== ta) return; // 让其它焦点处的 ⌘/ 走全局速查 modal
+      if (!ta) return;
+      if (e.isComposing) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      const value = ta.value;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const OPEN = "<!-- ";
+      const CLOSE = " -->";
+
+      // 计算操作 range：无选区 → 当前行整行；有选区 → 原选区
+      let opStart: number;
+      let opEnd: number;
+      if (start === end) {
+        const firstLineStart = value.lastIndexOf("\n", start - 1) + 1;
+        const nextNl = value.indexOf("\n", start);
+        const lastLineEnd = nextNl === -1 ? value.length : nextNl;
+        opStart = firstLineStart;
+        opEnd = lastLineEnd;
+      } else {
+        opStart = start;
+        opEnd = end;
+      }
+      const segment = value.slice(opStart, opEnd);
+      if (segment.trim().length === 0) return; // 全空，noop
+
+      // 检测是否已包裹 — trim 后 `<!-- ... -->` 形状
+      const trimmed = segment.trim();
+      const isWrapped =
+        trimmed.startsWith(OPEN.trim()) && trimmed.endsWith(CLOSE.trim());
+
+      let replacement: string;
+      let cursorAfter: number;
+      if (isWrapped) {
+        // 解注释：strip leading "<!--" + 内部 leading space（如有）+
+        // trailing "-->" + 内部 trailing space（如有）。容忍包裹有 / 无
+        // space pad 两种风格。
+        const leading = segment.length - segment.trimStart().length;
+        const trailing = segment.length - segment.trimEnd().length;
+        let inner = segment.slice(leading, segment.length - trailing);
+        inner = inner.slice("<!--".length, inner.length - "-->".length);
+        // 削除 inner 两端的单个 space（标准格式）— 不强制要求，
+        // 容忍紧贴 `<!--foo-->` 格式
+        if (inner.startsWith(" ")) inner = inner.slice(1);
+        if (inner.endsWith(" ")) inner = inner.slice(0, -1);
+        replacement =
+          segment.slice(0, leading) +
+          inner +
+          segment.slice(segment.length - trailing);
+        cursorAfter = opStart + replacement.length;
+      } else {
+        // 包裹：保留 leading / trailing whitespace（缩进 / 末尾换行
+        // 不被 wrap 吞）
+        const leading = segment.length - segment.trimStart().length;
+        const trailing = segment.length - segment.trimEnd().length;
+        replacement =
+          segment.slice(0, leading) +
+          OPEN +
+          segment.slice(leading, segment.length - trailing) +
+          CLOSE +
+          segment.slice(segment.length - trailing);
+        cursorAfter = opStart + replacement.length;
+      }
+
+      const next = value.slice(0, opStart) + replacement + value.slice(opEnd);
+      setEditingDetailContent(next);
+      // 选区调整：无选区 → 光标落 replacement 末尾；有选区 → 选区覆
+      // 盖新的 replacement 让 owner 可以再次 ⌘/ 反向 toggle
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        if (start === end) {
+          cur.selectionStart = cur.selectionEnd = cursorAfter;
+          setDetailCursorPos(cursorAfter);
+          setDetailSelectionEnd(cursorAfter);
+        } else {
+          cur.selectionStart = opStart;
+          cur.selectionEnd = opStart + replacement.length;
+          setDetailCursorPos(opStart);
+          setDetailSelectionEnd(opStart + replacement.length);
+        }
+      });
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, [editingDetailTitle]);
+
   /// ⌘P toggle preview-only 模式（VSCode preview-lock 风）。
   /// - 编辑器开启时全局捕获：
   ///   - 非 preview → 记下当前 mode 进 ref，切到 preview
@@ -12052,7 +12165,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -12415,7 +12528,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -15047,6 +15160,7 @@ export function PanelTasks({
                   ["⌘P", "切到 preview-only 焦点阅读（再按回写作姿态 · VSCode preview-lock 风）"],
                   ["⌘⇧L", "弹链接快速插入 popover（选区当 label 仅输 url；空选区双输入 url + label）"],
                   ["Tab / ⇧Tab", "多行缩进 / 反缩进（选区覆盖行 +/- 2 空格；无选区 Tab 在光标位置插 2 空格）"],
+                  ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
                   ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
