@@ -1746,6 +1746,40 @@ export function PanelTasks({
     return () => window.clearInterval(id);
   }, [editingDetailTitle]);
 
+  /// detail.md 自动版本历史：每次 task_save_detail 成功后后端在
+  /// `<detail_path>.history/<ts>.md` 留快照（cap = 5）。前端 chip "📜 N"
+  /// 在编辑器状态栏显，点击展开 popover 列出 ts + 内容前缀，让 owner 一键
+  /// 拷贝某版到剪贴板回滚。lazy fetch — 第一次 chip 点击或保存后才 invoke
+  /// task_detail_history；编辑器关闭即清。
+  interface DetailHistoryEntry {
+    ts: string;
+    content: string;
+  }
+  const [historyEntries, setHistoryEntries] = useState<DetailHistoryEntry[]>([]);
+  const [historyPopoverOpen, setHistoryPopoverOpen] = useState(false);
+  const [historyCopiedTs, setHistoryCopiedTs] = useState<string | null>(null);
+  const refreshDetailHistory = useCallback(async (taskTitle: string) => {
+    try {
+      const list = await invoke<DetailHistoryEntry[]>("task_detail_history", {
+        title: taskTitle,
+      });
+      setHistoryEntries(list);
+    } catch (e) {
+      // 失败容忍：safety net 性质，不应阻塞编辑流程
+      console.error("task_detail_history failed:", e);
+      setHistoryEntries([]);
+    }
+  }, []);
+  useEffect(() => {
+    if (editingDetailTitle === null) {
+      setHistoryEntries([]);
+      setHistoryPopoverOpen(false);
+      setHistoryCopiedTs(null);
+      return;
+    }
+    void refreshDetailHistory(editingDetailTitle);
+  }, [editingDetailTitle, refreshDetailHistory]);
+
   /// 自动草稿：每 60s 把当前 editingDetailContent 写到 localStorage 防意外关
   /// 闭丢内容。key 形如 `pet-detail-draft-${title}` —— task 标题已 unique 唯
   /// 一，重名不可能进 butler_tasks。draft 仅在 dirty 时写（content 与磁盘版
@@ -3200,6 +3234,9 @@ export function PanelTasks({
       setEditDetailErr("");
       try {
         await invoke("task_save_detail", { title: taskTitle, content: editingDetailContent });
+        // 保存成功 → 后端刚 snapshot 了"旧版" → 立即刷新 history list 让
+        // 下次 owner 点 📜 chip 看到最新快照。fire-and-forget；失败容忍。
+        void refreshDetailHistory(taskTitle);
         // 保存成功 → 清掉 auto-draft（磁盘已是真相，draft 不再有恢复价值）
         try {
           window.localStorage.removeItem(`pet-detail-draft-${taskTitle}`);
@@ -9640,6 +9677,153 @@ export function PanelTasks({
                                     </span>
                                   );
                                 })()}
+                                {/* 📜 历史版本 chip + popover：每次 ⌘S 保存
+                                    后端 snapshot 旧版到 .history（cap=5），
+                                    点击 chip 展开 popover 列出 ts + 内容前
+                                    缀，让 owner 一键复制某版到剪贴板回滚。
+                                    不直接 restore — 由 owner 主动决策粘回
+                                    避免误覆盖当前 dirty 内容的风险。 */}
+                                {historyEntries.length > 0 && (
+                                  <span
+                                    style={{ position: "relative", display: "inline-flex" }}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setHistoryPopoverOpen((v) => !v)
+                                      }
+                                      style={{
+                                        fontSize: 11,
+                                        padding: "2px 8px",
+                                        border: `1px solid ${historyPopoverOpen ? "var(--pet-color-accent)" : "var(--pet-color-border)"}`,
+                                        borderRadius: 4,
+                                        background: historyPopoverOpen
+                                          ? "var(--pet-tint-blue-bg)"
+                                          : "var(--pet-color-card)",
+                                        color: historyPopoverOpen
+                                          ? "var(--pet-tint-blue-fg)"
+                                          : "var(--pet-color-muted)",
+                                        cursor: "pointer",
+                                        fontWeight: historyPopoverOpen ? 600 : 400,
+                                        fontFamily: "inherit",
+                                      }}
+                                      title={`detail.md 自动版本历史 — 最近 ${historyEntries.length} 份 save 前快照（cap=5）。点击展开 popover 选 ts 复制到剪贴板回滚。`}
+                                      aria-label="detail history versions"
+                                    >
+                                      📜 {historyEntries.length}
+                                    </button>
+                                    {historyPopoverOpen && (
+                                      <div
+                                        style={{
+                                          position: "absolute",
+                                          top: "100%",
+                                          right: 0,
+                                          marginTop: 4,
+                                          minWidth: 280,
+                                          maxWidth: 380,
+                                          background: "var(--pet-color-card)",
+                                          border: "1px solid var(--pet-color-border)",
+                                          borderRadius: 4,
+                                          boxShadow:
+                                            "0 4px 16px rgba(0, 0, 0, 0.18)",
+                                          padding: 6,
+                                          zIndex: 100,
+                                          fontSize: 11,
+                                          color: "var(--pet-color-fg)",
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            fontSize: 10,
+                                            color: "var(--pet-color-muted)",
+                                            padding: "2px 6px 6px",
+                                          }}
+                                        >
+                                          📜 save 前快照（最新在前 · 点 ts 复制到剪贴板）
+                                        </div>
+                                        {historyEntries.map((entry) => {
+                                          // ts 格式: 20260517-143015 → 显 05-17 14:30:15
+                                          const tsFmt =
+                                            entry.ts.length === 15
+                                              ? `${entry.ts.slice(4, 6)}-${entry.ts.slice(6, 8)} ${entry.ts.slice(9, 11)}:${entry.ts.slice(11, 13)}:${entry.ts.slice(13, 15)}`
+                                              : entry.ts;
+                                          const preview = entry.content
+                                            .replace(/\s+/g, " ")
+                                            .trim()
+                                            .slice(0, 50);
+                                          const copied = historyCopiedTs === entry.ts;
+                                          return (
+                                            <button
+                                              key={entry.ts}
+                                              type="button"
+                                              onClick={async () => {
+                                                try {
+                                                  await navigator.clipboard.writeText(
+                                                    entry.content,
+                                                  );
+                                                  setHistoryCopiedTs(entry.ts);
+                                                  window.setTimeout(
+                                                    () =>
+                                                      setHistoryCopiedTs((cur) =>
+                                                        cur === entry.ts ? null : cur,
+                                                      ),
+                                                    2500,
+                                                  );
+                                                } catch (e) {
+                                                  console.error(
+                                                    "clipboard write failed:",
+                                                    e,
+                                                  );
+                                                }
+                                              }}
+                                              title={`${entry.ts} — ${entry.content.length} 字符 · 点击复制全文到剪贴板，粘到 textarea 回滚此版`}
+                                              style={{
+                                                display: "block",
+                                                width: "100%",
+                                                textAlign: "left",
+                                                background: copied
+                                                  ? "var(--pet-tint-green-bg)"
+                                                  : "transparent",
+                                                color: copied
+                                                  ? "var(--pet-tint-green-fg)"
+                                                  : "var(--pet-color-fg)",
+                                                border: "none",
+                                                padding: "4px 6px",
+                                                fontSize: 11,
+                                                cursor: "pointer",
+                                                borderRadius: 3,
+                                                fontFamily: "inherit",
+                                              }}
+                                            >
+                                              <div
+                                                style={{
+                                                  fontFamily:
+                                                    "'SF Mono', monospace",
+                                                  fontSize: 10,
+                                                  color: copied
+                                                    ? "var(--pet-tint-green-fg)"
+                                                    : "var(--pet-color-muted)",
+                                                }}
+                                              >
+                                                {copied ? "✓ 已复制 " : ""}{tsFmt}
+                                              </div>
+                                              <div
+                                                style={{
+                                                  whiteSpace: "nowrap",
+                                                  overflow: "hidden",
+                                                  textOverflow: "ellipsis",
+                                                  opacity: 0.8,
+                                                }}
+                                              >
+                                                {preview || "（空文件）"}
+                                              </div>
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </span>
+                                )}
                                 {/* R141: dirty marker — content !== original 时
                                     显 "● 未保存"；marginLeft: auto 在字数 counter
                                     上，dirty marker 紧贴字数左侧（gap 4 分隔）。

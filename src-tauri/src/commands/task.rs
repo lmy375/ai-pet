@@ -540,6 +540,24 @@ pub fn task_save_detail(title: String, content: String) -> Result<(), String> {
     Ok(())
 }
 
+/// `task_detail_history`：列出指定任务 detail.md 的最近 N 个版本快照（最新在
+/// 前）。给「任务详情页」的「📜 历史」chip 用 —— owner 想拿回上一版时一键
+/// 列出 + 选 ts 复制内容。任务不存在 → Err；history 目录不存在 / 空 → Ok([])。
+#[tauri::command]
+pub fn task_detail_history(
+    title: String,
+) -> Result<Vec<crate::detail_history::DetailHistoryEntry>, String> {
+    let title_trim = title.trim();
+    if title_trim.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trim)
+        .ok_or_else(|| format!("task not found: {}", title_trim))?;
+    let mem_dir = memory::memories_dir()?;
+    let full_path = mem_dir.join(&item.detail_path);
+    Ok(crate::detail_history::list_history(&full_path))
+}
+
 /// `task_set_due`：把任务的截止时间改成新值（或清空）。与 `task_set_priority`
 /// 完全对偶 —— 保留 priority / body / 其它 markers 不动，只动 due 字段。
 ///
