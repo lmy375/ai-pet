@@ -177,6 +177,15 @@ export function PanelDebug() {
   // 指纹 = `timestamp|kind|message`：timestamp 含 ms 单进程内不撞。重启后
   // 后端 store 自动清空，dismissed 自然失效，无需持久化。
   const [tgDismissed, setTgDismissed] = useState<Set<string>>(new Set());
+  /// ⏱ TG ping 按钮状态：result 含 username + latency_ms（成功时），
+  /// error 字符串（失败时），busy 时按钮 disabled + 显「测量中…」。
+  /// 同时只一次 in-flight ping —— 重复点击防止往返尚未结束就发第二条。
+  const [tgPingResult, setTgPingResult] = useState<{
+    username: string;
+    latency_ms: number;
+  } | null>(null);
+  const [tgPingError, setTgPingError] = useState<string | null>(null);
+  const [tgPingBusy, setTgPingBusy] = useState(false);
   const [tone, setTone] = useState<ToneSnapshot | null>(null);
   const [reminders, setReminders] = useState<PendingReminder[]>([]);
   // Iter TR3: pending high-risk tool reviews. Surfaces a modal asking
@@ -3612,6 +3621,110 @@ export function PanelDebug() {
           </div>
         );
       })()}
+
+      {/* ⏱ TG bot ping — 一行式测 Telegram bot 链路健康：调 ping_tg_bot
+          → 临时 teloxide::Bot.get_me() + 计时。结果显在按钮右边：
+          @username + N ms（绿）或失败原因（红）。与 PanelSettings 的
+          reconnect / reset 按钮分工 — 那两个改状态，本按钮是只读
+          health check（不改 bot 状态）。 */}
+      {(() => {
+        const ok = tgPingResult && !tgPingError;
+        const tone: "ok" | "err" | "muted" = tgPingError
+          ? "err"
+          : ok
+            ? "ok"
+            : "muted";
+        const color =
+          tone === "ok"
+            ? "var(--pet-tint-green-fg)"
+            : tone === "err"
+              ? "var(--pet-tint-red-fg)"
+              : "var(--pet-color-muted)";
+        const bg =
+          tone === "ok"
+            ? "var(--pet-tint-green-bg)"
+            : tone === "err"
+              ? "var(--pet-tint-red-bg)"
+              : "transparent";
+        let resultText = "";
+        if (tgPingBusy) resultText = "测量中…";
+        else if (tgPingError) resultText = `× ${tgPingError}`;
+        else if (tgPingResult)
+          resultText = `${tgPingResult.username} · ${tgPingResult.latency_ms} ms`;
+        else resultText = "未测";
+        return (
+          <div
+            style={{
+              padding: "6px 16px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 11,
+              color: "var(--pet-color-muted)",
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>TG 链路：</span>
+            <button
+              type="button"
+              onClick={async () => {
+                setTgPingBusy(true);
+                setTgPingError(null);
+                try {
+                  const r = await invoke<{
+                    username: string;
+                    latency_ms: number;
+                  }>("ping_tg_bot");
+                  setTgPingResult(r);
+                } catch (e) {
+                  setTgPingResult(null);
+                  setTgPingError(String(e));
+                } finally {
+                  setTgPingBusy(false);
+                }
+              }}
+              disabled={tgPingBusy}
+              title="测 Telegram bot 链路延迟（getMe API 往返毫秒）— 只读，不改 bot 状态。结果含 @username 让 owner 确认 token 对应的是哪个 bot。"
+              style={{
+                padding: "3px 10px",
+                fontSize: 11,
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 4,
+                background: tgPingBusy
+                  ? "var(--pet-color-bg)"
+                  : "var(--pet-color-card)",
+                color: "var(--pet-color-fg)",
+                cursor: tgPingBusy ? "default" : "pointer",
+                fontFamily: "inherit",
+                opacity: tgPingBusy ? 0.6 : 1,
+              }}
+            >
+              ⏱ ping
+            </button>
+            <span
+              style={{
+                padding: "2px 8px",
+                fontSize: 11,
+                borderRadius: 4,
+                background: bg,
+                color,
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                wordBreak: "break-all",
+                lineHeight: 1.5,
+              }}
+              title={
+                tgPingError ?? tgPingResult
+                  ? `${tgPingResult?.username ?? "（无 username）"} 往返 ${tgPingResult?.latency_ms ?? "?"} ms (DNS+TLS+HTTP)`
+                  : "点 ⏱ ping 测一次"
+              }
+            >
+              {resultText}
+            </span>
+          </div>
+        );
+      })()}
+
+      {/* Recent proactive decisions — answers "why didn't the pet say anything?" */}
 
       {/* Recent proactive decisions — answers "why didn't the pet say anything?" */}
       {/* CSS hover-only 显隐：决策行 hover 时单行复制按钮显出，平时透明
