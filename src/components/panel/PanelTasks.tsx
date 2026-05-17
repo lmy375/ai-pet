@@ -4270,6 +4270,33 @@ export function PanelTasks({
     [insertMarkdownAtCursor],
   );
 
+  /// detail.md textarea ⌘⇧M 插 markdown table 3x3 模板 — owner 快速搭表
+  /// 格架构而不手敲管道符 + 分隔行。模板含 header 行（| 列1 | 列2 | 列3 |）
+  /// + 分隔行（| --- | --- | --- |）+ 2 空数据行。
+  ///
+  /// 模板前后各加 `\n` 保表格独立成块（markdown table 必须 header 行前
+  /// 后是空行或文件起末才被识别）— 在文中插入时不会粘连前后段落。
+  ///
+  /// ⌘⇧M 选择：⌘M 在 macOS 是 minimize；⌘⇧M 行业 IDE （JetBrains "Move
+  /// File"）有用，但本 webview 内空 — 占 markdown 编辑相关键位（M for
+  /// "Markdown" / "Matrix"）owner 心智匹配。preventDefault 吃 OS default
+  /// （macOS Chrome ⌘M 是 minimize；shift 修饰已避开此 case 但 兜底）。
+  const handleDetailTableTemplate = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "m") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      // 3 列 × 4 行（header + 分隔 + 2 数据）— 实用最小尺寸
+      // 空数据格 |     | 给 owner 立即可填，光标定位简化为表后即可
+      const template = "\n| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|     |     |     |\n|     |     |     |\n";
+      insertMarkdownAtCursor("wrap", template, "");
+      return true;
+    },
+    [insertMarkdownAtCursor],
+  );
+
   /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
   /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
   /// modifier check（no shift / no alt）+ IME composing skip。空选 →
@@ -14891,6 +14918,9 @@ export function PanelTasks({
                                   // ⌘⇧I 插完整 ISO 8601 时间戳（含秒 + tz
                                   // offset）— 与 ⌘⇧D MM-DD HH:MM 紧凑版互补。
                                   if (handleDetailIsoTimestamp(e)) return;
+                                  // ⌘⇧M 插 markdown table 3x3 模板 —
+                                  // 快速搭表格架构免手敲管道符。
+                                  if (handleDetailTableTemplate(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -15380,6 +15410,9 @@ export function PanelTasks({
                                   // ⌘⇧I 插完整 ISO 8601 时间戳（含秒 + tz
                                   // offset）— 与 ⌘⇧D MM-DD HH:MM 紧凑版互补。
                                   if (handleDetailIsoTimestamp(e)) return;
+                                  // ⌘⇧M 插 markdown table 3x3 模板 —
+                                  // 快速搭表格架构免手敲管道符。
+                                  if (handleDetailTableTemplate(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -18696,6 +18729,7 @@ export function PanelTasks({
                   ["⌘⌥↑ / ⌘⌥↓", "复制当前行（或选区多行）向上 / 向下（Sublime 风 — 与 ⌥↑↓ 移动行同字母键、不同 modifier 区分复制 vs 移动）"],
                   ["⌘⌥L", "选区行排序（auto-detect numeric / alphabetical — IDE Sort Lines；<2 行 noop；已排序幂等）"],
                   ["⌘⇧I", "插完整 ISO 8601 时间戳（YYYY-MM-DDThh:mm:ss±tz）— 精度版 ⌘⇧D"],
+                  ["⌘⇧M", "插 markdown table 3x3 模板（header + 分隔 + 2 空行）— 快速搭表"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
