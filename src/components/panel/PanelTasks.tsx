@@ -2393,6 +2393,41 @@ export function PanelTasks({
     });
   }, []);
 
+  /// 把 textarea 当前选区按行加 `> ` 前缀拼成 markdown blockquote 写剪贴板。
+  /// 空选区 → 友好 toast 提示先选中。每行单独加 `> ` （含空白行变 `>`），
+  /// 让多行选区在外部 markdown 渲染时正确成连续 blockquote。
+  /// 不动 textarea 内容 — 与 insertMarkdownAtCursor("line-prefix", "> ") 不同
+  /// （后者在原 detail 里写 `>`，本助手只复制到剪贴板让 owner 粘到别处）。
+  const copySelectionAsBlockquote = useCallback(async () => {
+    const ta = detailEditorRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? start;
+    if (start >= end) {
+      setBulkResultMsg(
+        "📋 选中文字后再点 — 没有选区可复制为 blockquote",
+      );
+      window.setTimeout(() => setBulkResultMsg(""), 3500);
+      return;
+    }
+    const selection = ta.value.slice(start, end);
+    const lines = selection.split("\n");
+    const quoted = lines
+      .map((line) => (line.length === 0 ? ">" : `> ${line}`))
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(quoted);
+      const previewLen = Math.min(selection.length, 40);
+      setBulkResultMsg(
+        `📋 已复制 blockquote（${selection.length} 字 · ${lines.length} 行）`,
+      );
+      void previewLen;
+    } catch (e) {
+      setBulkResultMsg(`复制失败：${e}`);
+    }
+    window.setTimeout(() => setBulkResultMsg(""), 3500);
+  }, []);
+
   /// 在光标位置插入 3×3 GFM table 骨架。需独占整段：若光标前一字符不是
   /// 换行，先补一个 `\n` 让表头不被前文 "吞" 进同段。插入后把"列 1" 设为
   /// 当前 selection —— 用户立刻可敲 / 选 / 删，不必先手动 select 占位文。
@@ -10031,6 +10066,16 @@ export function PanelTasks({
                                     style={mdToolbarBtnStyle}
                                   >
                                     📜
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void copySelectionAsBlockquote()
+                                    }
+                                    title="把 textarea 当前选区按行加 > 前缀拼成 markdown blockquote 写剪贴板（不动 detail 本身）。适合 quote 一段笔记发同事 / 贴别处。空选区时 toast 提示。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    📋❝
                                   </button>
                                   <button
                                     type="button"
