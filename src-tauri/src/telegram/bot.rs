@@ -713,6 +713,12 @@ async fn handle_tg_command(
             let now = chrono::Local::now().naive_local();
             crate::telegram::commands::format_stats_reply(&views, now, now.date())
         }
+        TgCommand::Buckets => {
+            // 与 /stats 同 read path + filter active；formatter 内部 priority
+            // 分桶 + 一行式 dump。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_buckets_reply(&views)
+        }
         TgCommand::Pinned => {
             // 与 /tasks 共用 read path + 同 chat 过滤；再加 t.pinned 子集过滤。
             // 不缓存（与 /stats 同思路）：用户连发就是想"看现在到底什么样"。
