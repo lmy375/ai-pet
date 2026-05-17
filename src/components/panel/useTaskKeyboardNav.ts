@@ -31,6 +31,10 @@ export interface UseTaskKeyboardNavArgs<T extends TaskItemLike> {
   /** ⌘D / Ctrl+D 快捷键：复制焦点行 title 到剪贴板。键盘党 quick-grab，
    * 不必走右键 ctx menu。无焦点（focusedIdx===null）时跳过让默认行为透传。 */
   handleCopyTitle: (title: string) => void;
+  /** ⌘R / Ctrl+R 快捷键：立即刷新 task list — 免等 30s tick。owner 想看
+   * 后端刚发生的变更（LLM 新建 / 状态切换）即时反映。preventDefault 吃浏
+   * 览器默认"刷新页面"行为。 */
+  handleReload: () => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
   titleInputRef: RefObject<HTMLInputElement | null>;
   setCreateFormExpanded: (v: boolean) => void;
@@ -49,6 +53,7 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
     handleRetry,
     handleTogglePinned,
     handleCopyTitle,
+    handleReload,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -83,6 +88,10 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
   useEffect(() => {
     handleCopyTitleRef.current = handleCopyTitle;
   }, [handleCopyTitle]);
+  const handleReloadRef = useRef(handleReload);
+  useEffect(() => {
+    handleReloadRef.current = handleReload;
+  }, [handleReload]);
   const handleTogglePinnedRef = useRef(handleTogglePinned);
   useEffect(() => {
     handleTogglePinnedRef.current = handleTogglePinned;
@@ -104,6 +113,20 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
           el.focus();
           el.select();
         }
+        return;
+      }
+      // ⌘R / Ctrl+R 立即刷新 task list — 免等 30s tick；与 ⌘F / ⌘K 同
+      // 跨 input context 工作（owner 在搜索 / 创建表单输入时也想能按 ⌘R
+      // 看后端变化）。preventDefault 吃浏览器默认"刷新整页"行为（Tauri
+      // webview 通常会真重载导致 panel state 全丢，必须拦）。
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "r" &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        handleReloadRef.current();
         return;
       }
       // 用户在 search / 创建表单 / 取消原因等输入里打字、或 button 聚焦时按

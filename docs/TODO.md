@@ -9,7 +9,6 @@
 >
 
 - PanelMemory 加全段 fuzzy 搜索框：title / description 含 keyword 即过滤；快速定位长 cat 里的 item。
-- PanelTasks 加 ⌘R 立即刷新 task list 键盘快捷键：免等 30s tick，owner 想立即看后端变化按 ⌘R 触发。
 
 
 

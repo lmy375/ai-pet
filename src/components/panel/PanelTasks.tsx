@@ -4836,6 +4836,17 @@ export function PanelTasks({
         window.setTimeout(() => setBulkResultMsg(""), 3000);
       });
   }, []);
+  /// ⌘R 快捷键：立即拉新 task list — 复用既有 reload。reload 内部已
+  /// 处理 errMsg + setDetailMap({}) 缓存清理；这里额外 setBulkResultMsg
+  /// 让 owner 看到"已触发刷新"反馈（reload 本身 < 100ms 也可能太快感
+  /// 知不到 visual change）。
+  const handleReloadShortcut = useCallback(() => {
+    setBulkResultMsg("⌘R 刷新中…");
+    void reload().finally(() => {
+      setBulkResultMsg("✓ 已刷新");
+      window.setTimeout(() => setBulkResultMsg(""), 2000);
+    });
+  }, [reload]);
 
   // 键盘导航整段抽到 useTaskKeyboardNav（ref-stable 监听 + visibleTasks
   // 长度 clamp）。hook 内部用 ref 持最新依赖，避免每次 visibleTasks 变化
@@ -4849,6 +4860,7 @@ export function PanelTasks({
     handleRetry,
     handleTogglePinned,
     handleCopyTitle: handleCopyFocusedTitle,
+    handleReload: handleReloadShortcut,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
