@@ -7556,6 +7556,27 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           🔗
                         </button>
+                        {/* ↗ 跳到任务面板（仅 butler_tasks cat）：butler_tasks
+                            item 本身就是 task — owner 想跳到 PanelTasks 查
+                            状态 / 改优先级 / 看历史 / mark done 时一键切。
+                            复用既有 onRequestFocusTask(title) prop（与 task
+                            ref hover 跳转、记忆 description 含 `「title」`
+                            ref token 双击同 channel）。仅在 prop 传入 +
+                            该条本身是 butler_tasks 时显（其它 cat 的 item
+                            不是 task，按钮无意义）。 */}
+                        {catKey === "butler_tasks" && onRequestFocusTask && (
+                          <button
+                            style={s.btn}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRequestFocusTask(item.title);
+                            }}
+                            title={`切到 PanelTasks tab 并高亮「${item.title}」task 卡片 — 想立即 mark done / 改优先级 / 看 detail / 历史时一键跳。`}
+                            aria-label="jump to task panel for this item"
+                          >
+                            ↗
+                          </button>
+                        )}
                         {/* 📜 detail.md 历史快照：与 PanelTasks 📜 popover
                             对偶，让 PanelMemory 任一 cat 都能查 .history 快
                             照。点击拉最近 5 份 ts + 内容前缀，click 任一
