@@ -2117,6 +2117,11 @@ export function PanelTasks({
         y: number;
         prioritySubmenu: boolean;
         reminderSubmenu: boolean;
+        /// 「⏰ due in N min」submenu — 5/15/30/60/120 min preset 一键
+        /// 设短期 due。免输 datetime-local 的 ergo 改进；与 reminderMin
+        /// （fire 前提醒）/ snooze（推后到点）正交 — 这是设 due time
+        /// 本身。
+        dueInMinSubmenu: boolean;
       }
     | null
   >(null);
@@ -8283,6 +8288,7 @@ export function PanelTasks({
                     y: e.clientY,
                     prioritySubmenu: false,
                     reminderSubmenu: false,
+                    dueInMinSubmenu: false,
                   });
                 }}
                 onMouseEnter={() => startTaskPreviewHover(t.title, t.detail_path)}
@@ -14289,7 +14295,10 @@ export function PanelTasks({
         // 这里用经验值 180 / 320 做夹紧足够（带 priority 子面板时纵向 +60）。
         const m = taskCtxMenu;
         const W = 180;
-        const H = (m.prioritySubmenu ? 360 : 300) + (m.reminderSubmenu ? 60 : 0);
+        const H =
+          (m.prioritySubmenu ? 360 : 300) +
+          (m.reminderSubmenu ? 60 : 0) +
+          (m.dueInMinSubmenu ? 60 : 0);
         const left = Math.max(8, Math.min(m.x, window.innerWidth - W - 8));
         const top = Math.max(8, Math.min(m.y, window.innerHeight - H - 8));
         const t = tasks.find((x) => x.title === m.title) ?? null;
@@ -14965,6 +14974,100 @@ export function PanelTasks({
                           </button>
                         );
                       })}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+            {/* 「⏰ due in N min」submenu — 5/15/30/60/120 min preset 一键
+                设短期 due。与 reminderMin（fire 前 N 分钟提醒）/ snooze
+                （推后到点）正交 — 这是设 due time 本身。免输 datetime-
+                local 的 ergo 改进，常用 "20 分钟后回来开会做这事" 等
+                短期场景一键搞定。computed due = now + N min via
+                formatDueInput 写 ISO YYYY-MM-DDThh:mm。 */}
+            {(() => {
+              const m3 = taskCtxMenu;
+              if (!m3) return null;
+              const presets: Array<{ minutes: number; label: string }> = [
+                { minutes: 5, label: "5 分" },
+                { minutes: 15, label: "15 分" },
+                { minutes: 30, label: "30 分" },
+                { minutes: 60, label: "60 分" },
+                { minutes: 120, label: "2 小时" },
+              ];
+              return (
+                <>
+                  <button
+                    type="button"
+                    style={itemBtn}
+                    onMouseOver={itemBtnHoverIn}
+                    onMouseOut={itemBtnHoverOut}
+                    onClick={() =>
+                      setTaskCtxMenu((cur) =>
+                        cur
+                          ? { ...cur, dueInMinSubmenu: !cur.dueInMinSubmenu }
+                          : cur,
+                      )
+                    }
+                    title="一键设 N 分钟后到期 — 与 reminderMin（fire 前 N 分提醒）/ snooze（推后到点）正交，这是设 due time 本身。短期 due 免输 datetime-local。"
+                  >
+                    {m3.dueInMinSubmenu ? "▾" : "▸"} ⏰ due in N min
+                  </button>
+                  {m3.dueInMinSubmenu && (
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(5, 1fr)",
+                        gap: 2,
+                        padding: "2px 4px 4px",
+                      }}
+                    >
+                      {presets.map((p) => (
+                        <button
+                          key={p.minutes}
+                          type="button"
+                          onClick={async () => {
+                            setTaskCtxMenu(null);
+                            setActionErr("");
+                            setBusyTitle(m3.title);
+                            try {
+                              const target = new Date(
+                                Date.now() + p.minutes * 60_000,
+                              );
+                              const due = formatDueInput(target);
+                              await invoke<void>("task_set_due", {
+                                title: m3.title,
+                                due,
+                              });
+                              await reload();
+                            } catch (e) {
+                              setActionErr(`设 due 失败：${e}`);
+                            } finally {
+                              setBusyTitle(null);
+                            }
+                          }}
+                          style={{
+                            padding: "3px 0",
+                            fontSize: 10,
+                            border: "none",
+                            borderRadius: 3,
+                            background: "transparent",
+                            color: "var(--pet-color-fg)",
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                          onMouseOver={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.background =
+                              "var(--pet-color-bg)";
+                          }}
+                          onMouseOut={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.background =
+                              "transparent";
+                          }}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
                     </div>
                   )}
                 </>
