@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot 加 `/promote <title>` 命令：priority +1（clamp 9）— 比 /pri 更直觉，一步不必算具体 P 值。
 - TG bot 加 `/demote <title>` 命令：priority -1（clamp 0）— 与 /promote 对偶，"这个不那么急"一键降。
 - PanelDebug 加「📋 复制 logs 路径」chip：~/.config/pet/logs 绝对路径到剪贴板，方便粘到 Finder / VSCode 打开。
 - PanelTasks 加「☑️ 全选 P7+ 进 multi-select」chip：精准选高优 pending 进批量模式，与 ⌘A 全选 / 🎯 P7+ filter 互补。

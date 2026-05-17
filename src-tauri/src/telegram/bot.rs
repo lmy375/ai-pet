@@ -984,6 +984,63 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Promote { title } => {
+            // priority +1 (clamp 9)。三层 resolve title → 查 view 拿 current
+            // priority → 算 new = old + 1（clamp）→ 调 task_set_priority。
+            // 已是 P9 时 short-circuit 直接走 formatter no-op 文案。
+            if title.trim().is_empty() {
+                format_missing_argument("promote")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        // 拉 current priority — 从 chat views 找；找不到时 None
+                        // 让 formatter 走 fallback 简短文案。
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        let old = views
+                            .iter()
+                            .find(|v| v.title == t)
+                            .map(|v| v.priority);
+                        match old {
+                            Some(9) => {
+                                // 已 P9 — no-op 友好 reply 不调 backend
+                                crate::telegram::commands::format_promote_reply(
+                                    &t, Some(9), Ok(()),
+                                )
+                            }
+                            Some(o) => {
+                                let new_pri = o.saturating_add(1).min(9);
+                                match crate::commands::task::task_set_priority(
+                                    t.clone(),
+                                    new_pri,
+                                ) {
+                                    Ok(()) => crate::telegram::commands::format_promote_reply(
+                                        &t,
+                                        Some(o),
+                                        Ok(()),
+                                    ),
+                                    Err(e) => crate::telegram::commands::format_promote_reply(
+                                        &t,
+                                        Some(o),
+                                        Err(&e),
+                                    ),
+                                }
+                            }
+                            None => {
+                                // 查不到 priority — view miss 极少；不阻断主路径
+                                crate::telegram::commands::format_promote_reply(
+                                    &t, None, Ok(()),
+                                )
+                            }
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::CancelAllError { confirmed } => {
             // 扫本 chat 派单中的 error 任务（按 Tg(chat_id) origin 过滤）
             let views = read_tg_chat_task_views(chat_id.0);
