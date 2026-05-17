@@ -3556,6 +3556,28 @@ export function PanelTasks({
     [insertMarkdownAtCursor],
   );
 
+  /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
+  /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
+  /// modifier check（no shift / no alt）+ IME composing skip。空选 →
+  /// 插模板让 cursor 落中间 + 待 owner 敲；非空 → wrap 选区为 fenced
+  /// block。
+  ///
+  /// fence 前后各加 `\n` 保证 `\`\`\`` 单独成行（fence 内嵌行会让
+  /// markdown 解析器把 fence 当文本不开 code block）。如选区起始已是
+  /// 行首 / 文件首，前导 `\n` 多了无害（产生空行），可读性 OK。
+  const handleDetailCodeBlock = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (e.shiftKey || e.altKey) return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      if (e.key !== "`") return false;
+      e.preventDefault();
+      insertMarkdownAtCursor("wrap", "\n```\n", "\n```\n");
+      return true;
+    },
+    [insertMarkdownAtCursor],
+  );
+
   /// detail.md textarea Enter 自动续列表前缀。识别行首 list marker：
   ///   - `- text` / `* text` / `+ text`：无序列表
   ///   - `- [ ] text` / `- [x] text`：GFM checklist（新行总是 `- [ ] `，让 owner
@@ -13154,6 +13176,9 @@ export function PanelTasks({
                                   // ⌘B 加粗 / ⌘I 斜体：markdown 选区 wrap
                                   // **bold** / *italic*。与 toolbar 同 backend。
                                   if (handleDetailBoldItalic(e)) return;
+                                  // ⌘\` 代码块：选区 wrap ```\n<sel>\n```
+                                  // fenced block。与 ⌘B/⌘I 同 wrap-mode 模板。
+                                  if (handleDetailCodeBlock(e)) return;
                                   // ⌘⇧L 弹链接快速插入 popover：选区当 label
                                   // 仅输 url；空选区双输入 url + label。与
                                   // toolbar 「🔗」按钮（直接插模板 + url 占
