@@ -2766,6 +2766,32 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘B / ⌘I markdown 加粗 / 斜体 wrap：复用既有
+  /// `insertMarkdownAtCursor("wrap", "**", "**")` / `("wrap", "*", "*")`
+  /// 算法 — 选区 wrap，空选时插模板 + 光标落中间。与既有 markdown
+  /// toolbar 加粗 / 斜体 button 同后端。任何 shift / alt 修饰 → 不响应。
+  /// IME composing 跳过（与 bracket pair 同 guard）。
+  const handleDetailBoldItalic = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (e.shiftKey || e.altKey) return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const key = e.key.toLowerCase();
+      if (key === "b") {
+        e.preventDefault();
+        insertMarkdownAtCursor("wrap", "**", "**");
+        return true;
+      }
+      if (key === "i") {
+        e.preventDefault();
+        insertMarkdownAtCursor("wrap", "*", "*");
+        return true;
+      }
+      return false;
+    },
+    [insertMarkdownAtCursor],
+  );
+
   /// detail.md textarea Enter 自动续列表前缀。识别行首 list marker：
   ///   - `- text` / `* text` / `+ text`：无序列表
   ///   - `- [ ] text` / `- [x] text`：GFM checklist（新行总是 `- [ ] `，让 owner
@@ -11521,6 +11547,9 @@ export function PanelTasks({
                                   // 与 ⌘D 复制 / ⌘L 选中 同 IDE 行操作集群 —
                                   // owner 心智 "⌘+shift 修饰 = 重操作"。
                                   if (handleDetailDeleteLine(e)) return;
+                                  // ⌘B 加粗 / ⌘I 斜体：markdown 选区 wrap
+                                  // **bold** / *italic*。与 toolbar 同 backend。
+                                  if (handleDetailBoldItalic(e)) return;
                                   // ⌘S/Ctrl+S 触发保存：与按钮等价。preventDefault
                                   // 吃掉 webview 默认"另存为页面"行为；savingDetail
                                   // 守卫防止保存进行中重复发请求。
@@ -11574,7 +11603,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -11932,7 +11961,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -14367,6 +14396,7 @@ export function PanelTasks({
                   ["⌘⇧Enter", "保存并关闭"],
                   ["⌘⌥Enter", "保存并跳下一条 task（连续 review 流）"],
                   ["⌘F", "在 detail.md 内行内搜索（Enter / ↑↓ 切 match · Esc 关）"],
+                  ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
                   ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
                   ["⌘⇧K", "删除当前行（VS Code「Delete Line」）"],
