@@ -839,6 +839,28 @@ async fn handle_tg_command(
                 .unwrap_or_else(|| chrono::Local::now().date_naive());
             crate::telegram::commands::format_touched_yesterday_reply(&views, yesterday)
         }
+        TgCommand::MuteToday => {
+            // 算 now → 次日 00:00 的分钟数：以本地 calendar 算明日同
+            // ymd + (00:00:00)。clamp 1..=1440 防 DST 边界 / 跨日时区抖
+            // 动。复用 set_mute_minutes 同 /mute 路径。
+            use chrono::{Datelike, Local, TimeZone};
+            let now = Local::now();
+            let tomorrow = now.date_naive().succ_opt().unwrap_or(now.date_naive());
+            let target = Local
+                .with_ymd_and_hms(
+                    tomorrow.year(),
+                    tomorrow.month(),
+                    tomorrow.day(),
+                    0,
+                    0,
+                    0,
+                )
+                .single()
+                .unwrap_or_else(|| now + chrono::Duration::hours(1));
+            let minutes = (target - now).num_minutes().clamp(1, 1440);
+            let _ = crate::proactive::set_mute_minutes(minutes);
+            crate::telegram::commands::format_mute_today_reply(minutes)
+        }
         TgCommand::CascadeRename { title, new_title } => {
             // 与 /edit_title 同 3-layer resolve；backend 走
             // memory_cascade_rename_in_detail_md（含 memory_rename + 跨 cat
