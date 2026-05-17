@@ -530,6 +530,51 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     [bulkSilentBusy, releaseBulkSilent],
   );
 
+  /// 「🔊 全部 unsilent」批量清理：清所有带 [silent] marker 的
+  /// butler_task —— 不论 marker 是 iter #366 timer 加的还是 owner 手
+  /// 动单条标的。同时 short-circuit 当前 active 的 bulkSilentSnapshot
+  /// （avoid timer 醒来时 unsilent 已被外部清掉的 titles 引起的迷糊
+  /// console.error 噪音；snapshot 自身已无 marker 可撤）。
+  const clearAllSilent = useCallback(
+    async (titles: string[]) => {
+      if (bulkSilentBusy) return;
+      if (titles.length === 0) return;
+      setBulkSilentBusy(true);
+      let failed = 0;
+      for (const title of titles) {
+        try {
+          await invoke<void>("task_set_silent", { title, silent: false });
+        } catch (e) {
+          console.error(`bulk unsilent (manual) 失败 [${title}]:`, e);
+          failed += 1;
+        }
+      }
+      // 如果当前有 active timer-snapshot，一并清掉防 timer 后续 noop /
+      // 状态不一致。snapshot 撤回了但 marker 已被本次操作 nuke。
+      if (bulkSilentSnapshot !== null) {
+        if (bulkSilentExpiryTimerRef.current !== null) {
+          window.clearTimeout(bulkSilentExpiryTimerRef.current);
+          bulkSilentExpiryTimerRef.current = null;
+        }
+        try {
+          window.localStorage.removeItem(BULK_SILENT_STORAGE_KEY);
+        } catch {
+          /* ignore */
+        }
+        setBulkSilentSnapshot(null);
+      }
+      setBulkSilentBusy(false);
+      await loadIndex();
+      setMessage(
+        failed === 0
+          ? `🔊 已清掉 ${titles.length} 条 butler_task 的 [silent] marker`
+          : `🔊 已清 ${titles.length - failed}/${titles.length} 条（${failed} 条失败）`,
+      );
+      window.setTimeout(() => setMessage(""), 4000);
+    },
+    [bulkSilentBusy, bulkSilentSnapshot],
+  );
+
   /// mount 时从 localStorage 恢复 snapshot + 计算 remaining 重 arm。
   /// 错过 timer 窗口（应用关闭跨过 expiresAt）→ 立即触发解除作兜底。
   useEffect(() => {
@@ -4603,6 +4648,35 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         title={`把 ${candidates.length} 条 butler_task 临时标 [silent]（LLM proactive cycle 不会主动选它们），1h 后 frontend timer 自动撤回 [silent]。适合开会 / 集中写作 1 小时不被 pet 打扰；与全局 mute 区别 — mute 让 pet 完全不开口，本按钮只清空 task 候选池 pet 仍可主动聊天。`}
                       >
                         ⏸ 全部 silent 1h ({candidates.length})
+                      </button>
+                    );
+                  })()}
+                {/* 「🔊 全部 unsilent」批量清理按钮：清所有 [silent] marker
+                    （不仅 iter #366 timer 加的，也含 owner 手动通过 PanelTasks
+                    / TG /silent 单条标的）。与 iter #366「⏸ 全部 silent 1h」
+                    对偶清理入口 —— 那个 timer 自动撤回本轮加的；本按钮 nuke
+                    清所有现存 [silent]，让 owner 一键回到"无静默"baseline。
+                    仅 cat 内含 [silent] item 时显（计数 > 0 才有意义）；
+                    含 bulkSilentSnapshot 在 active 时也显（owner 想立即清
+                    全部不必先 release 再清）。 */}
+                {catKey === "butler_tasks" &&
+                  (() => {
+                    const silentItems = cat.items.filter((it) =>
+                      /\[silent\]/.test(it.description),
+                    );
+                    if (silentItems.length === 0) return null;
+                    return (
+                      <button
+                        style={{ ...s.btn, marginLeft: 4 }}
+                        disabled={bulkSilentBusy}
+                        onClick={() =>
+                          void clearAllSilent(
+                            silentItems.map((it) => it.title),
+                          )
+                        }
+                        title={`清掉所有 ${silentItems.length} 条带 [silent] marker 的 butler_task（不论是 iter #366 timer 加的还是 owner 手动标的）。与「⏸ 全部 silent 1h」对偶清理入口 — 一键回到"无静默"baseline。`}
+                      >
+                        🔊 全部 unsilent ({silentItems.length})
                       </button>
                     );
                   })()}
