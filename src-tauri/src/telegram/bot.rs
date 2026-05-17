@@ -786,6 +786,14 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Last => {
+            // 闪查最近创建：reuse read_tg_chat_task_views（已 chat-scoped）。
+            // formatter 内部 max_by created_at + 截 raw 预览。本地 now 注入
+            // 让 "N 前" 文案稳定（避免运行机时间影响测试）。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let now = chrono::Local::now().naive_local();
+            crate::telegram::commands::format_last_reply(&views, now)
+        }
         TgCommand::Now => {
             // 快速状态 check：复用 mood + companionship 两条 read 路径。time
             // 用 chrono::Local::now() 拿本地时间 + tz；with_timezone 转 DateTime

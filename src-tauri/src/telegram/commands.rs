@@ -139,6 +139,11 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/last` —— 显本 chat 派单中最近创建的一条 task：title + status emoji +
+    /// 相对创建时间 + raw_description 前 200 字符预览。让 owner 在 TG 端
+    /// 闪查"我刚 enqueue 的那条对不对"，不必走 /tasks 全表扫。无参；多
+    /// 余尾部忽略。本 chat 派单空 → 友好兜底文案。
+    Last,
     /// `/now` —— 一句话快速状态 check：当前本地时间 + tz 偏移 + 陪伴天数 +
     /// 当前 mood emoji + 心情文本。比 `/whoami`（多行画像）更简短，适合
     /// owner "现在几点 / 宠物啥状态" 闪查。无参；多余尾部一律忽略。
@@ -224,6 +229,7 @@ impl TgCommand {
             TgCommand::Due { .. } => "due",
             TgCommand::Show { .. } => "show",
             TgCommand::Now => "now",
+            TgCommand::Last => "last",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -266,6 +272,7 @@ impl TgCommand {
             | TgCommand::Digest { .. }
             | TgCommand::Due { .. }
             | TgCommand::Now
+            | TgCommand::Last
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -338,6 +345,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
             ("now", "One-line status check: time + tz + companionship days + mood emoji"),
+            ("last", "Show the most recently created task (this chat) with raw description preview"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -374,6 +382,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
             ("now", "一句话快速状态：当前时间 + 时区 + 陪伴天数 + 心情 emoji"),
+            ("last", "显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -696,6 +705,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "today" => Some(TgCommand::Today),
         // `/now` 无参；多余尾部忽略（与 /today / /mood / /version 同容忍）
         "now" => Some(TgCommand::Now),
+        // `/last` 无参；多余尾部忽略
+        "last" => Some(TgCommand::Last),
         // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
         // 时存 raw_arg 让 handler usage hint 时回显（preset 标 None 表示
         // "无效"）。preset 名单：tomorrow / thisweek / nextweek 含中英 alias。
@@ -1042,9 +1053,9 @@ pub fn format_tasks_no_change() -> String {
 pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-    "silenced", "markers", "tags", "mood", "whoami", "today", "now", "due",
-    "recent", "digest", "edit", "reflect", "find", "show", "blocked",
-    "snoozed", "reset", "version", "help",
+    "silenced", "markers", "tags", "mood", "whoami", "today", "now",
+    "last", "due", "recent", "digest", "edit", "reflect", "find", "show",
+    "blocked", "snoozed", "reset", "version", "help",
 ];
 
 pub fn format_help_for_topic(
@@ -1097,6 +1108,7 @@ pub fn format_help_for_topic(
         "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）；/due（更远视角 — tomorrow / thisweek / nextweek）。",
         "now" => "🐾 /now\n\n用法：一句话快速状态 check — 当前本地时间 + tz 偏移 + 陪伴天数 + 心情 emoji + 心情文本。无参。比 /whoami 多行画像简短，适合 owner 在 TG 想「现在几点 / 宠物啥状态」闪查。\n\n示例：\n  /now\n\n相关：/whoami（多行画像）；/mood（心情详情）。",
+        "last" => "🆕 /last\n\n用法：显本聊天派单中最近 created_at 的一条 task — title + status emoji + 相对创建时间 + raw_description 前 200 字符预览。无参。owner 想「我刚 /task 创的那条对不对」闪查时用 — 不必走 /tasks 全表扫。\n\n示例：\n  /last\n\n相关：/show <title>（看完整 raw + detail）；/recent（最近 N 条 done）；/tasks（全状态清单）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1151,6 +1163,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
         "/now  —  一句话快速状态：当前时间 + 时区 + 陪伴 + 心情 emoji（与 /whoami 多行画像互补）".to_string(),
+        "/last  —  显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的对不对".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2196,6 +2209,78 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
     out
 }
 
+/// `/last` 命令回复文案。pure：扫 views 按 created_at desc 拿首条，输出
+/// `🆕 title` header + status emoji + 相对时间 + raw_description 前 200
+/// 字符预览。views 空 → 友好兜底。caller 传 `now` 让相对时间单测稳定。
+pub const LAST_RAW_DESC_PREVIEW_CHARS: usize = 200;
+pub fn format_last_reply(
+    views: &[crate::task_queue::TaskView],
+    now: chrono::NaiveDateTime,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    if views.is_empty() {
+        return "🆕 /last\n\n本聊天还没派过单。\n用 /task <title> 创建第一条。".to_string();
+    }
+    // ISO created_at 字典序 = 时间序，取 max 即最新创建。空 created_at
+    // 兜底 — 极旧 task 可能无字段，按空串排尾。
+    let latest = views
+        .iter()
+        .max_by(|a, b| a.created_at.cmp(&b.created_at))
+        .expect("non-empty views guaranteed above");
+    let status_emoji = match latest.status {
+        TaskStatus::Pending => "⏳",
+        TaskStatus::Done => "✅",
+        TaskStatus::Error => "⚠️",
+        TaskStatus::Cancelled => "🚫",
+    };
+    // 相对时间：与 PanelTasks `📅 N 前` / `🕰 拖了` 同 buckets — 通过
+    // pure 计算（不调 frontend formatRelativeAge — 后端独立实现）。
+    let rel = format_created_relative(&latest.created_at, now);
+    let mut out = format!(
+        "🆕 最近创建 {} 「{}」\n📅 {}",
+        status_emoji,
+        latest.title,
+        rel
+    );
+    let raw = latest.raw_description.trim();
+    if !raw.is_empty() {
+        let preview: String = if raw.chars().count() > LAST_RAW_DESC_PREVIEW_CHARS {
+            let head: String = raw.chars().take(LAST_RAW_DESC_PREVIEW_CHARS).collect();
+            format!("{}…", head)
+        } else {
+            raw.to_string()
+        };
+        out.push_str("\n\n");
+        out.push_str(&preview);
+    }
+    out
+}
+
+/// pure：created_at ISO 时间 → "N 分钟前 / 小时前 / 天前 / 刚创建" 桶式
+/// 文案。解析失败 / 未来 ts 兜底空串。
+pub fn format_created_relative(
+    created_at: &str,
+    now: chrono::NaiveDateTime,
+) -> String {
+    let parsed = chrono::DateTime::parse_from_rfc3339(created_at)
+        .ok()
+        .map(|dt| dt.naive_local());
+    let Some(c) = parsed else {
+        return format!("created_at parse 失败：{}", created_at);
+    };
+    let diff = now.signed_duration_since(c);
+    if diff.num_seconds() < 60 {
+        return "刚创建".to_string();
+    }
+    if diff.num_minutes() < 60 {
+        return format!("{} 分钟前", diff.num_minutes());
+    }
+    if diff.num_hours() < 24 {
+        return format!("{} 小时前", diff.num_hours());
+    }
+    format!("{} 天前", diff.num_days())
+}
+
 /// `/now` 命令回复文案。pure：一行 / 两行的快速状态 check。
 /// - 第一行：mood emoji + `YYYY-MM-DD HH:MM` + tz 偏移（如 `+08:00`）
 /// - 第二行：陪伴天数 + 心情文本（mood 空时省略心情段）
@@ -3029,8 +3114,8 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today", "now",
-            "due", "recent", "digest", "edit", "reflect", "find", "show",
-            "blocked", "snoozed", "reset", "version", "help",
+            "last", "due", "recent", "digest", "edit", "reflect", "find",
+            "show", "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3495,8 +3580,8 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "now", "due", "edit", "reflect", "show", "tags", "reset", "version",
-            "help",
+            "now", "last", "due", "edit", "reflect", "show", "tags", "reset",
+            "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5298,6 +5383,126 @@ mod tests {
         cancelled.status = TaskStatus::Cancelled;
         let s = format_tags_reply(&[active, done, cancelled]);
         assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
+    }
+
+    // -------- /last parse + format --------
+
+    #[test]
+    fn last_parses_no_args() {
+        assert_eq!(parse_tg_command("/last"), Some(TgCommand::Last));
+        assert_eq!(parse_tg_command("/last anything"), Some(TgCommand::Last));
+        assert_eq!(parse_tg_command("/LAST"), Some(TgCommand::Last));
+    }
+
+    fn ndt(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(y, mo, d)
+            .unwrap()
+            .and_hms_opt(h, mi, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn last_reply_empty_views_shows_friendly_hint() {
+        let s = format_last_reply(&[], ndt(2026, 5, 17, 14, 0));
+        assert!(s.contains("还没派过单"), "{s}");
+        assert!(s.contains("/task <title>"), "should hint how to create: {s}");
+    }
+
+    #[test]
+    fn last_reply_picks_max_created_at_across_views() {
+        let mut older = view("旧任务", 3, None, TaskStatus::Pending, None);
+        older.created_at = "2026-05-15T10:00:00+08:00".to_string();
+        older.raw_description = "[task pri=3] 旧任务 body".to_string();
+        let mut newest = view("刚创的", 5, None, TaskStatus::Pending, None);
+        newest.created_at = "2026-05-17T13:50:00+08:00".to_string();
+        newest.raw_description = "[task pri=5 due=2026-05-20] 刚创的 body".to_string();
+        let mut middle = view("中间", 3, None, TaskStatus::Done, Some("结果"));
+        middle.created_at = "2026-05-16T09:00:00+08:00".to_string();
+        let s = format_last_reply(&[older, newest, middle], ndt(2026, 5, 17, 14, 0));
+        assert!(s.contains("刚创的"), "should pick newest: {s}");
+        assert!(!s.contains("旧任务"), "older shouldn't appear: {s}");
+        assert!(!s.contains("中间"), "middle shouldn't appear: {s}");
+    }
+
+    #[test]
+    fn last_reply_shows_status_emoji_per_state() {
+        let mut v = view("t", 3, None, TaskStatus::Pending, None);
+        v.created_at = "2026-05-17T13:00:00+08:00".to_string();
+        let s = format_last_reply(&[v.clone()], ndt(2026, 5, 17, 14, 0));
+        assert!(s.contains("⏳"), "pending: {s}");
+        v.status = TaskStatus::Done;
+        assert!(format_last_reply(&[v.clone()], ndt(2026, 5, 17, 14, 0)).contains("✅"));
+        v.status = TaskStatus::Error;
+        assert!(format_last_reply(&[v.clone()], ndt(2026, 5, 17, 14, 0)).contains("⚠️"));
+        v.status = TaskStatus::Cancelled;
+        assert!(format_last_reply(&[v], ndt(2026, 5, 17, 14, 0)).contains("🚫"));
+    }
+
+    #[test]
+    fn last_reply_truncates_long_raw_description() {
+        let mut v = view("t", 3, None, TaskStatus::Pending, None);
+        v.created_at = "2026-05-17T13:00:00+08:00".to_string();
+        v.raw_description = "x".repeat(LAST_RAW_DESC_PREVIEW_CHARS + 100);
+        let s = format_last_reply(&[v], ndt(2026, 5, 17, 14, 0));
+        assert!(s.contains("…"), "should truncate: {s}");
+    }
+
+    #[test]
+    fn last_reply_omits_raw_when_empty() {
+        let mut v = view("t", 3, None, TaskStatus::Pending, None);
+        v.created_at = "2026-05-17T13:00:00+08:00".to_string();
+        v.raw_description = "".to_string();
+        let s = format_last_reply(&[v], ndt(2026, 5, 17, 14, 0));
+        // 头部仍渲染；只是没有 raw preview 段
+        assert!(s.contains("最近创建"), "{s}");
+        // 应不含双换行 + 空内容的"raw preview 空段"
+        assert!(!s.contains("\n\n"), "no empty preview block: {s}");
+    }
+
+    // -------- format_created_relative buckets --------
+
+    #[test]
+    fn created_relative_just_now_within_60s() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        // 30 秒前
+        let c = "2026-05-17T13:59:30+08:00";
+        // 这里 NaiveDateTime / FixedOffset 接合：format_created_relative
+        // 走 rfc3339 parse → naive_local，与 ndt 参数同 timezone-stripped
+        // 比较。30 秒差应该 → "刚创建"
+        let s = format_created_relative(c, now);
+        assert_eq!(s, "刚创建");
+    }
+
+    #[test]
+    fn created_relative_minutes_bucket() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        // 5 分钟前
+        let c = "2026-05-17T13:55:00+08:00";
+        let s = format_created_relative(c, now);
+        assert_eq!(s, "5 分钟前");
+    }
+
+    #[test]
+    fn created_relative_hours_bucket() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        let c = "2026-05-17T11:00:00+08:00";
+        let s = format_created_relative(c, now);
+        assert_eq!(s, "3 小时前");
+    }
+
+    #[test]
+    fn created_relative_days_bucket() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        let c = "2026-05-14T14:00:00+08:00";
+        let s = format_created_relative(c, now);
+        assert_eq!(s, "3 天前");
+    }
+
+    #[test]
+    fn created_relative_parse_failure_returns_hint() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        let s = format_created_relative("not-a-date", now);
+        assert!(s.contains("parse 失败"), "{s}");
     }
 
     // -------- /now parse + format --------
