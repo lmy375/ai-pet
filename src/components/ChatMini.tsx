@@ -3017,6 +3017,44 @@ export function ChatMini({
                 ⛶ 在 Panel 中打开聊天
               </button>
             )}
+            {/* "🔍 search this session"：写 deeplink (chatSearch.keyword)
+                + 打开 Panel。PanelChat 收到后开 search bar + scope=current
+                + 填 query 让 owner 看本会话所有命中（与下方「定位本条」
+                单点对偶 — 那个滚 1 处，本入口开搜索循环遍历多点）。
+                仅 text 非空（hasText）+ onOpenPanel 传入时显。 */}
+            {onOpenPanel && hasText && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  // keyword: 取前 60 字符 + flatten whitespace（与
+                  // handleFindSimilarInSession line 540 同 limit）— 够独
+                  // 特命中、又不挤 search bar input。
+                  const keyword = text
+                    .replace(/\s+/g, " ")
+                    .trim()
+                    .slice(0, 60);
+                  if (!keyword) return;
+                  try {
+                    window.localStorage.setItem(
+                      "pet-panel-deeplink",
+                      JSON.stringify({
+                        chatSearch: { keyword },
+                        ts: Date.now(),
+                      }),
+                    );
+                  } catch {
+                    // localStorage 不可用：仍 onOpenPanel；owner 至少进 Panel
+                  }
+                  onOpenPanel();
+                }}
+              >
+                🔍 在 Panel 内搜本会话
+              </button>
+            )}
             {/* "在 Panel 定位本条"：写 deeplink (chatMatch.excerpt) + 打开
                 Panel。PanelChat 反向扫 items 找最近 substr 命中 → 滚到该
                 bubble + 1.5s 高亮。仅 text 非空（hasText）才显 —— 纯图
