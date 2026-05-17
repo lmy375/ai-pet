@@ -203,6 +203,12 @@ const MINI_CHAT_STYLES = `
 /// 点缓冲，避免微小量误判。
 const FOLLOW_BOTTOM_THRESHOLD_PX = 8;
 
+/// 长 assistant reply 折叠阈值。> THRESHOLD 字才会折叠（短 reply 不
+/// 屠龙）；折叠后显前 PREVIEW_CHARS 字 + "…" + 「展开」按钮。chars 用
+/// Array.from 计数确保 CJK / emoji 等多字节字符按字形计 1。
+const LONG_BUBBLE_THRESHOLD = 2000;
+const LONG_BUBBLE_PREVIEW_CHARS = 400;
+
 /// ChatMessage.ts → `[HH:MM]` 显示串。无 ts / 解析失败 → `[?]`。copyRecentN
 /// 与 bubble hover tooltip 都用同一份格式。
 function formatBubbleTimestamp(ts: string | undefined): string {
@@ -429,6 +435,24 @@ export function ChatMini({
   // 单条 bubble 复制反馈：刚被复制的 visibleItems idx，1.5s 自动清。
   // 与 copyToast（⌘+C 复制最近一条）分开，让两套语义各自独立显视觉反馈。
   const [bubbleCopyIdx, setBubbleCopyIdx] = useState<number | null>(null);
+
+  /// 长 assistant reply 折叠状态：visibleItems idx ∈ Set 表示"用户已展
+  /// 开"。默认所有长 bubble 折叠到 LONG_BUBBLE_PREVIEW_CHARS（400 字）
+  /// + "…" + 「展开」按钮；超过 LONG_BUBBLE_THRESHOLD（2000 字）才进
+  /// 折叠流。idx 作 key 简单可靠（新消息总是 append，旧 idx 稳定）；
+  /// 跨 session reset 时 stale idx 自然失效（Set 仍 in-memory 但不影
+  /// 响渲染）。
+  const [longBubblesExpanded, setLongBubblesExpanded] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const toggleLongBubble = (idx: number) => {
+    setLongBubblesExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
   /// 顶 ts chip click 复制 ISO timestamp 后的"✓ 已复制"短暂 visual feedback
   /// 状态。同 bubbleCopyIdx 模式：1.5s 自清。null = 无；非空 = 显 ✓ 的 idx。
   const [tsCopyIdx, setTsCopyIdx] = useState<number | null>(null);
@@ -2095,7 +2119,81 @@ export function ChatMini({
                     ))}
                   </div>
                 )}
-                {text && parseMarkdown(text)}
+                {text && (() => {
+                  // 长 assistant reply 折叠 — 默认折到 400 字让 chat 区
+                  // 不被单条占满。仅 assistant 且总 chars > THRESHOLD 时
+                  // 进折叠流；user 消息不折（用户输入 length 通常自控）；
+                  // 流式 streaming bubble 也不折（owner 看 LLM 在打字时
+                  // 不该突然折叠）。
+                  const chars = Array.from(text);
+                  const isLong =
+                    isAssistant && chars.length > LONG_BUBBLE_THRESHOLD;
+                  const isExpanded = longBubblesExpanded.has(idx);
+                  if (!isLong || isExpanded) {
+                    return (
+                      <>
+                        {parseMarkdown(text)}
+                        {isLong && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleLongBubble(idx);
+                            }}
+                            style={{
+                              display: "inline-block",
+                              marginTop: 4,
+                              padding: "1px 6px",
+                              fontSize: 10,
+                              border: "1px dashed var(--pet-color-border)",
+                              borderRadius: 4,
+                              background: "transparent",
+                              color: "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                            title={`折叠回 ${LONG_BUBBLE_PREVIEW_CHARS} 字预览（再点展开）`}
+                          >
+                            📑 折叠（{chars.length} 字）
+                          </button>
+                        )}
+                      </>
+                    );
+                  }
+                  // 折叠态：显前 PREVIEW_CHARS 字 + "…" + 展开按钮
+                  const preview =
+                    chars.slice(0, LONG_BUBBLE_PREVIEW_CHARS).join("") + "…";
+                  const remaining =
+                    chars.length - LONG_BUBBLE_PREVIEW_CHARS;
+                  return (
+                    <>
+                      {parseMarkdown(preview)}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleLongBubble(idx);
+                        }}
+                        style={{
+                          display: "inline-block",
+                          marginTop: 4,
+                          padding: "1px 6px",
+                          fontSize: 10,
+                          border: "1px dashed var(--pet-color-accent)",
+                          borderRadius: 4,
+                          background: "transparent",
+                          color: "var(--pet-color-accent)",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          fontWeight: 500,
+                        }}
+                        title={`展开剩余 ${remaining} 字 — 完整长度 ${chars.length} 字`}
+                      >
+                        📑 展开剩余 {remaining} 字
+                      </button>
+                    </>
+                  );
+                })()}
               </div>
               {/* assistant 左对齐 → 复制 + 再回应 + 存 task 按钮在 bubble 右侧 */}
               {m.role === "assistant" && respondBtn}
