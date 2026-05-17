@@ -2671,6 +2671,44 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘L / Ctrl+L 选中当前行：与 VS Code / Sublime / Atom
+  /// 通用"select line" 习惯一致。选区跨多行 → 扩展到第一行行首 / 最后一行
+  /// 行尾（"选区触及的所有完整行"）。任何 shift / alt 修饰 → 不响应，让
+  /// 位给未来扩展（⌘⇧L 选中至文末 / ⌘⌥L 选中所有同名变量等可后续加）。
+  /// IME composing 跳过。preventDefault 吃浏览器默认 ⌘L（"聚焦地址栏"）—
+  /// Tauri webview 通常无地址栏，但兜底安全。
+  const handleDetailSelectLine = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "l") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      // 选区起点所在行的行首 = 上一个 `\n` 后一位；首行时 = 0
+      const firstLineStart = value.lastIndexOf("\n", start - 1) + 1;
+      // 选区终点所在行的行尾 = 下一个 `\n`；末行时 = value.length
+      // 注意 end 已在行末（end === \n 位置）时 `indexOf` 应从 end 开始找
+      // 避免选区只覆盖空行换行符的边界 case。
+      const nextNl = value.indexOf("\n", end);
+      const lastLineEnd = nextNl === -1 ? value.length : nextNl;
+      e.preventDefault();
+      requestAnimationFrame(() => {
+        const t = detailEditorRef.current;
+        if (!t) return;
+        t.focus();
+        t.selectionStart = firstLineStart;
+        t.selectionEnd = lastLineEnd;
+        setDetailCursorPos(firstLineStart);
+        setDetailSelectionEnd(lastLineEnd);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea Enter 自动续列表前缀。识别行首 list marker：
   ///   - `- text` / `* text` / `+ text`：无序列表
   ///   - `- [ ] text` / `- [x] text`：GFM checklist（新行总是 `- [ ] `，让 owner
@@ -11120,6 +11158,11 @@ export function PanelTasks({
                                   // IDE 行为。放在 ⌘S 之前 —— 二者不冲突但保
                                   // 一致 modifier handler 集群。
                                   if (handleDetailDuplicateLine(e)) return;
+                                  // ⌘L 选中当前行：VS Code / Sublime "select
+                                  // line" 习惯。与 ⌘D 同 modifier 集群相邻 ——
+                                  // 两个 IDE-like 行操作在一起便于 owner 心智
+                                  // 建立。
+                                  if (handleDetailSelectLine(e)) return;
                                   // ⌘S/Ctrl+S 触发保存：与按钮等价。preventDefault
                                   // 吃掉 webview 默认"另存为页面"行为；savingDetail
                                   // 守卫防止保存进行中重复发请求。
@@ -11157,7 +11200,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -11515,7 +11558,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
