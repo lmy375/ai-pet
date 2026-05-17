@@ -1040,6 +1040,25 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_tag_reply(&views, &name)
         }
+        TgCommand::TagsFor { title } => {
+            // 单条 task 的 #tags 清单：3 层 title resolve + formatter 直
+            // 接读 target_view.tags Vec<String>。
+            if title.trim().is_empty() {
+                format_missing_argument("tags_for")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        crate::telegram::commands::format_tags_for_reply(&views, &t)
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Blocked => {
             // 被 blockedBy 锁住的 active task 清单。reuse 同 read path；
             // formatter 内部把 chat-scoped views 当 active 集 + 交集计算
