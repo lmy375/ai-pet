@@ -9,7 +9,6 @@
 >
 
 - PanelMemory item 加 ctx menu（右键）：聚合改名 / 📑 副本 / 🗑 删 / 🔗 inline ref 动作 — 让密集 chip 收纳。
-- PanelDebug 加「🔄 重置 ⚙️ shell stats」按钮：清 ShellStore — debug 时「从这里开始重测」。
 
 
 
