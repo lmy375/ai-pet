@@ -5448,6 +5448,36 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                       </button>
                     );
                   })()}
+                {/* 📋 复制段 title 清单：仅 title 拼成 markdown bullet
+                    list 一键复制（不含 description / detail.md）。与
+                    既有「📋 单段…」下拉互补 — 那个含 description / 时间
+                    戳全 dump；本 chip 仅 title bullet — 适合 "这段都
+                    有啥" 扫读分享 / 粘到 issue 列清单 / 备份 title 索
+                    引。 */}
+                {cat.items.length > 0 && (
+                  <button
+                    style={{ ...s.btn, marginLeft: 4 }}
+                    onClick={async () => {
+                      const label = categoryLabels[catKey] || cat.label;
+                      const lines: string[] = [];
+                      lines.push(`# ${label} · ${cat.items.length} 条 title`);
+                      lines.push("");
+                      for (const it of cat.items) lines.push(`- ${it.title}`);
+                      try {
+                        await navigator.clipboard.writeText(lines.join("\n"));
+                        setMessage(
+                          `📋 已复制「${label}」${cat.items.length} 条 title`,
+                        );
+                      } catch (e: any) {
+                        setMessage(`复制失败：${e}`);
+                      }
+                      setTimeout(() => setMessage(""), 3000);
+                    }}
+                    title={`仅复制「${categoryLabels[catKey] || cat.label}」段内 ${cat.items.length} 条 title 拼成 markdown bullet list（不含 description / detail.md）— 适合"这段都有啥"扫读分享。与顶部「📋 单段…」全段 + 描述 dump 互补。`}
+                  >
+                    📋 titles ({cat.items.length})
+                  </button>
+                )}
                 {/* 🗑 清空 cat：arm/confirm 二次确认（同
                     handleBulkDeleteMem 模式 — 3s 内同 cat 再点真删）。
                     仅非空 cat 显；执行中 busy 灰。armed 时按钮变红 +
