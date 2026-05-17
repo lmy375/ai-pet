@@ -30,6 +30,148 @@ fn history_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("pet").join("speech_history.log"))
 }
 
+/// Iter #389: 平行 sidecar JSONL，每行 `{"ts":..., "band":..., "factor":...,
+/// "mode":..., "deadline_factor":...}` — 与 speech_history.log 同 ts 维度
+/// 1:1。让 PanelDebug ⏰ chip / iter #384 deferred "为何开口" 半边能读
+/// 触发上下文。
+///
+/// 设计选择 sidecar 而非扩展原 log entry shape：
+/// - 原 log 是 `<ts> <text>` 单行；所有既有 reader（parse_recent /
+///   strip_timestamp / speeches_for_date / detect_repeated_topic 等）按
+///   "split_once(' ') 取 rest"
+///   假设。schema 变更要触 6+ 处。
+/// - sidecar 让所有既有 reader 零改动；新 reader 按 ts 在两个文件之间
+///   join 即可。meta 缺失（旧 entry / 写 meta 失败）→ 显示 "?"，不阻
+///   塞 speech 列。
+fn meta_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("pet").join("speech_meta.jsonl"))
+}
+
+const SPEECH_META_MAX_BYTES: u64 = 200_000;
+
+/// 单条 speech 的触发元数据 — caller (proactive cycle) 在写 speech 前
+/// 已算好 band / factor / mode，传给 record_speech_with_meta 一并写盘。
+/// 字段都 owned，方便 caller .clone() 传值；serde 序列化为 JSONL。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpeechMeta {
+    /// 与 speech_history.log entry 的 ts 字段对齐 — 用于 join。caller 不
+    /// 直接构造，由 record_speech_with_meta 内部填入 same ts as speech。
+    pub ts: String,
+    /// `feedback_history::classify_feedback_band` 返的 band 字符串
+    /// ("high_negative" / "low_negative" / "mid" / "insufficient_samples")
+    pub band: String,
+    /// 2.0 / 0.7 / 1.0 — 与 band 对应的 cooldown factor。
+    pub factor: f64,
+    /// "normal" / "deep_focus" / "casual" 等 proactive mode — caller 传
+    /// 当时 mode；空字符串表示未知 / 默认 normal。
+    pub mode: String,
+    /// 0.5 (urgent_deadline_count >= 1) / 1.0 (无 urgent) — 与 band /
+    /// mode 正交的 cooldown 缩放因子。
+    pub deadline_factor: f64,
+}
+
+/// 写 meta JSONL（append + 按行数 trim 到 SPEECH_HISTORY_CAP，与 speech
+/// log 同 cap 让两文件大致对齐）。best-effort — 失败不影响 speech 写
+/// 路径（caller 已 await record_speech 成功）。
+async fn record_meta(meta: &SpeechMeta) -> std::io::Result<()> {
+    let Some(path) = meta_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let _ = rotate_if_needed(&path, SPEECH_META_MAX_BYTES).await;
+    let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let mut entries: Vec<String> = existing
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+    let line = serde_json::to_string(meta)
+        .unwrap_or_else(|_| String::from("{}"));
+    entries.push(line);
+    if entries.len() > SPEECH_HISTORY_CAP {
+        let drop = entries.len() - SPEECH_HISTORY_CAP;
+        entries.drain(0..drop);
+    }
+    let mut content = entries.join("\n");
+    content.push('\n');
+    tokio::fs::write(&path, content).await
+}
+
+/// Pure: parse meta JSONL content into a ts → SpeechMeta lookup map.
+/// 容错跳过无法 deserialize 的行（防止旧 / partial / corrupted log
+/// 阻塞读路径）。
+pub fn parse_meta_index(content: &str) -> std::collections::HashMap<String, SpeechMeta> {
+    let mut out = std::collections::HashMap::new();
+    for line in content.lines().filter(|l| !l.is_empty()) {
+        if let Ok(m) = serde_json::from_str::<SpeechMeta>(line) {
+            out.insert(m.ts.clone(), m);
+        }
+    }
+    out
+}
+
+/// 单条 recent speech entry — 含 ts / 文本 / 触发 meta（可缺）。
+/// 给 frontend `get_recent_speeches_with_meta` Tauri 命令返回。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecentSpeechEntry {
+    pub ts: String,
+    pub text: String,
+    /// None 表示对应 ts 没找到 meta 记录（旧 entry / 写 meta 失败 /
+    /// 仅显示 ts + text 部分）。
+    pub meta: Option<SpeechMeta>,
+}
+
+/// 读最近 N 条 speech entry 含 meta — speech_history.log + speech_meta.jsonl
+/// join by ts。
+pub async fn recent_speeches_with_meta(n: usize) -> Vec<RecentSpeechEntry> {
+    if n == 0 {
+        return vec![];
+    }
+    let speech_path = match history_path() {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let speech_content = tokio::fs::read_to_string(&speech_path)
+        .await
+        .unwrap_or_default();
+    let lines = parse_recent(&speech_content, n);
+    if lines.is_empty() {
+        return vec![];
+    }
+    let meta_map: std::collections::HashMap<String, SpeechMeta> =
+        match meta_path() {
+            Some(p) => {
+                let content = tokio::fs::read_to_string(&p).await.unwrap_or_default();
+                parse_meta_index(&content)
+            }
+            None => std::collections::HashMap::new(),
+        };
+    lines
+        .into_iter()
+        .map(|line| {
+            let (ts, text) = line
+                .split_once(' ')
+                .map(|(t, r)| (t.to_string(), r.to_string()))
+                .unwrap_or_else(|| (String::new(), line.clone()));
+            let meta = if ts.is_empty() {
+                None
+            } else {
+                meta_map.get(&ts).cloned()
+            };
+            RecentSpeechEntry { ts, text, meta }
+        })
+        .collect()
+}
+
+/// Tauri 命令：返回 N 条最近 speech entry 含 meta。前端 PanelDebug chip
+/// row hover 显 band / mode 等触发上下文（iter #384 deferred 半边）。
+#[tauri::command]
+pub async fn get_recent_speeches_with_meta(n: Option<usize>) -> Vec<RecentSpeechEntry> {
+    recent_speeches_with_meta(n.unwrap_or(10)).await
+}
+
 /// 周报 / consolidate 用的"读全文"快捷：返回 speech_history.log 的原始内容
 /// （含全部时间戳）。文件不存在 / 读失败均返回空串 — 与 daily / consolidate
 /// 各 sweep 的"best-effort"语义一致。调用方按行 split + 自己解析。
@@ -62,11 +204,33 @@ const DAILY_RETAIN_DAYS: usize = 90;
 /// Append a new utterance to the history file, trimming to `SPEECH_HISTORY_CAP` entries
 /// total. Best-effort — IO errors are silently ignored so a hosed disk doesn't break the
 /// pet's actual speaking flow.
+///
+/// Iter #389: 薄包装。需要写 per-speech 触发元数据时（proactive cycle 知
+/// 道 band/mode/cooldown_factor）调 record_speech_with_meta；纯写 text
+/// 仍走本路径不破坏既有调用方。
 pub async fn record_speech(text: &str) {
-    let _ = record_speech_inner(text).await;
+    let _ = record_speech_inner(text, None).await;
 }
 
-async fn record_speech_inner(text: &str) -> std::io::Result<()> {
+/// Iter #389: 写 speech + sidecar meta JSONL（per-speech 触发上下文）。
+/// caller 是 proactive cycle / morning briefing，已算好 band/mode 等
+/// 信号；本 fn 在写 speech_history.log 的同 ts 同步写 speech_meta.jsonl
+/// （sidecar 设计避免破坏既有 reader 的 `<ts> <text>` 假设）。
+///
+/// meta 是 SpeechMeta value 但 caller 不需填 `ts` — 本 fn 内部用 same
+/// ts 覆盖（保证 1:1 join key 同源）。
+pub async fn record_speech_with_meta(text: &str, mut meta: SpeechMeta) {
+    let ts = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    meta.ts = ts.clone();
+    let _ = record_speech_inner(text, Some((ts, meta))).await;
+}
+
+async fn record_speech_inner(
+    text: &str,
+    pinned_ts_and_meta: Option<(String, SpeechMeta)>,
+) -> std::io::Result<()> {
     let Some(path) = history_path() else {
         return Ok(());
     };
@@ -83,9 +247,12 @@ async fn record_speech_inner(text: &str) -> std::io::Result<()> {
         .filter(|l| !l.is_empty())
         .map(String::from)
         .collect();
-    let ts = chrono::Local::now()
-        .format("%Y-%m-%dT%H:%M:%S%:z")
-        .to_string();
+    let ts = match &pinned_ts_and_meta {
+        Some((t, _)) => t.clone(),
+        None => chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string(),
+    };
     let flat = text.replace(['\n', '\r'], " ");
     entries.push(format!("{} {}", ts, flat));
     if entries.len() > SPEECH_HISTORY_CAP {
@@ -99,6 +266,12 @@ async fn record_speech_inner(text: &str) -> std::io::Result<()> {
     let _ = bump_lifetime_count().await;
     // Best-effort per-day bucket bump — same rationale.
     let _ = bump_today_count().await;
+    // Iter #389: 同 ts 写 sidecar meta（caller 传 meta 时）。失败 best-
+    // effort — speech 已写完，meta 缺失只是 PanelDebug chip 缺触发上
+    // 下文，不致命。
+    if let Some((_, meta)) = pinned_ts_and_meta {
+        let _ = record_meta(&meta).await;
+    }
     Ok(())
 }
 
@@ -999,6 +1172,53 @@ mod tests {
         let summary = classify_speech_register(&lines).unwrap();
         assert_eq!(summary.kind, "short");
         assert!(summary.mean_chars <= 8);
+    }
+
+    // -- Iter #389: speech meta sidecar -------------------------------------
+
+    #[test]
+    fn parse_meta_index_empty_content() {
+        let m = parse_meta_index("");
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn parse_meta_index_valid_lines() {
+        let content = r#"{"ts":"2026-05-17T18:00:00+08:00","band":"mid","factor":1.0,"mode":"normal","deadline_factor":1.0}
+{"ts":"2026-05-17T19:00:00+08:00","band":"low_negative","factor":0.7,"mode":"normal","deadline_factor":1.0}"#;
+        let m = parse_meta_index(content);
+        assert_eq!(m.len(), 2);
+        let e1 = m.get("2026-05-17T18:00:00+08:00").unwrap();
+        assert_eq!(e1.band, "mid");
+        assert!((e1.factor - 1.0).abs() < 1e-9);
+        let e2 = m.get("2026-05-17T19:00:00+08:00").unwrap();
+        assert_eq!(e2.band, "low_negative");
+        assert!((e2.factor - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_meta_index_skips_malformed_lines() {
+        // 混入 garbage 行不应阻塞 valid 行解析
+        let content = r#"not valid json
+{"ts":"2026-05-17T18:00:00+08:00","band":"mid","factor":1.0,"mode":"normal","deadline_factor":1.0}
+also garbage
+{"missing_required_fields": true}"#;
+        let m = parse_meta_index(content);
+        assert_eq!(m.len(), 1);
+        assert!(m.contains_key("2026-05-17T18:00:00+08:00"));
+    }
+
+    #[test]
+    fn parse_meta_index_dedup_by_ts() {
+        // 同 ts 出现两次 — 后写覆盖前写（HashMap insert 语义；append-only
+        // 文件中应不会发生，但 defensive 测试）
+        let content = r#"{"ts":"T1","band":"mid","factor":1.0,"mode":"normal","deadline_factor":1.0}
+{"ts":"T1","band":"high_negative","factor":2.0,"mode":"normal","deadline_factor":1.0}"#;
+        let m = parse_meta_index(content);
+        assert_eq!(m.len(), 1);
+        let e = m.get("T1").unwrap();
+        assert_eq!(e.band, "high_negative");
+        assert!((e.factor - 2.0).abs() < 1e-9);
     }
 
     #[test]

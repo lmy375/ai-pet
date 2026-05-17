@@ -390,6 +390,41 @@ pub struct CooldownBreakdown {
     pub effective_seconds: u64,
 }
 
+/// Iter #389: 写 speech 同时附 per-speech 触发 meta 进 sidecar JSONL —
+/// 让 PanelDebug ⏰ chip "为何开口" 半边能 audit。meta 来自 build_cooldown_
+/// breakdown 同算法，与 ToneStrip 当前态 chip 一致。proactive disabled
+/// （build_cooldown_breakdown 返 None）兜底 meta 用 "insufficient_samples"
+/// / 1.0 — 罕见场景（speech 写时 proactive 一定 enabled），仅 defensive。
+async fn record_speech_with_current_meta(text: &str) {
+    let recent_fb = crate::feedback_history::recent_feedback(20).await;
+    let urgent_count = {
+        let now = chrono::Local::now().naive_local();
+        let items: Vec<(chrono::NaiveDateTime, String)> =
+            crate::db::butler_tasks_as_memory_items()
+                .iter()
+                .filter_map(|i| parse_butler_deadline_prefix(&i.description))
+                .collect();
+        count_urgent_butler_deadlines(&items, now)
+    };
+    let meta = match build_cooldown_breakdown(&recent_fb, urgent_count) {
+        Some(b) => crate::speech_history::SpeechMeta {
+            ts: String::new(),
+            band: b.feedback_band,
+            factor: b.feedback_factor,
+            mode: b.mode,
+            deadline_factor: b.deadline_factor,
+        },
+        None => crate::speech_history::SpeechMeta {
+            ts: String::new(),
+            band: "insufficient_samples".to_string(),
+            factor: 1.0,
+            mode: String::new(),
+            deadline_factor: 1.0,
+        },
+    };
+    crate::speech_history::record_speech_with_meta(text, meta).await;
+}
+
 /// Iter R10: simple shape for the tone-strip feedback chip. R1c added
 /// `dismissed` so the panel can distinguish *active* rejection (user
 /// clicked the bubble within 5s) from *passive* ignore (no interaction).
@@ -1787,9 +1822,11 @@ async fn run_proactive_turn(
     }
 
     clock.mark_proactive_spoken().await;
-    // Append to the dedicated speech history so the next proactive turn's prompt can
-    // surface this line back to the LLM and avoid repetition.
-    crate::speech_history::record_speech(reply_trimmed).await;
+    // Iter #389: record speech + per-speech 触发 meta（band / factor / mode
+    // / deadline_factor）让 PanelDebug ⏰ chip "为何开口" 半边能读到上
+    // 下文。compute_record_meta 复用 build_cooldown_breakdown 同算法 —
+    // 与 ToneStrip 当前态 chip 一致。
+    record_speech_with_current_meta(reply_trimmed).await;
 
     // Re-read mood after the turn — if the LLM updated it via memory_edit, the file has been
     // rewritten and we should ship the latest snapshot to the frontend.
@@ -2409,7 +2446,9 @@ async fn maybe_run_morning_briefing(
     }
     let clock = app.state::<InteractionClockStore>().inner().clone();
     clock.mark_proactive_spoken().await;
-    crate::speech_history::record_speech(reply_trimmed).await;
+    // Iter #389: same meta-recording wrapper as run_proactive_turn — let
+    // morning briefing speeches 也带触发上下文进 sidecar。
+    record_speech_with_current_meta(reply_trimmed).await;
 
     // 把"今天的早安已发"写入 morning_briefing_last.txt 而不是 memory ——
     // 早安是事件，不是技能 / 偏好；剥出 memory 让记忆视图保持纯净。
