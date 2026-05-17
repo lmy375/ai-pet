@@ -786,6 +786,42 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Quick { text } => {
+            // 与 /task 同 backend (memory_edit("create", "butler_tasks")) 但
+            // priority 始终 P3、reply 极短。空 text 走 formatter usage hint。
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                crate::telegram::commands::format_quick_reply(&text, Ok(()))
+            } else {
+                let header = crate::task_queue::TaskHeader {
+                    priority: 3,
+                    due: None,
+                    body: String::new(),
+                };
+                let mut description =
+                    crate::task_queue::format_task_description(&header);
+                description = crate::task_queue::append_origin_marker(
+                    &description,
+                    &crate::task_queue::TaskOrigin::Tg(chat_id.0),
+                );
+                match crate::commands::memory::memory_edit(
+                    "create".to_string(),
+                    "butler_tasks".to_string(),
+                    trimmed.to_string(),
+                    Some(description),
+                    Some(String::new()),
+                ) {
+                    Ok(_) => crate::telegram::commands::format_quick_reply(
+                        &text,
+                        Ok(()),
+                    ),
+                    Err(e) => crate::telegram::commands::format_quick_reply(
+                        &text,
+                        Err(&e),
+                    ),
+                }
+            }
+        }
         TgCommand::Sleep => {
             // 一键 8h mute：复用 set_mute_minutes 同后端（与 /mute 等价）。
             // format_sleep_reply 走专属温和文案。SLEEP_MUTE_MINUTES = 480。
