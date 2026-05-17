@@ -829,6 +829,40 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_touched_today_reply(&views, today)
         }
+        TgCommand::EditTitle { title, new_title } => {
+            // resolve 同 /done / /cancel / /show 三层。命中后调
+            // memory_rename(butler_tasks, old, new)，新 title trim 后空由
+            // backend 拒（return Err "new title must not be empty"）—
+            // formatter 透显 err；同名拒 / 找不到拒同样透显。重名冲突时
+            // backend 会拒（"Title already exists ..."），与 /dup 的
+            // unique-filename 自动加 _N 行为不同（rename 是"显式新名"，
+            // 自动改名违反 owner intent）。
+            if title.trim().is_empty() || new_title.trim().is_empty() {
+                format_missing_argument("edit_title")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(src) => {
+                        let rename_result = crate::commands::memory::memory_rename(
+                            "butler_tasks".to_string(),
+                            src.clone(),
+                            new_title.clone(),
+                        );
+                        match rename_result {
+                            Ok(_) => crate::telegram::commands::format_edit_title_reply(
+                                &src,
+                                &new_title,
+                            ),
+                            Err(e) => format_command_error(&e),
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Quick { text } => {
             // 与 /task 同 backend (memory_edit("create", "butler_tasks")) 但
             // priority 始终 P3、reply 极短。空 text 走 formatter usage hint。
