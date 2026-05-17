@@ -12,7 +12,6 @@
 - PanelMemory 加全局「📌 pinned-only」toggle：与既有 sort toggle 同行；显所有 cat 仅 pinned items — 总览「我钉了哪些」。
 - TG bot `/peek <title>` 命令：显 task 一行紧凑视图（status + due + 关键 markers）— 比 /show 紧凑。
 - detail.md 编辑器「⌘P heading palette」shortcut：弹 fuzzy palette 列 detail.md heading，select 跳位置 — 长 doc 导航。
-- PanelDebug 加「⌚ 复制 uptime + 版本」chip：一键拼 markdown「pet vX · 已运行 N · schema vM」复制 — issue triage 一站式。
 - ChatPanel 输入框加「📜 复制全 input」按钮：清空前一键复制当前 input — 防误删长输入。
 
 
