@@ -166,6 +166,25 @@ export function ChatPanel({ onSend, isLoading }: Props) {
     };
   }, []);
 
+  // ChatMini bubble 右键「↺ 重发本条」派发的 CustomEvent。直接调
+  // onSend(text) 触发 LLM reroll — 跳过 textarea state 中转避免污染
+  // 用户当前输入。不 push 历史栈（已存在）；不复用 stage images；不调
+  // 多模态守门（原 send 已通过，re-send 同样请求）。isLoading 时
+  // 拒（保护并发）。
+  useEffect(() => {
+    const onResend = (e: Event) => {
+      const ce = e as CustomEvent<string>;
+      const text = ce.detail;
+      if (typeof text !== "string" || !text.trim()) return;
+      if (isLoading) return;
+      onSend(text.trim(), undefined);
+    };
+    window.addEventListener("pet-mini-resend-message", onResend);
+    return () => {
+      window.removeEventListener("pet-mini-resend-message", onResend);
+    };
+  }, [onSend, isLoading]);
+
   // ChatMini 选区浮 toolbar 的"🔄 改写"按钮派发的 CustomEvent。把选中
   // 文字以 `请改写：\n\n[text]` prefill 到输入框，把光标停在末尾让用户能
   // 在发送前修改意图（"请改写得更精炼" / "请翻译" 等）。已有内容时覆盖
