@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { usePollingState } from "../../hooks/usePollingState";
 import { invoke } from "@tauri-apps/api/core";
+import { formatBytes } from "../../utils/formatBytes";
 import { PanelChipStrip } from "./PanelChipStrip";
 import { PanelStatsCard } from "./PanelStatsCard";
 import { PanelToolsTopK } from "./PanelToolsTopK";
@@ -201,6 +202,32 @@ export function PanelDebug() {
   const [llmLatencyPanelOpen, setLlmLatencyPanelOpen] = useState(false);
   const [llmLatencies, setLlmLatencies] = useState<number[] | null>(null);
   const [llmLatencyFetching, setLlmLatencyFetching] = useState(false);
+
+  /// `.history` 目录占盘 chip：扫所有 detail.md sibling `.history` dirs
+  /// 累加文件大小 + dir 数。给 owner 看 safety-net 磁盘成本，决策"该不
+  /// 该清 / 调小 HISTORY_CAP"。点击 chip 立即重 fetch。
+  interface HistoryDiskUsage {
+    total_bytes: number;
+    file_count: number;
+    dir_count: number;
+  }
+  const [historyDisk, setHistoryDisk] = useState<HistoryDiskUsage | null>(null);
+  const [historyDiskFetching, setHistoryDiskFetching] = useState(false);
+  const fetchHistoryDisk = useCallback(async () => {
+    setHistoryDiskFetching(true);
+    try {
+      const u = await invoke<HistoryDiskUsage>("detail_history_disk_usage");
+      setHistoryDisk(u);
+    } catch (e) {
+      console.error("detail_history_disk_usage failed:", e);
+    } finally {
+      setHistoryDiskFetching(false);
+    }
+  }, []);
+  // 首屏拉一次；后续 owner 点 chip 触发刷新
+  useEffect(() => {
+    void fetchHistoryDisk();
+  }, [fetchHistoryDisk]);
   const fetchLlmLatencies = useCallback(async () => {
     setLlmLatencyFetching(true);
     try {
@@ -2155,6 +2182,22 @@ export function PanelDebug() {
           title="在系统文件管理器里打开 logs 目录（~/.config/pet/logs/）。owner 想 grep / tail / 拖到第三方 viewer 时一键到位。"
         >
           📂 logs 目录
+        </button>
+        {/* 🗄 detail .history 占盘 chip：扫所有 detail.md sibling .history
+            目录大小 + dir 数。点击立即刷新（首屏自动拉一次）。让 owner
+            知 safety-net 磁盘成本 — 决策"该不该清 / 调小 HISTORY_CAP"。
+            null 时 displays "未加载"；非 null 显 N KB · D dir · F file。 */}
+        <button
+          onClick={() => void fetchHistoryDisk()}
+          disabled={historyDiskFetching}
+          style={toolBtnStyle}
+          title={`扫所有 detail.md sibling .history 目录占盘 + dir / file 数 — safety-net 磁盘成本。\n${historyDisk ? `${formatBytes(historyDisk.total_bytes)} · ${historyDisk.dir_count} 个 dir · ${historyDisk.file_count} 份快照` : "未加载，点击刷新"}\n${historyDiskFetching ? "刷新中…" : "点击立即刷新"}`}
+        >
+          {historyDiskFetching
+            ? "🗄 刷新中…"
+            : historyDisk
+              ? `🗄 .history ${formatBytes(historyDisk.total_bytes)} · ${historyDisk.dir_count} dir`
+              : "🗄 .history —"}
         </button>
         <button
           onClick={() => {
