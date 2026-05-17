@@ -536,6 +536,12 @@ pub enum TgCommand {
     /// 任务详情不必回桌面。空 title 走 missing-arg；title resolve 三层
     /// （数字 index → fuzzy → 错误候选）与 /done /cancel /edit 同源。
     Show { title: String },
+    /// `/peek <title>` —— 一行紧凑视图：status emoji + 标题 + schedule 摘要
+    /// （every / once / deadline 解析）+ 关键 markers（📌 pinned / 🔇 silent
+    /// / 💤 snooze / 🔒 blockedBy / P{priority}）。与 /show 显完整 raw +
+    /// detail 互补 — owner 想"快瞄一眼这条状态"用 /peek，要看完整内容走
+    /// /show。空 title 走 missing-arg；title resolve 三层与 /show 同源。
+    Peek { title: String },
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -637,6 +643,7 @@ impl TgCommand {
             TgCommand::Reflect { .. } => "reflect",
             TgCommand::Due { .. } => "due",
             TgCommand::Show { .. } => "show",
+            TgCommand::Peek { .. } => "peek",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -697,6 +704,7 @@ impl TgCommand {
             | TgCommand::Note { text: title }
             | TgCommand::Reflect { text: title }
             | TgCommand::Show { title }
+            | TgCommand::Peek { title }
             | TgCommand::Timeline { title }
             | TgCommand::Forks { title }
             | TgCommand::BlockedBy { title }
@@ -862,6 +870,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find_in_detail", "Search this chat's tasks by keyword inside detail.md content (complements /find which scans title/description)"),
             ("find_speech", "Search speech_history.log by keyword — pet's past proactive utterances; complements /find / /find_in_detail"),
             ("show", "Show full raw description (with markers) + detail.md preview of a task"),
+            ("peek", "One-line compact view: status + schedule + key markers (complements /show full detail)"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -939,6 +948,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find_in_detail", "按 keyword 搜本聊天派单的 detail.md 内容（含命中点 snippet，至多 8 条）— 与 /find 互补"),
             ("find_speech", "按 keyword 搜 speech_history.log — 搜 pet 说过的话（含命中点 snippet，至多 8 条）"),
             ("show", "显单条任务完整 raw description（含 markers）+ detail.md 预览"),
+            ("peek", "一行紧凑视图：status + 标题 + schedule + 关键 markers（与 /show 完整视图互补）"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1209,6 +1219,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/show <title>`：所有参数 = title（与 /cancel /done 同模板）。空 title
         // 由 handler 走 missing-argument 反馈。
         "show" => Some(TgCommand::Show { title }),
+        // `/peek <title>`：与 /show 同 single-title 模板。空 title 由 handler
+        // 走 missing-argument。pure formatter 在 handler 端只读 raw_description
+        // + status，不读 detail.md（紧凑视图不需要）。
+        "peek" => Some(TgCommand::Peek { title }),
         // `/timeline <title>`：与 /show 同 single-title 模板。空 title 由
         // handler 走 missing-argument 反馈。butler_history.log 扫描在
         // handler 端做（IO），parser 仅切 title。
@@ -1949,7 +1963,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2102,6 +2116,7 @@ pub fn format_help_for_topic(
         "find_in_detail" => "🔬 /find_in_detail <keyword>\n\n用法：搜本聊天派单的 detail.md 内容（case-insensitive 子串），至多 8 条命中。与 /find（仅扫标题 / raw_description）互补 — pet 在 detail.md 写过相关进度 / 复盘但标题没体现时本命令命中。\n\n输出格式：\n  🔬 命中「<kw>」N 条（detail.md 内容搜索）：\n  🟢 <title>\n     …<snippet 含 keyword 60 字 context>…\n  ⚠️ <title>\n     …\n  ...\n\nsnippet 取 keyword 命中点附近 60 字 context；超长 + …。\n\n示例：\n  /find_in_detail rebase\n  /find_in_detail TODO\n  /find_in_detail 决策\n\n注：每次命令读所有派单的 detail.md（IO 较重），不必过分频繁。owner 想「快速过一遍标题」走 /find；想「我笔记里写过 X」走本命令。\n\n相关：/find（扫标题 + 描述）；/find_speech（搜 pet 说过的话）；/show <title>（看单条 raw + detail 预览）；/timeline（看历史变化）。",
         "find_speech" => "🗣 /find_speech <keyword>\n\n用法：在 speech_history.log 内搜 keyword（case-insensitive 子串），返回最多 8 条命中（ts MM-DD HH:MM + 命中点附近 60 字 snippet）。与 /find / /find_in_detail 同搜索族但 scope 是 **pet 说过的话**。\n\n输出格式：\n  🗣 speech 命中「<kw>」N 条：\n  · MM-DD HH:MM · …<snippet>…\n  · MM-DD HH:MM · …\n  ...\n\nsnippet 取 keyword 命中点附近 60 字 context；超长前后 + …。\n\n场景：owner 想「pet 之前提过 X 吗」/「pet 上次怎么说这件事」 audit — 比 /last_speech（仅最近 1 条）覆盖更广。\n\n示例：\n  /find_speech 周报\n  /find_speech rebase\n  /find_speech 心情\n\n相关：/last_speech（最近一条主动开口）；/find（任务标题 / 描述）；/find_in_detail（detail.md 内容）；/recent_chats（user ↔ pet 对话）。",
         "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
+        "peek" => "👀 /peek <title>\n\n用法：一行紧凑视图 — status emoji + 标题 + schedule（every / once / deadline 摘要）+ 关键 markers（📌 pinned / 🔇 silent / 💤 snoozed / 🔒 blockedBy）+ P{priority}。与 /show 显完整 raw + detail.md 预览互补 — owner 想「快瞄一眼这条状态」用 /peek，要看完整 description 走 /show。\n\nTitle resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  ⏳ 「<title>」 · 🕐 every 09:00 · 📌 🔇 💤 · P3\n\nschedule 段：[every: HH:MM] / [once: YYYY-MM-DD HH:MM] / [deadline: ...] / [every: 工作日 HH:MM] 等都识别；无 schedule 前缀 → 省略。\n\nmarkers 段：仅显非空 — 没钉不显 📌；没 snoozed 不显 💤。整条 markers 都没 → 段省略。\n\nP{n}：从 [task pri=N] 提取，缺省（无 pri marker）→ 省略。\n\n示例：\n  /peek 整理 Downloads\n  /peek 1  （/tasks 输出第 1 条）\n\n相关：/show <title>（完整 raw + detail）；/tasks（清单视图）；/timeline（历史演化）。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）；/forks <title>（反向：哪些 task 在等这条解锁）。",
         "forks" => "🔱 /forks <title>\n\n用法：反向 audit — 列出本 chat 派单中所有 active task（pending / error）的 description 含 `[blockedBy: <title>]` marker 的，让 owner 知道「这条 task 解锁后会让谁动起来」。与 /blocked（列被卡的）对偶。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /forks 整理 Downloads\n  /forks 1  （/tasks 输出第 1 条）\n\n输出格式：\n  🔱 解锁「<title>」会松开 N 条 task：\n  🟢 fork_a\n  ⚠️ fork_b\n\n无引用 → 「解锁这条不会影响其它 task」友好兜底。让 owner 在决定是否优先做某条 blocker 时，看到「这条做完会让谁动起来」做出更明智的优先级判断。\n\n相关：/blocked_by <title>（反向 — 我在等谁）。",
@@ -2191,6 +2206,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/find_in_detail <keyword>  —  搜 detail.md 内容（含命中点 snippet，至多 8 条；与 /find 互补 — 「我笔记里写过 X」audit）".to_string(),
         "/find_speech <keyword>  —  搜 speech_history.log（pet 说过的话，含命中点 snippet，至多 8 条；与 /last_speech 单条对偶）".to_string(),
         "/show <title>  —  显单条任务完整 raw description（含 markers）+ detail.md 预览".to_string(),
+        "/peek <title>  —  一行紧凑视图：status + schedule + 关键 markers（与 /show 完整视图互补 — 快瞄场景用）".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -5388,6 +5404,143 @@ pub fn format_show_reply(
     out
 }
 
+/// `/peek <title>` 命令回复文案。pure：
+/// - 一行紧凑视图，区段间用 ` · ` 分隔
+/// - `<status_emoji> 「<title>」 · <schedule?> · <markers?> · P{n}?`
+/// - 各可选段只在有内容时拼入；都无 → 仅 emoji + title
+///
+/// schedule 解析：扫 raw_description 起始的 `[every: ...]` / `[once: ...]` /
+/// `[deadline: ...]` 前缀（首个 `]` 收口）— 命中则原文显（仅去 `[` `]`），
+/// 加 🕐 前缀。无前缀 → 段省略。
+///
+/// markers 段：扫 `[pinned]` → 📌；`[silent]` → 🔇；`[snooze: ...]` → 💤；
+/// `[blockedBy: ...]` → 🔒。一句空格分隔；都无 → 段省略。
+///
+/// 优先级：扫 `[task pri=N]` → P{N}（N 必须 0..=9 单字符）；无 → 段省略。
+///
+/// 与 /show 互补：那个看完整 raw + detail.md preview；本命令仅 raw_description
+/// + status，不读 detail.md（紧凑视图不需要）。
+pub fn format_peek_reply(
+    title: &str,
+    raw_description: &str,
+    status: crate::task_queue::TaskStatus,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let status_emoji = match status {
+        TaskStatus::Pending => "⏳",
+        TaskStatus::Done => "✅",
+        TaskStatus::Error => "⚠️",
+        TaskStatus::Cancelled => "🚫",
+    };
+    let raw = raw_description.trim();
+    // ---- schedule prefix ----
+    // 仅认 raw_description 起始的 `[every: ...]` / `[once: ...]` / `[deadline: ...]`
+    // — 与 parse_butler_schedule_prefix 同语义但本 formatter 只展示文本，无需
+    // 解析时刻。首个 `]` 收口；非起始位置出现的 [every:...] 不算 schedule。
+    let schedule_label: Option<String> = {
+        const KEYS: &[&str] = &["every", "once", "deadline"];
+        if raw.starts_with('[') {
+            if let Some(close) = raw.find(']') {
+                let inner = &raw[1..close];
+                let matched = KEYS.iter().find(|k| {
+                    inner.starts_with(*k)
+                        && (inner.len() == k.len()
+                            || inner[k.len()..].starts_with(':')
+                            || inner[k.len()..].starts_with('：'))
+                });
+                matched.map(|_| inner.trim().to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    // ---- markers ----
+    // 不复用 extract_marker_tokens 因为本命令要的 marker 集合不同：
+    // - 收：pinned / silent / snooze / blockedBy（owner 看的活跃状态）
+    // - 不收：done / error / result / cancelled / archived（状态本身已在
+    //   status emoji 表达，重复显冗余）
+    let mut marker_emojis: Vec<&str> = Vec::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    let mut saw_pin = false;
+    let mut saw_silent = false;
+    let mut saw_snooze = false;
+    let mut saw_blocked = false;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        let close_rel = match raw[i..].find(']') {
+            Some(p) => p,
+            None => break,
+        };
+        let inner_end = i + close_rel;
+        let inner = &raw[i + 1..inner_end];
+        let starts_with_key = |k: &str| {
+            inner.starts_with(k)
+                && (inner.len() == k.len()
+                    || inner[k.len()..].starts_with(':')
+                    || inner[k.len()..].starts_with('：')
+                    || inner[k.len()..].starts_with(' '))
+        };
+        if !saw_pin && starts_with_key("pinned") {
+            saw_pin = true;
+        }
+        if !saw_silent && starts_with_key("silent") {
+            saw_silent = true;
+        }
+        if !saw_snooze && starts_with_key("snooze") {
+            saw_snooze = true;
+        }
+        if !saw_blocked && starts_with_key("blockedBy") {
+            saw_blocked = true;
+        }
+        i = inner_end + 1;
+    }
+    if saw_pin {
+        marker_emojis.push("📌");
+    }
+    if saw_silent {
+        marker_emojis.push("🔇");
+    }
+    if saw_snooze {
+        marker_emojis.push("💤");
+    }
+    if saw_blocked {
+        marker_emojis.push("🔒");
+    }
+    // ---- priority ----
+    // `[task pri=N]` 单字符 N（0..=9）。与 parse_task_prefix 同源约定 — 仅
+    // 取首个出现的 `[task pri=` 段。
+    let priority_label: Option<String> = {
+        let needle = "[task pri=";
+        raw.find(needle).and_then(|pos| {
+            let after = &raw[pos + needle.len()..];
+            let first = after.chars().next()?;
+            if first.is_ascii_digit() {
+                Some(format!("P{}", first))
+            } else {
+                None
+            }
+        })
+    };
+    // ---- assemble ----
+    let mut out = format!("{} 「{}」", status_emoji, title.trim());
+    if let Some(s) = schedule_label {
+        out.push_str(&format!(" · 🕐 {}", s));
+    }
+    if !marker_emojis.is_empty() {
+        out.push_str(&format!(" · {}", marker_emojis.join(" ")));
+    }
+    if let Some(p) = priority_label {
+        out.push_str(&format!(" · {}", p));
+    }
+    out
+}
+
 /// `/timeline` 中一行事件条目。`markers` 是该事件 snippet 内扫出的「状态
 /// 变化」marker token 列表（保 `[done]` / `[result: 已发送]` 等完整原文），
 /// 顺序保持 snippet 内出现顺序。
@@ -6329,7 +6482,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -6800,7 +6953,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -12806,6 +12959,138 @@ mod tests {
         let s = format_show_reply("t", "", "", TaskStatus::Pending);
         assert!(s.contains("raw_description 为空"), "should hint empty raw: {s}");
         assert!(!s.contains("📝"), "no detail section either: {s}");
+    }
+
+    // -------- /peek parse + format_peek_reply --------
+
+    #[test]
+    fn peek_parser_takes_all_args_as_title() {
+        assert_eq!(
+            parse_tg_command("/peek 整理 Downloads"),
+            Some(TgCommand::Peek {
+                title: "整理 Downloads".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn peek_parser_empty_title_yields_empty_string() {
+        // 空 title 留给 handler 走 missing-argument — 与 /show 同模板
+        assert_eq!(
+            parse_tg_command("/peek"),
+            Some(TgCommand::Peek {
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn peek_reply_status_emoji_matches_state() {
+        let s = format_peek_reply("写周报", "", TaskStatus::Pending);
+        assert!(s.starts_with("⏳"), "pending → ⏳: {s}");
+        let s = format_peek_reply("写周报", "", TaskStatus::Done);
+        assert!(s.starts_with("✅"), "done → ✅: {s}");
+        let s = format_peek_reply("写周报", "", TaskStatus::Error);
+        assert!(s.starts_with("⚠️"), "error → ⚠️: {s}");
+        let s = format_peek_reply("写周报", "", TaskStatus::Cancelled);
+        assert!(s.starts_with("🚫"), "cancelled → 🚫: {s}");
+    }
+
+    #[test]
+    fn peek_reply_bare_title_when_no_markers_or_schedule() {
+        // 空 raw_description → 仅 emoji + 「title」，无后续段
+        let s = format_peek_reply("写周报", "", TaskStatus::Pending);
+        assert_eq!(s, "⏳ 「写周报」");
+    }
+
+    #[test]
+    fn peek_reply_includes_every_schedule_prefix() {
+        let s = format_peek_reply("整理 Downloads", "[every: 09:00] 清桌面", TaskStatus::Pending);
+        assert!(s.contains("🕐"), "should have schedule clock emoji: {s}");
+        assert!(s.contains("every: 09:00"), "should keep schedule body verbatim: {s}");
+    }
+
+    #[test]
+    fn peek_reply_includes_once_and_deadline_schedule() {
+        let s = format_peek_reply("t", "[once: 2026-05-20 14:00] meet client", TaskStatus::Pending);
+        assert!(s.contains("once: 2026-05-20 14:00"), "{s}");
+        let s = format_peek_reply("t", "[deadline: 2026-06-01] submit", TaskStatus::Pending);
+        assert!(s.contains("deadline: 2026-06-01"), "{s}");
+    }
+
+    #[test]
+    fn peek_reply_omits_schedule_when_no_prefix() {
+        // raw 起始不是 [every|once|deadline:] → 无 🕐 段
+        let s = format_peek_reply("t", "just a free-form description", TaskStatus::Pending);
+        assert!(!s.contains("🕐"), "no schedule prefix → no clock: {s}");
+    }
+
+    #[test]
+    fn peek_reply_omits_schedule_when_prefix_not_at_start() {
+        // 中段出现 [every: ...] 不算 schedule（与 parse_butler_schedule_prefix 同语义）
+        let s = format_peek_reply("t", "free-form [every: 09:00] mid-text", TaskStatus::Pending);
+        assert!(!s.contains("🕐"), "mid-text prefix should not count: {s}");
+    }
+
+    #[test]
+    fn peek_reply_shows_pinned_silent_snooze_blocked_markers() {
+        let raw = "[task pri=3] [pinned] [silent] [snooze: 18:00] [blockedBy: foo] body";
+        let s = format_peek_reply("t", raw, TaskStatus::Pending);
+        assert!(s.contains("📌"), "pinned → 📌: {s}");
+        assert!(s.contains("🔇"), "silent → 🔇: {s}");
+        assert!(s.contains("💤"), "snooze → 💤: {s}");
+        assert!(s.contains("🔒"), "blockedBy → 🔒: {s}");
+    }
+
+    #[test]
+    fn peek_reply_omits_marker_section_when_none_present() {
+        // 仅 priority + body，无 pinned/silent/snooze/blockedBy → markers 段省略
+        let s = format_peek_reply("t", "[task pri=3] some body", TaskStatus::Pending);
+        assert!(!s.contains("📌"), "{s}");
+        assert!(!s.contains("🔇"), "{s}");
+        assert!(!s.contains("💤"), "{s}");
+        assert!(!s.contains("🔒"), "{s}");
+    }
+
+    #[test]
+    fn peek_reply_does_not_show_state_change_markers_like_done_or_result() {
+        // [done] / [result:] / [cancelled:] / [error:] 是状态变化 — 状态本身
+        // 已在 emoji 表达，不应在 markers 段重复
+        let raw = "[task pri=3] body [done] [result: ok]";
+        let s = format_peek_reply("t", raw, TaskStatus::Done);
+        assert!(!s.contains("✅ done"), "shouldn't echo done as marker: {s}");
+        assert!(!s.contains("result"), "shouldn't echo [result:] verbatim: {s}");
+    }
+
+    #[test]
+    fn peek_reply_priority_label_from_task_pri_marker() {
+        let s = format_peek_reply("t", "[task pri=5] body", TaskStatus::Pending);
+        assert!(s.contains("P5"), "should show priority label: {s}");
+        let s = format_peek_reply("t", "[task pri=0] body", TaskStatus::Pending);
+        assert!(s.contains("P0"), "P0 should still show: {s}");
+    }
+
+    #[test]
+    fn peek_reply_priority_omitted_when_no_task_pri_marker() {
+        // 无 [task pri=N] → 不显 P 段
+        let s = format_peek_reply("t", "free-form body", TaskStatus::Pending);
+        assert!(!s.contains(" · P"), "no pri marker → no P label: {s}");
+    }
+
+    #[test]
+    fn peek_reply_full_combo_layout() {
+        // 全段都有：emoji · title · schedule · markers · priority
+        let raw = "[every: 09:00] [task pri=3] [pinned] [silent] 早会";
+        let s = format_peek_reply("早会", raw, TaskStatus::Pending);
+        // 段间 separator
+        let dots: Vec<&str> = s.split(" · ").collect();
+        assert!(dots.len() >= 4, "should have ≥4 dot-separated segments: {s}");
+        assert!(s.contains("⏳"), "{s}");
+        assert!(s.contains("「早会」"), "{s}");
+        assert!(s.contains("🕐 every: 09:00"), "{s}");
+        assert!(s.contains("📌"), "{s}");
+        assert!(s.contains("🔇"), "{s}");
+        assert!(s.contains("P3"), "{s}");
     }
 
     // -------- /timeline parse + extract_marker_tokens + entries + format --------
