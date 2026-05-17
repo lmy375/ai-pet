@@ -10,7 +10,6 @@
 
 - TG bot `/dup <title>` 命令：复制 task 为新 P3 实例（保 markers + detail.md），新 title 自动加 `(副本)` 后缀 — 模板化新建。
 - PanelTasks 行 hover 「⏰ reminderMin」chip：点弹快速编辑 popover 改 [reminderMin: N] — 不必走 /edit 重写整 description。
-- ChatMini 气泡右键「📌 转 P3 task」菜单项：复用气泡 text 作新 task title — 快速 lift 聊天精华成任务。
 - detail.md 编辑器「⌘⇧F find-replace」modal：弹双输入 find / replace，预览匹配数 + 一键全替换 — 长 doc 批量改名。
 - TG bot `/why <title>` 命令：显该 task 最近 N 条 decision_log 条目（touch / snooze / promote 历史）— 与 /timeline 互补。
 
