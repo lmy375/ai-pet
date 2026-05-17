@@ -3149,6 +3149,55 @@ export function ChatMini({
             >
               ⌚ 复制 · 含时间戳
             </button>
+            {/* 📋 复制 thread 5：本 bubble 之上 4 条（含本条共 5 条）user
+                / assistant 消息拼 markdown 段。让 owner audit「上下文一
+                段对话」时不必逐条复制。format 与 copyRecentN 同 glyph
+                pattern（user 🧑 / assistant 🐾）+ 含 timestamp 与 copyIncludeTime
+                偏好一致；用 \n\n 段隔保 markdown 阅读体验。 */}
+            <button
+              type="button"
+              style={item}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              onClick={() => {
+                setCtxMenu(null);
+                const idx = ctxMenu.idx;
+                const startIdx = Math.max(0, idx - 4);
+                const slice = visibleItems.slice(startIdx, idx + 1);
+                if (slice.length === 0) return;
+                const text = slice
+                  .map((mi) => {
+                    const glyph =
+                      mi.role === "user"
+                        ? effectiveUserGlyph
+                        : effectiveAssistantGlyph;
+                    const prefix = copyIncludeTime
+                      ? `${formatBubbleTimestamp(mi.ts)} ${glyph}`
+                      : glyph;
+                    return `${prefix} ${extractText(mi.content)}`.trim();
+                  })
+                  .filter((s) => s.length > 0)
+                  .join("\n\n");
+                navigator.clipboard
+                  .writeText(text)
+                  .then(() => {
+                    setBubbleCopyIdx(ctxMenu.idx);
+                    window.setTimeout(
+                      () =>
+                        setBubbleCopyIdx((cur) =>
+                          cur === ctxMenu.idx ? null : cur,
+                        ),
+                      1500,
+                    );
+                  })
+                  .catch((err) =>
+                    console.error("copy thread 5 failed:", err),
+                  );
+              }}
+              title={`复制本 bubble + 之上 4 条（共 5 条 user / assistant 消息）拼 markdown — 上下文段 audit 场景。${copyIncludeTime ? "含 [HH:MM] timestamp prefix。" : "不含 timestamp（开顶部「⌚ 含时间戳」preference 切换）。"}`}
+            >
+              📋 复制 thread 5
+            </button>
             {/* 🔗 复制 task ref：把 bubble 内的所有 「title」 token 收
                 集 + dedupe + 空格拼接复制。无 ref 命中时 disabled + tooltip
                 解释。粘到 task description / detail.md / TG /quick 仍是
