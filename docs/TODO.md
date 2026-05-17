@@ -10,7 +10,6 @@
 
 - PanelTasks 行 hover 显「📂 detail N 字」chip：用 detailMap.detail_md.length 派生 — audit 哪些 task notes 积累深。
 - ChatMini bubble 右键菜单加「🔍 search this session」item：选 bubble → 触发 PanelChat scope=current session 搜（与 🔍 找类似互补）。
-- TG bot `/oldest_n [N]` 命令：列本 chat oldest pending N 条（按 created_at asc）— audit「堆积最久的活」入口。
 - PanelMemory item 加「↗ 跳到任务面板」按钮（仅 butler_tasks cat）：click 切到 PanelTasks tab + 高亮该 task 卡片。
 - detail.md 编辑器底部加「💡 字数 / 段数 / link 数」status bar：长文编辑 progress indicator。
 
