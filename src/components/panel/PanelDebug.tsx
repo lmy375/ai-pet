@@ -71,6 +71,44 @@ export function PanelDebug() {
     neutral: 0,
   });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
+  /// shell exit code 分布 chip 用：扫 ShellStore（≤ 1h 缓存）按
+  /// return_code 分桶 success / failure / running_or_unknown。debug
+  /// LLM 用 shell tool 的失败率信号。30s 轮询（与 recent_speeches
+  /// 同节奏 — shell call 不是高频事件）；total === 0 时 chip 不渲
+  /// 避免「全 0」噪音。
+  type ShellExitCodeStats = {
+    success: number;
+    failure: number;
+    runningOrUnknown: number;
+    total: number;
+  };
+  const [shellExitStats, setShellExitStats] = useState<ShellExitCodeStats>({
+    success: 0,
+    failure: 0,
+    runningOrUnknown: 0,
+    total: 0,
+  });
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const stats = await invoke<ShellExitCodeStats>(
+          "get_shell_exit_code_stats",
+        );
+        if (cancelled) return;
+        setShellExitStats(stats);
+      } catch (e) {
+        // 后端无 store / 解析失败：保留上次值，不闪到 0 误导
+        console.warn("get_shell_exit_code_stats failed:", e);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   /// iter #389: per-speech 触发 meta — ts → {band, factor, mode,
   /// deadline_factor}。get_recent_speeches_with_meta 单独轮询（30s，
   /// speech 写入是低频事件 — 与 debug snapshot 1s 轮询节奏分开避免
@@ -892,6 +930,12 @@ export function PanelDebug() {
       `- turns: ${cacheStats.turns}`,
       `- hits / calls: ${cacheStats.total_hits} / ${cacheStats.total_calls}`,
       "",
+      `## shell 退出码（近 1h 缓存）`,
+      `- success: ${shellExitStats.success}`,
+      `- failure: ${shellExitStats.failure}`,
+      `- running / unknown: ${shellExitStats.runningOrUnknown}`,
+      `- total: ${shellExitStats.total}`,
+      "",
       `## 心情 motion 命中`,
       `- with_tag: ${moodTagStats.with_tag}`,
       `- without_tag: ${moodTagStats.without_tag}`,
@@ -988,6 +1032,7 @@ export function PanelDebug() {
     toolRiskRows,
     recentSpeeches,
     muteUntil,
+    shellExitStats,
   ]);
   const [debugExportMsg, setDebugExportMsg] = useState("");
   const handleExportDebugMd = async () => {
@@ -2352,6 +2397,37 @@ export function PanelDebug() {
         >
           📋 导出快照 MD
         </button>
+        {/* ⚙️ shell exit code 分布 chip：扫 ShellStore（≤ 1h 缓存）按
+            return_code 分桶，让 owner 一眼看 LLM 用 shell tool 的失
+            败率。total === 0 时 chip 不渲（早期窗 / 长时间未触发 shell
+            的安静状态）。failure 比例 ≥ 50% 时 chip 染红 warning；否
+            则 muted 中性显。30s 轮询。 */}
+        {shellExitStats.total > 0 && (() => {
+          const failRatio =
+            shellExitStats.total > 0
+              ? shellExitStats.failure / shellExitStats.total
+              : 0;
+          const warn = failRatio >= 0.5;
+          return (
+            <span
+              title={`shell 工具调用近 1 小时缓存：${shellExitStats.success} 成功 / ${shellExitStats.failure} 失败 / ${shellExitStats.runningOrUnknown} 运行中或未知 — debug LLM shell tool 失败率。failure 比例 ${(failRatio * 100).toFixed(0)}% — ${warn ? "≥ 50% 显警告色" : "中性"}。1 小时 cleanup_old_tasks 后过期项剔除。`}
+              style={{
+                ...toolBtnStyle,
+                background: warn
+                  ? "var(--pet-tint-red-bg)"
+                  : "var(--pet-color-card)",
+                color: warn
+                  ? "var(--pet-tint-red-fg)"
+                  : "var(--pet-color-muted)",
+                cursor: "default",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              ⚙️ {shellExitStats.success}/{shellExitStats.failure}/
+              {shellExitStats.runningOrUnknown}
+            </span>
+          );
+        })()}
         <button
           onClick={handleCaptureSnapshotA}
           style={toolBtnStyle}

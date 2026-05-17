@@ -184,3 +184,42 @@ pub fn check_shell_status(
         None => Err(format!("Task not found: {}", task_id)),
     }
 }
+
+/// PanelDebug shell exit code 分布 chip 用：扫 ShellStore 内当前缓存
+/// 的所有 shell task（窗口 ≤ 1 小时 — cleanup_old_tasks 1h cutoff）
+/// + 按 return_code 分桶。`success` = code 0；`failure` = code 非
+/// 0；`running_or_unknown` = code None（仍 running / 被 kill / 写
+/// return_code 之前 panic 等）。让 owner 一眼看 LLM 用 shell tool
+/// 的失败率。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellExitCodeStats {
+    pub success: u32,
+    pub failure: u32,
+    pub running_or_unknown: u32,
+    pub total: u32,
+}
+
+#[tauri::command]
+pub fn get_shell_exit_code_stats(
+    store: State<'_, ShellStore>,
+) -> ShellExitCodeStats {
+    let map = store.0.lock().unwrap();
+    let mut success = 0u32;
+    let mut failure = 0u32;
+    let mut running_or_unknown = 0u32;
+    for task in map.values() {
+        match task.return_code {
+            Some(0) => success += 1,
+            Some(_) => failure += 1,
+            None => running_or_unknown += 1,
+        }
+    }
+    let total = success + failure + running_or_unknown;
+    ShellExitCodeStats {
+        success,
+        failure,
+        running_or_unknown,
+        total,
+    }
+}
