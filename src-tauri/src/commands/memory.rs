@@ -36,6 +36,77 @@ pub fn detail_history_disk_usage() -> Result<crate::detail_history::DetailHistor
     Ok(crate::detail_history::scan_history_disk_usage(&dir))
 }
 
+/// 安全检查 detail_path（与 reveal_detail_in_finder 同语义）：禁 `..` /
+/// 绝对路径；canonicalize 后必须落在 memories_dir 内。返绝对路径。
+fn resolve_safe_detail_path(detail_path: &str) -> Result<std::path::PathBuf, String> {
+    let trimmed = detail_path.trim();
+    if trimmed.is_empty() {
+        return Err("detail_path is required".to_string());
+    }
+    if trimmed.contains("..") || trimmed.starts_with('/') {
+        return Err("invalid detail_path".to_string());
+    }
+    let mem_dir = memories_dir()?;
+    let full = mem_dir.join(trimmed);
+    Ok(full)
+}
+
+/// `memory_detail_history`：列指定 detail.md 的最近 N 个版本快照。与
+/// `task_detail_history` 对偶但 category-agnostic — 走 detail_path 直接
+/// 索引而非 task title 查找，让 PanelMemory 任一 cat（general / todo /
+/// ai_insights / 等）都能用。文件不存在 / 无 .history dir → 空 Vec。
+#[tauri::command]
+pub fn memory_detail_history(
+    detail_path: String,
+) -> Result<Vec<crate::detail_history::DetailHistoryEntry>, String> {
+    let full = resolve_safe_detail_path(&detail_path)?;
+    Ok(crate::detail_history::list_history(&full))
+}
+
+/// `memory_reveal_history_dir`：在 Finder / Explorer 打开指定 detail.md
+/// 对应的 `.history` 目录。与 `task_reveal_history_dir` 对偶但 category-
+/// agnostic。.history 目录不存在 → Err 含友好文案。canonicalize 安全
+/// 检查与 reveal_detail_in_finder 同 pattern。
+#[tauri::command]
+pub fn memory_reveal_history_dir(detail_path: String) -> Result<(), String> {
+    let full = resolve_safe_detail_path(&detail_path)?;
+    let history_dir = crate::detail_history::history_dir_for(&full);
+    if !history_dir.exists() {
+        return Err("尚无历史快照（save 过该 item 的 detail.md 后才会有）".to_string());
+    }
+    let canon = fs::canonicalize(&history_dir)
+        .map_err(|e| format!("Failed to resolve history dir: {}", e))?;
+    let mem_canon = fs::canonicalize(memories_dir()?)
+        .map_err(|e| format!("Failed to resolve memories_dir: {}", e))?;
+    if !canon.starts_with(&mem_canon) {
+        return Err("history dir escaped memories_dir".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `open`: {}", e))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `explorer`: {}", e))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `xdg-open`: {}", e))
+    }
+}
+
 #[tauri::command]
 pub fn memory_disk_usage() -> Result<MemoryDiskUsage, String> {
     let dir = memories_dir()?;
