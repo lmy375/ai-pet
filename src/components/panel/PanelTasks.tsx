@@ -4317,6 +4317,26 @@ export function PanelTasks({
       // session 内仍生效
     }
   };
+  /// 把当前 visibleTasks 标题逐行复制到剪贴板。给"我想把任务清单粘到
+  /// Notion / Things / 另一个工具"这种 quick-export 场景用 — 比 📋 导出
+  /// MD 更轻量（不带 metadata / detail，只一行一标题）。空 visibleTasks
+  /// 时给 hint 文案不真复制。
+  const handleCopyVisibleTitles = useCallback(async () => {
+    if (visibleTasks.length === 0) {
+      setBulkResultMsg("当前过滤下没有任务可复制");
+      window.setTimeout(() => setBulkResultMsg(""), 4000);
+      return;
+    }
+    const text = visibleTasks.map((t) => t.title).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setBulkResultMsg(`已复制 ${visibleTasks.length} 条标题`);
+    } catch (e) {
+      setBulkResultMsg(`复制失败：${e}`);
+    }
+    window.setTimeout(() => setBulkResultMsg(""), 4000);
+  }, [visibleTasks]);
+
   /// 好过滤就一键导出当前视图。
   const handleExportAllVisibleAsMd = useCallback(async () => {
     if (visibleTasks.length === 0) {
@@ -6264,6 +6284,23 @@ export function PanelTasks({
             aria-label="导出全部任务为 markdown"
           >
             📋 导出 MD ({visibleTasks.length})
+          </button>
+          {/* 复制可见标题：与 📋 导出 MD 互补 — 那个含 metadata / detail
+              整段，这个只一行一标题。给"粘到 Notion / Things / 另一个工
+              具列清单"这种 quick-export 用。 */}
+          <button
+            type="button"
+            onClick={handleCopyVisibleTitles}
+            disabled={visibleTasks.length === 0}
+            style={s.searchClearBtn}
+            title={
+              filtersActive
+                ? `把当前过滤下的 ${visibleTasks.length} 条任务标题逐行复制到剪贴板（无 metadata / detail）`
+                : `把全部 ${visibleTasks.length} 条任务标题逐行复制到剪贴板（无 metadata / detail）`
+            }
+            aria-label="复制全部可见任务标题"
+          >
+            📋 标题 ({visibleTasks.length})
           </button>
         </div>
         {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0) && (
