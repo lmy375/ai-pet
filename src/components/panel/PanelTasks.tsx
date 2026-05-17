@@ -8003,47 +8003,71 @@ export function PanelTasks({
                         </span>
                       );
                     })()}
-                    {/* 🕰 老任务年龄 chip：created_at > 3 天且仍 pending/error
-                        时显，配 📌 钉住 chip 帮 owner 判断「这条放了多久 / 要不
-                        要拆 / 取消」。done / cancelled 不渲（静态终态，年龄无
-                        actionable 信号）。muted gray 与 actionable chips（📌 /
-                        💤 / 🔒）配色错开，弱化为"信息"非"动作"。tooltip 显完整
-                        created_at + 相对值，让 owner 心里有数 + hover 验证。 */}
+                    {/* 任务年龄 hint chip — 双轨：
+                        ≥ 3 天 → 🕰 chip with muted bg（"积压"信号，提醒拆 /
+                          改 priority / 取消）
+                        < 3 天 → 📅 N前 灰字 hint，无 bg（"新进"信号，让 owner
+                          一眼区分新建 vs 老积压）
+                        done / cancelled 不渲（静态终态，年龄无 actionable）。
+                        与 ts 字段读取 + nowMs 计算同源。 */}
                     {(t.status === "pending" || t.status === "error") &&
                       (() => {
                         const ts = Date.parse(t.created_at);
                         if (Number.isNaN(ts)) return null;
                         const ageMs = nowMs - ts;
-                        // 3 天阈值：< 3 天的任务"新"，不需要提醒；≥ 3 天
-                        // 开始显，覆盖一周内 / 一两周 / 更久三个粒度。
-                        if (ageMs < 3 * 86_400_000) return null;
                         const rel = formatRelativeAge(t.created_at, nowMs);
                         if (!rel) return null;
+                        // 积压 chip（≥ 3 天）— actionable 信号
+                        if (ageMs >= 3 * 86_400_000) {
+                          return (
+                            <span
+                              title={`创建于 ${t.created_at
+                                .slice(0, 16)
+                                .replace("T", " ")}（${rel}）—— 放了一阵了，要不要拆 / 改 priority / 取消？`}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 2,
+                                padding: "1px 7px",
+                                fontSize: 10,
+                                fontWeight: 500,
+                                lineHeight: 1.4,
+                                letterSpacing: 0.2,
+                                borderRadius: 999,
+                                background:
+                                  "color-mix(in srgb, var(--pet-color-muted) 12%, transparent)",
+                                color: "var(--pet-color-muted)",
+                                border:
+                                  "1px solid color-mix(in srgb, var(--pet-color-muted) 25%, transparent)",
+                                whiteSpace: "nowrap",
+                              }}
+                              aria-label={`已创建 ${rel}`}
+                            >
+                              🕰 {rel}
+                            </span>
+                          );
+                        }
+                        // 新进 hint（< 3 天）— info 信号，no bg / no border
+                        // 让其与 actionable chips 视觉分量错开。owner 一眼
+                        // 看到 "📅 30 分钟前" 知道这是刚 enqueue 的新任务。
                         return (
                           <span
                             title={`创建于 ${t.created_at
                               .slice(0, 16)
-                              .replace("T", " ")}（${rel}）—— 放了一阵了，要不要拆 / 改 priority / 取消？`}
+                              .replace("T", " ")}（${rel}）`}
                             style={{
                               display: "inline-flex",
                               alignItems: "center",
-                              gap: 2,
-                              padding: "1px 7px",
                               fontSize: 10,
-                              fontWeight: 500,
                               lineHeight: 1.4,
-                              letterSpacing: 0.2,
-                              borderRadius: 999,
-                              background:
-                                "color-mix(in srgb, var(--pet-color-muted) 12%, transparent)",
                               color: "var(--pet-color-muted)",
-                              border:
-                                "1px solid color-mix(in srgb, var(--pet-color-muted) 25%, transparent)",
+                              opacity: 0.7,
                               whiteSpace: "nowrap",
+                              fontFamily: "'SF Mono', monospace",
                             }}
                             aria-label={`已创建 ${rel}`}
                           >
-                            🕰 {rel}
+                            📅 {rel}
                           </span>
                         );
                       })()}
