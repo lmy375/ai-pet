@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- detail.md 编辑器加 "⏰ 编辑用时 N 分钟" 灰字 hint：进入 editing 后开始计时，让 owner 感知"在这条 task 写了多久"。
 - TG bot 加 `/edit <title> <new desc>` 命令：覆写 task description（owner 外面想加 marker / 改 body）。
 
 
