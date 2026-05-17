@@ -3333,9 +3333,16 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   (() => {
                     let silentN = 0;
                     let snoozeN = 0;
+                    let doneN = 0;
+                    const totalN = cat.items.length;
                     const nowMs = now.getTime();
                     const snoozeRe = /\[snooze:\s*(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{1,2})\]/g;
+                    // 与 task_queue::has_done_marker 同语义：要求 `[done` 后紧
+                    // 跟 `]` 或 ` `（容忍未来 `[done at=...]` 扩展），并要求闭
+                    // 合 `]` 存在 — 拒绝 description 字面提到 "done" 的误判。
+                    const doneRe = /\[done(?:\s[^\]]*)?\]/;
                     for (const it of cat.items) {
+                      if (doneRe.test(it.description)) doneN += 1;
                       if (/\[silent\]/.test(it.description)) silentN += 1;
                       // 多个 snooze marker 取最后一个 valid 值（与 backend
                       // parse_snooze "last-wins" 语义对偶）；未过点才算 active
@@ -3409,6 +3416,32 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             title={`${snoozeN} 条 butler_task 处于 [snooze: ...] 暂停期，时刻到达前自动从 proactive 选单隐藏。`}
                           >
                             💤 {snoozeN}
+                          </span>
+                        )}
+                        {/* ✅ 完成率 chip：butler_tasks 段产出率信号。done =
+                            items 含 `[done]` marker（与 task_queue 同语义）；
+                            total = 整段 items 数（含 every-recurring 永远算
+                            pending 的）—— recurring 项压低 pct 是正常现象，
+                            owner 看到 "我有 N 条 standing reminder, X 条已
+                            once-and-done" 仍是有效信号。与 7-day churn
+                            sparkline 互补：那个看"近期活跃节奏"，这个看
+                            "累计产出比例"。totalN==0 时不渲染。 */}
+                        {totalN > 0 && (
+                          <span
+                            style={{
+                              ...chipBase,
+                              background:
+                                doneN > 0
+                                  ? "var(--pet-tint-emerald-bg, #d1fae5)"
+                                  : "var(--pet-color-border)",
+                              color:
+                                doneN > 0
+                                  ? "var(--pet-tint-emerald-fg, #047857)"
+                                  : "var(--pet-color-muted)",
+                            }}
+                            title={`完成率 ${doneN}/${totalN} = ${Math.round((doneN / totalN) * 100)}% · done = items 含 [done] marker · 与 7-day churn 互补：那个看节奏，这个看产出率`}
+                          >
+                            ✅ {doneN}/{totalN}
                           </span>
                         )}
                       </>
