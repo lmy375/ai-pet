@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelDebug 加「⏰ 最近主动开口」chip 清单：显最近 N 条 proactive speeches 时刻 + 触发原因（feedback_band / cooldown）— audit pet 何时开口 + 为何。
 
 
 
