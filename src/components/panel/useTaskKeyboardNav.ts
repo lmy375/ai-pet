@@ -35,6 +35,10 @@ export interface UseTaskKeyboardNavArgs<T extends TaskItemLike> {
    * 后端刚发生的变更（LLM 新建 / 状态切换）即时反映。preventDefault 吃浏
    * 览器默认"刷新页面"行为。 */
   handleReload: () => void;
+  /** ⌘/ / Ctrl+/ 快捷键：弹快捷键速查 modal。owner 健忘 / 新用户发现快
+   * 捷键入口；跨 input context 工作（与 ⌘F / ⌘K / ⌘R 同放最前），让在
+   * 搜索 / 创建表单输入时也能拉起 cheatsheet。 */
+  handleShowShortcutHelp: () => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
   titleInputRef: RefObject<HTMLInputElement | null>;
   setCreateFormExpanded: (v: boolean) => void;
@@ -54,6 +58,7 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
     handleTogglePinned,
     handleCopyTitle,
     handleReload,
+    handleShowShortcutHelp,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -92,6 +97,10 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
   useEffect(() => {
     handleReloadRef.current = handleReload;
   }, [handleReload]);
+  const handleShowShortcutHelpRef = useRef(handleShowShortcutHelp);
+  useEffect(() => {
+    handleShowShortcutHelpRef.current = handleShowShortcutHelp;
+  }, [handleShowShortcutHelp]);
   const handleTogglePinnedRef = useRef(handleTogglePinned);
   useEffect(() => {
     handleTogglePinnedRef.current = handleTogglePinned;
@@ -127,6 +136,21 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
       ) {
         e.preventDefault();
         handleReloadRef.current();
+        return;
+      }
+      // ⌘/ / Ctrl+/ 弹快捷键速查 modal — 新用户发现 + 老用户健忘时一键
+      // 看全表。跨 input context 工作（与 ⌘R 同放最前 — cheatsheet 是
+      // 通用 affordance 不该被 input focus 限制）。preventDefault 吃浏
+      // 览器默认（macOS Safari 可能 Help 菜单聚焦；Tauri webview 无害
+      // 但兜底）。
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key === "/" &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        handleShowShortcutHelpRef.current();
         return;
       }
       // 用户在 search / 创建表单 / 取消原因等输入里打字、或 button 聚焦时按

@@ -4848,6 +4848,14 @@ export function PanelTasks({
     });
   }, [reload]);
 
+  /// ⌘/ 快捷键速查 modal：showShortcutHelp toggle。Esc 关由 modal 内
+  /// onKeyDown 处理（与 dirty editor cancel armed 等 panel-wide Esc
+  /// 行为隔离 — 此 modal 是单一焦点 overlay）。
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const handleShowShortcutHelp = useCallback(() => {
+    setShortcutHelpOpen((v) => !v);
+  }, []);
+
   // 键盘导航整段抽到 useTaskKeyboardNav（ref-stable 监听 + visibleTasks
   // 长度 clamp）。hook 内部用 ref 持最新依赖，避免每次 visibleTasks 变化
   // 都 re-subscribe 的窗口竞态。
@@ -4861,6 +4869,7 @@ export function PanelTasks({
     handleTogglePinned,
     handleCopyTitle: handleCopyFocusedTitle,
     handleReload: handleReloadShortcut,
+    handleShowShortcutHelp,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -13866,6 +13875,177 @@ export function PanelTasks({
           </div>
         );
       })()}
+      {/* ⌘/ 快捷键速查 modal：列出 PanelTasks 行内 / 全局 / detail editor
+          三段主要快捷键 + 用途。Esc 关；点击 backdrop 关；onClick 阻止
+          冒泡防 modal 内部 click 误关。新 owner 第一次按 ⌘/ 即看到全
+          map 学习曲线大幅压扁。 */}
+      {shortcutHelpOpen && (
+        <div
+          onClick={() => setShortcutHelpOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setShortcutHelpOpen(false);
+            }
+          }}
+          tabIndex={-1}
+          ref={(el) => {
+            if (el && shortcutHelpOpen) el.focus();
+          }}
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.45)",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            outline: "none",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 8,
+              padding: "16px 20px",
+              maxWidth: 580,
+              width: "92%",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              fontSize: 12,
+              color: "var(--pet-color-fg)",
+              boxShadow: "0 12px 36px rgba(0,0,0,0.32)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 10,
+                paddingBottom: 8,
+                borderBottom: "1px solid var(--pet-color-border)",
+              }}
+            >
+              <span style={{ fontSize: 14, fontWeight: 600 }}>
+                ⌨️ PanelTasks 快捷键速查
+              </span>
+              <span style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={() => setShortcutHelpOpen(false)}
+                style={{
+                  fontSize: 11,
+                  padding: "2px 8px",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 3,
+                  background: "var(--pet-color-bg)",
+                  color: "var(--pet-color-muted)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                Esc 关
+              </button>
+            </div>
+            {[
+              {
+                title: "🌐 全局（跨 input 工作）",
+                items: [
+                  ["⌘F / ⌘K / `/`", "聚焦顶部搜索框"],
+                  ["⌘R", "立即刷新 task list（免等 30s tick）"],
+                  ["⌘/", "弹本快捷键速查（再按 toggle 关）"],
+                ],
+              },
+              {
+                title: "📋 任务列表（focused row 时）",
+                items: [
+                  ["↑ / ↓", "上 / 下移焦点"],
+                  ["Home / End", "跳首 / 末任务"],
+                  ["Space", "toggle 选中焦点行"],
+                  ["Enter", "展开 / 折叠任务详情"],
+                  ["Delete / Backspace", "弹取消 reason 输入（pending / error 行）"],
+                  ["d", "标 done（pending / error 行）"],
+                  ["r", "retry（error 行）"],
+                  ["p", "toggle pinned 钉住"],
+                  ["⌘D", "复制焦点行 title 到剪贴板"],
+                ],
+              },
+              {
+                title: "🆕 创建表单",
+                items: [
+                  ["n", "展开新建任务表单 + focus 标题"],
+                  ["⌘N", "弹全屏 quick-add 模态"],
+                  ["⌘⇧Enter", "创建并打开 detail editor"],
+                ],
+              },
+              {
+                title: "📝 detail.md 编辑器（焦点在 textarea 时）",
+                items: [
+                  ["⌘S", "保存"],
+                  ["⌘⇧Enter", "保存并关闭"],
+                  ["⌘D", "复制 / 重复当前行（IDE 风格）"],
+                  ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
+                  ["⌘[ / ⌘]", "上 / 下一条 task detail"],
+                  ["Esc", "取消编辑（dirty 时 armed 二次确认）"],
+                  ["Enter", "续 list marker（- / * / 1. / > 等）"],
+                ],
+              },
+            ].map((section) => (
+              <div key={section.title} style={{ marginBottom: 10 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--pet-color-muted)",
+                    fontWeight: 600,
+                    marginBottom: 4,
+                  }}
+                >
+                  {section.title}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
+                  {section.items.map(([key, desc]) => (
+                    <Fragment key={key}>
+                      <kbd
+                        style={{
+                          fontFamily: "'SF Mono', 'Menlo', monospace",
+                          fontSize: 10,
+                          padding: "1px 6px",
+                          background: "var(--pet-color-bg)",
+                          border: "1px solid var(--pet-color-border)",
+                          borderRadius: 3,
+                          color: "var(--pet-color-fg)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {key}
+                      </kbd>
+                      <span style={{ color: "var(--pet-color-muted)" }}>{desc}</span>
+                    </Fragment>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div
+              style={{
+                marginTop: 8,
+                paddingTop: 8,
+                borderTop: "1px dashed var(--pet-color-border)",
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                fontStyle: "italic",
+              }}
+            >
+              点击空白 / Esc / 「Esc 关」按钮 / 再按 ⌘/ 均可关闭
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
