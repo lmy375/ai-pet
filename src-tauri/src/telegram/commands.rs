@@ -210,6 +210,11 @@ pub enum TgCommand {
     /// "我现在给 pet 什么信号" — 若 high_negative + 还没 mute，可主
     /// 动决定"让 ta 安静会儿"。无参；多余尾部一律忽略。
     Here,
+    /// `/tag <name>` —— 列含某 #tag 的所有 task（含 status emoji + due）。
+    /// name 可带 / 不带 `#` 前缀，case-insensitive 匹配。与桌面 PanelTasks
+    /// #tag chip click filter 对偶 audit。空 name → missing-arg。无命中
+    /// → 友好兜底 + 提示 /tags 看所有可用 tag 名。
+    Tag { name: String },
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -348,6 +353,7 @@ impl TgCommand {
             TgCommand::RecentChats { .. } => "recent_chats",
             TgCommand::Aware => "aware",
             TgCommand::Here => "here",
+            TgCommand::Tag { .. } => "tag",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
@@ -372,6 +378,7 @@ impl TgCommand {
             | TgCommand::Silent { title }
             | TgCommand::Unsilent { title }
             | TgCommand::Find { keyword: title }
+            | TgCommand::Tag { name: title }
             | TgCommand::Note { text: title }
             | TgCommand::Reflect { text: title }
             | TgCommand::Show { title }
@@ -498,6 +505,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent_chats", "List recent N user ↔ pet chat exchanges from the active session (default 5, cap 20)"),
             ("aware", "Pet's current awareness snapshot: transient_note + active tasks + mood emoji + time + companionship days"),
             ("here", "Owner-side signals snapshot: transient_note + mute state + recent feedback band (counterpart to /aware)"),
+            ("tag", "List all tasks with a given #tag (exact match, case-insensitive; counterpart to /tags which lists tag names)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
@@ -552,6 +560,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent_chats", "列最近 N 条 active session 内 user ↔ pet 聊天往返（缺省 5，上限 20）"),
             ("aware", "pet 当前感知 snapshot：transient_note + active tasks + mood + 时间 + 陪伴天数"),
             ("here", "owner 视角信号 snapshot：transient_note + mute 剩余 + 最近 feedback band（与 /aware 对偶）"),
+            ("tag", "列含某 #tag 的所有 task（exact 等值；与 /tags 列 tag 名互补）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
@@ -881,6 +890,14 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "aware" => Some(TgCommand::Aware),
         // `/here` 无参；多余尾部一律忽略（与 /aware 同模板）
         "here" => Some(TgCommand::Here),
+        // `/tag <name>`：name 可带 / 不带 `#` 前缀；多余尾部一律 trim 后
+        // 用第一个 token 作 name（含空格的 tag 不合法 — 与 parse_task_tags
+        // 边界一致）。空 name → handler 走 usage hint。
+        "tag" => {
+            let raw = title.trim().trim_start_matches('#').trim();
+            let name = raw.split_whitespace().next().unwrap_or("").to_string();
+            Some(TgCommand::Tag { name })
+        }
         // `/last` 无参；多余尾部忽略
         "last" => Some(TgCommand::Last),
         // `/random` 无参；多余尾部忽略
@@ -1366,9 +1383,9 @@ pub fn format_tasks_no_change() -> String {
 pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-    "silenced", "silent_all", "markers", "tags", "mood", "whoami",
-    "today", "yesterday", "streak", "now", "aware", "here", "last",
-    "random", "sleep", "quick", "due", "recent", "recent_chats",
+    "silenced", "silent_all", "markers", "tags", "tag", "mood",
+    "whoami", "today", "yesterday", "streak", "now", "aware", "here",
+    "last", "random", "sleep", "quick", "due", "recent", "recent_chats",
     "digest", "alarms", "edit", "pri", "promote", "demote", "reflect",
     "feedback", "feedback_history", "transient", "cancel_all_error",
     "find", "show", "blocked", "snoozed", "reset", "version", "help",
@@ -1490,6 +1507,7 @@ pub fn format_help_for_topic(
         "feedback_history" => "📜 /feedback_history [N]\n\n用法：列最近 N 条 feedback_history.log 条目，含 owner 主动写的 /feedback comment + 系统自动记录的隐性反馈（回复 / 主动点掉 bubble / 👍 点赞 / 沉默忽略 / 🤔 困惑反馈）。让 owner audit 「我给 pet 留过什么 / pet 接收了哪些信号」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · HH:MM <emoji> <kind> | <excerpt>\n\nkind emoji 映射：\n  ✅ replied · 👍 liked · 💬 comment · 🙉 ignored · 👋 dismissed · 🤔 puzzled\n\n示例：\n  /feedback_history\n  /feedback_history 10\n  /feedback_history 20\n\n相关：/feedback（写新条目）；R7 cooldown adapter / R28 chip 用 feedback_history 调整 pet 主动开口频率与语气 — 本命令是回看 pet 接收的训练信号。",
         "silent_all" => "⏸ /silent_all [minutes]\n\n用法：批量给所有 butler_tasks pending 任务加 [silent] marker N 分钟，N 后 backend tokio timer 自动撤回。让 owner 开会 / 集中写文档 1 小时挡住 task picker — pet 仍可主动聊天，只是不会主动派任务（如「我看你 Downloads 该整理了」之类）。minutes 缺省 60；0 = 立即解除当前 active 窗口（与 /mute 0 同协议）；clamp 0..=10080（≤ 7 天）。\n\n示例：\n  /silent_all       （默认 60 分钟）\n  /silent_all 30    （半小时）\n  /silent_all 120   （2 小时）\n  /silent_all 0     （立即解除）\n\n对比：/mute（让 pet 整体不开口）；/silent <title>（单条 silent）；本命令是批量临时 + 自动撤回。\n\n限制：app restart 会丢 timer，markers 留在原地 —— 重启后用 /silent_all 重启窗口或 /silent_all 0 手动清理（实现注：与桌面 PanelMemory「⏸ 全部 silent 1h」按钮使用 frontend timer 路径独立，两个 surface 不共享状态）。",
         "alarms" => "⏰ /alarms [N]\n\n用法：列最近 N 条 todo 段 pending reminders（含 `[remind: HH:MM]` / `[remind: YYYY-MM-DD HH:MM]` 协议条目），含目标时刻 + 剩余分钟 / 已逾期分钟。按 target 升序排（最近 fire 在前）。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · MM-DD HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n\n示例：\n  /alarms\n  /alarms 10\n\n如何创建 alarm：\n  · 桌面 PanelMemory 任意 item ⏰ chip → 选 5/15/30 min preset（iter #372）\n  · 直接 /task `[remind: 18:00] 准备会议材料`（写入 todo 类目）\n  · LLM 用 todo_edit 工具自动创建（owner 说「30 分钟后提醒我喝水」时）\n\n触发后：proactive 扫到 due → ChatMini 软提醒；Absolute 条目 24h 后 consolidate sweep 自动清扫 stale。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「我设了哪些 alarm，何时到点」audit 入口。",
+        "tag" => "🏷 /tag <name>\n\n用法：列含某 #tag 的所有 task — status emoji + title + 紧凑 due（MM-DD HH:MM）。name 可带 / 不带 `#` 前缀，case-insensitive exact 等值匹配（与 /find 子串搜正交 — /find 在 title / description 内含部分字也算命中，/tag 仅匹配完整 tag token）。pending / error 先列，其次 done / cancelled；至多前 20 条 + overflow hint。\n\n示例：\n  /tag 工作\n  /tag #urgent\n  /tag 健身\n\n相关：/tags 看本聊天用过的所有 tag 名 + 各任务数（top 15）；/find <keyword> 子串搜任务标题 + 描述（不限 tag）；桌面 PanelTasks #tag chip click 同 filter 视图。",
         "here" => "🧑 /here\n\n用法：owner 视角 dump 当前留给 pet 的状态信号 — transient_note（临时指示）+ mute（静音剩余）+ 最近 feedback band（high_negative / low_negative / mid / insufficient_samples + 当前 cooldown factor）。让 owner audit 「我现在给 pet 什么信号、pet cooldown 会因此被放大 / 缩小多少」— 比如发现 high_negative 但还没 mute 时可主动 /sleep。无参；多余尾部忽略。\n\n输出格式：\n  🧑 当前 owner 信号：\n  📝 transient_note: 「<text>」（剩 N 分钟）/ 未设\n  🔕 mute: 剩 N 分钟 / 未静音\n  💬 最近 feedback band: <label> · <cooldown factor 说明>\n\n示例：\n  /here\n\n对比 /aware：那个看 pet 感知到的（transient + tasks + mood + 时间 + 陪伴），本命令看 owner 输入侧（transient + mute + feedback band） — 两命令配合 audit「我说啥 → pet 看啥 → pet 怎么反应」全链路。\n\n相关：/transient（写 transient_note）；/mute（设静音 / 解除）；/feedback_history（看具体反馈条目，本命令仅显聚合 band）。",
         "aware" => "🐾 /aware\n\n用法：pet 自述当前感知到的上下文 — transient_note（owner 留下的临时指示）+ active butler_tasks 数 + 当前 mood（emoji + 文本）+ 当前时间 + 陪伴天数。无参；多余尾部忽略。一句话 debug 「pet 为啥没主动开口 / 选了那条 task」。\n\n输出格式：\n  🐾 当前感知：\n  📝 transient_note: 「<text>」（剩 N 分钟） / 无\n  📋 active tasks: N 条\n  ☁ mood: <emoji> <text>\n  🕐 当前: YYYY-MM-DD HH:MM (+08:00) · 陪伴 N 天\n\n示例：\n  /aware\n\n对比：/now（仅时间 + mood emoji，最简）；/whoami（多行画像 + 自我介绍长文）；本命令是「pet 当前感知 snapshot」中等粒度，含 transient_note 这条调度关键信号。\n\n相关：/here（owner 视角对偶 — 看 owner 输入了哪些信号）；/transient（写 transient_note）；/feedback_history（看 pet 接收的训练信号）。",
         "recent_chats" => "💬 /recent_chats [N]\n\n用法：列最近 N 条 active session 内 user ↔ pet 聊天往返（仅 user / assistant items，跳过 tool_call / 系统行）。手机端回顾上下文 — owner 想「我刚才让 pet 做啥来着」一句话查回桌面 ChatMini 滚动太累时用。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  💬 最近 N 条 chat · 会话「<title>」最近活动 MM-DD HH:MM：\n  🧑 <user excerpt>\n  🐾 <pet excerpt>\n  ...\n\nexcerpt cap 80 字；超长 + …。\n\n注：per-msg ts 不在后端 schema 里，仅 session 级 updated_at 一并呈现（「最近活动」信号）。pet 桌面 reset session 时本命令也会看到新空 session 提示。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「最近 chat 上下文」audit 入口。",
@@ -1565,6 +1583,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/recent_chats [N]  —  列最近 N 条 active session 内 user ↔ pet 聊天往返（缺省 5，上限 20）".to_string(),
         "/aware  —  pet 当前感知 snapshot（transient_note + active tasks + mood + 时间 + 陪伴）".to_string(),
         "/here  —  owner 视角信号 snapshot（transient_note + mute + 最近 feedback band，与 /aware 对偶）".to_string(),
+        "/tag <name>  —  列含某 #tag 的所有 task（exact 等值，case-insensitive；与 /tags 列 tag 名互补）".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
@@ -2301,6 +2320,81 @@ pub fn format_find_reply(
         out.push_str(&format!(
             "\n…还有 {} 条命中（关键词太宽？试更精确的词）",
             hits.len() - cap
+        ));
+    }
+    out
+}
+
+/// `/tag <name>` 命令回复文案。pure：在 views（已 chat-scoped）里找
+/// tags 数组含 `name`（case-insensitive，full-token 等值）的 task。
+/// 输出 status emoji + title + due（如有）。与 /find（子串搜）正交 —
+/// /tag 是精确 tag 等值匹配。
+///
+/// 空 name → usage hint。无命中 → 友好兜底 + 推 /tags 看可用 tag。
+pub fn format_tag_reply(
+    views: &[crate::task_queue::TaskView],
+    name: &str,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let kw = name.trim();
+    if kw.is_empty() {
+        return "🏷 用法：/tag <name>\n列含某 #tag 的所有 task（含 / 不含 `#` 前缀都接受，case-insensitive）。\n例：/tag 工作 / /tag #urgent / /tag 健身\n\n相关：/tags 看本聊天用过的所有 tag + 各自任务数。"
+            .to_string();
+    }
+    let kw_lower = kw.to_lowercase();
+    let mut hits: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| {
+            v.tags
+                .iter()
+                .any(|t| t.to_lowercase() == kw_lower)
+        })
+        .collect();
+    // pending / error 先（owner 当下更可能想 audit 活跃任务），其次
+    // done / cancelled。同状态保 views 原序（视图已 compare_for_queue）。
+    let status_rank = |s: &TaskStatus| match s {
+        TaskStatus::Pending => 0u8,
+        TaskStatus::Error => 1,
+        TaskStatus::Done => 2,
+        TaskStatus::Cancelled => 3,
+    };
+    hits.sort_by_key(|v| status_rank(&v.status));
+    if hits.is_empty() {
+        return format!(
+            "🏷 没有任务带 #{}。\n试 /tags 看本聊天用过的所有 tag + 各自任务数。",
+            kw
+        );
+    }
+    let cap = 20;
+    let shown = &hits[..hits.len().min(cap)];
+    let mut out = format!("🏷 #{} 命中 {} 条：", kw, hits.len());
+    for v in shown {
+        let emoji = match v.status {
+            TaskStatus::Pending => "🟢",
+            TaskStatus::Error => "⚠️",
+            TaskStatus::Done => "✅",
+            TaskStatus::Cancelled => "🚫",
+        };
+        let due_part = match &v.due {
+            Some(d) if !d.is_empty() => {
+                // "YYYY-MM-DDTHH:MM" → "MM-DD HH:MM" 紧凑
+                let short = if d.len() >= 16 {
+                    format!("{} {}", &d[5..10], &d[11..16])
+                } else {
+                    d.clone()
+                };
+                format!(" · ⏰ {}", short)
+            }
+            _ => String::new(),
+        };
+        out.push_str(&format!("\n{} {}{}", emoji, v.title, due_part));
+    }
+    if hits.len() > cap {
+        out.push_str(&format!(
+            "\n…还有 {} 条带本 tag（共 {} 条，本行仅显前 {}）",
+            hits.len() - cap,
+            hits.len(),
+            cap
         ));
     }
     out
@@ -4373,8 +4467,8 @@ mod tests {
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
-            "cancel_all_error", "find", "show", "blocked", "snoozed",
-            "reset", "version", "help",
+            "tag", "cancel_all_error", "find", "show", "blocked",
+            "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4843,7 +4937,7 @@ mod tests {
             "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
             "feedback_history", "transient", "silent_all", "alarms",
             "recent_chats", "aware", "here", "cancel_all_error", "show",
-            "tags", "reset", "version", "help",
+            "tags", "tag", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -8548,6 +8642,132 @@ mod tests {
         let s = format_here_reply(None, None, "unknown_label_xyz");
         assert!(s.contains("insufficient_samples"), "{s}");
         assert!(s.contains("样本不足"), "{s}");
+    }
+
+    // -------- /tag parse + format --------
+
+    #[test]
+    fn tag_parses_bare_name() {
+        assert_eq!(
+            parse_tg_command("/tag 工作"),
+            Some(TgCommand::Tag {
+                name: "工作".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn tag_parses_hash_prefix_stripped() {
+        // `#` 前缀允许 — 与桌面 PanelTasks #tag chip 同输入风格
+        assert_eq!(
+            parse_tg_command("/tag #urgent"),
+            Some(TgCommand::Tag {
+                name: "urgent".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn tag_parses_trailing_garbage_ignored() {
+        // 第二个 token 起一律忽略（与 parse_task_tags 无空格 tag 边界一致）
+        assert_eq!(
+            parse_tg_command("/tag 工作 extra trash"),
+            Some(TgCommand::Tag {
+                name: "工作".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn tag_parses_empty_name() {
+        assert_eq!(
+            parse_tg_command("/tag"),
+            Some(TgCommand::Tag {
+                name: String::new()
+            })
+        );
+        // 仅 `#` 前缀 + 空白 → 空 name（handler 走 usage hint）
+        assert_eq!(
+            parse_tg_command("/tag #"),
+            Some(TgCommand::Tag {
+                name: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn tag_reply_empty_name_shows_usage_hint() {
+        let s = format_tag_reply(&[], "");
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/tag <name>"), "{s}");
+        assert!(s.contains("/tags"), "show tag-list cross-ref: {s}");
+    }
+
+    #[test]
+    fn tag_reply_no_hits_shows_bootstrap() {
+        let views = vec![view_with_tags("a", &["健身"])];
+        let s = format_tag_reply(&views, "读书");
+        assert!(s.contains("没有任务带 #读书"), "{s}");
+        assert!(s.contains("/tags"), "推荐 /tags: {s}");
+    }
+
+    #[test]
+    fn tag_reply_lists_matching_tasks_with_status_emoji() {
+        let views = vec![
+            view_with_tags("健身 morning", &["健身", "晨练"]),
+            view_with_tags("读书", &["读书"]),
+            view_with_tags("健身 evening", &["健身"]),
+        ];
+        let s = format_tag_reply(&views, "健身");
+        assert!(s.contains("#健身 命中 2 条"), "{s}");
+        assert!(s.contains("🟢"), "pending emoji: {s}");
+        assert!(s.contains("健身 morning"), "{s}");
+        assert!(s.contains("健身 evening"), "{s}");
+        assert!(!s.contains("读书"), "should not include 读书: {s}");
+    }
+
+    #[test]
+    fn tag_reply_case_insensitive_match() {
+        let views = vec![view_with_tags("a", &["URGENT"])];
+        let s = format_tag_reply(&views, "urgent");
+        assert!(s.contains("#urgent 命中 1 条"), "{s}");
+        // tag 数组里 raw 是 URGENT，但 caller 输 urgent —— exact lower-case
+        // 比较应该命中。
+    }
+
+    #[test]
+    fn tag_reply_pending_before_done() {
+        let mut v_done = view_with_tags("done-a", &["x"]);
+        v_done.status = crate::task_queue::TaskStatus::Done;
+        let v_pending = view_with_tags("pending-a", &["x"]);
+        let views = vec![v_done.clone(), v_pending];
+        let s = format_tag_reply(&views, "x");
+        // pending 应在 done 之前（status_rank sort）
+        let p_idx = s.find("pending-a").unwrap();
+        let d_idx = s.find("done-a").unwrap();
+        assert!(p_idx < d_idx, "pending before done: {s}");
+    }
+
+    #[test]
+    fn tag_reply_includes_due_label() {
+        let mut v = view_with_tags("with-due", &["urgent"]);
+        v.due = Some("2026-05-20T14:30".to_string());
+        let s = format_tag_reply(&[v], "urgent");
+        assert!(s.contains("05-20 14:30"), "compact due display: {s}");
+    }
+
+    #[test]
+    fn tag_reply_overflow_hint_above_20() {
+        let mut views = Vec::new();
+        for i in 0..25 {
+            views.push(view_with_tags(
+                &format!("task-{}", i),
+                &["bulk"],
+            ));
+        }
+        let s = format_tag_reply(&views, "bulk");
+        assert!(s.contains("#bulk 命中 25 条"), "{s}");
+        assert!(s.contains("还有 5 条带本 tag"), "overflow: {s}");
     }
 
     // -------- /show parse + format --------
