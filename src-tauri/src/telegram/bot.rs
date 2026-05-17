@@ -786,6 +786,17 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Random => {
+            // 随机抽 active 任务：system time nanos 当 seed 拿非确定性。
+            // formatter 走 `seed % candidates.len()` 索引选一条。read path
+            // 同 /last / /tasks（已 chat-scoped）。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as usize)
+                .unwrap_or(0);
+            crate::telegram::commands::format_random_reply(&views, seed)
+        }
         TgCommand::Last => {
             // 闪查最近创建：reuse read_tg_chat_task_views（已 chat-scoped）。
             // formatter 内部 max_by created_at + 截 raw 预览。本地 now 注入
