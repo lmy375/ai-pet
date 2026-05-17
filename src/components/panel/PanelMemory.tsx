@@ -4840,6 +4840,98 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             ✏️
                           </button>
                         )}
+                        {/* 🔀 切 every ↔ once：仅 every / once 两个 kind 互
+                            换（every_weekdays / deadline 走 ✏️ 改 schedule
+                            重路径）。every → once：next-fire 选今 / 明 HH:MM
+                            （今日 HH:MM 已过则跳明日）。once → every：保
+                            HH:MM 丢日期。一键切，不必走 modal。 */}
+                        {catKey === "butler_tasks" &&
+                          parsed &&
+                          (parsed.schedule.kind === "every" ||
+                            parsed.schedule.kind === "once") &&
+                          (() => {
+                            const s = parsed.schedule;
+                            const isEvery = s.kind === "every";
+                            const hh = String(s.hour).padStart(2, "0");
+                            const mm = String(s.minute).padStart(2, "0");
+                            return (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  let newPrefix: string;
+                                  if (isEvery) {
+                                    // every → once：算 next-fire（今 / 明
+                                    // HH:MM；今日已过点则跳明日）让 owner
+                                    // 不必再开 modal 选日期。
+                                    const now = new Date();
+                                    const candidate = new Date(
+                                      now.getFullYear(),
+                                      now.getMonth(),
+                                      now.getDate(),
+                                      s.hour,
+                                      s.minute,
+                                      0,
+                                    );
+                                    if (
+                                      candidate.getTime() <= now.getTime()
+                                    ) {
+                                      candidate.setDate(
+                                        candidate.getDate() + 1,
+                                      );
+                                    }
+                                    const yyyy = candidate.getFullYear();
+                                    const mo = String(
+                                      candidate.getMonth() + 1,
+                                    ).padStart(2, "0");
+                                    const dd = String(
+                                      candidate.getDate(),
+                                    ).padStart(2, "0");
+                                    newPrefix = `[once: ${yyyy}-${mo}-${dd} ${hh}:${mm}]`;
+                                  } else {
+                                    // once → every：保 HH:MM 丢日期
+                                    newPrefix = `[every: ${hh}:${mm}]`;
+                                  }
+                                  const newDesc = `${newPrefix} ${parsed.topic}`;
+                                  try {
+                                    await invoke<string>("memory_edit", {
+                                      action: "update",
+                                      category: "butler_tasks",
+                                      title: item.title,
+                                      description: newDesc,
+                                      detailContent: null,
+                                    });
+                                    await loadIndex();
+                                    setMessage(
+                                      `🔀 已切 ${isEvery ? "every → once" : "once → every"}：${newPrefix}`,
+                                    );
+                                  } catch (e) {
+                                    setMessage(`切换失败：${e}`);
+                                  }
+                                  setTimeout(() => setMessage(""), 3500);
+                                }}
+                                title={
+                                  isEvery
+                                    ? `把 every 改成 once — 用今 / 明 HH:MM 自动算 next-fire（今日 ${hh}:${mm} 已过则跳明日）。想精挑日期走 ✏️。`
+                                    : `把 once 改成 every — 保 ${hh}:${mm} 丢日期，下次开始每天此时刻触发。`
+                                }
+                                aria-label="swap every and once"
+                                style={{
+                                  fontSize: 10,
+                                  lineHeight: 1,
+                                  padding: "1px 5px",
+                                  borderRadius: 3,
+                                  border:
+                                    "1px solid var(--pet-color-border)",
+                                  background: "var(--pet-color-card)",
+                                  color: "var(--pet-color-muted)",
+                                  cursor: "pointer",
+                                  fontFamily: "inherit",
+                                }}
+                              >
+                                🔀
+                              </button>
+                            );
+                          })()}
                         {/* ⏰ 下次触发倒计时 chip：每分钟刷一下显距离 next
                             fire 还有多久（tickNow 每 60s 自增）。仅有 parsed
                             schedule 的 butler 任务才显。every 下次 = 今 / 明
