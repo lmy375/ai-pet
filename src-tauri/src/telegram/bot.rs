@@ -722,6 +722,13 @@ async fn handle_tg_command(
                 .collect();
             crate::telegram::commands::format_pinned_tasks_list(&views)
         }
+        TgCommand::PinnedDue => {
+            // read 路径与 /pinned / /silenced 同；formatter 内部 filter
+            // active + pinned + due.is_some() + sort by due asc。本 handler
+            // 只过 chat-scope，formatter 做剩余过滤让单测稳定。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_pinned_due_reply(&views)
+        }
         TgCommand::Silenced => {
             // 与 /pinned 同模板：read_tg_chat_task_views + raw_description 含
             // [silent] marker 过滤。format_silenced_tasks_list 分状态分组渲染。

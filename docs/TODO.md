@@ -11,7 +11,6 @@
 - ChatMini 加「📌 view marks」popover：读 markedMessages sel-* 项 + 每 mark 显时间戳 chip + click 删 — own marks 浏览入口。
 - PanelTasks 顶部加「⏱ 平均完成耗时」chip：扫近 30 天 done task 算 created→updated 平均 hours，量化通量。
 - detail.md 编辑器 ⌘` markdown shortcut：选区 wrap 代码块（` ``` ... ``` `），与 ⌘B / ⌘I / ⌘K 同模板。
-- TG bot `/pinned_due` 命令：列同时 pinned + 含 due 的 active task — owner 紧急关注的高优截止清单 audit。
 - PanelMemory item 加「📋 复制 inline ref」按钮：生成 `[[cat/title]]` 形式 markdown ref 复制 — owner 在其他 detail.md 内交叉引用。
 - PanelTasks task 右键菜单加「📑 复制为新 task」：复 description + detail.md 到 auto -copy-N（与 PanelMemory iter #405 对偶）。
 
