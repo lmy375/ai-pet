@@ -291,6 +291,13 @@ pub enum TgCommand {
     /// （列被卡的）对偶。空 title → handler 走 missing-arg；title resolve 三
     /// 层（数字 index → fuzzy → 错误候选）与 /done /cancel /show 同源。
     Forks { title: String },
+    /// `/blocked_by <title>` —— 单条 task 的 blocker audit：列 title 的
+    /// `[blockedBy: ...]` markers 中**仍未解决**的 blocker（即仍 active
+    /// 的引用对象）。与 /blocked（全 chat 视图）对比 — 那个跨任务列所
+    /// 有被卡的，本命令聚焦单条「我这条卡在等什么」。与 /forks 反向 —
+    /// /forks 列「谁等我」，/blocked_by 列「我等谁」。空 title → handler
+    /// 走 missing-arg；title resolve 三层。
+    BlockedBy { title: String },
     /// `/snoozed` —— 列出本 chat 派单中当前在 `[snooze: …]` 中的 task + 显
     /// 还多久醒。与 /silenced / /pinned 对偶。无参；多余尾部忽略。owner 想
     /// audit "我哪些任务被暂存了 / 还多久回到队列" 用。
@@ -541,6 +548,7 @@ impl TgCommand {
             TgCommand::Find { .. } => "find",
             TgCommand::Blocked => "blocked",
             TgCommand::Forks { .. } => "forks",
+            TgCommand::BlockedBy { .. } => "blocked_by",
             TgCommand::Snoozed => "snoozed",
             TgCommand::Mute { .. } => "mute",
             TgCommand::Note { .. } => "note",
@@ -601,6 +609,7 @@ impl TgCommand {
             | TgCommand::Show { title }
             | TgCommand::Timeline { title }
             | TgCommand::Forks { title }
+            | TgCommand::BlockedBy { title }
             | TgCommand::Quick { text: title }
             | TgCommand::Pri { title, .. }
             | TgCommand::EditDue { title, .. }
@@ -748,6 +757,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
+            ("blocked_by", "Focused: list unresolved blockers that <title> is waiting on"),
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
             ("note", "Save arbitrary text as a general memory item (quick brain-dump)"),
@@ -812,6 +822,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
+            ("blocked_by", "单条 audit：列 title 仍未解决的 blockers（与 /forks 反向 — 我在等谁）"),
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
             ("note", "把任意文本作 general memory item 存（owner 随手记一笔）"),
@@ -1084,6 +1095,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // title 由 handler 走 missing-argument。反向 blockedBy 扫描在
         // formatter 端做（pure），parser 仅切 title。
         "forks" => Some(TgCommand::Forks { title }),
+        // `/blocked_by <title>`：与 /forks 同 single-title 模板，单条
+        // 反向 audit。snake_case 避开 dash drift-defense。
+        "blocked_by" => Some(TgCommand::BlockedBy { title }),
         // `/task <title>`：单数，创建。空 title 由 handler 走 missing-argument。
         // 注意先于 `tasks` 判断不必要 — split 已按 token 边界切分，"task" 与
         // "tasks" 是两个独立 token。可选 `!!` / `!!!` 前缀映射 P5 / P7。
@@ -1724,7 +1738,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
     "cancel_all_error", "promote_all_p7", "find", "show", "timeline",
-    "blocked", "forks", "snoozed", "reset", "version", "help",
+    "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1866,7 +1880,8 @@ pub fn format_help_for_topic(
         "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）；/forks <title>（反向：哪些 task 在等这条解锁）。",
-        "forks" => "🔱 /forks <title>\n\n用法：反向 audit — 列出本 chat 派单中所有 active task（pending / error）的 description 含 `[blockedBy: <title>]` marker 的，让 owner 知道「这条 task 解锁后会让谁动起来」。与 /blocked（列被卡的）对偶。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /forks 整理 Downloads\n  /forks 1  （/tasks 输出第 1 条）\n\n输出格式：\n  🔱 解锁「<title>」会松开 N 条 task：\n  🟢 fork_a\n  ⚠️ fork_b\n\n无引用 → 「解锁这条不会影响其它 task」友好兜底。让 owner 在决定是否优先做某条 blocker 时，看到「这条做完会让谁动起来」做出更明智的优先级判断。",
+        "forks" => "🔱 /forks <title>\n\n用法：反向 audit — 列出本 chat 派单中所有 active task（pending / error）的 description 含 `[blockedBy: <title>]` marker 的，让 owner 知道「这条 task 解锁后会让谁动起来」。与 /blocked（列被卡的）对偶。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /forks 整理 Downloads\n  /forks 1  （/tasks 输出第 1 条）\n\n输出格式：\n  🔱 解锁「<title>」会松开 N 条 task：\n  🟢 fork_a\n  ⚠️ fork_b\n\n无引用 → 「解锁这条不会影响其它 task」友好兜底。让 owner 在决定是否优先做某条 blocker 时，看到「这条做完会让谁动起来」做出更明智的优先级判断。\n\n相关：/blocked_by <title>（反向 — 我在等谁）。",
+        "blocked_by" => "🔒 /blocked_by <title>\n\n用法：单条 audit — 列出 title 的 `[blockedBy: ...]` markers 中**仍未解决**的 blocker（即引用对象仍处于 active = pending / error 状态）。已 done / cancelled 的 blocker 视作已解决跳过。\n\n与 /forks 反向：那个列「谁等我」（解锁 title 后谁会动起来），本命令列「我等谁」（title 卡在等什么）。与 /blocked（全 chat audit）对比 — 那个跨任务列所有被卡的，本命令聚焦单条。\n\n空 title → usage hint；title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  🔒 「<title>」被 N 条 blocker 卡住（共 M 条 marker / N 仍未解决）：\n  🟢 blocker_a\n  ⚠️ blocker_b\n\n所有 blocker 均已解决 → 「✨ 「<title>」的 M 条 blocker 均已解决 — 可以推进了」。无 blockedBy markers → 「不在等任何 blocker」。\n\n示例：\n  /blocked_by 写决策文档\n  /blocked_by 1   （/tasks 输出第 1 条）\n\n相关：/forks <title>（反向 — 谁等我）；/blocked（全 chat audit）；/show（看 raw description 含全部 markers）。",
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
         "reset" => "🔄 /reset\n\n用法：清掉 LLM 对话上下文（保留 system / 人设）。无 armed 二次确认（与桌面 `/clear` 不同 — 不同设备 / 多用户文化）。\n\n示例：\n  /reset",
         "version" => "🐾 /version\n\n用法：查看 pet app 版本 + SQLite schema 版本。无参。bug report 写「什么版本」用。\n\n示例：\n  /version",
@@ -1945,6 +1960,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
+        "/blocked_by <title>  —  单条 audit：title 仍未解决的 blockers（与 /forks 反向 — 我在等谁）".to_string(),
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
         "/note <text>  —  把任意文本作 general memory item 存（随手记一笔）".to_string(),
@@ -2996,6 +3012,83 @@ pub fn format_forks_reply(
             _ => "·",
         };
         out.push_str(&format!("\n{} {}", icon, title));
+    }
+    out
+}
+
+/// `/blocked_by <title>` 命令回复文案。pure：找 title 对应的 view +
+/// 列其 blocked_by markers 中**仍未解决**的 blocker（即 blocker 在
+/// active 集合中 — 已 done / cancelled 的 blocker 视作已解决跳过）。
+///
+/// 与 /forks 反向 — /forks 列「谁等我」（owner 解锁 title 后谁会
+/// 动起来）；/blocked_by 列「我等谁」（title 卡在等什么）。与
+/// /blocked（全 chat audit）对比 — 那个跨任务列所有被卡的，本命令
+/// 聚焦单条。
+///
+/// 状态机：
+/// - 空 target_title → defensive usage hint（caller 已用 missing-arg
+///   兜底；这里防御性覆盖）
+/// - target 在 views 找不到 → "task 不存在"错误（caller resolve 失败）
+/// - target blocked_by 为空 → "无 blockedBy markers — 这条不在等谁"
+/// - target blocked_by 全部已解决 → "所有 blocker 已解决 ✨"
+/// - 有未解决 blocker → 列表显
+pub fn format_blocked_by_reply(
+    views: &[crate::task_queue::TaskView],
+    target_title: &str,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let target = target_title.trim();
+    if target.is_empty() {
+        return "🔒 用法：/blocked_by <title>\n\n单条 audit：title 卡在等什么 active blocker。".to_string();
+    }
+    let Some(target_view) = views.iter().find(|v| v.title == target) else {
+        return format!("🔒 没找到 task「{}」。", target);
+    };
+    if target_view.blocked_by.is_empty() {
+        return format!(
+            "🔒 「{}」无 `[blockedBy: ...]` markers — 这条不在等任何 blocker。",
+            target
+        );
+    }
+    // active 集合用于 unresolved 判定。task_view 含 done / cancelled
+    // — 仅 Pending / Error 视作活跃 blocker。
+    let active: std::collections::HashSet<&str> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Pending | TaskStatus::Error))
+        .map(|v| v.title.as_str())
+        .collect();
+    let unresolved: Vec<&str> = target_view
+        .blocked_by
+        .iter()
+        .filter(|b| active.contains(b.trim()))
+        .map(|s| s.as_str())
+        .collect();
+    if unresolved.is_empty() {
+        let total = target_view.blocked_by.len();
+        return format!(
+            "✨ 「{}」的 {} 条 blocker 均已解决 — 可以推进了。",
+            target, total
+        );
+    }
+    let mut out = format!(
+        "🔒 「{}」被 {} 条 blocker 卡住（共 {} 条 marker / {} 仍未解决）：",
+        target,
+        unresolved.len(),
+        target_view.blocked_by.len(),
+        unresolved.len()
+    );
+    for b in &unresolved {
+        // active 集合命中 → 对应 view 必存在；status emoji 根据 status 选
+        let icon = views
+            .iter()
+            .find(|v| v.title == b.trim())
+            .map(|v| match v.status {
+                TaskStatus::Pending => "🟢",
+                TaskStatus::Error => "⚠️",
+                _ => "·",
+            })
+            .unwrap_or("·");
+        out.push_str(&format!("\n{} {}", icon, b));
     }
     out
 }
@@ -5397,7 +5490,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "edit_due", "cancel_all_error", "promote_all_p7", "find",
-            "show", "timeline", "blocked", "forks", "snoozed", "reset",
+            "show", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -5868,8 +5961,8 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "show", "timeline", "forks", "tags", "tag",
-            "reset", "version", "help",
+            "promote_all_p7", "show", "timeline", "forks", "blocked_by",
+            "tags", "tag", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -7666,6 +7759,95 @@ mod tests {
         // 是自环也算"会被松开"）。这条测试就是 pin 这种边缘情况的当前
         // 行为 — 不静默 broken。
         assert!(s.contains("会松开 1 条"), "self-loop counted (current behavior): {s}");
+    }
+
+    // -------- /blocked_by parse + format --------
+
+    #[test]
+    fn blocked_by_parser_takes_all_args_as_title() {
+        assert_eq!(
+            parse_tg_command("/blocked_by 写决策文档"),
+            Some(TgCommand::BlockedBy {
+                title: "写决策文档".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn blocked_by_parser_empty_title_parses() {
+        assert_eq!(
+            parse_tg_command("/blocked_by"),
+            Some(TgCommand::BlockedBy {
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn blocked_by_reply_empty_target_shows_usage() {
+        let s = format_blocked_by_reply(&[], "");
+        assert!(s.contains("用法"), "{s}");
+    }
+
+    #[test]
+    fn blocked_by_reply_target_not_found() {
+        let v = view("别人", 0, None, TaskStatus::Pending, None);
+        let s = format_blocked_by_reply(&[v], "不存在");
+        assert!(s.contains("没找到"), "{s}");
+    }
+
+    #[test]
+    fn blocked_by_reply_target_no_blockers_marker() {
+        let v = view("孤立 task", 0, None, TaskStatus::Pending, None);
+        let s = format_blocked_by_reply(&[v], "孤立 task");
+        assert!(s.contains("无 `[blockedBy"), "{s}");
+        assert!(s.contains("不在等任何"), "{s}");
+    }
+
+    #[test]
+    fn blocked_by_reply_all_blockers_resolved() {
+        // target 的 blockers 已全 done / cancelled → ✨ 提示
+        let mut target = view("写决策文档", 0, None, TaskStatus::Pending, None);
+        target.blocked_by = vec!["调研".to_string(), "审批".to_string()];
+        let done_blocker = view("调研", 0, None, TaskStatus::Done, Some("ok"));
+        let cancelled_blocker = view("审批", 0, None, TaskStatus::Cancelled, Some("drop"));
+        let s = format_blocked_by_reply(
+            &[target, done_blocker, cancelled_blocker],
+            "写决策文档",
+        );
+        assert!(s.contains("✨"), "{s}");
+        assert!(s.contains("均已解决"), "{s}");
+        assert!(s.contains("2 条 blocker"), "total count: {s}");
+    }
+
+    #[test]
+    fn blocked_by_reply_lists_unresolved_with_icons() {
+        let mut target = view("写决策文档", 0, None, TaskStatus::Pending, None);
+        target.blocked_by =
+            vec!["调研".to_string(), "等审批".to_string(), "done blocker".to_string()];
+        let pending_blocker = view("调研", 0, None, TaskStatus::Pending, None);
+        let error_blocker = view("等审批", 0, None, TaskStatus::Error, Some("err"));
+        let done_blocker = view("done blocker", 0, None, TaskStatus::Done, Some("ok"));
+        let s = format_blocked_by_reply(
+            &[target, pending_blocker, error_blocker, done_blocker],
+            "写决策文档",
+        );
+        assert!(s.contains("被 2 条 blocker 卡住"), "active count: {s}");
+        assert!(s.contains("共 3 条 marker"), "total marker count: {s}");
+        assert!(s.contains("🟢 调研"), "pending icon: {s}");
+        assert!(s.contains("⚠️ 等审批"), "error icon: {s}");
+        // done blocker 不渲（被视作已解决）
+        assert!(!s.contains("done blocker"), "done excluded: {s}");
+    }
+
+    #[test]
+    fn blocked_by_reply_trim_matches_blocker_titles() {
+        let mut target = view("a", 0, None, TaskStatus::Pending, None);
+        target.blocked_by = vec!["  调研  ".to_string()]; // 含周围空白
+        let blocker = view("调研", 0, None, TaskStatus::Pending, None);
+        let s = format_blocked_by_reply(&[target, blocker], "a");
+        assert!(s.contains("被 1 条 blocker 卡住"), "trim matched: {s}");
+        assert!(s.contains("调研"), "{s}");
     }
 
     // -------- /snoozed parse + format --------

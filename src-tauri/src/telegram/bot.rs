@@ -1068,6 +1068,26 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::BlockedBy { title } => {
+            // 单条 audit：title 在等谁。3 层 title resolve 与 /forks 同源。
+            // formatter 读 target view 的 blocked_by + filter 仍 active 的
+            // blocker 集合。
+            if title.trim().is_empty() {
+                format_missing_argument("blocked_by")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        crate::telegram::commands::format_blocked_by_reply(&views, &t)
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Snoozed => {
             // 当前 [snooze: ...] 中的 task 清单。read 路径与 /pinned /
             // /silenced 同；TaskView.snoozed_until 已由 build_task_view
