@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory item description 输 `#` 时弹既有 tag 补全 popover：与 iter #390 PanelTasks 搜索框对偶 — 让 owner 在写 memory 时也享受 tag 自动补全免敲错。
 - ChatMini ambient hint 行 chip click → 跳 PanelDebug 对应卡片：iter #383 hint 只显数字，click 应 deep-link 到详情（开 panel + 切对应 tab + 滚到位）。
 - pet ctx menu 加「🔄 重启 LLM 连接」：调试 LLM 卡死场景一键 reset chat HTTP client（与既有 reconnect_mcp 同模式但针对 chat backend）。
 
