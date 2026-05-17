@@ -10,7 +10,6 @@
 
 - speech_history.log entry 扩展记 per-speech feedback_band + cooldown_factor + mode：让 iter #384 的 PanelDebug ⏰ chip 真正能显"为何开口"（"何时"半边已就绪，缺数据源）。
 - PanelTasks 输入框输 `#` 时弹既有 tag 自动补全 popover：与 detail.md `@` task title 补全 popover 对偶 — 按当前 visibleTasks tags 频次排序。
-- ChatMini 长 assistant reply（> 2000 字）加「📑 折叠 / 展开」按钮：默认折到 400 字 + …，避免单条长 reply 挤压可见区。
 
 
 
