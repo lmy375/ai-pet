@@ -513,6 +513,79 @@ export function ChatPanel({ onSend, isLoading }: Props) {
               display: "block",
             }}
           />
+          {/* 📋 paste-as-plain 按钮：从剪贴板读文本 + normalize
+              （smart quotes → ASCII / NBSP / 零宽字符 / em-dash → ASCII
+              -）后插光标位置。让 owner 从 Word / Notion / 飞书等 rich-
+              text 源粘贴时去 unicode artifacts 污染。与 detail.md
+              ⌘⇧V 同 normalize 规则（PanelTasks handleDetailPastePlainText）。
+              clipboard 读失败 silent fallback（owner 可用 native ⌘V）。
+              位置 right: 36（💡 在 right: 8，左移 32px 让两按钮不重）。 */}
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={async (e) => {
+              e.stopPropagation();
+              let text: string;
+              try {
+                text = await navigator.clipboard.readText();
+              } catch (err) {
+                console.error(
+                  "paste-as-plain read clipboard failed:",
+                  err,
+                );
+                return;
+              }
+              if (text.length === 0) return;
+              // Normalize 常见 rich-text artifacts（与 detail.md ⌘⇧V 同
+              // 规则集 — 一处真相）
+              const clean = text
+                .replace(/[“”]/g, '"')
+                .replace(/[‘’]/g, "'")
+                .replace(/ /g, " ")
+                .replace(/[​‌‍﻿]/g, "")
+                .replace(/[–—]/g, "-");
+              const ta = textareaRef.current;
+              if (!ta) {
+                setInput((prev) => prev + clean);
+                return;
+              }
+              const start = ta.selectionStart ?? input.length;
+              const end = ta.selectionEnd ?? start;
+              const next =
+                input.slice(0, start) + clean + input.slice(end);
+              setInput(next);
+              requestAnimationFrame(() => {
+                const cur = textareaRef.current;
+                if (!cur) return;
+                cur.focus();
+                const newCursor = start + clean.length;
+                cur.selectionStart = cur.selectionEnd = newCursor;
+              });
+            }}
+            title="paste-as-plain：从剪贴板读文本 + normalize（smart quotes → ASCII / NBSP → 普通空格 / 零宽字符 → 删除 / em-dash → ASCII -）后插入光标位置。让 owner 从 Word / Notion 等 rich-text 源粘贴时去 unicode artifacts 污染。"
+            aria-label="paste as plain text"
+            style={{
+              position: "absolute",
+              top: 6,
+              right: 36,
+              width: 22,
+              height: 22,
+              borderRadius: "50%",
+              border: "1px solid var(--pet-color-border)",
+              background: "var(--pet-color-card)",
+              color: "var(--pet-color-muted)",
+              fontSize: 11,
+              lineHeight: 1,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              zIndex: 5,
+            }}
+          >
+            📋
+          </button>
           {/* 💡 最近输入 鼠标入口：替代 ↑↓ 键盘对鼠标 user 的 friction。
               floating 在 textarea 右上角；click 弹 popover 列最近 5 条，
               row click 把内容灌进 textarea + 同步 historyCursorRef 让接下来
