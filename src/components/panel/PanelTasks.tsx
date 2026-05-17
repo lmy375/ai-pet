@@ -5631,6 +5631,35 @@ export function PanelTasks({
     return n;
   }, [tasks]);
 
+  /// ⏱ 近 30 天 done task 平均完成耗时（小时）：扫 status=done 且 updated_at
+  /// 在 [now-30d, now] 窗口的 task，算 (updated - created) 平均小时 — 给
+  /// owner 一个"我最近通量是几小时" 量化信号（不像 streak 是次数维度，
+  /// 本 chip 是耗时维度）。0 个样本时返 null（chip 不渲）。极端样本（>30d
+  /// 完成耗时；如 backlog 老任务今日 done）也算 — 与 owner 直觉的"我 30
+  /// 天内做完了什么"一致。Math.round 到整 hour 让 chip 紧凑（< 1h 显
+  /// "<1h"）。
+  const avgCompletionHours = useMemo<{
+    avgHours: number;
+    sampleCount: number;
+  } | null>(() => {
+    const cutoff = nowMs - 30 * 24 * 60 * 60 * 1000;
+    let total = 0;
+    let n = 0;
+    for (const t of tasks) {
+      if (t.status !== "done") continue;
+      const updated = Date.parse(t.updated_at);
+      const created = Date.parse(t.created_at);
+      if (Number.isNaN(updated) || Number.isNaN(created)) continue;
+      if (updated < cutoff) continue;
+      const hours = (updated - created) / 3_600_000;
+      if (hours < 0) continue; // 防数据脏（updated < created）
+      total += hours;
+      n += 1;
+    }
+    if (n === 0) return null;
+    return { avgHours: total / n, sampleCount: n };
+  }, [tasks, nowMs]);
+
   // R104: 各 priority 的活动任务计数。派生 tasks 全集（不受 link 上 search /
   // tag / due / sort 过滤影响），让用户在任一 filter 下都能看到"还有哪几档
   // priority 有事"。只数活动态：finished 不在 chip row，由 showFinished
@@ -7842,6 +7871,43 @@ export function PanelTasks({
                 📌 {pinnedCount}
               </span>
             )}
+            {/* ⏱ 近 30 天平均完成耗时 chip：扫 done 且 updated_at ≥ 30d
+                内的 task，算 (updated - created) 平均小时。给 owner 一个
+                "我最近通量是几小时" 量化信号 — 与 /streak（次数维度）
+                互补，是耗时维度。0 样本时不渲染避免 dead chip；< 1h
+                显「<1h」让短时通量也能 audit；≥ 48h 显「Nd」转天数粒度
+                更直觉。 */}
+            {avgCompletionHours && (() => {
+              const { avgHours, sampleCount } = avgCompletionHours;
+              const label =
+                avgHours < 1
+                  ? "<1h"
+                  : avgHours >= 48
+                    ? `${(avgHours / 24).toFixed(1)}d`
+                    : `${Math.round(avgHours)}h`;
+              return (
+                <span
+                  title={`近 30 天 ${sampleCount} 条 done task 的平均完成耗时（从 created 到 updated）= ${avgHours.toFixed(1)} 小时。量化通量信号；耗时维度 — 与 /streak / "今日完成 N 条" 次数维度互补。`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    userSelect: "none",
+                    background: "var(--pet-tint-blue-bg)",
+                    color: "var(--pet-tint-blue-fg)",
+                    border:
+                      "1px solid color-mix(in srgb, var(--pet-tint-blue-fg) 30%, transparent)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                  aria-label={`average completion time over last 30 days: ${avgHours.toFixed(1)} hours over ${sampleCount} done tasks`}
+                >
+                  ⏱ 均 {label}
+                </span>
+              );
+            })()}
             {/* 🎯 P7+ 高优 one-tap chip：与既有 P{n} 多选 chip 互补 —— Set
                 是细颗粒挑选，这是 owner 最常用的"高优 backlog 聚焦"快捷动作。
                 仅在确有 P7+ 活动任务（priorityBands[0].pending > 0）时渲染，
