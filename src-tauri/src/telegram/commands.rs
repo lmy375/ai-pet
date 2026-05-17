@@ -560,6 +560,11 @@ pub enum TgCommand {
     /// N 缺省 5；clamp 1..=20（与 /recent / /digest / /show_speech 同上限
     /// 协议）。空 title → missing-arg；title resolve 三层与 /show 同源。
     RecentEvents { title: String, n: u32 },
+    /// `/touched_today` —— 列今日 updated_at 命中的 task（任意状态），按
+    /// 时间倒序。与 /today_done（done-only）/ /today（today due）互补 —
+    /// 本命令回答「我今天动过哪些 task」（含 promote / snooze / silent
+    /// 等 owner-action 引发的 update + LLM update）。无参。
+    TouchedToday,
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -665,6 +670,7 @@ impl TgCommand {
             TgCommand::Dup { .. } => "dup",
             TgCommand::Snippets => "snippets",
             TgCommand::RecentEvents { .. } => "recent_events",
+            TgCommand::TouchedToday => "touched_today",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -749,6 +755,7 @@ impl TgCommand {
             | TgCommand::Silenced
             | TgCommand::Markers
             | TgCommand::Snippets
+            | TgCommand::TouchedToday
             | TgCommand::Tags
             | TgCommand::Stats
             | TgCommand::Buckets
@@ -898,6 +905,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("dup", "Duplicate a task to a new pending instance (preserves schedule / pinned / silent / tags; strips terminal markers)"),
             ("snippets", "List tasks marked [snippet] / [snippet: <label>] — reusable templates / checklists / canned replies"),
             ("recent_events", "Compact last-N butler_history events for a task (default 5, cap 20) — complements /timeline full view"),
+            ("touched_today", "List tasks whose updated_at is today (any status) — audit what you moved today; complements /today_done done-only"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -979,6 +987,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("dup", "复制 task 为新 pending 实例（保 schedule / pinned / silent / tags；剥终态 markers）"),
             ("snippets", "列含 [snippet] / [snippet: <label>] marker 的 task — 可复用模板 / 流程 / 常用回复 audit"),
             ("recent_events", "单 task 最近 N 个 butler_history 事件紧凑视图（默认 5，上限 20）— 与 /timeline 完整视图互补"),
+            ("touched_today", "列今日 updated_at 命中 task（任意状态）— audit「我今天动过哪些」；与 /today_done done-only 互补"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1259,6 +1268,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/snippets`：无参 — 列含 [snippet] / [snippet: label] marker 的
         // task。与 /pinned / /silenced 同 chat-scope filter 模板。
         "snippets" => Some(TgCommand::Snippets),
+        // `/touched_today`：无参 — 列今日 updated_at 命中 task。多余尾部
+        // 忽略（与 /today / /yesterday / /today_done 同 tolerant trailing
+        // 协议）。
+        "touched_today" => Some(TgCommand::TouchedToday),
         // `/recent_events <title> [N]`：trailing N 解析与 /snooze 同
         // 「最后 token 命中预设 → 剥」模板，但本命令 token 是数字。
         // 仅当 2+ tokens 且最后 token 是 1..=20 数字时剥下作 N；只 1 token
@@ -2027,7 +2040,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2184,6 +2197,7 @@ pub fn format_help_for_topic(
         "dup" => "📑 /dup <title>\n\n用法：复制一条 task 为新 pending 实例 — title 加「(副本)」后缀，priority + due 继承源 task。owner 想「以这条为模板建一条相似的」时一键完成，免「复制 raw → 编辑去掉终态 markers → /task 重建」三步。\n\n继承的：[every:] / [once:] / [deadline:] / [reminderMin:] schedule + [pinned] / [silent] / [blockedBy:] markers + #tags + priority + due + body 文本。\n\n剥掉的：[done] / [result:] / [error:] / [cancelled:] / [archived:] / [snooze:] / [origin:tg:] — 这些是「原 task 实例」专属信号，副本应回 pending 重新起跑。\n\nTitle 冲突兜底：memory_edit 内置 unique-filename — 同 title 重复 dup 会变 `<src>_(副本)_1` / `_2` ...自动加序号。\n\n空 title → usage hint；title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /dup 整理 Downloads          → 「整理 Downloads (副本)」\n  /dup 1                        （/tasks 输出第 1 条）\n  /dup 写周报                   → 「写周报 (副本)」（继承 every + reminderMin + #work）\n\n输出格式：\n  📑 已复制「<src>」→「<new>」\n  · 继承 schedule / markers / tags / priority / due\n  · 剥终态 markers（done / result / snooze / origin 等）\n\n相关：/edit <title> :: <new desc>（覆写而非复制）；/show 看 raw 验证 markers；/tasks 看新 task 入列。",
         "snippets" => "📎 /snippets\n\n用法：列本聊天派单中含 `[snippet]` 或 `[snippet: <label>]` marker 的 task — 「可复用片段」分类清单。owner 用此 marker 标 prompt 模板 / 决策清单 / 常用回复 / 流程 checklist 等想反复用的内容，本命令一眼看「我都标了哪些 snippet」+ label + body 前 80 字预览。\n\nmarker 约定：\n  [snippet]              （无 label，简单标记为「可复用」）\n  [snippet: 模板A]      （含 label — 后续 /show / /dup 时一眼识别用途）\n  [snippet: PR template]（label 可为任意非 `]` 字符）\n\n输出格式：\n  📎 snippets · N 条：\n  🟢 <title> [模板A]\n     <body 前 80 字预览>\n  🟢 <title>\n     <body 前 80 字预览>\n  ...\n\nN === 0 时友好兜底：「本聊天派单还没标 snippet — 在 /edit 中给 task 加 `[snippet]` / `[snippet: <label>]` marker 后回来 audit」+ 教学例。\n\n场景：sprint 整理常用 prompt；/dup 一个 snippet 改装为新任务模板（/dup 保 markers 含 [snippet] — 副本也是 snippet）；写决策日志时回看 last week 我标了哪些可复用的。\n\n示例：\n  /snippets\n\n相关：/show <title>（看完整 raw + detail）；/dup <title>（克隆改装）；/markers（含 pinned + silent 联合视图，未来可扩 snippets 进 markers 矩阵）。",
         "recent_events" => "📜 /recent_events <title> [N]\n\n用法：给单条 task 显最近 N 个 butler_history 事件的紧凑一行视图 — TL;DR 视角。与 /timeline 完整视图互补 — owner 想「这条 task 最近发生了啥」时本命令更快，要看完整演化走 /timeline。\n\nN 缺省 5；clamp 1..=20（与 /recent / /digest / /show_speech 同协议）。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  📜 「<title>」最近 N 个事件（共 M）：\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: ok]\n  …\n\n与 /timeline 区别：\n- /timeline 显全部去重事件（cap 30）— 「这条 task 一生」audit\n- /recent_events 仅显最近 N（cap 20）— 「最近怎么样」快瞄\n- 两者底层同 butler_history → compute_timeline_entries 路径\n\n示例：\n  /recent_events 整理 Downloads          （显最近 5 条）\n  /recent_events 整理 Downloads 10       （显最近 10 条）\n  /recent_events 1                        （/tasks 第 1 条最近 5 条）\n  /recent_events 1 10                     （第 1 条最近 10 条）\n\n注意：title 仅 1 token 且是数字时一律视作 title（如 /recent_events 5 = 「第 5 条 task 最近 5 条」而非「最近 5 条无 title」）；想要带 N 显式两 token（/recent_events <title> <N>）。\n\n相关：/timeline（全 audit）；/show（当前 snapshot）；/peek（一行紧凑视图）。",
+        "touched_today" => "📅 /touched_today\n\n用法：列今日 updated_at 命中的本聊天派单（任意状态），按时间倒序。回答「我今天动过哪些 task」— 含 owner action（pinned / silent / snooze / promote / touch / edit）+ LLM update（result write / detail.md 写过）+ 状态变化（done / error / cancelled）所有引发 updated_at 前进的动作。\n\n空 → 友好兜底（教学指向 /today / /today_done）。\n\n输出格式：\n  📅 今日（YYYY-MM-DD）动过 N 条（按时间倒序）：\n  · ⏳ HH:MM 整理 Downloads\n  · ✅ HH:MM 写周报 — done with result\n  · 💤 HH:MM 写报告\n  · ⏳ HH:MM review PR\n\n状态 emoji：⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled · 💤 snoozed（pending 且含 [snooze:] marker）\n\n与 /today_done（仅 done）/ /today（今日 due）区别：\n- /today_done：done + updated_at 在今日 — 只看「完成产出」\n- /today：pending + due 在今日 + done 在今日两段 — 「今日叙事」视图\n- /touched_today：任意状态 + updated_at 在今日 — 「我今天动过」全谱（含 pending 调整 / snooze / pin / silent 等 owner action）\n\n场景：sprint 复盘「我今天到底做了 / 调了 / 推后了哪些」；夜里 audit owner 今日工作量；与 /today_done 对比 audit「动了但没完成」的进度感\n\n示例：\n  /touched_today\n\n相关：/today_done（仅完成）；/today（今日 due + done 叙事）；/yesterday（昨日产出）；/recent_events <title>（单 task TL;DR）。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）；/forks <title>（反向：哪些 task 在等这条解锁）。",
         "forks" => "🔱 /forks <title>\n\n用法：反向 audit — 列出本 chat 派单中所有 active task（pending / error）的 description 含 `[blockedBy: <title>]` marker 的，让 owner 知道「这条 task 解锁后会让谁动起来」。与 /blocked（列被卡的）对偶。空 title → usage hint；title resolve 与 /done / /cancel / /show / /timeline 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /forks 整理 Downloads\n  /forks 1  （/tasks 输出第 1 条）\n\n输出格式：\n  🔱 解锁「<title>」会松开 N 条 task：\n  🟢 fork_a\n  ⚠️ fork_b\n\n无引用 → 「解锁这条不会影响其它 task」友好兜底。让 owner 在决定是否优先做某条 blocker 时，看到「这条做完会让谁动起来」做出更明智的优先级判断。\n\n相关：/blocked_by <title>（反向 — 我在等谁）。",
@@ -2277,6 +2291,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/dup <title>  —  复制 task 为新 P3 pending 实例，title 加「(副本)」后缀 — 保 schedule / pinned / silent / tags，剥终态 markers".to_string(),
         "/snippets  —  列含 [snippet] / [snippet: <label>] marker 的 task — 可复用模板 / 流程 / 常用回复 audit".to_string(),
         "/recent_events <title> [N]  —  单 task 最近 N 个 butler_history 事件紧凑视图（默认 5，上限 20；与 /timeline 完整视图互补）".to_string(),
+        "/touched_today  —  列今日 updated_at 命中 task（任意状态）— audit「我今天动过哪些」；与 /today_done done-only 互补".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -5005,6 +5020,83 @@ pub fn format_today_done_reply(
     out
 }
 
+/// `/touched_today` 命令回复文案。pure：filter views by updated_at 起始
+/// 匹配 `today` 日期前缀，按 updated_at 倒序排（最新动作在前），列状态
+/// emoji + HH:MM + title + 可选 result preview（done task 时）。
+///
+/// 与 `format_today_done_reply` 的区别：本命令不限 status — 任意状态
+/// 只要 updated_at 命中今日就显，让 owner 看到「动过但没完成」的 task
+/// （pending after touch / snooze / pin 等 owner action 引发的 update）
+/// + 完成 + 失败全谱。snooze 状态用 💤 单独 emoji 区别于 ⏳ 普通 pending。
+pub fn format_touched_today_reply(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let t_str = today.format("%Y-%m-%d").to_string();
+    let mut touched: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| v.updated_at.starts_with(&t_str))
+        .collect();
+    if touched.is_empty() {
+        return format!(
+            "📅 今日（{}）暂无动过的 task。\n用 /today 看今日 due / /today_done 看今日完成 / /tasks 看全清单。",
+            t_str
+        );
+    }
+    // updated_at ISO 字典序 = 时间序，最新在前
+    touched.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let mut out = format!(
+        "📅 今日（{}）动过 {} 条（按时间倒序）：",
+        t_str,
+        touched.len(),
+    );
+    for v in &touched {
+        // updated_at 切 HH:MM。ISO 形如 `YYYY-MM-DDTHH:MM:SS.fff+08:00`
+        // 或 `YYYY-MM-DDTHH:MM:SS` — 取 11..16 索引切到分钟。极短串兜底。
+        let hm = if v.updated_at.len() >= 16 {
+            &v.updated_at[11..16]
+        } else {
+            ""
+        };
+        let emoji = match v.status {
+            TaskStatus::Done => "✅",
+            TaskStatus::Error => "⚠️",
+            TaskStatus::Cancelled => "🚫",
+            // pending 含 [snooze:] marker 用 💤 与 ⏳ 区分 — owner 一眼看
+            // "今天被推后" vs "今天还活着"
+            TaskStatus::Pending => {
+                if v.raw_description.contains("[snooze:") {
+                    "💤"
+                } else {
+                    "⏳"
+                }
+            }
+        };
+        if hm.is_empty() {
+            out.push_str(&format!("\n· {} {}", emoji, v.title));
+        } else {
+            out.push_str(&format!("\n· {} {} {}", emoji, hm, v.title));
+        }
+        // done 状态时附 result preview（与 /today_done / /yesterday 同 40 字 cap）
+        if matches!(v.status, TaskStatus::Done) {
+            if let Some(r) = &v.result {
+                let r_trim = r.trim();
+                if !r_trim.is_empty() {
+                    let preview: String = if r_trim.chars().count() > 40 {
+                        let head: String = r_trim.chars().take(40).collect();
+                        format!("{}…", head)
+                    } else {
+                        r_trim.to_string()
+                    };
+                    out.push_str(&format!(" — {}", preview));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// `/quick <text>` 命令回复文案。pure：极短 ack — 与 `format_task_created_
 /// success`（包含完整 /tasks / /cancel 指引）反向 — 让 owner 快速 dump
 /// 不被长 reply 打扰。
@@ -6721,7 +6813,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "dup", "snippets", "recent_events", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "dup", "snippets", "recent_events", "touched_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -7192,7 +7284,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -11858,6 +11950,125 @@ mod tests {
         done.updated_at = "2026-05-17T10:00:00+08:00".to_string();
         let s = format_today_done_reply(&[done], today);
         assert!(s.contains("…"), "long result should be truncated: {s}");
+    }
+
+    // -------- /touched_today parse + format --------
+
+    #[test]
+    fn touched_today_parser_no_arg() {
+        assert_eq!(
+            parse_tg_command("/touched_today"),
+            Some(TgCommand::TouchedToday)
+        );
+        assert_eq!(
+            parse_tg_command("/TOUCHED_TODAY"),
+            Some(TgCommand::TouchedToday)
+        );
+        // 尾部多余 token 容忍（与 /today / /today_done 同协议）
+        assert_eq!(
+            parse_tg_command("/touched_today extra"),
+            Some(TgCommand::TouchedToday)
+        );
+    }
+
+    #[test]
+    fn touched_today_empty_shows_friendly_fallback() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let s = format_touched_today_reply(&[], today);
+        assert!(s.contains("今日（2026-05-17）暂无动过"), "{s}");
+        assert!(s.contains("/today"), "{s}");
+        assert!(s.contains("/today_done"), "{s}");
+    }
+
+    #[test]
+    fn touched_today_filters_to_today_only_any_status() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut t_pending = view("p", 3, None, TaskStatus::Pending, None);
+        t_pending.updated_at = "2026-05-17T09:00:00+08:00".to_string();
+        let mut t_done = view("d", 3, None, TaskStatus::Done, Some("r"));
+        t_done.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut t_err = view("e", 3, None, TaskStatus::Error, Some("oops"));
+        t_err.updated_at = "2026-05-17T11:00:00+08:00".to_string();
+        let mut t_cancel = view("c", 3, None, TaskStatus::Cancelled, Some("nope"));
+        t_cancel.updated_at = "2026-05-17T12:00:00+08:00".to_string();
+        let mut y_done = view("y", 3, None, TaskStatus::Done, Some("y"));
+        y_done.updated_at = "2026-05-16T20:00:00+08:00".to_string();
+        let s = format_touched_today_reply(
+            &[t_pending, t_done, t_err, t_cancel, y_done],
+            today,
+        );
+        // 不限 status — 4 条今日都在
+        assert!(s.contains("动过 4 条"), "{s}");
+        assert!(s.contains("p"), "pending included: {s}");
+        assert!(s.contains("d"), "done included: {s}");
+        assert!(s.contains("e"), "error included: {s}");
+        assert!(s.contains("c"), "cancelled included: {s}");
+        assert!(!s.contains("\ny"), "yesterday excluded: {s}");
+    }
+
+    #[test]
+    fn touched_today_sorts_by_updated_at_desc() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut early = view("早", 3, None, TaskStatus::Pending, None);
+        early.updated_at = "2026-05-17T08:00:00+08:00".to_string();
+        let mut late = view("晚", 3, None, TaskStatus::Pending, None);
+        late.updated_at = "2026-05-17T22:30:00+08:00".to_string();
+        let mut mid = view("中", 3, None, TaskStatus::Pending, None);
+        mid.updated_at = "2026-05-17T14:00:00+08:00".to_string();
+        let s = format_touched_today_reply(&[early, mid, late], today);
+        let idx_late = s.find("晚").expect("晚 in output");
+        let idx_mid = s.find("中").expect("中 in output");
+        let idx_early = s.find("早").expect("早 in output");
+        assert!(idx_late < idx_mid, "{s}");
+        assert!(idx_mid < idx_early, "{s}");
+    }
+
+    #[test]
+    fn touched_today_status_emojis_per_state() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut p = view("p", 3, None, TaskStatus::Pending, None);
+        p.updated_at = "2026-05-17T09:00:00+08:00".to_string();
+        let mut d = view("d", 3, None, TaskStatus::Done, None);
+        d.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut e = view("e", 3, None, TaskStatus::Error, None);
+        e.updated_at = "2026-05-17T11:00:00+08:00".to_string();
+        let mut c = view("c", 3, None, TaskStatus::Cancelled, None);
+        c.updated_at = "2026-05-17T12:00:00+08:00".to_string();
+        let s = format_touched_today_reply(&[p, d, e, c], today);
+        assert!(s.contains("⏳"), "pending: {s}");
+        assert!(s.contains("✅"), "done: {s}");
+        assert!(s.contains("⚠️"), "error: {s}");
+        assert!(s.contains("🚫"), "cancelled: {s}");
+    }
+
+    #[test]
+    fn touched_today_snooze_emoji_for_pending_with_snooze_marker() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut snoozed = view("延", 3, None, TaskStatus::Pending, None);
+        snoozed.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        snoozed.raw_description = "[task pri=3] [snooze: 2026-05-18 09:00] 延".to_string();
+        let s = format_touched_today_reply(&[snoozed], today);
+        assert!(s.contains("💤"), "snoozed pending → 💤: {s}");
+        // ⏳ 不应同时显（避免双 emoji 视觉冗余）
+        assert!(!s.contains("⏳"), "non-snoozed emoji should be suppressed: {s}");
+    }
+
+    #[test]
+    fn touched_today_includes_hh_mm_prefix() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut v = view("t", 3, None, TaskStatus::Pending, None);
+        v.updated_at = "2026-05-17T14:30:00+08:00".to_string();
+        let s = format_touched_today_reply(&[v], today);
+        assert!(s.contains("14:30"), "should include HH:MM time: {s}");
+    }
+
+    #[test]
+    fn touched_today_done_includes_result_preview() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut d = view("写文档", 3, None, TaskStatus::Done, Some("提交到 PR #42"));
+        d.updated_at = "2026-05-17T16:00:00+08:00".to_string();
+        let s = format_touched_today_reply(&[d], today);
+        assert!(s.contains("— 提交到 PR #42"), "{s}");
     }
 
     #[test]
