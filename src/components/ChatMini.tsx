@@ -484,6 +484,103 @@ export function ChatMini({
       window.removeEventListener("keydown", onKey);
     };
   }, [ctxMenu]);
+  /// 📌 view marks popover：列当前 session 内 sel-* 标记（iter #412 写入）。
+  /// marks 是从 localStorage 读出的快照 (key + ts + text)；refreshTrigger
+  /// 让选区 📌 button 写入后能同步刷新视图。仅 popoverOpen 时实际 IO 加
+  /// 载；关闭时仍存内存但不刷（节省 invoke）。
+  const [marksPopoverOpen, setMarksPopoverOpen] = useState(false);
+  const [marksRefreshTrigger, setMarksRefreshTrigger] = useState(0);
+  const [marksList, setMarksList] = useState<
+    Array<{ key: string; ts: number; text: string }>
+  >([]);
+  const [marksCount, setMarksCount] = useState(0);
+  /// 读 localStorage 两个 key：`pet-chat-marked-messages` filter sel-* +
+  /// `pet-chatmini-mark-texts` 取 text body。需要 active session id 让
+  /// 跨 session marks 互不显。返回按 ts desc（最新在前）。
+  const refreshMarks = useCallback(async () => {
+    try {
+      const idx = await invoke<{ active_id: string }>("list_sessions");
+      const sid = idx.active_id?.trim();
+      if (!sid) {
+        setMarksList([]);
+        setMarksCount(0);
+        return;
+      }
+      const KEY = "pet-chat-marked-messages";
+      const TEXTS_KEY = "pet-chatmini-mark-texts";
+      let parsed: Record<string, unknown> = {};
+      let texts: Record<string, string> = {};
+      try {
+        const raw = window.localStorage.getItem(KEY);
+        if (raw) {
+          const got = JSON.parse(raw);
+          if (got && typeof got === "object" && !Array.isArray(got)) {
+            parsed = got;
+          }
+        }
+        const trawTexts = window.localStorage.getItem(TEXTS_KEY);
+        if (trawTexts) {
+          const got = JSON.parse(trawTexts);
+          if (got && typeof got === "object" && !Array.isArray(got)) {
+            texts = got;
+          }
+        }
+      } catch {
+        // 解析失败 → 视作空
+      }
+      const sessionPrefix = `${sid}::sel-`;
+      const out: Array<{ key: string; ts: number; text: string }> = [];
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof k !== "string" || !k.startsWith(sessionPrefix)) continue;
+        if (typeof v !== "number") continue;
+        out.push({
+          key: k,
+          ts: v,
+          text: texts[k] ?? "（无文本快照 — iter #412 之前的旧 mark）",
+        });
+      }
+      out.sort((a, b) => b.ts - a.ts);
+      setMarksList(out);
+      setMarksCount(out.length);
+    } catch {
+      // list_sessions 失败 → 不更新，保上次值
+    }
+  }, []);
+  /// mount + popover 开关 + refreshTrigger 变化 → 拉新数据
+  useEffect(() => {
+    void refreshMarks();
+  }, [refreshMarks, marksPopoverOpen, marksRefreshTrigger]);
+  /// 删除单条 mark：从 pet-chat-marked-messages + sibling text key 一并
+  /// 移除 + refreshTrigger 让 popover 重渲。
+  const deleteMark = useCallback(
+    (markKey: string) => {
+      const KEY = "pet-chat-marked-messages";
+      const TEXTS_KEY = "pet-chatmini-mark-texts";
+      try {
+        const raw = window.localStorage.getItem(KEY);
+        if (raw) {
+          const got = JSON.parse(raw);
+          if (got && typeof got === "object" && !Array.isArray(got)) {
+            delete got[markKey];
+            window.localStorage.setItem(KEY, JSON.stringify(got));
+          }
+        }
+      } catch {}
+      try {
+        const trawTexts = window.localStorage.getItem(TEXTS_KEY);
+        if (trawTexts) {
+          const got = JSON.parse(trawTexts);
+          if (got && typeof got === "object" && !Array.isArray(got)) {
+            delete got[markKey];
+            window.localStorage.setItem(TEXTS_KEY, JSON.stringify(got));
+          }
+        }
+      } catch {}
+      setMarksRefreshTrigger((v) => v + 1);
+    },
+    [],
+  );
+
   /// ⌘` 弹 transient_note 快速 popover：让 owner 不必发消息就能给 pet 留
   /// 临时上下文（如「半小时别打扰」「集中写文档」）。复用既有
   /// onSetTransientNote callback（同 set_transient_note Tauri 后端）。
@@ -1457,6 +1554,192 @@ export function ChatMini({
         >
           💾
         </button>
+        {/* iter #417: 📌 view marks chip — 仅当前 session 有 sel-* mark 时
+            浮起，badge 显计数。click toggle popover 列每条 mark + 删除按钮。
+            位置在 💾 之左（onOpenPanel 132 / no-panel 104；每个 28px 间距
+            与既有 chip 行节奏一致）。 */}
+        {marksCount > 0 && (
+          <button
+            type="button"
+            className="pet-mini-maxbtn"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setMarksPopoverOpen((v) => !v);
+            }}
+            title={`查看本会话标记 (${marksCount} 条) — 列每条 sel-* mark 内容 + 时间戳；click 🗑 删除单条`}
+            aria-label={`view ${marksCount} marks in this session`}
+            style={{
+              position: "absolute",
+              top: "14px",
+              right: onOpenPanel ? "132px" : "104px",
+              minWidth: "20px",
+              height: "20px",
+              padding: "0 5px",
+              borderRadius: "10px",
+              border: "1px solid var(--pet-tint-yellow-fg)",
+              background: "var(--pet-tint-yellow-bg)",
+              color: "var(--pet-tint-yellow-fg)",
+              fontSize: "10px",
+              fontWeight: 600,
+              lineHeight: 1,
+              cursor: "pointer",
+              zIndex: 13,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 2,
+              boxShadow: "var(--pet-shadow-sm)",
+            }}
+          >
+            📌 {marksCount}
+          </button>
+        )}
+        {marksPopoverOpen && (
+          <div
+            onMouseDown={(e) => {
+              // outside-click 关：内部 mousedown stopProp 防自关
+              if (e.target === e.currentTarget) {
+                setMarksPopoverOpen(false);
+              }
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 100000,
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              paddingTop: 60,
+              background:
+                "color-mix(in srgb, var(--pet-color-bg) 35%, transparent)",
+            }}
+          >
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{
+                minWidth: 320,
+                maxWidth: 440,
+                maxHeight: "70vh",
+                overflow: "auto",
+                padding: 12,
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 8,
+                background: "var(--pet-color-card)",
+                boxShadow: "var(--pet-shadow-md)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--pet-color-fg)",
+                  marginBottom: 4,
+                }}
+              >
+                📌 本会话标记 ({marksList.length})
+                <span style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  onClick={() => setMarksPopoverOpen(false)}
+                  title="关闭"
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    border: "1px solid var(--pet-color-border)",
+                    borderRadius: 4,
+                    background: "var(--pet-color-card)",
+                    color: "var(--pet-color-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+              {marksList.length === 0 ? (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--pet-color-muted)",
+                    padding: "12px 0",
+                    textAlign: "center",
+                  }}
+                >
+                  本会话暂无标记。
+                  <br />
+                  选中聊天里的文字 → 工具栏 📌 标记可加入。
+                </div>
+              ) : (
+                marksList.map((m) => {
+                  const d = new Date(m.ts);
+                  const tsLabel = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+                  return (
+                    <div
+                      key={m.key}
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        alignItems: "flex-start",
+                        padding: "6px 8px",
+                        border: "1px solid var(--pet-color-border)",
+                        borderRadius: 4,
+                        background: "var(--pet-color-bg)",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: "var(--pet-color-muted)",
+                          flexShrink: 0,
+                          fontFamily: "'SF Mono', monospace",
+                          padding: "2px 0",
+                        }}
+                        title={new Date(m.ts).toLocaleString()}
+                      >
+                        {tsLabel}
+                      </span>
+                      <span
+                        style={{
+                          flex: 1,
+                          fontSize: 12,
+                          color: "var(--pet-color-fg)",
+                          lineHeight: 1.5,
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {m.text}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => deleteMark(m.key)}
+                        title="删除这条标记"
+                        aria-label="delete mark"
+                        style={{
+                          padding: "2px 6px",
+                          fontSize: 11,
+                          border: "1px solid var(--pet-color-border)",
+                          borderRadius: 4,
+                          background: "var(--pet-color-card)",
+                          color: "var(--pet-tint-red-fg)",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
         {/* 「复制最近 N 条」按钮：⛶ 旁边。click 弹小菜单 3/5/10；选中后取
             最近 N 条 user/assistant 拼带角色前缀文本写剪贴板。 */}
         <div
@@ -2939,11 +3222,40 @@ export function ChatMini({
                   // 走，本 mark 仅作 audit 标记 / count 信号。
                   parsed[markKey] = ts;
                   window.localStorage.setItem(KEY, JSON.stringify(parsed));
+                  // 同步写 sibling key `pet-chatmini-mark-texts`：承载 text
+                  // snippet（120 字 cap），让 view-marks popover (iter #417)
+                  // 渲实际内容而非裸 timestamp。Schema：Record<markKey, text>。
+                  // 与 markedMessages 解耦 — PanelChat 不读这条 key，不影响
+                  // 既有渲染路径。
+                  const TEXTS_KEY = "pet-chatmini-mark-texts";
+                  let texts: Record<string, string> = {};
+                  try {
+                    const trawTexts = window.localStorage.getItem(TEXTS_KEY);
+                    if (trawTexts) {
+                      const got = JSON.parse(trawTexts);
+                      if (got && typeof got === "object" && !Array.isArray(got)) {
+                        texts = got;
+                      }
+                    }
+                  } catch {
+                    // 解析失败 → 覆盖写
+                  }
+                  texts[markKey] = text.length > 120
+                    ? text.slice(0, 120) + "…"
+                    : text;
+                  try {
+                    window.localStorage.setItem(
+                      TEXTS_KEY,
+                      JSON.stringify(texts),
+                    );
+                  } catch {
+                    // quota full → markedMessages 已写成功，text 失败不致命
+                  }
                   // 反馈：复用 copyToast 通道（与 📋 同视觉），1.5s 自清
                   setCopyToast("done");
                   window.setTimeout(() => setCopyToast("none"), 1500);
-                  // text snippet 让 owner 知道标的是啥（未来要在 ChatMini
-                  // own marks UI 里渲 — 留 console hint 方便调试 + audit）
+                  // 同步 marksRefreshTrigger 让 popover state 即时更新
+                  setMarksRefreshTrigger((v) => v + 1);
                   console.info(
                     `[ChatMini] 📌 marked selection (${text.length} chars):`,
                     text.slice(0, 60),
