@@ -1574,6 +1574,65 @@ export function PanelTasks({
   const [detailMap, setDetailMap] = useState<Record<string, TaskDetail>>({});
   const [detailLoadingTitle, setDetailLoadingTitle] = useState<string | null>(null);
   const [detailErr, setDetailErr] = useState("");
+  /// 「📊 看 history timeline」popover：从 ctxMenu 触发 — 弹 fixed
+  /// modal 列该 task 的 butler_history 事件清单（reuse 既有
+  /// task_get_detail.history + detailMap 缓存）。与既有 expand →
+  /// 「事件时间线」段对偶但跳过完整 detail panel 展开 — owner 快速
+  /// audit 入口；与 TG /timeline 同 SoT。null = 关；非 null 时显
+  /// task title + 已 loaded events（或 loading state — events=null）。
+  const [historyTimelinePopover, setHistoryTimelinePopover] = useState<
+    | { title: string; events: TaskHistoryEvent[] | null; ioError: boolean }
+    | null
+  >(null);
+  /// Esc 关 history timeline popover（mousedown outside-click 已由
+  /// 背景 div 处理）。
+  useEffect(() => {
+    if (!historyTimelinePopover) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setHistoryTimelinePopover(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [historyTimelinePopover]);
+  /// 「📊 看 history timeline」触发器：从 detailMap 拿缓存或 invoke
+  /// task_get_detail 拉新数据。loading 中 events=null；IO 失败时
+  /// events=[] + ioError=true 仍渲 popover 显警告条。
+  const openHistoryTimelinePopover = useCallback(
+    async (title: string) => {
+      setHistoryTimelinePopover({ title, events: null, ioError: false });
+      const cached = detailMap[title];
+      if (cached) {
+        setHistoryTimelinePopover({
+          title,
+          events: cached.history,
+          ioError: cached.history_io_error,
+        });
+        return;
+      }
+      try {
+        const detail = await invoke<TaskDetail>("task_get_detail", { title });
+        setDetailMap((prev) => ({ ...prev, [title]: detail }));
+        // 防 race：只有 popover 仍指向同一 title 时才 setState
+        setHistoryTimelinePopover((cur) =>
+          cur && cur.title === title
+            ? {
+                title,
+                events: detail.history,
+                ioError: detail.history_io_error,
+              }
+            : cur,
+        );
+      } catch (e) {
+        console.error("task_get_detail (history popover) failed:", e);
+        setHistoryTimelinePopover((cur) =>
+          cur && cur.title === title
+            ? { title, events: [], ioError: true }
+            : cur,
+        );
+      }
+    },
+    [detailMap],
+  );
 
   // 批量操作状态。selected 按 title 索引（与单条 retry/cancel 走同一套语义，
   // 重名走"首条匹配"）。bulkAction 控制二级输入面板（cancel reason / new
@@ -15466,6 +15525,190 @@ export function PanelTasks({
           </div>
         );
       })()}
+      {/* 📊 history timeline popover — fixed-center modal 列该 task 的
+          butler_history 事件清单（reuse task_get_detail.history）。从
+          ctxMenu 触发；click outside / ✕ / Esc 关；events === null 显
+          「读取中…」；ioError 显警告条；events 空但非 IO 错时显「无
+          事件」兜底。 */}
+      {historyTimelinePopover && (() => {
+        const popover = historyTimelinePopover;
+        return (
+          <div
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) {
+                setHistoryTimelinePopover(null);
+              }
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 100000,
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              paddingTop: 60,
+              background:
+                "color-mix(in srgb, var(--pet-color-bg) 35%, transparent)",
+            }}
+          >
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{
+                minWidth: 380,
+                maxWidth: 560,
+                maxHeight: "70vh",
+                overflow: "auto",
+                padding: 12,
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 8,
+                background: "var(--pet-color-card)",
+                boxShadow: "var(--pet-shadow-md)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--pet-color-fg)",
+                  marginBottom: 4,
+                }}
+              >
+                📊 「{popover.title}」事件时间线
+                {popover.events && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: "var(--pet-color-muted)",
+                      fontWeight: 400,
+                    }}
+                  >
+                    · 共 {popover.events.length} 条
+                  </span>
+                )}
+                <span style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  onClick={() => setHistoryTimelinePopover(null)}
+                  title="关闭（Esc）"
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    border: "1px solid var(--pet-color-border)",
+                    borderRadius: 4,
+                    background: "var(--pet-color-card)",
+                    color: "var(--pet-color-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+              {popover.ioError && (
+                <div
+                  style={{
+                    padding: "6px 8px",
+                    border: "1px solid var(--pet-tint-orange-fg, #d97706)",
+                    background: "var(--pet-tint-amber-bg, #fef3c7)",
+                    color: "var(--pet-tint-amber-fg, #92400e)",
+                    borderRadius: 4,
+                    fontSize: 11,
+                  }}
+                >
+                  ⚠ 读 butler_history.log 失败（权限 / corrupt 等）。
+                </div>
+              )}
+              {popover.events === null ? (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--pet-color-muted)",
+                    padding: "8px 0",
+                    textAlign: "center",
+                  }}
+                >
+                  读取中…
+                </div>
+              ) : popover.events.length === 0 ? (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--pet-color-muted)",
+                    padding: "8px 0",
+                    textAlign: "center",
+                    fontStyle: "italic",
+                  }}
+                >
+                  {popover.ioError
+                    ? "（无事件 — 因读失败）"
+                    : "本 task 在 butler_history.log 内无事件记录。"}
+                </div>
+              ) : (
+                popover.events.map((ev, i) => {
+                  // ts 截前 16 字 + T → 空格便阅读；action emoji 与 TG
+                  // /timeline formatter 同（create 📝 / update ✏️ / delete 🗑）
+                  const tsShort = ev.timestamp
+                    .slice(0, 16)
+                    .replace("T", " ");
+                  const action = ev.action.trim();
+                  const emoji =
+                    action === "create"
+                      ? "📝"
+                      : action === "delete"
+                        ? "🗑"
+                        : "✏️";
+                  return (
+                    <div
+                      key={`${ev.timestamp}-${i}`}
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        alignItems: "flex-start",
+                        padding: "5px 8px",
+                        border: "1px solid var(--pet-color-border)",
+                        borderRadius: 4,
+                        background: "var(--pet-color-bg)",
+                        fontSize: 11,
+                      }}
+                    >
+                      <span style={{ flexShrink: 0 }}>{emoji}</span>
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          color: "var(--pet-color-muted)",
+                          fontFamily: "'SF Mono', monospace",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                        title={ev.timestamp}
+                      >
+                        {tsShort}
+                      </span>
+                      <span
+                        style={{
+                          flex: 1,
+                          color: "var(--pet-color-fg)",
+                          lineHeight: 1.4,
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {action}
+                        {ev.snippet
+                          ? ` :: ${ev.snippet}`
+                          : ""}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        );
+      })()}
       {taskCtxMenu && (() => {
         // viewport 右 / 下越界时把菜单往回挪；menu 实际宽度 / 高度由内容定，
         // 这里用经验值 180 / 320 做夹紧足够（带 priority 子面板时纵向 +60）。
@@ -16337,6 +16580,26 @@ export function PanelTasks({
                 title="一键克隆此 task：strip 终态 / snooze marker 后创建 ${源} (副本) 新 task（重名累加），保留 schedule / tag / pinned / silent / blockedBy / reminderMin / detail.md 内容。"
               >
                 🪞 克隆任务
+              </button>
+            )}
+            {/* 📊 看 history timeline：弹 fixed modal 列该 task 的
+                butler_history 事件清单（reuse 既有 task_get_detail.history
+                + detailMap 缓存）。与既有 expand → 「事件时间线」段对偶
+                但跳过完整 detail panel 展开 — owner 快速 audit 入口；
+                与 TG /timeline 命令同 SoT。 */}
+            {t && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={() => {
+                  setTaskCtxMenu(null);
+                  void openHistoryTimelinePopover(m.title);
+                }}
+                title="弹 popover 列本 task 的 butler_history 事件清单（与 expand → 「事件时间线」段同源 / TG /timeline 同 SoT；跳过完整 detail 展开，快速 audit）。"
+              >
+                📊 看 history timeline
               </button>
             )}
             {/* 🔗 复制 detail.md 绝对路径：调后端 memory_detail_abs_path

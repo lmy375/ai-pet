@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelTasks 任务行右键加「📊 看 history timeline」popover：复用 task_get_detail.history 数据弹小 timeline 视图（与 TG /timeline 对偶）。
 - PanelMemory 加「🗑 批量清空 cat」按钮（带 confirm token 防误触）：empty 整个 cat 的临时项 cleanup。
 
 
