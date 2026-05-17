@@ -10463,6 +10463,56 @@ export function PanelTasks({
                           📜 复制 raw
                         </button>
                       )}
+                    {/* 📋 复制 task ref chip — 一键复制 `「<title>」` token
+                        到剪贴板，让 owner 粘到 detail.md / ChatPanel input /
+                        TG /quick 等位置免手敲 ref 语法。与既有 detail.md
+                        编辑器内 task ref chip click（跳到该 task）/ ⌘K
+                        palette「insertRef」mode 同 token 协议，仅本入口是
+                        「快从 row hover 拿 token」。
+                        permanent gate `taskPreviewHoverTitle === t.title`
+                        与其它 hover chip 同；title 空（极端兜底）不显。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      t.title.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const token = `「${t.title}」`;
+                            try {
+                              await navigator.clipboard.writeText(token);
+                              setBulkResultMsg(
+                                `📋 已复制 ref：${token}`,
+                              );
+                            } catch (err) {
+                              setBulkResultMsg(`复制 ref 失败：${err}`);
+                            }
+                            window.setTimeout(
+                              () => setBulkResultMsg(""),
+                              2500,
+                            );
+                          }}
+                          title={`复制 task ref token「${t.title}」到剪贴板 — 粘到 detail.md / chat / 别的 task description 引用本 task；token 在 detail.md 渲染成可点 chip 跳回。`}
+                          aria-label="copy task ref token"
+                          style={{
+                            fontSize: 10,
+                            padding: "0 5px",
+                            marginLeft: 6,
+                            border:
+                              "1px dashed var(--pet-color-border)",
+                            borderRadius: 3,
+                            background: "transparent",
+                            color: "var(--pet-color-muted)",
+                            cursor: "pointer",
+                            fontFamily:
+                              "'SF Mono', 'Menlo', monospace",
+                            lineHeight: 1.5,
+                            verticalAlign: "middle",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          📋 ref
+                        </button>
+                      )}
                     {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
                         时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
                         audit。complement 既有 dueUrgency 三档（normal /
