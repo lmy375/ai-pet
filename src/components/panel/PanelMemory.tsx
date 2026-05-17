@@ -1870,7 +1870,7 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         <input
           ref={searchInputRef}
           style={{ ...s.input, flex: 1 }}
-          placeholder="搜索记忆…（⌘F / Ctrl+F 聚焦）"
+          placeholder="搜索记忆…（输入即段内过滤 · Enter 跨 cat 命中清单 · ⌘F 聚焦）"
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           onKeyDown={(e) => {
@@ -4216,6 +4216,20 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 // "every" 等于"今日要执行 OR 每天类"。
                 const scheduleFilteredItems = (() => {
                   let pool = cat.items;
+                  // 🔍 段内 fuzzy 过滤（live as you type）：searchKeyword 非空
+                  // 且未触发 backend search（searchResults===null）时，把 pool
+                  // 收窄到 title 或 description 含 keyword 的 item（case-
+                  // insensitive 子串匹配）。让 owner 在长 cat 里"快速定位"
+                  // 不必先按 Enter 走 backend search。Enter 仍走 handleSearch
+                  // 切换 results view（跨 cat 命中清单）。
+                  const inplaceFilter = searchKeyword.trim().toLowerCase();
+                  if (inplaceFilter && searchResults === null) {
+                    pool = pool.filter((it) => {
+                      const t = it.title.toLowerCase();
+                      const d = it.description.toLowerCase();
+                      return t.includes(inplaceFilter) || d.includes(inplaceFilter);
+                    });
+                  }
                   // 🔇 仅 silent filter（section header chip 点亮时）：把
                   // pool 收窄到仅含 [silent] marker 的 item。与 schedule kind
                   // filter 是 AND 关系（叠加），让 owner 选 "silent + every"
