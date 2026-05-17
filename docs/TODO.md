@@ -9,7 +9,6 @@
 >
 
 - ChatMini 加「📌 view marks」popover：读 markedMessages sel-* 项 + 每 mark 显时间戳 chip + click 删 — own marks 浏览入口。
-- PanelTasks 顶部加「⏱ 平均完成耗时」chip：扫近 30 天 done task 算 created→updated 平均 hours，量化通量。
 - detail.md 编辑器 ⌘` markdown shortcut：选区 wrap 代码块（` ``` ... ``` `），与 ⌘B / ⌘I / ⌘K 同模板。
 - PanelTasks task 右键菜单加「📑 复制为新 task」：复 description + detail.md 到 auto -copy-N（与 PanelMemory iter #405 对偶）。
 
