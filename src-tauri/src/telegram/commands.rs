@@ -393,6 +393,12 @@ pub enum TgCommand {
     /// 互补 —— 那个看今日 due/done 切片，这个 audit 昨日产出。无参；多余
     /// 尾部一律忽略。空 → "昨日无完成记录"。
     Yesterday,
+    /// `/today_done` —— 列今日 done 任务标题 + `[result:]` 摘要。与 /today
+    /// 互补 —— 那个含 due 段 + done 段（双视图但 done 段无 result 摘要），
+    /// 本命令纯 done 切片 + result 一行式（与 /yesterday 同模板但 scope 是
+    /// 今日）。owner 想"今天做完啥 + 各条产物"一行扫读时用。无参；多余
+    /// 尾部一律忽略。
+    TodayDone,
     /// `/quick <text>` —— 与 `/task` 同后端但 reply 极短（仅 ✓ + title），
     /// 适合 owner 想"快速 dump 个 task 不被长 reply 打扰"的场景。priority
     /// 始终 P3（不解析 !! / !!!）— 想精细化走 `/task !!` 或 `/task !!!`。
@@ -514,6 +520,7 @@ impl TgCommand {
             TgCommand::Sleep => "sleep",
             TgCommand::Quick { .. } => "quick",
             TgCommand::Yesterday => "yesterday",
+            TgCommand::TodayDone => "today_done",
             TgCommand::Streak => "streak",
             TgCommand::Pri { .. } => "pri",
             TgCommand::Feedback { .. } => "feedback",
@@ -591,6 +598,7 @@ impl TgCommand {
             | TgCommand::Random
             | TgCommand::Sleep
             | TgCommand::Yesterday
+            | TgCommand::TodayDone
             | TgCommand::Streak
             | TgCommand::CancelAllError { .. }
             | TgCommand::Reset
@@ -670,6 +678,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("sleep", "Mute proactive for 8 hours with a friendly good-night reply (= /mute 480)"),
             ("quick", "Silently create a P3 task with minimal ack — for brain-dump without long reply"),
             ("yesterday", "List yesterday's done tasks with result summaries (complement to /today)"),
+            ("today_done", "Today's done tasks with [result:] summary one-liner (done-only slice of /today)"),
             ("streak", "Consecutive done-days streak + 7d / 30d done totals"),
             ("pri", "Set a task's priority (0..=9) without rewriting the rest"),
             ("feedback", "Send owner feedback to feedback_history (influences pet's next proactive turn)"),
@@ -728,6 +737,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("sleep", "一键 mute proactive 8 小时 + 友好「晚安」reply（= /mute 480）"),
             ("quick", "静默创 P3 task + 极短 reply — 适合快速 dump 不被长回复打扰"),
             ("yesterday", "列昨日 done 任务标题 + result 摘要（与 /today 互补）"),
+            ("today_done", "今日已 done 任务标题 + result 摘要一行式（/today 的 done 切片 + result）"),
             ("streak", "连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数"),
             ("pri", "单改任务 priority（0..=9）不走 /edit 全量覆写"),
             ("feedback", "给 pet 留反馈（写 feedback_history，影响下次 proactive turn）"),
@@ -1141,6 +1151,11 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "quick" => Some(TgCommand::Quick { text: title }),
         // `/yesterday` 无参；多余尾部忽略
         "yesterday" => Some(TgCommand::Yesterday),
+        // `/today_done`：无参，多余尾部忽略（与 /today / /yesterday 同
+        // 容忍策略）。注：name 必须 lowercase ASCII / digit / `_`（TG
+        // 客户端约束），`today_done` 是 snake_case 不用 dash 避免被
+        // drift-defense 拦截（dash 在 parse_tg_command 内部走 reject）。
+        "today_done" => Some(TgCommand::TodayDone),
         // `/streak` 无参；多余尾部忽略
         "streak" => Some(TgCommand::Streak),
         // `/pri <title> <N>`：rsplit 末尾 whitespace token 作 priority u8
@@ -1615,7 +1630,8 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "silent_all", "markers", "tags", "tag", "mood",
-    "whoami", "today", "yesterday", "streak", "now", "aware", "here",
+    "whoami", "today", "today_done", "yesterday", "streak", "now",
+    "aware", "here",
     "last", "random", "sleep", "quick", "due", "recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote",
     "reflect", "feedback", "feedback_history", "transient",
@@ -1731,7 +1747,8 @@ pub fn format_help_for_topic(
         "random" => "🎲 /random\n\n用法：从本聊天派单的 active 任务（pending / error）里随机抽 1 条让宠物推荐 — 给 owner「选择困难」/「不知道先做哪个」时让 pet 决定下一步。无参；多次调用会得到不同 task。无 active 任务时给兜底文案。\n\n示例：\n  /random\n\n相关：/tasks（看全清单）；/blocked（被锁住的）；/today（今日到期）。",
         "sleep" => "🌙 /sleep\n\n用法：一键让宠物 mute proactive 8 小时 + 友好「晚安」reply。无参。比手敲 `/mute 480` 更直觉 — owner 睡前 / 长会议 / 想 deep work 时一句话搞定。\n\n示例：\n  /sleep\n\n相关：/mute [N]（精确控制 N 分钟）；/mute 0（立刻解除静音）。",
         "quick" => "⚡ /quick <text>\n\n用法：静默创建一条 P3 task — 后端走 /task 同路径，但 reply 极短（仅 ✓ + title），适合 owner 想「快速 dump 想法 / 灵感不被长 reply 打扰」时用。priority 始终 P3；想精细化（!! / !!!）走 /task。空 text 由 handler 走 missing-arg hint。\n\n示例：\n  /quick 整理 ~/Downloads\n  /quick 写周报\n\n相关：/task <title>（带 !! P5 / !!! P7 前缀 + 完整确认 reply）；/note（杂项 brain-dump，不进 butler_tasks）。",
-        "yesterday" => "📅 /yesterday\n\n用法：列本聊天派单中昨日完成的任务标题 + result 摘要（按 updated_at 倒序）。无参。owner 想 audit 「昨天做完了啥」时用。\n\n示例：\n  /yesterday\n\n相关：/today（今日切片）；/recent（不限日期最近 N）；/digest（含 result 摘要的最近 N）。",
+        "yesterday" => "📅 /yesterday\n\n用法：列本聊天派单中昨日完成的任务标题 + result 摘要（按 updated_at 倒序）。无参。owner 想 audit 「昨天做完了啥」时用。\n\n示例：\n  /yesterday\n\n相关：/today（今日切片）；/today_done（今日 done + result）；/recent（不限日期最近 N）；/digest（含 result 摘要的最近 N）。",
+        "today_done" => "📅 /today_done\n\n用法：列今日完成的任务标题 + `[result:]` 摘要一行式（按 updated_at 倒序）。无参；多余尾部忽略。owner 想 audit「我今天做完啥 + 各条产物」一行扫读时用。\n\n输出格式：\n  📅 今日（YYYY-MM-DD）完成 N 条：\n  · ✅ <title> — <result preview 40 字截断>\n  · ✅ ...\n\n对比 /today：那个含 due 段（pending + 今日 due）+ done 段（标题清单无 result）—— 完整今日叙事；本命令是「纯 done 切片 + result 摘要」分流入口，与 /yesterday 同模板但 scope 是今日。\n\n示例：\n  /today_done\n\n相关：/today（含 due 双视图）；/yesterday（昨日 done + result）；/digest [N]（不限日期最近 N done + result）；/streak（连续 done 天数）。",
         "streak" => "🔥 /streak\n\n用法：显本聊天 done 完成节奏数据：连续完成天数 + 近 7 天 / 30 天 done 总数。无参。owner audit 「最近完成节奏怎么样 / 有没有 streak 在保」时用。streak 末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。\n\n示例：\n  /streak\n\n相关：/today（今日切片）；/yesterday（昨日产出）；/stats（pending / overdue 等汇总）。",
         "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
@@ -1808,6 +1825,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/sleep  —  一键 mute proactive 8 小时 + 友好「晚安」reply（与 /mute 480 等价但语气温和）".to_string(),
         "/quick <text>  —  静默创 P3 task + 极短 reply（仅 ✓ + title）— 适合快速 dump 不被长回复打扰".to_string(),
         "/yesterday  —  列昨日 done 任务标题 + result 摘要（与 /today 互补 — audit 昨日产出）".to_string(),
+        "/today_done  —  今日 done 任务标题 + result 摘要一行式（/today 的 done 切片 + result 摘要）".to_string(),
         "/streak  —  连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数（audit 完成节奏）".to_string(),
         "/pri <title> <N>  —  单改 priority（0..=9）— 不走 /edit 全量覆写".to_string(),
         "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
@@ -3677,6 +3695,52 @@ pub fn format_yesterday_reply(
     out
 }
 
+/// `/today_done` 命令回复文案。pure：filter Done + updated_at 在 `today`
+/// 当日的任务。按 updated_at 倒序排（最新完成在前），列标题 + `[result:]`
+/// 摘要（若有）。空 → 友好兜底，建议 `/today` 看 due 段。
+///
+/// 与 `format_yesterday_reply` 同模板但 scope 是今日 — 实现独立保持
+/// 两 fn 各自单测点稳定（不抽 generic boundary day 函数避免 owner
+/// 看到混合错文案）。
+pub fn format_today_done_reply(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let t_str = today.format("%Y-%m-%d").to_string();
+    let mut done: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Done))
+        .filter(|v| v.updated_at.starts_with(&t_str))
+        .collect();
+    if done.is_empty() {
+        return format!(
+            "📅 今日（{}）暂无完成记录。\n用 /today 看今日 due / /yesterday 看昨日产出。",
+            t_str
+        );
+    }
+    // updated_at ISO 字典序 = 时间序，最新在前
+    done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let mut out = format!("📅 今日（{}）完成 {} 条：", t_str, done.len());
+    for v in &done {
+        out.push_str(&format!("\n· ✅ {}", v.title));
+        if let Some(r) = &v.result {
+            let r_trim = r.trim();
+            if !r_trim.is_empty() {
+                // result 摘要截 40 char 保 reply 紧凑（与 /yesterday 同 cap）
+                let preview: String = if r_trim.chars().count() > 40 {
+                    let head: String = r_trim.chars().take(40).collect();
+                    format!("{}…", head)
+                } else {
+                    r_trim.to_string()
+                };
+                out.push_str(&format!(" — {}", preview));
+            }
+        }
+    }
+    out
+}
+
 /// `/quick <text>` 命令回复文案。pure：极短 ack — 与 `format_task_created_
 /// success`（包含完整 /tasks / /cancel 指引）反向 — 让 owner 快速 dump
 /// 不被长 reply 打扰。
@@ -4984,7 +5048,7 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today",
-            "yesterday", "streak", "now", "last", "random", "sleep", "quick",
+            "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
@@ -5454,7 +5518,7 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "yesterday", "streak", "now", "last", "random", "sleep", "quick",
+            "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "edit", "edit_due", "pri", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
@@ -8690,6 +8754,114 @@ mod tests {
         done.updated_at = "2026-05-16T10:00:00+08:00".to_string();
         let s = format_yesterday_reply(&[done], today);
         // 空白 result trim 后空 → 不渲染 " — ...." segment
+        assert!(!s.contains(" — "), "no empty result segment: {s}");
+        assert!(s.contains("t"), "title still rendered: {s}");
+    }
+
+    // -------- /today_done parse + format --------
+
+    #[test]
+    fn today_done_parses_no_args() {
+        assert_eq!(
+            parse_tg_command("/today_done"),
+            Some(TgCommand::TodayDone)
+        );
+        assert_eq!(
+            parse_tg_command("/today_done  "),
+            Some(TgCommand::TodayDone)
+        );
+        assert_eq!(
+            parse_tg_command("/today_done now"),
+            Some(TgCommand::TodayDone)
+        );
+        // case-insensitive parse 与 /yesterday 一致
+        assert_eq!(
+            parse_tg_command("/TODAY_DONE"),
+            Some(TgCommand::TodayDone)
+        );
+    }
+
+    #[test]
+    fn today_done_reply_empty_shows_friendly_fallback() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let s = format_today_done_reply(&[], today);
+        assert!(s.contains("今日（2026-05-17）暂无完成记录"), "{s}");
+        // 兜底里要建议两条 alt 入口
+        assert!(s.contains("/today"), "alt hint /today: {s}");
+        assert!(s.contains("/yesterday"), "alt hint /yesterday: {s}");
+    }
+
+    #[test]
+    fn today_done_reply_filters_to_done_on_today_only() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut today_done = view("t_task", 3, None, TaskStatus::Done, Some("today result"));
+        today_done.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut y_done = view("y_task", 3, None, TaskStatus::Done, Some("y"));
+        y_done.updated_at = "2026-05-16T15:00:00+08:00".to_string();
+        let mut t_pending = view("t_pending", 3, None, TaskStatus::Pending, None);
+        t_pending.updated_at = "2026-05-17T09:00:00+08:00".to_string();
+        let mut t_cancelled = view(
+            "t_cancelled",
+            3,
+            None,
+            TaskStatus::Cancelled,
+            Some("dropped"),
+        );
+        t_cancelled.updated_at = "2026-05-17T11:00:00+08:00".to_string();
+        let s = format_today_done_reply(
+            &[today_done, y_done, t_pending, t_cancelled],
+            today,
+        );
+        assert!(s.contains("t_task"), "today_done included: {s}");
+        assert!(s.contains("完成 1 条"), "count reflects filter: {s}");
+        assert!(!s.contains("y_task"), "yesterday excluded: {s}");
+        assert!(!s.contains("t_pending"), "pending excluded: {s}");
+        assert!(!s.contains("t_cancelled"), "cancelled excluded: {s}");
+    }
+
+    #[test]
+    fn today_done_reply_sorts_by_updated_at_desc() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut early = view("早", 3, None, TaskStatus::Done, Some("e"));
+        early.updated_at = "2026-05-17T08:00:00+08:00".to_string();
+        let mut late = view("晚", 3, None, TaskStatus::Done, Some("l"));
+        late.updated_at = "2026-05-17T22:30:00+08:00".to_string();
+        let mut mid = view("中", 3, None, TaskStatus::Done, Some("m"));
+        mid.updated_at = "2026-05-17T14:00:00+08:00".to_string();
+        let s = format_today_done_reply(&[early, mid, late], today);
+        let idx_late = s.find("晚").expect("晚 in output");
+        let idx_mid = s.find("中").expect("中 in output");
+        let idx_early = s.find("早").expect("早 in output");
+        assert!(idx_late < idx_mid, "晚 before 中: {s}");
+        assert!(idx_mid < idx_early, "中 before 早: {s}");
+    }
+
+    #[test]
+    fn today_done_reply_includes_result_summary() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut done = view("写文档", 3, None, TaskStatus::Done, Some("提交到 PR #42"));
+        done.updated_at = "2026-05-17T16:00:00+08:00".to_string();
+        let s = format_today_done_reply(&[done], today);
+        assert!(s.contains("写文档"), "{s}");
+        assert!(s.contains("— 提交到 PR #42"), "result preview: {s}");
+    }
+
+    #[test]
+    fn today_done_reply_truncates_long_result_at_40_chars() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let long_result = "x".repeat(80);
+        let mut done = view("t", 3, None, TaskStatus::Done, Some(long_result.as_str()));
+        done.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let s = format_today_done_reply(&[done], today);
+        assert!(s.contains("…"), "long result should be truncated: {s}");
+    }
+
+    #[test]
+    fn today_done_reply_omits_empty_result() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut done = view("t", 3, None, TaskStatus::Done, Some("   "));
+        done.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let s = format_today_done_reply(&[done], today);
         assert!(!s.contains(" — "), "no empty result segment: {s}");
         assert!(s.contains("t"), "title still rendered: {s}");
     }
