@@ -786,6 +786,15 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Sleep => {
+            // 一键 8h mute：复用 set_mute_minutes 同后端（与 /mute 等价）。
+            // format_sleep_reply 走专属温和文案。SLEEP_MUTE_MINUTES = 480。
+            let minutes = crate::telegram::commands::SLEEP_MUTE_MINUTES;
+            let _ = crate::proactive::set_mute_minutes(minutes);
+            let until_local =
+                Some(chrono::Local::now() + chrono::Duration::minutes(minutes));
+            crate::telegram::commands::format_sleep_reply(until_local)
+        }
         TgCommand::Random => {
             // 随机抽 active 任务：system time nanos 当 seed 拿非确定性。
             // formatter 走 `seed % candidates.len()` 索引选一条。read path
