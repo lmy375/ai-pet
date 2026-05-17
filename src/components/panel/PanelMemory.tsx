@@ -6629,11 +6629,39 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             </div>
                           );
                         })()}
+                        {/* 📄 detail.md 相对路径行 — 既有 hover preview popover
+                            内的 path 文本。本 iter 让其可点 click 复制
+                            **绝对** 路径（含 ~/.config/pet/memories/... 前缀），
+                            走既有 memory_detail_abs_path Tauri 命令 — 与展
+                            开后的「📋📄 复制 detail.md 绝对路径」button 同
+                            后端，但本入口在 hover preview 内不需展开 item，
+                            VSCode ⌘P / Finder ⇧⌘G / shell `open` 用户少
+                            一次点击。stopPropagation 防触发外层 hover preview
+                            的 click（保 hover preview 仍 sticky） */}
                         <div
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              const abs = await invoke<string>(
+                                "memory_detail_abs_path",
+                                { detailPath: item.detail_path },
+                              );
+                              await navigator.clipboard.writeText(abs);
+                              setMessage(`📄 已复制 detail.md 绝对路径`);
+                            } catch (err) {
+                              setMessage(`复制 path 失败：${err}`);
+                            }
+                            window.setTimeout(() => setMessage(""), 2500);
+                          }}
+                          title={`点击复制绝对路径（含 ~/.config/pet/memories/... 前缀）— 粘到 VSCode ⌘P / Finder ⇧⌘G / shell open 直接打开。当前显的是相对路径。`}
+                          role="button"
+                          tabIndex={0}
                           style={{
                             fontSize: 10,
                             color: "var(--pet-color-muted)",
                             marginBottom: 4,
+                            cursor: "pointer",
+                            userSelect: "none",
                           }}
                         >
                           📄 {item.detail_path}
