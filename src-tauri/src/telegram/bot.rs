@@ -984,6 +984,37 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Pri { title, priority } => {
+            // 单改 priority — 走 task_set_priority 同后端（保 due / body /
+            // 其它 markers 不动）。空 title / 无 priority → formatter usage
+            // hint。title resolve 与 /done /cancel 同三层。
+            if title.trim().is_empty() || priority.is_none() {
+                crate::telegram::commands::format_pri_reply(&title, priority, Ok(()))
+            } else {
+                let pri = priority.unwrap();
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        match crate::commands::task::task_set_priority(t.clone(), pri) {
+                            Ok(()) => crate::telegram::commands::format_pri_reply(
+                                &t,
+                                Some(pri),
+                                Ok(()),
+                            ),
+                            Err(e) => crate::telegram::commands::format_pri_reply(
+                                &t,
+                                Some(pri),
+                                Err(&e),
+                            ),
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Edit { title, new_desc } => {
             // 空 title / 空 new_desc → formatter 走 usage hint 路径，不真改。
             if title.trim().is_empty() || new_desc.trim().is_empty() {

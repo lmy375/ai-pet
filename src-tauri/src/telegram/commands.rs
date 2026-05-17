@@ -139,6 +139,14 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
+    /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
+    /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
+    /// 走 usage hint；title 缺失 → missing-arg。
+    Pri {
+        title: String,
+        priority: Option<u8>,
+    },
     /// `/streak` —— 本聊天连续有 done 完成的天数 + 近 7 天 / 近 30 天 done
     /// 总数。给 owner audit 「我最近完成节奏怎么样 / 有没有 streak 在保」。
     /// streak 末端：今日有 done → 今日；否则若 yesterday 有 → yesterday；
@@ -260,6 +268,7 @@ impl TgCommand {
             TgCommand::Quick { .. } => "quick",
             TgCommand::Yesterday => "yesterday",
             TgCommand::Streak => "streak",
+            TgCommand::Pri { .. } => "pri",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -284,7 +293,8 @@ impl TgCommand {
             | TgCommand::Note { text: title }
             | TgCommand::Reflect { text: title }
             | TgCommand::Show { title }
-            | TgCommand::Quick { text: title } => title.as_str(),
+            | TgCommand::Quick { text: title }
+            | TgCommand::Pri { title, .. } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
@@ -386,6 +396,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("quick", "Silently create a P3 task with minimal ack — for brain-dump without long reply"),
             ("yesterday", "List yesterday's done tasks with result summaries (complement to /today)"),
             ("streak", "Consecutive done-days streak + 7d / 30d done totals"),
+            ("pri", "Set a task's priority (0..=9) without rewriting the rest"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -428,6 +439,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("quick", "静默创 P3 task + 极短 reply — 适合快速 dump 不被长回复打扰"),
             ("yesterday", "列昨日 done 任务标题 + result 摘要（与 /today 互补）"),
             ("streak", "连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数"),
+            ("pri", "单改任务 priority（0..=9）不走 /edit 全量覆写"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -764,6 +776,39 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "yesterday" => Some(TgCommand::Yesterday),
         // `/streak` 无参；多余尾部忽略
         "streak" => Some(TgCommand::Streak),
+        // `/pri <title> <N>`：rsplit 末尾 whitespace token 作 priority u8
+        // (≤ 9)；解析失败 → priority=None 让 handler 走 usage hint。title
+        // 含空格 / 中文标点都保（与 /snooze trailing token 同模板）。
+        "pri" => {
+            let s = title.trim();
+            if s.is_empty() {
+                return Some(TgCommand::Pri {
+                    title: String::new(),
+                    priority: None,
+                });
+            }
+            let (title_out, pri_out) = match s.rfind(char::is_whitespace) {
+                Some(pos) => {
+                    let left = s[..pos].trim();
+                    let right = s[pos..].trim();
+                    match right.parse::<u8>() {
+                        Ok(n) if n <= 9 => (left.to_string(), Some(n)),
+                        _ => (s.to_string(), None),
+                    }
+                }
+                None => {
+                    // 无空白 — 仅 1 个 token；可能是"仅 title"或"仅 N"。前
+                    // 者更常见；若是纯数字 0-9 也归入 title（owner 想 set
+                    // priority 但漏了 title）。统一返 priority=None handler
+                    // 走 usage hint。
+                    (s.to_string(), None)
+                }
+            };
+            Some(TgCommand::Pri {
+                title: title_out,
+                priority: pri_out,
+            })
+        }
         // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
         // 时存 raw_arg 让 handler usage hint 时回显（preset 标 None 表示
         // "无效"）。preset 名单：tomorrow / thisweek / nextweek 含中英 alias。
@@ -1112,7 +1157,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
     "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
-    "digest", "edit", "reflect", "find", "show", "blocked", "snoozed",
+    "digest", "edit", "pri", "reflect", "find", "show", "blocked", "snoozed",
     "reset", "version", "help",
 ];
 
@@ -1172,6 +1217,7 @@ pub fn format_help_for_topic(
         "quick" => "⚡ /quick <text>\n\n用法：静默创建一条 P3 task — 后端走 /task 同路径，但 reply 极短（仅 ✓ + title），适合 owner 想「快速 dump 想法 / 灵感不被长 reply 打扰」时用。priority 始终 P3；想精细化（!! / !!!）走 /task。空 text 由 handler 走 missing-arg hint。\n\n示例：\n  /quick 整理 ~/Downloads\n  /quick 写周报\n\n相关：/task <title>（带 !! P5 / !!! P7 前缀 + 完整确认 reply）；/note（杂项 brain-dump，不进 butler_tasks）。",
         "yesterday" => "📅 /yesterday\n\n用法：列本聊天派单中昨日完成的任务标题 + result 摘要（按 updated_at 倒序）。无参。owner 想 audit 「昨天做完了啥」时用。\n\n示例：\n  /yesterday\n\n相关：/today（今日切片）；/recent（不限日期最近 N）；/digest（含 result 摘要的最近 N）。",
         "streak" => "🔥 /streak\n\n用法：显本聊天 done 完成节奏数据：连续完成天数 + 近 7 天 / 30 天 done 总数。无参。owner audit 「最近完成节奏怎么样 / 有没有 streak 在保」时用。streak 末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。\n\n示例：\n  /streak\n\n相关：/today（今日切片）；/yesterday（昨日产出）；/stats（pending / overdue 等汇总）。",
+        "pri" => "🎯 /pri <title> <N>\n\n用法：单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers（[every:] / [pinned] / [silent] / [snooze:] / [blockedBy:] / detail.md 等）。N 必须是 0-9 整数。title 含空格 / 中文标点也保（parser 取末 whitespace token 当 N）。\n\n示例：\n  /pri 整理 Downloads 5\n  /pri 写周报 7\n  /pri 跑步 0  （降到 P0 = idea 抽屉）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1232,6 +1278,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/quick <text>  —  静默创 P3 task + 极短 reply（仅 ✓ + title）— 适合快速 dump 不被长回复打扰".to_string(),
         "/yesterday  —  列昨日 done 任务标题 + result 摘要（与 /today 互补 — audit 昨日产出）".to_string(),
         "/streak  —  连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数（audit 完成节奏）".to_string(),
+        "/pri <title> <N>  —  单改 priority（0..=9）— 不走 /edit 全量覆写".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2275,6 +2322,28 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
         out.push_str(&format!("\n\n无 #tag 任务：{} 条", untagged));
     }
     out
+}
+
+/// `/pri <title> <N>` 命令回复文案。pure：
+/// - title 空 → usage hint
+/// - priority None（解析失败 / 缺失）→ usage hint with examples
+/// - resolved_title = Err → format_command_error (caller 路径)
+/// - save_ok = Ok(()) → "🎯 已设「<title>」P<N>"
+/// - save_ok = Err(msg) → "🎯 改 priority 失败：<msg>"
+pub fn format_pri_reply(
+    title: &str,
+    priority: Option<u8>,
+    save_ok: Result<(), &str>,
+) -> String {
+    let t = title.trim();
+    if t.is_empty() || priority.is_none() {
+        return "🎯 用法：/pri <title> <N>\n\n单改任务 priority（0..=9）— 不走 /edit 全量覆写，保留所有其它 markers。N 必须是 0-9 整数。title 含空格 / 中文标点也保（取末 token 当 N）。\n\n例：/pri 整理 Downloads 5\n例：/pri 写周报 7\n例：/pri 跑步 0".to_string();
+    }
+    let n = priority.unwrap();
+    match save_ok {
+        Ok(()) => format!("🎯 已设「{}」P{}", t, n),
+        Err(e) => format!("🎯 改 priority 失败：{}", e),
+    }
 }
 
 /// pure：从 views 抽出 done 任务的 updated_at 当日 NaiveDate 集合。
@@ -3407,8 +3476,8 @@ mod tests {
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "recent", "digest", "edit", "reflect", "find", "show",
-            "blocked", "snoozed", "reset", "version", "help",
+            "due", "recent", "digest", "edit", "pri", "reflect", "find",
+            "show", "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3874,8 +3943,8 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "edit", "reflect", "show", "tags", "reset", "version",
-            "help",
+            "due", "edit", "pri", "reflect", "show", "tags", "reset",
+            "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5677,6 +5746,128 @@ mod tests {
         cancelled.status = TaskStatus::Cancelled;
         let s = format_tags_reply(&[active, done, cancelled]);
         assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
+    }
+
+    // -------- /pri parse + format --------
+
+    #[test]
+    fn pri_parses_title_with_priority() {
+        assert_eq!(
+            parse_tg_command("/pri 写周报 5"),
+            Some(TgCommand::Pri {
+                title: "写周报".to_string(),
+                priority: Some(5),
+            })
+        );
+    }
+
+    #[test]
+    fn pri_parses_title_with_spaces_and_priority() {
+        // title 含空格，最后一个 token 是 N
+        assert_eq!(
+            parse_tg_command("/pri 整理 Downloads 桌面 7"),
+            Some(TgCommand::Pri {
+                title: "整理 Downloads 桌面".to_string(),
+                priority: Some(7),
+            })
+        );
+    }
+
+    #[test]
+    fn pri_parses_priority_zero_and_nine_boundary() {
+        assert_eq!(
+            parse_tg_command("/pri t 0"),
+            Some(TgCommand::Pri {
+                title: "t".to_string(),
+                priority: Some(0),
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/pri t 9"),
+            Some(TgCommand::Pri {
+                title: "t".to_string(),
+                priority: Some(9),
+            })
+        );
+    }
+
+    #[test]
+    fn pri_rejects_priority_out_of_range() {
+        // 10 / 100 越界 → priority=None，整段当 title
+        assert_eq!(
+            parse_tg_command("/pri t 10"),
+            Some(TgCommand::Pri {
+                title: "t 10".to_string(),
+                priority: None,
+            })
+        );
+    }
+
+    #[test]
+    fn pri_no_trailing_number_treats_all_as_title() {
+        // 末 token 不是数字 → priority None，全做 title
+        assert_eq!(
+            parse_tg_command("/pri 整理 Downloads"),
+            Some(TgCommand::Pri {
+                title: "整理 Downloads".to_string(),
+                priority: None,
+            })
+        );
+    }
+
+    #[test]
+    fn pri_empty_yields_both_empty() {
+        assert_eq!(
+            parse_tg_command("/pri"),
+            Some(TgCommand::Pri {
+                title: String::new(),
+                priority: None,
+            })
+        );
+    }
+
+    #[test]
+    fn pri_single_token_returns_priority_none() {
+        // 仅 "5" — 没空白，无法区分是 title='5' 还是 priority=5
+        // parser 走"统一返 None handler 走 usage hint" 路径
+        assert_eq!(
+            parse_tg_command("/pri 5"),
+            Some(TgCommand::Pri {
+                title: "5".to_string(),
+                priority: None,
+            })
+        );
+    }
+
+    #[test]
+    fn pri_reply_empty_title_shows_usage() {
+        let s = format_pri_reply("", Some(5), Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/pri <title> <N>"), "{s}");
+        assert!(s.contains("0..=9"), "should describe range: {s}");
+    }
+
+    #[test]
+    fn pri_reply_no_priority_shows_usage_even_with_title() {
+        let s = format_pri_reply("写周报", None, Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("0-9 整数"), "should explain N: {s}");
+    }
+
+    #[test]
+    fn pri_reply_success_shows_title_and_priority() {
+        let s = format_pri_reply("写周报", Some(5), Ok(()));
+        assert!(s.contains("🎯"), "{s}");
+        assert!(s.contains("已设"), "{s}");
+        assert!(s.contains("写周报"), "{s}");
+        assert!(s.contains("P5"), "{s}");
+    }
+
+    #[test]
+    fn pri_reply_failure_shows_error() {
+        let s = format_pri_reply("写周报", Some(5), Err("task not found"));
+        assert!(s.contains("改 priority 失败"), "{s}");
+        assert!(s.contains("task not found"), "{s}");
     }
 
     // -------- /streak parse + format --------
