@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelDebug 加「📊 近 1h tokens」chip：扫 llm_logs 算近 1 小时 token 累计 — audit 高峰耗用入口。
 - PanelTasks 行右键加「📌+⏰5min 提醒」组合项：钉住 + 5 分钟后软提醒 — sprint 突发场景。
 - ChatMini 顶部加「⏱ pet 沉默 N 分」chip：自上次 pet 主动开口算起 — owner 觉察 pet 卡住入口。
 

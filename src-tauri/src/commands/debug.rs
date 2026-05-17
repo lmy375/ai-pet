@@ -324,6 +324,64 @@ pub fn get_llm_logs(limit: Option<usize>) -> Vec<String> {
     }
 }
 
+/// PanelDebug 「📊 近 1h tokens」chip 用：扫 llm.log 中 `done_time` 在
+/// 最近 N 秒内的条目，按 (request + response_text + tool_calls JSON
+/// serialized) 字符数 / 4 估算 token 累计（heuristic — 与 Anthropic
+/// 真实 billing 不完全一致，但相对趋势有参考价值）。
+///
+/// 返 `(turns, approx_tokens)` —— turns 是符合窗口的 LLM round 数，
+/// approx_tokens 是按 4 chars/token 估计的累计。窗口外 / 解析失败行
+/// 跳过；done_time 字段缺失则跳过（旧 log 行兼容 — `write_llm_log`
+/// 总会写该字段）。
+#[tauri::command]
+pub fn get_llm_tokens_recent_secs(secs: u64) -> (u32, u64) {
+    let path = log_dir().join("llm.log");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+    let now = chrono::Local::now().fixed_offset();
+    let cutoff = now - chrono::Duration::seconds(secs as i64);
+    let mut turns: u32 = 0;
+    let mut approx_tokens: u64 = 0;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(done_time) = entry.get("done_time").and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Ok(ts) = chrono::DateTime::parse_from_rfc3339(done_time) else {
+            continue;
+        };
+        if ts < cutoff {
+            continue;
+        }
+        // 估计：request body 字符数（含 system / messages / tools schema）
+        // + response_text 字符数 + tool_calls JSON 字符数。除 4 当 token。
+        let mut chars: u64 = 0;
+        if let Some(req) = entry.get("request") {
+            chars = chars.saturating_add(req.to_string().chars().count() as u64);
+        }
+        if let Some(resp) = entry.get("response") {
+            if let Some(text) = resp.get("text").and_then(|v| v.as_str()) {
+                chars =
+                    chars.saturating_add(text.chars().count() as u64);
+            }
+            if let Some(tc) = resp.get("tool_calls") {
+                chars = chars.saturating_add(tc.to_string().chars().count() as u64);
+            }
+        }
+        approx_tokens = approx_tokens.saturating_add(chars / 4);
+        turns = turns.saturating_add(1);
+    }
+    (turns, approx_tokens)
+}
+
 #[tauri::command]
 pub fn get_logs(store: State<'_, LogStore>) -> Vec<String> {
     store.0.lock().unwrap().clone()

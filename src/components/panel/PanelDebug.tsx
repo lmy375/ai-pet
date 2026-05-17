@@ -1075,6 +1075,37 @@ export function PanelDebug() {
     window.setTimeout(() => setDebugExportMsg(""), 3500);
   };
 
+  /// 📊 近 1h tokens chip：调 `get_llm_tokens_recent_secs(3600)` 扫
+  /// llm.log 中 done_time 在最近 1 小时内的 round 数 + 估计 token 累计
+  /// （4 chars/token 启发式 — 与真实 billing 不完全一致但相对趋势可
+  /// audit "高峰耗用 / consolidate 突发"）。30s poll；mount 立即 fetch。
+  const [llmTokens1h, setLlmTokens1h] = useState<{
+    turns: number;
+    approxTokens: number;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const t = await invoke<[number, number]>(
+          "get_llm_tokens_recent_secs",
+          { secs: 3600 },
+        );
+        if (!cancelled) {
+          setLlmTokens1h({ turns: t[0], approxTokens: t[1] });
+        }
+      } catch (e) {
+        console.warn("get_llm_tokens_recent_secs failed (non-fatal):", e);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   /// 🧹 force consolidate：手动调 `trigger_consolidate` Tauri 命令，
   /// 不等 cron。与 PanelMemory「立即整理」同后端但 debug 入口偏向「不
   /// 离开 debug 视图就能跑一次 sweep」 — 验证 prompt tweak / audit 一
@@ -2508,6 +2539,31 @@ export function PanelDebug() {
           >
             🔄 reset ⚙️
           </button>
+        )}
+        {/* 📊 近 1h tokens chip：扫 llm.log 累计估 token 数（4 chars/
+            token 启发式）+ round 数。趋势性 audit「高峰耗用 / sprint
+            消耗激增」入口；仅有 round 数 > 0 时显（避免空状态噪音）。
+            tooltip 解释 heuristic 局限。 */}
+        {llmTokens1h && llmTokens1h.turns > 0 && (
+          <span
+            style={{
+              padding: "4px 10px",
+              fontSize: 11,
+              border: "1px dashed var(--pet-color-border)",
+              borderRadius: 6,
+              background: "transparent",
+              color: "var(--pet-color-muted)",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              whiteSpace: "nowrap",
+              cursor: "help",
+            }}
+            title={`近 1h：${llmTokens1h.turns} 个 LLM round · 估 ${llmTokens1h.approxTokens} tokens 累计（4 chars/token heuristic — 与 Anthropic 真实 billing 不完全一致，趋势性参考；30s 自动刷新）。`}
+          >
+            📊 1h ~ {llmTokens1h.approxTokens >= 1000
+              ? `${(llmTokens1h.approxTokens / 1000).toFixed(1)}k`
+              : llmTokens1h.approxTokens}
+            t · {llmTokens1h.turns} round
+          </span>
         )}
         {/* 🧹 force consolidate：手动触发一次 consolidate sweep，不
             等 cron 节奏（PanelMemory「立即整理」是更显眼的入口，本按
