@@ -39,6 +39,10 @@ export interface UseTaskKeyboardNavArgs<T extends TaskItemLike> {
    * 捷键入口；跨 input context 工作（与 ⌘F / ⌘K / ⌘R 同放最前），让在
    * 搜索 / 创建表单输入时也能拉起 cheatsheet。 */
   handleShowShortcutHelp: () => void;
+  /** ⌘A / Ctrl+A 快捷键：全选当前 visibleTasks 进入 multi-select 模式。
+   * 二次 ⌘A 清空（toggle）。tagName 守卫之后 — 不在 input/textarea 工
+   * 作（让 input 内 ⌘A 走原生全选文字）。 */
+  handleSelectAllVisible: () => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
   titleInputRef: RefObject<HTMLInputElement | null>;
   setCreateFormExpanded: (v: boolean) => void;
@@ -59,6 +63,7 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
     handleCopyTitle,
     handleReload,
     handleShowShortcutHelp,
+    handleSelectAllVisible,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -101,6 +106,10 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
   useEffect(() => {
     handleShowShortcutHelpRef.current = handleShowShortcutHelp;
   }, [handleShowShortcutHelp]);
+  const handleSelectAllVisibleRef = useRef(handleSelectAllVisible);
+  useEffect(() => {
+    handleSelectAllVisibleRef.current = handleSelectAllVisible;
+  }, [handleSelectAllVisible]);
   const handleTogglePinnedRef = useRef(handleTogglePinned);
   useEffect(() => {
     handleTogglePinnedRef.current = handleTogglePinned;
@@ -361,6 +370,20 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
           void handleToggleExpandRef.current(item.title);
           return prev;
         });
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "a" &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        // ⌘A / Ctrl+A = 全选当前 visibleTasks 进 multi-select 模式。
+        // 二次 ⌘A toggle 清空。preventDefault 吃浏览器默认（在
+        // panel 空白区按 ⌘A 否则会全选页面文字）。tagName 守卫之后 ⇒
+        // input / textarea 内的 ⌘A 仍走原生全选文字行为，与 d / r / p /
+        // ⌘D / ⌘E row-context 行为对齐。
+        if (list.length === 0) return;
+        e.preventDefault();
+        handleSelectAllVisibleRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
