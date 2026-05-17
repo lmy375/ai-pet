@@ -139,6 +139,11 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/streak` —— 本聊天连续有 done 完成的天数 + 近 7 天 / 近 30 天 done
+    /// 总数。给 owner audit 「我最近完成节奏怎么样 / 有没有 streak 在保」。
+    /// streak 末端：今日有 done → 今日；否则若 yesterday 有 → yesterday；
+    /// 否则 streak = 0。无参；多余尾部一律忽略。
+    Streak,
     /// `/yesterday` —— 列昨日 done 任务标题 + `[result:]` 摘要。与 `/today`
     /// 互补 —— 那个看今日 due/done 切片，这个 audit 昨日产出。无参；多余
     /// 尾部一律忽略。空 → "昨日无完成记录"。
@@ -254,6 +259,7 @@ impl TgCommand {
             TgCommand::Sleep => "sleep",
             TgCommand::Quick { .. } => "quick",
             TgCommand::Yesterday => "yesterday",
+            TgCommand::Streak => "streak",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -301,6 +307,7 @@ impl TgCommand {
             | TgCommand::Random
             | TgCommand::Sleep
             | TgCommand::Yesterday
+            | TgCommand::Streak
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -378,6 +385,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("sleep", "Mute proactive for 8 hours with a friendly good-night reply (= /mute 480)"),
             ("quick", "Silently create a P3 task with minimal ack — for brain-dump without long reply"),
             ("yesterday", "List yesterday's done tasks with result summaries (complement to /today)"),
+            ("streak", "Consecutive done-days streak + 7d / 30d done totals"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -419,6 +427,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("sleep", "一键 mute proactive 8 小时 + 友好「晚安」reply（= /mute 480）"),
             ("quick", "静默创 P3 task + 极短 reply — 适合快速 dump 不被长回复打扰"),
             ("yesterday", "列昨日 done 任务标题 + result 摘要（与 /today 互补）"),
+            ("streak", "连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -753,6 +762,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "quick" => Some(TgCommand::Quick { text: title }),
         // `/yesterday` 无参；多余尾部忽略
         "yesterday" => Some(TgCommand::Yesterday),
+        // `/streak` 无参；多余尾部忽略
+        "streak" => Some(TgCommand::Streak),
         // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
         // 时存 raw_arg 让 handler usage hint 时回显（preset 标 None 表示
         // "无效"）。preset 名单：tomorrow / thisweek / nextweek 含中英 alias。
@@ -1100,9 +1111,9 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
-    "now", "last", "random", "sleep", "quick", "due", "recent", "digest",
-    "edit", "reflect", "find", "show", "blocked", "snoozed", "reset",
-    "version", "help",
+    "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
+    "digest", "edit", "reflect", "find", "show", "blocked", "snoozed",
+    "reset", "version", "help",
 ];
 
 pub fn format_help_for_topic(
@@ -1160,6 +1171,7 @@ pub fn format_help_for_topic(
         "sleep" => "🌙 /sleep\n\n用法：一键让宠物 mute proactive 8 小时 + 友好「晚安」reply。无参。比手敲 `/mute 480` 更直觉 — owner 睡前 / 长会议 / 想 deep work 时一句话搞定。\n\n示例：\n  /sleep\n\n相关：/mute [N]（精确控制 N 分钟）；/mute 0（立刻解除静音）。",
         "quick" => "⚡ /quick <text>\n\n用法：静默创建一条 P3 task — 后端走 /task 同路径，但 reply 极短（仅 ✓ + title），适合 owner 想「快速 dump 想法 / 灵感不被长 reply 打扰」时用。priority 始终 P3；想精细化（!! / !!!）走 /task。空 text 由 handler 走 missing-arg hint。\n\n示例：\n  /quick 整理 ~/Downloads\n  /quick 写周报\n\n相关：/task <title>（带 !! P5 / !!! P7 前缀 + 完整确认 reply）；/note（杂项 brain-dump，不进 butler_tasks）。",
         "yesterday" => "📅 /yesterday\n\n用法：列本聊天派单中昨日完成的任务标题 + result 摘要（按 updated_at 倒序）。无参。owner 想 audit 「昨天做完了啥」时用。\n\n示例：\n  /yesterday\n\n相关：/today（今日切片）；/recent（不限日期最近 N）；/digest（含 result 摘要的最近 N）。",
+        "streak" => "🔥 /streak\n\n用法：显本聊天 done 完成节奏数据：连续完成天数 + 近 7 天 / 30 天 done 总数。无参。owner audit 「最近完成节奏怎么样 / 有没有 streak 在保」时用。streak 末端：今日有 done → 今日；否则若昨日有 → 昨日；否则 streak = 0。\n\n示例：\n  /streak\n\n相关：/today（今日切片）；/yesterday（昨日产出）；/stats（pending / overdue 等汇总）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1219,6 +1231,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/sleep  —  一键 mute proactive 8 小时 + 友好「晚安」reply（与 /mute 480 等价但语气温和）".to_string(),
         "/quick <text>  —  静默创 P3 task + 极短 reply（仅 ✓ + title）— 适合快速 dump 不被长回复打扰".to_string(),
         "/yesterday  —  列昨日 done 任务标题 + result 摘要（与 /today 互补 — audit 昨日产出）".to_string(),
+        "/streak  —  连续有 done 完成的天数 + 近 7 天 / 30 天 done 总数（audit 完成节奏）".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2264,6 +2277,109 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
     out
 }
 
+/// pure：从 views 抽出 done 任务的 updated_at 当日 NaiveDate 集合。
+/// `updated_at` 走 RFC3339 + 截前 10 字符（YYYY-MM-DD）NaiveDate parse；
+/// 解析失败的条目静默跳过（防御 legacy 数据格式不一致）。
+pub fn done_dates_from_views(
+    views: &[crate::task_queue::TaskView],
+) -> std::collections::HashSet<chrono::NaiveDate> {
+    use crate::task_queue::TaskStatus;
+    let mut set = std::collections::HashSet::new();
+    for v in views {
+        if !matches!(v.status, TaskStatus::Done) {
+            continue;
+        }
+        if v.updated_at.len() < 10 {
+            continue;
+        }
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(&v.updated_at[..10], "%Y-%m-%d") {
+            set.insert(d);
+        }
+    }
+    set
+}
+
+/// pure：算 streak (连续 done 天数 ending at today or yesterday)。空集合
+/// → 0；今日有 done → 从今日往前数；否则若昨日有 → 从昨日往前数；都
+/// 无 → 0。
+pub fn compute_done_streak(
+    done_dates: &std::collections::HashSet<chrono::NaiveDate>,
+    today: chrono::NaiveDate,
+) -> u32 {
+    if done_dates.is_empty() {
+        return 0;
+    }
+    let mut anchor = if done_dates.contains(&today) {
+        today
+    } else if done_dates.contains(&(today - chrono::Duration::days(1))) {
+        today - chrono::Duration::days(1)
+    } else {
+        return 0;
+    };
+    let mut count: u32 = 1;
+    loop {
+        let prev = anchor - chrono::Duration::days(1);
+        if done_dates.contains(&prev) {
+            count += 1;
+            anchor = prev;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+/// pure：算 [today - (days-1), today] 范围内 done 条数（counts task
+/// instances, not unique days）。`days` 通常 7 或 30。
+pub fn count_done_in_window(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+    days: u32,
+) -> u32 {
+    use crate::task_queue::TaskStatus;
+    if days == 0 {
+        return 0;
+    }
+    let start = today - chrono::Duration::days((days - 1) as i64);
+    let mut n: u32 = 0;
+    for v in views {
+        if !matches!(v.status, TaskStatus::Done) {
+            continue;
+        }
+        if v.updated_at.len() < 10 {
+            continue;
+        }
+        let Ok(d) = chrono::NaiveDate::parse_from_str(&v.updated_at[..10], "%Y-%m-%d") else {
+            continue;
+        };
+        if d >= start && d <= today {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// `/streak` 命令回复文案。pure：connect 三个 pure helpers + 友好 emoji
+/// 包装。caller 注入 `today` 让单测稳定。
+pub fn format_streak_reply(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+) -> String {
+    let done_dates = done_dates_from_views(views);
+    let streak = compute_done_streak(&done_dates, today);
+    let week = count_done_in_window(views, today, 7);
+    let month = count_done_in_window(views, today, 30);
+    let streak_line = if streak == 0 {
+        "🌱 streak 中断 — 今日 / 昨日均无完成".to_string()
+    } else {
+        format!("🔥 连续 {} 天有完成", streak)
+    };
+    format!(
+        "{}\n📊 近 7 天 done：{} 条 · 近 30 天 done：{} 条",
+        streak_line, week, month
+    )
+}
+
 /// `/yesterday` 命令回复文案。pure：filter Done + updated_at 在 `today
 /// - 1 day` 当日的任务。按 updated_at 倒序排（最新完成在前），列标题
 /// + `[result:]` 摘要（若有）。空 → 友好兜底。
@@ -3290,9 +3406,9 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today",
-            "yesterday", "now", "last", "random", "sleep", "quick", "due",
-            "recent", "digest", "edit", "reflect", "find", "show", "blocked",
-            "snoozed", "reset", "version", "help",
+            "yesterday", "streak", "now", "last", "random", "sleep", "quick",
+            "due", "recent", "digest", "edit", "reflect", "find", "show",
+            "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3757,8 +3873,9 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "yesterday", "now", "last", "random", "sleep", "quick", "due",
-            "edit", "reflect", "show", "tags", "reset", "version", "help",
+            "yesterday", "streak", "now", "last", "random", "sleep", "quick",
+            "due", "edit", "reflect", "show", "tags", "reset", "version",
+            "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5560,6 +5677,139 @@ mod tests {
         cancelled.status = TaskStatus::Cancelled;
         let s = format_tags_reply(&[active, done, cancelled]);
         assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
+    }
+
+    // -------- /streak parse + format --------
+
+    #[test]
+    fn streak_parses_no_args() {
+        assert_eq!(parse_tg_command("/streak"), Some(TgCommand::Streak));
+        assert_eq!(parse_tg_command("/streak now"), Some(TgCommand::Streak));
+        assert_eq!(parse_tg_command("/STREAK"), Some(TgCommand::Streak));
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn streak_empty_set_returns_zero() {
+        let today = date(2026, 5, 17);
+        let set = std::collections::HashSet::new();
+        assert_eq!(compute_done_streak(&set, today), 0);
+    }
+
+    #[test]
+    fn streak_today_only_returns_1() {
+        let today = date(2026, 5, 17);
+        let mut set = std::collections::HashSet::new();
+        set.insert(today);
+        assert_eq!(compute_done_streak(&set, today), 1);
+    }
+
+    #[test]
+    fn streak_yesterday_only_starts_from_yesterday() {
+        let today = date(2026, 5, 17);
+        let mut set = std::collections::HashSet::new();
+        set.insert(today - chrono::Duration::days(1));
+        // 今日无但昨日有 → streak 应从昨日往前数 = 1（仅昨日）
+        assert_eq!(compute_done_streak(&set, today), 1);
+    }
+
+    #[test]
+    fn streak_3_consecutive_days_ending_today() {
+        let today = date(2026, 5, 17);
+        let mut set = std::collections::HashSet::new();
+        set.insert(today);
+        set.insert(today - chrono::Duration::days(1));
+        set.insert(today - chrono::Duration::days(2));
+        assert_eq!(compute_done_streak(&set, today), 3);
+    }
+
+    #[test]
+    fn streak_gap_breaks_count() {
+        let today = date(2026, 5, 17);
+        let mut set = std::collections::HashSet::new();
+        set.insert(today); // day 0
+        set.insert(today - chrono::Duration::days(2)); // skip day 1
+        // 今日有 → 从今日往前数；day 1 缺 → break，streak = 1
+        assert_eq!(compute_done_streak(&set, today), 1);
+    }
+
+    #[test]
+    fn streak_no_today_no_yesterday_returns_zero_even_if_older() {
+        let today = date(2026, 5, 17);
+        let mut set = std::collections::HashSet::new();
+        // 3 days ago done — 但 streak end 要求 today 或 yesterday，否则 0
+        set.insert(today - chrono::Duration::days(3));
+        assert_eq!(compute_done_streak(&set, today), 0);
+    }
+
+    #[test]
+    fn done_dates_filters_to_done_and_parses_iso() {
+        let mut a = view("a", 3, None, TaskStatus::Done, Some("ok"));
+        a.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut b = view("b", 3, None, TaskStatus::Pending, None);
+        b.updated_at = "2026-05-16T10:00:00+08:00".to_string();
+        let mut c = view("c", 3, None, TaskStatus::Done, Some("r"));
+        c.updated_at = "2026-05-15T10:00:00+08:00".to_string();
+        let set = done_dates_from_views(&[a, b, c]);
+        assert!(set.contains(&date(2026, 5, 17)));
+        assert!(!set.contains(&date(2026, 5, 16)), "pending excluded");
+        assert!(set.contains(&date(2026, 5, 15)));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn count_done_in_window_inclusive_boundaries() {
+        let today = date(2026, 5, 17);
+        let mut day0 = view("today", 3, None, TaskStatus::Done, Some("r"));
+        day0.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut day6 = view("6 days ago", 3, None, TaskStatus::Done, Some("r"));
+        day6.updated_at = "2026-05-11T10:00:00+08:00".to_string();
+        let mut day7 = view("7 days ago", 3, None, TaskStatus::Done, Some("r"));
+        day7.updated_at = "2026-05-10T10:00:00+08:00".to_string();
+        let views = vec![day0, day6, day7];
+        // 近 7 天 = [today-6, today] = 2026-05-11..2026-05-17，含 day0 + day6（2 条），不含 day7
+        assert_eq!(count_done_in_window(&views, today, 7), 2);
+        // 近 30 天 = [today-29, today] — 三条都进
+        assert_eq!(count_done_in_window(&views, today, 30), 3);
+    }
+
+    #[test]
+    fn count_done_excludes_non_done_status() {
+        let today = date(2026, 5, 17);
+        let mut pending = view("p", 3, None, TaskStatus::Pending, None);
+        pending.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut error = view("e", 3, None, TaskStatus::Error, Some("err"));
+        error.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut cancelled = view("c", 3, None, TaskStatus::Cancelled, Some("c"));
+        cancelled.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        assert_eq!(
+            count_done_in_window(&[pending, error, cancelled], today, 7),
+            0,
+        );
+    }
+
+    #[test]
+    fn streak_reply_renders_fire_when_streak_gt_0() {
+        let today = date(2026, 5, 17);
+        let mut done = view("today done", 3, None, TaskStatus::Done, Some("r"));
+        done.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let s = format_streak_reply(&[done], today);
+        assert!(s.contains("🔥"), "{s}");
+        assert!(s.contains("连续 1 天"), "{s}");
+        assert!(s.contains("近 7 天 done：1 条"), "{s}");
+        assert!(s.contains("近 30 天 done：1 条"), "{s}");
+    }
+
+    #[test]
+    fn streak_reply_zero_streak_shows_seedling() {
+        let today = date(2026, 5, 17);
+        let s = format_streak_reply(&[], today);
+        assert!(s.contains("🌱"), "{s}");
+        assert!(s.contains("streak 中断"), "{s}");
+        assert!(s.contains("近 7 天 done：0 条"), "{s}");
     }
 
     // -------- /yesterday parse + format --------
