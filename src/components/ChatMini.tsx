@@ -3033,6 +3033,49 @@ export function ChatMini({
             >
               🔗 复制 task ref{hasRefs ? ` (${refTitles.length})` : ""}
             </button>
+            {/* 💾 转 task：把 bubble plain text 一键塞进 butler_tasks 队
+                列。title = 前 30 字（whitespace flat），body = 全文；
+                priority=P3，无 due。owner 在 chat 中看到 pet 提出的待办
+                / 自己的 brain-dump 一句想"先塞队列回头处理"时一键完
+                成 — 比手工切到 PanelTasks + 复制 + 填表三步快。 */}
+            {hasText && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={async () => {
+                  setCtxMenu(null);
+                  const flat = text.replace(/\s+/g, " ").trim();
+                  const titleRaw = flat.slice(0, 30);
+                  if (!titleRaw) return;
+                  try {
+                    await invoke<string>("task_create", {
+                      args: {
+                        title: titleRaw,
+                        body: text,
+                        priority: 3,
+                        due: null,
+                      },
+                    });
+                    setBubbleCopyIdx(ctxMenu.idx);
+                    window.setTimeout(
+                      () =>
+                        setBubbleCopyIdx((cur) =>
+                          cur === ctxMenu.idx ? null : cur,
+                        ),
+                      1500,
+                    );
+                    console.log(`💾 转 task 成功：${titleRaw}`);
+                  } catch (err) {
+                    console.error("create task from bubble failed:", err);
+                  }
+                }}
+                title={`一键把这条 bubble 转 task（P3，无 due）— 标题取前 30 字「${text.slice(0, 30).replace(/\s+/g, " ").trim()}」，body = 全文。后续在 PanelTasks 调 priority / 加 due / 改内容。`}
+              >
+                💾 转 task
+              </button>
+            )}
             {isAssistant && hasText && (
               <button
                 type="button"
