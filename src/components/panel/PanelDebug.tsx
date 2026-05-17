@@ -2658,6 +2658,42 @@ export function PanelDebug() {
             t · {llmTokens1h.turns} round
           </span>
         )}
+        {/* 📊 LLM 错误率 chip：从既有 llmOutcomeStats (spoke / silent /
+            error) 派生 — 进程启动以来的错误占比。注：与 「📊 1h tokens」
+            的 1h 窗口不同，本 chip 是 process-wide（llm.log 不存 error
+            条目，进程内 atomic 计数器是唯一 source）。仅 total > 0 时显
+            ；err > 0 时 amber tint 提示。 */}
+        {(() => {
+          const total =
+            llmOutcomeStats.spoke +
+            llmOutcomeStats.silent +
+            llmOutcomeStats.error;
+          if (total === 0) return null;
+          const errPct = Math.round(
+            (llmOutcomeStats.error / total) * 100,
+          );
+          const hasErr = llmOutcomeStats.error > 0;
+          return (
+            <span
+              style={{
+                padding: "4px 10px",
+                fontSize: 11,
+                border: "1px dashed var(--pet-color-border)",
+                borderRadius: 6,
+                background: "transparent",
+                color: hasErr
+                  ? "var(--pet-tint-amber-fg, var(--pet-tint-yellow-fg))"
+                  : "var(--pet-color-muted)",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                whiteSpace: "nowrap",
+                cursor: "help",
+              }}
+              title={`LLM 进程错误率（进程启动以来累计）：${llmOutcomeStats.error}/${total} = ${errPct}%\n· spoke ${llmOutcomeStats.spoke}（真说话）\n· silent ${llmOutcomeStats.silent}（[silent] / 空回复）\n· error ${llmOutcomeStats.error}（network / API / parse 失败）\n\n注：llm.log 仅存成功条目，错误率不能时间窗口化 — 本 chip 是进程级累计。建议 < 5%；高于 10% 时检查 API key / 网络 / prompt 是否触发 model refusal。可用 PanelDebug 顶部「🧪 LLM tools」面板「重置」按钮清零重测。`}
+            >
+              📊 err {errPct}%
+            </span>
+          );
+        })()}
         {/* ⏰ 下次 consolidate chip：显 spawn loop 下次 sleep 苏醒时
             刻 + 剩余分钟 + interval / enabled 状态。让 owner audit cron
             节奏是否正常运行（如发现 ETA 永远 0 = loop 卡 / 没 spawn）。
