@@ -7372,11 +7372,25 @@ export function PanelTasks({
                       const remain = Math.max(0, Math.ceil(60 - elapsed));
                       return remain;
                     })();
+                    // detail.md metadata：字数 + 上次编辑相对时间。让 owner
+                    // hover 时一眼看到"这条 detail 多大 / 最后改了多久前"。
+                    // length === 0 时不渲染（无内容可标）。char count 走
+                    // Array.from 保 emoji / 中文统一按"字形"计数（与
+                    // PanelMemory detail size chip 同算法）。
+                    const detailCharCount =
+                      pd.detail_md.length > 0
+                        ? Array.from(pd.detail_md).length
+                        : 0;
+                    const detailEditedRel =
+                      detailCharCount > 0 && pd.updated_at
+                        ? formatRelativeAge(pd.updated_at, nowMs)
+                        : "";
                     const hasChips =
                       isNowMarked ||
                       t.priority !== 3 ||
                       dueDisplay !== null ||
-                      t.tags.length > 0;
+                      t.tags.length > 0 ||
+                      detailCharCount > 0;
                     // 全空（无 chips / 无 history / 无 detail）就不浮 tooltip。
                     // priority === 3（默认值）单独不算"信息" —— 与新建表单
                     // default 一致，无信号价值。chips 行只有非默认 priority /
@@ -7489,6 +7503,27 @@ export function PanelTasks({
                                 #{tg}
                               </span>
                             ))}
+                            {/* 📝 detail metadata chip：detail.md 字数 + 上次
+                                编辑相对时间。让 owner hover 时多看一维 detail
+                                体积 / 新鲜度 — 决定 "该展开看 / 还是新鲜不必
+                                重看 / 还是大可以重写"。仅 detail.md 非空时显。
+                                muted bg 与 priority / due / tags 同色族保持 hover
+                                preview 信息层级一致。 */}
+                            {detailCharCount > 0 && (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "1px 6px",
+                                  borderRadius: 3,
+                                  background: "var(--pet-color-bg)",
+                                  color: "var(--pet-color-muted)",
+                                  fontFamily: "inherit",
+                                }}
+                                title={`detail.md ${detailCharCount} 字 · 上次编辑 ${detailEditedRel || "未知"}`}
+                              >
+                                📝 {detailCharCount} 字{detailEditedRel ? ` · ${detailEditedRel}` : ""}
+                              </span>
+                            )}
                           </div>
                         )}
                         {recentHistory.length > 0 && (
