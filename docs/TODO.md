@@ -8,6 +8,12 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- PanelTasks 任务行 hover 加「📅 created N天前」灰字 chip：让 owner 感知任务在队列里待了多久（积压信号 + 谁是新进）。
+- TG bot 加 `/due <preset>` 命令：扩展 /today 到 tomorrow / thisweek / nextweek 视图，让 owner 端 audit 未来时段。
+- TG bot 加 `/reflect <text>` 命令：与 /note 对偶 — text 作 ai_insights memory item 存（随手记反思 / observation，不是 general 杂项）。
+- PanelMemory butler_tasks 段加「⏰ next-fire 升序」一键 sort toggle：让 owner 看"接下来 N 分钟 / 小时会 fire 的"top of list，复用既有 next-fire 计算。
+- detail.md save 自动版本历史：每次 save 把上一版 snapshot 到 `<detail_path>.history/<ts>.md`，最多保留 5 份（意外覆盖时可恢复）。
+- PanelTasks 任务行加「🔗 blocker N」inline chip：[blockedBy:] 锁数量直显（不必展开 expand 才看到），hover 列具体 blocker titles + status。
 
 
 
