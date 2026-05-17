@@ -1142,6 +1142,65 @@ async fn handle_tg_command(
                 crate::telegram::commands::format_feedback_reply(&text)
             }
         }
+        TgCommand::SilentAll { minutes } => {
+            // minutes == 0 → 仅 release active 窗口（与 /mute 0 同协议）。
+            // minutes > 0 → arm 新窗口：先 release prior（如果有），再扫
+            // butler_tasks pending + !silent candidates 应用 markers + spawn timer。
+            if minutes == 0 {
+                let released = crate::telegram::bulk_silent::release_active();
+                crate::telegram::commands::format_silent_all_reply(
+                    0,
+                    released.map(|v| v.len()).unwrap_or(0),
+                    0,
+                    None,
+                )
+            } else {
+                // 先记录 release count（如果 arm 前有 prior 窗口）
+                let prior_count = crate::telegram::bulk_silent::snapshot()
+                    .map(|s| s.titles.len())
+                    .unwrap_or(0);
+                // 扫 butler_tasks pending && !silent 候选
+                let candidates: Vec<String> = match crate::commands::memory::memory_list(
+                    Some("butler_tasks".to_string()),
+                ) {
+                    Ok(index) => index
+                        .categories
+                        .get("butler_tasks")
+                        .map(|cat| {
+                            cat.items
+                                .iter()
+                                .filter(|it| {
+                                    // 排除 [done] 已结 + 已 [silent] 的
+                                    !it.description.contains("[done]")
+                                        && !it.description.contains("[silent]")
+                                })
+                                .map(|it| it.title.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
+                match crate::telegram::bulk_silent::arm(candidates, minutes) {
+                    Ok(state) => crate::telegram::commands::format_silent_all_reply(
+                        state.titles.len(),
+                        prior_count,
+                        minutes,
+                        Some(state.expires_at),
+                    ),
+                    Err(_) => {
+                        // arm 失败：要么 candidates 空（无可 silent），要么
+                        // task_set_silent 全失败。formatter armed_count=0 走友
+                        // 好兜底。
+                        crate::telegram::commands::format_silent_all_reply(
+                            0,
+                            prior_count,
+                            minutes,
+                            None,
+                        )
+                    }
+                }
+            }
+        }
         TgCommand::FeedbackHistory { n } => {
             // 读取最近 n 条 feedback_history.log 条目（recent_feedback 返
             // oldest-first），reverse 让"最新一条"在 TG 屏顶。format
