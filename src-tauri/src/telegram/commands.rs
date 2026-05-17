@@ -222,6 +222,13 @@ pub enum TgCommand {
     Pin { title: String },
     /// `/unpin <title>` —— 清掉 `[pinned]` marker。与 Pin 分立避免歧义。
     Unpin { title: String },
+    /// `/pinned_due` —— 列出本 chat 派单中同时 pinned + 含 due 的 active task
+    /// （pending / error）。与 /pinned（仅 pinned）/ /due（仅 due）双重收
+    /// 紧 — owner 紧急 audit「我钉了的 + 有截止时间的」高优清单。按 due
+    /// 升序排（最近到期在前 — owner 关心"下一个 deadline 是哪条"）。
+    /// 无参；多余尾部一律忽略。空 → 友好兜底提示 /pinned + /due 看更宽
+    /// 视角。
+    PinnedDue,
     /// `/pinned` —— 列出本 chat 派单中所有当前 pinned 任务（与桌面任务面板
     /// 「📌 N」chip 同源信号）。无参；多余尾部一律忽略。filter 范围与 `/tasks`
     /// 一致（origin == Tg(chat_id)），让两个查询命令的"范围语义"对齐。
@@ -503,6 +510,7 @@ impl TgCommand {
             TgCommand::Pin { .. } => "pin",
             TgCommand::Unpin { .. } => "unpin",
             TgCommand::Pinned => "pinned",
+            TgCommand::PinnedDue => "pinned_due",
             TgCommand::Silent { .. } => "silent",
             TgCommand::Unsilent { .. } => "unsilent",
             TgCommand::Silenced => "silenced",
@@ -583,6 +591,7 @@ impl TgCommand {
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
             | TgCommand::Pinned
+            | TgCommand::PinnedDue
             | TgCommand::Silenced
             | TgCommand::Markers
             | TgCommand::Tags
@@ -674,6 +683,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pin", "Mark a task as pinned (key task)"),
             ("unpin", "Clear a task's pinned mark"),
             ("pinned", "List currently pinned tasks dispatched from this chat"),
+            ("pinned_due", "List active tasks that are BOTH pinned AND have due — high-priority deadline audit"),
             ("silent", "Mark a task as [silent] (LLM won't auto-pick; manual fire still works)"),
             ("unsilent", "Clear a task's [silent] mark"),
             ("silenced", "List currently silent tasks dispatched from this chat"),
@@ -734,6 +744,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pin", "钉住任务（标 [pinned]）"),
             ("unpin", "取消任务钉住（剥 [pinned]）"),
             ("pinned", "列出本聊天派单中所有钉住任务（与桌面「📌 N」chip 同源）"),
+            ("pinned_due", "列同时 pinned + 含 due 的 active task（高优截止清单 — 紧急 audit）"),
             ("silent", "标静默（LLM 不主动选；面板 / 手动触发不受影响）"),
             ("unsilent", "解除静默（剥 [silent] marker）"),
             ("silenced", "列出本聊天派单中所有 silent 任务（与「🔇 N silent」面板同源）"),
@@ -1081,6 +1092,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/pinned`：列 pinned 任务清单。无参；多余尾部一律忽略（与 /tasks 同
         // 容忍策略），让 "/pinned now?" 这种用户随手探的写法也能命中。
         "pinned" => Some(TgCommand::Pinned),
+        // `/pinned_due`：无参；多余尾部忽略（与 /pinned / /silenced 同
+        // 容忍）。snake_case 命名避开 dash drift-defense。
+        "pinned_due" => Some(TgCommand::PinnedDue),
         // `/silent <title>`：标 silent 让 LLM 不主动 pick；无 preset 参数，所有
         // 内容当 title（与 /pin 同模板）。
         "silent" => Some(TgCommand::Silent { title }),
@@ -1646,7 +1660,7 @@ pub fn format_tasks_no_change() -> String {
 /// 段次序 — 高频创建命令在前、兜底 help 在末，与 /help 全表同节奏。
 pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
-    "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
+    "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent", "unsilent",
     "silenced", "silent_all", "markers", "tags", "tag", "mood",
     "whoami", "today", "today_done", "yesterday", "streak", "now",
     "aware", "here",
@@ -1751,7 +1765,8 @@ pub fn format_help_for_topic(
         "unsnooze" => "💤 /unsnooze <title>\n\n用法：清掉任务的 [snooze: ...] marker，立即回到 proactive 选单。\n\n示例：\n  /unsnooze 写周报",
         "pin" => "📌 /pin <title>\n\n用法：钉住关键任务（写 [pinned] marker）。pinned task 在桌面任务面板浮顶 + 「📌 N」chip 计数同源。\n\n示例：\n  /pin 季度规划\n\n相关：/pinned 列所有 pinned；/unpin 取消。",
         "unpin" => "📌 /unpin <title>\n\n用法：清掉任务的 [pinned] marker。\n\n示例：\n  /unpin 季度规划",
-        "pinned" => "📌 /pinned\n\n用法：列出本聊天派单中所有 pinned 任务（按状态分组）。无参。\n\n示例：\n  /pinned\n\n相关：/markers 一次列 pinned + silent 联合。",
+        "pinned" => "📌 /pinned\n\n用法：列出本聊天派单中所有 pinned 任务（按状态分组）。无参。\n\n示例：\n  /pinned\n\n相关：/markers 一次列 pinned + silent 联合；/pinned_due 收紧到 pinned + 含 due 的 active task（高优截止 audit）。",
+        "pinned_due" => "🔥 /pinned_due\n\n用法：列出本聊天派单中同时 pinned + 含 due 的 active task（pending / error），按 due 升序排（最近到期在前）。无参；多余尾部忽略。owner 紧急 audit「我钉了的 + 有截止时间的」高优清单 — 一行看完「下一个 deadline 是哪条」。\n\n双重 filter 比 /pinned 或 /due 单维度更聚焦：done / cancelled 跳过（已离开活跃池）；pinned=false 跳过（不算「关键 task」）；due=None 跳过（无截止压力的不算紧急清单一员）。\n\n输出格式：\n  🔥 pinned + due 任务（共 N 条，按 due 升序）\n  ⏳ P<n> <title> — 截至 <MM/DD HH:MM>\n  ⚠️ P<n> <title> — 截至 <MM/DD HH:MM>\n\n空 → 友好兜底 + 建议 /pinned（仅 pinned）/ /due（按窗口看 due）拿更宽视角。\n\n示例：\n  /pinned_due\n\n对比：/pinned（仅 pinned，不限 due）；/due [preset]（按时段，含 unpinned）；/markers（pinned + silent 联合，无 due 维度）。本命令是「pin 高优 + 有截止」交集 — 紧急冲刺时 owner 优先扫这条。",
         "silent" => "🔇 /silent <title>\n\n用法：标静默 — LLM 不主动选此任务，但面板 / 手动触发仍可。\n\n示例：\n  /silent 周末家务\n\n相关：/silenced 列所有 silent；/unsilent 取消。owner 不想让 pet 主动 pick 某条时用。",
         "unsilent" => "🔇 /unsilent <title>\n\n用法：清掉 [silent] marker，任务回到 LLM auto-pick 池。\n\n示例：\n  /unsilent 周末家务",
         "silenced" => "🔇 /silenced\n\n用法：列出本聊天派单中所有 silent 任务（按状态分组）。无参。\n\n示例：\n  /silenced",
@@ -1835,6 +1850,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/markers  —  一次列出所有 owner-intent markers（pinned + silent 两段，与 /pinned + /silenced 组合等价）".to_string(),
         "/tags  —  列本聊天派单中所有用过的 #tag + 各 tag 任务数（top 15，按数量降序）".to_string(),
         "/pinned  —  列出本聊天派单中所有钉住任务（按状态分组，含 done/error/cancelled）".to_string(),
+        "/pinned_due  —  收紧 pinned + 含 due 的 active task（高优截止 audit；按 due 升序）".to_string(),
         "/mood  —  查看宠物当前心情".to_string(),
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
@@ -2009,6 +2025,45 @@ pub fn format_pinned_tasks_list(views: &[crate::task_queue::TaskView]) -> String
 
     let trimmed = out.trim_end_matches('\n').to_string();
     truncate_if_overflow(trimmed, views.len())
+}
+
+/// `/pinned_due` 命令回复文案。pure：filter views — active (Pending /
+/// Error) + pinned + has due — 按 due 升序排（最近到期在前）。
+///
+/// 与 /pinned（仅 pinned，不 filter due）/ /due（仅 due window，不
+/// filter pinned）双重收紧 — owner 紧急 audit「我钉了的 + 有截止
+/// 时间的」高优清单。空 → 友好兜底教 owner 看更宽视角。
+pub fn format_pinned_due_reply(views: &[crate::task_queue::TaskView]) -> String {
+    use crate::task_queue::TaskStatus;
+    let mut filtered: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Pending | TaskStatus::Error))
+        .filter(|v| v.pinned)
+        .filter(|v| v.due.is_some())
+        .collect();
+    if filtered.is_empty() {
+        return "🔥 暂无同时 pinned + 含 due 的 active task。\n看 /pinned（仅 pinned）或 /due（按窗口看 due）拿更宽视角。".to_string();
+    }
+    // 按 due ISO 字典序升序 = 时间升序（task_queue 写的 "YYYY-MM-DDTHH:MM"
+    // 标准化形式字典序与时间序一致）。
+    filtered.sort_by(|a, b| {
+        a.due.as_deref().unwrap_or("").cmp(b.due.as_deref().unwrap_or(""))
+    });
+    let mut out = format!(
+        "🔥 pinned + due 任务（共 {} 条，按 due 升序）",
+        filtered.len()
+    );
+    for v in &filtered {
+        let emoji = match v.status {
+            TaskStatus::Pending => "⏳",
+            TaskStatus::Error => "⚠️",
+            // unreachable per filter
+            _ => "·",
+        };
+        out.push('\n');
+        out.push_str(&format_task_line(emoji, v));
+    }
+    truncate_if_overflow(out, filtered.len())
 }
 
 /// `/silenced` 命令回复文案。`views` 应已被 caller 过滤为"本 chat + [silent]"
@@ -5107,8 +5162,8 @@ mod tests {
         // 全表里每条命令都应该有 /help <cmd> 详细文案，避免 drift
         for name in [
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
-            "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-            "silenced", "markers", "tags", "mood", "whoami", "today",
+            "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent",
+            "unsilent", "silenced", "markers", "tags", "mood", "whoami", "today",
             "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
@@ -5579,7 +5634,8 @@ mod tests {
         // 实现但漏注册了几轮才补；本测试就是把这种 silent gap 钉死。
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
-            "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
+            "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned",
+            "pinned_due", "today",
             "today_done", "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "edit", "edit_due", "pri", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
@@ -6342,6 +6398,98 @@ mod tests {
         assert!(s.contains("活的"));
         assert!(s.contains("做完了"));
         assert!(s.contains("不做了"));
+    }
+
+    // -------- /pinned_due parse + format --------
+
+    #[test]
+    fn pinned_due_parses_no_args() {
+        assert_eq!(
+            parse_tg_command("/pinned_due"),
+            Some(TgCommand::PinnedDue)
+        );
+        assert_eq!(
+            parse_tg_command("/pinned_due  "),
+            Some(TgCommand::PinnedDue)
+        );
+        assert_eq!(
+            parse_tg_command("/pinned_due now"),
+            Some(TgCommand::PinnedDue)
+        );
+        assert_eq!(
+            parse_tg_command("/PINNED_DUE"),
+            Some(TgCommand::PinnedDue)
+        );
+    }
+
+    #[test]
+    fn pinned_due_reply_empty_shows_friendly_fallback() {
+        let s = format_pinned_due_reply(&[]);
+        assert!(s.contains("🔥"), "{s}");
+        assert!(s.contains("暂无"), "{s}");
+        assert!(s.contains("/pinned"), "hint /pinned alt: {s}");
+        assert!(s.contains("/due"), "hint /due alt: {s}");
+    }
+
+    #[test]
+    fn pinned_due_reply_filters_active_pinned_and_due() {
+        // 所有四个 filter 维度的测试矩阵：
+        // - pinned + due + Pending → 应入
+        // - pinned + due + Error → 应入
+        // - pinned + due + Done → 应排除（非 active）
+        // - pinned + no due + Pending → 应排除
+        // - no pin + due + Pending → 应排除
+        let mut a = view("活 pinned due", 3, Some("2026-05-20T10:00"), TaskStatus::Pending, None);
+        a.pinned = true;
+        let mut b = view("错 pinned due", 5, Some("2026-05-21T10:00"), TaskStatus::Error, Some("err"));
+        b.pinned = true;
+        let mut c = view("成 pinned due", 3, Some("2026-05-19T10:00"), TaskStatus::Done, Some("ok"));
+        c.pinned = true;
+        let mut d = view("pinned no due", 7, None, TaskStatus::Pending, None);
+        d.pinned = true;
+        let e = view("not pinned but due", 3, Some("2026-05-18T10:00"), TaskStatus::Pending, None);
+        let s = format_pinned_due_reply(&[a, b, c, d, e]);
+        assert!(s.contains("活 pinned due"), "active pending kept: {s}");
+        assert!(s.contains("错 pinned due"), "active error kept: {s}");
+        assert!(!s.contains("成 pinned due"), "done excluded: {s}");
+        assert!(!s.contains("pinned no due"), "no-due excluded: {s}");
+        assert!(!s.contains("not pinned but due"), "not-pinned excluded: {s}");
+        assert!(s.contains("共 2 条"), "count reflects filter: {s}");
+    }
+
+    #[test]
+    fn pinned_due_reply_sorts_by_due_asc() {
+        // 最近到期在前
+        let mut late = view("晚", 3, Some("2026-05-25T18:00"), TaskStatus::Pending, None);
+        late.pinned = true;
+        let mut early = view("早", 3, Some("2026-05-18T08:00"), TaskStatus::Pending, None);
+        early.pinned = true;
+        let mut mid = view("中", 3, Some("2026-05-20T14:00"), TaskStatus::Pending, None);
+        mid.pinned = true;
+        let s = format_pinned_due_reply(&[late, mid, early]);
+        let idx_early = s.find("早").expect("早 in output");
+        let idx_mid = s.find("中").expect("中 in output");
+        let idx_late = s.find("晚").expect("晚 in output");
+        assert!(idx_early < idx_mid, "早 before 中: {s}");
+        assert!(idx_mid < idx_late, "中 before 晚: {s}");
+    }
+
+    #[test]
+    fn pinned_due_reply_header_mentions_asc_sort_for_owner_clarity() {
+        // header 应明确 "按 due 升序"让 owner 不必猜顺序
+        let mut a = view("t", 3, Some("2026-05-20T10:00"), TaskStatus::Pending, None);
+        a.pinned = true;
+        let s = format_pinned_due_reply(&[a]);
+        assert!(s.contains("按 due 升序"), "header explains sort: {s}");
+    }
+
+    #[test]
+    fn pinned_due_reply_only_pinned_no_due_falls_back_empty() {
+        // 边缘：所有 pinned task 都无 due → 兜底「暂无」（与彻底空 views 同）
+        let mut a = view("pinned only", 7, None, TaskStatus::Pending, None);
+        a.pinned = true;
+        let s = format_pinned_due_reply(&[a]);
+        assert!(s.contains("暂无"), "{s}");
     }
 
     #[test]
