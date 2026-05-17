@@ -786,6 +786,14 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_today_reply(&views, today)
         }
+        TgCommand::Due { preset, raw_arg } => {
+            // 与 /today 同 read path，本地 today 注入；formatter 内部按 preset
+            // 算 [start, end] 日期范围。preset == None 时 formatter 走 usage
+            // hint 回显 raw_arg。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_due_reply(&views, preset, &raw_arg, today)
+        }
         TgCommand::Recent { n } => {
             // 最近完成清单：reuse 同 read path（已 origin==Tg(chat_id) 过滤），
             // formatter 内部按 updated_at 倒序 + n cap。clamp 已在 parser 完

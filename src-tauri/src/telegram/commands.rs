@@ -15,6 +15,33 @@
 //! 不识别的 `/xxx` 视作 `Unknown { name }`，由 handler 回一条简短"未知
 //! 命令"提示并指向 `/help` 而非静默吞掉。
 
+/// `/due` 命令的 preset 维度。绑定 caller 的 "今天" 后展开为具体 date
+/// range（pure formatter 内做，避免 parser 拿运行时时间，便于单测）。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum DuePreset {
+    /// 明天：today + 1 day。
+    Tomorrow,
+    /// 本周：包含 today 在内的 Mon..=Sun（ISO 周）。已过去的工作日仍算
+    /// 在内（owner 想 audit "本周还剩什么 due"），由 formatter 加 hint。
+    ThisWeek,
+    /// 下周：本周 Sun 之后的 Mon..=Sun。
+    NextWeek,
+}
+
+/// pure：识别 owner 输入的 preset 字符串。中英 alias 同表；大小写不敏感。
+/// 未识别返 None 让 handler 走 usage hint。
+pub fn parse_due_preset(s: &str) -> Option<DuePreset> {
+    let lower = s.trim().to_lowercase();
+    match lower.as_str() {
+        "tomorrow" | "tmr" | "tm" | "明天" | "明日" => Some(DuePreset::Tomorrow),
+        "thisweek" | "this-week" | "this_week" | "week" | "本周" | "这周" => {
+            Some(DuePreset::ThisWeek)
+        }
+        "nextweek" | "next-week" | "next_week" | "下周" => Some(DuePreset::NextWeek),
+        _ => None,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum TgCommand {
     Cancel { title: String },
@@ -107,6 +134,15 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/due <preset>` —— 列出 pending 任务在指定时间段的 due 清单。preset
+    /// 缺省 `tomorrow`（最常用的"明天什么"前向 audit）。支持中英 alias
+    /// （tomorrow / 明天 / 本周 / 下周 等）。与 `/today` 互补 —— /today 只
+    /// 看今日，/due 看更远视角。preset 无效时 handler 走 usage hint 附识
+    /// 别失败的字面字符串。
+    Due {
+        preset: Option<DuePreset>,
+        raw_arg: String,
+    },
     /// `/reflect <text>` —— 把任意文本作 **ai_insights** memory item 存
     /// （owner 在外面随手记反思 / observation）。与 `/note`（存 general）
     /// 对偶：那个是"杂项 brain-dump"，这个是"反思 / 自我洞察"——分类语义
@@ -170,6 +206,7 @@ impl TgCommand {
             TgCommand::Digest { .. } => "digest",
             TgCommand::Edit { .. } => "edit",
             TgCommand::Reflect { .. } => "reflect",
+            TgCommand::Due { .. } => "due",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -208,6 +245,7 @@ impl TgCommand {
             | TgCommand::Snoozed
             | TgCommand::Mute { .. }
             | TgCommand::Digest { .. }
+            | TgCommand::Due { .. }
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -278,6 +316,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mood", "Show the pet's current mood"),
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
+            ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
@@ -310,6 +349,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mood", "查看宠物当前心情"),
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
+            ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
@@ -623,6 +663,26 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "markers" => Some(TgCommand::Markers),
         // `/today` 同上无参语义
         "today" => Some(TgCommand::Today),
+        // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
+        // 时存 raw_arg 让 handler usage hint 时回显（preset 标 None 表示
+        // "无效"）。preset 名单：tomorrow / thisweek / nextweek 含中英 alias。
+        "due" => {
+            let trimmed = title.trim();
+            let (preset, raw) = if trimmed.is_empty() {
+                (Some(DuePreset::Tomorrow), String::new())
+            } else {
+                let first_token = trimmed
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                (parse_due_preset(&first_token), first_token)
+            };
+            Some(TgCommand::Due {
+                preset,
+                raw_arg: raw,
+            })
+        }
         // `/recent [N]`：N 缺省 5，clamp 1..=20。非数字尾部一律忽略走默认（与
         // /tasks since:7d 同前向兼容策略 —— 不让奇怪后缀走 Unknown）。
         "recent" => {
@@ -969,7 +1029,8 @@ pub fn format_help_for_topic(
         "markers" => "🏷 /markers\n\n用法：一次列 pinned + silent 两段（与 /pinned + /silenced 组合等价）。无参。\n\n示例：\n  /markers\n\n给 owner audit 「我标过哪些 owner-intent」用。",
         "mood" => "🐾 /mood\n\n用法：查看宠物当前心情（与桌面 MoodWidget 同 mood state 文件）。无参。\n\n示例：\n  /mood",
         "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
-        "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）。",
+        "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）；/due（更远视角 — tomorrow / thisweek / nextweek）。",
+        "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
         "edit" => "✏️ /edit <title> :: <new desc>\n\n用法：全量覆写指定 butler_task 的 description。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。\n\n示例：\n  /edit 整理 Downloads :: 整理 Downloads [task pri=5 due=2026-05-20] [pinned]\n  /edit 写周报 :: 完整新 body 一段\n\n注意：**全量覆写**语义 — 新 desc 完全替换旧描述。想保留 `[task pri=...]` `[every: ...]` `[pinned]` 等 markers 请自行写进新 desc（命令不会自动续 markers）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
@@ -1020,6 +1081,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/mood  —  查看宠物当前心情".to_string(),
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
+        "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
@@ -1492,6 +1554,111 @@ pub fn format_today_reply(
     };
     render_bucket(&mut out, "今日到期", &due_today);
     render_bucket(&mut out, "今日已完成", &done_today);
+    out
+}
+
+/// pure：把 DuePreset + today 展开为 (start, end) 闭区间日期范围。
+/// - Tomorrow：[today+1, today+1]
+/// - ThisWeek：[本周一, 本周日] (ISO 周 — 周一=0)
+/// - NextWeek：[下周一, 下周日]
+pub fn due_preset_range(
+    preset: DuePreset,
+    today: chrono::NaiveDate,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    use chrono::{Datelike, Duration};
+    match preset {
+        DuePreset::Tomorrow => {
+            let t = today + Duration::days(1);
+            (t, t)
+        }
+        DuePreset::ThisWeek => {
+            let weekday = today.weekday().num_days_from_monday() as i64;
+            let mon = today - Duration::days(weekday);
+            let sun = mon + Duration::days(6);
+            (mon, sun)
+        }
+        DuePreset::NextWeek => {
+            let weekday = today.weekday().num_days_from_monday() as i64;
+            let mon = today + Duration::days(7 - weekday);
+            let sun = mon + Duration::days(6);
+            (mon, sun)
+        }
+    }
+}
+
+/// `/due <preset>` 命令回复文案。pure：preset 为 None 时返 usage hint
+/// 附 raw_arg 让 owner 一眼看自己输错的字面；Some 时按 due_preset_range
+/// 算出 [start, end] 闭区间，列出 pending 任务里 `due` 字段日期落入区间
+/// 的标题清单（按 due 升序）。空 → "该时段无 due 任务" 兜底。
+pub fn format_due_reply(
+    views: &[crate::task_queue::TaskView],
+    preset: Option<DuePreset>,
+    raw_arg: &str,
+    today: chrono::NaiveDate,
+) -> String {
+    let p = match preset {
+        Some(p) => p,
+        None => {
+            return format!(
+                "📅 未识别 preset「{}」。\n\n用法：/due [preset]（缺省 tomorrow）\n  · tomorrow / tmr / 明天\n  · thisweek / 本周\n  · nextweek / 下周",
+                raw_arg.trim()
+            );
+        }
+    };
+    let (start, end) = due_preset_range(p, today);
+    let label = match p {
+        DuePreset::Tomorrow => format!("明天（{}）", start.format("%Y-%m-%d")),
+        DuePreset::ThisWeek => format!(
+            "本周（{} ~ {}）",
+            start.format("%m-%d"),
+            end.format("%m-%d")
+        ),
+        DuePreset::NextWeek => format!(
+            "下周（{} ~ {}）",
+            start.format("%m-%d"),
+            end.format("%m-%d")
+        ),
+    };
+    use crate::task_queue::TaskStatus;
+    let start_str = start.format("%Y-%m-%d").to_string();
+    let end_str = end.format("%Y-%m-%d").to_string();
+    let mut hits: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Pending))
+        .filter(|v| match &v.due {
+            Some(d) if d.len() >= 10 => {
+                let date = &d[..10];
+                date.as_bytes() >= start_str.as_bytes()
+                    && date.as_bytes() <= end_str.as_bytes()
+            }
+            _ => false,
+        })
+        .collect();
+    // due 升序（ISO 字典序 = 时间序）
+    hits.sort_by(|a, b| a.due.cmp(&b.due));
+    if hits.is_empty() {
+        return format!("📅 {}\n\n该时段无 due 任务 ✨", label);
+    }
+    let mut out = String::new();
+    out.push_str(&format!("📅 {}（{} 条）", label, hits.len()));
+    for v in hits.iter().take(10) {
+        // due 字段取 MM-DD HH:MM 显（解析失败 fallback 截 10）
+        let when = v
+            .due
+            .as_deref()
+            .map(|d| {
+                if d.len() >= 16 {
+                    format!("{} {}", &d[5..10], &d[11..16])
+                } else {
+                    d[..d.len().min(10)].to_string()
+                }
+            })
+            .unwrap_or_default();
+        out.push_str(&format!("\n· {} · {}", when, v.title));
+    }
+    if hits.len() > 10 {
+        out.push_str(&format!("\n…还有 {} 条", hits.len() - 10));
+    }
     out
 }
 
@@ -2598,7 +2765,7 @@ mod tests {
         for name in [
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-            "silenced", "markers", "mood", "whoami", "today", "recent",
+            "silenced", "markers", "mood", "whoami", "today", "due", "recent",
             "digest", "edit", "reflect", "find", "blocked", "snoozed",
             "reset", "version", "help",
         ] {
@@ -3065,7 +3232,7 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "edit", "reflect", "reset", "version", "help",
+            "due", "edit", "reflect", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -3910,6 +4077,220 @@ mod tests {
         let s = format_today_reply(&[], today);
         assert!(s.contains("📅 今日（2026-05-14）"), "today reply: {s}");
         assert!(s.contains("今日队列清爽 ✨"), "today reply: {s}");
+    }
+
+    // -------- /due parse + range + format --------
+
+    #[test]
+    fn due_parses_default_to_tomorrow_when_no_arg() {
+        assert_eq!(
+            parse_tg_command("/due"),
+            Some(TgCommand::Due {
+                preset: Some(DuePreset::Tomorrow),
+                raw_arg: String::new(),
+            })
+        );
+        // 全空白也算无参
+        assert_eq!(
+            parse_tg_command("/due   "),
+            Some(TgCommand::Due {
+                preset: Some(DuePreset::Tomorrow),
+                raw_arg: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn due_parses_aliases_case_insensitive() {
+        for s in ["tomorrow", "TMR", "明天", "明日"] {
+            let parsed = parse_tg_command(&format!("/due {s}"));
+            match parsed {
+                Some(TgCommand::Due { preset: Some(DuePreset::Tomorrow), .. }) => {}
+                other => panic!("expected Tomorrow for {s}, got {other:?}"),
+            }
+        }
+        for s in ["thisweek", "this-week", "本周", "这周"] {
+            let parsed = parse_tg_command(&format!("/due {s}"));
+            match parsed {
+                Some(TgCommand::Due { preset: Some(DuePreset::ThisWeek), .. }) => {}
+                other => panic!("expected ThisWeek for {s}, got {other:?}"),
+            }
+        }
+        for s in ["nextweek", "next-week", "下周"] {
+            let parsed = parse_tg_command(&format!("/due {s}"));
+            match parsed {
+                Some(TgCommand::Due { preset: Some(DuePreset::NextWeek), .. }) => {}
+                other => panic!("expected NextWeek for {s}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn due_parses_unknown_preset_stores_raw_arg() {
+        let parsed = parse_tg_command("/due lastweek");
+        match parsed {
+            Some(TgCommand::Due { preset: None, raw_arg }) => {
+                assert_eq!(raw_arg, "lastweek");
+            }
+            other => panic!("expected None preset for unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn due_preset_range_tomorrow_is_single_day() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let (s, e) = due_preset_range(DuePreset::Tomorrow, today);
+        assert_eq!(s, chrono::NaiveDate::from_ymd_opt(2026, 5, 15).unwrap());
+        assert_eq!(s, e);
+    }
+
+    #[test]
+    fn due_preset_range_thisweek_iso_mon_to_sun() {
+        // 2026-05-14 是周四 (weekday=3 from Monday)。本周 = 5/11 (Mon) ~ 5/17 (Sun)。
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let (s, e) = due_preset_range(DuePreset::ThisWeek, today);
+        assert_eq!(s, chrono::NaiveDate::from_ymd_opt(2026, 5, 11).unwrap());
+        assert_eq!(e, chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap());
+    }
+
+    #[test]
+    fn due_preset_range_thisweek_when_today_is_monday() {
+        // 边界：今天就是周一 — 本周从今天起。
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 11).unwrap();
+        let (s, e) = due_preset_range(DuePreset::ThisWeek, today);
+        assert_eq!(s, today);
+        assert_eq!(e, chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap());
+    }
+
+    #[test]
+    fn due_preset_range_nextweek_starts_after_this_sunday() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let (s, e) = due_preset_range(DuePreset::NextWeek, today);
+        assert_eq!(s, chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap());
+        assert_eq!(e, chrono::NaiveDate::from_ymd_opt(2026, 5, 24).unwrap());
+    }
+
+    #[test]
+    fn due_reply_unknown_preset_shows_usage_hint_with_raw() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let s = format_due_reply(&[], None, "lastweek", today);
+        assert!(s.contains("未识别 preset"), "{s}");
+        assert!(s.contains("lastweek"), "should echo raw arg: {s}");
+    }
+
+    #[test]
+    fn due_reply_tomorrow_filters_by_date() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let due_tomorrow = view(
+            "写周报",
+            3,
+            Some("2026-05-15T18:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let due_today = view(
+            "整理 Downloads",
+            3,
+            Some("2026-05-14T18:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let due_next_monday = view(
+            "季度规划",
+            3,
+            Some("2026-05-18T09:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let views = vec![due_today, due_tomorrow, due_next_monday];
+        let s = format_due_reply(&views, Some(DuePreset::Tomorrow), "", today);
+        assert!(s.contains("明天"), "{s}");
+        assert!(s.contains("写周报"), "{s}");
+        assert!(!s.contains("整理 Downloads"), "today excluded: {s}");
+        assert!(!s.contains("季度规划"), "next week excluded: {s}");
+    }
+
+    #[test]
+    fn due_reply_thisweek_includes_remaining_days() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let mon = view(
+            "周一 task",
+            3,
+            Some("2026-05-11T09:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let sat = view(
+            "周六 task",
+            3,
+            Some("2026-05-16T20:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let next_mon = view(
+            "下周一",
+            3,
+            Some("2026-05-18T09:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let views = vec![mon, sat, next_mon];
+        let s = format_due_reply(&views, Some(DuePreset::ThisWeek), "", today);
+        assert!(s.contains("本周"), "{s}");
+        assert!(s.contains("周一 task"), "{s}");
+        assert!(s.contains("周六 task"), "{s}");
+        assert!(!s.contains("下周一"), "next week excluded: {s}");
+    }
+
+    #[test]
+    fn due_reply_excludes_done_and_no_due() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        // done 在 tomorrow 也不计（命令只看 pending）
+        let done = view("完成的", 3, Some("2026-05-15T18:00"), TaskStatus::Done, None);
+        // pending 但无 due → 不计
+        let no_due = view("无 due 的", 3, None, TaskStatus::Pending, None);
+        let s = format_due_reply(
+            &[done, no_due],
+            Some(DuePreset::Tomorrow),
+            "",
+            today,
+        );
+        assert!(s.contains("无 due 任务"), "should be empty: {s}");
+        assert!(!s.contains("完成的"), "{s}");
+        assert!(!s.contains("无 due 的"), "{s}");
+    }
+
+    #[test]
+    fn due_reply_sorts_by_due_ascending() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let mid = view(
+            "中间",
+            3,
+            Some("2026-05-13T12:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let early = view(
+            "靠前",
+            3,
+            Some("2026-05-11T09:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let late = view(
+            "靠后",
+            3,
+            Some("2026-05-17T22:00"),
+            TaskStatus::Pending,
+            None,
+        );
+        let views = vec![mid, late, early];
+        let s = format_due_reply(&views, Some(DuePreset::ThisWeek), "", today);
+        let idx_early = s.find("靠前").expect("early in output");
+        let idx_mid = s.find("中间").expect("mid in output");
+        let idx_late = s.find("靠后").expect("late in output");
+        assert!(idx_early < idx_mid, "early should be before mid: {s}");
+        assert!(idx_mid < idx_late, "mid should be before late: {s}");
     }
 
     #[test]
