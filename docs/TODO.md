@@ -10,7 +10,6 @@
 
 - PanelTasks task row 加 "📅 推到明日 09:00" 一键 button：避开 due picker，常见 reschedule shortcut。
 - PanelMemory butler_tasks item ctx 加 "📋 复制 schedule prefix" 命令：复制 [every: …] 部分让 owner 创建相似 task 时粘贴。
-- detail.md 编辑器 toolbar 加 "📜 插日期 + 进度笔记" 模板按钮：一键插 "## YYYY-MM-DD 进度\n\n" 让长 detail 自然分日。
 - ChatMini 顶部加 "🌡️ context 健康" mini progress bar：现仅在超 4000 token 才显警示 chip；加常态进度条让 owner 提前感知。
 
 
