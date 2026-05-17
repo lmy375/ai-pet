@@ -139,6 +139,11 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/quick <text>` —— 与 `/task` 同后端但 reply 极短（仅 ✓ + title），
+    /// 适合 owner 想"快速 dump 个 task 不被长 reply 打扰"的场景。priority
+    /// 始终 P3（不解析 !! / !!!）— 想精细化走 `/task !!` 或 `/task !!!`。
+    /// 空 text 由 handler 走 missing-argument hint。
+    Quick { text: String },
     /// `/sleep` —— 一键让宠物 mute 8 小时 + 友好"晚安"语气 reply。比手敲
     /// `/mute 480` 更直觉 — owner 睡前 / 长会议时一句话搞定。无参；多余
     /// 尾部忽略。内部走 `set_mute_minutes(480)` 同后端，与 /mute 等价但
@@ -243,6 +248,7 @@ impl TgCommand {
             TgCommand::Last => "last",
             TgCommand::Random => "random",
             TgCommand::Sleep => "sleep",
+            TgCommand::Quick { .. } => "quick",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -266,7 +272,8 @@ impl TgCommand {
             | TgCommand::Find { keyword: title }
             | TgCommand::Note { text: title }
             | TgCommand::Reflect { text: title }
-            | TgCommand::Show { title } => title.as_str(),
+            | TgCommand::Show { title }
+            | TgCommand::Quick { text: title } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
@@ -363,6 +370,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("last", "Show the most recently created task (this chat) with raw description preview"),
             ("random", "Pick a random active (pending / error) task — for owner's choice paralysis moments"),
             ("sleep", "Mute proactive for 8 hours with a friendly good-night reply (= /mute 480)"),
+            ("quick", "Silently create a P3 task with minimal ack — for brain-dump without long reply"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -402,6 +410,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("last", "显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的"),
             ("random", "随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定"),
             ("sleep", "一键 mute proactive 8 小时 + 友好「晚安」reply（= /mute 480）"),
+            ("quick", "静默创 P3 task + 极短 reply — 适合快速 dump 不被长回复打扰"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -730,6 +739,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "random" => Some(TgCommand::Random),
         // `/sleep` 无参；多余尾部忽略
         "sleep" => Some(TgCommand::Sleep),
+        // `/quick <text>`：与 /task 同 silent ack 模式 — 所有 arg 当 text
+        // （保空格 / 不解析 !! / !!! 前缀）。空 text 由 handler 走 missing-
+        // argument 反馈。
+        "quick" => Some(TgCommand::Quick { text: title }),
         // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
         // 时存 raw_arg 让 handler usage hint 时回显（preset 标 None 表示
         // "无效"）。preset 名单：tomorrow / thisweek / nextweek 含中英 alias。
@@ -1077,8 +1090,9 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
     "silenced", "markers", "tags", "mood", "whoami", "today", "now",
-    "last", "random", "sleep", "due", "recent", "digest", "edit", "reflect",
-    "find", "show", "blocked", "snoozed", "reset", "version", "help",
+    "last", "random", "sleep", "quick", "due", "recent", "digest", "edit",
+    "reflect", "find", "show", "blocked", "snoozed", "reset", "version",
+    "help",
 ];
 
 pub fn format_help_for_topic(
@@ -1134,6 +1148,7 @@ pub fn format_help_for_topic(
         "last" => "🆕 /last\n\n用法：显本聊天派单中最近 created_at 的一条 task — title + status emoji + 相对创建时间 + raw_description 前 200 字符预览。无参。owner 想「我刚 /task 创的那条对不对」闪查时用 — 不必走 /tasks 全表扫。\n\n示例：\n  /last\n\n相关：/show <title>（看完整 raw + detail）；/recent（最近 N 条 done）；/tasks（全状态清单）。",
         "random" => "🎲 /random\n\n用法：从本聊天派单的 active 任务（pending / error）里随机抽 1 条让宠物推荐 — 给 owner「选择困难」/「不知道先做哪个」时让 pet 决定下一步。无参；多次调用会得到不同 task。无 active 任务时给兜底文案。\n\n示例：\n  /random\n\n相关：/tasks（看全清单）；/blocked（被锁住的）；/today（今日到期）。",
         "sleep" => "🌙 /sleep\n\n用法：一键让宠物 mute proactive 8 小时 + 友好「晚安」reply。无参。比手敲 `/mute 480` 更直觉 — owner 睡前 / 长会议 / 想 deep work 时一句话搞定。\n\n示例：\n  /sleep\n\n相关：/mute [N]（精确控制 N 分钟）；/mute 0（立刻解除静音）。",
+        "quick" => "⚡ /quick <text>\n\n用法：静默创建一条 P3 task — 后端走 /task 同路径，但 reply 极短（仅 ✓ + title），适合 owner 想「快速 dump 想法 / 灵感不被长 reply 打扰」时用。priority 始终 P3；想精细化（!! / !!!）走 /task。空 text 由 handler 走 missing-arg hint。\n\n示例：\n  /quick 整理 ~/Downloads\n  /quick 写周报\n\n相关：/task <title>（带 !! P5 / !!! P7 前缀 + 完整确认 reply）；/note（杂项 brain-dump，不进 butler_tasks）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1191,6 +1206,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/last  —  显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的对不对".to_string(),
         "/random  —  随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定下一步".to_string(),
         "/sleep  —  一键 mute proactive 8 小时 + 友好「晚安」reply（与 /mute 480 等价但语气温和）".to_string(),
+        "/quick <text>  —  静默创 P3 task + 极短 reply（仅 ✓ + title）— 适合快速 dump 不被长回复打扰".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2236,6 +2252,23 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
     out
 }
 
+/// `/quick <text>` 命令回复文案。pure：极短 ack — 与 `format_task_created_
+/// success`（包含完整 /tasks / /cancel 指引）反向 — 让 owner 快速 dump
+/// 不被长 reply 打扰。
+/// - 空 / 全空白 text → usage hint
+/// - save_ok = Ok(()) → "✓ <title>"（单行）
+/// - save_ok = Err(msg) → 失败反馈含原 err（owner 需要知道为啥没创成）
+pub fn format_quick_reply(text: &str, save_ok: Result<(), &str>) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "⚡ 用法：/quick <text>\n\n静默创一条 P3 task — reply 仅 ✓ + title，适合快速 dump 想法 / 灵感不被长 reply 打扰。\n\n例：/quick 整理 ~/Downloads\n例：/quick 写周报\n\n想精细化（!! P5 / !!! P7）走 /task。".to_string();
+    }
+    match save_ok {
+        Ok(()) => format!("✓ {}", trimmed),
+        Err(e) => format!("⚡ 创建失败：{}", e),
+    }
+}
+
 /// `/sleep` 命令回复文案。pure：caller 已调 `set_mute_minutes(480)`；本
 /// 函数生成"晚安"语气 reply。until_local 注入让单测稳定（与 format_mute_
 /// reply 同 pattern）。比 /mute 480 的中性文案更温和 — 让"睡前 mute"场
@@ -3200,8 +3233,8 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "tags", "mood", "whoami", "today", "now",
-            "last", "random", "sleep", "due", "recent", "digest", "edit",
-            "reflect", "find", "show", "blocked", "snoozed", "reset",
+            "last", "random", "sleep", "quick", "due", "recent", "digest",
+            "edit", "reflect", "find", "show", "blocked", "snoozed", "reset",
             "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -3667,8 +3700,8 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "now", "last", "random", "sleep", "due", "edit", "reflect", "show",
-            "tags", "reset", "version", "help",
+            "now", "last", "random", "sleep", "quick", "due", "edit", "reflect",
+            "show", "tags", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5470,6 +5503,78 @@ mod tests {
         cancelled.status = TaskStatus::Cancelled;
         let s = format_tags_reply(&[active, done, cancelled]);
         assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
+    }
+
+    // -------- /quick parse + format --------
+
+    #[test]
+    fn quick_parses_text_arg() {
+        assert_eq!(
+            parse_tg_command("/quick 整理 ~/Downloads"),
+            Some(TgCommand::Quick {
+                text: "整理 ~/Downloads".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn quick_parses_empty_text() {
+        assert_eq!(
+            parse_tg_command("/quick"),
+            Some(TgCommand::Quick {
+                text: String::new()
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/quick    "),
+            Some(TgCommand::Quick {
+                text: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn quick_does_not_parse_priority_prefix() {
+        // /quick "!!  写周报" — !! 不被解析为 P5；保留原 text
+        assert_eq!(
+            parse_tg_command("/quick !! 写周报"),
+            Some(TgCommand::Quick {
+                text: "!! 写周报".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn quick_reply_empty_shows_usage_hint() {
+        let s = format_quick_reply("", Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/quick <text>"), "{s}");
+        assert!(s.contains("P3"), "should explain priority: {s}");
+        assert!(s.contains("/task"), "should hint upgrade path: {s}");
+    }
+
+    #[test]
+    fn quick_reply_success_is_minimal() {
+        let s = format_quick_reply("整理 ~/Downloads", Ok(()));
+        assert_eq!(s, "✓ 整理 ~/Downloads", "should be just check + title");
+        // 极短 reply 不该含 /tasks / /cancel 等长指引（与 format_task_
+        // created_success 反向）
+        assert!(!s.contains("/tasks"));
+        assert!(!s.contains("/cancel"));
+    }
+
+    #[test]
+    fn quick_reply_trims_whitespace_from_title() {
+        let s = format_quick_reply("  写周报  ", Ok(()));
+        assert_eq!(s, "✓ 写周报", "trim leading / trailing whitespace: {s}");
+    }
+
+    #[test]
+    fn quick_reply_save_failure_shows_error() {
+        let s = format_quick_reply("写周报", Err("Title already exists"));
+        assert!(s.contains("⚡"), "{s}");
+        assert!(s.contains("创建失败"), "{s}");
+        assert!(s.contains("Title already exists"), "{s}");
     }
 
     // -------- /sleep parse + format --------
