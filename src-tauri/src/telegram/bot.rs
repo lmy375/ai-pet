@@ -879,6 +879,35 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Reflect { text } => {
+            // 与 /note 同模板但 category="ai_insights" + title prefix="reflect-"。
+            // 空 text → formatter 走 usage hint 路径，不真创建。
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                crate::telegram::commands::format_reflect_reply(&text, Ok(""))
+            } else {
+                let title = format!(
+                    "reflect-{}",
+                    chrono::Local::now().format("%Y-%m-%dT%H-%M-%S")
+                );
+                match crate::commands::memory::memory_edit(
+                    "create".to_string(),
+                    "ai_insights".to_string(),
+                    title.clone(),
+                    Some(trimmed.to_string()),
+                    None,
+                ) {
+                    Ok(_) => crate::telegram::commands::format_reflect_reply(
+                        &text,
+                        Ok(&title),
+                    ),
+                    Err(e) => crate::telegram::commands::format_reflect_reply(
+                        &text,
+                        Err(&e),
+                    ),
+                }
+            }
+        }
         TgCommand::Note { text } => {
             // 空 text → formatter 走 usage hint 路径，不真创建。
             let trimmed = text.trim();

@@ -107,6 +107,13 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/reflect <text>` —— 把任意文本作 **ai_insights** memory item 存
+    /// （owner 在外面随手记反思 / observation）。与 `/note`（存 general）
+    /// 对偶：那个是"杂项 brain-dump"，这个是"反思 / 自我洞察"——分类语义
+    /// 不同的两个入口避免 ai_insights 段被日常杂项稀释。title 自动生成
+    /// `reflect-YYYY-MM-DDTHH-MM-SS`（秒级唯一）；description = trim 后
+    /// 的 text。空 text → missing-arg friendly hint。
+    Reflect { text: String },
     /// `/edit <title> :: <new desc>` —— 覆写指定 butler_task 的 description
     /// 整段。`::` 是必填 separator —— 让 title 含空格 / 全角符号 / 中文标点
     /// 仍能精确切（与单空白切相比歧义最少；owner 外面想加 marker / 改 body
@@ -162,6 +169,7 @@ impl TgCommand {
             TgCommand::Note { .. } => "note",
             TgCommand::Digest { .. } => "digest",
             TgCommand::Edit { .. } => "edit",
+            TgCommand::Reflect { .. } => "reflect",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -183,7 +191,8 @@ impl TgCommand {
             | TgCommand::Silent { title }
             | TgCommand::Unsilent { title }
             | TgCommand::Find { keyword: title }
-            | TgCommand::Note { text: title } => title.as_str(),
+            | TgCommand::Note { text: title }
+            | TgCommand::Reflect { text: title } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
@@ -275,6 +284,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
             ("note", "Save arbitrary text as a general memory item (quick brain-dump)"),
+            ("reflect", "Save arbitrary text as an ai_insights memory item (reflection / self-observation)"),
             ("digest", "Recent N done tasks with [result:] summary one-liner (default 5, cap 20)"),
             ("edit", "Overwrite a butler task's description: /edit <title> :: <new desc>"),
             ("reset", "Clear LLM chat context (keep persona)"),
@@ -306,6 +316,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
             ("note", "把任意文本作 general memory item 存（owner 随手记一笔）"),
+            ("reflect", "把任意文本作 ai_insights memory item 存（反思 / 自我洞察）"),
             ("digest", "最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）"),
             ("edit", "覆写 butler task 描述：/edit <title> :: <new desc>"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
@@ -646,6 +657,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/note <text>`：所有 arg 当 text（含空格保留）。空 text 由
         // handler 走 missing-arg 反馈。
         "note" => Some(TgCommand::Note { text: title }),
+        // `/reflect <text>`：与 /note 同模板但写入 ai_insights category。
+        // 空 text 由 handler 走 missing-arg。
+        "reflect" => Some(TgCommand::Reflect { text: title }),
         // `/edit <title> :: <new desc>`：first-occurrence `::` 切分；任一端
         // trim 后为空 → handler 走 missing-arg。新 desc 是全量覆写（与
         // 桌面 detail.md textarea save 等价）。
@@ -959,6 +973,7 @@ pub fn format_help_for_topic(
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
         "edit" => "✏️ /edit <title> :: <new desc>\n\n用法：全量覆写指定 butler_task 的 description。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。\n\n示例：\n  /edit 整理 Downloads :: 整理 Downloads [task pri=5 due=2026-05-20] [pinned]\n  /edit 写周报 :: 完整新 body 一段\n\n注意：**全量覆写**语义 — 新 desc 完全替换旧描述。想保留 `[task pri=...]` `[every: ...]` `[pinned]` 等 markers 请自行写进新 desc（命令不会自动续 markers）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
+        "reflect" => "🪞 /reflect <text>\n\n用法：把任意文本作 ai_insights memory item 存盘（反思 / 自我洞察分类，与 /note 写 general 对偶）。title 自动 `reflect-YYYY-MM-DDTHH-MM-SS`。\n\n示例：\n  /reflect 今天回顾：我对中断接受度过高，应该早点说 no\n  /reflect 观察：长 task 拆细后完成率明显提升\n\n相关：/note 写 general（杂项 brain-dump）；二者按「信号类型」分流避免 ai_insights 段被日常杂项稀释。可在 PanelMemory → AI 洞察 段查看 / 整理。",
         "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）。",
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
@@ -1011,6 +1026,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
         "/note <text>  —  把任意文本作 general memory item 存（随手记一笔）".to_string(),
+        "/reflect <text>  —  把任意文本作 ai_insights memory item 存（反思 / 自我洞察，与 /note 对偶但分类不同）".to_string(),
         "/digest [N]  —  最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）".to_string(),
         "/edit <title> :: <new desc>  —  覆写 butler task 描述（全量替换，markers 需自己写进 new desc）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
@@ -1844,6 +1860,30 @@ pub fn format_note_reply(text: &str, save_result: Result<&str, &str>) -> String 
     }
 }
 
+/// `/reflect <text>` 命令回复文案。pure，与 format_note_reply 同模板但
+/// 走 ai_insights 类目（消息文案点明分类不同避免与 /note 混淆）。
+/// - 空 / 全空白 text → usage hint（带 /note 对照例避免 owner 用错入口）
+/// - Ok(title) → "🪞 已记到 ai_insights/<title>" + 前 60 字预览
+/// - Err(msg) → "🪞 保存失败：<msg>"
+pub fn format_reflect_reply(text: &str, save_result: Result<&str, &str>) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "🪞 用法：/reflect <text>\n\n把任意一段反思 / 自我观察文本作 ai_insights memory item 存盘（进 PanelMemory → AI 洞察 段查看）。\n\n例：/reflect 今天回顾：我对中断接受度过高\n例：/reflect 观察：长 task 拆细后完成率明显提升\n\n对比 /note：那个写 general（杂项 brain-dump），这个写 ai_insights（反思）— 按信号类型分流。".to_string();
+    }
+    match save_result {
+        Ok(title) => {
+            let preview = if trimmed.chars().count() > 60 {
+                let s: String = trimmed.chars().take(60).collect();
+                format!("{}…", s)
+            } else {
+                trimmed.to_string()
+            };
+            format!("🪞 已记到 ai_insights/{}\n\n{}", title, preview)
+        }
+        Err(e) => format!("🪞 保存失败：{}", e),
+    }
+}
+
 /// `/edit <title> :: <new desc>` 命令回复文案。pure：
 /// - title 或 new_desc trim 后任一空 → usage hint（与 missing-arg 同模板
 ///   但带 `::` separator 例子，避免 owner 看完不懂怎么写）
@@ -2559,8 +2599,8 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "mood", "whoami", "today", "recent",
-            "digest", "edit", "find", "blocked", "snoozed", "reset", "version",
-            "help",
+            "digest", "edit", "reflect", "find", "blocked", "snoozed",
+            "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3025,7 +3065,7 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "edit", "reset", "version", "help",
+            "edit", "reflect", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -4404,6 +4444,72 @@ mod tests {
     #[test]
     fn note_reply_save_failure_shows_error() {
         let s = format_note_reply("test note", Err("disk full"));
+        assert!(s.contains("保存失败"), "{s}");
+        assert!(s.contains("disk full"), "{s}");
+    }
+
+    // -------- /reflect parse + format --------
+
+    #[test]
+    fn reflect_parses_text_arg() {
+        assert_eq!(
+            parse_tg_command("/reflect 今天回顾：接受中断太多"),
+            Some(TgCommand::Reflect {
+                text: "今天回顾：接受中断太多".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn reflect_parses_empty_text() {
+        assert_eq!(
+            parse_tg_command("/reflect"),
+            Some(TgCommand::Reflect {
+                text: String::new()
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/reflect   "),
+            Some(TgCommand::Reflect {
+                text: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn reflect_reply_empty_shows_usage_hint() {
+        let s = format_reflect_reply("", Ok(""));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/reflect <text>"), "{s}");
+        assert!(s.contains("ai_insights"), "must name category: {s}");
+        // 对比 /note：让 owner 知道不要选错入口
+        assert!(s.contains("/note"), "should compare with /note: {s}");
+    }
+
+    #[test]
+    fn reflect_reply_success_shows_category_and_title() {
+        let s = format_reflect_reply(
+            "今天观察：长 task 拆细后完成率明显提升",
+            Ok("reflect-2026-05-17T13-44-00"),
+        );
+        assert!(s.contains("🪞"), "{s}");
+        assert!(
+            s.contains("ai_insights/reflect-2026-05-17T13-44-00"),
+            "{s}"
+        );
+        assert!(s.contains("长 task 拆细"), "preview: {s}");
+    }
+
+    #[test]
+    fn reflect_reply_long_text_truncates_preview() {
+        let long = "x".repeat(100);
+        let s = format_reflect_reply(&long, Ok("reflect-test"));
+        assert!(s.contains("…"), "should truncate: {s}");
+    }
+
+    #[test]
+    fn reflect_reply_save_failure_shows_error() {
+        let s = format_reflect_reply("ref text", Err("disk full"));
         assert!(s.contains("保存失败"), "{s}");
         assert!(s.contains("disk full"), "{s}");
     }
