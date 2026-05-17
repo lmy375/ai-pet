@@ -1711,6 +1711,11 @@ export function PanelTasks({
   /// 重渲发生即可，badge 内部读 ref 算最新值）。
   const dirtySinceRef = useRef<number | null>(null);
   const [dirtyTickKey, setDirtyTickKey] = useState(0);
+  /// 编辑会话开始时刻：进入 edit 模式时设为 Date.now()，editor 关闭时清。
+  /// 让 status bar 渲 "⏰ 编辑用时 N 分钟"灰字 hint，owner 感知 "在这条 task
+  /// 写了多久"。dirtyTickKey 已驱动 5s 重渲染让数字推进；不存 elapsed 进
+  /// state 避免多余 render（只读 ref + tick key 让重渲发生即可）。
+  const editStartRef = useRef<number | null>(null);
   useEffect(() => {
     const dirty = editingDetailContent !== editingDetailOriginalRef.current;
     if (dirty) {
@@ -1722,8 +1727,10 @@ export function PanelTasks({
   useEffect(() => {
     if (editingDetailTitle === null) {
       dirtySinceRef.current = null;
+      editStartRef.current = null;
       return;
     }
+    editStartRef.current = Date.now();
     const id = window.setInterval(() => setDirtyTickKey((k) => k + 1), 5000);
     return () => window.clearInterval(id);
   }, [editingDetailTitle]);
@@ -9575,6 +9582,41 @@ export function PanelTasks({
                                       📑
                                     </button>
                                   )}
+                                {/* ⏰ 编辑用时 hint：editor 打开后开始计时，
+                                    灰字渲在状态栏供 owner 感知 "在这条 task
+                                    写了多久"。< 1 分钟不显（避免噪音），≥ 60s
+                                    显 "⏰ Nm" 整分钟；≥ 60min 后显 "Hh Mm"。
+                                    与 ● 未保存 互补 —— 那个是"内容已改但未存
+                                    多久"，这个是"session 总时长" 。dirtyTickKey
+                                    驱动 5s 重渲让数字推进。 */}
+                                {(() => {
+                                  const start = editStartRef.current;
+                                  if (!start) return null;
+                                  const elapsedSec = Math.floor(
+                                    (Date.now() - start) / 1000,
+                                  );
+                                  if (elapsedSec < 60) return null;
+                                  void dirtyTickKey;
+                                  const mins = Math.floor(elapsedSec / 60);
+                                  const label =
+                                    mins >= 60
+                                      ? `${Math.floor(mins / 60)}h ${mins % 60}m`
+                                      : `${mins}m`;
+                                  return (
+                                    <span
+                                      style={{
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                        opacity: 0.7,
+                                      }}
+                                      title={`本次进入编辑后已 ${elapsedSec}s — 让你感知 "在这条 task 写了多久"。重开编辑器即重置计时。`}
+                                    >
+                                      ⏰ 编辑用时 {label}
+                                    </span>
+                                  );
+                                })()}
                                 {/* R141: dirty marker — content !== original 时
                                     显 "● 未保存"；marginLeft: auto 在字数 counter
                                     上，dirty marker 紧贴字数左侧（gap 4 分隔）。
