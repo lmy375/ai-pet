@@ -9,7 +9,6 @@
 >
 
 - TG bot 加 `/aware` 命令：让 pet 输出当前感知到的 transient_note + active task 数 + 下次 due + 心情 emoji — 一句话 debug pet 决策上下文。
-- PanelMemory butler_tasks 段加「🔊 全部 unsilent」批量按钮：清所有 [silent] marker（不仅本轮 timer 加的），与 iter #366 「⏸ 全部 silent 1h」对偶清理入口。
 - PanelDebug 加「⏰ 最近主动开口」chip 清单：显最近 N 条 proactive speeches 时刻 + 触发原因（feedback_band / cooldown）— audit pet 何时开口 + 为何。
 - ChatMini 顶部加「💡 ambient」hint 行：一行显当前 transient_note + active alarms 数 + mute 剩余 — 让 owner 一眼看 pet 临时上下文。
 - TG bot 加 `/here` 命令：列当前 owner 留下的状态信号（transient_note / mute / 最近 feedback band），与 /aware 对偶 — 那个看 pet 视角，本命令看 owner 输入侧。
