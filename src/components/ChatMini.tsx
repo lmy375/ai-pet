@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { bubbleStyle } from "./panel/panelChatBits";
 import { EmptyState } from "./panel/EmptyState";
 import { ImageLightbox } from "./common/ImageLightbox";
@@ -334,6 +335,73 @@ export function ChatMini({
   const effectiveUserGlyph = userGlyph?.trim() || "🧑";
   const effectiveAssistantGlyph = assistantGlyph?.trim() || "🐾";
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  /// 💡 ambient hint 行：顶部一行显当前 transient_note + active alarms
+  /// 数 + mute 剩余。30s 轮询足够（这三个信号都是分钟级粒度变化）。
+  /// 三段全空时整行不渲，避免占垂直空间。
+  /// - tn: { text, mins } | null
+  /// - alarms: count
+  /// - muteMins: number | null（None = 未静音）
+  const [ambientTransient, setAmbientTransient] = useState<{
+    text: string;
+    mins: number;
+  } | null>(null);
+  const [ambientAlarms, setAmbientAlarms] = useState<number>(0);
+  const [ambientMuteMins, setAmbientMuteMins] = useState<number | null>(null);
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const [tnTuple, reminders, muteUntil] = await Promise.all([
+          invoke<[string, string]>("get_transient_note").catch(() => [
+            "",
+            "",
+          ] as [string, string]),
+          invoke<{ time: string; topic: string; title: string; due_now: boolean }[]>(
+            "get_pending_reminders",
+          ).catch(() => []),
+          invoke<string>("get_mute_until").catch(() => ""),
+        ]);
+        if (cancelled) return;
+        const [tnText, tnUntilIso] = tnTuple;
+        if (tnText.length === 0) {
+          setAmbientTransient(null);
+        } else {
+          const untilMs = Date.parse(tnUntilIso);
+          const mins = Number.isNaN(untilMs)
+            ? 0
+            : Math.max(1, Math.ceil((untilMs - Date.now()) / 60000));
+          setAmbientTransient({ text: tnText, mins });
+        }
+        setAmbientAlarms(reminders.length);
+        if (muteUntil.length === 0) {
+          setAmbientMuteMins(null);
+        } else {
+          const untilMs = Date.parse(muteUntil);
+          if (Number.isNaN(untilMs)) {
+            setAmbientMuteMins(null);
+          } else {
+            const mins = Math.max(1, Math.ceil((untilMs - Date.now()) / 60000));
+            setAmbientMuteMins(mins);
+          }
+        }
+      } catch (e) {
+        console.error("ambient poll failed:", e);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [visible]);
+
+  const ambientHasContent =
+    ambientTransient !== null ||
+    ambientAlarms > 0 ||
+    ambientMuteMins !== null;
   // followTail：用户是否处于"自动跟随最新"状态。挂载时默认 true（贴底）。
   // 用 ref 让 auto-scroll effect 拿到最新值而不必加进 deps；同名 state
   // 仅供「跳到底浮标」按钮可见态用。两者由 onScroll 同步更新。
@@ -898,6 +966,88 @@ export function ChatMini({
           transition: "opacity 600ms ease-out",
         }}
       >
+        {/* 💡 ambient hint 行：顶部一行显当前 pet 临时上下文 — transient_note
+            preview + active alarms 数 + mute 剩余。让 owner 不必开 panel 即
+            可一眼看「pet 现在感知到什么」。三段全空 → 整行不渲（idle 态省
+            垂直空间）。30s 轮询足够（这三个信号都是分钟级粒度）。 */}
+        {ambientHasContent && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              padding: "2px 4px 6px",
+              fontSize: 10,
+              color: "var(--pet-color-muted)",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              userSelect: "none",
+            }}
+            aria-label="pet 当前上下文 ambient hint"
+          >
+            {ambientTransient && (() => {
+              const preview =
+                ambientTransient.text.length > 30
+                  ? ambientTransient.text.slice(0, 30) + "…"
+                  : ambientTransient.text;
+              return (
+                <span
+                  title={`pet 当前 transient_note（剩 ${ambientTransient.mins} 分钟）：${ambientTransient.text}`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 2,
+                    padding: "1px 6px",
+                    borderRadius: 8,
+                    background: "color-mix(in srgb, #0891b2 14%, transparent)",
+                    color: "#0891b2",
+                    fontWeight: 500,
+                    maxWidth: 220,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  📝 {preview} · {ambientTransient.mins}m
+                </span>
+              );
+            })()}
+            {ambientAlarms > 0 && (
+              <span
+                title={`${ambientAlarms} 条 pending alarm（todo 段 [remind:] 条目）— pet proactive 扫到 due 时会软提醒。`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 2,
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                  background:
+                    "color-mix(in srgb, var(--pet-tint-blue-fg) 14%, transparent)",
+                  color: "var(--pet-tint-blue-fg)",
+                  fontWeight: 500,
+                }}
+              >
+                ⏰ {ambientAlarms}
+              </span>
+            )}
+            {ambientMuteMins !== null && (
+              <span
+                title={`pet 当前被静音 — 剩 ${ambientMuteMins} 分钟。期间 proactive 不主动开口；ChatMini / panel 仍可手动发起。`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 2,
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                  background: "color-mix(in srgb, #7c3aed 14%, transparent)",
+                  color: "#7c3aed",
+                  fontWeight: 500,
+                }}
+              >
+                🔇 {ambientMuteMins}m
+              </span>
+            )}
+          </div>
+        )}
         {/* ⌘F inline 搜索条：浮在 chat 列表顶部，不挤压列表本身（list 的
             paddingTop 用 visibility 切换的方式吸收 38px，避免空间被搜索条
             盖住）。Enter / Shift+Enter / Esc 在 input keydown 里处理。 */}
