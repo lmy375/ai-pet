@@ -1004,6 +1004,12 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_find_reply(&views, &keyword)
         }
+        TgCommand::Tag { name } => {
+            // 按 #tag exact 等值匹配。reuse 同 read path；空 name 由
+            // formatter 内部走 usage hint。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_tag_reply(&views, &name)
+        }
         TgCommand::Blocked => {
             // 被 blockedBy 锁住的 active task 清单。reuse 同 read path；
             // formatter 内部把 chat-scoped views 当 active 集 + 交集计算
