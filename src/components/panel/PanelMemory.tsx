@@ -5907,6 +5907,49 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         >
                           📝
                         </button>
+                        {/* 📑 复制纯 markdown：与 📝（H2 + 元数据 + 多 section）
+                            互补 —— 这条只输出 H1 title + description + detail.md
+                            正文，无任何 meta / section header / category 信息。
+                            适合"外部转载 / 备份"（粘到 Notion / Obsidian / 博
+                            客）这种"只要内容本身"的场景。size > 0 时一并拉
+                            detail；为空时仅 H1 + description。 */}
+                        <button
+                          style={s.btn}
+                          onClick={async () => {
+                            const lines: string[] = [`# ${item.title}`, ""];
+                            const desc = (item.description || "").trim();
+                            if (desc) lines.push(desc);
+                            const size = detailSizes[item.detail_path] ?? 0;
+                            if (size > 0) {
+                              try {
+                                const content = await invoke<string>(
+                                  "memory_read_detail_full",
+                                  { detailPath: item.detail_path },
+                                );
+                                if (content && content.trim()) {
+                                  if (desc) lines.push("");
+                                  lines.push(content.trimEnd());
+                                }
+                              } catch {
+                                // detail 失败 → 静默丢，纯 title + desc 仍能粘
+                              }
+                            }
+                            const md = lines.join("\n");
+                            try {
+                              await navigator.clipboard.writeText(md);
+                              setMessage(
+                                `已复制 markdown 纯文本（${md.length} 字符）`,
+                              );
+                            } catch (e) {
+                              setMessage(`复制失败：${e}`);
+                            }
+                            setTimeout(() => setMessage(""), 3000);
+                          }}
+                          title={`把 "${item.title}" 拼成纯 markdown 复制：# title + description + detail.md 正文（无元数据 / 无 section header）。适合外部转载 / 备份 / 粘到 Notion / Obsidian / 博客 — 比「📝」更干净。`}
+                          aria-label="copy clean markdown of memory item"
+                        >
+                          📑
+                        </button>
                         {(() => {
                           const armed =
                             armedDeleteKey === `${catKey}::${item.title}`;
