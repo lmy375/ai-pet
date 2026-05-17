@@ -2221,6 +2221,13 @@ export function PanelTasks({
   // 单 task 编辑互斥（editingDetailTitle 是单值），所以单 ref 够用。
   const detailEditorRef = useRef<HTMLTextAreaElement>(null);
 
+  /// ⌘P toggle preview-only 时记下"进 preview 前的 mode"，再次 ⌘P 恢复。
+  /// 仅 ref 不进 state — toggle 路径不需要 re-render；缺省 null 表示
+  /// 当前不在"通过 ⌘P 进入 preview"的态。owner 手动通过按钮切到
+  /// preview 时不写此 ref → 再 ⌘P 时直接 fallback "edit"（合理：手动
+  /// 切到 preview 后忘了原 mode，⌘P 还能给个出口）。
+  const detailViewModeBeforePreviewRef = useRef<DetailViewMode | null>(null);
+
   /// detail.md 编辑器内 ⌘F 全文搜浮 bar：长 detail.md（每条 ≥ 数千字）owner
   /// 想快速跳到某关键词位置，PanelTasks 顶部 search 是按 task 标题 / 描述搜，
   /// 不进 detail。这里加 in-textarea find — 与 Chrome / VS Code 找一致。
@@ -2289,6 +2296,39 @@ export function PanelTasks({
     return () =>
       window.removeEventListener("keydown", onKey, { capture: true });
   }, [editingDetailTitle]);
+
+  /// ⌘P toggle preview-only 模式（VSCode preview-lock 风）。
+  /// - 编辑器开启时全局捕获：
+  ///   - 非 preview → 记下当前 mode 进 ref，切到 preview
+  ///   - preview → 恢复 ref 里的 mode（缺省 "edit"）
+  /// 同时 preventDefault 拦截浏览器默认 print dialog；capture:true +
+  /// stopImmediatePropagation 防止跟其它 ⌘P 冲突（目前无其它绑定，但
+  /// 防御未来撞）。owner 长 detail.md 看时 ⌘P 一键焦点纯阅读，再按
+  /// 回写作姿态。与 ✏️/🔀/👁 三按钮 UI 行为同源（都改 detailViewMode）
+  /// — keyboard shortcut 加速心智，UI 仍是 source of truth。
+  useEffect(() => {
+    if (editingDetailTitle === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "p") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setDetailViewMode((cur) => {
+        if (cur === "preview") {
+          const restore = detailViewModeBeforePreviewRef.current ?? "edit";
+          detailViewModeBeforePreviewRef.current = null;
+          return restore;
+        }
+        detailViewModeBeforePreviewRef.current = cur;
+        return "preview";
+      });
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, [editingDetailTitle]);
+
   /// activeIdx / matches 变化 → 把对应 range 选中并把 input 焦点保留。
   /// textarea.focus() + setSelectionRange 触发 webview 内 textarea 自动滚到
   /// 选区位置；rAF 等浏览器滚完再 refocus input，避免连按 Enter 时焦点跳乱。
@@ -9942,7 +9982,7 @@ export function PanelTasks({
                                           ? "纯编辑（只看 textarea）"
                                           : key === "split"
                                             ? "左编辑 + 右预览（适合 panel 宽 600+ 写大段时实时看效果）"
-                                            : "纯预览（只看渲染结果）"
+                                            : "纯预览（只看渲染结果）— 键盘 ⌘P 一键 toggle，VSCode preview-lock 风"
                                       }
                                     >
                                       {label}
@@ -14511,6 +14551,7 @@ export function PanelTasks({
                   ["⌘⇧Enter", "保存并关闭"],
                   ["⌘⌥Enter", "保存并跳下一条 task（连续 review 流）"],
                   ["⌘F", "在 detail.md 内行内搜索（Enter / ↑↓ 切 match · Esc 关）"],
+                  ["⌘P", "切到 preview-only 焦点阅读（再按回写作姿态 · VSCode preview-lock 风）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
                   ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
