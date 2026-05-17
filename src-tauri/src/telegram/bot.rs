@@ -1426,6 +1426,52 @@ async fn handle_tg_command(
                 )
             }
         }
+        TgCommand::EditDue { title, preset } => {
+            // 用 friendly preset 改 due。computed = compute_edit_due_preset
+            // 解出的 NaiveDateTime；Clear preset 返 None；caller 转
+            // task_set_due Option<String>。空 title / 无效 preset →
+            // formatter 走 usage hint。
+            if title.trim().is_empty() || preset.is_none() {
+                crate::telegram::commands::format_edit_due_reply(
+                    &title,
+                    preset.as_ref(),
+                    None,
+                    Ok(()),
+                )
+            } else {
+                let now = chrono::Local::now().naive_local();
+                let preset_ref = preset.as_ref().expect("checked Some above");
+                let computed = crate::telegram::commands::compute_edit_due_preset(
+                    preset_ref, now,
+                );
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let due_str = computed.map(|dt| {
+                            dt.format("%Y-%m-%dT%H:%M").to_string()
+                        });
+                        match crate::commands::task::task_set_due(t.clone(), due_str) {
+                            Ok(()) => crate::telegram::commands::format_edit_due_reply(
+                                &t,
+                                Some(preset_ref),
+                                computed,
+                                Ok(()),
+                            ),
+                            Err(e) => crate::telegram::commands::format_edit_due_reply(
+                                &t,
+                                Some(preset_ref),
+                                computed,
+                                Err(&e),
+                            ),
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Pri { title, priority } => {
             // 单改 priority — 走 task_set_priority 同后端（保 due / body /
             // 其它 markers 不动）。空 title / 无 priority → formatter usage

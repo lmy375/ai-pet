@@ -42,6 +42,153 @@ pub fn parse_due_preset(s: &str) -> Option<DuePreset> {
     }
 }
 
+/// iter #393: `/edit_due <title> <preset>` 命令的 preset 维度。比
+/// `/due` 的 DuePreset（仅 audit 时间段）更广 — 含 tonight / 单
+/// weekday / next-week weekday / +Nm/h/d 相对时长 / clear 多形态。
+/// caller 把 preset 与 now 注入 `compute_edit_due_preset` 得到具体
+/// NaiveDateTime（pure，便单测）。
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum EditDuePreset {
+    /// today 18:00；若 now 已过 18:00 → tomorrow 18:00（避免点完一下
+    /// 子 "tonight" 又被解释成已过去时刻 footgun）
+    Tonight,
+    /// tomorrow 09:00
+    TomorrowMorning,
+    /// 本周（或最近未来）某 weekday 09:00。`weekday`: 0=Mon..6=Sun
+    /// 与 chrono::Weekday::num_days_from_monday() 同 mapping
+    Weekday(u8),
+    /// 下周某 weekday 09:00（本周已过或本日 weekday 也算下周以避免
+    /// 撞当日 footgun）
+    NextWeekday(u8),
+    /// now + minutes（+Nm）
+    PlusMinutes(u32),
+    /// now + hours（+Nh）
+    PlusHours(u32),
+    /// now + days 09:00（+Nd — 几天后早上 9 点，而非"几天后此刻"避
+    /// 免 due 落到午夜 / 半夜的反直觉）
+    PlusDays(u32),
+    /// 清掉 due（"clear" / "none" / "0"）
+    Clear,
+}
+
+/// pure：识别 owner 输入的 edit_due preset。tonight / morning / 单
+/// weekday / next-week weekday / +Nm/h/d / clear 多形态；中英 alias
+/// 同表；大小写不敏感。未识别返 None 让 handler 走 usage hint。
+pub fn parse_edit_due_preset(s: &str) -> Option<EditDuePreset> {
+    let lower = s.trim().to_lowercase();
+    match lower.as_str() {
+        "tonight" | "今晚" | "today_evening" | "today-evening" => {
+            return Some(EditDuePreset::Tonight);
+        }
+        "tomorrow" | "tmr" | "tm" | "明天" | "明日" | "morning" | "早上" => {
+            return Some(EditDuePreset::TomorrowMorning);
+        }
+        "clear" | "none" | "0" | "清除" | "取消" => {
+            return Some(EditDuePreset::Clear);
+        }
+        _ => {}
+    }
+    // Weekday 单词：mon/tue/.../sun + 周一..周日
+    let weekday_map: &[(&str, u8)] = &[
+        ("monday", 0), ("mon", 0), ("周一", 0), ("星期一", 0),
+        ("tuesday", 1), ("tue", 1), ("周二", 1), ("星期二", 1),
+        ("wednesday", 2), ("wed", 2), ("周三", 2), ("星期三", 2),
+        ("thursday", 3), ("thu", 3), ("周四", 3), ("星期四", 3),
+        ("friday", 4), ("fri", 4), ("周五", 4), ("星期五", 4),
+        ("saturday", 5), ("sat", 5), ("周六", 5), ("星期六", 5),
+        ("sunday", 6), ("sun", 6), ("周日", 6), ("周天", 6), ("星期日", 6),
+    ];
+    for (alias, idx) in weekday_map {
+        if lower == *alias {
+            return Some(EditDuePreset::Weekday(*idx));
+        }
+        // next_<weekday> / next-mon / 下周一
+        let next_prefixes = ["next_", "next-", "下"];
+        for pfx in &next_prefixes {
+            let key = format!("{}{}", pfx, alias);
+            if lower == key {
+                return Some(EditDuePreset::NextWeekday(*idx));
+            }
+        }
+    }
+    // 相对时长：+Nm / +Nh / +Nd
+    if let Some(rest) = lower.strip_prefix('+') {
+        let (digits, unit) = rest.split_at(rest.len().saturating_sub(1));
+        if let Ok(n) = digits.parse::<u32>() {
+            if n > 0 {
+                return match unit {
+                    "m" => Some(EditDuePreset::PlusMinutes(n)),
+                    "h" => Some(EditDuePreset::PlusHours(n)),
+                    "d" => Some(EditDuePreset::PlusDays(n)),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
+}
+
+/// pure：把 EditDuePreset + now 算出具体 NaiveDateTime。`None` = Clear
+/// 语义（caller 传 None 给 task_set_due 清 due）；`Some(dt)` = 设
+/// 该时刻。返回类型 `Option<Option<NaiveDateTime>>` 似乎冗余，但语义
+/// 上 `Some(None)` 是 "明确 Clear"（不是错误），与 `Some(Some(dt))`
+/// 区分；caller 把内层 Option 转 `Option<String>` 传给 task_set_due。
+pub fn compute_edit_due_preset(
+    preset: &EditDuePreset,
+    now: chrono::NaiveDateTime,
+) -> Option<chrono::NaiveDateTime> {
+    use chrono::{Duration, NaiveTime};
+    let today = now.date();
+    let nine_am = NaiveTime::from_hms_opt(9, 0, 0)?;
+    let six_pm = NaiveTime::from_hms_opt(18, 0, 0)?;
+    match preset {
+        EditDuePreset::Tonight => {
+            let tonight = today.and_time(six_pm);
+            if tonight > now {
+                Some(tonight)
+            } else {
+                // 已过 18:00 → 明晚 18:00 防"tonight 已过去"footgun
+                Some((today + Duration::days(1)).and_time(six_pm))
+            }
+        }
+        EditDuePreset::TomorrowMorning => {
+            Some((today + Duration::days(1)).and_time(nine_am))
+        }
+        EditDuePreset::Weekday(idx) => {
+            // 当前 weekday → target weekday 之差（mod 7）；0 时算下周
+            // （避免设到今天同 weekday 但当前已过 9 点 → 落已过时刻）
+            use chrono::Datelike;
+            let cur = today.weekday().num_days_from_monday() as i64;
+            let target = *idx as i64;
+            let mut diff = (target - cur).rem_euclid(7);
+            if diff == 0 {
+                // 当日 weekday：若 09:00 仍未来则当日，否则下周
+                let target_today = today.and_time(nine_am);
+                if target_today > now {
+                    return Some(target_today);
+                }
+                diff = 7;
+            }
+            Some((today + Duration::days(diff)).and_time(nine_am))
+        }
+        EditDuePreset::NextWeekday(idx) => {
+            use chrono::Datelike;
+            let cur = today.weekday().num_days_from_monday() as i64;
+            let target = *idx as i64;
+            let base_diff = (target - cur).rem_euclid(7);
+            // 显式 "next" 语义：至少 7 天之后（即使 base_diff > 0）
+            let diff = if base_diff == 0 { 7 } else { base_diff + 7 };
+            Some((today + Duration::days(diff)).and_time(nine_am))
+        }
+        EditDuePreset::PlusMinutes(n) => Some(now + Duration::minutes(*n as i64)),
+        EditDuePreset::PlusHours(n) => Some(now + Duration::hours(*n as i64)),
+        EditDuePreset::PlusDays(n) => {
+            Some((today + Duration::days(*n as i64)).and_time(nine_am))
+        }
+        EditDuePreset::Clear => None,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum TgCommand {
     Cancel { title: String },
@@ -215,6 +362,15 @@ pub enum TgCommand {
     /// #tag chip click filter 对偶 audit。空 name → missing-arg。无命中
     /// → 友好兜底 + 提示 /tags 看所有可用 tag 名。
     Tag { name: String },
+    /// `/edit_due <title> <preset>` —— 改任务 due 为 preset 解出的时刻。
+    /// preset 接 tonight/tomorrow/monday/next_monday/+30m/+2h/+1d/clear 等
+    /// 友好词 — 免手敲 ISO 日期。preset 是 last whitespace token，余作
+    /// title（与 /pri / /promote / /demote 同 parser 模板）。空 title /
+    /// 无法识别的 preset → usage hint。复用 task_set_due 后端。
+    EditDue {
+        title: String,
+        preset: Option<EditDuePreset>,
+    },
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -354,6 +510,7 @@ impl TgCommand {
             TgCommand::Aware => "aware",
             TgCommand::Here => "here",
             TgCommand::Tag { .. } => "tag",
+            TgCommand::EditDue { .. } => "edit_due",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
@@ -384,6 +541,7 @@ impl TgCommand {
             | TgCommand::Show { title }
             | TgCommand::Quick { text: title }
             | TgCommand::Pri { title, .. }
+            | TgCommand::EditDue { title, .. }
             | TgCommand::Feedback { text: title }
             | TgCommand::Transient { text: title, .. }
             | TgCommand::Promote { title }
@@ -506,6 +664,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("aware", "Pet's current awareness snapshot: transient_note + active tasks + mood emoji + time + companionship days"),
             ("here", "Owner-side signals snapshot: transient_note + mute state + recent feedback band (counterpart to /aware)"),
             ("tag", "List all tasks with a given #tag (exact match, case-insensitive; counterpart to /tags which lists tag names)"),
+            ("edit_due", "Edit a task's due time using friendly preset (tonight / tomorrow / monday / next_friday / +30m / +2h / clear ...)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
@@ -561,6 +720,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("aware", "pet 当前感知 snapshot：transient_note + active tasks + mood + 时间 + 陪伴天数"),
             ("here", "owner 视角信号 snapshot：transient_note + mute 剩余 + 最近 feedback band（与 /aware 对偶）"),
             ("tag", "列含某 #tag 的所有 task（exact 等值；与 /tags 列 tag 名互补）"),
+            ("edit_due", "用友好 preset 改 due（tonight / 明天 / 周一 / next_friday / +30m / +1d / clear ...）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
@@ -897,6 +1057,48 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
             let raw = title.trim().trim_start_matches('#').trim();
             let name = raw.split_whitespace().next().unwrap_or("").to_string();
             Some(TgCommand::Tag { name })
+        }
+        // `/edit_due <title> <preset>`：与 /pri 同 parser 模板 — rsplit
+        // 末 whitespace token 作 preset 字符串走 parse_edit_due_preset；
+        // 剩余作 title。preset 无法识别 → None 让 handler 走 usage hint
+        // （含 list of valid presets）。空 title / 仅 preset 单 token →
+        // (title="", preset=parsed_or_none) 让 handler 走 missing-arg。
+        "edit_due" => {
+            let s = title.trim();
+            if s.is_empty() {
+                return Some(TgCommand::EditDue {
+                    title: String::new(),
+                    preset: None,
+                });
+            }
+            let (title_out, preset_out) = match s.rfind(char::is_whitespace) {
+                Some(pos) => {
+                    let left = s[..pos].trim();
+                    let right = s[pos..].trim();
+                    let preset = parse_edit_due_preset(right);
+                    match preset {
+                        Some(p) => (left.to_string(), Some(p)),
+                        // preset 不识别 → 整段当 title，preset=None
+                        None => (s.to_string(), None),
+                    }
+                }
+                None => {
+                    // 单 token：可能"仅 title"或"仅 preset"。后者更可能
+                    // （title 单字罕见）— 仅 title 路径 owner 想清 due
+                    // 也会写 `<title> clear`。试 preset 解析；解出来视
+                    // 为"仅 preset 缺 title"。
+                    let preset = parse_edit_due_preset(s);
+                    if preset.is_some() {
+                        (String::new(), preset)
+                    } else {
+                        (s.to_string(), None)
+                    }
+                }
+            };
+            Some(TgCommand::EditDue {
+                title: title_out,
+                preset: preset_out,
+            })
         }
         // `/last` 无参；多余尾部忽略
         "last" => Some(TgCommand::Last),
@@ -1386,9 +1588,10 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "silenced", "silent_all", "markers", "tags", "tag", "mood",
     "whoami", "today", "yesterday", "streak", "now", "aware", "here",
     "last", "random", "sleep", "quick", "due", "recent", "recent_chats",
-    "digest", "alarms", "edit", "pri", "promote", "demote", "reflect",
-    "feedback", "feedback_history", "transient", "cancel_all_error",
-    "find", "show", "blocked", "snoozed", "reset", "version", "help",
+    "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote",
+    "reflect", "feedback", "feedback_history", "transient",
+    "cancel_all_error", "find", "show", "blocked", "snoozed", "reset",
+    "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1518,6 +1721,7 @@ pub fn format_help_for_topic(
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
         "edit" => "✏️ /edit <title> :: <new desc>\n\n用法：全量覆写指定 butler_task 的 description。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。\n\n示例：\n  /edit 整理 Downloads :: 整理 Downloads [task pri=5 due=2026-05-20] [pinned]\n  /edit 写周报 :: 完整新 body 一段\n\n注意：**全量覆写**语义 — 新 desc 完全替换旧描述。想保留 `[task pri=...]` `[every: ...]` `[pinned]` 等 markers 请自行写进新 desc（命令不会自动续 markers）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
+        "edit_due" => "📅 /edit_due <title> <preset>\n\n用法：免手敲 ISO 日期改任务 due — preset 接友好词。preset 是 last whitespace token，剩余作 title（与 /pri / /promote / /demote 同 parser 模板，含空格 / 中文 title 也保）。复用 task_set_due 后端 — 与 ✏️ /edit 全量覆写正交，仅改 due 字段不动其它 markers。\n\nPreset 名单：\n\n  时刻类：\n    · tonight / 今晚 — 今晚 18:00（已过则明晚同点）\n    · tomorrow / 明天 / morning / 早上 / tmr — 明早 09:00\n    · monday..sunday / 周一..周日 / mon..sun — 本周（或下周如已过）该 weekday 09:00\n    · next_monday..next_sunday / 下周一..下周日 / next-mon..next-sun — 下周 weekday 09:00\n\n  相对类：\n    · +Nm — now + N 分钟\n    · +Nh — now + N 小时\n    · +Nd — N 天后 09:00（落次日早上而非「几天后此刻」避免午夜反直觉）\n\n  清除：\n    · clear / none / 0 / 清除 / 取消 — 清掉 due\n\n示例：\n  /edit_due 整理 Downloads tonight\n  /edit_due 写周报 next_friday\n  /edit_due 跑步 +30m\n  /edit_due 旧任务 clear\n\n相关：/pri <title> <N>（改 priority）；/promote / /demote（priority +/-1）；/snooze（暂停而非改 due）。",
         "reflect" => "🪞 /reflect <text>\n\n用法：把任意文本作 ai_insights memory item 存盘（反思 / 自我洞察分类，与 /note 写 general 对偶）。title 自动 `reflect-YYYY-MM-DDTHH-MM-SS`。\n\n示例：\n  /reflect 今天回顾：我对中断接受度过高，应该早点说 no\n  /reflect 观察：长 task 拆细后完成率明显提升\n\n相关：/note 写 general（杂项 brain-dump）；二者按「信号类型」分流避免 ai_insights 段被日常杂项稀释。可在 PanelMemory → AI 洞察 段查看 / 整理。",
         "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）；/show（看单条详情）。",
         "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
@@ -1598,6 +1802,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/reflect <text>  —  把任意文本作 ai_insights memory item 存（反思 / 自我洞察，与 /note 对偶但分类不同）".to_string(),
         "/digest [N]  —  最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）".to_string(),
         "/edit <title> :: <new desc>  —  覆写 butler task 描述（全量替换，markers 需自己写进 new desc）".to_string(),
+        "/edit_due <title> <preset>  —  友好 preset 改 due（tonight / 明天 / 周一 / next_friday / +30m / +1d / clear ...）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -3205,6 +3410,43 @@ pub fn format_pri_reply(
     }
 }
 
+/// `/edit_due <title> <preset>` 命令回复文案。pure。
+///
+/// 入参：
+/// - title trim 后的字符串（caller resolve 后传 actual title）
+/// - preset 解析结果（None = 不识别）
+/// - computed: caller 调 compute_edit_due_preset 拿到的最终 NaiveDateTime
+///   （Some = 设 due，None = clear 语义）。仅 preset 有效时才传 valid 值。
+/// - save_ok: task_set_due 调用结果
+///
+/// 输出 4 种态：
+/// - 空 title / preset=None → usage hint（含 preset 名单 + 示例）
+/// - save Err → "📅 设 due 失败：<msg>"
+/// - preset=Clear / computed=None → "📅 已清「title」的 due"
+/// - preset=有效时刻 → "📅 已设「title」due → MM-DD HH:MM"
+pub fn format_edit_due_reply(
+    title: &str,
+    preset: Option<&EditDuePreset>,
+    computed: Option<chrono::NaiveDateTime>,
+    save_ok: Result<(), &str>,
+) -> String {
+    let t = title.trim();
+    if t.is_empty() || preset.is_none() {
+        return "📅 用法：/edit_due <title> <preset>\n\n免手敲 ISO 日期改任务 due。preset 接友好词：\n\n时刻类：\n  · tonight / 今晚 — 今晚 18:00（已过则明晚）\n  · tomorrow / 明天 / morning / 早上 / tmr — 明早 09:00\n  · monday..sunday / 周一..周日 — 本周（或下周如已过）该 weekday 09:00\n  · next_monday..next_sunday / 下周一..下周日 — 下周 weekday 09:00\n\n相对类：\n  · +30m / +2h / +1d — now + 时长（+Nd 落次日 09:00）\n\n清除：\n  · clear / none / 0 / 清除 — 清掉 due\n\n例：\n  /edit_due 整理 Downloads tonight\n  /edit_due 写周报 next_friday\n  /edit_due 跑步 +30m\n  /edit_due 旧任务 clear\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。".to_string();
+    }
+    if let Err(e) = save_ok {
+        return format!("📅 设 due 失败：{}", e);
+    }
+    match computed {
+        Some(dt) => format!(
+            "📅 已设「{}」due → {}",
+            t,
+            dt.format("%m-%d %H:%M")
+        ),
+        None => format!("📅 已清「{}」的 due", t),
+    }
+}
+
 /// pure：从 views 抽出 done 任务的 updated_at 当日 NaiveDate 集合。
 /// `updated_at` 走 RFC3339 + 截前 10 字符（YYYY-MM-DD）NaiveDate parse；
 /// 解析失败的条目静默跳过（防御 legacy 数据格式不一致）。
@@ -4467,8 +4709,8 @@ mod tests {
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
-            "tag", "cancel_all_error", "find", "show", "blocked",
-            "snoozed", "reset", "version", "help",
+            "tag", "edit_due", "cancel_all_error", "find", "show",
+            "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4934,10 +5176,10 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
-            "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
-            "feedback_history", "transient", "silent_all", "alarms",
-            "recent_chats", "aware", "here", "cancel_all_error", "show",
-            "tags", "tag", "reset", "version", "help",
+            "due", "edit", "edit_due", "pri", "promote", "demote", "reflect",
+            "feedback", "feedback_history", "transient", "silent_all",
+            "alarms", "recent_chats", "aware", "here", "cancel_all_error",
+            "show", "tags", "tag", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -8768,6 +9010,248 @@ mod tests {
         let s = format_tag_reply(&views, "bulk");
         assert!(s.contains("#bulk 命中 25 条"), "{s}");
         assert!(s.contains("还有 5 条带本 tag"), "overflow: {s}");
+    }
+
+    // -------- /edit_due parse + compute + format --------
+
+    #[test]
+    fn edit_due_parse_preset_tonight_aliases() {
+        assert_eq!(parse_edit_due_preset("tonight"), Some(EditDuePreset::Tonight));
+        assert_eq!(parse_edit_due_preset("今晚"), Some(EditDuePreset::Tonight));
+    }
+
+    #[test]
+    fn edit_due_parse_preset_tomorrow_aliases() {
+        for s in &["tomorrow", "tmr", "明天", "morning", "早上"] {
+            assert_eq!(
+                parse_edit_due_preset(s),
+                Some(EditDuePreset::TomorrowMorning),
+                "alias {} should map to TomorrowMorning",
+                s,
+            );
+        }
+    }
+
+    #[test]
+    fn edit_due_parse_preset_clear_aliases() {
+        for s in &["clear", "none", "0", "清除", "取消"] {
+            assert_eq!(
+                parse_edit_due_preset(s),
+                Some(EditDuePreset::Clear),
+                "alias {} should map to Clear",
+                s,
+            );
+        }
+    }
+
+    #[test]
+    fn edit_due_parse_preset_weekday() {
+        // Monday = 0
+        assert_eq!(parse_edit_due_preset("monday"), Some(EditDuePreset::Weekday(0)));
+        assert_eq!(parse_edit_due_preset("周一"), Some(EditDuePreset::Weekday(0)));
+        // Sunday = 6
+        assert_eq!(parse_edit_due_preset("sunday"), Some(EditDuePreset::Weekday(6)));
+        assert_eq!(parse_edit_due_preset("周日"), Some(EditDuePreset::Weekday(6)));
+    }
+
+    #[test]
+    fn edit_due_parse_preset_next_weekday() {
+        assert_eq!(
+            parse_edit_due_preset("next_monday"),
+            Some(EditDuePreset::NextWeekday(0)),
+        );
+        assert_eq!(
+            parse_edit_due_preset("下周五"),
+            Some(EditDuePreset::NextWeekday(4)),
+        );
+    }
+
+    #[test]
+    fn edit_due_parse_preset_relative_duration() {
+        assert_eq!(parse_edit_due_preset("+30m"), Some(EditDuePreset::PlusMinutes(30)));
+        assert_eq!(parse_edit_due_preset("+2h"), Some(EditDuePreset::PlusHours(2)));
+        assert_eq!(parse_edit_due_preset("+1d"), Some(EditDuePreset::PlusDays(1)));
+        // 0 / invalid 拒
+        assert_eq!(parse_edit_due_preset("+0m"), None);
+        assert_eq!(parse_edit_due_preset("+xyz"), None);
+        assert_eq!(parse_edit_due_preset("+5s"), None); // 秒不支持
+    }
+
+    #[test]
+    fn edit_due_parse_preset_unknown_returns_none() {
+        assert_eq!(parse_edit_due_preset("blahblah"), None);
+        assert_eq!(parse_edit_due_preset(""), None);
+    }
+
+    #[test]
+    fn edit_due_compute_tonight_before_18() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::Tonight, now);
+        assert_eq!(result, Some(ndt(2026, 5, 17, 18, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_tonight_after_18_rolls_to_next_day() {
+        let now = ndt(2026, 5, 17, 22, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::Tonight, now);
+        assert_eq!(result, Some(ndt(2026, 5, 18, 18, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_tomorrow_morning() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::TomorrowMorning, now);
+        assert_eq!(result, Some(ndt(2026, 5, 18, 9, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_weekday_future_in_week() {
+        // 2026-05-17 is Sunday (weekday 6). Monday(0) is +1 day.
+        let now = ndt(2026, 5, 17, 14, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::Weekday(0), now);
+        assert_eq!(result, Some(ndt(2026, 5, 18, 9, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_weekday_today_before_9_today() {
+        // 2026-05-17 is Sunday (weekday 6). Sunday(6) at 08:00 → today 09:00.
+        let now = ndt(2026, 5, 17, 8, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::Weekday(6), now);
+        assert_eq!(result, Some(ndt(2026, 5, 17, 9, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_weekday_today_after_9_next_week() {
+        // 2026-05-17 is Sunday. Sunday(6) at 10:00 → next Sunday 2026-05-24.
+        let now = ndt(2026, 5, 17, 10, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::Weekday(6), now);
+        assert_eq!(result, Some(ndt(2026, 5, 24, 9, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_next_weekday_always_at_least_7d_out() {
+        // 2026-05-17 (Sun) + next_monday(0) → 2026-05-25（下下周一）
+        let now = ndt(2026, 5, 17, 8, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::NextWeekday(0), now);
+        assert_eq!(result, Some(ndt(2026, 5, 25, 9, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_plus_minutes() {
+        let now = ndt(2026, 5, 17, 14, 30);
+        let result = compute_edit_due_preset(&EditDuePreset::PlusMinutes(45), now);
+        assert_eq!(result, Some(ndt(2026, 5, 17, 15, 15)));
+    }
+
+    #[test]
+    fn edit_due_compute_plus_hours() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        let result = compute_edit_due_preset(&EditDuePreset::PlusHours(3), now);
+        assert_eq!(result, Some(ndt(2026, 5, 17, 17, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_plus_days_lands_morning_9am() {
+        let now = ndt(2026, 5, 17, 14, 30);
+        let result = compute_edit_due_preset(&EditDuePreset::PlusDays(2), now);
+        assert_eq!(result, Some(ndt(2026, 5, 19, 9, 0)));
+    }
+
+    #[test]
+    fn edit_due_compute_clear_returns_none() {
+        let now = ndt(2026, 5, 17, 14, 0);
+        assert_eq!(compute_edit_due_preset(&EditDuePreset::Clear, now), None);
+    }
+
+    #[test]
+    fn edit_due_parse_command_title_and_preset() {
+        assert_eq!(
+            parse_tg_command("/edit_due 整理 Downloads tonight"),
+            Some(TgCommand::EditDue {
+                title: "整理 Downloads".to_string(),
+                preset: Some(EditDuePreset::Tonight),
+            }),
+        );
+    }
+
+    #[test]
+    fn edit_due_parse_command_unknown_preset_treated_as_title() {
+        // preset 无法识别 → 整段当 title，preset=None（handler usage hint）
+        assert_eq!(
+            parse_tg_command("/edit_due 整理 Downloads invalidpreset"),
+            Some(TgCommand::EditDue {
+                title: "整理 Downloads invalidpreset".to_string(),
+                preset: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn edit_due_parse_command_single_token_preset_only() {
+        // 仅 preset 缺 title → handler 走 usage hint
+        assert_eq!(
+            parse_tg_command("/edit_due tonight"),
+            Some(TgCommand::EditDue {
+                title: String::new(),
+                preset: Some(EditDuePreset::Tonight),
+            }),
+        );
+    }
+
+    #[test]
+    fn edit_due_parse_command_empty() {
+        assert_eq!(
+            parse_tg_command("/edit_due"),
+            Some(TgCommand::EditDue {
+                title: String::new(),
+                preset: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn edit_due_reply_empty_shows_usage() {
+        let s = format_edit_due_reply("", None, None, Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/edit_due <title> <preset>"), "{s}");
+        assert!(s.contains("tonight"), "show preset names: {s}");
+        assert!(s.contains("+30m"), "show relative example: {s}");
+        assert!(s.contains("clear"), "show clear option: {s}");
+    }
+
+    #[test]
+    fn edit_due_reply_set_success() {
+        let s = format_edit_due_reply(
+            "整理 Downloads",
+            Some(&EditDuePreset::Tonight),
+            Some(ndt(2026, 5, 17, 18, 0)),
+            Ok(()),
+        );
+        assert!(s.contains("已设「整理 Downloads」"), "{s}");
+        assert!(s.contains("05-17 18:00"), "{s}");
+    }
+
+    #[test]
+    fn edit_due_reply_clear_success() {
+        let s = format_edit_due_reply(
+            "整理 Downloads",
+            Some(&EditDuePreset::Clear),
+            None,
+            Ok(()),
+        );
+        assert!(s.contains("已清「整理 Downloads」"), "{s}");
+    }
+
+    #[test]
+    fn edit_due_reply_save_err() {
+        let s = format_edit_due_reply(
+            "missing-task",
+            Some(&EditDuePreset::Tonight),
+            Some(ndt(2026, 5, 17, 18, 0)),
+            Err("task not found: missing-task"),
+        );
+        assert!(s.contains("设 due 失败"), "{s}");
+        assert!(s.contains("not found"), "show err msg: {s}");
     }
 
     // -------- /show parse + format --------
