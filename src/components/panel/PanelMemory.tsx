@@ -105,6 +105,38 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   /// `${catKey}::${title}`；async create 期间 disable 按钮 + 显灰色。
   /// 与既有 alarmBusy / renameMemoryBusy 同模式。
   const [copyingItemKey, setCopyingItemKey] = useState<string | null>(null);
+  /// 右键 ctx menu 状态：聚合既有 chip 动作（✏️ 改名 / 📑 副本 /
+  /// 🗑 删 / 🔗 inline ref / 📋 detail 路径）让 owner 一次发现入口。
+  /// 与既有 inline chip 互补 — 右键是 quick-action 入口（mouse 党
+  /// 偏好），chip 仍 always-visible 给 hover-discoverable owner。
+  /// x/y 是 viewport 坐标 (fixed 定位)；null = 关。
+  const [memItemCtxMenu, setMemItemCtxMenu] = useState<
+    | {
+        catKey: string;
+        title: string;
+        detailPath: string;
+        description: string;
+        x: number;
+        y: number;
+      }
+    | null
+  >(null);
+  /// Esc / outside-click 关 ctx menu（与 PanelTasks taskCtxMenu 同
+  /// 模式）。mousedown 而非 click — owner 按下那一刻就关，菜单跟手
+  /// 感更好。
+  useEffect(() => {
+    if (!memItemCtxMenu) return;
+    const onDocClick = () => setMemItemCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMemItemCtxMenu(null);
+    };
+    window.addEventListener("mousedown", onDocClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDocClick);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [memItemCtxMenu]);
   // 双击 inline 改 memory title。同时只允许一条 item 处于改名（多 input
   // 分散注意力）；key 用 `${catKey}::${oldTitle}` 跨 category 唯一。复用
   // 后端 memory_rename 命令（与 PanelTasks 改名同源）。
@@ -5875,6 +5907,23 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     }}
                     onMouseEnter={() => startPreviewHover(item.detail_path)}
                     onMouseLeave={endPreviewHover}
+                    onContextMenu={(e) => {
+                      // 仅在 item 主体右键弹 menu — input / button 等子节
+                      // 点击的右键（如 inline rename textarea）由它们自身
+                      // 处理。e.preventDefault 阻浏览器默认 menu（Tauri
+                      // 已禁默认 contextmenu，保险一道）。
+                      e.preventDefault();
+                      e.stopPropagation();
+                      endPreviewHover();
+                      setMemItemCtxMenu({
+                        catKey,
+                        title: item.title,
+                        detailPath: item.detail_path,
+                        description: item.description,
+                        x: e.clientX,
+                        y: e.clientY,
+                      });
+                    }}
                   >
                     {/* hover 500ms 浮的 detail.md 预览 tooltip。读取首字 ≤
                         600 字符；改：previewActive 即渲染外壳 + 时间 / path
@@ -8438,6 +8487,209 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 )}
               </div>
             </div>
+          </div>
+        );
+      })()}
+      {/* 右键 item ctx menu — fixed 定位到 click 坐标；夹紧 viewport
+          右/下边界避免被切。聚合既有 chip 动作（✏️ 改名 / 📑 副本 /
+          🔗 inline ref / 🗑 删）让 mouse 党快速操作；与 always-visible
+          inline chip 互补（hover-党仍走 chip 路径）。 */}
+      {memItemCtxMenu && (() => {
+        const m = memItemCtxMenu;
+        const W = 200;
+        const H = 200;
+        const left = Math.max(8, Math.min(m.x, window.innerWidth - W - 8));
+        const top = Math.max(8, Math.min(m.y, window.innerHeight - H - 8));
+        const itemKey = `${m.catKey}::${m.title}`;
+        const armedDel = armedDeleteKey === itemKey;
+        const itemBtn: React.CSSProperties = {
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          padding: "6px 10px",
+          fontSize: 12,
+          lineHeight: 1.3,
+          border: "none",
+          background: "transparent",
+          color: "var(--pet-color-fg)",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          borderRadius: 4,
+        };
+        const itemHoverIn = (e: React.MouseEvent<HTMLButtonElement>) => {
+          (e.currentTarget as HTMLButtonElement).style.background =
+            "var(--pet-color-bg)";
+        };
+        const itemHoverOut = (e: React.MouseEvent<HTMLButtonElement>) => {
+          (e.currentTarget as HTMLButtonElement).style.background =
+            "transparent";
+        };
+        return (
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            style={{
+              position: "fixed",
+              left,
+              top,
+              minWidth: W,
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 6,
+              boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+              padding: 4,
+              zIndex: 50,
+              fontFamily: "inherit",
+            }}
+          >
+            <div
+              style={{
+                padding: "4px 10px 6px",
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+                borderBottom: "1px solid var(--pet-color-border)",
+                marginBottom: 4,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={m.title}
+            >
+              {m.title}
+            </div>
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              onClick={() => {
+                setMemItemCtxMenu(null);
+                setRenamingMemoryKey(itemKey);
+                setRenameMemoryDraft(m.title);
+              }}
+            >
+              ✏️ 改名
+            </button>
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              onClick={async () => {
+                setMemItemCtxMenu(null);
+                setCopyingItemKey(itemKey);
+                try {
+                  let detailContent = "";
+                  if (m.detailPath) {
+                    try {
+                      detailContent = await invoke<string>(
+                        "memory_read_detail_full",
+                        { detailPath: m.detailPath },
+                      );
+                    } catch {
+                      detailContent = "";
+                    }
+                  }
+                  const existing = new Set(
+                    (index?.categories[m.catKey]?.items ?? []).map(
+                      (i) => i.title,
+                    ),
+                  );
+                  let candidate = `${m.title} -copy`;
+                  if (existing.has(candidate)) {
+                    let n = 2;
+                    while (existing.has(`${m.title} -copy-${n}`)) n++;
+                    candidate = `${m.title} -copy-${n}`;
+                  }
+                  await invoke("memory_edit", {
+                    action: "create",
+                    category: m.catKey,
+                    title: candidate,
+                    description: m.description,
+                    detailContent: detailContent || null,
+                  });
+                  setMessage(`📑 已复制为「${candidate}」`);
+                  await loadIndex();
+                } catch (err) {
+                  setMessage(`复制副本失败：${err}`);
+                } finally {
+                  setCopyingItemKey(null);
+                  window.setTimeout(() => setMessage(""), 3000);
+                }
+              }}
+            >
+              📑 复制副本
+            </button>
+            <button
+              type="button"
+              style={itemBtn}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              onClick={async () => {
+                setMemItemCtxMenu(null);
+                const ref = `[[${m.catKey}/${m.title}]]`;
+                try {
+                  await navigator.clipboard.writeText(ref);
+                  setMessage(`🔗 已复制 inline ref：${ref}`);
+                } catch (err) {
+                  setMessage(`复制 ref 失败：${err}`);
+                }
+                window.setTimeout(() => setMessage(""), 3000);
+              }}
+            >
+              🔗 复制 inline ref
+            </button>
+            {m.catKey === "butler_tasks" && onRequestFocusTask && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setMemItemCtxMenu(null);
+                  onRequestFocusTask(m.title);
+                }}
+              >
+                ↗ 跳到任务面板
+              </button>
+            )}
+            <div
+              style={{
+                height: 1,
+                background: "var(--pet-color-border)",
+                margin: "4px 0",
+              }}
+            />
+            <button
+              type="button"
+              style={{
+                ...itemBtn,
+                color: armedDel
+                  ? "var(--pet-tint-red-fg)"
+                  : "var(--pet-color-fg)",
+                fontWeight: armedDel ? 600 : 400,
+              }}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              onClick={() => {
+                // 不立即关 menu — armed 状态下需 owner 再点确认
+                void handleDelete(m.catKey, m.title);
+                if (armedDeleteKey === itemKey) {
+                  setMemItemCtxMenu(null);
+                }
+              }}
+              title={
+                armedDel
+                  ? "⚠ 再点确认删除（3 秒内有效）"
+                  : "删除此 item（双击确认 — 与既有 🗑 chip 同 armed/confirm 模式）"
+              }
+            >
+              {armedDel ? "⚠ 再点确认删除" : "🗑 删除"}
+            </button>
           </div>
         );
       })()}
