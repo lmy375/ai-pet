@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelTasks 任务行右键加「📋 复制 raw_description（不含 markers）」: strip 所有 markers 复纯文本 body。
 - PanelMemory item 加 ctx menu（右键）：聚合改名 / 📑 副本 / 🗑 删 / 🔗 inline ref 动作 — 让密集 chip 收纳。
 - PanelDebug 加「🔄 重置 ⚙️ shell stats」按钮：清 ShellStore — debug 时「从这里开始重测」。
 - detail.md 编辑器加「📍 跳下一 unchecked」shortcut（⌘]）：跳到下一个 `- [ ]` 行 — 长 checklist 快速找未完成项。
