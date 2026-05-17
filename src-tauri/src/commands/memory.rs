@@ -390,6 +390,10 @@ pub fn memory_edit(
             // Update detail file content if provided
             if let Some(content) = detail_content {
                 let full_path = mem_dir.join(&item.detail_path);
+                // 先 snapshot 现版到 `<full_path>.history/<ts>.md`（best-effort —
+                // 失败不阻断主 write）给 owner 提供"我刚保存覆盖了，能拿回上
+                // 一版吗"的 safety net。新文件 / 空文件 → snapshot no-op。
+                crate::detail_history::snapshot_before_write(&full_path);
                 fs::write(&full_path, &content)
                     .map_err(|e| format!("Failed to write detail file: {e}"))?;
             }
