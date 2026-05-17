@@ -1017,6 +1017,27 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_blocked_reply(&views)
         }
+        TgCommand::Forks { title } => {
+            // 反向 audit：解锁 title 会松开哪些 active task。title resolve
+            // 三层（数字 index → fuzzy → 错误候选）与 /show / /timeline 同
+            // 源；resolved title 传给 pure formatter 在 chat-scoped views
+            // 里扫 blocked_by 引用方。空 title 走 missing-arg hint。
+            if title.trim().is_empty() {
+                format_missing_argument("forks")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        crate::telegram::commands::format_forks_reply(&views, &t)
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Snoozed => {
             // 当前 [snooze: ...] 中的 task 清单。read 路径与 /pinned /
             // /silenced 同；TaskView.snoozed_until 已由 build_task_view
