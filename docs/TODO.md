@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot `/find_in_detail <keyword>` 命令：搜 detail.md 内容子串（与 /find 标题/描述互补 — 「我笔记里写过 X」audit）。
 - PanelDebug 加「🔄 force consolidate」按钮：手动触发一次 consolidate sweep — 不等 cron。
 - PanelTasks 顶部加「📈 24h 事件 sparkline」chip：扫 butler_history 24h 按小时桶 — 一眼看高峰活跃期。
 

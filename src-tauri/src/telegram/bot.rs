@@ -1043,6 +1043,63 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_find_reply(&views, &keyword)
         }
+        TgCommand::FindInDetail { keyword } => {
+            // 搜每条 task 的 detail.md 内容 — handler 负责 IO（读所有
+            // detail.md 文件），formatter 仅做字符串拼装。空 keyword 由
+            // formatter 内部走 usage hint。
+            let kw = keyword.trim().to_string();
+            if kw.is_empty() {
+                crate::telegram::commands::format_find_in_detail_reply(
+                    &[],
+                    &keyword,
+                )
+            } else {
+                let views = read_tg_chat_task_views(chat_id.0);
+                let mut hits: Vec<
+                    crate::telegram::commands::FindInDetailHit,
+                > = Vec::new();
+                // 排序：active 在前 — pending → error → done → cancelled
+                use crate::task_queue::TaskStatus;
+                let status_rank = |s: &TaskStatus| match s {
+                    TaskStatus::Pending => 0u8,
+                    TaskStatus::Error => 1,
+                    TaskStatus::Done => 2,
+                    TaskStatus::Cancelled => 3,
+                };
+                let mut sorted: Vec<&crate::task_queue::TaskView> =
+                    views.iter().collect();
+                sorted.sort_by_key(|v| status_rank(&v.status));
+                for v in sorted.iter() {
+                    if v.detail_path.is_empty() {
+                        continue;
+                    }
+                    let content =
+                        match crate::commands::memory::memory_read_detail_full(
+                            v.detail_path.clone(),
+                        ) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                    if content.is_empty() {
+                        continue;
+                    }
+                    if let Some(snippet) =
+                        crate::telegram::commands::extract_find_in_detail_snippet(
+                            &content, &kw,
+                        )
+                    {
+                        hits.push(crate::telegram::commands::FindInDetailHit {
+                            title: v.title.as_str(),
+                            status: v.status,
+                            snippet,
+                        });
+                    }
+                }
+                crate::telegram::commands::format_find_in_detail_reply(
+                    &hits, &keyword,
+                )
+            }
+        }
         TgCommand::Tag { name } => {
             // 按 #tag exact 等值匹配。reuse 同 read path；空 name 由
             // formatter 内部走 usage hint。
