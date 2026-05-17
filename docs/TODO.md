@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot `/promote_all_p7` 命令：本 chat 所有 active task priority +1 到 P7 上限（紧急 sprint 模式）；需 confirm token 防误触。
 - ChatMini 选区 toolbar 加「📌 标记」按钮：把选中段标到 markedMessages（与 PanelChat bookmark chip strip 同 localStorage 通道）。
 
 

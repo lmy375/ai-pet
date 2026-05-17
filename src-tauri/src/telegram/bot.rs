@@ -1253,6 +1253,45 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::PromoteAllP7 { confirmed } => {
+            // 紧急 sprint：扫本 chat 派单的 active task（pending / error）
+            // + filter priority < 7（已 ≥ P7 跳过避免无意义写）→ confirm
+            // 时逐条 task_set_priority(t, old+1) clamp 7。失败计入 err 不
+            // 阻断后续。formatter 走 pure path 返计数 reply。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let candidates: Vec<(String, u8)> = views
+                .iter()
+                .filter(|v| matches!(
+                    v.status,
+                    crate::task_queue::TaskStatus::Pending
+                        | crate::task_queue::TaskStatus::Error
+                ))
+                .filter(|v| v.priority < 7)
+                .map(|v| (v.title.clone(), v.priority))
+                .collect();
+            let total = candidates.len() as u32;
+            if !confirmed {
+                crate::telegram::commands::format_promote_all_p7_reply(
+                    false, total, 0, 0,
+                )
+            } else {
+                let mut ok = 0u32;
+                let mut err = 0u32;
+                for (title, old) in &candidates {
+                    let new_pri = (*old).saturating_add(1).min(7);
+                    match crate::commands::task::task_set_priority(
+                        title.clone(),
+                        new_pri,
+                    ) {
+                        Ok(()) => ok += 1,
+                        Err(_) => err += 1,
+                    }
+                }
+                crate::telegram::commands::format_promote_all_p7_reply(
+                    true, total, ok, err,
+                )
+            }
+        }
         TgCommand::CancelAllError { confirmed } => {
             // 扫本 chat 派单中的 error 任务（按 Tg(chat_id) origin 过滤）
             let views = read_tg_chat_task_views(chat_id.0);
