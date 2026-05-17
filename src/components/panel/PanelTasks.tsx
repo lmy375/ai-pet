@@ -4505,6 +4505,28 @@ export function PanelTasks({
     window.setTimeout(() => setBulkResultMsg(""), 4000);
   }, [visibleTasks]);
 
+  /// ⌘A 全选当前 visibleTasks 进入 multi-select 模式。若已全选 → 清空
+  /// （toggle 行为，第二次 ⌘A 取消）。空 visibleTasks → no-op。批量
+  /// cancel / done / pin 等动作走既有 selected Set 路径。
+  const handleSelectAllVisible = useCallback(() => {
+    if (visibleTasks.length === 0) return;
+    const allTitles = visibleTasks.map((t) => t.title);
+    setSelected((prev) => {
+      // 已全选 → 清空（toggle）；否则全填
+      const allSelected =
+        prev.size === allTitles.length &&
+        allTitles.every((tt) => prev.has(tt));
+      if (allSelected) {
+        setBulkResultMsg("⌘A 清除全部选中");
+        window.setTimeout(() => setBulkResultMsg(""), 2000);
+        return new Set();
+      }
+      setBulkResultMsg(`⌘A 全选 ${allTitles.length} 条`);
+      window.setTimeout(() => setBulkResultMsg(""), 2000);
+      return new Set(allTitles);
+    });
+  }, [visibleTasks]);
+
   /// 好过滤就一键导出当前视图。
   const handleExportAllVisibleAsMd = useCallback(async () => {
     if (visibleTasks.length === 0) {
@@ -4995,6 +5017,7 @@ export function PanelTasks({
     handleCopyTitle: handleCopyFocusedTitle,
     handleReload: handleReloadShortcut,
     handleShowShortcutHelp,
+    handleSelectAllVisible,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -14241,6 +14264,7 @@ export function PanelTasks({
                   ["↑ / ↓ 或 j / k", "上 / 下移焦点（vim 风格 j/k 同 ↑/↓）"],
                   ["Home / End", "跳首 / 末任务"],
                   ["Space", "toggle 选中焦点行"],
+                  ["⌘A", "全选 visible 进 multi-select（再按清空）"],
                   ["Enter 或 ⌘E", "展开 / 折叠任务详情"],
                   ["Delete / Backspace", "弹取消 reason 输入（pending / error 行）"],
                   ["d", "标 done（pending / error 行）"],
