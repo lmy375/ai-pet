@@ -4229,6 +4229,47 @@ export function PanelTasks({
     [insertMarkdownAtCursor],
   );
 
+  /// detail.md textarea ⌘⇧I 插完整 ISO 8601 时间戳（含秒 + tz offset）—
+  /// 与 ⌘⇧D `MM-DD HH:MM` 精度互补：那个紧凑标 "我什么时候做" 一目了然；
+  /// 本 shortcut 用在「需精确时刻」场景（cross-tool 引用 / 日志相关性 /
+  /// timestamp diff 计算 / 录决策时刻能精到秒）。
+  ///
+  /// 输出格式：`2026-05-19T01:23:45+08:00`（Date.prototype 内建 toISOString
+  /// 返 UTC `Z`；本 helper 手算 local + offset 让 owner 看本地时刻 + tz
+  /// 上下文）。与既有 ChatMini ts chip click 复制 ISO 同协议（那个用
+  /// `m.ts` 直接 raw，本 helper 自己构造）。
+  ///
+  /// ⌘⇧I 选择：⌘I 已被 italic 占；行业 IDE 「Insert ISO Timestamp」常
+  /// 见绑 ⌘⇧I（VS Code 部分 timestamp plugin / JetBrains）。preventDefault
+  /// 吃 browser 默认。
+  const handleDetailIsoTimestamp = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "i") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const now = new Date();
+      const y = now.getFullYear();
+      const mo = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const ss = String(now.getSeconds()).padStart(2, "0");
+      // tz offset：getTimezoneOffset 返「UTC - local」分钟数 — 与 ISO
+      // 显示方向相反。东八区 -480 minutes → 显 `+08:00`。
+      const offMin = -now.getTimezoneOffset();
+      const sign = offMin >= 0 ? "+" : "-";
+      const abs = Math.abs(offMin);
+      const offH = String(Math.floor(abs / 60)).padStart(2, "0");
+      const offM = String(abs % 60).padStart(2, "0");
+      const stamp = `${y}-${mo}-${d}T${hh}:${mm}:${ss}${sign}${offH}:${offM}`;
+      insertMarkdownAtCursor("wrap", stamp, "");
+      return true;
+    },
+    [insertMarkdownAtCursor],
+  );
+
   /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
   /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
   /// modifier check（no shift / no alt）+ IME composing skip。空选 →
@@ -14847,6 +14888,9 @@ export function PanelTasks({
                                   // 形 `YYYY-MM-DD HH:MM` 互补（紧凑版省 5
                                   // 字符）。
                                   if (handleDetailDateStamp(e)) return;
+                                  // ⌘⇧I 插完整 ISO 8601 时间戳（含秒 + tz
+                                  // offset）— 与 ⌘⇧D MM-DD HH:MM 紧凑版互补。
+                                  if (handleDetailIsoTimestamp(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -15333,6 +15377,9 @@ export function PanelTasks({
                                   if (handleDetailTabIndent(e)) return;
                                   // ⌘⇧D 插短日期戳：与 split 模式同 handler。
                                   if (handleDetailDateStamp(e)) return;
+                                  // ⌘⇧I 插完整 ISO 8601 时间戳（含秒 + tz
+                                  // offset）— 与 ⌘⇧D MM-DD HH:MM 紧凑版互补。
+                                  if (handleDetailIsoTimestamp(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -18648,6 +18695,7 @@ export function PanelTasks({
                   ["⌥↑ / ⌥↓", "上下移当前行（或选区多行 — 与 VSCode / Sublime IDE 通用）"],
                   ["⌘⌥↑ / ⌘⌥↓", "复制当前行（或选区多行）向上 / 向下（Sublime 风 — 与 ⌥↑↓ 移动行同字母键、不同 modifier 区分复制 vs 移动）"],
                   ["⌘⌥L", "选区行排序（auto-detect numeric / alphabetical — IDE Sort Lines；<2 行 noop；已排序幂等）"],
+                  ["⌘⇧I", "插完整 ISO 8601 时间戳（YYYY-MM-DDThh:mm:ss±tz）— 精度版 ⌘⇧D"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
