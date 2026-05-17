@@ -3239,6 +3239,25 @@ export function ChatMini({
                 📝 用此话设 transient_note 30m
               </button>
             )}
+            {/* 🎯 60m preset：与 30m 对偶，给「长会议 / deep work」场景
+                更顺手的 1 小时窗口。pet 在 60 分钟内每次主动开口 / 选
+                task 都会读到这条 transient_note 作 context。两 preset
+                同 callback、不同 minutes — owner 想精确分钟数走桌面
+                ToneStrip 自定义。 */}
+            {isAssistant && hasText && onSetTransientNote && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  onSetTransientNote(text, 60);
+                }}
+              >
+                🎯 用此话设 transient_note 60m
+              </button>
+            )}
             {onOpenPanel && (
               <button
                 type="button"

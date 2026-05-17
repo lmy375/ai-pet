@@ -10,7 +10,6 @@
 
 - PanelTasks 行右键加「⏰ 1h / ⏰ tonight 18:00」preset 组合 menu：与既有「📌+⏰5min」对偶 — 多 preset 单击设 due。
 - TG bot `/last_speech` 命令：显 pet 最近一条主动开口 + ts — 与 ChatMini「⏱ 沉默」chip 对偶 audit。
-- ChatMini bubble 右键加「🎯 transient 60m」: 把 bubble 文本作 60 分钟 transient_note — 与既有 30m preset 对偶。
 - PanelDebug 加「📊 今日决策」chip：扫 decision_log 显今日 ok/error/skip 计数 — audit pet 自主行为节奏。
 - PanelMemory 段标题右键加「📁 reveal cat dir」: 一键 Finder 打开 cat 子目录 — 调试 file structure 入口。
 - detail.md 编辑器加「⌘⇧X 行剪切」shortcut：剪当前行 / 多行选区到剪贴板 + 删除 — 与 ⌘⇧K 删除行互补。
