@@ -1088,6 +1088,11 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_due_reply(&views, preset, &raw_arg, today)
         }
+        TgCommand::OldestDone { n } => {
+            // 与 /recent 同 read path；formatter sort asc 拿最早完成。
+            let views: Vec<crate::task_queue::TaskView> = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_oldest_done_reply(&views, n)
+        }
         TgCommand::Recent { n } => {
             // 最近完成清单：reuse 同 read path（已 origin==Tg(chat_id) 过滤），
             // formatter 内部按 updated_at 倒序 + n cap。clamp 已在 parser 完
