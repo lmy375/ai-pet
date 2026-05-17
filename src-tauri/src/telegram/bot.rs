@@ -1437,6 +1437,45 @@ async fn handle_tg_command(
                 )
             }
         }
+        TgCommand::PinAllP7 { confirmed } => {
+            // P7+ 批量族第三条：扫 active task（pending / error）+ filter
+            // priority >= 7 + 未 [pinned]（已 pinned 跳过避免无意义写）→
+            // confirm 时逐条 task_set_pinned(title, true)。失败计入 err
+            // 不阻断。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let candidates: Vec<String> = views
+                .iter()
+                .filter(|v| matches!(
+                    v.status,
+                    crate::task_queue::TaskStatus::Pending
+                        | crate::task_queue::TaskStatus::Error
+                ))
+                .filter(|v| v.priority >= 7)
+                .filter(|v| !v.pinned)
+                .map(|v| v.title.clone())
+                .collect();
+            let total = candidates.len() as u32;
+            if !confirmed {
+                crate::telegram::commands::format_pin_all_p7_reply(
+                    false, total, 0, 0,
+                )
+            } else {
+                let mut ok = 0u32;
+                let mut err = 0u32;
+                for title in &candidates {
+                    match crate::commands::task::task_set_pinned(
+                        title.clone(),
+                        true,
+                    ) {
+                        Ok(()) => ok += 1,
+                        Err(_) => err += 1,
+                    }
+                }
+                crate::telegram::commands::format_pin_all_p7_reply(
+                    true, total, ok, err,
+                )
+            }
+        }
         TgCommand::CancelAllError { confirmed } => {
             // 扫本 chat 派单中的 error 任务（按 Tg(chat_id) origin 过滤）
             let views = read_tg_chat_task_views(chat_id.0);
