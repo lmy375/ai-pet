@@ -4088,6 +4088,104 @@ export function PanelDebug() {
         </div>
       )}
 
+      {/* iter #384: 「⏰ 最近主动开口」紧凑 chip 行 — 让 owner 不必切到
+          speech timeline tab 就能瞄一眼 pet 最近开口节奏。每 chip 显 HH:MM
+          + 短 preview；hover 显完整 text + 相对时间；click 切到 speech tab
+          看全表。空 speech 时不渲（无内容显占空间没必要）。
+
+          注：本 chip 行仅 surface "何时" 维度；"为何"（feedback_band /
+          cooldown 触发原因）走 PanelToneStrip 上方 chip 看当前态 —
+          per-speech 历史 trigger reason 不在 speech_history.log schema
+          里，要做需后端扩 entry 字段，scope 超本 iter；本 chip 是
+          discoverability 改进 + 显信号"何时开口"半边。 */}
+      {recentSpeeches.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 4,
+            padding: "6px 16px",
+            background: "var(--pet-tint-purple-bg)",
+            borderBottom: "1px solid var(--pet-color-border)",
+            fontSize: 10,
+            alignItems: "center",
+          }}
+        >
+          <span
+            style={{
+              color: "var(--pet-tint-purple-fg)",
+              fontWeight: 600,
+              marginRight: 4,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+            }}
+          >
+            ⏰ 最近开口
+          </span>
+          {recentSpeeches.slice(-5).map((line, i) => {
+            const idx = line.indexOf(" ");
+            const ts = idx > 0 ? line.slice(0, idx) : "";
+            const text = idx > 0 ? line.slice(idx + 1) : line;
+            const tShort = ts.length >= 16 ? ts.slice(11, 16) : ts;
+            // 相对时间（hover 时显信号"多久之前开过口"）
+            const tsMs = Date.parse(ts);
+            const ageMin = Number.isNaN(tsMs)
+              ? null
+              : Math.max(0, Math.round((Date.now() - tsMs) / 60000));
+            const ageLabel =
+              ageMin === null
+                ? ""
+                : ageMin < 60
+                  ? `${ageMin}m 前`
+                  : ageMin < 60 * 24
+                    ? `${Math.floor(ageMin / 60)}h 前`
+                    : `${Math.floor(ageMin / 1440)}d 前`;
+            const preview = text.length > 16 ? text.slice(0, 16) + "…" : text;
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setActiveTimeline("speech")}
+                title={`${tShort}${ageLabel ? ` (${ageLabel})` : ""}\n\n${text}\n\n点击切到「宠物说」timeline 看全 ${recentSpeeches.length} 条 + 触发上下文（当前 feedback_band / cooldown 见上方 ToneStrip）。`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 3,
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                  background:
+                    "color-mix(in srgb, var(--pet-tint-purple-fg) 14%, transparent)",
+                  color: "var(--pet-tint-purple-fg)",
+                  fontSize: 10,
+                  border:
+                    "1px solid color-mix(in srgb, var(--pet-tint-purple-fg) 25%, transparent)",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                  cursor: "pointer",
+                  maxWidth: 160,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {tShort} · {preview}
+              </button>
+            );
+          })}
+          {recentSpeeches.length > 5 && (
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--pet-tint-purple-fg)",
+                opacity: 0.7,
+                marginLeft: 2,
+              }}
+              title={`总 ${recentSpeeches.length} 条；本行仅显最新 5 条`}
+            >
+              +{recentSpeeches.length - 5}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* R142: 三 timeline 切换 tab。speech / tool / feedback 共用一槽，
           点 tab 切换聚焦其中一种。tab 上显条数让用户在切换前预判内容。
           accent 边表 active，灰 border + muted 字表 inactive。 */}
