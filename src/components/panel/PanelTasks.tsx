@@ -3867,6 +3867,86 @@ export function PanelTasks({
     [],
   );
 
+  /// ⌘⌥L sort-lines：选区覆盖的行按字典 / 数字序排序，替换选区。
+  ///
+  /// 选区扩边到整行（partial 首末行也算）。<2 行视为 noop（仅 1 行无序
+  /// 可言），但仍 preventDefault 吃键避免触发 ⌥L native（在 macOS Chrome
+  /// 是 "select to next word with shift"，本快捷键单独绑 ⌥L 不冲突，但
+  /// 防御性预防系统级 binding）。
+  ///
+  /// 排序模式 auto-detect：
+  /// - **numeric**：每行 leading 非空白 token 都能 parse 成 finite Number
+  ///   → 按数字升序排
+  /// - **alphabetical**：否则走 localeCompare（中文 / 英文 / 混合都按 Unicode
+  ///   collation 顺序）— 与 Array.sort 默认相比，locale-aware 更符合长
+  ///   doc 内 "字母序排清单" 直觉
+  ///
+  /// 稳定性：等键值保 input 内出现顺序（保持 Array.prototype.sort 稳定 —
+  /// ECMA 2019+ 保证）。已排序的输入 → 输出相同（idempotent）。
+  ///
+  /// 与 IDE 通用「Sort Lines Ascending」一致（VSCode `editor.action.sortLines
+  /// Ascending` / Sublime "Sort Lines"）。⌘⌥L 在 mac 等键盘上是 IntelliJ
+  /// "Reformat" 默认 — 但本 detail.md 无 reformat 概念，键位空，归我们 sort。
+  const handleDetailSortLines = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.altKey || e.shiftKey) return false;
+      if (e.key.toLowerCase() !== "l") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      // 扩边到整行（与 handleDetailMoveLines / DeleteLine 同算法）
+      const blockStart = value.lastIndexOf("\n", start - 1) + 1;
+      const probe = end > start ? end - 1 : end;
+      const nextNl = value.indexOf("\n", probe);
+      const blockEnd = nextNl === -1 ? value.length : nextNl;
+      const block = value.slice(blockStart, blockEnd);
+      const lines = block.split("\n");
+      if (lines.length < 2) return true; // noop on <2 lines；事件已 prevented
+      // numeric detect：每行 leading 非空白 token 都是 finite number
+      const numericKeys: Array<{ key: number; line: string }> = [];
+      let allNumeric = true;
+      for (const line of lines) {
+        const head = line.trimStart().split(/\s+/, 1)[0];
+        const n = Number(head);
+        if (head.length === 0 || !Number.isFinite(n)) {
+          allNumeric = false;
+          break;
+        }
+        numericKeys.push({ key: n, line });
+      }
+      const sorted: string[] = allNumeric
+        ? numericKeys
+            .sort((a, b) => a.key - b.key)
+            .map((x) => x.line)
+        : [...lines].sort((a, b) => a.localeCompare(b));
+      const sortedBlock = sorted.join("\n");
+      // idempotent short-circuit：已排序时 noop 防触发不必要的 dirty / re-render
+      if (sortedBlock === block) return true;
+      const before = value.slice(0, blockStart);
+      const after = value.slice(blockEnd);
+      const next = before + sortedBlock + after;
+      setEditingDetailContent(next);
+      // 选区维持覆盖排序后的 block（与 IDE 通用「sorted 后选区不丢」同行为）
+      const newStart = blockStart;
+      const newEnd = blockStart + sortedBlock.length;
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = newStart;
+        cur.selectionEnd = newEnd;
+        setDetailCursorPos(newStart);
+        setDetailSelectionEnd(newEnd);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea Tab / Shift+Tab 多行缩进 / 反缩进。
   ///
   /// 行为：
@@ -14605,6 +14685,9 @@ export function PanelTasks({
                                   // ⌘⌥↑ / ⌘⌥↓ 复制当前行（或选区多行）
                                   // 向上 / 向下 — 与 ⌥↑/⌥↓ 移动行对偶。
                                   if (handleDetailCopyLines(e)) return;
+                                  // ⌘⌥L 选区行排序（numeric / alphabetical
+                                  // auto-detect）— IDE 通用 sort-lines。
+                                  if (handleDetailSortLines(e)) return;
                                   // Tab / Shift+Tab 多行缩进 / 反缩进：选
                                   // 区覆盖行行首 +/- 2 空格；无选区 Tab 在
                                   // 光标位置插 2 空格 + 阻断 native focus
@@ -15101,6 +15184,8 @@ export function PanelTasks({
                                   if (handleDetailMoveLines(e)) return;
                                   // ⌘⌥↑ / ⌘⌥↓ 复制行：与 split 模式同 handler。
                                   if (handleDetailCopyLines(e)) return;
+                                  // ⌘⌥L 选区行排序：与 split 模式同 handler。
+                                  if (handleDetailSortLines(e)) return;
                                   // Tab / Shift+Tab 多行缩进：与 split 模
                                   // 式同 handler。
                                   if (handleDetailTabIndent(e)) return;
@@ -18420,6 +18505,7 @@ export function PanelTasks({
                   ["Tab / ⇧Tab", "多行缩进 / 反缩进（选区覆盖行 +/- 2 空格；无选区 Tab 在光标位置插 2 空格）"],
                   ["⌥↑ / ⌥↓", "上下移当前行（或选区多行 — 与 VSCode / Sublime IDE 通用）"],
                   ["⌘⌥↑ / ⌘⌥↓", "复制当前行（或选区多行）向上 / 向下（Sublime 风 — 与 ⌥↑↓ 移动行同字母键、不同 modifier 区分复制 vs 移动）"],
+                  ["⌘⌥L", "选区行排序（auto-detect numeric / alphabetical — IDE Sort Lines；<2 行 noop；已排序幂等）"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
