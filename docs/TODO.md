@@ -10,7 +10,6 @@
 
 - TG bot `/find_in_detail <keyword>` 命令：搜 detail.md 内容子串（与 /find 标题/描述互补 — 「我笔记里写过 X」audit）。
 - PanelTasks 行加「⏭ +1d」hover chip：一键把 due 字段 +1 天，比 /edit_due +1d 三步流程更轻。
-- detail.md 编辑器「⌘⇧D 插日期戳」shortcut：光标位置插 `MM-DD HH:MM` — progress note 常用。
 - PanelMemory item 加「📅 created chip click 复制 ISO」: 与 PanelTasks ts chip click 复制对偶。
 - PanelDebug 加「🔄 force consolidate」按钮：手动触发一次 consolidate sweep — 不等 cron。
 - PanelTasks 顶部加「📈 24h 事件 sparkline」chip：扫 butler_history 24h 按小时桶 — 一眼看高峰活跃期。
