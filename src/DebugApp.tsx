@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PanelDebug } from "./components/panel/PanelDebug";
 import { LlmLogView } from "./components/panel/LlmLogView";
 import { PanelDebugStats } from "./components/panel/PanelDebugStats";
@@ -34,6 +34,81 @@ export function DebugApp() {
 
   // 跨窗口主题 / 强调色同步走共享 hook（与 App.tsx 桌面宠物窗口同一份）。
   useThemeChangeSync();
+
+  /// iter #395: pet-debug-deeplink 消费 — caller（如 ChatMini ambient
+  /// hint chip click）写 localStorage `pet-debug-deeplink` =
+  /// `{ tab, scrollAnchor?, ts }` + invoke("open_debug")；DebugApp
+  /// 在 mount + storage 事件两路径消费（已开 / 未开两 case）。TTL
+  /// 10s 防过期 deeplink 在用户后续手动开 debug 时误触发。scroll-
+  /// Anchor → 找 id=`pet-debug-anchor-<value>` 元素 + scrollIntoView。
+  ///
+  /// 同既有 pet-panel-deeplink 模板（PanelApp consumePanelDeeplink），
+  /// 但 key 独立避免与 panel deeplink 冲突 + tab 名空间不同。
+  const consumeDebugDeeplink = useCallback(() => {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem("pet-debug-deeplink");
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    try {
+      localStorage.removeItem("pet-debug-deeplink");
+    } catch {
+      // ignore — TTL 兜底
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    const p = parsed as {
+      tab?: unknown;
+      scrollAnchor?: unknown;
+      ts?: unknown;
+    };
+    if (typeof p.ts !== "number" || Date.now() - p.ts > 10_000) return;
+    if (typeof p.tab === "string" && (TABS as readonly string[]).includes(p.tab)) {
+      setActiveTab(p.tab as Tab);
+    }
+    if (typeof p.scrollAnchor === "string" && p.scrollAnchor.trim()) {
+      const anchor = p.scrollAnchor.trim();
+      // 等下一帧让 setActiveTab 生效 + PanelDebug 完成 mount + 渲染
+      // 后再 scroll；50ms 余量给 children 完成 first paint（避免 anchor
+      // 元素还未在 DOM 时 getElementById null）。
+      window.setTimeout(() => {
+        const el = document.getElementById(`pet-debug-anchor-${anchor}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+          // 短暂 flash 高亮让 owner 看到目标位置 — 与既有 mem-flash
+          // / chat-match 高亮风格一致。
+          el.style.transition = "background 600ms ease-out";
+          const prev = el.style.background;
+          el.style.background =
+            "color-mix(in srgb, var(--pet-color-accent) 24%, transparent)";
+          window.setTimeout(() => {
+            el.style.background = prev;
+          }, 1200);
+        }
+      }, 50);
+    }
+  }, []);
+  // 已开 debug 窗：pet 窗 setItem 触发 storage 事件 → 立即消费
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== "pet-debug-deeplink") return;
+      if (!e.newValue) return;
+      consumeDebugDeeplink();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [consumeDebugDeeplink]);
+  // 未开 debug 窗：open_debug 后 DebugApp 首次 mount → 这里读
+  useEffect(() => {
+    consumeDebugDeeplink();
+  }, [consumeDebugDeeplink]);
 
   // ⌘1 – ⌘4（含 Ctrl 等价）跳到 N 号 tab —— 共用 useTabKeyboardShortcut hook
   // 与 PanelApp 同模式（hook 内部按 tabs.length 自动适配键位范围）。

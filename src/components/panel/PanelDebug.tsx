@@ -3536,7 +3536,13 @@ export function PanelDebug() {
 
       <PanelToolsTopK history={toolCallHistory} />
 
-      <PanelToneStrip tone={tone} />
+      {/* iter #395: ChatMini ambient hint chip deeplink scroll anchor —
+          owner 在 chat 端 click 📝 transient_note / 🔇 mute chip 时
+          通过 pet-debug-deeplink 锚到此处。div 仅作 scrollIntoView
+          target，无视觉副作用。 */}
+      <div id="pet-debug-anchor-tone-strip">
+        <PanelToneStrip tone={tone} />
+      </div>
 
       {/* TG bot 启动期 non-fatal 告警 banner —— set_my_commands 失败、bot 起
           不来等情况此前只 eprintln，用户看不到。空 / 全 dismiss 时不渲染。 */}
@@ -4865,9 +4871,12 @@ export function PanelDebug() {
       </div>
       )}
 
-      {/* Pending user-set reminders — sourced from todo memory category */}
+      {/* Pending user-set reminders — sourced from todo memory category。
+          iter #395: id="pet-debug-anchor-pending-reminders" 让 ChatMini
+          ambient hint ⏰ alarms chip click deeplink 锚到此区。 */}
       {reminders.length > 0 && (
         <div
+          id="pet-debug-anchor-pending-reminders"
           style={{
             padding: "8px 16px",
             borderBottom: "1px solid var(--pet-color-border)",
