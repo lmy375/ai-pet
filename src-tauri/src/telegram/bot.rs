@@ -829,6 +829,16 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_touched_today_reply(&views, today)
         }
+        TgCommand::TouchedYesterday => {
+            // 与 TouchedToday 同模板，date - 1 天。chrono::Days::new(1) 减
+            // 安全，跨月跨年 chrono 自动处理。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let yesterday = chrono::Local::now()
+                .date_naive()
+                .pred_opt()
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
+            crate::telegram::commands::format_touched_yesterday_reply(&views, yesterday)
+        }
         TgCommand::EditTitle { title, new_title } => {
             // resolve 同 /done / /cancel / /show 三层。命中后调
             // memory_rename(butler_tasks, old, new)，新 title trim 后空由
