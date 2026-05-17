@@ -747,6 +747,13 @@ async fn handle_tg_command(
                     .collect();
             crate::telegram::commands::format_markers_list(&views)
         }
+        TgCommand::Tags => {
+            // /tags：统计本 chat 派单的 #tag 矩阵。read path 同 /markers /
+            // /today 等：read_tg_chat_task_views 已 chat-scoped。formatter
+            // 内部聚合 + 排序 + cap + 兜底。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_tags_reply(&views)
+        }
         TgCommand::Mood => {
             // 心情是宠物全局状态（与 MoodWidget 同 mood state 文件），不分 chat
             // 过滤。read 失败 / 未写过 → format 函数兜底友好提示。

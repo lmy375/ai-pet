@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 加 ⌘D 快捷键复制 focused row title：键盘党 quick-grab title 不必走右键菜单。
-- TG bot 加 `/tags` 命令：列本 chat 派单中所有用过的 #tag + 各 tag 任务数（owner audit 自定义 tag 维度）。
 - PanelMemory 加全段 fuzzy 搜索框：title / description 含 keyword 即过滤；快速定位长 cat 里的 item。
 - detail.md 编辑器加 ⌘L 快捷键选中当前行：textarea 光标所在行全选，快速 cut / replace / copy 用。
 - TG `/help all` 长版说明书：拼接 format_help_for_topic 全部 entries 一次发完整说明（owner 学习 / 离线 audit）。

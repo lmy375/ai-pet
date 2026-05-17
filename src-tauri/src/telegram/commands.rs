@@ -94,6 +94,11 @@ pub enum TgCommand {
     /// silent 联合）。与 /pinned + /silenced 两条命令对偶 —— 让 owner 用一
     /// 条命令 audit 自己标过的所有 marker 状态。无参；多余尾部一律忽略。
     Markers,
+    /// `/tags` —— 列本 chat 派单中所有用过的 `#tag` + 各 tag 任务数（按
+    /// 数量降序）。让 owner audit "我标过哪些自定义 tag"。与 /markers
+    /// 对偶 —— 那个是系统 marker（pinned / silent），这个是 owner 自定
+    /// 义 #tag 维度。无参；多余尾部忽略；最多列 15 tag，余下汇总"其它 N 个"。
+    Tags,
     /// `/whoami` —— 宠物自我介绍。无参；与桌面 chat `/whoami` 同信号源
     /// （陪伴天数 + 当前心情 + 自我画像首段 + 近常用工具 top 3），让 TG
     /// 端也能让宠物自报家门。
@@ -201,6 +206,7 @@ impl TgCommand {
             TgCommand::Unsilent { .. } => "unsilent",
             TgCommand::Silenced => "silenced",
             TgCommand::Markers => "markers",
+            TgCommand::Tags => "tags",
             TgCommand::Today => "today",
             TgCommand::Recent { .. } => "recent",
             TgCommand::Find { .. } => "find",
@@ -243,6 +249,7 @@ impl TgCommand {
             | TgCommand::Pinned
             | TgCommand::Silenced
             | TgCommand::Markers
+            | TgCommand::Tags
             | TgCommand::Stats
             | TgCommand::Mood
             | TgCommand::Whoami
@@ -320,6 +327,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("unsilent", "Clear a task's [silent] mark"),
             ("silenced", "List currently silent tasks dispatched from this chat"),
             ("markers", "List all owner-intent markers in one shot (pinned + silent)"),
+            ("tags", "List all custom #tags used in this chat's tasks with counts (top 15)"),
             ("mood", "Show the pet's current mood"),
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
@@ -354,6 +362,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("unsilent", "解除静默（剥 [silent] marker）"),
             ("silenced", "列出本聊天派单中所有 silent 任务（与「🔇 N silent」面板同源）"),
             ("markers", "一次列出所有 owner-intent markers（pinned + silent）"),
+            ("tags", "列本聊天派单中所有用过的 #tag + 各 tag 任务数（top 15）"),
             ("mood", "查看宠物当前心情"),
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
@@ -673,6 +682,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "silenced" => Some(TgCommand::Silenced),
         // `/markers`：一次列 pinned + silent 联合。
         "markers" => Some(TgCommand::Markers),
+        // `/tags`：无参；多余尾部忽略（与 /markers / /pinned 同容忍策略）。
+        "tags" => Some(TgCommand::Tags),
         // `/today` 同上无参语义
         "today" => Some(TgCommand::Today),
         // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
@@ -1039,6 +1050,7 @@ pub fn format_help_for_topic(
         "unsilent" => "🔇 /unsilent <title>\n\n用法：清掉 [silent] marker，任务回到 LLM auto-pick 池。\n\n示例：\n  /unsilent 周末家务",
         "silenced" => "🔇 /silenced\n\n用法：列出本聊天派单中所有 silent 任务（按状态分组）。无参。\n\n示例：\n  /silenced",
         "markers" => "🏷 /markers\n\n用法：一次列 pinned + silent 两段（与 /pinned + /silenced 组合等价）。无参。\n\n示例：\n  /markers\n\n给 owner audit 「我标过哪些 owner-intent」用。",
+        "tags" => "🏷 /tags\n\n用法：列本聊天派单中所有用过的 `#tag` + 各 tag 任务数（按数量降序，top 15）。无参。无 #tag 任务的不计入。\n\n示例：\n  /tags\n\n相关：/markers（pinned + silent 系统 marker 维度）；/find #健身（按某 tag 搜任务清单）。让 owner audit 「我自定义 tag 矩阵长什么样」。",
         "mood" => "🐾 /mood\n\n用法：查看宠物当前心情（与桌面 MoodWidget 同 mood state 文件）。无参。\n\n示例：\n  /mood",
         "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）；/due（更远视角 — tomorrow / thisweek / nextweek）。",
@@ -1090,6 +1102,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/silent <title> | /unsilent <title>  —  标静默 / 解除静默（LLM 不主动选；面板仍可手动触发）".to_string(),
         "/silenced  —  列出本聊天派单中所有 silent 任务（按状态分组）".to_string(),
         "/markers  —  一次列出所有 owner-intent markers（pinned + silent 两段，与 /pinned + /silenced 组合等价）".to_string(),
+        "/tags  —  列本聊天派单中所有用过的 #tag + 各 tag 任务数（top 15，按数量降序）".to_string(),
         "/pinned  —  列出本聊天派单中所有钉住任务（按状态分组，含 done/error/cancelled）".to_string(),
         "/mood  —  查看宠物当前心情".to_string(),
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
@@ -2090,6 +2103,55 @@ pub fn format_note_reply(text: &str, save_result: Result<&str, &str>) -> String 
     }
 }
 
+/// `/tags` 命令回复文案。pure：扫 views（已过滤本 chat 派单），统计 tag
+/// 计数（无视 done/cancelled — owner audit 时 "我用过哪些 tag" 是历史维
+/// 度，不只看 active）。按数量 desc + 名字 asc 二阶排序保结果稳定。空
+/// tag 矩阵 → 友好兜底文案；超 TAGS_CAP 个 → 列前 15 + "其它 N 个" 汇
+/// 总。同时输出"无 #tag 任务"数让 owner 看到分母。
+pub const TAGS_CAP: usize = 15;
+pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut untagged: u32 = 0;
+    for v in views {
+        if v.tags.is_empty() {
+            untagged += 1;
+        } else {
+            for t in &v.tags {
+                let key = t.trim();
+                if key.is_empty() {
+                    continue;
+                }
+                *counts.entry(key.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    if counts.is_empty() {
+        return format!(
+            "🏷 /tags\n\n本聊天派单暂无 #tag 任务（{} 条任务无 tag）。\n创建任务时在 description 写 `#name` 即被自动收录（如 #健身 / #读书）。",
+            untagged
+        );
+    }
+    // counts.into_iter() 默认按 key 字典序（BTreeMap）；再 by-count desc 排序
+    // 用 stable sort 保 ties 字典序。
+    let mut sorted: Vec<(String, u32)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let total_tags = sorted.len();
+    let mut out = String::new();
+    out.push_str(&format!("🏷 /tags（共 {} 个 tag）\n", total_tags));
+    let shown = sorted.iter().take(TAGS_CAP);
+    for (name, count) in shown {
+        out.push_str(&format!("\n· #{} ×{}", name, count));
+    }
+    if total_tags > TAGS_CAP {
+        out.push_str(&format!("\n…还有 {} 个 tag", total_tags - TAGS_CAP));
+    }
+    if untagged > 0 {
+        out.push_str(&format!("\n\n无 #tag 任务：{} 条", untagged));
+    }
+    out
+}
+
 /// `/show <title>` 命令回复文案。pure：
 /// - title 行 + status emoji
 /// - raw_description 全量（含 markers），cap 1500 char 防 TG 4096 上限被
@@ -2886,9 +2948,9 @@ mod tests {
         for name in [
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-            "silenced", "markers", "mood", "whoami", "today", "due", "recent",
-            "digest", "edit", "reflect", "find", "show", "blocked", "snoozed",
-            "reset", "version", "help",
+            "silenced", "markers", "tags", "mood", "whoami", "today", "due",
+            "recent", "digest", "edit", "reflect", "find", "show", "blocked",
+            "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3353,7 +3415,7 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "due", "edit", "reflect", "show", "reset", "version", "help",
+            "due", "edit", "reflect", "show", "tags", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5012,6 +5074,96 @@ mod tests {
         let s = format_note_reply("test note", Err("disk full"));
         assert!(s.contains("保存失败"), "{s}");
         assert!(s.contains("disk full"), "{s}");
+    }
+
+    // -------- /tags parse + format --------
+
+    #[test]
+    fn tags_parses_no_args() {
+        assert_eq!(parse_tg_command("/tags"), Some(TgCommand::Tags));
+        // 多余尾部忽略（与 /markers / /today 同模板）
+        assert_eq!(parse_tg_command("/tags now"), Some(TgCommand::Tags));
+    }
+
+    fn view_with_tags(title: &str, tags: &[&str]) -> TaskView {
+        let mut v = view(title, 3, None, TaskStatus::Pending, None);
+        v.tags = tags.iter().map(|s| s.to_string()).collect();
+        v
+    }
+
+    #[test]
+    fn tags_reply_empty_views_shows_friendly_hint() {
+        let s = format_tags_reply(&[]);
+        assert!(s.contains("暂无 #tag"), "should show empty hint: {s}");
+        assert!(s.contains("0 条任务无 tag"), "should report untagged 0: {s}");
+    }
+
+    #[test]
+    fn tags_reply_lists_tags_sorted_by_count_desc() {
+        let views = vec![
+            view_with_tags("a", &["健身"]),
+            view_with_tags("b", &["健身", "晨练"]),
+            view_with_tags("c", &["健身"]),
+            view_with_tags("d", &["读书"]),
+            view_with_tags("e", &["读书"]),
+        ];
+        let s = format_tags_reply(&views);
+        // 健身 3 / 读书 2 / 晨练 1 — 按 count desc
+        let idx_jian = s.find("#健身 ×3").expect("健身 line");
+        let idx_du = s.find("#读书 ×2").expect("读书 line");
+        let idx_chen = s.find("#晨练 ×1").expect("晨练 line");
+        assert!(idx_jian < idx_du, "健身 should come before 读书: {s}");
+        assert!(idx_du < idx_chen, "读书 should come before 晨练: {s}");
+    }
+
+    #[test]
+    fn tags_reply_excludes_untagged_from_tag_counts() {
+        let views = vec![
+            view_with_tags("a", &["健身"]),
+            view_with_tags("b", &[]),
+            view_with_tags("c", &[]),
+        ];
+        let s = format_tags_reply(&views);
+        assert!(s.contains("#健身 ×1"), "{s}");
+        // untagged 数也出现
+        assert!(s.contains("无 #tag 任务：2 条"), "{s}");
+    }
+
+    #[test]
+    fn tags_reply_caps_at_top_15_and_shows_overflow() {
+        // 制造 20 个 tag，每个 1 条
+        let mut views = Vec::new();
+        for i in 0..20 {
+            // 用前缀确保字典序与生成顺序一致让"哪 15 个被列出"有确定性
+            // (count tied → name asc fallback by BTreeMap; sort_by 用 stable)
+            views.push(view_with_tags(&format!("t{i}"), &[Box::leak(format!("tag{i:02}").into_boxed_str()) as &str]));
+        }
+        let s = format_tags_reply(&views);
+        assert!(s.contains("共 20 个 tag"), "{s}");
+        assert!(s.contains("…还有 5 个 tag"), "should show overflow hint: {s}");
+    }
+
+    #[test]
+    fn tags_reply_skips_empty_tag_strings() {
+        // 防御 trim 后空 tag（不应进矩阵）
+        let mut v = view("a", 3, None, TaskStatus::Pending, None);
+        v.tags = vec!["  ".to_string(), "健身".to_string()];
+        let s = format_tags_reply(&[v]);
+        assert!(s.contains("#健身 ×1"), "{s}");
+        assert!(s.contains("共 1 个 tag"), "empty tag should be skipped: {s}");
+    }
+
+    #[test]
+    fn tags_reply_counts_across_all_statuses() {
+        // /tags 是 audit 维度，done / cancelled 也该计入（owner 想知道
+        // "我用过哪些 tag"，不局限活跃）
+        let active = view_with_tags("a", &["健身"]);
+        let mut done = view_with_tags("b", &["健身"]);
+        done.status = TaskStatus::Done;
+        let mut cancelled = view_with_tags("c", &["健身"]);
+        cancelled.status = TaskStatus::Cancelled;
+        let s = format_tags_reply(&[active, done, cancelled]);
+        assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
     }
 
     // -------- /show parse + format --------
