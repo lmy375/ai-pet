@@ -9900,12 +9900,49 @@ export function PanelTasks({
                                       >
                                         <div
                                           style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 6,
                                             fontSize: 10,
                                             color: "var(--pet-color-muted)",
                                             padding: "2px 6px 6px",
                                           }}
                                         >
-                                          📜 save 前快照（最新在前 · 📋 复制 / ↶ restore 替换 textarea）
+                                          <span style={{ flex: 1 }}>
+                                            📜 save 前快照（最新在前 · 📋 复制 / ↶ restore 替换 textarea）
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={async () => {
+                                              try {
+                                                await invoke(
+                                                  "task_reveal_history_dir",
+                                                  { title: t.title },
+                                                );
+                                              } catch (e) {
+                                                setBulkResultMsg(
+                                                  `打开失败：${e}`,
+                                                );
+                                                window.setTimeout(
+                                                  () => setBulkResultMsg(""),
+                                                  3000,
+                                                );
+                                              }
+                                            }}
+                                            title="在 Finder / Explorer 打开 .history 目录 — owner cherry-pick 历史文件 / 备份导出 / 自己 diff 用。"
+                                            style={{
+                                              fontSize: 10,
+                                              padding: "1px 5px",
+                                              border: "1px solid var(--pet-color-border)",
+                                              borderRadius: 3,
+                                              background: "var(--pet-color-card)",
+                                              color: "var(--pet-color-muted)",
+                                              cursor: "pointer",
+                                              fontFamily: "inherit",
+                                            }}
+                                          >
+                                            📁 .history
+                                          </button>
                                         </div>
                                         {historyEntries.map((entry) => {
                                           // ts 格式: 20260517-143015 → 显 05-17 14:30:15

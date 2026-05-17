@@ -558,6 +558,60 @@ pub fn task_detail_history(
     Ok(crate::detail_history::list_history(&full_path))
 }
 
+/// `task_reveal_history_dir`：在 Finder / Explorer 打开指定任务 detail.md
+/// 对应的 `.history` 目录。给「📜」popover「📁 Finder 打开 .history dir」
+/// 按钮用 —— owner cherry-pick 历史 / 备份导出 / 自己 diff 时不必复制
+/// 路径再去开。任务不存在 → Err；history 目录不存在（任务从未 save 过
+/// 或 cap 被清光）→ Err 含友好文案。
+#[tauri::command]
+pub fn task_reveal_history_dir(title: String) -> Result<(), String> {
+    let title_trim = title.trim();
+    if title_trim.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trim)
+        .ok_or_else(|| format!("task not found: {}", title_trim))?;
+    let mem_dir = memory::memories_dir()?;
+    let full_path = mem_dir.join(&item.detail_path);
+    let history_dir = crate::detail_history::history_dir_for(&full_path);
+    if !history_dir.exists() {
+        return Err("尚无历史快照（save 过 detail.md 后才会有 .history dir）".to_string());
+    }
+    let canon = std::fs::canonicalize(&history_dir).map_err(|e| {
+        format!("Failed to resolve history dir: {}", e)
+    })?;
+    let mem_canon = std::fs::canonicalize(&mem_dir).map_err(|e| {
+        format!("Failed to resolve memories_dir: {}", e)
+    })?;
+    if !canon.starts_with(&mem_canon) {
+        return Err("history dir escaped memories_dir".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `open`: {}", e))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `explorer`: {}", e))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&canon)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open via `xdg-open`: {}", e))
+    }
+}
+
 /// `task_set_due`：把任务的截止时间改成新值（或清空）。与 `task_set_priority`
 /// 完全对偶 —— 保留 priority / body / 其它 markers 不动，只动 due 字段。
 ///
