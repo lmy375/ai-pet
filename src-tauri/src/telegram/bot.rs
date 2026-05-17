@@ -830,6 +830,35 @@ async fn handle_tg_command(
             };
             crate::telegram::commands::format_mute_reply(minutes, until_local)
         }
+        TgCommand::Note { text } => {
+            // 空 text → formatter 走 usage hint 路径，不真创建。
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                crate::telegram::commands::format_note_reply(&text, Ok(""))
+            } else {
+                // 标题用本地时间秒精度，避免同分钟内多 /note 撞名。
+                let title = format!(
+                    "note-{}",
+                    chrono::Local::now().format("%Y-%m-%dT%H-%M-%S")
+                );
+                match crate::commands::memory::memory_edit(
+                    "create".to_string(),
+                    "general".to_string(),
+                    title.clone(),
+                    Some(trimmed.to_string()),
+                    None,
+                ) {
+                    Ok(_) => crate::telegram::commands::format_note_reply(
+                        &text,
+                        Ok(&title),
+                    ),
+                    Err(e) => crate::telegram::commands::format_note_reply(
+                        &text,
+                        Err(&e),
+                    ),
+                }
+            }
+        }
         TgCommand::Version => {
             // app_version 走编译期 env，schema_version 走 _migrations 最大 version。
             // 单 SQL 查不引入新 Tauri 命令；读失败 → 0（format 时省略 schema 行）。
