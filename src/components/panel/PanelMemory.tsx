@@ -521,6 +521,32 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return next;
     });
   };
+  /// 📏 按字数排序 toggle：true 时 rest 段按 description 字数 + detail.md
+  /// 字数总和倒序排（最大在前）。让 owner 一眼看 cat 内哪些 item content
+  /// 最重 — consolidate / 拆分决策。pinned 仍挂头。与 sortByRecent /
+  /// sortBulterByNextFire 三态互斥 — 都开时优先级 next-fire (butler 段) >
+  /// 字数 > recent > 默认序。
+  const [sortByCharCount, setSortByCharCount] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-memory-sort-charcount") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSortByCharCount = () => {
+    setSortByCharCount((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          "pet-memory-sort-charcount",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
   /// butler_tasks 段「⏰ next-fire 升序」专属 toggle：true 时段内非 pinned
   /// items 按下次触发时刻升序（最近会 fire 的浮顶），让 owner 一眼看
   /// "接下来 N 分钟 / 小时会 fire 的 N 条" 优先处理。无法解析 schedule
@@ -2342,6 +2368,30 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
           }
         >
           📅 {sortByRecent ? "按时间" : "默认序"}
+        </button>
+        {/* 📏 按字数 sort toggle：与 sortByRecent / sortBulterByNextFire
+            三态互斥（都开优先级 next-fire > 字数 > recent > 默认）。让
+            owner 一眼看 cat 内哪些 item content 最重 — consolidate / 拆
+            分决策。pinned 仍挂头。 */}
+        <button
+          style={
+            sortByCharCount
+              ? {
+                  ...s.btn,
+                  background: "var(--pet-tint-blue-bg)",
+                  color: "var(--pet-tint-blue-fg)",
+                  borderColor: "var(--pet-tint-blue-fg)",
+                }
+              : s.btn
+          }
+          onClick={toggleSortByCharCount}
+          title={
+            sortByCharCount
+              ? "现按 description + detail.md 字数倒序。点击切回默认 / 时间排序。pinned 仍挂头。"
+              : "切到按字数倒序排（description + detail.md 字数总和）— 让 owner 一眼看哪些 item content 最重，决策 consolidate / 拆分。pinned 仍挂头。"
+          }
+        >
+          📏 {sortByCharCount ? "按字数" : "字数 -"}
         </button>
       </div>
 
@@ -4503,6 +4553,18 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     fireOf(a) - fireOf(b);
                   pinned.sort(cmpFire);
                   rest.sort(cmpFire);
+                } else if (sortByCharCount) {
+                  // 字数排序：description char count + detail.md size。
+                  // detail.md 字数走 detailSizes 缓存（无 IPC）；缺失 → 0。
+                  const sizeOf = (it: MemoryItem): number => {
+                    const dl = Array.from(it.description || "").length;
+                    const dt = detailSizes[it.detail_path] ?? 0;
+                    return dl + dt;
+                  };
+                  const cmpSize = (a: MemoryItem, b: MemoryItem) =>
+                    sizeOf(b) - sizeOf(a);
+                  pinned.sort(cmpSize);
+                  rest.sort(cmpSize);
                 } else if (sortByRecent) {
                   const cmpRecent = (a: MemoryItem, b: MemoryItem) =>
                     (b.updated_at || "").localeCompare(a.updated_at || "");
@@ -4512,7 +4574,7 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                 const sortedItems =
                   pinned.length > 0
                     ? [...pinned, ...rest]
-                    : useNextFire || sortByRecent
+                    : useNextFire || sortByCharCount || sortByRecent
                       ? rest
                       : scheduleFilteredItems;
                 const isLong = sortedItems.length > CATEGORY_FOLD_THRESHOLD;
