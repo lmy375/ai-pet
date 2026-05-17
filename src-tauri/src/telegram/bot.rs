@@ -984,6 +984,54 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Demote { title } => {
+            // priority -1 (clamp 0)。与 Promote arm 对偶。已 P0 short-circuit
+            // no-op friendly reply 不调 backend。
+            if title.trim().is_empty() {
+                format_missing_argument("demote")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        let old = views
+                            .iter()
+                            .find(|v| v.title == t)
+                            .map(|v| v.priority);
+                        match old {
+                            Some(0) => crate::telegram::commands::format_demote_reply(
+                                &t, Some(0), Ok(()),
+                            ),
+                            Some(o) => {
+                                let new_pri = o.saturating_sub(1);
+                                match crate::commands::task::task_set_priority(
+                                    t.clone(),
+                                    new_pri,
+                                ) {
+                                    Ok(()) => crate::telegram::commands::format_demote_reply(
+                                        &t,
+                                        Some(o),
+                                        Ok(()),
+                                    ),
+                                    Err(e) => crate::telegram::commands::format_demote_reply(
+                                        &t,
+                                        Some(o),
+                                        Err(&e),
+                                    ),
+                                }
+                            }
+                            None => crate::telegram::commands::format_demote_reply(
+                                &t, None, Ok(()),
+                            ),
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Promote { title } => {
             // priority +1 (clamp 9)。三层 resolve title → 查 view 拿 current
             // priority → 算 new = old + 1（clamp）→ 调 task_set_priority。
