@@ -2363,6 +2363,36 @@ export function PanelTasks({
     });
   }, []);
 
+  /// 在光标位置插入 "## YYYY-MM-DD 进度\n\n" 模板，让长 detail.md 按日自然
+  /// 分段。需独占整段：若前一字符不是换行，先补 `\n` 让 H2 头不被前文"吞"
+  /// 进同段；后面留两个换行（H2 + 空行）让光标落在第三行可直接敲今日笔记。
+  /// 与 insertTableSkeletonAtCursor 同 "block-level template + 智能补换行"
+  /// 模式。
+  const insertDateHeadingAtCursor = useCallback(() => {
+    const ta = detailEditorRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? start;
+    const value = ta.value;
+    const now = new Date();
+    const y = now.getFullYear();
+    const mo = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    const today = `${y}-${mo}-${d}`;
+    const needLeadingNL = start > 0 && value[start - 1] !== "\n";
+    const lead = needLeadingNL ? "\n" : "";
+    const block = `${lead}## ${today} 进度\n\n`;
+    const next = value.slice(0, start) + block + value.slice(end);
+    const cursorPos = start + block.length;
+    setEditingDetailContent(next);
+    requestAnimationFrame(() => {
+      const cur = detailEditorRef.current;
+      if (!cur) return;
+      cur.focus();
+      cur.selectionStart = cur.selectionEnd = cursorPos;
+    });
+  }, []);
+
   /// 在光标位置插入 3×3 GFM table 骨架。需独占整段：若光标前一字符不是
   /// 换行，先补一个 `\n` 让表头不被前文 "吞" 进同段。插入后把"列 1" 设为
   /// 当前 selection —— 用户立刻可敲 / 选 / 删，不必先手动 select 占位文。
@@ -9953,6 +9983,14 @@ export function PanelTasks({
                                     style={mdToolbarBtnStyle}
                                   >
                                     📅
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={insertDateHeadingAtCursor}
+                                    title="📜 插日期 + 进度笔记 模板（## YYYY-MM-DD 进度 + 空行 + 光标落第三行）。让长 detail.md 自然按日分段；光标落正确位置可直接敲今日笔记。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    📜
                                   </button>
                                   <button
                                     type="button"
