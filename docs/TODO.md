@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- detail.md 编辑器 ⌘K 链接快速插入 popover：有选区当 label 只输 url；无选区弹 url + label 双框 — 键盘党比当前 🔗 按钮快。
 - PanelMemory butler_tasks 段加「⏸ 全部 silent 1h」批量按钮：临时静音不关全局 — 开会 / 集中写 1 小时用。
 
 

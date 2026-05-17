@@ -2819,6 +2819,99 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md 编辑器 ⌘⇧L 链接快速插入 popover 状态。与 toolbar 「🔗」
+  /// (insertLinkAtCursor) 互补 —— 那个直接插模板 + 占位符 pre-select；
+  /// 本路径弹小输入框让 owner 一次性输完整 url + label 再插（键盘党想
+  /// 跳过"点 🔗 → 选 url 占位 → 替换 → 再选 label"多步流程）。
+  ///
+  /// 选区策略：开 popover 时若 textarea 有选区 → label 预填选区文，仅
+  /// 显 url 单输入框；否则 url + label 双输入框。range 记录 popover 打开
+  /// 时的 selection [start, end]，确保提交时插到原位置不被打开 popover
+  /// 期间 textarea 内 cursor 移动影响（popover 内 input 抢焦点会清空
+  /// textarea selection）。
+  ///
+  /// 不复用 ⌘K palette 的两 mode（jump / insertRef）扩第三 mode：palette
+  /// 是 task-title 全文索引 + fuzzy 搜索；本 popover 是简单 url + label
+  /// 输入。语义不同，UI 不同，强行复用会膨胀。
+  const [linkPopoverOpen, setLinkPopoverOpen] = useState(false);
+  const [linkUrlDraft, setLinkUrlDraft] = useState("");
+  const [linkLabelDraft, setLinkLabelDraft] = useState("");
+  const linkSelectionRangeRef = useRef<{ start: number; end: number } | null>(
+    null,
+  );
+  const linkUrlInputRef = useRef<HTMLInputElement>(null);
+  const linkLabelInputRef = useRef<HTMLInputElement>(null);
+
+  /// ⌘⇧L 弹链接快速插入 popover：detail.md textarea 焦点内捕获。与
+  /// 既有 ⌘K palette 不冲突（K vs L），且 ⌘L 是"选中当前行"（无 shift），
+  /// ⌘⇧L 走链接 popover —— shift 修饰扩展同字母键语义集群。
+  ///
+  /// 选区策略：textarea 有选区 → label 预填，仅 url 单输入；空选区 →
+  /// url + label 双输入。保留打开 popover 时的 selection range 到 ref，
+  /// 提交时插到原位置（popover input focus 后 textarea selection 会被
+  /// 清掉，必须先存）。
+  const handleDetailLinkPopover = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "l") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const selected = ta.value.slice(start, end);
+      linkSelectionRangeRef.current = { start, end };
+      setLinkLabelDraft(selected);
+      setLinkUrlDraft("");
+      setLinkPopoverOpen(true);
+      // 选区非空 → 直接聚 url 输入（label 已预填）；空选 → 先聚 label
+      // 让 owner 输 link 文本。
+      window.setTimeout(() => {
+        const target =
+          selected.length > 0
+            ? linkUrlInputRef.current
+            : linkLabelInputRef.current;
+        target?.focus();
+        target?.select();
+      }, 0);
+      return true;
+    },
+    [],
+  );
+
+  /// 提交 link popover：在保存的 range 处插 `[label](url)`，覆盖原选区。
+  /// label 空 fallback "link" — 避免插出 `[](url)` 空 anchor。url 空时
+  /// 不该走到此（提交按钮 disabled），但兜底防御。
+  const commitLinkPopover = useCallback(() => {
+    const range = linkSelectionRangeRef.current;
+    if (!range) {
+      setLinkPopoverOpen(false);
+      return;
+    }
+    const url = linkUrlDraft.trim();
+    if (url.length === 0) return;
+    const label = linkLabelDraft.trim().length > 0 ? linkLabelDraft : "link";
+    const inserted = `[${label}](${url})`;
+    setEditingDetailContent((prev) => {
+      const next =
+        prev.slice(0, range.start) + inserted + prev.slice(range.end);
+      return next;
+    });
+    const cursorAfter = range.start + inserted.length;
+    setLinkPopoverOpen(false);
+    setLinkUrlDraft("");
+    setLinkLabelDraft("");
+    requestAnimationFrame(() => {
+      const ta = detailEditorRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = cursorAfter;
+      setDetailCursorPos(cursorAfter);
+      setDetailSelectionEnd(cursorAfter);
+    });
+  }, [linkUrlDraft, linkLabelDraft]);
+
   /// detail.md textarea 插 markdown link `[text](url)`：与 insertMarkdown
   /// AtCursor("wrap", "[", "](url)") 不同 —— 本 helper 把 `url` 占位符 pre-
   /// select，让 owner 立即敲键替换地址（与 Notion / VS Code markdown
@@ -11780,6 +11873,12 @@ export function PanelTasks({
                                   // ⌘B 加粗 / ⌘I 斜体：markdown 选区 wrap
                                   // **bold** / *italic*。与 toolbar 同 backend。
                                   if (handleDetailBoldItalic(e)) return;
+                                  // ⌘⇧L 弹链接快速插入 popover：选区当 label
+                                  // 仅输 url；空选区双输入 url + label。与
+                                  // toolbar 「🔗」按钮（直接插模板 + url 占
+                                  // 位 pre-select）互补 — 键盘党想跳过"点 🔗
+                                  // → 选 url 占位 → 替换" 多步流程。
+                                  if (handleDetailLinkPopover(e)) return;
                                   // ⌘S/Ctrl+S 触发保存：与按钮等价。preventDefault
                                   // 吃掉 webview 默认"另存为页面"行为；savingDetail
                                   // 守卫防止保存进行中重复发请求。
@@ -11833,7 +11932,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -12165,6 +12264,8 @@ export function PanelTasks({
                                   if (handleDetailListContinue(e)) return;
                                   if (handleDetailBracketPair(e)) return;
                                   if (handleDetailDuplicateLine(e)) return;
+                                  // ⌘⇧L 弹链接 popover：与 split 模式同 handler。
+                                  if (handleDetailLinkPopover(e)) return;
                                   if (
                                     (e.metaKey || e.ctrlKey) &&
                                     e.key.toLowerCase() === "s"
@@ -12191,7 +12292,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -13363,6 +13464,200 @@ export function PanelTasks({
           ↑↓ 移动选中 idx，Enter 切换到该 task 的 detail 编辑器（复用
           switchToTaskDetail pipeline），Esc / outside-click 关。fixed 顶层
           浮卡，与 row hover preview / ctx menu 同 viewport-clamp 思路。 */}
+      {/* ⌘⇧L 弹链接快速插入 popover：与 ⌘K palette 同 fixed overlay 风格。
+          有选区 → 仅 url 单输入（label 已预填）；空选区 → url + label 双输
+          入。Enter 提交 / Esc 关 / 点 backdrop 关。提交时插 `[label](url)`
+          到打开 popover 时的 selection range（ref 存）。 */}
+      {linkPopoverOpen && (
+        <div
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setLinkPopoverOpen(false);
+            }
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.3)",
+            zIndex: 250,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            paddingTop: "14vh",
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              width: 420,
+              maxWidth: "92vw",
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 8,
+              boxShadow: "var(--pet-shadow-md)",
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--pet-color-fg)",
+              }}
+            >
+              🔗 插入链接
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                marginTop: -4,
+              }}
+            >
+              将插入 markdown `[label](url)` 到原选区位置（覆盖选区）。
+            </div>
+            <label
+              style={{
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+                marginTop: 4,
+              }}
+            >
+              Label（显示文本）
+            </label>
+            <input
+              ref={linkLabelInputRef}
+              type="text"
+              value={linkLabelDraft}
+              placeholder={
+                linkLabelDraft.length === 0
+                  ? "（缺省 'link'）"
+                  : ""
+              }
+              onChange={(e) => setLinkLabelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setLinkPopoverOpen(false);
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (linkUrlDraft.trim().length === 0) {
+                    linkUrlInputRef.current?.focus();
+                  } else {
+                    commitLinkPopover();
+                  }
+                }
+              }}
+              style={{
+                fontSize: 12,
+                padding: "6px 8px",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 4,
+                background: "var(--pet-color-bg)",
+                color: "var(--pet-color-fg)",
+                fontFamily: "inherit",
+              }}
+            />
+            <label
+              style={{
+                fontSize: 11,
+                color: "var(--pet-color-muted)",
+                marginTop: 4,
+              }}
+            >
+              URL
+            </label>
+            <input
+              ref={linkUrlInputRef}
+              type="text"
+              value={linkUrlDraft}
+              placeholder="https://…"
+              onChange={(e) => setLinkUrlDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setLinkPopoverOpen(false);
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (linkUrlDraft.trim().length === 0) return;
+                  commitLinkPopover();
+                }
+              }}
+              style={{
+                fontSize: 12,
+                padding: "6px 8px",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 4,
+                background: "var(--pet-color-bg)",
+                color: "var(--pet-color-fg)",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 6,
+                marginTop: 4,
+                alignItems: "center",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 10,
+                  color: "var(--pet-color-muted)",
+                  marginRight: "auto",
+                }}
+              >
+                Enter 提交 · Esc 取消
+              </span>
+              <button
+                type="button"
+                onClick={() => setLinkPopoverOpen(false)}
+                style={{
+                  padding: "4px 12px",
+                  fontSize: 11,
+                  borderRadius: 4,
+                  border: "1px solid var(--pet-color-border)",
+                  background: "var(--pet-color-card)",
+                  color: "var(--pet-color-fg)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={commitLinkPopover}
+                disabled={linkUrlDraft.trim().length === 0}
+                style={{
+                  padding: "4px 14px",
+                  fontSize: 11,
+                  borderRadius: 4,
+                  border: "1px solid var(--pet-color-accent)",
+                  background:
+                    linkUrlDraft.trim().length === 0
+                      ? "var(--pet-color-muted)"
+                      : "var(--pet-color-accent)",
+                  color: "#fff",
+                  cursor:
+                    linkUrlDraft.trim().length === 0
+                      ? "default"
+                      : "pointer",
+                  fontFamily: "inherit",
+                  fontWeight: 600,
+                }}
+              >
+                插入
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {taskPaletteOpen && (() => {
         const q = paletteQuery.trim().toLowerCase();
         const filtered =
@@ -14627,6 +14922,7 @@ export function PanelTasks({
                   ["⌘⌥Enter", "保存并跳下一条 task（连续 review 流）"],
                   ["⌘F", "在 detail.md 内行内搜索（Enter / ↑↓ 切 match · Esc 关）"],
                   ["⌘P", "切到 preview-only 焦点阅读（再按回写作姿态 · VSCode preview-lock 风）"],
+                  ["⌘⇧L", "弹链接快速插入 popover（选区当 label 仅输 url；空选区双输入 url + label）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
                   ["⌘L", "选中当前行（VS Code / Sublime 风格）"],
