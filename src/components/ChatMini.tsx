@@ -1323,6 +1323,65 @@ export function ChatMini({
             boxSizing: "border-box",
           }}
         >
+        {/* 🌡️ context 健康 mini progress bar：常态可见（仅 sessionTokens
+            > 20% threshold = 800 时显，避免空 session 噪音），让 owner 在
+            撞 4000 警示线前提前感知。色按 < 50% 绿 / 50-75% amber / ≥ 75%
+            red 三档；cap 100% width。撞警示线后由下方更显眼的警示 chip
+            接力（同一信号两层视觉权重 — bar 是 ambient peek，chip 是 CTA）。 */}
+        {sessionTokens !== undefined &&
+          sessionTokens > MINI_TOKEN_WARN_THRESHOLD * 0.2 &&
+          sessionTokens <= MINI_TOKEN_WARN_THRESHOLD && (
+            <div
+              style={{
+                marginBottom: 6,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+              }}
+              title={`当前 session 累计 ~${sessionTokens} / ${MINI_TOKEN_WARN_THRESHOLD} tokens（${Math.round((sessionTokens / MINI_TOKEN_WARN_THRESHOLD) * 100)}%）· 撞警示线后会浮 /reset CTA chip`}
+            >
+              <span>🌡️</span>
+              <div
+                style={{
+                  flex: 1,
+                  height: 4,
+                  borderRadius: 2,
+                  background: "var(--pet-color-border)",
+                  overflow: "hidden",
+                  position: "relative",
+                }}
+              >
+                {(() => {
+                  const pct = Math.min(
+                    1,
+                    sessionTokens / MINI_TOKEN_WARN_THRESHOLD,
+                  );
+                  const fg =
+                    pct < 0.5
+                      ? "var(--pet-tint-green-fg)"
+                      : pct < 0.75
+                        ? "var(--pet-tint-amber-fg, #d97706)"
+                        : "var(--pet-tint-red-fg)";
+                  return (
+                    <div
+                      style={{
+                        width: `${pct * 100}%`,
+                        height: "100%",
+                        background: fg,
+                        transition: "width 200ms ease-out",
+                      }}
+                    />
+                  );
+                })()}
+              </div>
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {sessionTokens}/{MINI_TOKEN_WARN_THRESHOLD}
+              </span>
+            </div>
+          )}
         {/* 上下文 token 警示 chip：与 DebugApp 统计 tab 「当前会话 LLM 上下
             文」卡片同源信号（4000 阈值）。一键 reset 走 armed-confirm 二次
             确认（首点变"再点确认"+3s 自清）防止误触丢历史。 */}
