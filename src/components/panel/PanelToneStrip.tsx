@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { ToneSnapshot } from "./panelTypes";
 
 /**
@@ -12,7 +14,84 @@ interface PanelToneStripProps {
   tone: ToneSnapshot | null;
 }
 
+/// 「✍️ 写 transient_note」popover 时长 chips 预设。与 TG /transient 命令
+/// 同 minutes 量纲（minutes，clamp 1..=10080）— 桌面 UI 给最常用的 4 档：
+/// 15m（短暂"我去倒杯水"）/ 30m（典型"开会"）/ 1h（"集中写文档"）/
+/// 2h（"长会议 / deep work block"）。owner 想精细化可走 TG /transient 给
+/// 任意分钟数。
+const TRANSIENT_PRESETS: { minutes: number; label: string }[] = [
+  { minutes: 15, label: "15m" },
+  { minutes: 30, label: "30m" },
+  { minutes: 60, label: "1h" },
+  { minutes: 120, label: "2h" },
+];
+
 export function PanelToneStrip({ tone }: PanelToneStripProps) {
+  // 「✍️ 写 transient_note」popover 状态。state 在 PanelToneStrip 内部
+  // 而非 parent — popover 生命周期短（写完 / Esc 关），不需要跨组件
+  // 同步。父 PanelDebug 已 1s polling get_debug_snapshot → 写完后 chip
+  // 会在 ≤1s 内自动更新，不需要手动触发 reload callback。
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [draftText, setDraftText] = useState("");
+  const [pendingMinutes, setPendingMinutes] = useState<number>(30);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // 打开 popover 时聚焦 textarea + 预填既有 transient_note（让 owner
+  // 看到当前内容可继续编辑或清空）。剩余分钟解析为最近的 preset 选
+  // 中态：owner "改主意延长 2h" 时一键覆盖即可。
+  useEffect(() => {
+    if (!editorOpen) return;
+    setDraftText(tone?.transient_note ?? "");
+    // 解析剩余秒到最近 preset；若没现存 note → fallback 30m
+    const rem = tone?.transient_note_remaining_seconds ?? null;
+    if (rem !== null) {
+      const remMin = Math.max(1, Math.round(rem / 60));
+      const closest = TRANSIENT_PRESETS.reduce((acc, p) =>
+        Math.abs(p.minutes - remMin) < Math.abs(acc.minutes - remMin) ? p : acc,
+      );
+      setPendingMinutes(closest.minutes);
+    } else {
+      setPendingMinutes(30);
+    }
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [editorOpen, tone?.transient_note, tone?.transient_note_remaining_seconds]);
+
+  const submit = async () => {
+    setErrorMsg("");
+    setSubmitting(true);
+    try {
+      // proactive::set_transient_note(text, minutes)。空 text + 任意
+      // minutes 等价于 clear；这里允许 owner 提交空 text 主动清除当前
+      // note（与 popover "清除" 按钮等价 affordance — Enter 提交空字符
+      // 串 = clear）。
+      await invoke<string>("set_transient_note", {
+        text: draftText.trim(),
+        minutes: pendingMinutes,
+      });
+      setEditorOpen(false);
+    } catch (e) {
+      setErrorMsg(`保存失败：${e}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const clearNote = async () => {
+    setErrorMsg("");
+    setSubmitting(true);
+    try {
+      // text 空 → backend 视为 clear（与 /transient 0 + any text 等价）
+      await invoke<string>("set_transient_note", { text: "", minutes: 0 });
+      setEditorOpen(false);
+    } catch (e) {
+      setErrorMsg(`清除失败：${e}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (!tone) return null;
   return (
     <div
@@ -26,8 +105,223 @@ export function PanelToneStrip({ tone }: PanelToneStripProps) {
         display: "flex",
         flexWrap: "wrap",
         gap: "12px",
+        position: "relative",
       }}
     >
+      {/* ✍️ 写 transient_note 入口：与 TG /transient <text> [minutes]
+          命令同后端（proactive::set_transient_note）— owner 想从桌面
+          一键给 pet 写"我在开会"、"集中写文档" 等临时上下文。点击展开
+          inline popover：textarea + 时长 preset chips（15m/30m/1h/2h）+
+          保存 / 清除 / 取消。tone.transient_note 非空时 popover 预填
+          既有内容供编辑；空时空白起步。owner 想精细化分钟数 → 走 TG
+          /transient（任意 1..=10080）。 */}
+      <button
+        type="button"
+        onClick={() => setEditorOpen((v) => !v)}
+        title={
+          tone.transient_note
+            ? `点击编辑 / 替换当前 transient_note。当前：「${tone.transient_note}」`
+            : "写一条 N 分钟有效的临时上下文给 pet —— in-memory 不存盘，到时自动清除。pet 开口时会读到这条 [临时指示]。"
+        }
+        aria-label={
+          tone.transient_note ? "编辑 transient_note" : "写 transient_note"
+        }
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 3,
+          padding: "1px 8px",
+          fontSize: 11,
+          borderRadius: 10,
+          border: editorOpen
+            ? "1px solid #0891b2"
+            : "1px dashed #94a3b8",
+          background: editorOpen ? "#0891b2" : "transparent",
+          color: editorOpen ? "#fff" : "#475569",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontWeight: editorOpen ? 600 : 500,
+        }}
+      >
+        ✍️ 写
+      </button>
+      {editorOpen && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 16,
+            zIndex: 200,
+            background: "#fff",
+            border: "1px solid #cbd5e1",
+            borderRadius: 6,
+            padding: 10,
+            minWidth: 320,
+            maxWidth: 440,
+            boxShadow: "0 6px 18px rgba(0,0,0,0.16)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
+          <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+            ✍️ 写 transient_note（in-memory · 不存盘）
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={draftText}
+            disabled={submitting}
+            onChange={(e) => setDraftText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setEditorOpen(false);
+              } else if (
+                (e.metaKey || e.ctrlKey) &&
+                e.key === "Enter" &&
+                !submitting
+              ) {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+            placeholder="例：在开会，半小时别打扰我"
+            rows={3}
+            style={{
+              width: "100%",
+              fontFamily: "inherit",
+              fontSize: 12,
+              padding: 6,
+              border: "1px solid #cbd5e1",
+              borderRadius: 4,
+              resize: "vertical",
+              boxSizing: "border-box",
+            }}
+          />
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              flexWrap: "wrap",
+            }}
+          >
+            <span style={{ fontSize: 10, color: "#64748b", marginRight: 2 }}>
+              时长：
+            </span>
+            {TRANSIENT_PRESETS.map((p) => {
+              const active = pendingMinutes === p.minutes;
+              return (
+                <button
+                  key={p.minutes}
+                  type="button"
+                  onClick={() => setPendingMinutes(p.minutes)}
+                  disabled={submitting}
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    border: active
+                      ? "1px solid #0891b2"
+                      : "1px solid #cbd5e1",
+                    background: active ? "#0891b2" : "#fff",
+                    color: active ? "#fff" : "#475569",
+                    cursor: submitting ? "default" : "pointer",
+                    fontFamily: "inherit",
+                    fontWeight: active ? 600 : 400,
+                  }}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+          {errorMsg && (
+            <div style={{ fontSize: 11, color: "#dc2626" }}>{errorMsg}</div>
+          )}
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              justifyContent: "flex-end",
+              alignItems: "center",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 10,
+                color: "#94a3b8",
+                marginRight: "auto",
+              }}
+            >
+              ⌘Enter 保存 · Esc 取消
+            </span>
+            {tone.transient_note && (
+              <button
+                type="button"
+                onClick={() => void clearNote()}
+                disabled={submitting}
+                title="立即清除当前 transient_note（与等过期等价但即刻生效）"
+                style={{
+                  padding: "3px 10px",
+                  fontSize: 11,
+                  borderRadius: 4,
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  color: "#dc2626",
+                  cursor: submitting ? "default" : "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                🗑 清除
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setEditorOpen(false)}
+              disabled={submitting}
+              style={{
+                padding: "3px 10px",
+                fontSize: 11,
+                borderRadius: 4,
+                border: "1px solid #cbd5e1",
+                background: "#fff",
+                color: "#475569",
+                cursor: submitting ? "default" : "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={submitting || draftText.trim().length === 0}
+              style={{
+                padding: "3px 12px",
+                fontSize: 11,
+                borderRadius: 4,
+                border: "1px solid #0891b2",
+                background:
+                  submitting || draftText.trim().length === 0
+                    ? "#94a3b8"
+                    : "#0891b2",
+                color: "#fff",
+                cursor:
+                  submitting || draftText.trim().length === 0
+                    ? "default"
+                    : "pointer",
+                fontFamily: "inherit",
+                fontWeight: 600,
+              }}
+            >
+              {submitting ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </div>
+      )}
       {!tone.proactive_enabled && (
         <span
           title="settings.proactive.enabled = false — 主动开口循环不会触发任何 LLM 评估。所有其它 chip 仍按现状显示，只是 gate 不会真的放行。"
