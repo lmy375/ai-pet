@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- ChatMini bubble timestamp chip click → 复制本条 ISO 8601 时间戳到剪贴板 — 日志 / paste 到 issue / 跨工具引用场景。
 - PanelMemory item hover 「📋 path」chip：复制 detail.md 的绝对路径 — VSCode ⌘P / Finder ⇧⌘G 一键 open 用。
 - TG bot `/snippets` 命令：列含 `[snippet:]` marker 的 task — 让 owner 把可复用片段 audit 集中。
 - PanelTasks 行 hover 「📋 task ref」chip：复制 `「<title>」` token — 跨 detail.md 引用免手敲 ref。
