@@ -212,6 +212,7 @@ pub fn run() {
             proactive::trigger_proactive_turn_with_prompt,
             commands::shell::check_shell_status,
             commands::shell::get_shell_exit_code_stats,
+            commands::shell::reset_shell_store,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,
             commands::session::list_sessions,

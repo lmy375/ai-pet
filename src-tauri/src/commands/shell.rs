@@ -223,3 +223,32 @@ pub fn get_shell_exit_code_stats(
         total,
     }
 }
+
+/// PanelDebug「🔄 重置 ⚙️ shell stats」按钮触发：清空 ShellStore
+/// 内**已完成**任务（finished — 含 success / failure）+ 删对应
+/// stdout/stderr 文件。**running** 任务保留（仍在执行的子进程
+/// 状态需要被 check_shell_status 继续观察；强删除会让正在跑的
+/// shell tool 失联）。
+///
+/// 与 cleanup_old_tasks（1h cutoff）共享 finished + 删文件 pattern
+/// 但不看时间 — 立即清。debug 场景「从这里开始重测」：让 ⚙️
+/// chip 计数归零，新 shell call 进 clean 累计。
+///
+/// 返回清掉的 task 数让前端 toast 显反馈（"已清 N 条"）。
+#[tauri::command]
+pub fn reset_shell_store(store: State<'_, ShellStore>) -> u32 {
+    let mut map = store.0.lock().unwrap();
+    let to_remove: Vec<String> = map
+        .iter()
+        .filter(|(_, t)| t.status == TaskStatus::Finished)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let removed = to_remove.len() as u32;
+    for id in to_remove {
+        if let Some(task) = map.remove(&id) {
+            let _ = std::fs::remove_file(&task.stdout_path);
+            let _ = std::fs::remove_file(&task.stderr_path);
+        }
+    }
+    removed
+}

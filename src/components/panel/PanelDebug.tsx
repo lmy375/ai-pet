@@ -2428,6 +2428,29 @@ export function PanelDebug() {
             </span>
           );
         })()}
+        {/* 🔄 重置 ⚙️ shell stats：调 reset_shell_store 清 ShellStore
+            内 finished tasks（running 保留 — 仍在执行的子进程不能
+            强失联）+ 删 stdout/stderr 文件。debug 场景「从这里开
+            始重测」让 chip 计数归零。仅 finished 计数 > 0 时显（无
+            可清时不渲免 dead UI）。返清掉数显 toast。 */}
+        {shellExitStats.success + shellExitStats.failure > 0 && (
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const removed = await invoke<number>("reset_shell_store");
+                setDebugExportMsg(`🔄 已清 ${removed} 条 finished shell task`);
+              } catch (e) {
+                setDebugExportMsg(`重置 shell stats 失败：${e}`);
+              }
+              window.setTimeout(() => setDebugExportMsg(""), 3000);
+            }}
+            style={toolBtnStyle}
+            title="清 ShellStore 内已完成的 shell task（含 stdout/stderr 文件），让 ⚙️ chip 计数归零。仅 finished 清；running 保留（仍在执行的子进程不能强失联）。debug 场景「从这里开始重测」用。"
+          >
+            🔄 reset ⚙️
+          </button>
+        )}
         <button
           onClick={handleCaptureSnapshotA}
           style={toolBtnStyle}
