@@ -2884,6 +2884,26 @@ export function ChatMini({
         const text = extractText(m.content);
         const hasText = text.length > 0;
         const isAssistant = m.role === "assistant";
+        // 🔗 复制 task ref：扫 bubble 文本里的 `「title」` token，dedupe
+        // 保留出现顺序，拼成空格分隔的 inline ref 串。owner 复制后可粘到
+        // 新 task description（如 `[blockedBy: 「a」 「b」]`）/ detail.md /
+        // TG /quick — refs 渲染保留双击跳源 task 的语义。pet 在 reply 里
+        // 频繁带 ref token；本入口让 owner 不必手工拣字符。
+        const refTitlesSet: string[] = [];
+        if (hasText) {
+          const seen = new Set<string>();
+          const re = /「([^「」\n]+)」/g;
+          let match: RegExpExecArray | null;
+          while ((match = re.exec(text)) !== null) {
+            const t = match[1].trim();
+            if (t && !seen.has(t)) {
+              seen.add(t);
+              refTitlesSet.push(t);
+            }
+          }
+        }
+        const refTitles = refTitlesSet;
+        const hasRefs = refTitles.length > 0;
         // 经验值夹紧：菜单大约 200×180px；超出 right/bottom 时向上 / 左挪。
         const MAX_W = 220;
         const MAX_H = 180;
@@ -2972,6 +2992,46 @@ export function ChatMini({
               }}
             >
               ⌚ 复制 · 含时间戳
+            </button>
+            {/* 🔗 复制 task ref：把 bubble 内的所有 「title」 token 收
+                集 + dedupe + 空格拼接复制。无 ref 命中时 disabled + tooltip
+                解释。粘到 task description / detail.md / TG /quick 仍是
+                ref（owner 不必手工拣字符）。 */}
+            <button
+              type="button"
+              style={item}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              disabled={!hasRefs}
+              title={
+                hasRefs
+                  ? `复制 ${refTitles.length} 个 task ref：${refTitles
+                      .map((t) => `「${t}」`)
+                      .join(" ")}`
+                  : "本条未提到任何 「title」 ref token"
+              }
+              onClick={() => {
+                setCtxMenu(null);
+                if (!hasRefs) return;
+                const payload = refTitles.map((t) => `「${t}」`).join(" ");
+                navigator.clipboard
+                  .writeText(payload)
+                  .then(() => {
+                    setBubbleCopyIdx(ctxMenu.idx);
+                    window.setTimeout(
+                      () =>
+                        setBubbleCopyIdx((cur) =>
+                          cur === ctxMenu.idx ? null : cur,
+                        ),
+                      1500,
+                    );
+                  })
+                  .catch((err) =>
+                    console.error("copy task ref tokens failed:", err),
+                  );
+              }}
+            >
+              🔗 复制 task ref{hasRefs ? ` (${refTitles.length})` : ""}
             </button>
             {isAssistant && hasText && (
               <button

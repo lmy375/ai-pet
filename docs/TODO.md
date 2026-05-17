@@ -9,7 +9,6 @@
 >
 
 - PanelMemory 加「📥 import .md」按钮：粘 markdown 文本 → parse H2 为 cat / H3 为 item 一次导入。
-- ChatMini bubble 右键加「🔗 复制 task ref」: 把 bubble 内提到的「title」token 当 inline ref 复制。
 
 
 
