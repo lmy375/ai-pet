@@ -1345,6 +1345,67 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::SnoozeUntil { title, time } => {
+            // 与 /sleep_until 同跨日规则：HH:MM 解析为今日同时刻，已
+            // 过则 +1d 落明日。time=None → 失败兜底 formatter usage。
+            // 成功路径 task_set_snooze("YYYY-MM-DD HH:MM" 字符串)。
+            if title.trim().is_empty() || time.is_none() {
+                crate::telegram::commands::format_snooze_until_reply(
+                    &title,
+                    time,
+                    None,
+                    false,
+                    Ok(()),
+                )
+            } else {
+                use chrono::{Datelike, Local, TimeZone};
+                let (h, m) = time.unwrap();
+                let now = Local::now();
+                let today_target = Local
+                    .with_ymd_and_hms(
+                        now.year(),
+                        now.month(),
+                        now.day(),
+                        h as u32,
+                        m as u32,
+                        0,
+                    )
+                    .single();
+                let target = match today_target {
+                    Some(t) if t > now => t,
+                    Some(t) => t + chrono::Duration::days(1),
+                    None => now + chrono::Duration::hours(1),
+                };
+                let crosses_midnight = today_target
+                    .map(|t| t <= now)
+                    .unwrap_or(false);
+                let until_str = target.format("%Y-%m-%d %H:%M").to_string();
+                // title resolve 三层（数字 index → fuzzy → exact）：
+                // 与 /snooze / /done / /cancel 同模板
+                let resolved =
+                    match try_resolve_by_index(&title, chat_id.0, state)
+                        .await
+                    {
+                        Some(t) => Ok(t),
+                        None => resolve_tg_task_title(&title),
+                    };
+                let save_ok = match resolved {
+                    Ok(t) => crate::commands::task::task_set_snooze(
+                        t.clone(),
+                        Some(until_str.clone()),
+                    )
+                    .map_err(|e| e.to_string()),
+                    Err(e) => Err(e),
+                };
+                crate::telegram::commands::format_snooze_until_reply(
+                    &title,
+                    Some((h, m)),
+                    Some(target),
+                    crosses_midnight,
+                    save_ok,
+                )
+            }
+        }
         TgCommand::Digest { n } => {
             // 最近 done 任务标题 + result 摘要清单。reuse 同 read path（与
             // /recent / /tasks / /today 同源），formatter 内部 sort updated_at
