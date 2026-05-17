@@ -71,6 +71,52 @@ export function PanelDebug() {
     neutral: 0,
   });
   const [recentSpeeches, setRecentSpeeches] = useState<string[]>([]);
+  /// iter #389: per-speech 触发 meta — ts → {band, factor, mode,
+  /// deadline_factor}。get_recent_speeches_with_meta 单独轮询（30s，
+  /// speech 写入是低频事件 — 与 debug snapshot 1s 轮询节奏分开避免
+  /// 浪费）。frontend chip hover title 拼 meta 信息让 owner audit
+  /// "为何 pet 在 HH:MM 开口"。缺 meta 的旧 entry → tooltip 仅显
+  /// timestamp + text（与 iter #384 原行为兼容）。
+  type SpeechMetaEntry = {
+    ts: string;
+    band: string;
+    factor: number;
+    mode: string;
+    deadline_factor: number;
+  };
+  const [speechMetaByTs, setSpeechMetaByTs] = useState<
+    Record<string, SpeechMetaEntry>
+  >({});
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const entries = await invoke<
+          {
+            ts: string;
+            text: string;
+            meta: SpeechMetaEntry | null;
+          }[]
+        >("get_recent_speeches_with_meta", { n: 50 });
+        if (cancelled) return;
+        const map: Record<string, SpeechMetaEntry> = {};
+        for (const e of entries) {
+          if (e.meta && e.ts) {
+            map[e.ts] = e.meta;
+          }
+        }
+        setSpeechMetaByTs(map);
+      } catch (e) {
+        console.error("get_recent_speeches_with_meta failed:", e);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   // R142: 三 timeline 切换 tab。三卡（speech / tool / feedback）原本堆叠占
   // 垂直空间多；改成单选 tab 让用户聚焦其中一种。default 选 speech（用户
   // 最关心宠物刚说了什么）。session 内有效，关 panel 重置回 speech。
@@ -4140,12 +4186,20 @@ export function PanelDebug() {
                     ? `${Math.floor(ageMin / 60)}h 前`
                     : `${Math.floor(ageMin / 1440)}d 前`;
             const preview = text.length > 16 ? text.slice(0, 16) + "…" : text;
+            // iter #389: 拼 per-speech 触发 meta 进 tooltip — band /
+            // mode / factor / deadline_factor 让 owner 知道"这条 speech
+            // 当时是什么 cooldown 上下文"。缺 meta 的旧 entry 仅显
+            // text + ts。
+            const meta = ts ? speechMetaByTs[ts] : undefined;
+            const metaLine = meta
+              ? `\n\n触发上下文：feedback_band=${meta.band} (×${meta.factor.toFixed(1)})${meta.mode ? ` · mode=${meta.mode}` : ""}${meta.deadline_factor < 1.0 ? ` · ⚡ deadline 紧迫 (×${meta.deadline_factor.toFixed(1)})` : ""}`
+              : "";
             return (
               <button
                 key={i}
                 type="button"
                 onClick={() => setActiveTimeline("speech")}
-                title={`${tShort}${ageLabel ? ` (${ageLabel})` : ""}\n\n${text}\n\n点击切到「宠物说」timeline 看全 ${recentSpeeches.length} 条 + 触发上下文（当前 feedback_band / cooldown 见上方 ToneStrip）。`}
+                title={`${tShort}${ageLabel ? ` (${ageLabel})` : ""}\n\n${text}${metaLine}\n\n点击切到「宠物说」timeline 看全 ${recentSpeeches.length} 条 + 触发上下文（当前 feedback_band / cooldown 见上方 ToneStrip）。`}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",

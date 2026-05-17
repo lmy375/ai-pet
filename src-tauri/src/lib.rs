@@ -176,6 +176,7 @@ pub fn run() {
             butler_history::get_butler_history,
             butler_history::get_butler_daily_summaries,
             speech_history::get_recent_speeches,
+            speech_history::get_recent_speeches_with_meta,
             speech_history::get_lifetime_speech_count,
             speech_history::get_today_speech_count,
             speech_history::get_week_speech_count,
