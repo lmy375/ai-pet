@@ -471,6 +471,16 @@ function App() {
     -1,
   );
 
+  /// 今日 mute proactive 累计次数。10 分钟轮一次（mute 是用户低频操作，
+  /// 不必更密）。> 0 时桌面 Live2D 区右上 🐾 chip 右侧渲一个 🔕 N chip，
+  /// 让 owner 一眼看到"今天我让宠物闭嘴几次" — 自我 audit 是否过度打断。
+  /// `-1` fallback 兜未抓到 → chip 不显。
+  const { data: todayMuteCount } = usePollingState(
+    () => invoke<number>("get_today_mute_count"),
+    600_000,
+    -1,
+  );
+
   /// 当前 session 上下文 token 量。60 秒轮一次（变化频率与 user 聊天节奏一致；
   /// 更频会浪费 IPC，更稀疏会漏报"刚刚才聊几句就过线"）。> 4000 时 ChatMini
   /// 顶部浮出"该 /reset 一下" chip，与 DebugApp 统计 tab 同源信号 +
@@ -1377,6 +1387,47 @@ function App() {
                 }}
               >
                 🐾 {todaySpeechCount}
+              </div>
+            )}
+            {/* 今日 mute proactive 累计 🔕 N chip：钉在 🐾 chip 左侧。
+                todayMuteCount = 后端 mute_count::get_today_mute_count
+                （进程内每日聚合）。> 0 才渲染（无 mute 时不噪音）。
+                位置 right 动态算：有 🐾 chip 时偏更左让两 chip 并排。 */}
+            {todayMuteCount > 0 && (
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                title={`今天你让宠物闭嘴 ${todayMuteCount} 次（通过 PanelDebug "⚙️ mute" / PanelChat "/sleep" 等路径）。进程重启清零。`}
+                style={{
+                  position: "absolute",
+                  top: "8px",
+                  right:
+                    todaySpeechCount > 0
+                      ? `${76 + 56}px`
+                      : "76px",
+                  padding: "3px 9px",
+                  borderRadius: "12px",
+                  background: "var(--pet-color-card)",
+                  border: "1px solid var(--pet-color-border)",
+                  color: "var(--pet-color-muted)",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  cursor: "default",
+                  zIndex: 60,
+                  boxShadow: "var(--pet-shadow-sm)",
+                  opacity: 0.6,
+                  transition: "opacity 120ms ease-out",
+                  userSelect: "none",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseOver={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.opacity = "1";
+                }}
+                onMouseOut={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.opacity = "0.6";
+                }}
+              >
+                🔕 {todayMuteCount}
               </div>
             )}
             {/* 陪伴天数 ✦ N chip：紧贴收起按钮左侧。默认 opacity 0.6 让它
