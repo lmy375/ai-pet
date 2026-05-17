@@ -89,6 +89,10 @@ pub enum TgCommand {
     /// 多余尾部忽略（与 /tasks / /today 同容忍策略）。给 owner audit "我哪
     /// 些任务卡住了 / 卡在等什么" 用。
     Blocked,
+    /// `/snoozed` —— 列出本 chat 派单中当前在 `[snooze: …]` 中的 task + 显
+    /// 还多久醒。与 /silenced / /pinned 对偶。无参；多余尾部忽略。owner 想
+    /// audit "我哪些任务被暂存了 / 还多久回到队列" 用。
+    Snoozed,
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -125,6 +129,7 @@ impl TgCommand {
             TgCommand::Recent { .. } => "recent",
             TgCommand::Find { .. } => "find",
             TgCommand::Blocked => "blocked",
+            TgCommand::Snoozed => "snoozed",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help => "help",
@@ -157,6 +162,7 @@ impl TgCommand {
             | TgCommand::Today
             | TgCommand::Recent { .. }
             | TgCommand::Blocked
+            | TgCommand::Snoozed
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help
@@ -230,6 +236,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
+            ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -256,6 +263,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
+            ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -577,6 +585,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "find" => Some(TgCommand::Find { keyword: title }),
         // `/blocked`：无参；多余尾部忽略（与 /tasks / /today 同容忍策略）。
         "blocked" => Some(TgCommand::Blocked),
+        // `/snoozed`：无参；多余尾部忽略（与 /silenced / /pinned 同模板）。
+        "snoozed" => Some(TgCommand::Snoozed),
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -846,6 +856,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
+        "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1468,6 +1479,81 @@ pub fn format_blocked_reply(views: &[crate::task_queue::TaskView]) -> String {
         for b in blockers {
             out.push_str(&format!("\n   └ 等：{}", b));
         }
+    }
+    out
+}
+
+/// `/snoozed` 命令回复文案。pure：接收已 chat-scoped + `snoozed_until.is_some()`
+/// 过滤的 views，按醒来时刻升序排（最近醒的在前 — owner 想看"下一个回到队
+/// 列的是哪条"），每行显 task + 倒计时（N 分 / N 时 / N 天 后醒）+ 状态
+/// emoji。无 snoozed task → 友好引导文案。
+///
+/// `now` 由 caller 注入便于单测；生产用 `chrono::Local::now().naive_local()`。
+pub fn format_snoozed_reply(
+    views: &[crate::task_queue::TaskView],
+    now: chrono::NaiveDateTime,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let mut rows: Vec<(&crate::task_queue::TaskView, chrono::NaiveDateTime)> =
+        Vec::new();
+    for v in views {
+        let Some(until_str) = &v.snoozed_until else {
+            continue;
+        };
+        let Ok(until) =
+            chrono::NaiveDateTime::parse_from_str(until_str, "%Y-%m-%dT%H:%M")
+        else {
+            continue;
+        };
+        rows.push((v, until));
+    }
+    if rows.is_empty() {
+        return "💤 暂无被暂存的任务（本聊天派单中）。\n用 /snooze <标题> [30m / 2h / tonight / tomorrow / monday] 暂存一条；过点后自动回到队列。".to_string();
+    }
+    // 按 until asc：最近醒的先列（owner 关心"马上回到队列"那条）。
+    rows.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut out = format!("💤 当前暂存任务（共 {} 条）", rows.len());
+    for (v, until) in &rows {
+        let icon = match v.status {
+            TaskStatus::Pending => "⏳",
+            TaskStatus::Error => "⚠️",
+            TaskStatus::Done => "✅",
+            TaskStatus::Cancelled => "🚫",
+        };
+        let diff = *until - now;
+        let total_mins = diff.num_minutes();
+        let label = if total_mins < 1 {
+            "马上醒".to_string()
+        } else if total_mins < 60 {
+            format!("{} 分后醒", total_mins)
+        } else if total_mins < 60 * 24 {
+            let h = total_mins / 60;
+            let m = total_mins % 60;
+            if m == 0 {
+                format!("{} 时后醒", h)
+            } else {
+                format!("{} 时 {} 分后醒", h, m)
+            }
+        } else {
+            let d = total_mins / (60 * 24);
+            let h = (total_mins % (60 * 24)) / 60;
+            if h == 0 {
+                format!("{} 天后醒", d)
+            } else {
+                format!("{} 天 {} 时后醒", d, h)
+            }
+        };
+        // 时刻截 `MM-DD HH:MM` — until_str 是 `YYYY-MM-DDTHH:MM`，5..10 + 11..16 二段。
+        let until_short =
+            if let Some(s) = v.snoozed_until.as_deref().filter(|s| s.len() >= 16) {
+                format!("{} {}", &s[5..10], &s[11..16])
+            } else {
+                v.snoozed_until.clone().unwrap_or_default()
+            };
+        out.push_str(&format!(
+            "\n{} {} · {}（{}）",
+            icon, v.title, label, until_short
+        ));
     }
     out
 }
@@ -3679,6 +3765,98 @@ mod tests {
         let b = view("调研", 0, None, TaskStatus::Pending, None);
         let s = format_blocked_reply(&[a, b]);
         assert!(s.contains("⚠️ 写文档"), "{s}");
+    }
+
+    // -------- /snoozed parse + format --------
+
+    #[test]
+    fn snoozed_parses_no_arg() {
+        assert_eq!(parse_tg_command("/snoozed"), Some(TgCommand::Snoozed));
+        assert_eq!(parse_tg_command("/snoozed  "), Some(TgCommand::Snoozed));
+        assert_eq!(parse_tg_command("/snoozed now"), Some(TgCommand::Snoozed));
+    }
+
+    #[test]
+    fn snoozed_reply_empty_friendly_with_command_hint() {
+        let now = chrono::NaiveDateTime::parse_from_str(
+            "2026-05-17T10:00",
+            "%Y-%m-%dT%H:%M",
+        )
+        .unwrap();
+        let s = format_snoozed_reply(&[], now);
+        assert!(s.contains("💤"), "{s}");
+        assert!(s.contains("暂无被暂存"), "{s}");
+        assert!(s.contains("/snooze"), "hint: {s}");
+    }
+
+    #[test]
+    fn snoozed_reply_skips_views_without_snoozed_until() {
+        let a = view("无 snooze", 0, None, TaskStatus::Pending, None);
+        let now = chrono::NaiveDateTime::parse_from_str(
+            "2026-05-17T10:00",
+            "%Y-%m-%dT%H:%M",
+        )
+        .unwrap();
+        let s = format_snoozed_reply(&[a], now);
+        assert!(s.contains("暂无"), "{s}");
+    }
+
+    #[test]
+    fn snoozed_reply_minutes_label() {
+        let mut a = view("等下个 sprint", 0, None, TaskStatus::Pending, None);
+        a.snoozed_until = Some("2026-05-17T10:45".to_string());
+        let now = chrono::NaiveDateTime::parse_from_str(
+            "2026-05-17T10:00",
+            "%Y-%m-%dT%H:%M",
+        )
+        .unwrap();
+        let s = format_snoozed_reply(&[a], now);
+        assert!(s.contains("45 分后醒"), "{s}");
+        assert!(s.contains("等下个 sprint"), "{s}");
+        assert!(s.contains("（05-17 10:45）"), "until_short: {s}");
+    }
+
+    #[test]
+    fn snoozed_reply_hours_minutes_label() {
+        let mut a = view("写文档", 0, None, TaskStatus::Pending, None);
+        a.snoozed_until = Some("2026-05-17T12:30".to_string());
+        let now = chrono::NaiveDateTime::parse_from_str(
+            "2026-05-17T10:00",
+            "%Y-%m-%dT%H:%M",
+        )
+        .unwrap();
+        let s = format_snoozed_reply(&[a], now);
+        assert!(s.contains("2 时 30 分后醒"), "{s}");
+    }
+
+    #[test]
+    fn snoozed_reply_days_label() {
+        let mut a = view("整理 Downloads", 0, None, TaskStatus::Pending, None);
+        a.snoozed_until = Some("2026-05-20T15:00".to_string());
+        let now = chrono::NaiveDateTime::parse_from_str(
+            "2026-05-17T10:00",
+            "%Y-%m-%dT%H:%M",
+        )
+        .unwrap();
+        let s = format_snoozed_reply(&[a], now);
+        assert!(s.contains("3 天 5 时后醒"), "{s}");
+    }
+
+    #[test]
+    fn snoozed_reply_orders_by_wake_time_asc() {
+        let mut later = view("后醒的", 0, None, TaskStatus::Pending, None);
+        later.snoozed_until = Some("2026-05-17T15:00".to_string());
+        let mut sooner = view("先醒的", 0, None, TaskStatus::Pending, None);
+        sooner.snoozed_until = Some("2026-05-17T11:00".to_string());
+        let now = chrono::NaiveDateTime::parse_from_str(
+            "2026-05-17T10:00",
+            "%Y-%m-%dT%H:%M",
+        )
+        .unwrap();
+        let s = format_snoozed_reply(&[later, sooner], now);
+        let pos_sooner = s.find("先醒的").expect("sooner present");
+        let pos_later = s.find("后醒的").expect("later present");
+        assert!(pos_sooner < pos_later, "sooner first: {s}");
     }
 
     // -------- /reset parse + format --------

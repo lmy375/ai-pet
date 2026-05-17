@@ -806,6 +806,18 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_blocked_reply(&views)
         }
+        TgCommand::Snoozed => {
+            // 当前 [snooze: ...] 中的 task 清单。read 路径与 /pinned /
+            // /silenced 同；TaskView.snoozed_until 已由 build_task_view
+            // 按 active-only（now < until）填充，所以本地 filter 即可。
+            let views: Vec<crate::task_queue::TaskView> =
+                read_tg_chat_task_views(chat_id.0)
+                    .into_iter()
+                    .filter(|v| v.snoozed_until.is_some())
+                    .collect();
+            let now = chrono::Local::now().naive_local();
+            crate::telegram::commands::format_snoozed_reply(&views, now)
+        }
         TgCommand::Version => {
             // app_version 走编译期 env，schema_version 走 _migrations 最大 version。
             // 单 SQL 查不引入新 Tauri 命令；读失败 → 0（format 时省略 schema 行）。
