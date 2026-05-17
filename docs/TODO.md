@@ -11,7 +11,6 @@
 - TG bot 加 `/show <title>` 命令：显完整 raw_description + detail.md 前 300 字预览，让 owner 在 TG 端看任务详情不必回桌面。
 - PanelTasks 行右键菜单加「📋 复制 raw_description」：含全部 markers 的完整描述文本（debug / 移植 / 跨任务复用 marker 组合用）。
 - PanelMemory item 加「📋 复制 markdown」按钮：拼「# title」+ description + detail.md 整段 markdown 拷贝（外部转载 / 备份用）。
-- detail.md 📜 popover 加「↶ 直接 restore」按钮：与「复制到剪贴板」互补 — dirty 时 armed 二次确认，否则一键替换 textarea。
 - TG bot `/whoami` reply 加心情 emoji 前缀：从 mood state 读 emoji 映射，让 reply 第一行视觉化心情。
 
 

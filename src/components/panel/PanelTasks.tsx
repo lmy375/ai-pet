@@ -1758,6 +1758,10 @@ export function PanelTasks({
   const [historyEntries, setHistoryEntries] = useState<DetailHistoryEntry[]>([]);
   const [historyPopoverOpen, setHistoryPopoverOpen] = useState(false);
   const [historyCopiedTs, setHistoryCopiedTs] = useState<string | null>(null);
+  /// "↶ restore" armed 状态：dirty 时第一次点击设 armed（3s 内再点真 restore），
+  /// 非 dirty 时直接 restore。avoid "误点击覆盖正在写的新版" 的风险（既有
+  /// armed-confirm 3s/5s pattern）。
+  const [historyRestoreArmedTs, setHistoryRestoreArmedTs] = useState<string | null>(null);
   const refreshDetailHistory = useCallback(async (taskTitle: string) => {
     try {
       const list = await invoke<DetailHistoryEntry[]>("task_detail_history", {
@@ -1775,6 +1779,7 @@ export function PanelTasks({
       setHistoryEntries([]);
       setHistoryPopoverOpen(false);
       setHistoryCopiedTs(null);
+      setHistoryRestoreArmedTs(null);
       return;
     }
     void refreshDetailHistory(editingDetailTitle);
@@ -9800,7 +9805,7 @@ export function PanelTasks({
                                             padding: "2px 6px 6px",
                                           }}
                                         >
-                                          📜 save 前快照（最新在前 · 点 ts 复制到剪贴板）
+                                          📜 save 前快照（最新在前 · 📋 复制 / ↶ restore 替换 textarea）
                                         </div>
                                         {historyEntries.map((entry) => {
                                           // ts 格式: 20260517-143015 → 显 05-17 14:30:15
@@ -9813,60 +9818,143 @@ export function PanelTasks({
                                             .trim()
                                             .slice(0, 50);
                                           const copied = historyCopiedTs === entry.ts;
+                                          const restoreArmed =
+                                            historyRestoreArmedTs === entry.ts;
+                                          const isDirty =
+                                            editingDetailContent !==
+                                            editingDetailOriginalRef.current;
                                           return (
-                                            <button
+                                            <div
                                               key={entry.ts}
-                                              type="button"
-                                              onClick={async () => {
-                                                try {
-                                                  await navigator.clipboard.writeText(
-                                                    entry.content,
-                                                  );
-                                                  setHistoryCopiedTs(entry.ts);
-                                                  window.setTimeout(
-                                                    () =>
-                                                      setHistoryCopiedTs((cur) =>
-                                                        cur === entry.ts ? null : cur,
-                                                      ),
-                                                    2500,
-                                                  );
-                                                } catch (e) {
-                                                  console.error(
-                                                    "clipboard write failed:",
-                                                    e,
-                                                  );
-                                                }
-                                              }}
-                                              title={`${entry.ts} — ${entry.content.length} 字符 · 点击复制全文到剪贴板，粘到 textarea 回滚此版`}
                                               style={{
-                                                display: "block",
-                                                width: "100%",
-                                                textAlign: "left",
+                                                display: "flex",
+                                                flexDirection: "column",
+                                                padding: "4px 6px",
+                                                gap: 2,
                                                 background: copied
                                                   ? "var(--pet-tint-green-bg)"
-                                                  : "transparent",
-                                                color: copied
-                                                  ? "var(--pet-tint-green-fg)"
-                                                  : "var(--pet-color-fg)",
-                                                border: "none",
-                                                padding: "4px 6px",
-                                                fontSize: 11,
-                                                cursor: "pointer",
+                                                  : restoreArmed
+                                                    ? "var(--pet-tint-orange-bg)"
+                                                    : "transparent",
                                                 borderRadius: 3,
-                                                fontFamily: "inherit",
                                               }}
                                             >
                                               <div
                                                 style={{
-                                                  fontFamily:
-                                                    "'SF Mono', monospace",
-                                                  fontSize: 10,
-                                                  color: copied
-                                                    ? "var(--pet-tint-green-fg)"
-                                                    : "var(--pet-color-muted)",
+                                                  display: "flex",
+                                                  alignItems: "center",
+                                                  gap: 6,
                                                 }}
                                               >
-                                                {copied ? "✓ 已复制 " : ""}{tsFmt}
+                                                <span
+                                                  style={{
+                                                    fontFamily:
+                                                      "'SF Mono', monospace",
+                                                    fontSize: 10,
+                                                    color: copied
+                                                      ? "var(--pet-tint-green-fg)"
+                                                      : restoreArmed
+                                                        ? "var(--pet-tint-orange-fg)"
+                                                        : "var(--pet-color-muted)",
+                                                    flex: 1,
+                                                  }}
+                                                >
+                                                  {copied ? "✓ 已复制 " : ""}{tsFmt}
+                                                </span>
+                                                <button
+                                                  type="button"
+                                                  onClick={async () => {
+                                                    try {
+                                                      await navigator.clipboard.writeText(
+                                                        entry.content,
+                                                      );
+                                                      setHistoryCopiedTs(entry.ts);
+                                                      window.setTimeout(
+                                                        () =>
+                                                          setHistoryCopiedTs((cur) =>
+                                                            cur === entry.ts ? null : cur,
+                                                          ),
+                                                        2500,
+                                                      );
+                                                    } catch (e) {
+                                                      console.error(
+                                                        "clipboard write failed:",
+                                                        e,
+                                                      );
+                                                    }
+                                                  }}
+                                                  title={`复制此版全文 (${entry.content.length} 字符) 到剪贴板 — 粘回 textarea 实现"部分回滚"`}
+                                                  style={{
+                                                    fontSize: 10,
+                                                    padding: "1px 5px",
+                                                    border: "1px solid var(--pet-color-border)",
+                                                    borderRadius: 3,
+                                                    background: "var(--pet-color-card)",
+                                                    color: "var(--pet-color-muted)",
+                                                    cursor: "pointer",
+                                                    fontFamily: "inherit",
+                                                  }}
+                                                >
+                                                  📋
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    // dirty → armed 二次确认（避免误覆盖正写新版）
+                                                    if (isDirty && !restoreArmed) {
+                                                      setHistoryRestoreArmedTs(entry.ts);
+                                                      window.setTimeout(
+                                                        () =>
+                                                          setHistoryRestoreArmedTs((cur) =>
+                                                            cur === entry.ts ? null : cur,
+                                                          ),
+                                                        3000,
+                                                      );
+                                                      return;
+                                                    }
+                                                    // 真 restore：替换 textarea 内容；
+                                                    // dirtySince 在 useEffect 内据
+                                                    // editingDetailContent 变化自动更新；
+                                                    // editingDetailOriginalRef 保留磁盘版让
+                                                    // dirty marker 正确反映"已改未保存"。
+                                                    setEditingDetailContent(entry.content);
+                                                    setHistoryRestoreArmedTs(null);
+                                                    setHistoryPopoverOpen(false);
+                                                    setBulkResultMsg(
+                                                      `↶ 已 restore ${tsFmt}（textarea 已替换 · 按 ⌘S 保存写盘）`,
+                                                    );
+                                                    window.setTimeout(
+                                                      () => setBulkResultMsg(""),
+                                                      4000,
+                                                    );
+                                                  }}
+                                                  title={
+                                                    restoreArmed
+                                                      ? `再点一次确认 restore（3s 内）— 当前 textarea 有未保存改动`
+                                                      : isDirty
+                                                        ? `restore 此版到 textarea（当前有未保存改动 → armed 二次确认）`
+                                                        : `直接 restore 此版到 textarea（按 ⌘S 才会写盘）`
+                                                  }
+                                                  style={{
+                                                    fontSize: 10,
+                                                    padding: "1px 5px",
+                                                    border: restoreArmed
+                                                      ? "1px solid var(--pet-tint-orange-fg)"
+                                                      : "1px solid var(--pet-color-border)",
+                                                    borderRadius: 3,
+                                                    background: restoreArmed
+                                                      ? "var(--pet-tint-orange-fg)"
+                                                      : "var(--pet-color-card)",
+                                                    color: restoreArmed
+                                                      ? "#fff"
+                                                      : "var(--pet-color-muted)",
+                                                    cursor: "pointer",
+                                                    fontFamily: "inherit",
+                                                    fontWeight: restoreArmed ? 600 : 400,
+                                                  }}
+                                                >
+                                                  {restoreArmed ? "再点确认" : "↶"}
+                                                </button>
                                               </div>
                                               <div
                                                 style={{
@@ -9874,11 +9962,13 @@ export function PanelTasks({
                                                   overflow: "hidden",
                                                   textOverflow: "ellipsis",
                                                   opacity: 0.8,
+                                                  fontSize: 11,
+                                                  color: "var(--pet-color-fg)",
                                                 }}
                                               >
                                                 {preview || "（空文件）"}
                                               </div>
-                                            </button>
+                                            </div>
                                           );
                                         })}
                                       </div>
