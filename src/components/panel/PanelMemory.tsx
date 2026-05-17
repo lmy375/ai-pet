@@ -2244,6 +2244,60 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     });
   };
   const clearMemSelection = () => setSelectedMemKeys(new Set());
+  /// 「🗑 清空 cat」按钮 arm/confirm 状态：armed catKey 唯一（同时
+  /// 只能 arm 一个 cat），3s 内同 cat 再点真执行 — 与既有
+  /// bulkDeleteArmed 同模式。批量 delete 走 memory_edit("delete") 逐
+  /// 条调用，与 handleBulkDeleteMem 同 backend channel。
+  const [clearCatArmedKey, setClearCatArmedKey] = useState<string | null>(
+    null,
+  );
+  const clearCatArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [clearCatBusy, setClearCatBusy] = useState<string | null>(null);
+  const armClearCat = (catKey: string) => {
+    if (clearCatArmTimer.current) clearTimeout(clearCatArmTimer.current);
+    setClearCatArmedKey(catKey);
+    clearCatArmTimer.current = setTimeout(() => {
+      setClearCatArmedKey(null);
+      clearCatArmTimer.current = null;
+    }, 3000);
+  };
+  const handleClearCat = async (catKey: string) => {
+    if (clearCatBusy) return;
+    const cat = index?.categories[catKey];
+    if (!cat || cat.items.length === 0) return;
+    if (clearCatArmedKey !== catKey) {
+      armClearCat(catKey);
+      return;
+    }
+    if (clearCatArmTimer.current) clearTimeout(clearCatArmTimer.current);
+    setClearCatArmedKey(null);
+    setClearCatBusy(catKey);
+    const titles = cat.items.map((i) => i.title);
+    let ok = 0;
+    const failures: string[] = [];
+    for (const title of titles) {
+      try {
+        await invoke("memory_edit", {
+          action: "delete",
+          category: catKey,
+          title,
+        });
+        ok++;
+      } catch (e) {
+        failures.push(`${title}: ${e}`);
+      }
+    }
+    setClearCatBusy(null);
+    if (failures.length === 0) {
+      setMessage(`🗑 已清空 ${cat.label || catKey}（${ok} 条）`);
+    } else {
+      setMessage(
+        `🗑 清空 ${cat.label || catKey}：成功 ${ok} / 失败 ${failures.length}（${failures.slice(0, 2).join("； ")}${failures.length > 2 ? "…" : ""}）`,
+      );
+    }
+    await loadIndex();
+    window.setTimeout(() => setMessage(""), 4000);
+  };
   /// 批量删除走 arm/confirm 二次确认。armed 期间按钮文案 / 颜色变红；3s
   /// 内再点真执行，否则自动 disarm。与单条 handleDelete 模式一致，避免
   /// 误删一片。
@@ -5122,6 +5176,48 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                       </button>
                     );
                   })()}
+                {/* 🗑 清空 cat：arm/confirm 二次确认（同
+                    handleBulkDeleteMem 模式 — 3s 内同 cat 再点真删）。
+                    仅非空 cat 显；执行中 busy 灰。armed 时按钮变红 +
+                    label「⚠ 再点确认」防误触。让 owner 一键清掉
+                    临时 cat（如 ai_insights 旧 reflect / general 杂
+                    项 brain-dump）cleanup。 */}
+                {cat.items.length > 0 && (() => {
+                  const armed = clearCatArmedKey === catKey;
+                  const busy = clearCatBusy === catKey;
+                  return (
+                    <button
+                      style={{
+                        ...s.btn,
+                        marginLeft: 4,
+                        ...(armed
+                          ? {
+                              background: "var(--pet-tint-red-bg)",
+                              color: "var(--pet-tint-red-fg)",
+                              borderColor: "var(--pet-tint-red-fg)",
+                              fontWeight: 600,
+                            }
+                          : {}),
+                        ...(busy
+                          ? { opacity: 0.5, cursor: "default" }
+                          : {}),
+                      }}
+                      disabled={busy}
+                      onClick={() => void handleClearCat(catKey)}
+                      title={
+                        armed
+                          ? `⚠ 再点确认：将删除 ${cat.label || catKey} 段内全部 ${cat.items.length} 条 item（detail.md 文件一并删）。3 秒内有效。`
+                          : `清空 ${cat.label || catKey}（${cat.items.length} 条）— 临时项 cleanup。点击后需在 3s 内再点确认才真删，防误触。`
+                      }
+                    >
+                      {armed
+                        ? `⚠ 再点确认（${cat.items.length}）`
+                        : busy
+                          ? `🗑 删除中…`
+                          : `🗑 清空 (${cat.items.length})`}
+                    </button>
+                  );
+                })()}
                 <button
                   style={{
                     ...s.btn,
