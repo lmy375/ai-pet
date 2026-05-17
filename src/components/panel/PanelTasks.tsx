@@ -6915,6 +6915,79 @@ export function PanelTasks({
                 🎯 P7+ {priorityBands[0].pending}
               </span>
             )}
+            {/* ☑️ 全选 P7+ 进 multi-select：与 🎯 P7+ filter / ⌘A 全选
+                visible 互补。
+                - 🎯 P7+ filter：只改"看什么"（缩窄视图），不动选区
+                - ⌘A 全选 visible：选区跟随当前视图
+                - ☑️ 全选 P7+（本 chip）：跨视图精准把所有 P7+ pending
+                  压进选区，省去"先开 🎯 P7+ filter 再 ⌘A"两步。
+                源数据走完整 tasks 而非 visibleTasks — 让 owner 在任意
+                视图下都能一键 batch 高优。toggle 行为：再次点击且选区
+                正好等于 P7+ 集合时清空。仅在确有 P7+ pending 时渲染，
+                避免 dead chip。rose tint 与 🎯 P7+ filter 同色族，glyph
+                ☑️ 区分动作语义（filter vs select）。 */}
+            {priorityBands[0].pending > 0 && (() => {
+              const p7Titles = tasks
+                .filter((t) => t.priority >= 7 && t.status === "pending")
+                .map((t) => t.title);
+              const matchesP7 =
+                p7Titles.length > 0 &&
+                selected.size === p7Titles.length &&
+                p7Titles.every((tt) => selected.has(tt));
+              const handle = () => {
+                if (p7Titles.length === 0) return;
+                if (matchesP7) {
+                  setSelected(new Set());
+                  setBulkResultMsg("已清除 P7+ 选区");
+                } else {
+                  setSelected(new Set(p7Titles));
+                  setBulkResultMsg(
+                    `已选中 ${p7Titles.length} 条 P7+ 进 multi-select`,
+                  );
+                }
+                window.setTimeout(() => setBulkResultMsg(""), 2500);
+              };
+              return (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={handle}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handle();
+                    }
+                  }}
+                  aria-pressed={matchesP7}
+                  title={
+                    matchesP7
+                      ? `选区正好是当前 ${p7Titles.length} 条 P7+ pending。再点清空选区。`
+                      : `把全部 ${p7Titles.length} 条 P7+ pending 压进选区进入 multi-select 模式（跨当前视图筛选）— 之后可批量改 priority / cancel / pin / 加 tag。与 🎯 P7+ filter（仅改视图）互补。`
+                  }
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    cursor: "pointer",
+                    userSelect: "none",
+                    background: matchesP7
+                      ? "var(--pet-tint-rose-fg, #e11d48)"
+                      : "var(--pet-tint-rose-bg, #ffe4e6)",
+                    color: matchesP7
+                      ? "#fff"
+                      : "var(--pet-tint-rose-fg, #9f1239)",
+                    border: matchesP7
+                      ? "1px solid var(--pet-tint-rose-fg, #e11d48)"
+                      : "1px dashed color-mix(in srgb, var(--pet-tint-rose-fg, #e11d48) 40%, transparent)",
+                  }}
+                >
+                  ☑️ 全选 P7+
+                </span>
+              );
+            })()}
             {/* R104: priority 多选 chip 行。OR 命中（任一进集合即通过）；
                 P0 保留 "💡 idea 抽屉" glyph 让老用户直觉不变，其它走 P{n}
                 朴素文案。slate / gray 中性色与 dueFilter 同色族让 priority
