@@ -3677,11 +3677,14 @@ export function PanelTasks({
     [],
   );
 
-  /// detail.md textarea ⌘B / ⌘I markdown 加粗 / 斜体 wrap：复用既有
-  /// `insertMarkdownAtCursor("wrap", "**", "**")` / `("wrap", "*", "*")`
-  /// 算法 — 选区 wrap，空选时插模板 + 光标落中间。与既有 markdown
-  /// toolbar 加粗 / 斜体 button 同后端。任何 shift / alt 修饰 → 不响应。
-  /// IME composing 跳过（与 bracket pair 同 guard）。
+  /// detail.md textarea ⌘B / ⌘I / ⌘U markdown 加粗 / 斜体 / 删除线
+  /// wrap：复用既有 `insertMarkdownAtCursor("wrap", ...)` 算法 — 选区
+  /// wrap，空选时插模板 + 光标落中间。与既有 markdown toolbar 同后端。
+  /// 任何 shift / alt 修饰 → 不响应。IME composing 跳过（与 bracket
+  /// pair 同 guard）。
+  ///
+  /// 注：浏览器默认 ⌘U 是"查看页面源代码" — Tauri webview 已禁，但
+  /// preventDefault 仍是必须的保险（debug 构建有时仍触发）。
   const handleDetailBoldItalic = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
       if (!(e.metaKey || e.ctrlKey)) return false;
@@ -3696,6 +3699,11 @@ export function PanelTasks({
       if (key === "i") {
         e.preventDefault();
         insertMarkdownAtCursor("wrap", "*", "*");
+        return true;
+      }
+      if (key === "u") {
+        e.preventDefault();
+        insertMarkdownAtCursor("wrap", "~~", "~~");
         return true;
       }
       return false;
@@ -12911,10 +12919,22 @@ export function PanelTasks({
                                     onClick={() =>
                                       insertMarkdownAtCursor("wrap", "**", "**")
                                     }
-                                    title="加粗（**...**）。选中后点击包裹；无选区时光标落在 ** | ** 中间。"
+                                    title="加粗（**...**）。选中后点击包裹；无选区时光标落在 ** | ** 中间。⌘B 同效。"
                                     style={mdToolbarBtnStyle}
                                   >
                                     <strong>B</strong>
+                                  </button>
+                                  {/* ⌘U 删除线：与 ⌘B / ⌘I 同 wrap-mode 模板。
+                                      markdown `~~...~~` GFM 删除线渲染。 */}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      insertMarkdownAtCursor("wrap", "~~", "~~")
+                                    }
+                                    title="删除线（~~...~~）。GFM markdown 渲为划线文字。选中后点击包裹；无选区时光标落在 ~~ | ~~ 中间。⌘U 同效。"
+                                    style={mdToolbarBtnStyle}
+                                  >
+                                    <s>S</s>
                                   </button>
                                   <button
                                     type="button"
