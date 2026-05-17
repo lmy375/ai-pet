@@ -765,6 +765,82 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       window.removeEventListener("keydown", close);
     };
   }, [moveCatPicker]);
+  /// 🔖 加 #tag 快捷 popover：与「🏷 改类目」对偶但语义不同 — 那个是
+  /// 跨 cat 移动 item，本入口是给当前 item description 追加 `#name` tag。
+  /// 避免 owner 走完整编辑 modal 只为加一个 tag。outside-click / Esc 关
+  /// 同既有 moveCatPicker pattern。draft 跨 item 共享 — owner 关 popover
+  /// 再开同 item 时 draft 已清。
+  const [addTagPicker, setAddTagPicker] = useState<{
+    catKey: string;
+    title: string;
+  } | null>(null);
+  const [addTagDraft, setAddTagDraft] = useState("");
+  const [addTagBusy, setAddTagBusy] = useState(false);
+  useEffect(() => {
+    if (!addTagPicker) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+      setAddTagPicker(null);
+      setAddTagDraft("");
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [addTagPicker]);
+  const submitAddTag = useCallback(
+    async (catKey: string, item: { title: string; description: string }) => {
+      const raw = addTagDraft.trim().replace(/^#+/, "");
+      if (!raw) {
+        setMessage("tag 名不能为空");
+        setTimeout(() => setMessage(""), 2000);
+        return;
+      }
+      if (/\s/.test(raw)) {
+        setMessage("tag 名不能含空白字符");
+        setTimeout(() => setMessage(""), 2000);
+        return;
+      }
+      // 已存在该 tag 时静默跳过（避免 description 累积冗余）。检测走
+      // word-boundary 匹配（与后端 parse_tags 同语义 — 仅 `(start|space)#name`
+      // 算 tag）。
+      const tagRe = new RegExp(
+        `(?:^|\\s)#${raw.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}(?:\\s|$)`,
+      );
+      if (tagRe.test(item.description)) {
+        setMessage(`tag #${raw} 已存在`);
+        setTimeout(() => setMessage(""), 2000);
+        return;
+      }
+      // 追加到 description 末尾。trim 末尾再加 space + #tag — 让 markers
+      // 排列保持单空格分隔风格。
+      const newDesc = `${item.description.trimEnd()} #${raw}`.trim();
+      setAddTagBusy(true);
+      try {
+        await invoke("memory_edit", {
+          action: "update",
+          category: catKey,
+          title: item.title,
+          description: newDesc,
+          detailContent: null,
+        });
+        setMessage(`已加 #${raw}`);
+        setTimeout(() => setMessage(""), 2500);
+        setAddTagPicker(null);
+        setAddTagDraft("");
+        await loadIndex();
+      } catch (e: any) {
+        setMessage(`加 tag 失败：${e}`);
+        setTimeout(() => setMessage(""), 3000);
+      } finally {
+        setAddTagBusy(false);
+      }
+    },
+    [addTagDraft],
+  );
+
   /// 每分钟刷一下的"当前时刻" state — butler_tasks 下次触发倒计时 chip
   /// 用。setInterval 60s 而非更短，因 chip 精度只到分钟，60s tick 即足够；
   /// 节省 re-render。setInterval 启动时立即 setTickNow 一次确保挂载后到下
@@ -5757,6 +5833,127 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                                       );
                                     })
                                   )}
+                                </div>
+                              )}
+                            </span>
+                          );
+                        })()}
+                        {/* 🔖 加 #tag：mini input popover，提交后追加
+                            ` #name` 到 description 末尾。免走完整编辑 modal
+                            只为加 tag。outside-click / Esc 关；空 / 含空白 /
+                            重复 tag 给短反馈不写入。 */}
+                        {(() => {
+                          const open =
+                            addTagPicker !== null &&
+                            addTagPicker.catKey === catKey &&
+                            addTagPicker.title === item.title;
+                          return (
+                            <span
+                              style={{
+                                position: "relative",
+                                display: "inline-block",
+                              }}
+                            >
+                              <button
+                                style={s.btn}
+                                disabled={addTagBusy}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAddTagPicker((cur) =>
+                                    cur &&
+                                    cur.catKey === catKey &&
+                                    cur.title === item.title
+                                      ? null
+                                      : { catKey, title: item.title },
+                                  );
+                                  setAddTagDraft("");
+                                }}
+                                title={`加 #tag：在 description 末尾追加 \`#name\` 标记，免走完整编辑 modal。空白 / 重复 tag 会被拒。`}
+                                aria-label="add custom tag to item"
+                              >
+                                🔖
+                              </button>
+                              {open && (
+                                <div
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    position: "absolute",
+                                    top: "calc(100% + 4px)",
+                                    right: 0,
+                                    minWidth: 200,
+                                    padding: 6,
+                                    background: "var(--pet-color-card)",
+                                    border: "1px solid var(--pet-color-border)",
+                                    borderRadius: 4,
+                                    boxShadow:
+                                      "0 4px 12px rgba(0,0,0,0.18)",
+                                    zIndex: 50,
+                                    fontSize: 11,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 4,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      fontSize: 10,
+                                      color: "var(--pet-color-muted)",
+                                    }}
+                                  >
+                                    🔖 加 #tag（追加到 description 末尾）
+                                  </div>
+                                  <div style={{ display: "flex", gap: 4 }}>
+                                    <span
+                                      style={{
+                                        fontFamily: "'SF Mono', monospace",
+                                        fontSize: 11,
+                                        color: "var(--pet-color-muted)",
+                                        alignSelf: "center",
+                                      }}
+                                    >
+                                      #
+                                    </span>
+                                    <input
+                                      autoFocus
+                                      value={addTagDraft}
+                                      onChange={(e) =>
+                                        setAddTagDraft(e.target.value)
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          void submitAddTag(catKey, item);
+                                        } else if (e.key === "Escape") {
+                                          e.preventDefault();
+                                          setAddTagPicker(null);
+                                          setAddTagDraft("");
+                                        }
+                                      }}
+                                      placeholder="tag 名（无空白）"
+                                      disabled={addTagBusy}
+                                      style={{
+                                        flex: 1,
+                                        fontSize: 11,
+                                        padding: "2px 6px",
+                                        border: "1px solid var(--pet-color-border)",
+                                        borderRadius: 3,
+                                        background: "var(--pet-color-bg)",
+                                        color: "var(--pet-color-fg)",
+                                        fontFamily: "inherit",
+                                      }}
+                                    />
+                                    <button
+                                      style={s.btn}
+                                      disabled={addTagBusy || !addTagDraft.trim()}
+                                      onClick={() =>
+                                        void submitAddTag(catKey, item)
+                                      }
+                                    >
+                                      {addTagBusy ? "…" : "加"}
+                                    </button>
+                                  </div>
                                 </div>
                               )}
                             </span>

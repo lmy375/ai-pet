@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory item action row 加「🏷 加 #tag」按钮：弹 mini input 写入 description 末尾，免走完整 modal 编辑只为加一个 tag。
 - PanelTasks 行右键加「⏰ 设 reminderMin」popover：与 PanelMemory reminder chip 入口对偶，让 PanelTasks 端也能快设 / 移除提醒分钟数。
 
 
