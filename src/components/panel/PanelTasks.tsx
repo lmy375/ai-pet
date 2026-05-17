@@ -12291,6 +12291,67 @@ export function PanelTasks({
                                     </span>
                                   );
                                 })()}
+                                {/* ¶ 段数 chip：扫 editingDetailContent 算
+                                    paragraph 数 — 用 "\n\n+" 切（连续空行视
+                                    作一个分隔），与 markdown 视觉段对齐。空
+                                    内容 → chip 不显避免 dead UI。长文 (> 20
+                                    段) muted 不染色避免与既有字数 chip 抢
+                                    视觉。 */}
+                                {editingDetailTitle === t.title && (() => {
+                                  const content = editingDetailContent.trim();
+                                  if (content.length === 0) return null;
+                                  const paraCount = content
+                                    .split(/\n\s*\n+/)
+                                    .filter((s) => s.trim().length > 0).length;
+                                  return (
+                                    <span
+                                      style={{
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                      }}
+                                      title={`${paraCount} 段（按 markdown 空行分隔；连续多空行视作一个分隔）`}
+                                    >
+                                      ¶ {paraCount} 段
+                                    </span>
+                                  );
+                                })()}
+                                {/* 🔗 link 数 chip：扫 markdown link
+                                    `[text](url)` 模式 + 裸 URL `https?://...`
+                                    分别计数 → 总和显「N 链」。覆盖既有
+                                    parseUrls 的两类识别（markdown + bare URL）。
+                                    0 时不渲，避免空 0 噪音。 */}
+                                {editingDetailTitle === t.title && (() => {
+                                  const content = editingDetailContent;
+                                  if (content.length === 0) return null;
+                                  const mdLinks = (
+                                    content.match(/\[[^\]]+\]\([^)]+\)/g) ?? []
+                                  ).length;
+                                  // 裸 URL：减去已在 markdown link 里的（前置
+                                  // `(` ）以免双计。简单 heuristic：仅匹配前
+                                  // 字符非 `(` 的 URL。
+                                  const bareUrls = (
+                                    content.match(
+                                      /(^|[^(])https?:\/\/[^\s)]+/g,
+                                    ) ?? []
+                                  ).length;
+                                  const total = mdLinks + bareUrls;
+                                  if (total === 0) return null;
+                                  return (
+                                    <span
+                                      style={{
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        fontFamily:
+                                          "'SF Mono', 'Menlo', monospace",
+                                      }}
+                                      title={`含 ${mdLinks} 条 markdown link \`[text](url)\` + ${bareUrls} 条裸 URL（heuristic：非 ( 起 https?://）`}
+                                    >
+                                      🔗 {total} 链
+                                    </span>
+                                  );
+                                })()}
                                 {/* 📐 字数目标 chip：editingDetailTitle 在编
                                     辑态时显；未设 goal → "📐 设目标"按钮；
                                     设了 → "📐 N/M" + 三档配色（< 30% red /
