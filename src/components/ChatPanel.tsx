@@ -586,6 +586,51 @@ export function ChatPanel({ onSend, isLoading }: Props) {
           >
             📋
           </button>
+          {/* 📜 复制全 input 按钮：把当前 textarea 内容一键复制到剪
+              贴板 — 防 owner 误删长输入（如不小心 ⌘A → ⌫ / Esc / 切
+              app 失焦 timer 等）。仅 input 非空时显（empty 时 click 无
+              意义 → 隐藏避免噪音）。位置 right: 64（📋 在 right: 36，
+              再左移 28px 让两按钮 + 💡 三 chip 各居其位）。 */}
+          {input.trim().length > 0 && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={async (e) => {
+                e.stopPropagation();
+                try {
+                  await navigator.clipboard.writeText(input);
+                  console.log(
+                    `📜 已复制全 input（${input.length} 字）`,
+                  );
+                } catch (err) {
+                  console.error("copy input failed:", err);
+                }
+              }}
+              title={`复制当前 input（${input.length} 字）到剪贴板 — 防误删 / 防失焦丢失 / 暂存草稿 audit。`}
+              aria-label="copy full input to clipboard"
+              style={{
+                position: "absolute",
+                top: 6,
+                right: 64,
+                width: 22,
+                height: 22,
+                borderRadius: "50%",
+                border: "1px solid var(--pet-color-border)",
+                background: "var(--pet-color-card)",
+                color: "var(--pet-color-muted)",
+                fontSize: 11,
+                lineHeight: 1,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 0,
+                zIndex: 5,
+              }}
+            >
+              📜
+            </button>
+          )}
           {/* 💡 最近输入 鼠标入口：替代 ↑↓ 键盘对鼠标 user 的 friction。
               floating 在 textarea 右上角；click 弹 popover 列最近 5 条，
               row click 把内容灌进 textarea + 同步 historyCursorRef 让接下来
