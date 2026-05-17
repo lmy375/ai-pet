@@ -2981,6 +2981,27 @@ export function ChatMini({
         const text = extractText(m.content);
         const hasText = text.length > 0;
         const isAssistant = m.role === "assistant";
+        // 📋 markdown 原文：与 extractText（stripMdImages 后的 plain）
+        // 不同 — 保留 markdown image 语法 / ref tokens / code blocks 原
+        // 状。让 owner 粘到 markdown 编辑器 / detail.md / TG /quick 保
+        // 留所有渲染。pet reply 常含 「title」 ref + ```code``` block，
+        // 走 extractText 后 image 语法被 strip；本变体保完整 raw。
+        const getRawMarkdown = (content: unknown): string => {
+          if (typeof content === "string") return content;
+          if (!Array.isArray(content)) return "";
+          return content
+            .filter(
+              (p): p is { type: "text"; text: string } =>
+                !!p &&
+                typeof p === "object" &&
+                (p as { type?: string }).type === "text" &&
+                typeof (p as { text?: unknown }).text === "string",
+            )
+            .map((p) => p.text)
+            .join("\n");
+        };
+        const rawMarkdown = getRawMarkdown(m.content);
+        const hasRawMarkdown = rawMarkdown.trim().length > 0;
         // 🔗 复制 task ref：扫 bubble 文本里的 `「title」` token，dedupe
         // 保留出现顺序，拼成空格分隔的 inline ref 串。owner 复制后可粘到
         // 新 task description（如 `[blockedBy: 「a」 「b」]`）/ detail.md /
@@ -3059,6 +3080,44 @@ export function ChatMini({
               }}
             >
               📋 复制本条
+            </button>
+            {/* 📋 markdown 原文：与「📋 复制本条」(plain text, stripMdImages
+                抹掉) 对偶，保完整 markdown 语法 — 让 owner 粘到 markdown
+                编辑器 / detail.md / TG /quick 保留 ref tokens / image /
+                code blocks 渲染。仅 rawMarkdown 非空显（pure-image 消息
+                content 数组无 text part 时空 string 时跳）。 */}
+            <button
+              type="button"
+              style={item}
+              onMouseOver={itemHoverIn}
+              onMouseOut={itemHoverOut}
+              disabled={!hasRawMarkdown}
+              onClick={() => {
+                setCtxMenu(null);
+                if (!hasRawMarkdown) return;
+                navigator.clipboard
+                  .writeText(rawMarkdown)
+                  .then(() => {
+                    setBubbleCopyIdx(ctxMenu.idx);
+                    window.setTimeout(
+                      () =>
+                        setBubbleCopyIdx((cur) =>
+                          cur === ctxMenu.idx ? null : cur,
+                        ),
+                      1500,
+                    );
+                  })
+                  .catch((err) =>
+                    console.error("markdown raw copy failed:", err),
+                  );
+              }}
+              title={
+                hasRawMarkdown
+                  ? `复制 ${rawMarkdown.length} 字 markdown 原文（保 ref tokens / image / code block 等语法）`
+                  : "本条无可复制 markdown 原文"
+              }
+            >
+              📋 markdown 原文
             </button>
             <button
               type="button"
