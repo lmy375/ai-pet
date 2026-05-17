@@ -4669,11 +4669,25 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                           return (
                             <div
                               style={{ ...s.itemTitle, cursor: "text" }}
-                              onDoubleClick={() => {
+                              onDoubleClick={(e) => {
+                                // ⌘/Ctrl + 双击 → 直接进编辑 modal（skip 找
+                                // 「编辑」按钮的中间步骤）；plain 双击 → inline
+                                // 改名（既有行为）。两 gesture 互补 — owner
+                                // 想"只改名"走 plain 双击，想"改 description /
+                                // detail / category 完整编辑"走 ⌘ + 双击。
+                                if (e.metaKey || e.ctrlKey) {
+                                  setEditingItem({
+                                    category: catKey,
+                                    title: item.title,
+                                    description: item.description,
+                                    isNew: false,
+                                  });
+                                  return;
+                                }
                                 setRenamingMemoryKey(renameKey);
                                 setRenameMemoryDraft(item.title);
                               }}
-                              title="双击改名"
+                              title="双击改名 / ⌘ + 双击 进编辑 modal"
                             >
                               {item.title}
                             </div>
