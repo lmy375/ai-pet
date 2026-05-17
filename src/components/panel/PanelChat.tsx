@@ -4992,6 +4992,101 @@ export function PanelChat({
         </div>
       )}
 
+      {/* 📌 当前会话标记 chip 横条：复用「📌 N」modal 同 markedMessages 数据
+          源但 scope 收紧到「本会话内 marked 消息」— filter key 以 sessionId
+          为前缀 → 取对应 items[idx] 拼短预览 chip。click chip 走既有
+          setPendingScroll(idx) → scrollIntoView + 1.5s 高亮路径（与跨会话
+          搜索 hit click 同 channel）。dangling（item 已删 / idx 漂移）静
+          默 skip，不渲死链 chip。
+          与「📌 N」modal 互补：modal 跨会话审计，chip strip 本会话快速 nav
+          — 与 task pin（PanelTasks 也有 pinned chip strip）语义对偶但
+          scope=chat。 */}
+      {(() => {
+        if (!sessionId || markedMessages.size === 0) return null;
+        const sessionPrefix = `${sessionId}::`;
+        const sessionMarks: Array<{ idx: number; item: ChatItem }> = [];
+        for (const [k] of markedMessages) {
+          if (!k.startsWith(sessionPrefix)) continue;
+          const idx = parseInt(k.slice(sessionPrefix.length), 10);
+          if (Number.isNaN(idx)) continue;
+          const it = items[idx];
+          if (!it) continue;
+          if (it.type !== "user" && it.type !== "assistant") continue;
+          sessionMarks.push({ idx, item: it });
+        }
+        if (sessionMarks.length === 0) return null;
+        sessionMarks.sort((a, b) => a.idx - b.idx);
+        return (
+          <div
+            style={{
+              padding: "6px 12px",
+              borderBottom: "1px solid var(--pet-color-border)",
+              background:
+                "color-mix(in srgb, var(--pet-tint-yellow-bg) 50%, var(--pet-color-bg))",
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              overflowX: "auto",
+              flexShrink: 0,
+              fontSize: 11,
+            }}
+          >
+            <span
+              style={{
+                color: "var(--pet-color-muted)",
+                flexShrink: 0,
+                fontWeight: 600,
+              }}
+              title={`本会话内被 📌 标记的 ${sessionMarks.length} 条消息 — 顺序与会话内 idx 升序一致。点击 chip 跳到该消息（scrollIntoView + 1.5s 高亮）。`}
+            >
+              📌 本会话 ({sessionMarks.length})
+            </span>
+            {sessionMarks.map(({ idx, item }) => {
+              const glyph = item.type === "user" ? "🧑" : "🐾";
+              const preview = item.content
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 24);
+              return (
+                <button
+                  key={idx}
+                  onClick={() => setPendingScroll(idx)}
+                  title={`#${idx + 1} · ${item.type}\n\n${item.content.slice(0, 200)}${item.content.length > 200 ? "…" : ""}\n\n点击跳到此消息`}
+                  style={{
+                    padding: "2px 8px",
+                    border: "1px solid var(--pet-tint-yellow-fg)",
+                    borderRadius: 999,
+                    background: "var(--pet-color-card)",
+                    color: "var(--pet-tint-yellow-fg)",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    fontFamily: "inherit",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                    maxWidth: 220,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <span style={{ flexShrink: 0 }}>{glyph}</span>
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {preview || "（无文字内容）"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
+
       {/* Message list — R103: 外层 relative 让 ↑ 浮动按钮锚定到视口右下，
           不被滚动卷走；内层 height:100% + overflowY:auto 保留原 scroll
           行为。 */}
