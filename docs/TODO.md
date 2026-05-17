@@ -9,7 +9,6 @@
 >
 
 - PanelMemory item action row 加「🏷 加 #tag」按钮：弹 mini input 写入 description 末尾，免走完整 modal 编辑只为加一个 tag。
-- detail.md 编辑器加 ⌘⇧K 删除当前行：VS Code 风行删除快捷键，与既有 ⌘D 复制 / ⌘L 选中 同行操作集群。
 - PanelTasks 行右键加「⏰ 设 reminderMin」popover：与 PanelMemory reminder chip 入口对偶，让 PanelTasks 端也能快设 / 移除提醒分钟数。
 - PanelDebug 加「🗄 detail .history 占盘」chip：扫所有 .history dirs 算大小，让 owner 知 safety net 磁盘成本。
 
