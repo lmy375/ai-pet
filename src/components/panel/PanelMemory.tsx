@@ -278,6 +278,48 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     failed: number;
   } | null>(null);
   const fireOneArmedTimer = useRef<number | null>(null);
+  /// "⏭ skip 一次" armed 状态：butler_task 行内"跳本轮 due"按钮按下后
+  /// 3s 内再按确认。复用 fireOneArmedTitle 同模板 — 同时只允许一条 item
+  /// 处于 armed，再开新 armed 取消旧。
+  const [skipOnceArmedTitle, setSkipOnceArmedTitle] = useState<string | null>(
+    null,
+  );
+  const skipOnceArmedTimerRef = useRef<number | null>(null);
+  const [skipOnceBusyTitle, setSkipOnceBusyTitle] = useState<string | null>(
+    null,
+  );
+  const handleSkipOnce = async (title: string) => {
+    if (skipOnceBusyTitle !== null) return;
+    if (skipOnceArmedTitle !== title) {
+      setSkipOnceArmedTitle(title);
+      if (skipOnceArmedTimerRef.current !== null) {
+        window.clearTimeout(skipOnceArmedTimerRef.current);
+      }
+      skipOnceArmedTimerRef.current = window.setTimeout(() => {
+        setSkipOnceArmedTitle(null);
+        skipOnceArmedTimerRef.current = null;
+      }, 3000);
+      return;
+    }
+    setSkipOnceArmedTitle(null);
+    if (skipOnceArmedTimerRef.current !== null) {
+      window.clearTimeout(skipOnceArmedTimerRef.current);
+      skipOnceArmedTimerRef.current = null;
+    }
+    setSkipOnceBusyTitle(title);
+    setMessage(`正在跳过「${title}」本轮…`);
+    try {
+      await invoke<void>("task_skip_once", { title });
+      await loadIndex();
+      setMessage(`⏭ 已跳过「${title}」本轮 · 下一轮 schedule 仍按原 every 触发`);
+      window.setTimeout(() => setMessage(""), 4000);
+    } catch (e) {
+      setMessage(`跳过失败：${e}`);
+      window.setTimeout(() => setMessage(""), 4000);
+    } finally {
+      setSkipOnceBusyTitle(null);
+    }
+  };
   /// 全部 due butler_tasks 一次跑：armed 二次确认 → 串行 invoke
   /// trigger_proactive_turn_for_task 处理每条。串行而非 Promise.all 避免
   /// 同 chat 内 LLM 接到混乱顺序的 prompt race。progress 状态 done/failed/
@@ -4897,6 +4939,42 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                               aria-label="fire this task"
                             >
                               {busy ? "处理中…" : armed ? "再点确认 (3s)" : "▶️ 现在跑"}
+                            </button>
+                          );
+                        })()}
+                        {/* ⏭ skip 一次：仅 butler_tasks + due 时显。点击 stamps
+                            updated_at 到 now → 本轮 fire 跳过；下一轮仍按
+                            schedule。armed 二次确认 3s。与 ▶️ 现在跑 互补：
+                            一个推进 / 一个推后。 */}
+                        {catKey === "butler_tasks" && due && (() => {
+                          const armed = skipOnceArmedTitle === item.title;
+                          const busy = skipOnceBusyTitle === item.title;
+                          return (
+                            <button
+                              type="button"
+                              style={{
+                                ...s.btn,
+                                ...(armed
+                                  ? {
+                                      background: "var(--pet-tint-amber-bg, #fef3c7)",
+                                      color: "var(--pet-tint-amber-fg, #92400e)",
+                                      borderColor:
+                                        "color-mix(in srgb, var(--pet-tint-amber-fg, #92400e) 40%, transparent)",
+                                      fontWeight: 600,
+                                    }
+                                  : {}),
+                                ...(busy ? { opacity: 0.5, cursor: "default" } : {}),
+                              }}
+                              disabled={busy}
+                              onClick={() => void handleSkipOnce(item.title)}
+                              title={
+                                armed
+                                  ? "再次点击确认跳过本轮（3s 内有效；不改 schedule，下一轮仍触发）"
+                                  : "跳过本轮 due — 刷 updated_at 到 now 让 isButlerDue 返 false，本轮不会被 proactive 选中；下次 schedule 仍正常触发。"
+                              }
+                              aria-label="skip this fire cycle"
+                            >
+                              {busy ? "跳过中…" : armed ? "再点确认 (3s)" : "⏭ skip"}
                             </button>
                           );
                         })()}
