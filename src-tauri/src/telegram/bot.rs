@@ -786,6 +786,23 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Now => {
+            // 快速状态 check：复用 mood + companionship 两条 read 路径。time
+            // 用 chrono::Local::now() 拿本地时间 + tz；with_timezone 转 DateTime
+            // <FixedOffset> 给 pure formatter 注入便于单测稳定（FixedOffset
+            // 不依赖运行机 Local::now 时间）。
+            let now_local = chrono::Local::now();
+            let now_fixed = now_local.with_timezone(now_local.offset());
+            let companionship_days =
+                Some(crate::companionship::companionship_days().await);
+            let mood = crate::mood::read_current_mood_parsed();
+            let mood_text = mood.as_ref().map(|(t, _)| t.as_str());
+            crate::telegram::commands::format_now_reply(
+                now_fixed,
+                companionship_days,
+                mood_text,
+            )
+        }
         TgCommand::Today => {
             // 今日叙事视图：reuse 与 /tasks /stats 同一 read path；本地 today
             // 日期注入。views 已按 origin==Tg(chat_id) 过滤，与其它命令一致。

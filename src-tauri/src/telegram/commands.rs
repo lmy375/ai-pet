@@ -139,6 +139,10 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/now` —— 一句话快速状态 check：当前本地时间 + tz 偏移 + 陪伴天数 +
+    /// 当前 mood emoji + 心情文本。比 `/whoami`（多行画像）更简短，适合
+    /// owner "现在几点 / 宠物啥状态" 闪查。无参；多余尾部一律忽略。
+    Now,
     /// `/show <title>` —— 显示指定任务的 raw_description（含全部 markers）
     /// + detail.md 内容预览（前 300 字符），让 owner 在 TG 端 audit 单条
     /// 任务详情不必回桌面。空 title 走 missing-arg；title resolve 三层
@@ -219,6 +223,7 @@ impl TgCommand {
             TgCommand::Reflect { .. } => "reflect",
             TgCommand::Due { .. } => "due",
             TgCommand::Show { .. } => "show",
+            TgCommand::Now => "now",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -260,6 +265,7 @@ impl TgCommand {
             | TgCommand::Mute { .. }
             | TgCommand::Digest { .. }
             | TgCommand::Due { .. }
+            | TgCommand::Now
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -331,6 +337,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mood", "Show the pet's current mood"),
             ("whoami", "Show pet's whoami digest (companionship / mood / persona / top tools)"),
             ("today", "Today's due / done task titles"),
+            ("now", "One-line status check: time + tz + companionship days + mood emoji"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
@@ -366,6 +373,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("mood", "查看宠物当前心情"),
             ("whoami", "宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）"),
             ("today", "今日到期 / 已完成的任务标题清单"),
+            ("now", "一句话快速状态：当前时间 + 时区 + 陪伴天数 + 心情 emoji"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
@@ -686,6 +694,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "tags" => Some(TgCommand::Tags),
         // `/today` 同上无参语义
         "today" => Some(TgCommand::Today),
+        // `/now` 无参；多余尾部忽略（与 /today / /mood / /version 同容忍）
+        "now" => Some(TgCommand::Now),
         // `/due [preset]`：缺省 tomorrow（最常用前向 audit）；非空且无法识别
         // 时存 raw_arg 让 handler usage hint 时回显（preset 标 None 表示
         // "无效"）。preset 名单：tomorrow / thisweek / nextweek 含中英 alias。
@@ -1032,7 +1042,7 @@ pub fn format_tasks_no_change() -> String {
 pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-    "silenced", "markers", "tags", "mood", "whoami", "today", "due",
+    "silenced", "markers", "tags", "mood", "whoami", "today", "now", "due",
     "recent", "digest", "edit", "reflect", "find", "show", "blocked",
     "snoozed", "reset", "version", "help",
 ];
@@ -1086,6 +1096,7 @@ pub fn format_help_for_topic(
         "mood" => "🐾 /mood\n\n用法：查看宠物当前心情（与桌面 MoodWidget 同 mood state 文件）。无参。\n\n示例：\n  /mood",
         "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）；/due（更远视角 — tomorrow / thisweek / nextweek）。",
+        "now" => "🐾 /now\n\n用法：一句话快速状态 check — 当前本地时间 + tz 偏移 + 陪伴天数 + 心情 emoji + 心情文本。无参。比 /whoami 多行画像简短，适合 owner 在 TG 想「现在几点 / 宠物啥状态」闪查。\n\n示例：\n  /now\n\n相关：/whoami（多行画像）；/mood（心情详情）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
         "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
@@ -1139,6 +1150,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/mood  —  查看宠物当前心情".to_string(),
         "/whoami  —  宠物自我介绍（陪伴 / 心情 / 自我画像 / 近常用工具）".to_string(),
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
+        "/now  —  一句话快速状态：当前时间 + 时区 + 陪伴 + 心情 emoji（与 /whoami 多行画像互补）".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
@@ -2184,6 +2196,42 @@ pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
     out
 }
 
+/// `/now` 命令回复文案。pure：一行 / 两行的快速状态 check。
+/// - 第一行：mood emoji + `YYYY-MM-DD HH:MM` + tz 偏移（如 `+08:00`）
+/// - 第二行：陪伴天数 + 心情文本（mood 空时省略心情段）
+///
+/// caller 注入 now / companionship_days / mood，便于单测断言确定行为。
+/// mood = None / 空 text → 第一行用 🐾 兜底 + 第二行不显心情段。
+pub fn format_now_reply(
+    now: chrono::DateTime<chrono::FixedOffset>,
+    companionship_days: Option<u64>,
+    mood_text: Option<&str>,
+) -> String {
+    let mood_t = mood_text.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let emoji = mood_t.map(mood_emoji_for).unwrap_or("🐾");
+    let time = now.format("%Y-%m-%d %H:%M").to_string();
+    // tz offset：`+08:00` / `-05:00` 形式给 owner 一眼看时区上下文
+    let tz = now.format("%:z").to_string();
+    let mut out = format!("{} {} ({})", emoji, time, tz);
+    // 陪伴天数 + 心情段。两段都缺时第二行整段省略，仅保第一行时间。
+    let mut bits: Vec<String> = Vec::new();
+    if let Some(days) = companionship_days {
+        if days == 0 {
+            bits.push("今天与你初识".to_string());
+        } else {
+            bits.push(format!("陪伴 {} 天", days));
+        }
+    }
+    if let Some(t) = mood_t {
+        bits.push(format!("心情：{}", t));
+    }
+    if !bits.is_empty() {
+        out.push('\n');
+        out.push_str(&bits.join(" · "));
+    }
+    out
+}
+
 /// `/show <title>` 命令回复文案。pure：
 /// - title 行 + status emoji
 /// - raw_description 全量（含 markers），cap 1500 char 防 TG 4096 上限被
@@ -2980,9 +3028,9 @@ mod tests {
         for name in [
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-            "silenced", "markers", "tags", "mood", "whoami", "today", "due",
-            "recent", "digest", "edit", "reflect", "find", "show", "blocked",
-            "snoozed", "reset", "version", "help",
+            "silenced", "markers", "tags", "mood", "whoami", "today", "now",
+            "due", "recent", "digest", "edit", "reflect", "find", "show",
+            "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -3447,7 +3495,8 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "due", "edit", "reflect", "show", "tags", "reset", "version", "help",
+            "now", "due", "edit", "reflect", "show", "tags", "reset", "version",
+            "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -5249,6 +5298,87 @@ mod tests {
         cancelled.status = TaskStatus::Cancelled;
         let s = format_tags_reply(&[active, done, cancelled]);
         assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
+    }
+
+    // -------- /now parse + format --------
+
+    #[test]
+    fn now_parses_no_args() {
+        assert_eq!(parse_tg_command("/now"), Some(TgCommand::Now));
+        // 多余尾部忽略（与 /today / /mood / /version 同容忍策略）
+        assert_eq!(parse_tg_command("/now please"), Some(TgCommand::Now));
+        assert_eq!(parse_tg_command("/NOW"), Some(TgCommand::Now));
+    }
+
+    fn fixed_dt(y: i32, mo: u32, d: u32, h: u32, mi: u32, tz_hours: i32) -> chrono::DateTime<chrono::FixedOffset> {
+        use chrono::{NaiveDate, TimeZone};
+        let dt = NaiveDate::from_ymd_opt(y, mo, d)
+            .unwrap()
+            .and_hms_opt(h, mi, 0)
+            .unwrap();
+        let offset = chrono::FixedOffset::east_opt(tz_hours * 3600).unwrap();
+        offset.from_local_datetime(&dt).unwrap()
+    }
+
+    #[test]
+    fn now_reply_full_signal_renders_time_tz_days_mood() {
+        let now = fixed_dt(2026, 5, 17, 14, 42, 8);
+        let s = format_now_reply(now, Some(14), Some("今天特别专注"));
+        assert!(s.contains("2026-05-17 14:42"), "{s}");
+        assert!(s.contains("+08:00"), "{s}");
+        assert!(s.contains("陪伴 14 天"), "{s}");
+        assert!(s.contains("心情：今天特别专注"), "{s}");
+    }
+
+    #[test]
+    fn now_reply_mood_emoji_prefix_matches_text() {
+        // 复用 mood_emoji_for — "开心" → 😊
+        let now = fixed_dt(2026, 5, 17, 14, 42, 8);
+        let s = format_now_reply(now, Some(1), Some("今天很开心"));
+        let first_line = s.lines().next().unwrap();
+        assert!(first_line.starts_with("😊"), "expected 😊 prefix: {first_line}");
+    }
+
+    #[test]
+    fn now_reply_paw_fallback_when_mood_missing() {
+        let now = fixed_dt(2026, 5, 17, 14, 42, 8);
+        let s = format_now_reply(now, Some(3), None);
+        let first_line = s.lines().next().unwrap();
+        assert!(first_line.starts_with("🐾"), "no-mood should fall back to 🐾: {first_line}");
+        assert!(!s.contains("心情："), "no mood section should be rendered: {s}");
+    }
+
+    #[test]
+    fn now_reply_paw_fallback_when_mood_empty() {
+        let now = fixed_dt(2026, 5, 17, 14, 42, 8);
+        let s = format_now_reply(now, Some(3), Some("   "));
+        assert!(s.starts_with("🐾"), "empty mood text should fall back to 🐾: {s}");
+    }
+
+    #[test]
+    fn now_reply_zero_days_says_today_init() {
+        let now = fixed_dt(2026, 5, 17, 9, 0, 8);
+        let s = format_now_reply(now, Some(0), None);
+        assert!(s.contains("今天与你初识"), "{s}");
+        assert!(!s.contains("陪伴 0 天"), "should switch wording at 0: {s}");
+    }
+
+    #[test]
+    fn now_reply_no_companionship_no_mood_only_time_line() {
+        let now = fixed_dt(2026, 5, 17, 14, 42, 8);
+        let s = format_now_reply(now, None, None);
+        // 第二行整段省略 — 仅时间行
+        assert_eq!(s.lines().count(), 1, "should be single line: {s:?}");
+        assert!(s.contains("2026-05-17 14:42"), "{s}");
+        assert!(s.contains("+08:00"), "{s}");
+    }
+
+    #[test]
+    fn now_reply_negative_tz_offset_renders_minus() {
+        // -05:00（New York standard time）
+        let now = fixed_dt(2026, 5, 17, 14, 42, -5);
+        let s = format_now_reply(now, Some(7), None);
+        assert!(s.contains("-05:00"), "should render negative tz: {s}");
     }
 
     // -------- /show parse + format --------

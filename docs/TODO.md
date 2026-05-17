@@ -10,7 +10,6 @@
 
 - PanelTasks 加 ⌘/ 弹快捷键速查 modal：列出全部行内快捷键 + 用途，Esc 关；新 owner / 老用户健忘时一键查。
 - PanelTasks 任务行 overdue 时加「📅 拖了 N 天」具体天数 hint：与紧迫 chip 互补，让 owner 看具体拖延量。
-- TG bot 加 `/now` 命令：一句话状态 — 当前时间 + tz + 陪伴天数 + mood emoji。比 /whoami 简短的快速 status check。
 - PanelMemory item 双击 title 直接进编辑 modal：少一次单击展开 → 找编辑按钮的中间步骤。
 - detail.md 历史 popover 加「📁 Finder 打开 .history dir」按钮：让 owner cherry-pick 历史文件 / 备份导出。
 - PanelTasks 行 hover preview 内加 detail.md 字数 + 上次编辑时间 chip：让 owner 在 hover 多看一维 detail metadata。
