@@ -10,7 +10,6 @@
 
 - PanelTasks 行加「↘ 展开 detail」chip：hover 即显，一键展开 detail 段并滚到顶端，省两步。
 - PanelMemory 段标题加「📋 复制段 title 清单」chip：仅 title 拼 markdown bullet list 复制 — 不含 description。
-- PanelDebug snapshot 顶段加「⌚ 进程已运行 N 分」字段：audit 长跑性能 / 内存问题入口。
 - ChatMini bubble ctx menu 加「💾 转 task」项：把 bubble plain text 当 task description 一键入队（auto-title = 前 30 字）。
 
 

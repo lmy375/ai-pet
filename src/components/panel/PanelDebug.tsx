@@ -408,23 +408,33 @@ export function PanelDebug() {
     () => invoke<DedicatedToolStats>("get_dedicated_tool_stats"),
     30_000,
   );
-  /// app 版本 + SQLite schema version —— 拼到调试 snapshot 顶部"环境"段。
-  /// 三元素全可独立 fail（旧 backend 缺 app_version / get_db_stats）；缺失时
-  /// snapshot 该段相应字段省略，不挡其它字段。
+  /// app 版本 + SQLite schema version + 进程启动锚点 —— 拼到调试 snapshot 顶
+  /// 部"环境"段。各元素全可独立 fail（旧 backend 缺 app_version /
+  /// get_db_stats / get_process_uptime_secs）；缺失时 snapshot 该段相应字
+  /// 段省略，不挡其它字段。
+  ///
+  /// bootedAtMs：mount 时 fetch 一次 uptime 算出锚点 `Date.now() - secs*1000`，
+  /// snapshot 生成时 `Date.now() - bootedAtMs` 算最新 uptime — 长 session
+  /// 中不必 poll，每次 snapshot 都用最新值。
   const [envInfo, setEnvInfo] = useState<{
     appVersion: string;
     schemaVersion: number;
+    bootedAtMs: number | null;
   } | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [v, s] = await Promise.all([
+      const [v, s, u] = await Promise.all([
         invoke<string>("app_version").catch(() => ""),
         invoke<{ schema_version: number }>("get_db_stats")
           .then((d) => d.schema_version)
           .catch(() => 0),
+        invoke<number>("get_process_uptime_secs").catch(() => -1),
       ]);
-      if (!cancelled) setEnvInfo({ appVersion: v, schemaVersion: s });
+      if (!cancelled) {
+        const bootedAtMs = u >= 0 ? Date.now() - u * 1000 : null;
+        setEnvInfo({ appVersion: v, schemaVersion: s, bootedAtMs });
+      }
     })();
     return () => {
       cancelled = true;
@@ -894,8 +904,9 @@ export function PanelDebug() {
       `# Pet 调试快照（${ts}）`,
       "",
     ];
-    // 环境段：app + schema + 平台。给 triage 提供"是哪个版本 / 哪个 schema"
-    // 关键上下文。envInfo === null（还在 fetch 或 backend 缺命令）时整段跳。
+    // 环境段：app + schema + 平台 + 已运行。给 triage 提供"是哪个版本 / 哪个
+    // schema / 跑了多久"关键上下文。envInfo === null（还在 fetch 或 backend 缺
+    // 命令）时整段跳。
     if (envInfo) {
       lines.push("## 环境");
       if (envInfo.appVersion) lines.push(`- app: pet v${envInfo.appVersion}`);
@@ -905,6 +916,25 @@ export function PanelDebug() {
       const plat = typeof navigator !== "undefined" ? navigator.platform : "";
       if (plat) lines.push(`- 平台: ${plat}`);
       lines.push(`- 时间: ${ts}`);
+      // ⌚ 已运行：从 bootedAtMs（mount 时锚定）算最新 elapsed。长跑 audit /
+      // 内存泄漏诊断时给"跑了多久"具体数；分级用「秒 / 分 / 小时 分 / 天 小时」
+      // 让短 session 与长 session 都有可读粒度。
+      if (envInfo.bootedAtMs !== null) {
+        const elapsedSecs = Math.floor((Date.now() - envInfo.bootedAtMs) / 1000);
+        const formatUptime = (secs: number): string => {
+          if (secs < 60) return `${secs} 秒`;
+          if (secs < 3600) return `${Math.floor(secs / 60)} 分`;
+          if (secs < 86400) {
+            const h = Math.floor(secs / 3600);
+            const m = Math.floor((secs % 3600) / 60);
+            return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`;
+          }
+          const d = Math.floor(secs / 86400);
+          const h = Math.floor((secs % 86400) / 3600);
+          return h > 0 ? `${d} 天 ${h} 小时` : `${d} 天`;
+        };
+        lines.push(`- 已运行: ${formatUptime(elapsedSecs)}`);
+      }
       lines.push("");
     }
     lines.push(
