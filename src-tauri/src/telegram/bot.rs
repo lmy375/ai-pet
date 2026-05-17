@@ -830,6 +830,13 @@ async fn handle_tg_command(
             };
             crate::telegram::commands::format_mute_reply(minutes, until_local)
         }
+        TgCommand::Digest { n } => {
+            // 最近 done 任务标题 + result 摘要清单。reuse 同 read path（与
+            // /recent / /tasks / /today 同源），formatter 内部 sort updated_at
+            // desc + 截 N。clamp 已在 parser 完成 (1..=20)。
+            let views = read_tg_chat_task_views(chat_id.0);
+            crate::telegram::commands::format_digest_reply(&views, n)
+        }
         TgCommand::Note { text } => {
             // 空 text → formatter 走 usage hint 路径，不真创建。
             let trimmed = text.trim();

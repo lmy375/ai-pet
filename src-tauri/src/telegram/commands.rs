@@ -103,6 +103,10 @@ pub enum TgCommand {
     /// 唯一）；description = trim 后的 text。空 text → missing-arg friendly
     /// hint。与 桌面 PanelMemory "新建 general item" 同后端，状态一致。
     Note { text: String },
+    /// `/digest [N]` —— 最近 N 条 done task 标题 + [result:] 摘要一行式
+    /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
+    /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
+    Digest { n: u32 },
     /// `/reset` —— 清掉 LLM 对话上下文（保留 system / 人设）。单击生效，无
     /// armed 二次确认（与桌面 `/clear` 的 5s armed 模式分开 —— 不同设备 /
     /// 多用户文化下 armed 窗口不适用）。
@@ -148,6 +152,7 @@ impl TgCommand {
             TgCommand::Snoozed => "snoozed",
             TgCommand::Mute { .. } => "mute",
             TgCommand::Note { .. } => "note",
+            TgCommand::Digest { .. } => "digest",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -183,6 +188,7 @@ impl TgCommand {
             | TgCommand::Blocked
             | TgCommand::Snoozed
             | TgCommand::Mute { .. }
+            | TgCommand::Digest { .. }
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -259,6 +265,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
             ("note", "Save arbitrary text as a general memory item (quick brain-dump)"),
+            ("digest", "Recent N done tasks with [result:] summary one-liner (default 5, cap 20)"),
             ("reset", "Clear LLM chat context (keep persona)"),
             ("version", "Show pet app version + SQLite schema version"),
             ("help", "Show command help"),
@@ -288,6 +295,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
             ("note", "把任意文本作 general memory item 存（owner 随手记一笔）"),
+            ("digest", "最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）"),
             ("reset", "清掉 LLM 对话上下文（保留人设）"),
             ("version", "查看 pet 版本 + schema 版本"),
             ("help", "显示完整命令帮助"),
@@ -626,6 +634,17 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/note <text>`：所有 arg 当 text（含空格保留）。空 text 由
         // handler 走 missing-arg 反馈。
         "note" => Some(TgCommand::Note { text: title }),
+        // `/digest [N]`：与 /recent 同 N 处理 — 缺省 5，clamp 1..=20，
+        // 非数字尾部 fallback 默认。
+        "digest" => {
+            let n = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 20))
+                .unwrap_or(5);
+            Some(TgCommand::Digest { n })
+        }
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -912,7 +931,8 @@ pub fn format_help_for_topic(
         "mood" => "🐾 /mood\n\n用法：查看宠物当前心情（与桌面 MoodWidget 同 mood state 文件）。无参。\n\n示例：\n  /mood",
         "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）。",
-        "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/today（只看今日 done）；/tasks（全部状态）。",
+        "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/digest（同范围但含 [result:] 摘要）；/today（只看今日 done）；/tasks（全部状态）。",
+        "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
         "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）。",
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
@@ -965,6 +985,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
         "/note <text>  —  把任意文本作 general memory item 存（随手记一笔）".to_string(),
+        "/digest [N]  —  最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）".to_string(),
         "/reset  —  清掉 LLM 对话上下文（保留人设）".to_string(),
         "/version  —  查看 pet 版本 + schema 版本".to_string(),
         "/help  —  显示本帮助".to_string(),
@@ -1709,6 +1730,66 @@ pub fn format_mute_reply(
     )
 }
 
+/// `/digest [N]` 命令回复文案。pure：接收 chat-scoped views + n cap，
+/// 输出最近 N 条 done 任务的标题 + `[result: ...]` 摘要一行式（按
+/// updated_at 倒序）。与 `format_recent_reply` 互补 — recent 仅标题，
+/// digest 含 result 摘要让 owner 在 TG 上看具体产物。
+///
+/// 单行格式：`· MM-DD HH:MM · title — result` （result 缺时省 `—` 段）。
+/// result 截 80 字 + `…` 避免单条爆行；header 显共多少条 done + 实际 cap。
+pub fn format_digest_reply(
+    views: &[crate::task_queue::TaskView],
+    n: u32,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let mut done: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Done))
+        .collect();
+    done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    if done.is_empty() {
+        return "✨ 本聊天派单暂无完成记录。\n做完一条 /done <标题> 标记，再来 /digest 看清单（含 [result:] 摘要）。"
+            .to_string();
+    }
+    let cap = (n as usize).max(1);
+    let shown = &done[..done.len().min(cap)];
+    let mut out = format!(
+        "📋 最近 {} 条完成（共 {}）：",
+        shown.len(),
+        done.len()
+    );
+    for v in shown {
+        let when = if v.updated_at.len() >= 16 {
+            format!("{} {}", &v.updated_at[5..10], &v.updated_at[11..16])
+        } else {
+            v.updated_at.clone()
+        };
+        let result_part = match v.result.as_deref() {
+            Some(r) if !r.trim().is_empty() => {
+                let r = r.trim();
+                let chars: Vec<char> = r.chars().collect();
+                let summary = if chars.len() > 80 {
+                    let s: String = chars.iter().take(80).collect();
+                    format!("{}…", s)
+                } else {
+                    r.to_string()
+                };
+                format!(" — {}", summary)
+            }
+            _ => String::new(),
+        };
+        out.push_str(&format!("\n· {} · {}{}", when, v.title, result_part));
+    }
+    if done.len() > shown.len() {
+        out.push_str(&format!(
+            "\n…还有 {} 条更早完成（/digest {} 看更多，上限 20）",
+            done.len() - shown.len(),
+            done.len().min(20)
+        ));
+    }
+    out
+}
+
 /// `/note <text>` 命令回复文案。pure：
 /// - 空 / 全空白 text → usage hint
 /// - save_result == Some(title) → "📝 已记到 general/<title>"，附复制
@@ -2422,7 +2503,8 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "mood", "whoami", "today", "recent",
-            "find", "blocked", "snoozed", "reset", "version", "help",
+            "digest", "find", "blocked", "snoozed", "reset", "version",
+            "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4268,6 +4350,125 @@ mod tests {
         let s = format_note_reply("test note", Err("disk full"));
         assert!(s.contains("保存失败"), "{s}");
         assert!(s.contains("disk full"), "{s}");
+    }
+
+    // -------- /digest parse + format --------
+
+    #[test]
+    fn digest_parses_default_5() {
+        assert_eq!(
+            parse_tg_command("/digest"),
+            Some(TgCommand::Digest { n: 5 })
+        );
+        assert_eq!(
+            parse_tg_command("/digest  "),
+            Some(TgCommand::Digest { n: 5 })
+        );
+    }
+
+    #[test]
+    fn digest_parses_explicit_n() {
+        assert_eq!(
+            parse_tg_command("/digest 10"),
+            Some(TgCommand::Digest { n: 10 })
+        );
+        assert_eq!(
+            parse_tg_command("/digest 1"),
+            Some(TgCommand::Digest { n: 1 })
+        );
+    }
+
+    #[test]
+    fn digest_clamps_to_1_20() {
+        assert_eq!(
+            parse_tg_command("/digest 0"),
+            Some(TgCommand::Digest { n: 1 })
+        );
+        assert_eq!(
+            parse_tg_command("/digest 999"),
+            Some(TgCommand::Digest { n: 20 })
+        );
+    }
+
+    #[test]
+    fn digest_garbage_arg_falls_back_to_default() {
+        assert_eq!(
+            parse_tg_command("/digest abc"),
+            Some(TgCommand::Digest { n: 5 })
+        );
+    }
+
+    #[test]
+    fn digest_reply_empty_done_friendly() {
+        let s = format_digest_reply(&[], 5);
+        assert!(s.contains("✨"), "{s}");
+        assert!(s.contains("暂无完成记录"), "{s}");
+        assert!(s.contains("/digest"), "{s}");
+    }
+
+    #[test]
+    fn digest_reply_orders_done_desc_with_result_summary() {
+        let mut a = view("跑步", 0, None, TaskStatus::Done, Some("5km"));
+        a.updated_at = "2026-05-13T10:00:00+08:00".to_string();
+        let mut b = view(
+            "整理 Downloads",
+            0,
+            None,
+            TaskStatus::Done,
+            Some("挪了 30 个文件"),
+        );
+        b.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+        let s = format_digest_reply(&[a, b], 5);
+        let pos_b = s.find("整理 Downloads").expect("b present");
+        let pos_a = s.find("跑步").expect("a present");
+        assert!(pos_b < pos_a, "latest first: {s}");
+        assert!(s.contains("— 5km"), "result attached: {s}");
+        assert!(s.contains("— 挪了 30 个文件"), "result attached: {s}");
+        assert!(s.contains("共 2"), "header: {s}");
+        assert!(s.contains("05-14 11:00"), "ts format: {s}");
+    }
+
+    #[test]
+    fn digest_reply_skips_non_done_status() {
+        let mut p = view("pending 的", 0, None, TaskStatus::Pending, None);
+        p.updated_at = "2026-05-14T11:00:00+08:00".to_string();
+        let mut d = view("done 的", 0, None, TaskStatus::Done, Some("ok"));
+        d.updated_at = "2026-05-14T10:00:00+08:00".to_string();
+        let s = format_digest_reply(&vec![p, d], 5);
+        assert!(s.contains("done 的"), "done present: {s}");
+        assert!(!s.contains("pending 的"), "pending skipped: {s}");
+        assert!(s.contains("— ok"), "result: {s}");
+    }
+
+    #[test]
+    fn digest_reply_done_without_result_shows_no_em_dash() {
+        let mut a = view("跑步", 0, None, TaskStatus::Done, None);
+        a.updated_at = "2026-05-14T10:00:00+08:00".to_string();
+        let s = format_digest_reply(&[a], 5);
+        assert!(s.contains("跑步"), "{s}");
+        assert!(!s.contains("跑步 —"), "no em dash: {s}");
+    }
+
+    #[test]
+    fn digest_reply_truncates_long_result_to_80_chars() {
+        let long = "x".repeat(120);
+        let mut a = view("done", 0, None, TaskStatus::Done, Some(&long));
+        a.updated_at = "2026-05-14T10:00:00+08:00".to_string();
+        let s = format_digest_reply(&[a], 5);
+        assert!(s.contains("…"), "should truncate: {s}");
+    }
+
+    #[test]
+    fn digest_reply_overflow_hint_when_more_than_n() {
+        let mut views = Vec::new();
+        for i in 0..7 {
+            let mut v = view(&format!("done-{}", i), 0, None, TaskStatus::Done, None);
+            v.updated_at = format!("2026-05-14T1{}:00:00+08:00", i);
+            views.push(v);
+        }
+        let s = format_digest_reply(&views, 3);
+        assert!(s.contains("最近 3 条完成（共 7）"), "{s}");
+        assert!(s.contains("还有 4 条"), "overflow hint: {s}");
     }
 
     // -------- /reset parse + format --------
