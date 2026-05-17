@@ -174,6 +174,14 @@ pub enum TgCommand {
     /// 过什么 / pet 接收了哪些信号"。与 /feedback（写）对偶。N 缺省
     /// 5，clamp 1..=20（与 /recent / /digest 同上限）。
     FeedbackHistory { n: u32 },
+    /// `/silent_all [minutes]` —— 批量给 butler_tasks 加 [silent] marker
+    /// N 分钟，N 后 backend tokio timer 自动撤回。与桌面 PanelMemory
+    /// 「⏸ 全部 silent 1h」按钮（iter #366，frontend timer）对偶 — 让
+    /// 手机端 owner 开会 / 集中写作时一键挡住 task picker。minutes 缺
+    /// 省 60；0 = 立即释放当前 active 窗口（与 /mute 0 同协议）；clamp
+    /// 0..=10080。与 /mute 区别：mute 让 pet 整体不开口；本命令只清
+    /// 空 task 候选池，pet 仍可主动聊天。
+    SilentAll { minutes: i64 },
     /// `/pri <title> <N>` —— 单改任务 priority（0..=9），不走 /edit 全量覆写。
     /// title 含空格 / 中文标点不被破坏 — parser 把"最后一个 whitespace
     /// token 作为 N 解析为 u8 ≤ 9"，剩余作 title。N 缺失 / 越界 → handler
@@ -307,6 +315,7 @@ impl TgCommand {
             TgCommand::Feedback { .. } => "feedback",
             TgCommand::Transient { .. } => "transient",
             TgCommand::FeedbackHistory { .. } => "feedback_history",
+            TgCommand::SilentAll { .. } => "silent_all",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
@@ -357,6 +366,7 @@ impl TgCommand {
             | TgCommand::Mute { .. }
             | TgCommand::Digest { .. }
             | TgCommand::FeedbackHistory { .. }
+            | TgCommand::SilentAll { .. }
             | TgCommand::Due { .. }
             | TgCommand::Now
             | TgCommand::Last
@@ -447,6 +457,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("feedback", "Send owner feedback to feedback_history (influences pet's next proactive turn)"),
             ("transient", "Set a transient note for N minutes — in-memory only context for the pet (default 60m, cap 7d)"),
             ("feedback_history", "List recent N feedback_history.log entries (replied / liked / comment / ignored / dismissed / puzzled; default 5, cap 20)"),
+            ("silent_all", "Bulk-silence all butler_tasks for N minutes — auto-releases on timer (default 60m; 0 = release now)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
@@ -496,6 +507,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("feedback", "给 pet 留反馈（写 feedback_history，影响下次 proactive turn）"),
             ("transient", "设 N 分钟有效的临时上下文给 pet（不存盘 in-memory；缺省 60m，上限 7 天）"),
             ("feedback_history", "列最近 N 条 feedback 记录（回复 / 点赞 / 评论 / 忽略 / 点掉 / 困惑；缺省 5，上限 20）"),
+            ("silent_all", "批量给所有 butler_tasks 加 [silent] N 分钟，到期 backend timer 自动撤回（缺省 60；0 = 立即解除）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
@@ -1007,6 +1019,18 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 .unwrap_or(5);
             Some(TgCommand::FeedbackHistory { n })
         }
+        // `/silent_all [minutes]`：与 /mute 同 clamp 模板。minutes 缺省
+        // 60；0 = 立即释放当前 active 窗口（/mute 0 同协议）；clamp
+        // 0..=10080（≤ 7 天）。非数字尾部走默认 60。
+        "silent_all" => {
+            let minutes = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|n| n.clamp(0, 10080))
+                .unwrap_or(60);
+            Some(TgCommand::SilentAll { minutes })
+        }
         // `/reset` 无参；多余尾部忽略
         "reset" => Some(TgCommand::Reset),
         // `/version` 无参；多余尾部忽略
@@ -1272,11 +1296,12 @@ pub fn format_tasks_no_change() -> String {
 pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
-    "silenced", "markers", "tags", "mood", "whoami", "today", "yesterday",
-    "streak", "now", "last", "random", "sleep", "quick", "due", "recent",
-    "digest", "edit", "pri", "promote", "demote", "reflect", "feedback",
-    "feedback_history", "transient", "cancel_all_error", "find", "show",
-    "blocked", "snoozed", "reset", "version", "help",
+    "silenced", "silent_all", "markers", "tags", "mood", "whoami",
+    "today", "yesterday", "streak", "now", "last", "random", "sleep",
+    "quick", "due", "recent", "digest", "edit", "pri", "promote",
+    "demote", "reflect", "feedback", "feedback_history", "transient",
+    "cancel_all_error", "find", "show", "blocked", "snoozed", "reset",
+    "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1393,6 +1418,7 @@ pub fn format_help_for_topic(
         "feedback" => "💬 /feedback <text>\n\n用法：给 pet 留反馈到 feedback_history.log（FeedbackKind::Comment）。LLM 在下次 proactive cycle 会读到 owner 原话调整行为。正向 / 负向 / 中性建议都可走此入口。\n\n示例：\n  /feedback 你最近说话太啰嗦，请精炼点\n  /feedback 这次主动选 task 选得很到位！\n  /feedback 周末别那么主动开口，让我休息\n\n相关：/note（杂项记到 general memory）；/reflect（反思记到 ai_insights）；二者按存储目的分流。本命令直接影响 pet 行为，是与 pet 沟通调整的快速通道。",
         "transient" => "📝 /transient <text> [minutes]\n\n用法：写一条 N 分钟有效的临时上下文给宠物（owner 当前状态如「在开会」「集中写文档」「今晚 9 点后回我」等）。**不存盘**，只挂当前 in-memory，到时自动清除（与桌面 PanelToneStrip 显示的 [临时指示] 同源）。minutes 末 whitespace token 解析；缺省 60；clamp 1..=10080（≤ 7 天）。\n\n示例：\n  /transient 在开会，半小时别打扰我 30\n  /transient 集中写文档不要主动开口 90\n  /transient 今晚 9 点后再 ping 我 240\n  /transient 心情不好别活泼  （默认 60 分钟）\n\n对比：/note（→ general memory 永久存盘）；/reflect（→ ai_insights 永久存盘）；/feedback（写 feedback_history 改 pet 行为）；/mute（直接静音不开口）。本命令是「给 pet 临时上下文，但不阻塞它说话」— pet 仍会主动开口，只是开口时读到这条调整语气 / 选择。",
         "feedback_history" => "📜 /feedback_history [N]\n\n用法：列最近 N 条 feedback_history.log 条目，含 owner 主动写的 /feedback comment + 系统自动记录的隐性反馈（回复 / 主动点掉 bubble / 👍 点赞 / 沉默忽略 / 🤔 困惑反馈）。让 owner audit 「我给 pet 留过什么 / pet 接收了哪些信号」。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · HH:MM <emoji> <kind> | <excerpt>\n\nkind emoji 映射：\n  ✅ replied · 👍 liked · 💬 comment · 🙉 ignored · 👋 dismissed · 🤔 puzzled\n\n示例：\n  /feedback_history\n  /feedback_history 10\n  /feedback_history 20\n\n相关：/feedback（写新条目）；R7 cooldown adapter / R28 chip 用 feedback_history 调整 pet 主动开口频率与语气 — 本命令是回看 pet 接收的训练信号。",
+        "silent_all" => "⏸ /silent_all [minutes]\n\n用法：批量给所有 butler_tasks pending 任务加 [silent] marker N 分钟，N 后 backend tokio timer 自动撤回。让 owner 开会 / 集中写文档 1 小时挡住 task picker — pet 仍可主动聊天，只是不会主动派任务（如「我看你 Downloads 该整理了」之类）。minutes 缺省 60；0 = 立即解除当前 active 窗口（与 /mute 0 同协议）；clamp 0..=10080（≤ 7 天）。\n\n示例：\n  /silent_all       （默认 60 分钟）\n  /silent_all 30    （半小时）\n  /silent_all 120   （2 小时）\n  /silent_all 0     （立即解除）\n\n对比：/mute（让 pet 整体不开口）；/silent <title>（单条 silent）；本命令是批量临时 + 自动撤回。\n\n限制：app restart 会丢 timer，markers 留在原地 —— 重启后用 /silent_all 重启窗口或 /silent_all 0 手动清理（实现注：与桌面 PanelMemory「⏸ 全部 silent 1h」按钮使用 frontend timer 路径独立，两个 surface 不共享状态）。",
         "cancel_all_error" => "🧹 /cancel_all_error confirm\n\n用法：批量 cancel 本聊天所有 error 状态的任务。**必须带 `confirm` token** 防误触 —— 不带 confirm 时显 usage hint 告诉 owner 怎么用。\n\n示例：\n  /cancel_all_error confirm\n\n场景：周末整理 task 队列 / 大批 error 累积想一次性清空。注意：仅 cancel 本 chat 派单（origin == Tg<chat_id>）；其它 chat / 桌面直接派的 error 任务不动。已 done / cancelled 任务跳过。\n\n相关：/cancel <title>（单条取消）；/retry <title>（单条重试）；/stats（看 error 数）。",
         "promote" => "🎯 /promote <title>\n\n用法：把任务 priority 升 +1（clamp 9 — 已是 P9 时不动 + 友好 reply）。一步操作不必算具体 P 值（与 /pri <title> <N> 互补 — pri 是绝对值，promote 是相对值）。保留所有其它 markers / due / body 不动（复用 task_set_priority 后端）。\n\n示例：\n  /promote 整理 Downloads\n  /promote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/demote（-1 反方向）。",
         "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
@@ -1460,6 +1486,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/feedback <text>  —  给 pet 留反馈（写 feedback_history，影响下次 proactive turn）".to_string(),
         "/transient <text> [minutes]  —  设 N 分钟有效的临时上下文（不存盘 in-memory；缺省 60m，上限 7 天）".to_string(),
         "/feedback_history [N]  —  列最近 N 条 feedback 记录（含 /feedback 写的 + 系统记录的隐性信号；缺省 5，上限 20）".to_string(),
+        "/silent_all [minutes]  —  批量 silent butler_tasks N 分钟，自动撤回（缺省 60；0 = 立即解除）".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
@@ -2488,6 +2515,73 @@ pub fn format_feedback_history_reply(
         ));
     }
     out
+}
+
+/// `/silent_all [minutes]` 命令回复文案。pure。
+///
+/// 入参语义：
+/// - `armed_count`: arm 成功时新窗口的 silenced 条数（0 = 没 candidates，
+///   armed_count == 0 + minutes > 0 走"无可 silent 任务"友好兜底）
+/// - `released_count`: 同次操作释放的 prior 窗口条数（minutes==0 或 arm
+///   先 release_active 时；用于"已解除 N"片段；0 = 没有上轮可释放）
+/// - `minutes`: 用户传入分钟数（0 = release-only intent）
+/// - `until_local`: arm 成功时新窗口到期时刻，None = release-only / 失败
+///
+/// 输出 4 种态：
+/// - minutes == 0 + released > 0 → "🔊 已解除 N 条 silent"
+/// - minutes == 0 + released == 0 → "✨ 当前无 silent 窗口可解除"
+/// - minutes > 0 + armed > 0 → "⏸ 已 silent N 条·M 分钟后自动解除（到 HH:MM）"
+///   含 released 信息：上轮 reset 时附加"（先解除上轮 X 条）"
+/// - minutes > 0 + armed == 0 → "✨ 暂无可 silent 任务（无 pending 或都已 silent）"
+pub fn format_silent_all_reply(
+    armed_count: usize,
+    released_count: usize,
+    minutes: i64,
+    until_local: Option<chrono::DateTime<chrono::Local>>,
+) -> String {
+    if minutes == 0 {
+        if released_count == 0 {
+            return "✨ 当前无 silent 窗口可解除。\n用 /silent_all [minutes] 开始批量 silent；minutes 缺省 60。".to_string();
+        }
+        return format!(
+            "🔊 已解除 {} 条 butler_task 的临时 [silent]。",
+            released_count
+        );
+    }
+    if armed_count == 0 {
+        return "✨ 暂无可 silent 任务（butler_tasks 段无 pending 或已全部 silent）。".to_string();
+    }
+    let nice = if minutes < 60 {
+        format!("{} 分钟", minutes)
+    } else if minutes < 60 * 24 {
+        let h = minutes / 60;
+        let m = minutes % 60;
+        if m == 0 {
+            format!("{} 小时", h)
+        } else {
+            format!("{} 小时 {} 分钟", h, m)
+        }
+    } else {
+        let d = minutes / (60 * 24);
+        let h = (minutes % (60 * 24)) / 60;
+        if h == 0 {
+            format!("{} 天", d)
+        } else {
+            format!("{} 天 {} 小时", d, h)
+        }
+    };
+    let when = until_local
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_else(|| "—".to_string());
+    let release_note = if released_count > 0 {
+        format!("（先解除上轮 {} 条）", released_count)
+    } else {
+        String::new()
+    };
+    format!(
+        "⏸ 已 silent {} 条 butler_task{} · {} 后自动解除（到 {}）。\n\n期间 LLM proactive cycle 不会主动选这些 task；用 /silent_all 0 立即解除。",
+        armed_count, release_note, nice, when
+    )
 }
 
 /// `/note <text>` 命令回复文案。pure：
@@ -3888,8 +3982,8 @@ mod tests {
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
-            "cancel_all_error", "find", "show", "blocked", "snoozed",
-            "reset", "version", "help",
+            "silent_all", "cancel_all_error", "find", "show", "blocked",
+            "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -4356,8 +4450,8 @@ mod tests {
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
             "yesterday", "streak", "now", "last", "random", "sleep", "quick",
             "due", "edit", "pri", "promote", "demote", "reflect", "feedback",
-            "feedback_history", "transient", "cancel_all_error", "show",
-            "tags", "reset", "version", "help",
+            "feedback_history", "transient", "silent_all", "cancel_all_error",
+            "show", "tags", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -6726,6 +6820,118 @@ mod tests {
         assert!(s.contains("entry 0"), "{s}");
         assert!(s.contains("entry 2"), "{s}");
         assert!(!s.contains("entry 3"), "should be capped: {s}");
+    }
+
+    // -------- /silent_all parse + format --------
+
+    #[test]
+    fn silent_all_parses_default_60() {
+        assert_eq!(
+            parse_tg_command("/silent_all"),
+            Some(TgCommand::SilentAll { minutes: 60 })
+        );
+    }
+
+    #[test]
+    fn silent_all_parses_explicit_minutes() {
+        assert_eq!(
+            parse_tg_command("/silent_all 30"),
+            Some(TgCommand::SilentAll { minutes: 30 })
+        );
+        assert_eq!(
+            parse_tg_command("/silent_all 120"),
+            Some(TgCommand::SilentAll { minutes: 120 })
+        );
+    }
+
+    #[test]
+    fn silent_all_parses_zero_as_release_intent() {
+        // 0 是合法 — 走 release_active 路径（与 /mute 0 同协议）
+        assert_eq!(
+            parse_tg_command("/silent_all 0"),
+            Some(TgCommand::SilentAll { minutes: 0 })
+        );
+    }
+
+    #[test]
+    fn silent_all_clamps_high_to_7d() {
+        assert_eq!(
+            parse_tg_command("/silent_all 99999"),
+            Some(TgCommand::SilentAll { minutes: 10080 })
+        );
+    }
+
+    #[test]
+    fn silent_all_clamps_negative_to_zero() {
+        // 负数被 clamp 到 0（release 语义）— 不引入新错误态
+        assert_eq!(
+            parse_tg_command("/silent_all -10"),
+            Some(TgCommand::SilentAll { minutes: 0 })
+        );
+    }
+
+    #[test]
+    fn silent_all_non_numeric_falls_back_to_default() {
+        assert_eq!(
+            parse_tg_command("/silent_all blah"),
+            Some(TgCommand::SilentAll { minutes: 60 })
+        );
+    }
+
+    #[test]
+    fn silent_all_reply_release_no_active() {
+        // minutes=0 + released=0 → 友好兜底
+        let s = format_silent_all_reply(0, 0, 0, None);
+        assert!(s.contains("当前无 silent 窗口"), "{s}");
+        assert!(s.contains("/silent_all"), "show usage hint: {s}");
+    }
+
+    #[test]
+    fn silent_all_reply_release_with_active() {
+        // minutes=0 + released>0 → 已解除
+        let s = format_silent_all_reply(0, 5, 0, None);
+        assert!(s.contains("已解除 5 条"), "{s}");
+    }
+
+    #[test]
+    fn silent_all_reply_arm_no_candidates() {
+        // minutes>0 + armed=0 → 友好兜底
+        let s = format_silent_all_reply(0, 0, 60, None);
+        assert!(s.contains("暂无可 silent"), "{s}");
+    }
+
+    #[test]
+    fn silent_all_reply_arm_success() {
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 19, 30, 0)
+            .unwrap();
+        let s = format_silent_all_reply(7, 0, 60, Some(until));
+        assert!(s.contains("已 silent 7 条"), "{s}");
+        assert!(s.contains("1 小时"), "{s}");
+        assert!(s.contains("19:30"), "show expires_at HH:MM: {s}");
+        assert!(s.contains("/silent_all 0"), "show release shortcut: {s}");
+    }
+
+    #[test]
+    fn silent_all_reply_arm_with_prior_release() {
+        // minutes>0 + armed>0 + released>0 → 显含 "（先解除上轮 N 条）"
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 20, 0, 0)
+            .unwrap();
+        let s = format_silent_all_reply(5, 3, 120, Some(until));
+        assert!(s.contains("已 silent 5 条"), "{s}");
+        assert!(s.contains("先解除上轮 3 条"), "{s}");
+        assert!(s.contains("2 小时"), "{s}");
+    }
+
+    #[test]
+    fn silent_all_reply_day_label() {
+        // 60 * 24 = 1440 → "1 天"
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 18, 18, 0, 0)
+            .unwrap();
+        let s = format_silent_all_reply(3, 0, 1440, Some(until));
+        assert!(s.contains("1 天"), "{s}");
     }
 
     #[test]

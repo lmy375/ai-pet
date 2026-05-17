@@ -1,4 +1,5 @@
 pub mod bot;
+pub mod bulk_silent;
 pub mod commands;
 pub mod warnings;
 
