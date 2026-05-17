@@ -2766,6 +2766,50 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea 插 markdown link `[text](url)`：与 insertMarkdown
+  /// AtCursor("wrap", "[", "](url)") 不同 —— 本 helper 把 `url` 占位符 pre-
+  /// select，让 owner 立即敲键替换地址（与 Notion / VS Code markdown
+  /// `⌘K` 链接同 UX）。选区非空 → 选区作 link text，光标落 url；空
+  /// 选区 → 光标落 `[|]` 让 owner 先敲 link text，但 url placeholder 仍
+  /// pre-select 待替换（用 rAF 二次设置覆盖第一次 set）。
+  ///
+  /// 与既有 toolbar 「🔗」按钮共享后端 — 既有 onClick 仅做 wrap 不
+  /// pre-select；本 helper 替换那条 onClick 让 link 工作流少一步"我现在
+  /// 要再选 url 这 3 个字符然后输入"。
+  const insertLinkAtCursor = useCallback(() => {
+    const ta = detailEditorRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? start;
+    const value = ta.value;
+    const selected = value.slice(start, end);
+    const prefix = "[";
+    const suffix = "](url)";
+    const inserted = prefix + selected + suffix;
+    const next = value.slice(0, start) + inserted + value.slice(end);
+    setEditingDetailContent(next);
+    // url 占位符相对位置：start + 1 (skip "[") + selected.length + 2 (skip "](" )
+    const urlStart = start + 1 + selected.length + 2;
+    const urlEnd = urlStart + 3; // "url" 3 chars
+    requestAnimationFrame(() => {
+      const cur = detailEditorRef.current;
+      if (!cur) return;
+      cur.focus();
+      // 选区非空：直接 pre-select url placeholder 让 owner 立即替换。
+      // 选区空：光标落 [|] 让 owner 先敲 link text，但 url 仍 pre-select
+      // 是不直觉（owner 想先敲 text）— 空选时 cursor 落 [ ] 之间。
+      if (selected.length > 0) {
+        cur.selectionStart = urlStart;
+        cur.selectionEnd = urlEnd;
+      } else {
+        // [ | ](url) —— 光标落 [] 之间
+        cur.selectionStart = cur.selectionEnd = start + 1;
+      }
+      setDetailCursorPos(cur.selectionStart);
+      setDetailSelectionEnd(cur.selectionEnd);
+    });
+  }, []);
+
   /// detail.md textarea ⌘B / ⌘I markdown 加粗 / 斜体 wrap：复用既有
   /// `insertMarkdownAtCursor("wrap", "**", "**")` / `("wrap", "*", "*")`
   /// 算法 — 选区 wrap，空选时插模板 + 光标落中间。与既有 markdown
@@ -10897,10 +10941,8 @@ export function PanelTasks({
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() =>
-                                      insertMarkdownAtCursor("wrap", "[", "](url)")
-                                    }
-                                    title="链接（[...](url)）。选中作链接文本；无选区时光标落在 [|] 让你先写文本。url 占位符提示填地址。"
+                                    onClick={insertLinkAtCursor}
+                                    title="链接（[...](url)）。有选区 → wrap 作 link text + 自动 pre-select `url` 占位符让你立即敲键替换地址；无选区 → 光标落 [|] 让你先写文本。"
                                     style={mdToolbarBtnStyle}
                                   >
                                     🔗

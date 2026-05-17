@@ -12,7 +12,6 @@
 - TG bot 加 `/cancel-all-error confirm` 命令：批量 cancel 所有 error 状态任务，必须带 confirm token 防误触。
 - PanelChat 加 ⌘F 行内搜索 messages：长 chat 历史 keyword 命中跳转，长会话查找用。
 - PanelMemory item action row 加 ✏️ rename mini-input：与既有双击 title rename 对偶 — 鼠标党直接按按钮免双击。
-- detail editor 工具栏加「🔗 插 link 模板」按钮：选区 → `[text](url)` wrap，光标落 url 处让 owner 填。
 
 
 
