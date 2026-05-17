@@ -561,6 +561,53 @@ function formatBytes(n: number): string {
 ///   ## C         ← counter=3，level=2（结束 A）
 /// extractSection(md, 1) → "## A\ntext...\n### B\n..."
 /// extractSection(md, 2) → "### B\n..."
+/// 给 ⌘⇧C「复制当前段」用：定位光标所在的 markdown heading 段（heading
+/// 行到下一同级或更高级 heading 之间）。与 `extractSectionFromMarkdown`
+/// 同算法但入参是 cursor 偏移而非 heading counter。
+///
+/// 光标在第一个 heading 之前 → 返从文首到第一个 heading 之间的内容
+/// （让 owner 能复制 "preamble" 段，与既有 「📋 复制此节」按钮 callback
+/// 仅作用于 heading 段不同）。无任何 heading → 返整个 md（fallback：
+/// 把 md 当成单段）。
+function extractSectionAroundCursor(md: string, cursor: number): string {
+  if (md.length === 0) return "";
+  const before = md.slice(0, Math.max(0, Math.min(cursor, md.length)));
+  const cursorLine = before.split("\n").length - 1;
+  const lines = md.split("\n");
+  // 向上找最近的 heading
+  let startIdx = -1;
+  let startLevel = 0;
+  for (let i = cursorLine; i >= 0; i--) {
+    const m = lines[i].match(/^(#{1,3})\s+/);
+    if (m) {
+      startIdx = i;
+      startLevel = m[1].length;
+      break;
+    }
+  }
+  if (startIdx < 0) {
+    // 光标在第一个 heading 前 — 返 preamble（文首到首 heading 之间）
+    let firstHeading = lines.length;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^#{1,3}\s+/.test(lines[i])) {
+        firstHeading = i;
+        break;
+      }
+    }
+    return lines.slice(0, firstHeading).join("\n").trimEnd();
+  }
+  // 向下找下一同级或更高级 heading
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,3})\s+/);
+    if (m && m[1].length <= startLevel) {
+      endIdx = i;
+      break;
+    }
+  }
+  return lines.slice(startIdx, endIdx).join("\n").trimEnd();
+}
+
 function extractSectionFromMarkdown(md: string, counter: number): string {
   const lines = md.split("\n");
   let seen = 0;
@@ -3732,6 +3779,52 @@ export function PanelTasks({
       return false;
     },
     [insertMarkdownAtCursor],
+  );
+
+  /// detail.md textarea ⌘⇧C「复制当前段」：把光标所在的 markdown heading
+  /// 段（heading 行到下一同级或更高级 heading 之间）复制到剪贴板。与既
+  /// 有 preview 内「📋 复制此节」按钮入口对偶 — 按钮入口要 mouse 点 +
+  /// 找到对应 heading；本 shortcut 让光标在哪段就复制哪段，键盘党快。
+  ///
+  /// 光标在第一个 heading 之前 → 复制 preamble。无 heading → 复制全文
+  /// （fallback）。复用既有 `extractSectionAroundCursor` 算法 — 与
+  /// extractSectionFromMarkdown 同 boundary 协议（`<= startLevel`）。
+  ///
+  /// ⌘⇧C 选择：⌘C 是浏览器 / OS 默认复制（textarea 选区 → clipboard），
+  /// 不抢。⌘⇧C 在 Chrome devtools 是「inspect element」— Tauri webview
+  /// 已禁但 preventDefault 兜底安全。
+  const handleDetailCopySection = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "c") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const cursor = ta.selectionStart ?? 0;
+      const section = extractSectionAroundCursor(ta.value, cursor);
+      if (!section) {
+        setBulkResultMsg("📋 复制当前段：未找到 markdown 段");
+        window.setTimeout(() => setBulkResultMsg(""), 2000);
+        return true;
+      }
+      const head = section.split("\n")[0].slice(0, 30);
+      navigator.clipboard
+        .writeText(section)
+        .then(() => {
+          setBulkResultMsg(
+            `📋 已复制当前段（${section.length} 字 · ${head}）`,
+          );
+          window.setTimeout(() => setBulkResultMsg(""), 2500);
+        })
+        .catch((err) => {
+          console.error("copy detail section failed:", err);
+          setBulkResultMsg(`复制当前段失败：${err}`);
+          window.setTimeout(() => setBulkResultMsg(""), 2500);
+        });
+      return true;
+    },
+    [],
   );
 
   /// detail.md textarea ⌘⇧D 插短日期戳 `MM-DD HH:MM` —— progress note 场
@@ -13901,6 +13994,9 @@ export function PanelTasks({
                                   // 形 `YYYY-MM-DD HH:MM` 互补（紧凑版省 5
                                   // 字符）。
                                   if (handleDetailDateStamp(e)) return;
+                                  // ⌘⇧C 复制当前 heading 段（光标定位）—
+                                  // 与 preview 「📋 复制此节」按钮入口对偶。
+                                  if (handleDetailCopySection(e)) return;
                                   // ⌘] 跳到下一个 unchecked `- [ ] ` 行 —
                                   // 长 checklist 快速找未完成项 audit /
                                   // 跳读。无命中时 wrap 从头扫。
@@ -14365,6 +14461,9 @@ export function PanelTasks({
                                   if (handleDetailTabIndent(e)) return;
                                   // ⌘⇧D 插短日期戳：与 split 模式同 handler。
                                   if (handleDetailDateStamp(e)) return;
+                                  // ⌘⇧C 复制当前 heading 段（光标定位）—
+                                  // 与 preview 「📋 复制此节」按钮入口对偶。
+                                  if (handleDetailCopySection(e)) return;
                                   // ⌘⇧L 弹链接 popover：与 split 模式同 handler。
                                   if (handleDetailLinkPopover(e)) return;
                                   // ⌘⇧V paste as plain：与 split 模式同 handler。
