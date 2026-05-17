@@ -1144,6 +1144,7 @@ export function PanelDebug() {
     nextEtaUnixSecs: number;
     intervalHours: number;
     enabled: boolean;
+    minTotalItems: number;
   } | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -1153,12 +1154,14 @@ export function PanelDebug() {
           next_eta_unix_secs: number;
           interval_hours: number;
           enabled: boolean;
+          min_total_items: number;
         }>("get_consolidate_schedule");
         if (!cancelled) {
           setConsolidateSched({
             nextEtaUnixSecs: sched.next_eta_unix_secs,
             intervalHours: sched.interval_hours,
             enabled: sched.enabled,
+            minTotalItems: sched.min_total_items,
           });
         }
       } catch (e) {
@@ -2705,6 +2708,40 @@ export function PanelDebug() {
             </span>
           );
         })()}
+        {/* 📋 复制 cron 配置 chip：把 consolidate 关键配置（interval /
+            enabled / min_total_items）拼成 markdown 一键复制 — owner 在
+            issue / triage 上贴具体 cron 配置不必手抄。复用 setDebugExportMsg
+            通道。 */}
+        {consolidateSched && (
+          <button
+            type="button"
+            onClick={async () => {
+              const lines: string[] = [];
+              lines.push("## consolidate cron 配置");
+              lines.push("");
+              lines.push(`- interval: ${consolidateSched.intervalHours}h`);
+              lines.push(`- enabled: ${consolidateSched.enabled ? "true" : "false"}`);
+              lines.push(`- min_total_items: ${consolidateSched.minTotalItems}`);
+              if (consolidateSched.nextEtaUnixSecs > 0) {
+                lines.push(
+                  `- next_eta: ${new Date(consolidateSched.nextEtaUnixSecs * 1000).toLocaleString()}`,
+                );
+              }
+              const md = lines.join("\n");
+              try {
+                await navigator.clipboard.writeText(md);
+                setDebugExportMsg("📋 已复制 cron 配置 markdown");
+              } catch (e) {
+                setDebugExportMsg(`复制失败：${e}`);
+              }
+              window.setTimeout(() => setDebugExportMsg(""), 3500);
+            }}
+            style={toolBtnStyle}
+            title={`复制 consolidate 关键配置为 markdown — issue / triage 场景。\n含 interval (${consolidateSched.intervalHours}h) · enabled (${consolidateSched.enabled}) · min_total_items (${consolidateSched.minTotalItems}) · next_eta。`}
+          >
+            📋 cron 配置
+          </button>
+        )}
         {/* 🧹 force consolidate：手动触发一次 consolidate sweep，不
             等 cron 节奏（PanelMemory「立即整理」是更显眼的入口，本按
             钮是 debug 视图就近入口 — 验证 prompt tweak / audit 行为 /

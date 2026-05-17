@@ -44,19 +44,25 @@ pub struct ConsolidateSchedule {
     pub next_eta_unix_secs: i64,
     pub interval_hours: u64,
     pub enabled: bool,
+    pub min_total_items: usize,
 }
 
 #[tauri::command]
 pub fn get_consolidate_schedule() -> ConsolidateSchedule {
     let eta = NEXT_RUN_AT.load(Ordering::SeqCst);
-    let (interval_hours, enabled) = match get_settings() {
-        Ok(s) => (s.memory_consolidate.interval_hours, s.memory_consolidate.enabled),
-        Err(_) => (0, false),
+    let (interval_hours, enabled, min_total_items) = match get_settings() {
+        Ok(s) => (
+            s.memory_consolidate.interval_hours,
+            s.memory_consolidate.enabled,
+            s.memory_consolidate.min_total_items,
+        ),
+        Err(_) => (0, false, 0),
     };
     ConsolidateSchedule {
         next_eta_unix_secs: eta,
         interval_hours,
         enabled,
+        min_total_items,
     }
 }
 
