@@ -11,7 +11,6 @@
 - TG bot `/promote_all_p7` 命令：本 chat 所有 active task priority +1 到 P7 上限（紧急 sprint 模式）；需 confirm token 防误触。
 - ChatMini 选区 toolbar 加「📌 标记」按钮：把选中段标到 markedMessages（与 PanelChat bookmark chip strip 同 localStorage 通道）。
 - PanelMemory 顶部加「📊 cat 总览」chip 横条：每 cat 一个 chip 显 item 数 + 总字符数，让 owner 一眼看分类占用分布。
-- TG bot `/today_done` 命令：今日已 done task 标题清单 + result 摘要一行（与 /today 互补 — 那个含 due，这个仅 done 切片）。
 
 
 
