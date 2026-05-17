@@ -9357,6 +9357,59 @@ export function PanelTasks({
                           ✏
                         </button>
                       )}
+                    {/* ⏱ 在队列时长 chip：仅 hover + active (Pending / Error)
+                        状态显。formatRelativeAge 同算法（与既有 itemMeta
+                        创建时间 chip 同源）— 显"已挂 N 分钟 / N 小时 / N
+                        天"。owner 看长队列时一眼看出哪条"早就该做但没做"。
+                        click 复制 created_at ISO 到剪贴板（外发 / 排查
+                        场景）。done/cancelled 不显 — 已终态的"在队列多
+                        久"信号意义弱。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      (t.status === "pending" || t.status === "error") &&
+                      (() => {
+                        const rel = formatRelativeAge(t.created_at, nowMs);
+                        if (!rel) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                await navigator.clipboard.writeText(
+                                  t.created_at,
+                                );
+                                setBulkResultMsg(
+                                  `📋 已复制 created_at：${t.created_at}`,
+                                );
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`这条 task 在队列已 ${rel}（创建于 ${t.created_at}）— 点击复制 ISO 创建时间到剪贴板。仅 active 状态显此 chip。`}
+                            aria-label="task in-queue duration"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border: "1px dashed var(--pet-color-border)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ⏱ {rel}
+                          </button>
+                        );
+                      })()}
                     {/* 📊 30 天 sparkline chip：10 bar 显近 30 天 butler_history
                         事件桶分布（最老在左，最新在右）。仅总和 > 0 时显
                         — 从未 touch 过的 task 不显避免视觉噪音。max 归一
