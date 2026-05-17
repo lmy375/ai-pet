@@ -1837,6 +1837,29 @@ export function PanelTasks({
     }
   });
   const detailGutterRef = useRef<HTMLDivElement>(null);
+  /// 📏 wrap ruler：gutter 内每行单独 row，line.length > 80 时该行号
+  /// 染黄 — code-like 80-col ruler 写作辅助。`line.length` 用 UTF-16
+  /// code unit 数（CJK 1 / ASCII 1 / 多数 emoji 2）— 与 IDE "80 字符
+  /// 标尺"惯例同 lens。仅当 showDetailGutter on 时生效（ruler 没 gutter
+  /// 可染）；toggle 独立持久化 localStorage `pet-detail-wrap-ruler`。
+  const [wrapRuler, setWrapRuler] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-detail-wrap-ruler") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleWrapRuler = useCallback(() => {
+    setWrapRuler((cur) => {
+      const next = !cur;
+      try {
+        window.localStorage.setItem("pet-detail-wrap-ruler", next ? "1" : "0");
+      } catch {
+        // 配额满 / 私密 — session 内仍生效
+      }
+      return next;
+    });
+  }, []);
   const toggleShowDetailGutter = useCallback(() => {
     setShowDetailGutter((cur) => {
       const next = !cur;
@@ -13026,6 +13049,40 @@ export function PanelTasks({
                                       🔢
                                     </button>
                                   )}
+                                  {/* 📏 wrap ruler：80-col 警示。仅当 🔢 行号
+                                      gutter 已开时生效（ruler 没 gutter 可染）。
+                                      gutter 未开时按钮提示先开。持久化
+                                      localStorage `pet-detail-wrap-ruler`。 */}
+                                  {detailViewMode === "edit" && (
+                                    <button
+                                      type="button"
+                                      onClick={toggleWrapRuler}
+                                      disabled={!showDetailGutter}
+                                      title={
+                                        !showDetailGutter
+                                          ? "先开启 🔢 行号 gutter — ruler 在 gutter 上染色"
+                                          : wrapRuler
+                                            ? "关闭 80 字 ruler（gutter 行号染色）"
+                                            : "显 80 字 ruler — 当前行超 80 字时左侧行号染黄。code-like 写作辅助。"
+                                      }
+                                      style={{
+                                        ...mdToolbarBtnStyle,
+                                        background: wrapRuler && showDetailGutter
+                                          ? "var(--pet-tint-yellow-bg)"
+                                          : mdToolbarBtnStyle.background,
+                                        color: wrapRuler && showDetailGutter
+                                          ? "var(--pet-tint-yellow-fg)"
+                                          : !showDetailGutter
+                                            ? "var(--pet-color-muted)"
+                                            : mdToolbarBtnStyle.color,
+                                        opacity: !showDetailGutter ? 0.5 : 1,
+                                        cursor: !showDetailGutter ? "not-allowed" : "pointer",
+                                      }}
+                                      aria-pressed={wrapRuler}
+                                    >
+                                      📏
+                                    </button>
+                                  )}
                                   {/* 🔗 插 task ref：复用 ⌘K palette 但 mode
                                       = insertRef。fuzzy 选其他 task 后在光标
                                       位置插 `「title」`，token 与 bulk
@@ -13878,40 +13935,85 @@ export function PanelTasks({
                                     短行可忽略。textarea onScroll 同步 gutter
                                     scrollTop。 */}
                                 {showDetailGutter && (() => {
-                                  const lineCount = Math.max(
-                                    1,
-                                    editingDetailContent.split("\n").length,
-                                  );
+                                  const lines = editingDetailContent.split("\n");
+                                  const lineCount = Math.max(1, lines.length);
+                                  const baseStyle: React.CSSProperties = {
+                                    flexShrink: 0,
+                                    width: 36,
+                                    padding: "12px 4px 12px 8px",
+                                    textAlign: "right",
+                                    fontSize: 12,
+                                    fontFamily:
+                                      "'SF Mono', 'Menlo', monospace",
+                                    lineHeight: 1.65,
+                                    color: "var(--pet-color-muted)",
+                                    background: "var(--pet-color-bg)",
+                                    border:
+                                      "1px solid var(--pet-color-border)",
+                                    borderRight: "none",
+                                    borderRadius: "8px 0 0 8px",
+                                    boxShadow: "var(--pet-shadow-sm)",
+                                    boxSizing: "border-box",
+                                    overflow: "hidden",
+                                    userSelect: "none",
+                                  };
+                                  // ruler off → 单 block 渲（原路径，无 per-line
+                                  // DOM 开销）；ruler on → per-line div 让 > 80
+                                  // 字逻辑行的行号 cell 染黄（lines[i].length 用
+                                  // UTF-16 code-unit 数；CJK 算 1，emoji 多数
+                                  // 算 2 — 与 IDE 80-col 标尺惯例同 lens）
+                                  if (!wrapRuler) {
+                                    return (
+                                      <div
+                                        ref={detailGutterRef}
+                                        aria-hidden
+                                        style={{
+                                          ...baseStyle,
+                                          whiteSpace: "pre",
+                                        }}
+                                      >
+                                        {Array.from(
+                                          { length: lineCount },
+                                          (_, i) => i + 1,
+                                        ).join("\n")}
+                                      </div>
+                                    );
+                                  }
                                   return (
                                     <div
                                       ref={detailGutterRef}
                                       aria-hidden
-                                      style={{
-                                        flexShrink: 0,
-                                        width: 36,
-                                        padding: "12px 4px 12px 8px",
-                                        textAlign: "right",
-                                        fontSize: 12,
-                                        fontFamily:
-                                          "'SF Mono', 'Menlo', monospace",
-                                        lineHeight: 1.65,
-                                        color: "var(--pet-color-muted)",
-                                        background: "var(--pet-color-bg)",
-                                        border:
-                                          "1px solid var(--pet-color-border)",
-                                        borderRight: "none",
-                                        borderRadius: "8px 0 0 8px",
-                                        boxShadow: "var(--pet-shadow-sm)",
-                                        boxSizing: "border-box",
-                                        overflow: "hidden",
-                                        userSelect: "none",
-                                        whiteSpace: "pre",
-                                      }}
+                                      style={baseStyle}
                                     >
                                       {Array.from(
                                         { length: lineCount },
-                                        (_, i) => i + 1,
-                                      ).join("\n")}
+                                        (_, i) => i,
+                                      ).map((i) => {
+                                        const over =
+                                          (lines[i]?.length ?? 0) > 80;
+                                        return (
+                                          <div
+                                            key={i}
+                                            style={{
+                                              background: over
+                                                ? "var(--pet-tint-yellow-bg)"
+                                                : "transparent",
+                                              color: over
+                                                ? "var(--pet-tint-yellow-fg)"
+                                                : "var(--pet-color-muted)",
+                                              fontWeight: over ? 600 : 400,
+                                              paddingRight: 2,
+                                            }}
+                                            title={
+                                              over
+                                                ? `第 ${i + 1} 行 ${lines[i].length} 字 — 超 80 字`
+                                                : undefined
+                                            }
+                                          >
+                                            {i + 1}
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   );
                                 })()}
