@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelDebug 加「📋 复制 logs 路径」chip：~/.config/pet/logs 绝对路径到剪贴板，方便粘到 Finder / VSCode 打开。
 - PanelTasks 加「☑️ 全选 P7+ 进 multi-select」chip：精准选高优 pending 进批量模式，与 ⌘A 全选 / 🎯 P7+ filter 互补。
 - detail.md 编辑器加 ⌘P toggle preview-only 模式：VS Code preview-only lock 风，看长 detail.md 时焦点纯阅读。
 - PanelMemory item action row 加「📅 created N前」hover chip：让 owner glance 这条 memory 何时建立（与 PanelTasks 行内 N前 chip 对偶）。

@@ -146,6 +146,7 @@ pub fn run() {
             commands::debug::append_log,
             commands::debug::clear_logs,
             commands::debug::open_logs_dir,
+            commands::debug::get_logs_dir_path,
             commands::debug::get_llm_logs,
             commands::debug::get_cache_stats,
             commands::debug::reset_cache_stats,
