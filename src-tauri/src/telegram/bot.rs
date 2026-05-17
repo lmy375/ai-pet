@@ -1142,6 +1142,67 @@ async fn handle_tg_command(
                 crate::telegram::commands::format_feedback_reply(&text)
             }
         }
+        TgCommand::RecentChats { n } => {
+            // 读 active session → 过滤 user/assistant items → 取最后 N
+            // → truncate excerpt → 调 formatter。session 不存在 / 空时
+            // formatter 走 bootstrap hint。
+            let idx = crate::commands::session::list_sessions();
+            if idx.active_id.is_empty() {
+                crate::telegram::commands::format_recent_chats_reply(
+                    &[],
+                    "",
+                    "",
+                    n,
+                    0,
+                )
+            } else {
+                match crate::commands::session::load_session(idx.active_id.clone()) {
+                    Ok(session) => {
+                        let cap = crate::telegram::commands::RECENT_CHATS_EXCERPT_CHARS;
+                        let mut all: Vec<(String, String)> = session
+                            .items
+                            .iter()
+                            .filter_map(|item| {
+                                let obj = item.as_object()?;
+                                let t = obj.get("type")?.as_str()?;
+                                if t != "user" && t != "assistant" {
+                                    return None;
+                                }
+                                let content =
+                                    obj.get("content")?.as_str()?.to_string();
+                                let flat = content.replace(['\n', '\r'], " ");
+                                let trimmed =
+                                    flat.split_whitespace().collect::<Vec<_>>().join(" ");
+                                let chars: Vec<char> = trimmed.chars().collect();
+                                let excerpt = if chars.len() > cap {
+                                    let head: String = chars.iter().take(cap).collect();
+                                    format!("{}…", head)
+                                } else {
+                                    trimmed
+                                };
+                                Some((t.to_string(), excerpt))
+                            })
+                            .collect();
+                        let total = all.len();
+                        let want = (n as usize).max(1);
+                        if all.len() > want {
+                            let drop = all.len() - want;
+                            all.drain(0..drop);
+                        }
+                        crate::telegram::commands::format_recent_chats_reply(
+                            &all,
+                            &session.title,
+                            &session.updated_at,
+                            n,
+                            total,
+                        )
+                    }
+                    Err(_) => crate::telegram::commands::format_recent_chats_reply(
+                        &[], "", "", n, 0,
+                    ),
+                }
+            }
+        }
         TgCommand::Alarms { n } => {
             // 读 todo memory items → 过滤含 [remind: ...] 协议条目 →
             // 收集 (target, topic, title) → 按 target 升序排（最近 fire
