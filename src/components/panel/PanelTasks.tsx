@@ -3702,6 +3702,72 @@ export function PanelTasks({
     [insertMarkdownAtCursor],
   );
 
+  /// detail.md textarea ⌘] 跳到下一个 unchecked checklist `- [ ] `
+  /// 行 — 长 checklist 快速找未完成项 audit / 跳读。无 unchecked 时
+  /// wrap 到顶 (从头扫一遍)，仍无则 noop（不动 cursor）。⌘[ 走
+  /// 浏览器默认（前进 / 后退）不抢；只占 ⌘] 单方向。
+  ///
+  /// 扫描语义：cursor 之后的第一个 `- [ ] ` 行首匹配（含可选 indent）。
+  /// `- [x] ` / `- [X] ` 已完成 / 大小写都跳过。selectionRange 设到
+  /// 该行行首 → textarea 自动滚到位置 + 行首高亮。
+  const handleDetailJumpNextUnchecked = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (e.shiftKey || e.altKey) return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      if (e.key !== "]") return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const value = ta.value;
+      const cursor = ta.selectionStart ?? 0;
+      // regex 匹配 unchecked checklist 行首：行起始 + 可选 indent +
+      // `- [ ] `（space-only — 已 checked 是 `- [x] ` 或 `- [X] `）
+      const re = /(^|\n)([ \t]*)- \[ \] /g;
+      let foundIdx = -1;
+      let m: RegExpExecArray | null;
+      // 从 cursor 之后开始找：lastIndex = cursor + 1（防匹配 cursor
+      // 当前行起始）。先扫 cursor 之后，找不到再 wrap 从头扫一遍。
+      re.lastIndex = cursor;
+      while ((m = re.exec(value)) !== null) {
+        // m.index 是匹配起点（可能是行首字符 `\n` 或文件起始的 ""）；
+        // 真实 `- ` 起点 = m.index + m[1].length (1 if `\n`, 0 if "")
+        const lineStart = m.index + m[1].length;
+        if (lineStart > cursor) {
+          foundIdx = lineStart;
+          break;
+        }
+      }
+      if (foundIdx < 0) {
+        // wrap：从头扫到 cursor 之前
+        re.lastIndex = 0;
+        while ((m = re.exec(value)) !== null) {
+          const lineStart = m.index + m[1].length;
+          if (lineStart <= cursor) {
+            foundIdx = lineStart;
+            // 不 break — 取 cursor 之前的最后一个？不，取第一个让
+            // owner 知道"绕回到顶"语义
+            break;
+          }
+        }
+      }
+      if (foundIdx < 0) {
+        // 全无 unchecked → noop（不动 cursor，不抢焦点）
+        return true;
+      }
+      // 设光标到行首 + textarea 自动滚到位置
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = cur.selectionEnd = foundIdx;
+        setDetailCursorPos(foundIdx);
+        setDetailSelectionEnd(foundIdx);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea Enter 自动续列表前缀。识别行首 list marker：
   ///   - `- text` / `* text` / `+ text`：无序列表
   ///   - `- [ ] text` / `- [x] text`：GFM checklist（新行总是 `- [ ] `，让 owner
@@ -13505,6 +13571,10 @@ export function PanelTasks({
                                   // ⌘\` 代码块：选区 wrap ```\n<sel>\n```
                                   // fenced block。与 ⌘B/⌘I 同 wrap-mode 模板。
                                   if (handleDetailCodeBlock(e)) return;
+                                  // ⌘] 跳到下一个 unchecked `- [ ] ` 行 —
+                                  // 长 checklist 快速找未完成项 audit /
+                                  // 跳读。无命中时 wrap 从头扫。
+                                  if (handleDetailJumpNextUnchecked(e)) return;
                                   // ⌘⇧L 弹链接快速插入 popover：选区当 label
                                   // 仅输 url；空选区双输入 url + label。与
                                   // toolbar 「🔗」按钮（直接插模板 + url 占
