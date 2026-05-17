@@ -7898,6 +7898,74 @@ export function PanelTasks({
                 </span>
               );
             })()}
+            {/* iter #392: 「📊 priority distribution」 mini sparkline chip —
+                一行显 P0-P9 各档 pending 数 mini bar 让 owner 一眼看分布
+                偏态。color：P0-P3 muted / P4-P6 blue / P7-P9 rose（与
+                既有 priorityBands 三段 chip 同色族）。bar 高 normalize 到
+                max bucket count；空 bucket 渲 1px 占位让 10 列对齐。仅
+                priorityCounts 非空时显（避免 0 pending 时空 chip）。 */}
+            {priorityCounts.length > 0 && (() => {
+              const buckets: number[] = Array.from({ length: 10 }, () => 0);
+              for (const [p, count] of priorityCounts) {
+                if (p >= 0 && p <= 9) buckets[p] = count;
+              }
+              const max = Math.max(...buckets, 1);
+              const total = buckets.reduce((a, b) => a + b, 0);
+              const colorForP = (p: number) =>
+                p >= 7
+                  ? "var(--pet-tint-rose-fg, #e11d48)"
+                  : p >= 4
+                    ? "var(--pet-tint-blue-fg)"
+                    : "var(--pet-color-muted)";
+              const titleParts: string[] = [
+                `共 ${total} 条活动任务的 priority 分布（P0 = idea 抽屉 / P3 默认 / P7+ 高优）：`,
+              ];
+              for (let i = 9; i >= 0; i--) {
+                if (buckets[i] > 0) {
+                  titleParts.push(`  P${i}: ${buckets[i]} 条`);
+                }
+              }
+              return (
+                <span
+                  title={titleParts.join("\n")}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "flex-end",
+                    gap: 2,
+                    padding: "3px 6px 2px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    background: "var(--pet-color-card)",
+                    border: "1px solid var(--pet-color-border)",
+                    color: "var(--pet-color-muted)",
+                    userSelect: "none",
+                    height: 22,
+                  }}
+                  aria-label={`priority distribution: ${buckets.join(",")}`}
+                >
+                  <span style={{ marginRight: 3 }}>📊</span>
+                  {buckets.map((count, p) => {
+                    const heightPct =
+                      count > 0 ? Math.max(15, (count / max) * 100) : 5;
+                    return (
+                      <span
+                        key={p}
+                        style={{
+                          display: "inline-block",
+                          width: 4,
+                          height: `${heightPct}%`,
+                          background:
+                            count > 0
+                              ? colorForP(p)
+                              : "color-mix(in srgb, var(--pet-color-muted) 18%, transparent)",
+                          borderRadius: 1,
+                        }}
+                      />
+                    );
+                  })}
+                </span>
+              );
+            })()}
             {/* R104: priority 多选 chip 行。OR 命中（任一进集合即通过）；
                 P0 保留 "💡 idea 抽屉" glyph 让老用户直觉不变，其它走 P{n}
                 朴素文案。slate / gray 中性色与 dueFilter 同色族让 priority
