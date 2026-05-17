@@ -8,6 +8,13 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- TG bot `/edit_title <title> :: <new title>` 命令：仅改标题不动 description — 前端 inline rename 已有，TG 端缺。
+- PanelTasks 顶部 toolbar 「📅 仅今日新建」filter chip：仅显 created_at 今日的 task — sprint「我今天加了啥」audit。
+- PanelDebug 「📊 24h LLM 调用」chip：copy 「N calls · 平均 Xms · 错 Y%」一行 — 既有 1h chip 的 daily 视角。
+- ChatPanel input 长 input chip：input ≥ 500 字时浮 inline char-count 徽章 — 防 textarea 失控膨胀盲打。
+- PanelMemory item hover 「📊 行数」chip：显 detail.md 行数（仅 ≥ 20 行时显）— 长 doc 视觉密度 audit。
+- TG bot `/touched_today` 命令：列 updated_at 今日的 task — audit「我今天动过哪些 task」与 /today_done done-only 互补。
+
 
 
 
