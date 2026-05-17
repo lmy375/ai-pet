@@ -2486,6 +2486,60 @@ export function PanelDebug() {
         >
           📋 logs 路径
         </button>
+        {/* ⌚ 复制 uptime + 版本 chip：从既有 envInfo（appVersion /
+            schemaVersion / bootedAtMs）派生一行 markdown，一键复制 —
+            issue / triage 场景把版本 + 已运行时长一站式贴出。snapshot
+            完整 dump 是「📸 抓快照 A」，本 chip 是「最少必要 triage 头」
+            轻量入口。 */}
+        {envInfo && (
+          <button
+            onClick={async () => {
+              const parts: string[] = [];
+              if (envInfo.appVersion) {
+                parts.push(`pet v${envInfo.appVersion}`);
+              }
+              if (envInfo.schemaVersion > 0) {
+                parts.push(`schema v${envInfo.schemaVersion}`);
+              }
+              if (envInfo.bootedAtMs !== null) {
+                const elapsedSecs = Math.floor(
+                  (Date.now() - envInfo.bootedAtMs) / 1000,
+                );
+                const fmt = (secs: number) => {
+                  if (secs < 60) return `${secs} 秒`;
+                  if (secs < 3600)
+                    return `${Math.floor(secs / 60)} 分`;
+                  if (secs < 86400) {
+                    const h = Math.floor(secs / 3600);
+                    const m = Math.floor((secs % 3600) / 60);
+                    return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`;
+                  }
+                  const d = Math.floor(secs / 86400);
+                  const h = Math.floor((secs % 86400) / 3600);
+                  return h > 0 ? `${d} 天 ${h} 小时` : `${d} 天`;
+                };
+                parts.push(`已运行 ${fmt(elapsedSecs)}`);
+              }
+              const plat =
+                typeof navigator !== "undefined"
+                  ? navigator.platform
+                  : "";
+              if (plat) parts.push(plat);
+              const md = parts.join(" · ");
+              try {
+                await navigator.clipboard.writeText(md);
+                setDebugExportMsg(`⌚ 已复制：${md}`);
+              } catch (e) {
+                setDebugExportMsg(`复制失败：${e}`);
+              }
+              window.setTimeout(() => setDebugExportMsg(""), 3500);
+            }}
+            style={toolBtnStyle}
+            title={`复制一行 markdown 含 pet 版本 + schema 版本 + 已运行 + 平台 — issue / triage 场景一站式 paste。\n\n格式示例：pet v1.2.3 · schema v42 · 已运行 3 小时 15 分 · MacIntel`}
+          >
+            ⌚ uptime + 版本
+          </button>
+        )}
         {/* 🗄 detail .history 占盘 chip：扫所有 detail.md sibling .history
             目录大小 + dir 数。点击立即刷新（首屏自动拉一次）。让 owner
             知 safety-net 磁盘成本 — 决策"该不该清 / 调小 HISTORY_CAP"。
