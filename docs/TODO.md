@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot `/snooze_until <title> <HH:MM>` 命令：与 /sleep_until 对偶 — 给 task 设 snooze 到指定时刻。
 
 
 

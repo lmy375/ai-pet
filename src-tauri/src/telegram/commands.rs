@@ -326,6 +326,15 @@ pub enum TgCommand {
     /// "⚙️ mute" 按钮等价。让 owner 在 TG 上"嘿宠物先安静半小时"一句话搞定。
     /// clamp 0..=10080（≤ 7 天）。
     Mute { minutes: i64 },
+    /// `/snooze_until <title> <HH:MM>` —— 把任务 snooze 到指定本地时
+    /// 刻（与 /sleep_until 对偶 — 那个静音 proactive 整体到 HH:MM，本
+    /// 命令仅 snooze 单条 task 到 HH:MM）。空 title / 时刻解析失败由
+    /// handler 走 usage hint。HH:MM 解析 / 跨日规则与 /sleep_until 一致
+    /// （目标 ≤ now 落明日同时刻）。
+    SnoozeUntil {
+        title: String,
+        time: Option<(u8, u8)>,
+    },
     /// `/sleep_until <HH:MM>` —— 静音到指定本地时刻（与 /mute N 互补；
     /// 「安静到 8 点」更自然）。raw arg 由 handler 解析；目标时刻 ≤ now
     /// → 落到明日同时刻（owner 说"早上 8 点"，凌晨 1 点收到 → 视为今早
@@ -615,6 +624,7 @@ impl TgCommand {
             TgCommand::Snoozed => "snoozed",
             TgCommand::Mute { .. } => "mute",
             TgCommand::SleepUntil { .. } => "sleep_until",
+            TgCommand::SnoozeUntil { .. } => "snooze_until",
             TgCommand::Note { .. } => "note",
             TgCommand::Digest { .. } => "digest",
             TgCommand::Edit { .. } => "edit",
@@ -691,7 +701,8 @@ impl TgCommand {
             | TgCommand::Transient { text: title, .. }
             | TgCommand::Promote { title }
             | TgCommand::Demote { title }
-            | TgCommand::SleepUntil { raw: title } => title.as_str(),
+            | TgCommand::SleepUntil { raw: title }
+            | TgCommand::SnoozeUntil { title, .. } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::SwapPriority { title_a, .. } => title_a.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
@@ -850,6 +861,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
             ("sleep_until", "Mute proactive until an absolute local time (HH:MM) — complements /mute N relative minutes"),
+            ("snooze_until", "Snooze a task until an absolute local time (HH:MM) — complements /snooze relative presets"),
             ("note", "Save arbitrary text as a general memory item (quick brain-dump)"),
             ("reflect", "Save arbitrary text as an ai_insights memory item (reflection / self-observation)"),
             ("digest", "Recent N done tasks with [result:] summary one-liner (default 5, cap 20)"),
@@ -925,6 +937,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
             ("sleep_until", "静音到指定本地时刻（HH:MM）— 与 /mute N 互补；目标时刻 ≤ now 时落明日同时"),
+            ("snooze_until", "把任务 snooze 到指定本地时刻（HH:MM）— 与 /snooze 相对预设互补"),
             ("note", "把任意文本作 general memory item 存（owner 随手记一笔）"),
             ("reflect", "把任意文本作 ai_insights memory item 存（反思 / 自我洞察）"),
             ("digest", "最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）"),
@@ -1453,6 +1466,34 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
                 .unwrap_or(30);
             Some(TgCommand::Mute { minutes })
         }
+        // `/snooze_until <title> <HH:MM>`：rsplit 末尾 whitespace token
+        // 作 HH:MM；解析失败 → time=None 让 handler 走 usage hint。
+        // title 含空格 / 中文标点都保（与 /pri / /promote 同模板）。
+        "snooze_until" => {
+            let s = title.trim();
+            if s.is_empty() {
+                return Some(TgCommand::SnoozeUntil {
+                    title: String::new(),
+                    time: None,
+                });
+            }
+            let (title_out, time_out) = match s.rfind(char::is_whitespace) {
+                Some(pos) => {
+                    let left = s[..pos].trim();
+                    let right = s[pos..].trim();
+                    if let Some(hm) = parse_sleep_until_time(right) {
+                        (left.to_string(), Some(hm))
+                    } else {
+                        (s.to_string(), None)
+                    }
+                }
+                None => (s.to_string(), None),
+            };
+            Some(TgCommand::SnoozeUntil {
+                title: title_out,
+                time: time_out,
+            })
+        }
         // `/sleep_until <HH:MM>`：raw arg 由 handler 走 parse_sleep_until_time
         // 解析 + 计算"到 target 剩多少分钟"。空 / 无效格式由 handler 走
         // missing-arg 反馈。snake_case 命名避开 dash drift-defense。
@@ -1885,7 +1926,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "silenced", "silent_all", "markers", "tags", "tag", "tags_for", "touch", "mood",
     "whoami", "today", "today_done", "yesterday", "streak", "now", "last_speech",
     "aware", "here",
-    "last", "random", "sleep", "sleep_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
+    "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
     "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "timeline",
@@ -2002,7 +2043,8 @@ pub fn format_help_for_topic(
         "last" => "🆕 /last\n\n用法：显本聊天派单中最近 created_at 的一条 task — title + status emoji + 相对创建时间 + raw_description 前 200 字符预览。无参。owner 想「我刚 /task 创的那条对不对」闪查时用 — 不必走 /tasks 全表扫。\n\n示例：\n  /last\n\n相关：/show <title>（看完整 raw + detail）；/recent（最近 N 条 done）；/tasks（全状态清单）。",
         "random" => "🎲 /random\n\n用法：从本聊天派单的 active 任务（pending / error）里随机抽 1 条让宠物推荐 — 给 owner「选择困难」/「不知道先做哪个」时让 pet 决定下一步。无参；多次调用会得到不同 task。无 active 任务时给兜底文案。\n\n示例：\n  /random\n\n相关：/tasks（看全清单）；/blocked（被锁住的）；/today（今日到期）。",
         "sleep" => "🌙 /sleep\n\n用法：一键让宠物 mute proactive 8 小时 + 友好「晚安」reply。无参。比手敲 `/mute 480` 更直觉 — owner 睡前 / 长会议 / 想 deep work 时一句话搞定。\n\n示例：\n  /sleep\n\n相关：/mute [N]（精确控制 N 分钟）；/sleep_until HH:MM（静音到指定时刻）；/mute 0（立刻解除静音）。",
-        "sleep_until" => "🌙 /sleep_until <HH:MM>\n\n用法：静音 proactive 到指定本地时刻（HH:MM 24 小时制；H:MM / HH / H 也接受 — 单数字视为 HH:00）。与 /mute N（相对分钟数）/ /sleep（固定 8h）互补 — owner 想「安静到 8 点」/「安静到中午」更自然。\n\n语义：目标时刻 ≤ now → 落到明日同时刻（owner 凌晨 1 点说「到 8 点」视为今早 8:00，非次日 8:00 反直觉）；clamp 1..=10080 分钟（≤ 7 天）。\n\n示例：\n  /sleep_until 8:00    （静音到 8 点）\n  /sleep_until 22:30   （静音到 22:30）\n  /sleep_until 14      （静音到下午 2 点）\n\n相关：/mute [N]（相对分钟数）；/sleep（一键 8h）；/mute 0（立刻解除）。",
+        "sleep_until" => "🌙 /sleep_until <HH:MM>\n\n用法：静音 proactive 到指定本地时刻（HH:MM 24 小时制；H:MM / HH / H 也接受 — 单数字视为 HH:00）。与 /mute N（相对分钟数）/ /sleep（固定 8h）互补 — owner 想「安静到 8 点」/「安静到中午」更自然。\n\n语义：目标时刻 ≤ now → 落到明日同时刻（owner 凌晨 1 点说「到 8 点」视为今早 8:00，非次日 8:00 反直觉）；clamp 1..=10080 分钟（≤ 7 天）。\n\n示例：\n  /sleep_until 8:00    （静音到 8 点）\n  /sleep_until 22:30   （静音到 22:30）\n  /sleep_until 14      （静音到下午 2 点）\n\n相关：/mute [N]（相对分钟数）；/sleep（一键 8h）；/snooze_until <title> <HH:MM>（单条 task 同模板）；/mute 0（立刻解除）。",
+        "snooze_until" => "💤 /snooze_until <title> <HH:MM>\n\n用法：把指定 task snooze 到本地时刻（HH:MM 24 小时制；H:MM / HH / H 也接受）。与 /sleep_until 对偶 — 那个静音 proactive 整体到 HH:MM，本命令仅 snooze 单条 task 到 HH:MM。与既有 /snooze relative preset（tonight / tomorrow / 30m / 等）互补。\n\n语义：目标时刻 ≤ now → 落到明日同时刻；title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /snooze_until 整理 Downloads 18:00   （今晚 6 点醒）\n  /snooze_until 写周报 9:00              （明早 9 点醒）\n  /snooze_until 1 14                      （/tasks 第 1 条到下午 2 点）\n\n相关：/snooze <title> [preset]（相对预设）；/unsnooze <title>；/snoozed（列被暂停的）；/sleep_until（静音 proactive 整体）。",
         "quick" => "⚡ /quick <text>\n\n用法：静默创建一条 P3 task — 后端走 /task 同路径，但 reply 极短（仅 ✓ + title），适合 owner 想「快速 dump 想法 / 灵感不被长 reply 打扰」时用。priority 始终 P3；想精细化（!! / !!!）走 /task。空 text 由 handler 走 missing-arg hint。\n\n示例：\n  /quick 整理 ~/Downloads\n  /quick 写周报\n\n相关：/task <title>（带 !! P5 / !!! P7 前缀 + 完整确认 reply）；/note（杂项 brain-dump，不进 butler_tasks）。",
         "yesterday" => "📅 /yesterday\n\n用法：列本聊天派单中昨日完成的任务标题 + result 摘要（按 updated_at 倒序）。无参。owner 想 audit 「昨天做完了啥」时用。\n\n示例：\n  /yesterday\n\n相关：/today（今日切片）；/today_done（今日 done + result）；/recent（不限日期最近 N）；/digest（含 result 摘要的最近 N）。",
         "today_done" => "📅 /today_done\n\n用法：列今日完成的任务标题 + `[result:]` 摘要一行式（按 updated_at 倒序）。无参；多余尾部忽略。owner 想 audit「我今天做完啥 + 各条产物」一行扫读时用。\n\n输出格式：\n  📅 今日（YYYY-MM-DD）完成 N 条：\n  · ✅ <title> — <result preview 40 字截断>\n  · ✅ ...\n\n对比 /today：那个含 due 段（pending + 今日 due）+ done 段（标题清单无 result）—— 完整今日叙事；本命令是「纯 done 切片 + result 摘要」分流入口，与 /yesterday 同模板但 scope 是今日。\n\n示例：\n  /today_done\n\n相关：/today（含 due 双视图）；/yesterday（昨日 done + result）；/digest [N]（不限日期最近 N done + result）；/streak（连续 done 天数）。",
@@ -2134,6 +2176,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
         "/sleep_until <HH:MM>  —  静音到指定本地时刻（HH:MM；目标 ≤ now → 明日同时；与 /mute N 互补）".to_string(),
+        "/snooze_until <title> <HH:MM>  —  把任务 snooze 到指定本地时刻（与 /snooze relative preset 互补；目标 ≤ now → 明日同时）".to_string(),
         "/note <text>  —  把任意文本作 general memory item 存（随手记一笔）".to_string(),
         "/reflect <text>  —  把任意文本作 ai_insights memory item 存（反思 / 自我洞察，与 /note 对偶但分类不同）".to_string(),
         "/digest [N]  —  最近 N 条 done task 标题 + result 一行式（默认 5，上限 20）".to_string(),
@@ -3631,6 +3674,52 @@ pub fn format_sleep_until_reply(
     format!(
         "🌙 已静音 proactive 到 {}{}（{} 后自动解除）。期间宠物不主动开口；用 /mute 0 立刻解除。",
         when, cross_hint, nice
+    )
+}
+
+/// `/snooze_until` 命令回复文案。pure：caller 已 parse title + HH:MM
+/// + 算 target Local time + 调 task_set_snooze。本函数仅按入参拼
+/// owner 友好文案。
+///
+/// 4 态：
+/// - title 空 → usage hint
+/// - time 解析失败（None）→ 错误 + 用法 hint
+/// - title resolve 失败（save_ok=Err）→ 显具体错误
+/// - 成功 → 「💤 已 snooze『title』到 HH:MM（跨日 hint 如有）」
+pub fn format_snooze_until_reply(
+    title: &str,
+    time: Option<(u8, u8)>,
+    until_local: Option<chrono::DateTime<chrono::Local>>,
+    crosses_midnight: bool,
+    save_ok: Result<(), String>,
+) -> String {
+    let t = title.trim();
+    if t.is_empty() {
+        return "💤 用法：/snooze_until <title> <HH:MM>\n把任务 snooze 到指定本地时刻（HH:MM 24h；H:MM / HH / H 单数字也接受）。\n例：/snooze_until 整理 Downloads 18:00\n例：/snooze_until 写周报 9:00\n\n与 /snooze <title> [preset] 互补 — 那个走相对预设（30m / 2h / tonight 等），本命令是绝对时刻。".to_string();
+    }
+    let Some((h, m)) = time else {
+        return format!(
+            "💤 「{}」末尾不是合法时刻。\n用法：/snooze_until <title> <HH:MM>（24h；H:MM / HH / H 单数字也接受）。\n例：/snooze_until 整理 Downloads 18:00",
+            t
+        );
+    };
+    if let Err(reason) = save_ok {
+        return format!(
+            "💤 设 snooze 失败：{}\n（title `{}` / 时刻 {:02}:{:02}）",
+            reason, t, h, m
+        );
+    }
+    let when = until_local
+        .map(|dt| dt.format("%H:%M").to_string())
+        .unwrap_or_else(|| format!("{:02}:{:02}", h, m));
+    let cross_hint = if crosses_midnight {
+        "（明日同时刻 — 目标 ≤ now 自动跨日）"
+    } else {
+        ""
+    };
+    format!(
+        "💤 已 snooze 「{}」到 {}{}。期间不进 proactive 选单；用 /unsnooze {} 立刻解除。",
+        t, when, cross_hint, t
     )
 }
 
@@ -6171,7 +6260,7 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent",
             "unsilent", "silenced", "markers", "tags", "mood", "whoami", "today",
-            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "quick",
+            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "snooze_until", "quick",
             "due", "recent", "oldest_n", "active_recent", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
@@ -6643,7 +6732,7 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "buckets", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned",
             "pinned_due", "today",
-            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "quick",
+            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "snooze_until", "quick",
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
@@ -9055,6 +9144,116 @@ mod tests {
         // 3 天 = 4320 分钟
         let s = format_mute_reply(4320, Some(until));
         assert!(s.contains("3 天"), "{s}");
+    }
+
+    // -------- /snooze_until parse + format --------
+
+    #[test]
+    fn snooze_until_parses_title_and_time() {
+        assert_eq!(
+            parse_tg_command("/snooze_until 整理 Downloads 18:00"),
+            Some(TgCommand::SnoozeUntil {
+                title: "整理 Downloads".to_string(),
+                time: Some((18, 0)),
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/snooze_until 写周报 9"),
+            Some(TgCommand::SnoozeUntil {
+                title: "写周报".to_string(),
+                time: Some((9, 0)),
+            })
+        );
+    }
+
+    #[test]
+    fn snooze_until_parses_empty_arg() {
+        assert_eq!(
+            parse_tg_command("/snooze_until"),
+            Some(TgCommand::SnoozeUntil {
+                title: String::new(),
+                time: None,
+            })
+        );
+    }
+
+    #[test]
+    fn snooze_until_invalid_time_falls_into_title_time_none() {
+        // 末尾不是合法 HH:MM → 整段当 title，time=None
+        assert_eq!(
+            parse_tg_command("/snooze_until 整理 Downloads laterxx"),
+            Some(TgCommand::SnoozeUntil {
+                title: "整理 Downloads laterxx".to_string(),
+                time: None,
+            })
+        );
+    }
+
+    #[test]
+    fn format_snooze_until_empty_title_shows_usage() {
+        let s = format_snooze_until_reply("", None, None, false, Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/snooze_until <title> <HH:MM>"), "{s}");
+    }
+
+    #[test]
+    fn format_snooze_until_invalid_time_shows_error() {
+        let s = format_snooze_until_reply(
+            "整理 Downloads",
+            None,
+            None,
+            false,
+            Ok(()),
+        );
+        assert!(s.contains("不是合法时刻"), "{s}");
+        assert!(s.contains("整理 Downloads"), "echoes title: {s}");
+    }
+
+    #[test]
+    fn format_snooze_until_save_failure_shows_reason() {
+        let s = format_snooze_until_reply(
+            "missing_task",
+            Some((18, 0)),
+            None,
+            false,
+            Err("task not found: missing_task".to_string()),
+        );
+        assert!(s.contains("设 snooze 失败"), "{s}");
+        assert!(s.contains("not found"), "{s}");
+    }
+
+    #[test]
+    fn format_snooze_until_success_shows_target() {
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 18, 0, 0)
+            .unwrap();
+        let s = format_snooze_until_reply(
+            "整理 Downloads",
+            Some((18, 0)),
+            Some(until),
+            false,
+            Ok(()),
+        );
+        assert!(s.contains("💤"), "{s}");
+        assert!(s.contains("整理 Downloads"), "{s}");
+        assert!(s.contains("18:00"), "{s}");
+        assert!(s.contains("/unsnooze 整理 Downloads"), "follow-up hint: {s}");
+        assert!(!s.contains("明日同时刻"), "no cross-midnight: {s}");
+    }
+
+    #[test]
+    fn format_snooze_until_cross_midnight_adds_hint() {
+        let until = chrono::Local
+            .with_ymd_and_hms(2026, 5, 18, 9, 0, 0)
+            .unwrap();
+        let s = format_snooze_until_reply(
+            "写周报",
+            Some((9, 0)),
+            Some(until),
+            true,
+            Ok(()),
+        );
+        assert!(s.contains("明日同时刻"), "cross-midnight hint: {s}");
     }
 
     // -------- /sleep_until parse + format --------
