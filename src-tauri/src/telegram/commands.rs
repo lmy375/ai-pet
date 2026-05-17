@@ -100,7 +100,13 @@ pub enum TgCommand {
     /// `/version` —— 查看 pet app 版本 + SQLite schema 版本。无参；与桌面
     /// `/version` slash / Settings chip 同源。bug report 写"什么版本"用。
     Version,
-    Help,
+    /// `/help` —— 显示帮助。无 topic 时列全表（每命令一行 + 一行描述）；
+    /// 有 topic（如 `/help cancel`）时只显该命令的详细用法 + 示例 + 注意
+    /// 事项。topic 可以带 `/` 前缀（`/help /cancel`）或不带（`/help cancel`），
+    /// 大小写不敏感。
+    Help {
+        topic: Option<String>,
+    },
     Unknown { name: String },
 }
 
@@ -132,7 +138,7 @@ impl TgCommand {
             TgCommand::Snoozed => "snoozed",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
-            TgCommand::Help => "help",
+            TgCommand::Help { .. } => "help",
             TgCommand::Unknown { name } => name,
         }
     }
@@ -165,7 +171,7 @@ impl TgCommand {
             | TgCommand::Snoozed
             | TgCommand::Reset
             | TgCommand::Version
-            | TgCommand::Help
+            | TgCommand::Help { .. }
             | TgCommand::Unknown { .. } => "",
         }
     }
@@ -592,7 +598,15 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/version` 无参；多余尾部忽略
         "version" => Some(TgCommand::Version),
         // `/help` 同 /tasks：无参，多余尾部忽略
-        "help" => Some(TgCommand::Help),
+        // `/help` 无参 = 显全表；`/help <cmd>` = 显该命令详细用法。topic
+        // 可以带 `/` 前缀或不带，大小写不敏感 — 都在 format helper 内规整。
+        "help" => Some(TgCommand::Help {
+            topic: if title.is_empty() {
+                None
+            } else {
+                Some(title)
+            },
+        }),
         _ => Some(TgCommand::Unknown { name }),
     }
 }
@@ -834,6 +848,65 @@ pub fn format_tasks_no_change() -> String {
 
 /// `/help` 输出文案。每条命令一行 `/<name> [<arg>] — <说明>` + 总注脚。
 /// pure：方便单测与未来调试器复用（如 panel 里复用同一份命令矩阵展示）。
+/// `/help <cmd>` 单命令详细文案。pure：返回该命令的用法 + 示例 + 注意事项
+/// 多行段。topic 可带或不带 `/` 前缀，大小写不敏感。命中 → 详细段；不命
+/// 中 → 友好兜底（"未知命令 X — /help 看全表"）。custom 命令命中时显
+/// "（自定义命令）"提示 + 描述（owner 自配，详细用法只他自己知道）。
+pub fn format_help_for_topic(
+    topic: &str,
+    custom: &[crate::commands::settings::TgCustomCommand],
+) -> String {
+    let name = topic.trim().trim_start_matches('/').to_lowercase();
+    if name.is_empty() {
+        return format_help_text(custom);
+    }
+    let detail = match name.as_str() {
+        "task" => "📝 /task <title>\n\n用法：把单条任务塞进队列。\n  · 默认优先级 P3\n  · 前缀 `!!` → P5（紧迫）\n  · 前缀 `!!!` → P7（最高）\n\n示例：\n  /task 整理 Downloads\n  /task !! 写周报\n  /task !!! 修复线上 bug\n\n创建后 chat 自动收到确认 + origin marker [origin:tg:<chat_id>]，桌面 watcher 完成时也回传通知。",
+        "tasks" => "📋 /tasks\n\n用法：列出本会话派出的任务清单（按 compare_for_queue 排序 + 按状态分组）。无参；多余尾部忽略。\n\n示例：\n  /tasks\n\n相关：/stats（数字汇总）/ /today（今日切片）/ /recent（近完成）/ /find（关键词搜）。",
+        "stats" => "📊 /stats\n\n用法：一行汇总当前 chat 派单的状态计数 — 待办 / 逾期 / 今日完成 / 出错 / 今日取消。无参。\n\n示例：\n  /stats\n\n与 /tasks 互补：/stats 看数字汇总，/tasks 看具体清单。",
+        "done" => "✅ /done <title>\n\n用法：把 pending / error 任务标 done。已 done / cancelled 拒绝重复操作。\n\n示例：\n  /done 整理 Downloads\n\n注意：TG 端不支持 `[result: ...]` 摘要；想加 result 回桌面板单条 mark-done dialog。",
+        "cancel" => "🚫 /cancel <title>\n\n用法：取消一条 pending / error 任务（终态）。\n\n示例：\n  /cancel 整理 Downloads\n  /cancel 1   （/tasks 输出第 1 条）\n\n相关：/retry 把 error 重置回 pending；二者可来回切。",
+        "retry" => "🔄 /retry <title>\n\n用法：把 status==Error 的任务重置为 pending，剥所有 [error: ...] / [done] markers。\n\n示例：\n  /retry 跑步\n\n限制：仅 error 状态可 retry；pending / done / cancelled 拒。",
+        "snooze" => "💤 /snooze <title> [preset]\n\n用法：暂停任务到指定时刻（preset 缺省 30m）。\n\nPreset：\n  · 30m / 2h / Nm / Nh（Nm ≤ 7 天）\n  · tonight（今晚 18:00）\n  · tomorrow（明早 09:00）\n  · monday（下周一 09:00）\n  · 今晚 / 明早 / 明天 / 周一 / 下周一 CJK 同义词\n\n示例：\n  /snooze 写周报\n  /snooze 跑步 tonight\n  /snooze 读论文 2h\n\n过点后 marker 自动失效，任务回到 proactive 选单。",
+        "unsnooze" => "💤 /unsnooze <title>\n\n用法：清掉任务的 [snooze: ...] marker，立即回到 proactive 选单。\n\n示例：\n  /unsnooze 写周报",
+        "pin" => "📌 /pin <title>\n\n用法：钉住关键任务（写 [pinned] marker）。pinned task 在桌面任务面板浮顶 + 「📌 N」chip 计数同源。\n\n示例：\n  /pin 季度规划\n\n相关：/pinned 列所有 pinned；/unpin 取消。",
+        "unpin" => "📌 /unpin <title>\n\n用法：清掉任务的 [pinned] marker。\n\n示例：\n  /unpin 季度规划",
+        "pinned" => "📌 /pinned\n\n用法：列出本聊天派单中所有 pinned 任务（按状态分组）。无参。\n\n示例：\n  /pinned\n\n相关：/markers 一次列 pinned + silent 联合。",
+        "silent" => "🔇 /silent <title>\n\n用法：标静默 — LLM 不主动选此任务，但面板 / 手动触发仍可。\n\n示例：\n  /silent 周末家务\n\n相关：/silenced 列所有 silent；/unsilent 取消。owner 不想让 pet 主动 pick 某条时用。",
+        "unsilent" => "🔇 /unsilent <title>\n\n用法：清掉 [silent] marker，任务回到 LLM auto-pick 池。\n\n示例：\n  /unsilent 周末家务",
+        "silenced" => "🔇 /silenced\n\n用法：列出本聊天派单中所有 silent 任务（按状态分组）。无参。\n\n示例：\n  /silenced",
+        "markers" => "🏷 /markers\n\n用法：一次列 pinned + silent 两段（与 /pinned + /silenced 组合等价）。无参。\n\n示例：\n  /markers\n\n给 owner audit 「我标过哪些 owner-intent」用。",
+        "mood" => "🐾 /mood\n\n用法：查看宠物当前心情（与桌面 MoodWidget 同 mood state 文件）。无参。\n\n示例：\n  /mood",
+        "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
+        "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）。",
+        "recent" => "🕒 /recent [N]\n\n用法：最近 N 条 done 任务标题（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /recent\n  /recent 10\n\n相关：/today（只看今日 done）；/tasks（全部状态）。",
+        "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）。",
+        "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）。",
+        "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
+        "reset" => "🔄 /reset\n\n用法：清掉 LLM 对话上下文（保留 system / 人设）。无 armed 二次确认（与桌面 `/clear` 不同 — 不同设备 / 多用户文化）。\n\n示例：\n  /reset",
+        "version" => "🐾 /version\n\n用法：查看 pet app 版本 + SQLite schema 版本。无参。bug report 写「什么版本」用。\n\n示例：\n  /version",
+        "help" => "❓ /help [cmd]\n\n用法：\n  · /help（无参）→ 显全表 + 一行描述\n  · /help <cmd> → 显该命令的详细用法 + 示例\n\n示例：\n  /help\n  /help cancel\n  /help /snooze   （`/` 前缀也接受）",
+        _ => "",
+    };
+    if !detail.is_empty() {
+        return detail.to_string();
+    }
+    // custom 命令命中 → 显 owner 配的 description；详细用法只 owner 自己知道
+    for c in custom {
+        if c.name.trim().to_lowercase() == name {
+            return format!(
+                "🛠 /{}（自定义命令）\n\n{}",
+                c.name.trim(),
+                c.description.trim()
+            );
+        }
+    }
+    format!(
+        "❓ 未知命令「/{}」。\n发 /help 看完整命令表。",
+        name
+    )
+}
+
 pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -> String {
     // 精简版：把 `/task` + `/task !!` + `/task !!!` 合到一行；
     // `/cancel` `/retry` 用斜杠紧贴；保留 `/tasks` 单行；总注脚移到首行
@@ -1968,7 +2041,7 @@ mod tests {
         assert_eq!(tasks.name(), "tasks");
         assert_eq!(tasks.title(), "");
 
-        let help = TgCommand::Help;
+        let help = TgCommand::Help { topic: None };
         assert_eq!(help.name(), "help");
         assert_eq!(help.title(), "");
 
@@ -2156,21 +2229,99 @@ mod tests {
     // -------- /help parsing + format --------
 
     #[test]
-    fn parse_help_command() {
-        assert_eq!(parse_tg_command("/help"), Some(TgCommand::Help));
+    fn parse_help_command_no_topic() {
+        assert_eq!(
+            parse_tg_command("/help"),
+            Some(TgCommand::Help { topic: None })
+        );
+        assert_eq!(
+            parse_tg_command("/help   "),
+            Some(TgCommand::Help { topic: None })
+        );
     }
 
     #[test]
     fn parse_help_is_case_insensitive() {
-        assert_eq!(parse_tg_command("/HELP"), Some(TgCommand::Help));
-        assert_eq!(parse_tg_command("/Help"), Some(TgCommand::Help));
+        assert_eq!(
+            parse_tg_command("/HELP"),
+            Some(TgCommand::Help { topic: None })
+        );
+        assert_eq!(
+            parse_tg_command("/Help"),
+            Some(TgCommand::Help { topic: None })
+        );
     }
 
     #[test]
-    fn parse_help_ignores_trailing_argument() {
-        // 同 /tasks：多余尾部不触发 Unknown
-        assert_eq!(parse_tg_command("/help anything"), Some(TgCommand::Help));
-        assert_eq!(parse_tg_command("/help   "), Some(TgCommand::Help));
+    fn parse_help_with_topic_keeps_arg() {
+        assert_eq!(
+            parse_tg_command("/help cancel"),
+            Some(TgCommand::Help {
+                topic: Some("cancel".to_string())
+            })
+        );
+        // `/` 前缀也接受
+        assert_eq!(
+            parse_tg_command("/help /snooze"),
+            Some(TgCommand::Help {
+                topic: Some("/snooze".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn format_help_for_topic_strips_slash_prefix() {
+        let s = format_help_for_topic("/cancel", &[]);
+        assert!(s.contains("/cancel"));
+        assert!(s.contains("用法"));
+    }
+
+    #[test]
+    fn format_help_for_topic_is_case_insensitive() {
+        let s = format_help_for_topic("CANCEL", &[]);
+        assert!(s.contains("/cancel"));
+    }
+
+    #[test]
+    fn format_help_for_unknown_topic_returns_friendly_hint() {
+        let s = format_help_for_topic("nope", &[]);
+        assert!(s.contains("未知命令"), "{s}");
+        assert!(s.contains("/help"), "{s}");
+    }
+
+    #[test]
+    fn format_help_for_custom_command_returns_owner_description() {
+        let custom = vec![crate::commands::settings::TgCustomCommand {
+            name: "morning".to_string(),
+            description: "把今天的日历汇总发到群".to_string(),
+        }];
+        let s = format_help_for_topic("morning", &custom);
+        assert!(s.contains("/morning"), "{s}");
+        assert!(s.contains("自定义命令"), "{s}");
+        assert!(s.contains("把今天的日历汇总发到群"), "{s}");
+    }
+
+    #[test]
+    fn format_help_for_empty_topic_falls_back_to_full_help() {
+        // 空 topic 视作 /help 无参 — 显全表
+        let s = format_help_for_topic("", &[]);
+        let full = format_help_text(&[]);
+        assert_eq!(s, full);
+    }
+
+    #[test]
+    fn format_help_for_each_listed_command_returns_detail() {
+        // 全表里每条命令都应该有 /help <cmd> 详细文案，避免 drift
+        for name in [
+            "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
+            "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
+            "silenced", "markers", "mood", "whoami", "today", "recent",
+            "find", "blocked", "snoozed", "reset", "version", "help",
+        ] {
+            let s = format_help_for_topic(name, &[]);
+            assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
+            assert!(!s.contains("未知命令"), "{name} fell to unknown branch: {s}");
+        }
     }
 
     // -------- fuzzy match --------

@@ -872,7 +872,13 @@ async fn handle_tg_command(
             }
             crate::telegram::commands::format_reset_reply()
         }
-        TgCommand::Help => format_help_text(&state.custom_command_objects),
+        TgCommand::Help { topic } => match topic {
+            Some(t) => crate::telegram::commands::format_help_for_topic(
+                &t,
+                &state.custom_command_objects,
+            ),
+            None => format_help_text(&state.custom_command_objects),
+        },
         TgCommand::Unknown { name } => {
             // 用 levenshtein 在已知命令名里找距 ≤ 2 的最近候选 → 在反馈
             // 首行加 "你是想发 /xxx 吗？"，避免用户来回翻 /help。
