@@ -3915,6 +3915,128 @@ export function PanelTasks({
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSelectedIdx, setPaletteSelectedIdx] = useState(0);
   const paletteInputRef = useRef<HTMLInputElement>(null);
+  /// detail 编辑器 `@` 触发 task title 自动补全 popover：detect 当前 cursor
+  /// 之前是否有 word-boundary `@`，提取 `@` 后到 cursor 的串作 query 实时
+  /// 筛 visibleTasks 显 popover。↑↓ 选 / Enter | Tab 接受 / Esc 关。接受
+  /// 后把 `@query` 替换成 `「title」`（与 `🔗 拼为 ref` / ⌘K palette 同协议）。
+  /// `atDismissedAt`: owner Esc 后记录关 popover 时的 @ 位置，让 cursor 还
+  /// 在该 @ 内时不重新弹（owner 显式说"不"应该 sticky）；离开 @ 词后重置。
+  const [atDismissedAt, setAtDismissedAt] = useState<number | null>(null);
+  const atTrigger = useMemo(() => {
+    if (editingDetailTitle === null) return null;
+    const cursor = detailCursorPos;
+    const text = editingDetailContent;
+    if (cursor === 0 || cursor > text.length) return null;
+    // 从 cursor 向回扫找 word-boundary `@`：遇 whitespace 即 abort（说明
+    // @ 在更早的 word 里 / 当前 word 无 @）；遇 `@` 时确认前一字符是 start /
+    // whitespace 才算 trigger（避免 email `foo@bar.com` 误触）。
+    let atPos = -1;
+    for (let i = cursor - 1; i >= 0; i--) {
+      const ch = text[i];
+      if (ch === "@") {
+        if (i === 0 || /\s/.test(text[i - 1])) {
+          atPos = i;
+        }
+        break;
+      }
+      if (/\s/.test(ch)) break;
+    }
+    if (atPos < 0) return null;
+    if (atDismissedAt === atPos) return null;
+    const query = text.slice(atPos + 1, cursor);
+    return { atPos, query };
+  }, [
+    editingDetailContent,
+    detailCursorPos,
+    atDismissedAt,
+    editingDetailTitle,
+  ]);
+  /// cursor 离开 @ 词后清 atDismissedAt（让下次 owner 重新打 @ 时弹起）。
+  useEffect(() => {
+    if (atDismissedAt === null) return;
+    if (atTrigger !== null) return;
+    // atTrigger 为 null 说明 cursor 已离开 @ 词；清 dismissed 标记
+    setAtDismissedAt(null);
+  }, [atTrigger, atDismissedAt]);
+  /// 实时筛 visibleTasks：query 空显前 8 条；非空走标题 case-insensitive
+  /// substring 命中，cap 8。
+  const atSuggestions = useMemo(() => {
+    if (!atTrigger) return [] as TaskView[];
+    const q = atTrigger.query.toLowerCase();
+    if (q.length === 0) return visibleTasks.slice(0, 8);
+    return visibleTasks
+      .filter((t) => t.title.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [atTrigger, visibleTasks]);
+  const [atSelectedIdx, setAtSelectedIdx] = useState(0);
+  /// query 变化时重置 idx 到 0（避免 owner 删字时 idx 越界悄悄指错条）。
+  useEffect(() => {
+    setAtSelectedIdx(0);
+  }, [atTrigger?.query]);
+  /// 接受当前 popover 选中条：用 `「title」` 替换 `@query` 段，cursor 落
+  /// token 尾让 owner 接着敲后续文字。
+  const acceptAtSuggestion = useCallback(
+    (title: string) => {
+      if (!atTrigger) return;
+      const cursor = detailCursorPos;
+      const text = editingDetailContent;
+      const token = `「${title}」`;
+      const before = text.slice(0, atTrigger.atPos);
+      const after = text.slice(cursor);
+      const next = `${before}${token}${after}`;
+      setEditingDetailContent(next);
+      const newPos = atTrigger.atPos + token.length;
+      setDetailCursorPos(newPos);
+      setDetailSelectionEnd(newPos);
+      setAtDismissedAt(null);
+      window.requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.setSelectionRange(newPos, newPos);
+      });
+    },
+    [atTrigger, detailCursorPos, editingDetailContent],
+  );
+  /// textarea onKeyDown 顶部 hook：popover 激活时拦截 ↑↓ / Enter / Tab / Esc。
+  /// 返回 true → 调用方应早 return（事件已处理）；false → 走原 onKeyDown。
+  const handleAtKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!atTrigger) return false;
+      if (atSuggestions.length === 0 && e.key !== "Escape") return false;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setAtSelectedIdx((i) =>
+          atSuggestions.length === 0
+            ? 0
+            : Math.min(i + 1, atSuggestions.length - 1),
+        );
+        return true;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setAtSelectedIdx((i) => Math.max(0, i - 1));
+        return true;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const safe = Math.max(
+          0,
+          Math.min(atSelectedIdx, atSuggestions.length - 1),
+        );
+        const target = atSuggestions[safe];
+        if (target) acceptAtSuggestion(target.title);
+        return true;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setAtDismissedAt(atTrigger.atPos);
+        return true;
+      }
+      return false;
+    },
+    [atTrigger, atSuggestions, atSelectedIdx, acceptAtSuggestion],
+  );
   /// 把 `「title」` 全角直角引号 ref token 插到 detail.md textarea 当前光标
   /// 位置（或替换选区）。光标落 token 末尾让 owner 接着敲。token 形态与
   /// renderContentWithTaskRefs / `🔗 拼为 ref` 同协议。
@@ -10332,6 +10454,11 @@ export function PanelTasks({
                                   void insertImageBlobsIntoDetail(blobs);
                                 }}
                                 onKeyDown={(e) => {
+                                  // @ 触发 task 自动补全 popover 激活时拦
+                                  // 截 ↑↓ / Enter / Tab / Esc。返 true → 提前
+                                  // return 防 list-continue / bracket-pair / ⌘S
+                                  // 等下游 handler 抢键。
+                                  if (handleAtKeyDown(e)) return;
                                   // Enter 自动续列表前缀（无序 / GFM checklist /
                                   // 有序 / blockquote）。优先级在 bracket 之前
                                   // —— Enter 不是 bracket pair 触发字符，互不
@@ -10509,8 +10636,103 @@ export function PanelTasks({
                                   display: "flex",
                                   alignItems: "stretch",
                                   width: "100%",
+                                  position: "relative",
                                 }}
                               >
+                                {/* @ task title 自动补全 popover：detect 当前
+                                    cursor 之前的 word-boundary @ 触发，键入即筛。
+                                    ↑↓ 选 / Enter | Tab 接受 / Esc 关。popover
+                                    绝对定位贴 textarea 底，max-height 220 滚动。
+                                    悬浮在 wrapper 内不撑出布局。 */}
+                                {atTrigger && atSuggestions.length > 0 && (
+                                  <div
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    style={{
+                                      position: "absolute",
+                                      top: "100%",
+                                      left: 8,
+                                      right: 8,
+                                      marginTop: 4,
+                                      maxHeight: 220,
+                                      overflowY: "auto",
+                                      padding: 4,
+                                      background: "var(--pet-color-card)",
+                                      border:
+                                        "1px solid var(--pet-color-border)",
+                                      borderRadius: 6,
+                                      boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                                      zIndex: 30,
+                                      fontFamily: "inherit",
+                                    }}
+                                  >
+                                    <div
+                                      style={{
+                                        padding: "4px 9px 6px",
+                                        fontSize: 10,
+                                        color: "var(--pet-color-muted)",
+                                        borderBottom:
+                                          "1px solid var(--pet-color-border)",
+                                        marginBottom: 4,
+                                      }}
+                                    >
+                                      🔍 @{atTrigger.query || "..."} ·{" "}
+                                      {atSuggestions.length} 条 · ↑↓ 选 /
+                                      Enter 接受 / Esc 关
+                                    </div>
+                                    {atSuggestions.map((s, i) => {
+                                      const active = i === atSelectedIdx;
+                                      return (
+                                        <button
+                                          key={s.title}
+                                          type="button"
+                                          onMouseEnter={() =>
+                                            setAtSelectedIdx(i)
+                                          }
+                                          onClick={(ev) => {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
+                                            acceptAtSuggestion(s.title);
+                                          }}
+                                          style={{
+                                            display: "block",
+                                            width: "100%",
+                                            textAlign: "left",
+                                            padding: "5px 9px",
+                                            fontSize: 12,
+                                            border: "none",
+                                            background: active
+                                              ? "var(--pet-tint-blue-bg)"
+                                              : "transparent",
+                                            color: active
+                                              ? "var(--pet-tint-blue-fg)"
+                                              : "var(--pet-color-fg)",
+                                            fontWeight: active ? 600 : 400,
+                                            cursor: "pointer",
+                                            fontFamily: "inherit",
+                                            borderRadius: 4,
+                                            whiteSpace: "nowrap",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                          }}
+                                          title={`插 「${s.title}」 ref token`}
+                                        >
+                                          {s.title}{" "}
+                                          <span
+                                            style={{
+                                              fontSize: 9,
+                                              color: "var(--pet-color-muted)",
+                                              fontFamily:
+                                                "'SF Mono', monospace",
+                                              marginLeft: 4,
+                                            }}
+                                          >
+                                            P{s.priority}
+                                          </span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
                                 {/* 🔢 行号 gutter：仅 showDetailGutter on +
                                     edit 模式。按 `\n` 分段（逻辑行）；wrap 多
                                     行的逻辑行视觉 mismatch — 大多数 detail

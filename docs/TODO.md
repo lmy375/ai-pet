@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- detail.md 编辑器加 `@` 触发 task title 自动补全 popover：inline picker（与 ⌘K palette 不同——更轻量，键入即筛）。
 
 
 
