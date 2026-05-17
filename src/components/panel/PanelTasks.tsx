@@ -2103,6 +2103,7 @@ export function PanelTasks({
         x: number;
         y: number;
         prioritySubmenu: boolean;
+        reminderSubmenu: boolean;
       }
     | null
   >(null);
@@ -3839,6 +3840,48 @@ export function PanelTasks({
       }
     },
     [reload],
+  );
+
+  /// 设 / 清 reminderMin marker：右键菜单 ⏰ 子面板用。复用 PanelMemory
+  /// 的 strip 旧 [reminderMin: N] + 追加新 marker 算法，走 memory_edit
+  /// ("update") 写盘。newMin === null → 仅 strip。
+  const handleSetReminderMin = useCallback(
+    async (title: string, newMin: number | null) => {
+      const target = tasks.find((t) => t.title === title);
+      if (!target) {
+        setActionErr(`task not found: ${title}`);
+        return;
+      }
+      const stripped = target.raw_description
+        .replace(/\[reminderMin:\s*\d+\s*\]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const next =
+        newMin === null
+          ? stripped
+          : stripped
+            ? `${stripped} [reminderMin: ${newMin}]`
+            : `[reminderMin: ${newMin}]`;
+      try {
+        await invoke<string>("memory_edit", {
+          action: "update",
+          category: "butler_tasks",
+          title,
+          description: next,
+          detailContent: null,
+        });
+        await reload();
+        setBulkResultMsg(
+          newMin === null
+            ? `已移除「${title}」reminderMin marker`
+            : `已设「${title}」reminderMin = ${newMin}`,
+        );
+        window.setTimeout(() => setBulkResultMsg(""), 3000);
+      } catch (e) {
+        setActionErr(`改 reminderMin 失败：${e}`);
+      }
+    },
+    [tasks, reload],
   );
 
   /// 拖拽到 target 后被 onDrop 调：把 target 的 priority 写给 source。
@@ -7346,6 +7389,7 @@ export function PanelTasks({
                     x: e.clientX,
                     y: e.clientY,
                     prioritySubmenu: false,
+                    reminderSubmenu: false,
                   });
                 }}
                 onMouseEnter={() => startTaskPreviewHover(t.title, t.detail_path)}
@@ -13117,7 +13161,7 @@ export function PanelTasks({
         // 这里用经验值 180 / 320 做夹紧足够（带 priority 子面板时纵向 +60）。
         const m = taskCtxMenu;
         const W = 180;
-        const H = m.prioritySubmenu ? 360 : 300;
+        const H = (m.prioritySubmenu ? 360 : 300) + (m.reminderSubmenu ? 60 : 0);
         const left = Math.max(8, Math.min(m.x, window.innerWidth - W - 8));
         const top = Math.max(8, Math.min(m.y, window.innerHeight - H - 8));
         const t = tasks.find((x) => x.title === m.title) ?? null;
@@ -13695,6 +13739,109 @@ export function PanelTasks({
                 })}
               </div>
             )}
+            {/* ⏰ reminderMin 子面板：与 priority 子面板同 pattern — 主项
+                显当前值，hover 展开 5/15/30/60/移除 五选一。仅 butler_
+                tasks 任务有 reminderMin 概念（即所有 PanelTasks 任务）。
+                复用 handleSetReminderMin 写后端。 */}
+            {(() => {
+              const m2 = taskCtxMenu;
+              if (!m2) return null;
+              const target = tasks.find((tt) => tt.title === m2.title);
+              const current = target
+                ? Number(
+                    target.raw_description.match(
+                      /\[reminderMin:\s*(\d+)\s*\]/,
+                    )?.[1] ?? 0,
+                  )
+                : 0;
+              const presets: Array<{ value: number | null; label: string }> = [
+                { value: 5, label: "5 分" },
+                { value: 15, label: "15 分" },
+                { value: 30, label: "30 分" },
+                { value: 60, label: "60 分" },
+                { value: null, label: "移除" },
+              ];
+              return (
+                <>
+                  <button
+                    type="button"
+                    style={itemBtn}
+                    onMouseOver={itemBtnHoverIn}
+                    onMouseOut={itemBtnHoverOut}
+                    onClick={() =>
+                      setTaskCtxMenu((cur) =>
+                        cur
+                          ? { ...cur, reminderSubmenu: !cur.reminderSubmenu }
+                          : cur,
+                      )
+                    }
+                    title={
+                      current > 0
+                        ? `当前 reminderMin = ${current} 分钟（到点前 N 分软提醒）。点击展开预设 / 移除。`
+                        : "未设 reminderMin。点击展开预设设到点前 N 分软提醒（5/15/30/60）。"
+                    }
+                  >
+                    {m2.reminderSubmenu ? "▾" : "▸"} ⏰ reminderMin（{
+                      current > 0 ? `当前 ${current} 分` : "未设"
+                    }）
+                  </button>
+                  {m2.reminderSubmenu && (
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(5, 1fr)",
+                        gap: 2,
+                        padding: "2px 4px 4px",
+                      }}
+                    >
+                      {presets.map((p) => {
+                        const active = p.value === current ||
+                          (p.value === null && current === 0);
+                        return (
+                          <button
+                            key={String(p.value)}
+                            type="button"
+                            onClick={() => {
+                              setTaskCtxMenu(null);
+                              void handleSetReminderMin(m2.title, p.value);
+                            }}
+                            style={{
+                              padding: "3px 0",
+                              fontSize: 10,
+                              border: "none",
+                              borderRadius: 3,
+                              background: active
+                                ? "var(--pet-tint-blue-bg)"
+                                : "transparent",
+                              color: active
+                                ? "var(--pet-tint-blue-fg)"
+                                : "var(--pet-color-fg)",
+                              cursor: active ? "default" : "pointer",
+                              fontWeight: active ? 600 : 400,
+                              fontFamily: "inherit",
+                            }}
+                            onMouseOver={(e) => {
+                              if (!active) {
+                                (e.currentTarget as HTMLButtonElement).style.background =
+                                  "var(--pet-color-bg)";
+                              }
+                            }}
+                            onMouseOut={(e) => {
+                              if (!active) {
+                                (e.currentTarget as HTMLButtonElement).style.background =
+                                  "transparent";
+                              }
+                            }}
+                          >
+                            {p.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
             {sep}
             <button
               type="button"
