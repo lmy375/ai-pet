@@ -11,7 +11,6 @@
 - PanelTasks 任务行 hover 加「📅 created N天前」灰字 chip：让 owner 感知任务在队列里待了多久（积压信号 + 谁是新进）。
 - TG bot 加 `/due <preset>` 命令：扩展 /today 到 tomorrow / thisweek / nextweek 视图，让 owner 端 audit 未来时段。
 - detail.md save 自动版本历史：每次 save 把上一版 snapshot 到 `<detail_path>.history/<ts>.md`，最多保留 5 份（意外覆盖时可恢复）。
-- PanelTasks 任务行加「🔗 blocker N」inline chip：[blockedBy:] 锁数量直显（不必展开 expand 才看到），hover 列具体 blocker titles + status。
 
 
 

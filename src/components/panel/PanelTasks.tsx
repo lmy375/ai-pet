@@ -54,28 +54,38 @@ interface TaskView {
   pinned?: boolean;
 }
 
-/** 给定全部 tasks，返回每条 pending/error 任务仍未解决的 blocker title 列表。
+/** 给定全部 tasks，返回每条 pending/error 任务仍未解决的 blocker（含 status）。
  * "未解决"= blocker title 仍在 tasks 里且其 status 不是 done / cancelled。
  *
  * 与后端 `task_queue::unresolved_blockers` 同算法（独立实现一份避免 IPC 往返
  * + 让 UI 即时反映本地状态变更）。typo / 已删除的 blocker 视作已解决，避免
  * 永久卡死。done / cancelled 任务自身不计算 blocker —— 终态行没有"等待"语义。
+ *
+ * 返回 `{title, status}` 而非纯 title 让 chip tooltip 能区分 "blocker 仍是
+ * pending（等执行）" vs "blocker 卡在 error（应该先 retry 它）" — owner 不
+ * 必展开两条 task 才能判断怎么解锁。
  */
+export interface UnresolvedBlocker {
+  title: string;
+  status: TaskStatus;
+}
 function computeUnresolvedBlockers(
   tasks: TaskView[],
-): Map<string, string[]> {
-  const activeTitles = new Set<string>();
+): Map<string, UnresolvedBlocker[]> {
+  const statusByTitle = new Map<string, TaskStatus>();
   for (const t of tasks) {
     if (t.status !== "done" && t.status !== "cancelled") {
-      activeTitles.add(t.title);
+      statusByTitle.set(t.title, t.status);
     }
   }
-  const out = new Map<string, string[]>();
+  const out = new Map<string, UnresolvedBlocker[]>();
   for (const t of tasks) {
     if (t.status === "done" || t.status === "cancelled") continue;
     const raw = t.blocked_by ?? [];
     if (raw.length === 0) continue;
-    const unresolved = raw.filter((b) => activeTitles.has(b));
+    const unresolved: UnresolvedBlocker[] = raw
+      .filter((b) => statusByTitle.has(b))
+      .map((title) => ({ title, status: statusByTitle.get(title)! }));
     if (unresolved.length > 0) out.set(t.title, unresolved);
   }
   return out;
@@ -1193,10 +1203,11 @@ export function PanelTasks({
   onConsumePendingQuickAddBody,
 }: PanelTasksProps = {}) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
-  /// 任务依赖未解决映射：title → 仍卡着的 blocker title 列表。tasks 变化时
-  /// O(n) 计算一次；行渲染时 .has(title) 决定是否显 🔒 chip。useMemo 让 tasks
-  /// 不变时引用稳定，避免每次 re-render 都重算 Map（虽然 n 通常 < 几十）。
-  const blockedMap = useMemo<Map<string, string[]>>(
+  /// 任务依赖未解决映射：title → 仍卡着的 blocker（含 status）列表。tasks
+  /// 变化时 O(n) 计算一次；行渲染时 .has(title) 决定是否显 🔒 chip。useMemo
+  /// 让 tasks 不变时引用稳定，避免每次 re-render 都重算 Map（虽然 n 通常
+  /// < 几十）。
+  const blockedMap = useMemo<Map<string, UnresolvedBlocker[]>>(
     () => computeUnresolvedBlockers(tasks),
     [tasks],
   );
@@ -7905,19 +7916,31 @@ export function PanelTasks({
                       );
                     })()}
                     {/* 任务依赖 🔒 chip：blockedBy 引用的 title 仍处 pending/error
-                        时显。tooltip 列出仍卡着的 blocker。proactive prompt 已自动
-                        过滤这些任务给 LLM，面板仍渲染让用户看到"为什么没人做这条"。
-                        终态行（done / cancelled）computeUnresolvedBlockers 跳过。 */}
+                        时显。tooltip 列出仍卡着的 blocker + 各自 status emoji（让
+                        owner 一眼判断 "blocker 是 pending 等执行" vs "卡在 error
+                        应该先 retry 它"，不必展开两条 task 才能决策）。proactive
+                        prompt 已自动过滤这些任务给 LLM，面板仍渲染让用户看到
+                        "为什么没人做这条"。 */}
                     {(() => {
                       const blockers = blockedMap.get(t.title);
                       if (!blockers || blockers.length === 0) return null;
                       const preview =
                         blockers.length === 1
-                          ? blockers[0]
-                          : `${blockers[0]} +${blockers.length - 1}`;
+                          ? blockers[0].title
+                          : `${blockers[0].title} +${blockers.length - 1}`;
+                      // pending = ⏳ 等执行 / error = ⚠️ 卡 error — emoji 让
+                      // owner 在 tooltip 一行内识别 actionable signal
+                      const statusEmoji = (s: TaskStatus): string =>
+                        s === "error" ? "⚠️" : "⏳";
+                      const errorN = blockers.filter(
+                        (b) => b.status === "error",
+                      ).length;
+                      const tipHead = errorN > 0
+                        ? `本任务被 [blockedBy: …] 依赖卡住（其中 ${errorN} 条 blocker 卡在 error，建议先 /retry）：`
+                        : "本任务被 [blockedBy: …] 依赖卡住，等下列任务完成或取消后才会出现在 proactive 选单：";
                       return (
                         <span
-                          title={`本任务被 [blockedBy: …] 依赖卡住，等下列任务完成或取消后才会出现在 proactive 选单：\n${blockers.map((b) => `· ${b}`).join("\n")}`}
+                          title={`${tipHead}\n${blockers.map((b) => `· ${statusEmoji(b.status)} ${b.title}`).join("\n")}`}
                           style={{
                             display: "inline-flex",
                             alignItems: "center",
