@@ -1008,14 +1008,35 @@ export function ChatMini({
             }}
             aria-label="pet 当前上下文 ambient hint"
           >
+            {/* iter #395: chip click → deeplink 跳 PanelDebug 对应卡片。
+                写 pet-debug-deeplink localStorage + invoke open_debug；
+                DebugApp 读后切到 "应用" tab + scrollIntoView 锚点元素。
+                与 pet-panel-deeplink 同 TTL=10s 模板。chips 改 button 以
+                获 cursor: pointer + keyboard accessible。 */}
             {ambientTransient && (() => {
               const preview =
                 ambientTransient.text.length > 30
                   ? ambientTransient.text.slice(0, 30) + "…"
                   : ambientTransient.text;
               return (
-                <span
-                  title={`pet 当前 transient_note（剩 ${ambientTransient.mins} 分钟）：${ambientTransient.text}`}
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      window.localStorage.setItem(
+                        "pet-debug-deeplink",
+                        JSON.stringify({
+                          tab: "应用",
+                          scrollAnchor: "tone-strip",
+                          ts: Date.now(),
+                        }),
+                      );
+                    } catch (e) {
+                      console.error("write pet-debug-deeplink failed:", e);
+                    }
+                    invoke("open_debug").catch(console.error);
+                  }}
+                  title={`pet 当前 transient_note（剩 ${ambientTransient.mins} 分钟）：${ambientTransient.text}\n\n点击 → 打开 debug 窗 + 滚到 ToneStrip 查看 / 改 transient_note`}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -1029,15 +1050,35 @@ export function ChatMini({
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
+                    border: "none",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    fontSize: "inherit",
                   }}
                 >
                   📝 {preview} · {ambientTransient.mins}m
-                </span>
+                </button>
               );
             })()}
             {ambientAlarms > 0 && (
-              <span
-                title={`${ambientAlarms} 条 pending alarm（todo 段 [remind:] 条目）— pet proactive 扫到 due 时会软提醒。`}
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    window.localStorage.setItem(
+                      "pet-debug-deeplink",
+                      JSON.stringify({
+                        tab: "应用",
+                        scrollAnchor: "pending-reminders",
+                        ts: Date.now(),
+                      }),
+                    );
+                  } catch (e) {
+                    console.error("write pet-debug-deeplink failed:", e);
+                  }
+                  invoke("open_debug").catch(console.error);
+                }}
+                title={`${ambientAlarms} 条 pending alarm（todo 段 [remind:] 条目）— pet proactive 扫到 due 时会软提醒。\n\n点击 → 打开 debug 窗 + 滚到「待提醒事项」卡片`}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -1048,14 +1089,34 @@ export function ChatMini({
                     "color-mix(in srgb, var(--pet-tint-blue-fg) 14%, transparent)",
                   color: "var(--pet-tint-blue-fg)",
                   fontWeight: 500,
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  fontSize: "inherit",
                 }}
               >
                 ⏰ {ambientAlarms}
-              </span>
+              </button>
             )}
             {ambientMuteMins !== null && (
-              <span
-                title={`pet 当前被静音 — 剩 ${ambientMuteMins} 分钟。期间 proactive 不主动开口；ChatMini / panel 仍可手动发起。`}
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    window.localStorage.setItem(
+                      "pet-debug-deeplink",
+                      JSON.stringify({
+                        tab: "应用",
+                        scrollAnchor: "tone-strip",
+                        ts: Date.now(),
+                      }),
+                    );
+                  } catch (e) {
+                    console.error("write pet-debug-deeplink failed:", e);
+                  }
+                  invoke("open_debug").catch(console.error);
+                }}
+                title={`pet 当前被静音 — 剩 ${ambientMuteMins} 分钟。期间 proactive 不主动开口；ChatMini / panel 仍可手动发起。\n\n点击 → 打开 debug 窗 + 滚到 ToneStrip 查看 / 改 mute`}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -1065,10 +1126,14 @@ export function ChatMini({
                   background: "color-mix(in srgb, #7c3aed 14%, transparent)",
                   color: "#7c3aed",
                   fontWeight: 500,
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  fontSize: "inherit",
                 }}
               >
                 🔇 {ambientMuteMins}m
-              </span>
+              </button>
             )}
           </div>
         )}
