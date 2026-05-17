@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 加 ⌘E 展开 / 折叠 focused row detail：键盘党不必鼠标 click expand 详情。
-- TG bot 加 `/sleep` 命令：set mute 8 小时简化 + "宠物去睡了" 友好 reply。
 - TG bot 加 `/quick <text>` 命令：静默创 P3 task 不发确认 reply，适合"快速 dump"减少打扰。
 - PanelMemory item action row 加「📜 历史快照」按钮：与 PanelTasks 📜 popover 对偶，让 PanelMemory 端也能查 detail.md history。
 - detail.md 编辑器加 ⌘⌥Enter 保存并跳下一条 task：连续 review / 编辑 task 流畅，免手动 ⌘] 切换。
