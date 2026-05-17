@@ -10,7 +10,6 @@
 
 - PanelTasks 加「☑️ 全选 P7+ 进 multi-select」chip：精准选高优 pending 进批量模式，与 ⌘A 全选 / 🎯 P7+ filter 互补。
 - detail.md 编辑器加 ⌘P toggle preview-only 模式：VS Code preview-only lock 风，看长 detail.md 时焦点纯阅读。
-- PanelMemory item action row 加「📅 created N前」hover chip：让 owner glance 这条 memory 何时建立（与 PanelTasks 行内 N前 chip 对偶）。
 
 
 
