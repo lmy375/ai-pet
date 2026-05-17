@@ -5526,6 +5526,38 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             📐
                           </button>
                         )}
+                        {/* ⏰ 复制 schedule prefix only：仅 butler_tasks +
+                            parsed schedule 时浮。与 📐 互补 — 📐 拷"完整一
+                            行（含 topic）"用于迁移 / 备份；⏰ 仅拷 `[every:
+                            ...]` 等 bracket prefix 段，让 owner 创建相似新
+                            task 时粘到 description 起手 → 再敲新 topic。 */}
+                        {catKey === "butler_tasks" && parsed && (
+                          <button
+                            style={s.btn}
+                            onClick={async () => {
+                              const sch = parsed.schedule;
+                              const hh = String(sch.hour).padStart(2, "0");
+                              const mm = String(sch.minute).padStart(2, "0");
+                              const prefix =
+                                sch.kind === "every"
+                                  ? `[every: ${hh}:${mm}]`
+                                  : sch.kind === "every_weekdays"
+                                    ? `[every: ${formatWeekdayMaskLabel(sch.mask)} ${hh}:${mm}]`
+                                    : `[${sch.kind}: ${sch.year}-${String(sch.month).padStart(2, "0")}-${String(sch.day).padStart(2, "0")} ${hh}:${mm}]`;
+                              try {
+                                await navigator.clipboard.writeText(prefix);
+                                setMessage(`已复制 schedule prefix：${prefix}`);
+                              } catch (e) {
+                                setMessage(`复制失败：${e}`);
+                              }
+                              setTimeout(() => setMessage(""), 2500);
+                            }}
+                            title="复制仅 schedule prefix（如 `[every: 09:00]` / `[every: 工作日 09:30]` / `[once: 2026-05-20 14:00]`），不含 topic。粘到新 task description 起手 → 接着敲新 topic，省一遍打字。与 📐（含 topic）互补。"
+                            aria-label="copy schedule prefix only"
+                          >
+                            ⏰
+                          </button>
+                        )}
                         {/* 📋 复制 detail.md 全文：仅在 detailSizes 已知且 > 0
                             字时浮。与 hover preview 600 字截断 / 🚀 外部编辑
                             互补 —— 这条走系统剪贴板，让用户即时粘到外部 markdown
