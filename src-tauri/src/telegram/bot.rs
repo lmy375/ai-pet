@@ -889,6 +889,61 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_today_reply(&views, today)
         }
+        TgCommand::Aware => {
+            // pet 自述当前感知 snapshot：transient_note + active tasks + mood
+            // + 时间 + 陪伴。所有 read 路径都已就绪 — 复用既有 API：
+            // - proactive::get_transient_note() → (text, until_iso)
+            // - memory_list("butler_tasks") → 数非 [done] item
+            // - mood::read_current_mood_parsed() → (text, motion)
+            // - companionship::companionship_days() → u64
+            let now_local = chrono::Local::now();
+            let now_fixed = now_local.with_timezone(now_local.offset());
+            let companionship_days =
+                Some(crate::companionship::companionship_days().await);
+            let mood = crate::mood::read_current_mood_parsed();
+            let mood_text = mood.as_ref().map(|(t, _)| t.as_str());
+
+            let (tn_text, tn_until) = crate::proactive::get_transient_note();
+            let transient = if tn_text.is_empty() {
+                None
+            } else {
+                let mins = chrono::DateTime::parse_from_str(
+                    &tn_until,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|until| {
+                    let diff = until - now_local.with_timezone(until.offset());
+                    diff.num_minutes()
+                })
+                .unwrap_or(0);
+                Some((tn_text.as_str(), mins))
+            };
+
+            let active_count = match crate::commands::memory::memory_list(
+                Some("butler_tasks".to_string()),
+            ) {
+                Ok(index) => index
+                    .categories
+                    .get("butler_tasks")
+                    .map(|cat| {
+                        cat.items
+                            .iter()
+                            .filter(|it| !it.description.contains("[done]"))
+                            .count()
+                    })
+                    .unwrap_or(0),
+                Err(_) => 0,
+            };
+
+            crate::telegram::commands::format_aware_reply(
+                transient,
+                active_count,
+                mood_text,
+                now_fixed,
+                companionship_days,
+            )
+        }
         TgCommand::Due { preset, raw_arg } => {
             // 与 /today 同 read path，本地 today 注入；formatter 内部按 preset
             // 算 [start, end] 日期范围。preset == None 时 formatter 走 usage
