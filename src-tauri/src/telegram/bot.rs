@@ -1531,6 +1531,19 @@ async fn handle_tg_command(
                 )
             }
         }
+        TgCommand::DigestYesterday { n } => {
+            // 与 Digest 同 read path；formatter 内部按 yesterday 日期过滤。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let yesterday = chrono::Local::now()
+                .date_naive()
+                .pred_opt()
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
+            crate::telegram::commands::format_digest_yesterday_reply(
+                &views,
+                yesterday,
+                n,
+            )
+        }
         TgCommand::Digest { n } => {
             // 最近 done 任务标题 + result 摘要清单。reuse 同 read path（与
             // /recent / /tasks / /today 同源），formatter 内部 sort updated_at

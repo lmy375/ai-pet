@@ -594,6 +594,10 @@ pub enum TgCommand {
     /// 「还多少分钟到午夜」。与 /mute N（相对分钟）/ /sleep_until <HH:MM>
     /// （任意目标时刻）互补 — 本命令是「今夜不打扰」常用预设。无参。
     MuteToday,
+    /// `/digest_yesterday [N]` —— 昨日 done task 标题 + [result:] 一行式 —
+    /// /digest 的昨日对偶（那个是「最近 N 条 done」按 updated_at 倒序，
+    /// 本命令限定昨日 calendar day）。N 缺省 5，clamp 1..=20。
+    DigestYesterday { n: u32 },
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -705,6 +709,7 @@ impl TgCommand {
             TgCommand::EditTitle { .. } => "edit_title",
             TgCommand::CascadeRename { .. } => "cascade_rename",
             TgCommand::MuteToday => "mute_today",
+            TgCommand::DigestYesterday { .. } => "digest_yesterday",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -808,6 +813,7 @@ impl TgCommand {
             | TgCommand::Snoozed
             | TgCommand::Mute { .. }
             | TgCommand::Digest { .. }
+            | TgCommand::DigestYesterday { .. }
             | TgCommand::FeedbackHistory { .. }
             | TgCommand::SilentAll { .. }
             | TgCommand::Alarms { .. }
@@ -950,6 +956,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("oldest_done", "List oldest N done tasks (updated_at asc) — reverse of /recent; longest-running completions"),
             ("cascade_rename", "Rename + auto-update 「<old>」 refs in every detail.md across categories"),
             ("mute_today", "Mute proactive until local midnight — one-shot 'no more pings tonight'"),
+            ("digest_yesterday", "Yesterday's done tasks with [result:] summaries (default 5, cap 20) — /digest counterpart"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -1037,6 +1044,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("oldest_done", "最早完成的 N 条 done task（updated_at asc）— /recent 反向；audit「老 backlog 终于完成」"),
             ("cascade_rename", "改 task 标题 + 自动同步所有 detail.md 内 「<old>」 ref 替换（cross-doc ref 维护）"),
             ("mute_today", "静音 proactive 到本地午夜 — 一键「今夜不打扰」预设"),
+            ("digest_yesterday", "昨日 done 任务 + [result:] 一行式（默认 5，上限 20）— /digest 的昨日对偶"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1792,6 +1800,17 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 同协议）。handler 内算「now → 次日 00:00 的分钟数」+ 调
         // set_mute_minutes。
         "mute_today" => Some(TgCommand::MuteToday),
+        // `/digest_yesterday [N]`：与 /digest / /recent 同 N 处理 — 缺省
+        // 5，clamp 1..=20。
+        "digest_yesterday" => {
+            let n = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 20))
+                .unwrap_or(5);
+            Some(TgCommand::DigestYesterday { n })
+        }
         // `/swap_priority <a> :: <b>`：first-occurrence `::` 切两 title。
         // 任一端 trim 后为空 → handler 走 missing-arg（在 formatter 内
         // 做兜底）。snake_case 命名避开 dash drift-defense。
@@ -2132,7 +2151,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2293,6 +2312,7 @@ pub fn format_help_for_topic(
         "edit_title" => "✏️ /edit_title <title> :: <new title>\n\n用法：仅改 task 标题，不动 description / detail.md / markers。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。前端 PanelTasks 已有 double-click inline rename；本命令是 TG 端对偶。\n\n与 /edit（全量覆写 description）区别：\n- /edit：覆写 description body — markers 需自己写进 new desc\n- /edit_title：只换标题字符串 — 所有 markers / body / detail.md 不动\n\n后端：复用既有 `memory_rename` Tauri 命令 — index 项改 title + .md 文件 move + 同名冲突自动加 `_N` 后缀（与 /dup unique-filename 同 fallback）。\n\nTitle resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  ✏️ 已改标题：「<old>」→「<new>」\n\n注意：rename 后既有 `[task: 「<old>」]` ref / detail.md 内 `「<old>」` token 不自动跟随更新（owner 需手动改）。考虑后续 iter 加 cascade rename。\n\n示例：\n  /edit_title 整理 Downloads :: 清理桌面（更详细名）\n  /edit_title 1 :: 重命名（/tasks 第 1 条）\n  /edit_title 写周报 :: 写 2026-W20 周报\n\n相关：/edit（覆写 description）；/dup（克隆为新 task）；/show（看 rename 后的 raw）。",
         "touched_yesterday" => "📅 /touched_yesterday\n\n用法：/touched_today 的昨日对偶 — 列昨日（本地日历日）updated_at 命中的本聊天派单（任意状态），按时间倒序。复盘视角：「昨天我动过哪些 task」。\n\n场景：早上 standup 前回顾「昨天做了 / 调了 / 推后了哪些」；周末 audit 工作日 backlog 变化；与 /yesterday（仅 done）/ /today_done 三件套形成完整 today-yesterday × 全谱-完成 audit 矩阵。\n\n输出格式：\n  📅 昨日（YYYY-MM-DD）动过 N 条（按时间倒序）：\n  · ⏳ HH:MM 整理 Downloads\n  · ✅ HH:MM 写周报 — done with result\n  · 💤 HH:MM 写报告\n  · ⏳ HH:MM review PR\n\n状态 emoji 同 /touched_today（⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled · 💤 snoozed pending）。\n\n空 → 友好兜底（教学指向 /touched_today / /yesterday / /tasks）。\n\n示例：\n  /touched_yesterday\n\n相关：/touched_today（今日全谱）；/yesterday（昨日 done）；/today_done（今日 done）；/recent_events <title>（单 task TL;DR）。",
         "oldest_done" => "🪦 /oldest_done [N]\n\n用法：列**最早完成**的 N 条 done task（按 updated_at 升序）— 与 /recent done（最近完成）反向。让 owner 看「这些任务我做了多久 / 哪些是 ancient backlog 终于完成」的考古视角。\n\nN 缺省 5；clamp 1..=20（与 /recent / /digest / /show_speech 同协议）。无 done task → 友好兜底教学指向 /done 标完成。\n\n输出格式：\n  🪦 最早完成的 N 条（共 M done）：\n  · YYYY-MM-DD HH:MM · <title>\n  · YYYY-MM-DD HH:MM · <title>\n  ...\n\n（与 /recent 同 line 格式 — 让 owner 切换视角时心智一致）\n\n场景：\n- 「这条 task 我做了多久」考古 — 比对源 create_at（/show 含）vs 最早 done updated_at\n- audit 「最老的 done 是何时」— sprint 复盘 / quarterly review\n- 与 /recent done 形成「最近完成 vs 最早完成」镜像\n\n示例：\n  /oldest_done           （显最早 5 条）\n  /oldest_done 10        （显最早 10 条）\n\n相关：/recent（最近完成 — 与本命令反向）；/oldest_n（最老 pending — pending 维度反向）；/yesterday / /today_done（按日期范围而非「最老/最新」）。",
+        "digest_yesterday" => "📋 /digest_yesterday [N]\n\n用法：昨日（本地日历日）done task 标题 + [result:] 摘要一行式。与 /digest 的区别：那个按 updated_at 倒序取最近 N 条（可能跨多日 / 今日为主），本命令限定昨日 calendar day — 「昨天我完成了哪些 + 产物是什么」复盘视角。\n\nN 缺省 5，clamp 1..=20（与 /digest / /recent 同协议）。空（昨日无 done）→ 友好兜底教学指向 /digest / /yesterday / /touched_yesterday。\n\n输出格式：\n  📋 昨日（YYYY-MM-DD）完成 N 条（共 M done）：\n  · HH:MM · <title> — <result 前 80 字>\n  · HH:MM · <title> — <result>\n  ...\n\nresult 截 80 字 + …（与 /digest / /yesterday 同 cap）。\n\n场景：早会前看「昨天我做了什么 + 怎么做的」；周五整理本周产出；与 /yesterday（昨日 done 仅标题）/ /touched_yesterday（昨日任意状态全谱）三件套形成完整 yesterday audit 矩阵。\n\n示例：\n  /digest_yesterday        （昨日 done 5 条）\n  /digest_yesterday 10     （昨日 done 10 条）\n\n相关：/digest（按更新时序 N 条 done，不限日期）；/yesterday（昨日 done 仅标题无 result）；/touched_yesterday（昨日任意状态）。",
         "mute_today" => "🌙 /mute_today\n\n用法：一键静音 proactive 到**本地午夜**（次日 00:00），免 owner 算「还多少分钟到午夜」。与 /mute N（任意分钟）/ /sleep_until <HH:MM>（任意目标时刻）互补 — 本命令是「今夜不打扰」的常用预设。\n\n后端：算 `now → 次日 00:00` 的分钟数 → 调 `set_mute_minutes(minutes)` 同既有 /mute 路径。clamp 1..=1440（绝不超过 24h）— 极端 DST 边界兜底。\n\n输出格式：\n  🌙 已静音 proactive 到本地午夜（00:00）— 还 N 分钟（M 小时）\n\n场景：晚上 10 点开始写决策日志 / 看书 / 睡前；想说「今夜别再打扰我」时不必心算「到午夜还几分钟」。\n\n注：到点后 mute 自然解除 — pet 早上首 schedule 仍触发。如想跨天静音走 /mute N 或 /sleep_until 明早时刻。\n\n示例：\n  /mute_today\n\n相关：/mute N（任意 N 分钟）；/sleep_until HH:MM（任意目标时刻，含明日）；/sleep（一键 8h）；/here（看 owner 当前 mute 状态）。",
         "cascade_rename" => "🔁 /cascade_rename <title> :: <new title>\n\n用法：与 /edit_title 同 `::` 模板，但额外扫所有 categories 的 detail.md 文件，把出现的 `「<old>」` token 替换为 `「<new>」`。让跨 doc task ref 自动跟随 rename — 避免 owner 在多份 detail.md 内手动维护。\n\n与 /edit_title 区别：\n- /edit_title：仅改 task 标题 + .md 文件 move（cross-doc ref 留 stale）\n- /cascade_rename：上述全套 + 扫所有 detail.md 替换 `「<old>」` token\n\n后端：先 `memory_rename(butler_tasks, old, new)` 做主操作；成功后扫 index 内所有 item 的 detail.md 文件，文本搜替 `「<old>」` → `「<new>」` 后 fs::write。失败的单文件 IO 不回滚主 rename（已 sealed），best-effort 语义。\n\n限制：\n- 仅扫 `「<title>」` 全角引号 token — 不触及 `[blockedBy: <title>]` 等 description markers（那些在 description 而非 detail.md，需 memory_edit re-write 路径，未来 iter 扩）\n- 不触及 description 本身的 task ref — owner 通常希望 description 保持原样作历史 snapshot\n\n空 title / new_title → usage hint。Title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  🔁 已改标题：「<old>」→「<new>」\n  · 同步 N 份 detail.md 内的 ref token\n\nN === 0 时说「无 detail.md 需要更新」— owner 知道 cascade 扫了但没找到引用，可手动 grep 验证。\n\n示例：\n  /cascade_rename 写周报 :: 写 W21 周报\n  /cascade_rename 整理 Downloads :: 清理桌面（更详细名）\n  /cascade_rename 1 :: 重命名（/tasks 第 1 条 + cascade）\n\n相关：/edit_title（仅 rename 不 cascade — owner 想保 detail.md ref 不动时用）；/dup（克隆而非 rename）；/show（看 rename 后 raw + detail）。",
         "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
@@ -2394,6 +2414,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/oldest_done [N]  —  最早完成的 N 条 done task（updated_at asc）— /recent 反向；audit「老 backlog 终于完成」".to_string(),
         "/cascade_rename <title> :: <new title>  —  改标题 + 自动同步所有 detail.md 内 「<old>」 ref token 替换（cross-doc ref 维护）".to_string(),
         "/mute_today  —  静音 proactive 到本地午夜 — 一键「今夜不打扰」预设；与 /mute N / /sleep_until 互补".to_string(),
+        "/digest_yesterday [N]  —  昨日 done 任务 + [result:] 一行式（默认 5，上限 20）— /digest 的昨日对偶".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -5300,6 +5321,78 @@ pub fn format_touched_today_reply(
     out
 }
 
+/// `/digest_yesterday <N>` 命令回复文案。pure：与 `format_digest_reply`
+/// 同结构（done filter + result preview），但额外限定 updated_at 起始
+/// 匹配 `yesterday` 日期前缀。caller 已 clamp n 1..=20。
+///
+/// 与 `format_yesterday_reply`（仅标题无 result）/ `format_digest_reply`
+/// （不限日期）双重对偶 — 三者形成 yesterday × done × result-or-not 矩阵
+/// 的完整覆盖。
+pub fn format_digest_yesterday_reply(
+    views: &[crate::task_queue::TaskView],
+    yesterday: chrono::NaiveDate,
+    n: u32,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let t_str = yesterday.format("%Y-%m-%d").to_string();
+    let mut done: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| matches!(v.status, TaskStatus::Done))
+        .filter(|v| v.updated_at.starts_with(&t_str))
+        .collect();
+    if done.is_empty() {
+        return format!(
+            "📋 昨日（{}）暂无完成记录。\n用 /digest 看最近 done（不限日期）/ /yesterday 看仅标题视图 / /touched_yesterday 看昨日全谱。",
+            t_str
+        );
+    }
+    // updated_at desc — 最新完成在前（与 /digest 同方向）
+    done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let cap = (n as usize).max(1);
+    let shown = &done[..done.len().min(cap)];
+    let mut out = format!(
+        "📋 昨日（{}）完成 {} 条（共 {}）：",
+        t_str,
+        shown.len(),
+        done.len(),
+    );
+    for v in shown {
+        // updated_at 截 HH:MM（昨日 date 已在 header，省 MM-DD 冗余）
+        let hm = if v.updated_at.len() >= 16 {
+            &v.updated_at[11..16]
+        } else {
+            ""
+        };
+        let result_part = match v.result.as_deref() {
+            Some(r) if !r.trim().is_empty() => {
+                let r = r.trim();
+                let chars: Vec<char> = r.chars().collect();
+                let summary = if chars.len() > 80 {
+                    let s: String = chars.iter().take(80).collect();
+                    format!("{}…", s)
+                } else {
+                    r.to_string()
+                };
+                format!(" — {}", summary)
+            }
+            _ => String::new(),
+        };
+        if hm.is_empty() {
+            out.push_str(&format!("\n· {}{}", v.title, result_part));
+        } else {
+            out.push_str(&format!("\n· {} · {}{}", hm, v.title, result_part));
+        }
+    }
+    if done.len() > shown.len() {
+        out.push_str(&format!(
+            "\n…还有 {} 条更早完成（/digest_yesterday {} 看更多，上限 20）",
+            done.len() - shown.len(),
+            done.len().min(20),
+        ));
+    }
+    out
+}
+
 /// `/touched_yesterday` 命令回复文案。pure。与 `format_touched_today_reply`
 /// 同结构（filter / sort / emoji / preview 完全一致），仅 scope 是 `yesterday`
 /// 日期 + 标题用「昨日」+ 空集兜底教学指向 /touched_today / /yesterday /
@@ -7087,7 +7180,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -7558,7 +7651,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "peek", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -12297,6 +12390,79 @@ mod tests {
         assert!(s.contains("「a」"), "{s}");
         assert!(s.contains("「b」"), "{s}");
         assert!(!s.contains("  a  "), "{s}");
+    }
+
+    // -------- /digest_yesterday parse + format --------
+
+    #[test]
+    fn digest_yesterday_parser_clamps_and_defaults() {
+        assert_eq!(
+            parse_tg_command("/digest_yesterday"),
+            Some(TgCommand::DigestYesterday { n: 5 })
+        );
+        assert_eq!(
+            parse_tg_command("/digest_yesterday 10"),
+            Some(TgCommand::DigestYesterday { n: 10 })
+        );
+        // clamp 21 → 20
+        assert_eq!(
+            parse_tg_command("/digest_yesterday 21"),
+            Some(TgCommand::DigestYesterday { n: 20 })
+        );
+        // 非数字 → default 5
+        assert_eq!(
+            parse_tg_command("/digest_yesterday abc"),
+            Some(TgCommand::DigestYesterday { n: 5 })
+        );
+    }
+
+    #[test]
+    fn digest_yesterday_empty_shows_friendly_fallback() {
+        let y = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let s = format_digest_yesterday_reply(&[], y, 5);
+        assert!(s.contains("昨日（2026-05-16）暂无完成"), "{s}");
+        // 三条 alt 入口教学
+        assert!(s.contains("/digest"), "{s}");
+        assert!(s.contains("/yesterday"), "{s}");
+        assert!(s.contains("/touched_yesterday"), "{s}");
+    }
+
+    #[test]
+    fn digest_yesterday_filters_to_done_on_yesterday_only() {
+        let y = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let mut y_done = view("y_d", 3, None, TaskStatus::Done, Some("yesterday r"));
+        y_done.updated_at = "2026-05-16T15:00:00+08:00".to_string();
+        let mut t_done = view("t_d", 3, None, TaskStatus::Done, Some("today r"));
+        t_done.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        let mut y_pending = view("y_p", 3, None, TaskStatus::Pending, None);
+        y_pending.updated_at = "2026-05-16T09:00:00+08:00".to_string();
+        let s = format_digest_yesterday_reply(&[y_done, t_done, y_pending], y, 5);
+        assert!(s.contains("y_d"), "yesterday done included: {s}");
+        assert!(!s.contains("t_d"), "today excluded: {s}");
+        assert!(!s.contains("y_p"), "yesterday pending excluded (done-only): {s}");
+        assert!(s.contains("完成 1 条"), "count reflects filter: {s}");
+    }
+
+    #[test]
+    fn digest_yesterday_shows_result_preview_with_hh_mm_only() {
+        let y = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let mut d = view("写文档", 3, None, TaskStatus::Done, Some("提交到 PR #42"));
+        d.updated_at = "2026-05-16T16:00:00+08:00".to_string();
+        let s = format_digest_yesterday_reply(&[d], y, 5);
+        assert!(s.contains("· 16:00 · 写文档"), "HH:MM prefix (no MM-DD): {s}");
+        assert!(s.contains("— 提交到 PR #42"), "result preview: {s}");
+        // 不含 MM-DD（已在 header）— 避免冗余
+        assert!(!s.contains("05-16 16:00"), "{s}");
+    }
+
+    #[test]
+    fn digest_yesterday_truncates_long_result() {
+        let y = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let long = "x".repeat(120);
+        let mut d = view("t", 3, None, TaskStatus::Done, Some(long.as_str()));
+        d.updated_at = "2026-05-16T10:00:00+08:00".to_string();
+        let s = format_digest_yesterday_reply(&[d], y, 5);
+        assert!(s.contains("…"), "truncate at 80: {s}");
     }
 
     // -------- /mute_today parse + format --------
