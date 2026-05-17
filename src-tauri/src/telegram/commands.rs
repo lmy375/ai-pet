@@ -404,6 +404,13 @@ pub enum TgCommand {
     /// 对偶但单条聚焦）。owner 想「这条 task 标了哪些 tag」audit 单点
     /// 入口。空 title → missing-arg；title resolve 与 /show 同三层。
     TagsFor { title: String },
+    /// `/touch <title>` —— 刷 updated_at 不改内容 — 让老 task 重新冒
+    /// 头 proactive 选单。机制：rewrite 同 description → memory_edit 自
+    /// 动 stamp updated_at 到 now（与 task_skip_once 同 backend helper
+    /// 但 decision_log 标 TaskTouch 做 audit 区分）。done / cancelled
+    /// 拒（终态 task touch 无意义）。空 title → missing-arg；title
+    /// resolve 与 /done /cancel /show 同三层。
+    Touch { title: String },
     /// `/edit_due <title> <preset>` —— 改任务 due 为 preset 解出的时刻。
     /// preset 接 tonight/tomorrow/monday/next_monday/+30m/+2h/+1d/clear 等
     /// 友好词 — 免手敲 ISO 日期。preset 是 last whitespace token，余作
@@ -582,6 +589,7 @@ impl TgCommand {
             TgCommand::Here => "here",
             TgCommand::Tag { .. } => "tag",
             TgCommand::TagsFor { .. } => "tags_for",
+            TgCommand::Touch { .. } => "touch",
             TgCommand::EditDue { .. } => "edit_due",
             TgCommand::CancelAllError { .. } => "cancel_all_error",
             TgCommand::PromoteAllP7 { .. } => "promote_all_p7",
@@ -610,6 +618,7 @@ impl TgCommand {
             | TgCommand::Find { keyword: title }
             | TgCommand::Tag { name: title }
             | TgCommand::TagsFor { title }
+            | TgCommand::Touch { title }
             | TgCommand::Note { text: title }
             | TgCommand::Reflect { text: title }
             | TgCommand::Show { title }
@@ -751,6 +760,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("here", "Owner-side signals snapshot: transient_note + mute state + recent feedback band (counterpart to /aware)"),
             ("tag", "List all tasks with a given #tag (exact match, case-insensitive; counterpart to /tags which lists tag names)"),
             ("tags_for", "List the #tags on a specific task (single-task focus; counterpart to /tags whole-chat view)"),
+            ("touch", "Bump task's updated_at without changing content — bring an old task back to proactive selection"),
             ("edit_due", "Edit a task's due time using friendly preset (tonight / tomorrow / monday / next_friday / +30m / +2h / clear ...)"),
             ("cancel_all_error", "Batch cancel all error tasks in this chat (requires `confirm` token)"),
             ("promote_all_p7", "Sprint mode: batch +1 priority on all active tasks (clamp 7) — requires `confirm`"),
@@ -817,6 +827,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("here", "owner 视角信号 snapshot：transient_note + mute 剩余 + 最近 feedback band（与 /aware 对偶）"),
             ("tag", "列含某 #tag 的所有 task（exact 等值；与 /tags 列 tag 名互补）"),
             ("tags_for", "列单条 task 标的所有 #tag（与 /tags 全聊天视图对偶 — 单条聚焦）"),
+            ("touch", "刷 task 的 updated_at 不改内容 — 让老 task 重新冒头 proactive 选单"),
             ("edit_due", "用友好 preset 改 due（tonight / 明天 / 周一 / next_friday / +30m / +1d / clear ...）"),
             ("cancel_all_error", "批量 cancel 本聊天所有 error 状态任务（需带 `confirm` token 防误触）"),
             ("promote_all_p7", "紧急 sprint：批量给本聊天 active task priority +1（clamp 7）— 需带 `confirm`"),
@@ -1165,6 +1176,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // 模板。空 title 由 handler 走 missing-arg。snake_case 避开
         // dash drift-defense。
         "tags_for" => Some(TgCommand::TagsFor { title }),
+        // `/touch <title>`：与 /show / /done 同 single-title 模板。
+        "touch" => Some(TgCommand::Touch { title }),
         // `/today` 同上无参语义
         "today" => Some(TgCommand::Today),
         // `/now` 无参；多余尾部忽略（与 /today / /mood / /version 同容忍）
@@ -1743,7 +1756,7 @@ pub fn format_tasks_no_change() -> String {
 pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "buckets", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent", "unsilent",
-    "silenced", "silent_all", "markers", "tags", "tag", "tags_for", "mood",
+    "silenced", "silent_all", "markers", "tags", "tag", "tags_for", "touch", "mood",
     "whoami", "today", "today_done", "yesterday", "streak", "now",
     "aware", "here",
     "last", "random", "sleep", "quick", "due", "recent", "oldest_n", "recent_chats",
@@ -1875,6 +1888,7 @@ pub fn format_help_for_topic(
         "alarms" => "⏰ /alarms [N]\n\n用法：列最近 N 条 todo 段 pending reminders（含 `[remind: HH:MM]` / `[remind: YYYY-MM-DD HH:MM]` 协议条目），含目标时刻 + 剩余分钟 / 已逾期分钟。按 target 升序排（最近 fire 在前）。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  · MM-DD HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n\n示例：\n  /alarms\n  /alarms 10\n\n如何创建 alarm：\n  · 桌面 PanelMemory 任意 item ⏰ chip → 选 5/15/30 min preset（iter #372）\n  · 直接 /task `[remind: 18:00] 准备会议材料`（写入 todo 类目）\n  · LLM 用 todo_edit 工具自动创建（owner 说「30 分钟后提醒我喝水」时）\n\n触发后：proactive 扫到 due → ChatMini 软提醒；Absolute 条目 24h 后 consolidate sweep 自动清扫 stale。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「我设了哪些 alarm，何时到点」audit 入口。",
         "tag" => "🏷 /tag <name>\n\n用法：列含某 #tag 的所有 task — status emoji + title + 紧凑 due（MM-DD HH:MM）。name 可带 / 不带 `#` 前缀，case-insensitive exact 等值匹配（与 /find 子串搜正交 — /find 在 title / description 内含部分字也算命中，/tag 仅匹配完整 tag token）。pending / error 先列，其次 done / cancelled；至多前 20 条 + overflow hint。\n\n示例：\n  /tag 工作\n  /tag #urgent\n  /tag 健身\n\n相关：/tags 看本聊天用过的所有 tag 名 + 各任务数（top 15）；/tags_for <title>（单条聚焦 — 列 title 自己的 tags）；/find <keyword> 子串搜任务标题 + 描述（不限 tag）；桌面 PanelTasks #tag chip click 同 filter 视图。",
         "tags_for" => "🏷 /tags_for <title>\n\n用法：列单条 task 标的所有 #tag — 与 /tags（全聊天 tag 矩阵）对偶但单条聚焦。owner 想「这条 task 标了哪些 tag」audit 单点入口。\n\n空 title → usage hint；title resolve 与 /done / /cancel / /show 同三层（数字 index → fuzzy → 错误候选）。\n\n输出格式：\n  🏷 「<title>」N 个 tag：\n  #a #b #c ...\n\n无 #tag 标记 → 「无 #tag 标记。在 description 写 `#name` 自动收录」+ 教学。\n\n示例：\n  /tags_for 整理 Downloads\n  /tags_for 1  （/tasks 输出第 1 条）\n\n相关：/tags（全聊天 tag 矩阵 + 计数）；/tag <name>（含某 tag 的所有 task 反向）；/show <title>（看 raw description 含 #tag tokens）。",
+        "touch" => "✨ /touch <title>\n\n用法：刷 task 的 updated_at 不改内容 — 让老 task 重新冒头 proactive 选单。机制：rewrite 同 description → memory_edit 自动 stamp updated_at 到 now（与 task_skip_once 共享 backend helper 但 decision_log 标 `TaskTouch` 区分）。\n\n场景：一条挂了很久的 active task owner 想让 pet 重新主动关注（无需 /promote 改 priority — touch 仅刷时间序）。\n\n空 title → usage hint；title resolve 与 /done / /cancel / /show 同三层。\n\n输出格式：\n  ✨ 已 touch「<title>」— updated_at 已刷新，老任务重新冒头 proactive 选单。\n\nDone / cancelled task 拒（终态 touch 无意义 — 不会回到 proactive 选单）。\n\n示例：\n  /touch 整理 Downloads\n  /touch 1   （/tasks 输出第 1 条）\n\n相关：/oldest_n（列最老 pending — touch 候选）；/pri / /promote（重组优先级，更强语义）；/snooze（推后到时刻 — touch 反向语义）。",
         "here" => "🧑 /here\n\n用法：owner 视角 dump 当前留给 pet 的状态信号 — transient_note（临时指示）+ mute（静音剩余）+ 最近 feedback band（high_negative / low_negative / mid / insufficient_samples + 当前 cooldown factor）。让 owner audit 「我现在给 pet 什么信号、pet cooldown 会因此被放大 / 缩小多少」— 比如发现 high_negative 但还没 mute 时可主动 /sleep。无参；多余尾部忽略。\n\n输出格式：\n  🧑 当前 owner 信号：\n  📝 transient_note: 「<text>」（剩 N 分钟）/ 未设\n  🔕 mute: 剩 N 分钟 / 未静音\n  💬 最近 feedback band: <label> · <cooldown factor 说明>\n\n示例：\n  /here\n\n对比 /aware：那个看 pet 感知到的（transient + tasks + mood + 时间 + 陪伴），本命令看 owner 输入侧（transient + mute + feedback band） — 两命令配合 audit「我说啥 → pet 看啥 → pet 怎么反应」全链路。\n\n相关：/transient（写 transient_note）；/mute（设静音 / 解除）；/feedback_history（看具体反馈条目，本命令仅显聚合 band）。",
         "aware" => "🐾 /aware\n\n用法：pet 自述当前感知到的上下文 — transient_note（owner 留下的临时指示）+ active butler_tasks 数 + 当前 mood（emoji + 文本）+ 当前时间 + 陪伴天数。无参；多余尾部忽略。一句话 debug 「pet 为啥没主动开口 / 选了那条 task」。\n\n输出格式：\n  🐾 当前感知：\n  📝 transient_note: 「<text>」（剩 N 分钟） / 无\n  📋 active tasks: N 条\n  ☁ mood: <emoji> <text>\n  🕐 当前: YYYY-MM-DD HH:MM (+08:00) · 陪伴 N 天\n\n示例：\n  /aware\n\n对比：/now（仅时间 + mood emoji，最简）；/whoami（多行画像 + 自我介绍长文）；本命令是「pet 当前感知 snapshot」中等粒度，含 transient_note 这条调度关键信号。\n\n相关：/here（owner 视角对偶 — 看 owner 输入了哪些信号）；/transient（写 transient_note）；/feedback_history（看 pet 接收的训练信号）。",
         "recent_chats" => "💬 /recent_chats [N]\n\n用法：列最近 N 条 active session 内 user ↔ pet 聊天往返（仅 user / assistant items，跳过 tool_call / 系统行）。手机端回顾上下文 — owner 想「我刚才让 pet 做啥来着」一句话查回桌面 ChatMini 滚动太累时用。N 缺省 5，clamp 1..=20。\n\n输出格式：\n  💬 最近 N 条 chat · 会话「<title>」最近活动 MM-DD HH:MM：\n  🧑 <user excerpt>\n  🐾 <pet excerpt>\n  ...\n\nexcerpt cap 80 字；超长 + …。\n\n注：per-msg ts 不在后端 schema 里，仅 session 级 updated_at 一并呈现（「最近活动」信号）。pet 桌面 reset session 时本命令也会看到新空 session 提示。\n\n相关：/feedback_history（看 pet 接收训练信号）；/transient（写 in-memory 临时指示）；本命令是回看「最近 chat 上下文」audit 入口。",
@@ -1962,6 +1976,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/here  —  owner 视角信号 snapshot（transient_note + mute + 最近 feedback band，与 /aware 对偶）".to_string(),
         "/tag <name>  —  列含某 #tag 的所有 task（exact 等值，case-insensitive；与 /tags 列 tag 名互补）".to_string(),
         "/tags_for <title>  —  列单条 task 标的所有 #tag（与 /tags 全聊天视图对偶 — 单条聚焦）".to_string(),
+        "/touch <title>  —  刷 task 的 updated_at 不改内容 — 让老 task 重新冒头 proactive 选单".to_string(),
         "/cancel_all_error confirm  —  批量 cancel 本聊天所有 error 任务（需带 confirm token 防误触）".to_string(),
         "/promote_all_p7 confirm  —  紧急 sprint：批量给本聊天 active task priority +1（clamp 7；需带 confirm）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
@@ -3707,6 +3722,28 @@ pub fn format_tags_for_reply(
         target_view.tags.len(),
         tags_str
     )
+}
+
+/// `/touch <title>` 命令回复文案。pure：caller 已 resolve title +
+/// 调 task_touch_inner。
+///
+/// 状态机：
+/// - 空 title → usage hint
+/// - save Ok → "✨ 已 touch「<title>」— updated_at 已刷新，老任务
+///   重新冒头 proactive 选单。"
+/// - save Err → "✨ touch 失败：<msg>"
+pub fn format_touch_reply(title: &str, save_ok: Result<(), &str>) -> String {
+    let t = title.trim();
+    if t.is_empty() {
+        return "✨ 用法：/touch <title>\n\n刷 updated_at 不改内容 — 让老 task 重新冒头 proactive 选单。\n\n例：/touch 整理 Downloads\n例：/touch 1   （/tasks 输出第 1 条）\n\n机制：rewrite 同 description → updated_at 自动 stamp 到 now。done / cancelled task 拒（终态 touch 无意义）。与 /skip（同 backend 但语义是「跳本轮 fire」）共享机制；decision_log 标 TaskTouch audit 区分。".to_string();
+    }
+    match save_ok {
+        Ok(()) => format!(
+            "✨ 已 touch「{}」— updated_at 已刷新，老任务重新冒头 proactive 选单。",
+            t
+        ),
+        Err(e) => format!("✨ touch 失败：{}", e),
+    }
 }
 
 /// `/cancel_all_error` 命令回复文案。pure：
@@ -5543,7 +5580,7 @@ mod tests {
             "due", "recent", "oldest_n", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
-            "tag", "tags_for", "edit_due", "cancel_all_error", "promote_all_p7", "find",
+            "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "find",
             "show", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help",
         ] {
@@ -6016,7 +6053,7 @@ mod tests {
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
             "promote_all_p7", "show", "timeline", "forks", "blocked_by",
-            "tags", "tag", "tags_for", "reset", "version", "help",
+            "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -10671,6 +10708,52 @@ mod tests {
         assert!(s.contains("#工作"), "{s}");
         assert!(s.contains("#urgent"), "{s}");
         assert!(s.contains("#整理"), "{s}");
+    }
+
+    // -------- /touch parse + format --------
+
+    #[test]
+    fn touch_parser_takes_all_args_as_title() {
+        assert_eq!(
+            parse_tg_command("/touch 整理 Downloads"),
+            Some(TgCommand::Touch {
+                title: "整理 Downloads".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn touch_parser_empty_title_parses() {
+        assert_eq!(
+            parse_tg_command("/touch"),
+            Some(TgCommand::Touch {
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn touch_reply_empty_title_shows_usage() {
+        let s = format_touch_reply("", Ok(()));
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/touch"), "{s}");
+        assert!(s.contains("updated_at"), "explains mechanism: {s}");
+    }
+
+    #[test]
+    fn touch_reply_success_acknowledges_refresh() {
+        let s = format_touch_reply("整理 Downloads", Ok(()));
+        assert!(s.contains("✨"), "{s}");
+        assert!(s.contains("已 touch"), "{s}");
+        assert!(s.contains("整理 Downloads"), "{s}");
+        assert!(s.contains("updated_at"), "{s}");
+    }
+
+    #[test]
+    fn touch_reply_failure_shows_error() {
+        let s = format_touch_reply("写周报", Err("cannot touch a finished task"));
+        assert!(s.contains("touch 失败"), "{s}");
+        assert!(s.contains("cannot touch"), "{s}");
     }
 
     // -------- /edit_due parse + compute + format --------

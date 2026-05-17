@@ -1059,6 +1059,38 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Touch { title } => {
+            // 刷 updated_at 不改内容 — 让老 task 重新冒头 proactive 选
+            // 单。3 层 title resolve + 调 task_touch_inner（与 task_
+            // skip_once 共享 backend helper 但 decision_log 标 TaskTouch
+            // 区分）。done / cancelled 拒由 backend 内部 status check。
+            if title.trim().is_empty() {
+                crate::telegram::commands::format_touch_reply(&title, Ok(()))
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let decisions = state
+                            .app
+                            .state::<crate::decision_log::DecisionLogStore>()
+                            .inner()
+                            .clone();
+                        let save = crate::commands::task::task_touch_inner(
+                            t.clone(),
+                            decisions,
+                        );
+                        crate::telegram::commands::format_touch_reply(
+                            &t,
+                            save.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                        )
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Blocked => {
             // 被 blockedBy 锁住的 active task 清单。reuse 同 read path；
             // formatter 内部把 chat-scoped views 当 active 集 + 交集计算
