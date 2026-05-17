@@ -918,6 +918,29 @@ export function PanelDebug() {
     if (tone) {
       lines.push("", `## tone snapshot`, "```json", JSON.stringify(tone, null, 2), "```");
     }
+    // mute state：与 PanelDebug header「⚙️ mute」chip 同 SoT
+    // (get_mute_until)。 muteUntil 早于 buildDebugMarkdownSnapshot
+    // 声明可直接 closure；剩余分钟在 snapshot 闭包内 inline 算（避免
+    // 用 muteRemainingMins useMemo 的 TDZ — 那个在本 useCallback 之
+    // 后才声明）。snapshot 含"无 mute"同样是有效信号 — owner
+    // reproduce bug 时排除"是不是被静音"假设。
+    {
+      let muteMins = 0;
+      if (muteUntil) {
+        const t = Date.parse(muteUntil);
+        if (Number.isFinite(t)) {
+          const diff = t - Date.now();
+          if (diff > 0) muteMins = Math.ceil(diff / 60_000);
+        }
+      }
+      lines.push("", `## mute`);
+      if (muteMins > 0) {
+        lines.push(`- 状态: muted (剩 ${muteMins} 分钟)`);
+        if (muteUntil) lines.push(`- until: ${muteUntil}`);
+      } else {
+        lines.push(`- 状态: 未静音`);
+      }
+    }
     if (pendingReviews.length > 0) {
       lines.push("", `## 待审核工具调用（${pendingReviews.length}）`);
       for (const r of pendingReviews) {
@@ -964,6 +987,7 @@ export function PanelDebug() {
     reminders,
     toolRiskRows,
     recentSpeeches,
+    muteUntil,
   ]);
   const [debugExportMsg, setDebugExportMsg] = useState("");
   const handleExportDebugMd = async () => {
