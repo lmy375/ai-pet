@@ -4192,6 +4192,85 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     </span>
                   );
                 })()}
+                {/* iter #398: butler_tasks 段「📊 schedule 24h 分布」mini
+                    bar chip — 扫 cat.items 中含 [every:] / [once:] /
+                    [deadline:] schedule 的 hour 字段，按 24 桶聚合（仅
+                    pending — 不计 [done]）。bar 高 normalize 到 max
+                    bucket count；空桶 faint 占位让 24 列对齐。owner
+                    一眼看 "我的 butler_tasks 都集中在几点 fire" — 早
+                    9 扎堆 vs 散布等偏态信号。仅 butler_tasks 段；scheduled
+                    items > 0 时渲（避免空 chip）。 */}
+                {catKey === "butler_tasks" &&
+                  (() => {
+                    const buckets: number[] = Array.from({ length: 24 }, () => 0);
+                    let scheduledCount = 0;
+                    const doneRe = /\[done(?:\s[^\]]*)?\]/;
+                    for (const it of cat.items) {
+                      if (doneRe.test(it.description)) continue;
+                      const p = parseButlerSchedule(it.description);
+                      if (!p) continue;
+                      const h = p.schedule.hour;
+                      if (h >= 0 && h <= 23) {
+                        buckets[h] += 1;
+                        scheduledCount += 1;
+                      }
+                    }
+                    if (scheduledCount === 0) return null;
+                    const max = Math.max(...buckets, 1);
+                    const titleParts: string[] = [
+                      `${scheduledCount} 条 scheduled butler_task 的 fire 小时分布：`,
+                    ];
+                    for (let h = 0; h < 24; h++) {
+                      if (buckets[h] > 0) {
+                        titleParts.push(
+                          `  ${String(h).padStart(2, "0")}:00 — ${buckets[h]} 条`,
+                        );
+                      }
+                    }
+                    // 小时段 tint 用 muted 单色（vs PanelTasks priority
+                    // 三段 muted/blue/rose）— 24 列已视觉密度高，单色
+                    // 让数量差异（bar 高）主导信号。
+                    return (
+                      <span
+                        title={titleParts.join("\n")}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "flex-end",
+                          gap: 1,
+                          padding: "3px 6px 2px",
+                          fontSize: 11,
+                          borderRadius: 999,
+                          background: "var(--pet-color-card)",
+                          border: "1px solid var(--pet-color-border)",
+                          color: "var(--pet-color-muted)",
+                          userSelect: "none",
+                          height: 22,
+                        }}
+                        aria-label={`schedule 24h distribution: ${buckets.join(",")}`}
+                      >
+                        <span style={{ marginRight: 3 }}>📊</span>
+                        {buckets.map((count, h) => {
+                          const heightPct =
+                            count > 0 ? Math.max(15, (count / max) * 100) : 5;
+                          return (
+                            <span
+                              key={h}
+                              style={{
+                                display: "inline-block",
+                                width: 3,
+                                height: `${heightPct}%`,
+                                background:
+                                  count > 0
+                                    ? "var(--pet-tint-purple-fg)"
+                                    : "color-mix(in srgb, var(--pet-color-muted) 18%, transparent)",
+                                borderRadius: 1,
+                              }}
+                            />
+                          );
+                        })}
+                      </span>
+                    );
+                  })()}
                 {/* ⏰ N pending alarms chip：todo 段专属。扫 cat.items
                     description 中 `[remind: HH:MM]` / `[remind: YYYY-MM-DD
                     HH:MM]` 协议条目计数；> 0 时渲。click 弹倒计时清单
