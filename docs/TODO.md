@@ -8,7 +8,12 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory item 加 ctx menu（右键）：聚合改名 / 📑 副本 / 🗑 删 / 🔗 inline ref 动作 — 让密集 chip 收纳。
+- TG bot `/touch_all_p7` 命令：批量 touch 所有 P7+ active task — 与 /promote_all_p7 互补的紧急聚焦高优。
+- detail.md 编辑器加「📏 wrap ruler」: 当前行超 80 字时行号染黄 — code-like 写作辅助。
+- PanelMemory 加「📥 import .md」按钮：粘 markdown 文本 → parse H2 为 cat / H3 为 item 一次导入。
+- ChatMini bubble 右键加「🔗 复制 task ref」: 把 bubble 内提到的「title」token 当 inline ref 复制。
+- TG bot `/active_recent [N]` 命令：列最近 N 条创建的 active task — 与 /recent done 反向。
+- PanelDebug 加「📜 复制 raw logs」按钮：把 LogStore 内容拼成 markdown 表复制 — 与既有 snapshot 互补。
 
 
 
