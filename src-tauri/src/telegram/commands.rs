@@ -526,6 +526,11 @@ pub enum TgCommand {
     /// ChatMini 顶部「⏱ pet 沉默 N 分」chip 对偶 — 那个显沉默时长，本
     /// 命令显具体说了什么。空 history 时友好兜底。无参；多余尾部忽略。
     LastSpeech,
+    /// `/show_speech [N]` —— 显 pet 最近 N 条主动开口（speech_history.log
+    /// 末 N 条，倒序最新在前）。与 /last_speech 单条对偶。N 缺省 5；
+    /// clamp 1..=20（与 /recent / /digest 等 N-cap 命令统一上限）；非
+    /// 数字尾部一律忽略走默认。
+    ShowSpeech { n: u32 },
     /// `/show <title>` —— 显示指定任务的 raw_description（含全部 markers）
     /// + detail.md 内容预览（前 300 字符），让 owner 在 TG 端 audit 单条
     /// 任务详情不必回桌面。空 title 走 missing-arg；title resolve 三层
@@ -635,6 +640,7 @@ impl TgCommand {
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
+            TgCommand::ShowSpeech { .. } => "show_speech",
             TgCommand::Last => "last",
             TgCommand::Random => "random",
             TgCommand::Sleep => "sleep",
@@ -731,6 +737,7 @@ impl TgCommand {
             | TgCommand::Due { .. }
             | TgCommand::Now
             | TgCommand::LastSpeech
+            | TgCommand::ShowSpeech { .. }
             | TgCommand::Aware
             | TgCommand::Here
             | TgCommand::Last
@@ -819,6 +826,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("today", "Today's due / done task titles"),
             ("now", "One-line status check: time + tz + companionship days + mood emoji"),
             ("last_speech", "Show pet's most recent proactive utterance + ts — pairs with ChatMini's ⏱ silent chip"),
+            ("show_speech", "List recent N proactive utterances (default 5, cap 20) — generalizes /last_speech"),
             ("last", "Show the most recently created task (this chat) with raw description preview"),
             ("random", "Pick a random active (pending / error) task — for owner's choice paralysis moments"),
             ("sleep", "Mute proactive for 8 hours with a friendly good-night reply (= /mute 480)"),
@@ -895,6 +903,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("today", "今日到期 / 已完成的任务标题清单"),
             ("now", "一句话快速状态：当前时间 + 时区 + 陪伴天数 + 心情 emoji"),
             ("last_speech", "pet 最近一条主动开口 + ts — 与 ChatMini「⏱ 沉默 N 分」chip 对偶"),
+            ("show_speech", "列最近 N 条 pet 主动开口（默认 5，上限 20）— 与 /last_speech 单条对偶"),
             ("last", "显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的"),
             ("random", "随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定"),
             ("sleep", "一键 mute proactive 8 小时 + 友好「晚安」reply（= /mute 480）"),
@@ -1279,6 +1288,17 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/last_speech`：无参；多余尾部一律忽略（与 /now / /aware / /here
         // 同 "tolerant trailing" 模板）。
         "last_speech" => Some(TgCommand::LastSpeech),
+        // `/show_speech [N]`：N clamp 1..=20，缺省 5。非数字尾部一律
+        // 忽略走默认（与 /recent / /digest 同前向兼容策略）。
+        "show_speech" => {
+            let n = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 20))
+                .unwrap_or(5);
+            Some(TgCommand::ShowSpeech { n })
+        }
         // `/aware` 无参；多余尾部一律忽略（与 /now 同模板）
         "aware" => Some(TgCommand::Aware),
         // `/here` 无参；多余尾部一律忽略（与 /aware 同模板）
@@ -1924,7 +1944,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "task", "tasks", "stats", "buckets", "done", "cancel", "retry", "snooze",
     "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent", "unsilent",
     "silenced", "silent_all", "markers", "tags", "tag", "tags_for", "touch", "mood",
-    "whoami", "today", "today_done", "yesterday", "streak", "now", "last_speech",
+    "whoami", "today", "today_done", "yesterday", "streak", "now", "last_speech", "show_speech",
     "aware", "here",
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
@@ -2039,7 +2059,8 @@ pub fn format_help_for_topic(
         "whoami" => "🐾 /whoami\n\n用法：宠物自我介绍 — 陪伴天数 / 当前心情 / 自我画像首段 / 近常用工具 top 3。无参。\n\n示例：\n  /whoami",
         "today" => "📅 /today\n\n用法：今日叙事视图 — 今日到期 (pending + due 在今天) + 今日已完成 (done + updated_at 在今天) 两段标题清单。无参。\n\n示例：\n  /today\n\n相关：/recent（不限今日 done）；/blocked（被 [blockedBy:] 锁住的）；/due（更远视角 — tomorrow / thisweek / nextweek）。",
         "now" => "🐾 /now\n\n用法：一句话快速状态 check — 当前本地时间 + tz 偏移 + 陪伴天数 + 心情 emoji + 心情文本。无参。比 /whoami 多行画像简短，适合 owner 在 TG 想「现在几点 / 宠物啥状态」闪查。\n\n示例：\n  /now\n\n相关：/whoami（多行画像）；/mood（心情详情）；/last_speech（pet 最近主动开口）。",
-        "last_speech" => "🗣 /last_speech\n\n用法：显 pet 最近一条主动开口（speech_history.log 末条），含 ts + 文本 + 相对时间「N 分前 / N 小时前 / N 天前」。无参；多余尾部忽略。\n\n与 ChatMini 顶部「⏱ pet 沉默 N 分」chip 对偶 — 那个显沉默时长触发关心；本命令显具体最近说了啥（原话 + 从那时起的分钟数）。\n\n输出格式：\n  🗣 pet 最近主动开口 · MM-DD HH:MM（N 分前）：\n  「<text 前 N 字 cap>」\n\n空 history（pet 还没主动开口过 / 刚 reset） → 友好兜底。\n\n示例：\n  /last_speech\n\n相关：/aware（pet 当前感知）；/here（owner 信号 snapshot）；/feedback_history（pet 接收的反馈）。",
+        "last_speech" => "🗣 /last_speech\n\n用法：显 pet 最近一条主动开口（speech_history.log 末条），含 ts + 文本 + 相对时间「N 分前 / N 小时前 / N 天前」。无参；多余尾部忽略。\n\n与 ChatMini 顶部「⏱ pet 沉默 N 分」chip 对偶 — 那个显沉默时长触发关心；本命令显具体最近说了啥（原话 + 从那时起的分钟数）。\n\n输出格式：\n  🗣 pet 最近主动开口 · MM-DD HH:MM（N 分前）：\n  「<text 前 N 字 cap>」\n\n空 history（pet 还没主动开口过 / 刚 reset） → 友好兜底。\n\n示例：\n  /last_speech\n\n相关：/show_speech [N]（最近 N 条）；/aware（pet 当前感知）；/here（owner 信号 snapshot）；/feedback_history（pet 接收的反馈）。",
+        "show_speech" => "🗣 /show_speech [N]\n\n用法：列 pet 最近 N 条主动开口（speech_history.log 末 N 条，倒序最新在前）。N 缺省 5；clamp 1..=20。与 /last_speech 单条对偶 — 那个看「上次说了啥」，本命令看「最近一段时间说过啥」。\n\n输出格式：\n  🗣 pet 最近 N 条主动开口（共 M）：\n  · MM-DD HH:MM · <text 80 字 cap>\n  · MM-DD HH:MM · <text>\n  ...\n\ntext 80 字截断（per-row 紧凑 vs /last_speech 200 字单条完整）；超长 + …。\n\n场景：owner 想 audit「pet 最近一波主动开口节奏 / 内容多样性」时用；比 /find_speech（关键词搜）更适合扫读。\n\n示例：\n  /show_speech\n  /show_speech 10\n  /show_speech 20\n\n相关：/last_speech（最近 1 条 + 完整 200 字）；/find_speech <kw>（关键词搜）；/recent_chats（user↔pet 对话）。",
         "last" => "🆕 /last\n\n用法：显本聊天派单中最近 created_at 的一条 task — title + status emoji + 相对创建时间 + raw_description 前 200 字符预览。无参。owner 想「我刚 /task 创的那条对不对」闪查时用 — 不必走 /tasks 全表扫。\n\n示例：\n  /last\n\n相关：/show <title>（看完整 raw + detail）；/recent（最近 N 条 done）；/tasks（全状态清单）。",
         "random" => "🎲 /random\n\n用法：从本聊天派单的 active 任务（pending / error）里随机抽 1 条让宠物推荐 — 给 owner「选择困难」/「不知道先做哪个」时让 pet 决定下一步。无参；多次调用会得到不同 task。无 active 任务时给兜底文案。\n\n示例：\n  /random\n\n相关：/tasks（看全清单）；/blocked（被锁住的）；/today（今日到期）。",
         "sleep" => "🌙 /sleep\n\n用法：一键让宠物 mute proactive 8 小时 + 友好「晚安」reply。无参。比手敲 `/mute 480` 更直觉 — owner 睡前 / 长会议 / 想 deep work 时一句话搞定。\n\n示例：\n  /sleep\n\n相关：/mute [N]（精确控制 N 分钟）；/sleep_until HH:MM（静音到指定时刻）；/mute 0（立刻解除静音）。",
@@ -2134,6 +2155,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/today  —  今日到期 / 已完成的任务标题清单".to_string(),
         "/now  —  一句话快速状态：当前时间 + 时区 + 陪伴 + 心情 emoji（与 /whoami 多行画像互补）".to_string(),
         "/last_speech  —  pet 最近一条主动开口 + ts（与 ChatMini「⏱ 沉默 N 分」chip 对偶 audit）".to_string(),
+        "/show_speech [N]  —  pet 最近 N 条主动开口（默认 5，上限 20）— 与 /last_speech 单条对偶".to_string(),
         "/last  —  显本聊天最近创建的一条 task（含 raw 描述预览）— 闪查刚 enqueue 的对不对".to_string(),
         "/random  —  随机抽 1 条 active 任务（pending / error）— 选择困难时让宠物决定下一步".to_string(),
         "/sleep  —  一键 mute proactive 8 小时 + 友好「晚安」reply（与 /mute 480 等价但语气温和）".to_string(),
@@ -5137,6 +5159,48 @@ pub fn format_last_speech_reply(
     )
 }
 
+/// `/show_speech <N>` 命令回复文案。pure：caller 已 await
+/// `recent_speeches_with_meta(n)` 拿到 oldest-first vec；本函数倒序
+/// （newest-first）+ 拼字符串。
+///
+/// 每行 `· MM-DD HH:MM · <text 80 字 cap>`；text 80 字截断（per-row
+/// 紧凑 vs /last_speech 单条 200 字完整）。空 → 友好兜底。
+pub fn format_show_speech_reply(
+    entries: &[(String, String)],
+) -> String {
+    if entries.is_empty() {
+        return "🗣 speech_history 空 — pet 还没主动开口过 / 刚 reset / 一直被 mute。\n用 /aware 看 pet 当前感知；/last_speech 单条 audit。".to_string();
+    }
+    // entries 来自 caller 已是 oldest-first；reverse 让 newest 在前
+    let mut sorted: Vec<&(String, String)> = entries.iter().collect();
+    sorted.reverse();
+    let mut out = format!(
+        "🗣 pet 最近 {} 条主动开口（newest first）：",
+        sorted.len()
+    );
+    for (ts_str, text) in &sorted {
+        let when_label =
+            match chrono::DateTime::parse_from_rfc3339(ts_str) {
+                Ok(dt) => dt
+                    .with_timezone(&chrono::Local)
+                    .format("%m-%d %H:%M")
+                    .to_string(),
+                Err(_) => ts_str.to_string(),
+            };
+        let chars: Vec<char> = text.chars().collect();
+        let preview: String = if chars.len() > 80 {
+            let head: String = chars.iter().take(80).collect();
+            format!("{}…", head)
+        } else {
+            (*text).clone()
+        };
+        // flatten newline 让单行 reply 可读
+        let flat = preview.replace('\n', " ").replace('\t', " ");
+        out.push_str(&format!("\n· {} · {}", when_label, flat));
+    }
+    out
+}
+
 /// `/aware` 命令回复文案。pure。
 ///
 /// 入参（caller 在 bot handler 抓齐传入，让 formatter 可单元测试）：
@@ -6260,7 +6324,7 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "pinned_due", "silent",
             "unsilent", "silenced", "markers", "tags", "mood", "whoami", "today",
-            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "snooze_until", "quick",
+            "today_done", "yesterday", "streak", "now", "last_speech", "show_speech", "last", "random", "sleep", "sleep_until", "snooze_until", "quick",
             "due", "recent", "oldest_n", "active_recent", "digest", "edit", "pri", "swap_priority", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
@@ -6732,7 +6796,7 @@ mod tests {
             "task", "tasks", "cancel", "retry", "done", "stats", "buckets", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned",
             "pinned_due", "today",
-            "today_done", "yesterday", "streak", "now", "last_speech", "last", "random", "sleep", "sleep_until", "snooze_until", "quick",
+            "today_done", "yesterday", "streak", "now", "last_speech", "show_speech", "last", "random", "sleep", "sleep_until", "snooze_until", "quick",
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
@@ -11930,6 +11994,113 @@ mod tests {
         );
         assert!(s.contains("ts 解析失败"), "{s}");
         assert!(s.contains("fallback text"), "still shows text: {s}");
+    }
+
+    // -------- /show_speech parse + format --------
+
+    #[test]
+    fn show_speech_parses_default_5_no_arg() {
+        assert_eq!(
+            parse_tg_command("/show_speech"),
+            Some(TgCommand::ShowSpeech { n: 5 })
+        );
+        assert_eq!(
+            parse_tg_command("/show_speech   "),
+            Some(TgCommand::ShowSpeech { n: 5 })
+        );
+    }
+
+    #[test]
+    fn show_speech_parses_explicit_n() {
+        assert_eq!(
+            parse_tg_command("/show_speech 10"),
+            Some(TgCommand::ShowSpeech { n: 10 })
+        );
+        assert_eq!(
+            parse_tg_command("/show_speech 1"),
+            Some(TgCommand::ShowSpeech { n: 1 })
+        );
+    }
+
+    #[test]
+    fn show_speech_clamps_to_1_20_range() {
+        assert_eq!(
+            parse_tg_command("/show_speech 0"),
+            Some(TgCommand::ShowSpeech { n: 1 })
+        );
+        assert_eq!(
+            parse_tg_command("/show_speech 9999"),
+            Some(TgCommand::ShowSpeech { n: 20 })
+        );
+    }
+
+    #[test]
+    fn show_speech_garbage_arg_falls_back_to_default() {
+        assert_eq!(
+            parse_tg_command("/show_speech abc"),
+            Some(TgCommand::ShowSpeech { n: 5 })
+        );
+    }
+
+    #[test]
+    fn format_show_speech_empty_says_no_history() {
+        let s = format_show_speech_reply(&[]);
+        assert!(s.contains("🗣"), "{s}");
+        assert!(s.contains("speech_history 空"), "{s}");
+    }
+
+    #[test]
+    fn format_show_speech_reverses_to_newest_first() {
+        use chrono::TimeZone;
+        // oldest-first input（与 recent_speeches_with_meta 返回顺序同）
+        let ts_old = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 10, 0, 0)
+            .unwrap()
+            .to_rfc3339();
+        let ts_new = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 14, 0, 0)
+            .unwrap()
+            .to_rfc3339();
+        let entries = vec![
+            (ts_old.clone(), "早些说的".to_string()),
+            (ts_new.clone(), "最新说的".to_string()),
+        ];
+        let s = format_show_speech_reply(&entries);
+        // 最新应在前
+        let pos_new = s.find("最新说的").expect("newest");
+        let pos_old = s.find("早些说的").expect("oldest");
+        assert!(pos_new < pos_old, "newest first: {s}");
+        assert!(s.contains("最近 2 条主动开口"), "header: {s}");
+    }
+
+    #[test]
+    fn format_show_speech_truncates_long_text_to_80_chars() {
+        use chrono::TimeZone;
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 14, 0, 0)
+            .unwrap()
+            .to_rfc3339();
+        let long_text: String = "啊".repeat(100);
+        let entries = vec![(ts, long_text)];
+        let s = format_show_speech_reply(&entries);
+        let counted = s.chars().filter(|&c| c == '啊').count();
+        assert_eq!(counted, 80, "expected 80-char cap: {s}");
+        assert!(s.contains("…"), "{s}");
+    }
+
+    #[test]
+    fn format_show_speech_flattens_newlines_in_text() {
+        use chrono::TimeZone;
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 5, 17, 14, 0, 0)
+            .unwrap()
+            .to_rfc3339();
+        let entries = vec![(
+            ts,
+            "line1\nline2\nline3".to_string(),
+        )];
+        let s = format_show_speech_reply(&entries);
+        assert!(s.contains("line1 line2 line3"), "newlines flattened: {s}");
     }
 
     // -------- /aware parse + format --------

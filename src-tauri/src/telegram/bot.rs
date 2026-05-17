@@ -915,6 +915,19 @@ async fn handle_tg_command(
             let now = chrono::Local::now();
             crate::telegram::commands::format_last_speech_reply(entry_opt, now)
         }
+        TgCommand::ShowSpeech { n } => {
+            // 最近 N 条主动开口：调既有 recent_speeches_with_meta(n) +
+            // 转 (ts, text) tuple vec 给 pure formatter。empty / IO 失败
+            // 由 formatter 内部走兜底。clamp 已在 parser 完成 (1..=20)。
+            let entries =
+                crate::speech_history::recent_speeches_with_meta(n as usize)
+                    .await;
+            let tuples: Vec<(String, String)> = entries
+                .into_iter()
+                .map(|e| (e.ts, e.text))
+                .collect();
+            crate::telegram::commands::format_show_speech_reply(&tuples)
+        }
         TgCommand::Today => {
             // 今日叙事视图：reuse 与 /tasks /stats 同一 read path；本地 today
             // 日期注入。views 已按 origin==Tg(chat_id) 过滤，与其它命令一致。
