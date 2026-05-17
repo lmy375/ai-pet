@@ -672,6 +672,42 @@ export function ChatPanel({ onSend, isLoading }: Props) {
               💡
             </button>
           )}
+          {/* 📏 长 input 字符徽章：input ≥ 500 字时浮 bottom-right inline 灰字
+              「Nch」+ ≥ 2000 切红 tint 告警。避免 owner 在长 prompt 写作中
+              失去对 textarea 体积的感知（textarea 默认 overflow: hidden 不
+              显完整内容，长 input 时容易盲打越界）。位置 bottom-right 与
+              顶部 chip 行 (📜/📋/💡) 不重叠；仅 input.length 跨阈值时浮，
+              短 input 时不显避免视觉噪音。 */}
+          {input.length >= 500 && (
+            <div
+              title={`当前 input ${input.length} 字 — 长 prompt 注意：textarea 默认收起，越界时也只显头几行；考虑分多条 / 用 detail.md 整理。${input.length >= 2000 ? " 🚨 已 >2000 字，建议拆分。" : ""}`}
+              aria-label={`input char count ${input.length}`}
+              style={{
+                position: "absolute",
+                bottom: 6,
+                right: 12,
+                fontSize: 10,
+                color:
+                  input.length >= 2000
+                    ? "var(--pet-tint-red-fg)"
+                    : "var(--pet-color-muted)",
+                fontWeight: input.length >= 2000 ? 600 : undefined,
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                background:
+                  input.length >= 2000
+                    ? "var(--pet-tint-red-bg)"
+                    : "var(--pet-color-card)",
+                padding: "0 5px",
+                borderRadius: 3,
+                lineHeight: "14px",
+                pointerEvents: "auto",
+                zIndex: 4,
+                userSelect: "none",
+              }}
+            >
+              📏 {input.length}ch
+            </div>
+          )}
           {historyPopoverOpen && sentHistory.length > 0 && (
             <div
               onMouseDown={(e) => e.stopPropagation()}
