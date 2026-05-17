@@ -28,6 +28,9 @@ export interface UseTaskKeyboardNavArgs<T extends TaskItemLike> {
   handleRetry: (title: string) => Promise<void>;
   /** p 快捷键：反转焦点行 pinned。pin 与 status 正交，done / cancelled 也响应（与桌面右键菜单 + bulk pin 同语义）。 */
   handleTogglePinned: (title: string, nextPinned: boolean) => Promise<void>;
+  /** ⌘D / Ctrl+D 快捷键：复制焦点行 title 到剪贴板。键盘党 quick-grab，
+   * 不必走右键 ctx menu。无焦点（focusedIdx===null）时跳过让默认行为透传。 */
+  handleCopyTitle: (title: string) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
   titleInputRef: RefObject<HTMLInputElement | null>;
   setCreateFormExpanded: (v: boolean) => void;
@@ -45,6 +48,7 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
     handleMarkDone,
     handleRetry,
     handleTogglePinned,
+    handleCopyTitle,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
@@ -75,6 +79,10 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
   useEffect(() => {
     handleRetryRef.current = handleRetry;
   }, [handleRetry]);
+  const handleCopyTitleRef = useRef(handleCopyTitle);
+  useEffect(() => {
+    handleCopyTitleRef.current = handleCopyTitle;
+  }, [handleCopyTitle]);
   const handleTogglePinnedRef = useRef(handleTogglePinned);
   useEffect(() => {
     handleTogglePinnedRef.current = handleTogglePinned;
@@ -251,6 +259,25 @@ export function useTaskKeyboardNav<T extends TaskItemLike>(
           if (!item) return prev;
           e.preventDefault();
           void handleTogglePinnedRef.current(item.title, !item.pinned);
+          return prev;
+        });
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "d" &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        // ⌘D / Ctrl+D = 复制焦点行 title 到剪贴板。键盘党 quick-grab —
+        // 与右键 ctx menu「📋 复制 raw_description」对偶但更轻量（仅 title）。
+        // 仅 focusedIdx 非空时拦截 / preventDefault；无焦点时透传默认行为
+        // （macOS 在 webview 里 ⌘D 默认无害）。tagName 守卫之后 = 不在输入
+        // 框工作（避免覆盖系统 ⌘D），与 d / r / p 单键行为对齐。
+        setFocusedIdx((prev) => {
+          if (prev === null) return null;
+          const item = list[prev];
+          if (!item) return prev;
+          e.preventDefault();
+          handleCopyTitleRef.current(item.title);
           return prev;
         });
       }

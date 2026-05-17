@@ -4783,6 +4783,22 @@ export function PanelTasks({
     pinnedFilter ||
     highPriorityOnly;
 
+  /// ⌘D 快捷键：把焦点行 title 复制到剪贴板。useCallback 让 hook ref
+  /// 不必每次 visibleTasks 变化都重 sync —— title 是字符串 by value，
+  /// 走 navigator.clipboard 即可，setBulkResultMsg 反馈 3s。
+  const handleCopyFocusedTitle = useCallback((title: string) => {
+    navigator.clipboard
+      .writeText(title)
+      .then(() => {
+        setBulkResultMsg(`已复制标题「${title}」`);
+        window.setTimeout(() => setBulkResultMsg(""), 3000);
+      })
+      .catch((e) => {
+        setBulkResultMsg(`复制失败：${e}`);
+        window.setTimeout(() => setBulkResultMsg(""), 3000);
+      });
+  }, []);
+
   // 键盘导航整段抽到 useTaskKeyboardNav（ref-stable 监听 + visibleTasks
   // 长度 clamp）。hook 内部用 ref 持最新依赖，避免每次 visibleTasks 变化
   // 都 re-subscribe 的窗口竞态。
@@ -4794,6 +4810,7 @@ export function PanelTasks({
     handleMarkDone,
     handleRetry,
     handleTogglePinned,
+    handleCopyTitle: handleCopyFocusedTitle,
     searchInputRef,
     titleInputRef,
     setCreateFormExpanded,
