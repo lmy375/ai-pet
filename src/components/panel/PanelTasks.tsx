@@ -12680,6 +12680,46 @@ export function PanelTasks({
                 🔗 复制 detail.md 绝对路径
               </button>
             )}
+            {/* 📋 复制 detail.md 全文：调 task_get_detail 拿 detail_md
+                字符串直接写剪贴板。owner 不必先打开 detail 编辑器再 ⌘A+⌘C，
+                也不必走"📑 复制为 Markdown"那种带元数据 bullet 头的完整段
+                — 单纯 detail 进度笔记 raw 文本。空 detail / IO 失败给消息
+                反馈。 */}
+            {t && t.detail_path && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={async () => {
+                  setTaskCtxMenu(null);
+                  try {
+                    const detail = await invoke<TaskDetail>(
+                      "task_get_detail",
+                      { title: m.title },
+                    );
+                    const content = detail.detail_md ?? "";
+                    if (content.trim().length === 0) {
+                      setBulkResultMsg(
+                        "detail.md 为空 — 没有内容可复制",
+                      );
+                    } else {
+                      await navigator.clipboard.writeText(content);
+                      const chars = Array.from(content).length;
+                      setBulkResultMsg(
+                        `已复制 detail.md 全文（${chars} 字）`,
+                      );
+                    }
+                  } catch (e) {
+                    setBulkResultMsg(`复制 detail 失败：${e}`);
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 3000);
+                }}
+                title="把 detail.md 的全文 raw markdown 直接复制到剪贴板。比走「📑 复制为 Markdown」少一段元数据 bullet 头；比打开编辑器再 ⌘A+⌘C 少两步。"
+              >
+                📋 复制 detail.md 全文
+              </button>
+            )}
             {/* 复制为 markdown 引用块 (> ...)：与 📑 完整段不同，blockquote
                 轻量 quote 形态，适合 paste 到 detail.md / chat / 别的 task 描述
                 里作为 "ref 到此任务" 一段。emoji + title + meta 单行 + 描述
