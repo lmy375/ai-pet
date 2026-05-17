@@ -1161,6 +1161,50 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "reset", "version", "help",
 ];
 
+/// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
+/// (name, registry_desc, full_detail) 三处文本，case-insensitive 子串
+/// 命中即收录。返列表 "· /<name> — <registry_desc>"。空 kw → usage
+/// hint。无命中 → 友好兜底 + 提示 `/help all` 看全文。
+pub fn format_help_search(
+    kw: &str,
+    custom: &[crate::commands::settings::TgCustomCommand],
+) -> String {
+    if kw.is_empty() {
+        return "🔍 用法：/help search <keyword>\n\n在所有命令名 / 描述 / 详细文案里搜 keyword（case-insensitive），返命中清单。\n\n例：/help search done\n例：/help search 复制\n例：/help search snooze\n\n相关：/help <cmd>（看单条详细）；/help all（长版说明书）。".to_string();
+    }
+    let kw_lower = kw.to_lowercase();
+    // 构建 zh registry 索引（最常见用户语言；en 也匹配但 zh 含中文文案
+    // 命中率更高）
+    let zh_registry = tg_command_registry_localized("zh");
+    let mut hits: Vec<(String, String)> = Vec::new();
+    for tname in ALL_HELP_TOPICS {
+        let detail = format_help_for_topic(tname, custom);
+        let reg_desc = zh_registry
+            .iter()
+            .find(|(n, _)| n == tname)
+            .map(|(_, d)| *d)
+            .unwrap_or("");
+        let in_name = tname.to_lowercase().contains(&kw_lower);
+        let in_desc = reg_desc.to_lowercase().contains(&kw_lower);
+        let in_detail = detail.to_lowercase().contains(&kw_lower);
+        if in_name || in_desc || in_detail {
+            hits.push((tname.to_string(), reg_desc.to_string()));
+        }
+    }
+    if hits.is_empty() {
+        return format!(
+            "🔍 /help search「{}」\n\n未在任何命令中命中。\n试 /help（全表）/ /help all（长版说明书）。",
+            kw
+        );
+    }
+    let mut out = format!("🔍 /help search「{}」命中 {} 条：\n", kw, hits.len());
+    for (name, desc) in &hits {
+        out.push_str(&format!("\n· /{} — {}", name, desc));
+    }
+    out.push_str("\n\n（用 /help <cmd> 看单条详细 / /help all 看长版）");
+    out
+}
+
 pub fn format_help_for_topic(
     topic: &str,
     custom: &[crate::commands::settings::TgCustomCommand],
@@ -1189,6 +1233,16 @@ pub fn format_help_for_topic(
             out.push_str(&detail);
         }
         return out;
+    }
+    // "search <kw>" → 在 ALL_HELP_TOPICS 内扫命令名 + 详细文案 + registry
+    // 描述，case-insensitive 子串匹配，返命中清单（每条 `· /name — 一行
+    // 描述`）。让 owner 自助查命令 — 不必记 30+ 命令名。空 kw 走 usage
+    // hint。
+    if let Some(kw) = name
+        .strip_prefix("search ")
+        .or_else(|| if name == "search" { Some("") } else { None })
+    {
+        return format_help_search(kw.trim(), custom);
     }
     let detail = match name.as_str() {
         "task" => "📝 /task <title>\n\n用法：把单条任务塞进队列。\n  · 默认优先级 P3\n  · 前缀 `!!` → P5（紧迫）\n  · 前缀 `!!!` → P7（最高）\n\n示例：\n  /task 整理 Downloads\n  /task !! 写周报\n  /task !!! 修复线上 bug\n\n创建后 chat 自动收到确认 + origin marker [origin:tg:<chat_id>]，桌面 watcher 完成时也回传通知。",
@@ -1229,7 +1283,7 @@ pub fn format_help_for_topic(
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
         "reset" => "🔄 /reset\n\n用法：清掉 LLM 对话上下文（保留 system / 人设）。无 armed 二次确认（与桌面 `/clear` 不同 — 不同设备 / 多用户文化）。\n\n示例：\n  /reset",
         "version" => "🐾 /version\n\n用法：查看 pet app 版本 + SQLite schema 版本。无参。bug report 写「什么版本」用。\n\n示例：\n  /version",
-        "help" => "❓ /help [cmd]\n\n用法：\n  · /help（无参）→ 显全表 + 一行描述\n  · /help <cmd> → 显该命令的详细用法 + 示例\n  · /help all → 长版说明书（每条命令详细用法 + 示例 + 相关命令，自动切多条 TG 消息）\n\n示例：\n  /help\n  /help cancel\n  /help /snooze   （`/` 前缀也接受）\n  /help all",
+        "help" => "❓ /help [cmd | all | search <kw>]\n\n用法：\n  · /help（无参）→ 显全表 + 一行描述\n  · /help <cmd> → 显该命令的详细用法 + 示例\n  · /help all → 长版说明书（每条命令详细用法 + 示例 + 相关命令，自动切多条 TG 消息）\n  · /help search <kw> → 在所有命令名 / 描述 / 详细文案里搜 keyword（case-insensitive）\n\n示例：\n  /help\n  /help cancel\n  /help /snooze   （`/` 前缀也接受）\n  /help all\n  /help search 复制",
         _ => "",
     };
     if !detail.is_empty() {
@@ -5746,6 +5800,73 @@ mod tests {
         cancelled.status = TaskStatus::Cancelled;
         let s = format_tags_reply(&[active, done, cancelled]);
         assert!(s.contains("#健身 ×3"), "should count all statuses: {s}");
+    }
+
+    // -------- /help search <kw> --------
+
+    #[test]
+    fn help_search_empty_shows_usage_hint() {
+        let s = format_help_search("", &[]);
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/help search <keyword>"), "{s}");
+        assert!(s.contains("case-insensitive"), "{s}");
+    }
+
+    #[test]
+    fn help_search_matches_command_name() {
+        let s = format_help_search("done", &[]);
+        assert!(s.contains("/done"), "should match command name: {s}");
+    }
+
+    #[test]
+    fn help_search_matches_chinese_in_description() {
+        // "复制" is in many command detail / descriptions
+        let s = format_help_search("复制", &[]);
+        assert!(s.contains("命中"), "{s}");
+        // 应该不止 1 条命中（含"复制"的命令多个）
+        assert!(s.matches("·").count() >= 1);
+    }
+
+    #[test]
+    fn help_search_case_insensitive() {
+        let lower = format_help_search("done", &[]);
+        let upper = format_help_search("DONE", &[]);
+        let mixed = format_help_search("Done", &[]);
+        // 三种 case 应命中数量一致（同 keyword 不同大小写）
+        let count_lower = lower.matches("·").count();
+        let count_upper = upper.matches("·").count();
+        let count_mixed = mixed.matches("·").count();
+        assert_eq!(count_lower, count_upper);
+        assert_eq!(count_lower, count_mixed);
+    }
+
+    #[test]
+    fn help_search_no_match_shows_friendly_hint() {
+        let s = format_help_search("zzzzzzzznoinmatchatall", &[]);
+        assert!(s.contains("未在任何命令中命中"), "{s}");
+        assert!(s.contains("/help all"), "should hint alternatives: {s}");
+    }
+
+    #[test]
+    fn help_search_via_format_help_for_topic() {
+        // /help search <kw> 入口由 format_help_for_topic 顶层 dispatch
+        let s = format_help_for_topic("search done", &[]);
+        assert!(s.contains("/done"), "dispatch via topic: {s}");
+    }
+
+    #[test]
+    fn help_search_via_topic_bare_search_shows_usage() {
+        // 仅 "search" 无 kw → usage hint
+        let s = format_help_for_topic("search", &[]);
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/help search <keyword>"), "{s}");
+    }
+
+    #[test]
+    fn help_search_via_topic_with_slash_prefix() {
+        // "/search done" 前缀 `/` 由 trim_start_matches('/') 去掉后变成 "search done"
+        let s = format_help_for_topic("/search done", &[]);
+        assert!(s.contains("/done"), "{s}");
     }
 
     // -------- /pri parse + format --------
