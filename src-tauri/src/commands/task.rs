@@ -396,6 +396,29 @@ pub fn task_skip_once_inner(
     title: String,
     decisions: DecisionLogStore,
 ) -> Result<(), String> {
+    rewrite_description_to_bump_updated(title, decisions, "TaskSkipOnce")
+}
+
+/// `task_touch_inner`：与 task_skip_once 同机制（重 write 同 description
+/// → memory_edit 自动 stamp updated_at），但语义是「让老 task 重新冒
+/// 头 proactive 选单」（非 schedule-bounded task 也可用 — owner 想让
+/// pet 重新关注一条挂了很久的 active task）。decision_log 标
+/// "TaskTouch" 做 audit 区分。done / cancelled 拒绝（终态任务 touch
+/// 无意义 — 不会回到 proactive 选单）。
+pub fn task_touch_inner(
+    title: String,
+    decisions: DecisionLogStore,
+) -> Result<(), String> {
+    rewrite_description_to_bump_updated(title, decisions, "TaskTouch")
+}
+
+/// 内部 helper：核心机制是 rewrite 同 description 让 memory_edit 自
+/// 动 bump updated_at。caller 注入 decision_log label 区分意图。
+fn rewrite_description_to_bump_updated(
+    title: String,
+    decisions: DecisionLogStore,
+    decision_label: &str,
+) -> Result<(), String> {
     let title_trimmed = title.trim();
     if title_trimmed.is_empty() {
         return Err("title is required".to_string());
@@ -405,12 +428,11 @@ pub fn task_skip_once_inner(
     let (status, _) = classify_status(&item.description);
     if matches!(status, TaskStatus::Done | TaskStatus::Cancelled) {
         return Err(format!(
-            "cannot skip a finished task (current status: {:?})",
+            "cannot {} a finished task (current status: {:?})",
+            decision_label.to_lowercase(),
             status
         ));
     }
-    // 重 write 同 description → memory_edit 自动 stamp updated_at 到 now，
-    // 实现"跳本轮"。
     memory::memory_edit(
         "update".to_string(),
         "butler_tasks".to_string(),
@@ -418,7 +440,7 @@ pub fn task_skip_once_inner(
         Some(item.description.clone()),
         None,
     )?;
-    decisions.push("TaskSkipOnce", item.title.clone());
+    decisions.push(decision_label, item.title.clone());
     Ok(())
 }
 
