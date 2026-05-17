@@ -7531,6 +7531,31 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             </button>
                           );
                         })()}
+                        {/* 🔗 复制 inline ref：生成 `[[cat/title]]` 形式
+                            markdown ref 到剪贴板 — 让 owner 在其他 detail.md
+                            内嵌入对该 item 的交叉引用（owner 自己识读约
+                            定，render 端可后续加 wiki-link 解析；当前是
+                            纯 plain-text token，扫读时 `[[...]]` 视觉一眼
+                            认出"这是另一条 memory 引用"）。复用 setMessage
+                            toast 通道。 */}
+                        <button
+                          style={s.btn}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const ref = `[[${catKey}/${item.title}]]`;
+                            try {
+                              await navigator.clipboard.writeText(ref);
+                              setMessage(`🔗 已复制 inline ref：${ref}`);
+                            } catch (err) {
+                              setMessage(`复制 ref 失败：${err}`);
+                            }
+                            window.setTimeout(() => setMessage(""), 3000);
+                          }}
+                          title={`复制 inline ref \`[[${catKey}/${item.title}]]\` 到剪贴板 — 在其它 memory item / task detail.md 内粘贴作交叉引用 token。owner 自己约定语义；当前是 plain-text marker，未来可加 wiki-link 解析。`}
+                          aria-label="copy inline memory ref"
+                        >
+                          🔗
+                        </button>
                         {/* 📜 detail.md 历史快照：与 PanelTasks 📜 popover
                             对偶，让 PanelMemory 任一 cat 都能查 .history 快
                             照。点击拉最近 5 份 ts + 内容前缀，click 任一
