@@ -1075,6 +1075,34 @@ export function PanelDebug() {
     window.setTimeout(() => setDebugExportMsg(""), 3500);
   };
 
+  /// 🧹 force consolidate：手动调 `trigger_consolidate` Tauri 命令，
+  /// 不等 cron。与 PanelMemory「立即整理」同后端但 debug 入口偏向「不
+  /// 离开 debug 视图就能跑一次 sweep」 — 验证 prompt tweak / audit 一
+  /// 次具体行为 / 看 progress event 实时打印等场景。
+  ///
+  /// busy 期间禁重复 click；result 走 setDebugExportMsg 复用既有 3.5s
+  /// 自动消失 toast 通道（避免新 state slot）。
+  const [consolidateBusy, setConsolidateBusy] = useState(false);
+  const handleForceConsolidate = async () => {
+    if (consolidateBusy) return;
+    setConsolidateBusy(true);
+    setDebugExportMsg("🧹 正在 force consolidate sweep…");
+    try {
+      const status = await invoke<string>("trigger_consolidate");
+      setDebugExportMsg(`🧹 ${status}`);
+    } catch (e: any) {
+      const msg = String(e);
+      setDebugExportMsg(
+        msg.includes("用户取消")
+          ? "🧹 已取消整理（已完成步骤保留）"
+          : `🧹 整理失败：${msg}`,
+      );
+    } finally {
+      setConsolidateBusy(false);
+      window.setTimeout(() => setDebugExportMsg(""), 6000);
+    }
+  };
+
   /// 快照对比：抓两个时间点的 markdown 快照，简单 set-diff 显增 / 删 / 同。
   /// 不用 jsdiff —— 内部 snapshot 格式是稳定的 key:value 行，set-diff 已能
   /// 答"哪些值变了"的核心问题，省一个 npm 依赖。
@@ -2481,6 +2509,28 @@ export function PanelDebug() {
             🔄 reset ⚙️
           </button>
         )}
+        {/* 🧹 force consolidate：手动触发一次 consolidate sweep，不
+            等 cron 节奏（PanelMemory「立即整理」是更显眼的入口，本按
+            钮是 debug 视图就近入口 — 验证 prompt tweak / audit 行为 /
+            看 progress event 实时打印时不必切 PanelMemory）。busy 期
+            间禁重复 click；result 走 setDebugExportMsg 6s toast。 */}
+        <button
+          type="button"
+          onClick={handleForceConsolidate}
+          disabled={consolidateBusy}
+          style={{
+            ...toolBtnStyle,
+            opacity: consolidateBusy ? 0.5 : 1,
+            cursor: consolidateBusy ? "default" : "pointer",
+          }}
+          title={
+            consolidateBusy
+              ? "consolidate sweep 进行中…"
+              : "手动触发一次 consolidate sweep（不等 cron）— 与 PanelMemory「立即整理」同后端但 debug 视图就近入口。验证 prompt tweak / audit 行为 / 看 progress event 实时打印时用。"
+          }
+        >
+          {consolidateBusy ? "🧹 整理中…" : "🧹 force consolidate"}
+        </button>
         <button
           onClick={handleCaptureSnapshotA}
           style={toolBtnStyle}
