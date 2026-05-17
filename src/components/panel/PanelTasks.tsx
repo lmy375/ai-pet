@@ -10181,6 +10181,67 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* 🔁 复制 schedule chip：扫 raw_description 内
+                        [every:] / [once:] / [deadline:] / [reminderMin:]
+                        schedule 族 marker，一键复制。让 owner 把这条
+                        task 的 schedule 「共用」到新 task — 不必去
+                        butler_tasks memory 抄。仅含 schedule marker 的
+                        active row + hover 时显（与 📂 / ↗ / 📊 同
+                        taskPreviewHoverTitle gate）。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      !isFinished(t.status) &&
+                      (() => {
+                        const re =
+                          /\[(?:every|once|deadline|reminderMin):[^\]]+\]/g;
+                        const matches =
+                          t.raw_description.match(re) ?? [];
+                        if (matches.length === 0) return null;
+                        const payload = matches.join(" ");
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                await navigator.clipboard.writeText(
+                                  payload,
+                                );
+                                setBulkResultMsg(
+                                  `🔁 已复制 schedule（${matches.length} 段）：${payload}`,
+                                );
+                              } catch (err) {
+                                setBulkResultMsg(
+                                  `复制 schedule 失败：${err}`,
+                                );
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`复制 ${matches.length} 段 schedule marker：${payload}\n\n粘到新 task description 共用同 schedule（如「同时间每周提醒」/ 类似 deadline）。`}
+                            aria-label="copy schedule markers"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border:
+                                "1px dashed var(--pet-color-border)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            🔁 复制 schedule
+                          </button>
+                        );
+                      })()}
                     {/* ↗ inline ref 出度 chip：扫 detail.md 内
                         `[[<cat>/<title>]]` token（iter #414 PanelMemory
                         🔗 写入约定）+ memory ref `「<title>」` token
