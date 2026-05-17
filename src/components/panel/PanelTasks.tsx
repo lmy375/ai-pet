@@ -3711,6 +3711,35 @@ export function PanelTasks({
     [insertMarkdownAtCursor],
   );
 
+  /// detail.md textarea ⌘⇧D 插短日期戳 `MM-DD HH:MM` —— progress note 场
+  /// 景常用 inline 标注「我什么时候做了 X」。与既有 📅 toolbar 按钮
+  /// （`insertCurrentTimeAtCursor` 全形 `YYYY-MM-DD HH:MM`）互补 — 那个
+  /// 适合独立段落 ts；本 shortcut 适合 inline 紧凑标注（同一年内 year
+  /// 上下文 obvious，省 5 字符）。
+  ///
+  /// ⌘⇧D 选择：⌘D 已被 duplicate-line 占；ⅡDE 行业 ⌘⇧D 多用于「插日
+  /// 期」（VS Code Insert Date Snippet / Sublime Date 等）— 与 owner 心
+  /// 智匹配。preventDefault 吃 browser 默认（部分 OS 是「书签所有 tab」/
+  /// 「duplicate file」）— Tauri webview 已禁，但兜底安全。
+  const handleDetailDateStamp = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "d") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const now = new Date();
+      const mo = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const stamp = `${mo}-${d} ${hh}:${mm}`;
+      insertMarkdownAtCursor("wrap", stamp, "");
+      return true;
+    },
+    [insertMarkdownAtCursor],
+  );
+
   /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
   /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
   /// modifier check（no shift / no alt）+ IME composing skip。空选 →
@@ -13698,6 +13727,11 @@ export function PanelTasks({
                                   // ⌘\` 代码块：选区 wrap ```\n<sel>\n```
                                   // fenced block。与 ⌘B/⌘I 同 wrap-mode 模板。
                                   if (handleDetailCodeBlock(e)) return;
+                                  // ⌘⇧D 插短日期戳 `MM-DD HH:MM` — progress
+                                  // note inline 标注常用；与 📅 toolbar 全
+                                  // 形 `YYYY-MM-DD HH:MM` 互补（紧凑版省 5
+                                  // 字符）。
+                                  if (handleDetailDateStamp(e)) return;
                                   // ⌘] 跳到下一个 unchecked `- [ ] ` 行 —
                                   // 长 checklist 快速找未完成项 audit /
                                   // 跳读。无命中时 wrap 从头扫。
@@ -14160,6 +14194,8 @@ export function PanelTasks({
                                   // Tab / Shift+Tab 多行缩进：与 split 模
                                   // 式同 handler。
                                   if (handleDetailTabIndent(e)) return;
+                                  // ⌘⇧D 插短日期戳：与 split 模式同 handler。
+                                  if (handleDetailDateStamp(e)) return;
                                   // ⌘⇧L 弹链接 popover：与 split 模式同 handler。
                                   if (handleDetailLinkPopover(e)) return;
                                   // ⌘⇧V paste as plain：与 split 模式同 handler。
