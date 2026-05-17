@@ -3536,6 +3536,126 @@ export function PanelTasks({
     });
   }, [linkUrlDraft, linkLabelDraft]);
 
+  /// ⌘⇧P heading palette：长 detail.md 文档导航。扫 editingDetailContent
+  /// 取 ATX-style markdown heading（`^#{1,6}\s+<text>$`），弹 fuzzy palette
+  /// 让 owner 输模糊词筛选 heading text，Enter 跳到 heading 行（光标落
+  /// 行首 + scrollIntoView）。Esc 关，↑↓ 移动选中 idx。
+  ///
+  /// 与既有 ⌘K task quick-find palette（跨 task 跳）/ ⌘⇧L link popover
+  /// 互补 — 本 popover 是 intra-doc 导航。⌘P 已被 preview-only toggle 占
+  /// （line 2764），故 ⌘⇧P（VS Code "Command Palette" 修饰约定）。
+  ///
+  /// 与 toolbar 「📑 outline」（如果未来加）共享 derived heading list；
+  /// 当前仅 keyboard 入口。
+  const [headingPaletteOpen, setHeadingPaletteOpen] = useState(false);
+  const [headingPaletteQuery, setHeadingPaletteQuery] = useState("");
+  const [headingPaletteIdx, setHeadingPaletteIdx] = useState(0);
+  const headingPaletteInputRef = useRef<HTMLInputElement>(null);
+
+  /// pure：扫 markdown 文本取 ATX-style headings。每条返 {level (1-6),
+  /// text, lineStart}。lineStart 是 heading 行起始字符 offset（包括行首
+  /// 的 # 字符），可直接喂 textarea.selectionStart + scrollIntoView。
+  ///
+  /// 不识别 setext-style headings（用 === / --- 下划线）— ATX 是更现代
+  /// 标准，我们 toolbar 「H1 / H2」按钮也只插 ATX。也不识别 fenced
+  /// code block 内的 #（避免误匹配 shell 注释 / python comment）。
+  const headingsInContent = useMemo(() => {
+    type Heading = { level: number; text: string; lineStart: number };
+    const out: Heading[] = [];
+    const lines = editingDetailContent.split("\n");
+    let offset = 0;
+    let insideFence = false;
+    for (const line of lines) {
+      const trimmedLine = line.trimStart();
+      // 切换 fenced block 状态：``` 或 ~~~ 起始（允许行首缩进与 trim）
+      if (trimmedLine.startsWith("```") || trimmedLine.startsWith("~~~")) {
+        insideFence = !insideFence;
+      } else if (!insideFence) {
+        // ATX heading: ^#{1,6}\s+<text>，` # h1` 这种允许行首最多 3 空格
+        // （CommonMark spec — 4 空格起算 code block）
+        const leadingSpaces = line.length - trimmedLine.length;
+        if (leadingSpaces <= 3) {
+          let hashes = 0;
+          while (hashes < 6 && trimmedLine[hashes] === "#") hashes += 1;
+          if (hashes > 0 && hashes <= 6) {
+            const after = trimmedLine.slice(hashes);
+            if (after.length > 0 && (after[0] === " " || after[0] === "\t")) {
+              const text = after.trim();
+              if (text.length > 0) {
+                out.push({ level: hashes, text, lineStart: offset });
+              }
+            }
+          }
+        }
+      }
+      offset += line.length + 1; // +1 for the consumed "\n"
+    }
+    return out;
+  }, [editingDetailContent]);
+
+  /// 按 headingPaletteQuery fuzzy 筛 headings（case-insensitive 子串）。
+  /// 空 query → 全显（保原文档顺序，让 owner 看完整 outline）。
+  const filteredHeadings = useMemo(() => {
+    const q = headingPaletteQuery.trim().toLowerCase();
+    if (q.length === 0) return headingsInContent;
+    return headingsInContent.filter((h) =>
+      h.text.toLowerCase().includes(q),
+    );
+  }, [headingsInContent, headingPaletteQuery]);
+
+  /// 跳到 heading 行：focus textarea + 设 selectionStart/End 到 lineStart
+  /// + scrollIntoView。complete 后关 popover。
+  const jumpToHeading = useCallback((lineStart: number) => {
+    const ta = detailEditorRef.current;
+    if (!ta) {
+      setHeadingPaletteOpen(false);
+      return;
+    }
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = lineStart;
+    setDetailCursorPos(lineStart);
+    setDetailSelectionEnd(lineStart);
+    // scrollIntoView：textarea 无原生 scroll-to-position API；通过临时
+    // 测量 line height + 计算行号 × line height 直接设 scrollTop（与
+    // computeTextareaCursorLineNumber pattern 同）。简化路径：先设
+    // selection 让 native focus 自带 scrollIntoView 行为（多数浏览器
+    // textarea focus + setSelectionRange 会保证选区在视口内）；再 rAF
+    // 校准一次确保稳定。
+    requestAnimationFrame(() => {
+      if (!detailEditorRef.current) return;
+      detailEditorRef.current.scrollTop = Math.max(
+        0,
+        detailEditorRef.current.scrollTop - 40,
+      ); // 头顶留 40px 视觉缓冲
+    });
+    setHeadingPaletteOpen(false);
+    setHeadingPaletteQuery("");
+    setHeadingPaletteIdx(0);
+  }, []);
+
+  /// ⌘⇧P 触发 — detail textarea onKeyDown 链上 hook。
+  /// 仅 metaKey/ctrlKey + shiftKey + key === "p"，无 altKey。
+  /// preventDefault 防浏览器原生「打印」+ stopPropagation 防其它 handler。
+  const handleDetailHeadingPalette = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "p") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      setHeadingPaletteOpen(true);
+      setHeadingPaletteQuery("");
+      setHeadingPaletteIdx(0);
+      window.setTimeout(() => {
+        headingPaletteInputRef.current?.focus();
+        headingPaletteInputRef.current?.select();
+      }, 0);
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea 插 markdown link `[text](url)`：与 insertMarkdown
   /// AtCursor("wrap", "[", "](url)") 不同 —— 本 helper 把 `url` 占位符 pre-
   /// select，让 owner 立即敲键替换地址（与 Notion / VS Code markdown
@@ -14402,6 +14522,11 @@ export function PanelTasks({
                                   // 位 pre-select）互补 — 键盘党想跳过"点 🔗
                                   // → 选 url 占位 → 替换" 多步流程。
                                   if (handleDetailLinkPopover(e)) return;
+                                  // ⌘⇧P heading palette — 长 detail.md 文档
+                                  // 导航。⌘P 已是 preview-only toggle，故
+                                  // shift 修饰扩展。fuzzy 输 heading text →
+                                  // Enter 跳行首。
+                                  if (handleDetailHeadingPalette(e)) return;
                                   // ⌘⇧V paste as plain text — normalize smart
                                   // quotes / NBSP / 零宽字符 / em dash 等
                                   // rich-text artifacts，防 markdown 文本被
@@ -14873,6 +14998,8 @@ export function PanelTasks({
                                   if (handleDetailCopySection(e)) return;
                                   // ⌘⇧L 弹链接 popover：与 split 模式同 handler。
                                   if (handleDetailLinkPopover(e)) return;
+                                  // ⌘⇧P heading palette：与 split 模式同 handler。
+                                  if (handleDetailHeadingPalette(e)) return;
                                   // ⌘⇧V paste as plain：与 split 模式同 handler。
                                   void handleDetailPastePlainText(e);
                                   if (
@@ -16263,6 +16390,197 @@ export function PanelTasks({
               >
                 插入
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ⌘⇧P heading palette：长 detail.md 文档导航。fuzzy 输 heading
+          text → ↑↓ 选 → Enter 跳行首（textarea focus + selectionStart =
+          lineStart + scrollIntoView）。Esc 关 / 点 backdrop 关。空 query
+          时显全 outline。fenced code block 内的 # 不算 heading。 */}
+      {headingPaletteOpen && (
+        <div
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setHeadingPaletteOpen(false);
+            }
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.3)",
+            zIndex: 250,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            paddingTop: "14vh",
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              width: 480,
+              maxWidth: "92vw",
+              maxHeight: "70vh",
+              background: "var(--pet-color-card)",
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 8,
+              boxShadow: "var(--pet-shadow-md)",
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--pet-color-fg)",
+              }}
+            >
+              📑 跳转到 heading
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                marginTop: -4,
+              }}
+            >
+              {headingsInContent.length === 0
+                ? "本文档无 markdown heading（# / ## / ...）"
+                : `输入关键词 fuzzy 过滤 · 共 ${headingsInContent.length} 个 heading`}
+            </div>
+            <input
+              ref={headingPaletteInputRef}
+              type="text"
+              value={headingPaletteQuery}
+              placeholder="搜 heading 文字…"
+              onChange={(e) => {
+                setHeadingPaletteQuery(e.target.value);
+                setHeadingPaletteIdx(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setHeadingPaletteOpen(false);
+                  return;
+                }
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setHeadingPaletteIdx((i) =>
+                    Math.min(filteredHeadings.length - 1, i + 1),
+                  );
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setHeadingPaletteIdx((i) => Math.max(0, i - 1));
+                  return;
+                }
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  const target = filteredHeadings[headingPaletteIdx];
+                  if (target) jumpToHeading(target.lineStart);
+                }
+              }}
+              style={{
+                fontSize: 12,
+                padding: "6px 8px",
+                border: "1px solid var(--pet-color-border)",
+                borderRadius: 4,
+                background: "var(--pet-color-bg)",
+                color: "var(--pet-color-fg)",
+                fontFamily: "inherit",
+              }}
+            />
+            <div
+              style={{
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+                maxHeight: "50vh",
+                marginTop: 2,
+              }}
+            >
+              {filteredHeadings.length === 0 ? (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--pet-color-muted)",
+                    fontStyle: "italic",
+                    padding: "8px 4px",
+                  }}
+                >
+                  {headingsInContent.length === 0
+                    ? "（无 heading — 用 toolbar H1 / H2 / # 标记添加）"
+                    : "（无匹配项）"}
+                </div>
+              ) : (
+                filteredHeadings.map((h, idx) => {
+                  const active = idx === headingPaletteIdx;
+                  return (
+                    <button
+                      key={`${h.lineStart}:${idx}`}
+                      type="button"
+                      onMouseEnter={() => setHeadingPaletteIdx(idx)}
+                      onClick={() => jumpToHeading(h.lineStart)}
+                      style={{
+                        textAlign: "left",
+                        padding: "6px 8px",
+                        border: "1px solid",
+                        borderColor: active
+                          ? "var(--pet-color-accent)"
+                          : "transparent",
+                        background: active
+                          ? "color-mix(in srgb, var(--pet-color-accent) 12%, var(--pet-color-card))"
+                          : "var(--pet-color-card)",
+                        color: "var(--pet-color-fg)",
+                        borderRadius: 4,
+                        fontSize: 12,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: "var(--pet-color-muted)",
+                          fontFamily: "'SF Mono', 'Menlo', monospace",
+                          width: 28,
+                          flexShrink: 0,
+                        }}
+                      >
+                        H{h.level}
+                      </span>
+                      <span
+                        style={{
+                          paddingLeft: (h.level - 1) * 12,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {h.text}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                marginTop: 2,
+              }}
+            >
+              ↑↓ 选 · Enter 跳行首 · Esc 关
             </div>
           </div>
         </div>
@@ -17983,6 +18301,7 @@ export function PanelTasks({
                   ["⌘⌥Enter", "保存并跳下一条 task（连续 review 流）"],
                   ["⌘F", "在 detail.md 内行内搜索（Enter / ↑↓ 切 match · Esc 关）"],
                   ["⌘P", "切到 preview-only 焦点阅读（再按回写作姿态 · VSCode preview-lock 风）"],
+                  ["⌘⇧P", "弹 heading palette — 长 detail.md 文档导航（fuzzy 输 heading text → Enter 跳行首）"],
                   ["⌘⇧L", "弹链接快速插入 popover（选区当 label 仅输 url；空选区双输入 url + label）"],
                   ["⌘⇧V", "粘贴为纯文本（normalize smart quotes / NBSP / 零宽字符 / em dash — 防 markdown 文本被浏览器 copy 的 unicode artifacts 污染）"],
                   ["Tab / ⇧Tab", "多行缩进 / 反缩进（选区覆盖行 +/- 2 空格；无选区 Tab 在光标位置插 2 空格）"],
