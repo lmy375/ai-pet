@@ -845,6 +845,42 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_digest_reply(&views, n)
         }
+        TgCommand::Show { title } => {
+            // resolve 同 /done /cancel 三层（数字 index → fuzzy → 错误候选）。
+            // 命中后调 task_get_detail 拿 raw_description + detail_md；查 view
+            // 拿 status 给 formatter 选 emoji。task_get_detail 内部 detail.md
+            // 读失败 → 空串（formatter 自动省略 detail 段）。
+            if title.trim().is_empty() {
+                format_missing_argument("show")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let views = read_tg_chat_task_views(chat_id.0);
+                        let status = views
+                            .iter()
+                            .find(|v| v.title == t)
+                            .map(|v| v.status)
+                            .unwrap_or(crate::task_queue::TaskStatus::Pending);
+                        match crate::commands::task::task_get_detail(t.clone()).await {
+                            Ok(detail) => {
+                                crate::telegram::commands::format_show_reply(
+                                    &detail.title,
+                                    &detail.raw_description,
+                                    &detail.detail_md,
+                                    status,
+                                )
+                            }
+                            Err(e) => format_command_error(&e),
+                        }
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Edit { title, new_desc } => {
             // 空 title / 空 new_desc → formatter 走 usage hint 路径，不真改。
             if title.trim().is_empty() || new_desc.trim().is_empty() {

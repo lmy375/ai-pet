@@ -134,6 +134,11 @@ pub enum TgCommand {
     /// dump。与 /recent 只显标题互补 — owner 想"扫读最近做了啥 + 产物"
     /// 时用 /digest，纯标题用 /recent。N 缺省 5，clamp 1..=20。
     Digest { n: u32 },
+    /// `/show <title>` —— 显示指定任务的 raw_description（含全部 markers）
+    /// + detail.md 内容预览（前 300 字符），让 owner 在 TG 端 audit 单条
+    /// 任务详情不必回桌面。空 title 走 missing-arg；title resolve 三层
+    /// （数字 index → fuzzy → 错误候选）与 /done /cancel /edit 同源。
+    Show { title: String },
     /// `/due <preset>` —— 列出 pending 任务在指定时间段的 due 清单。preset
     /// 缺省 `tomorrow`（最常用的"明天什么"前向 audit）。支持中英 alias
     /// （tomorrow / 明天 / 本周 / 下周 等）。与 `/today` 互补 —— /today 只
@@ -207,6 +212,7 @@ impl TgCommand {
             TgCommand::Edit { .. } => "edit",
             TgCommand::Reflect { .. } => "reflect",
             TgCommand::Due { .. } => "due",
+            TgCommand::Show { .. } => "show",
             TgCommand::Reset => "reset",
             TgCommand::Version => "version",
             TgCommand::Help { .. } => "help",
@@ -229,7 +235,8 @@ impl TgCommand {
             | TgCommand::Unsilent { title }
             | TgCommand::Find { keyword: title }
             | TgCommand::Note { text: title }
-            | TgCommand::Reflect { text: title } => title.as_str(),
+            | TgCommand::Reflect { text: title }
+            | TgCommand::Show { title } => title.as_str(),
             TgCommand::Edit { title, .. } => title.as_str(),
             TgCommand::Task { title, .. } => title.as_str(),
             TgCommand::Tasks
@@ -319,6 +326,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
+            ("show", "Show full raw description (with markers) + detail.md preview of a task"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
@@ -352,6 +360,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
+            ("show", "显单条任务完整 raw description（含 markers）+ detail.md 预览"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
@@ -613,6 +622,9 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "cancel" => Some(TgCommand::Cancel { title }),
         "retry" => Some(TgCommand::Retry { title }),
         "done" => Some(TgCommand::Done { title }),
+        // `/show <title>`：所有参数 = title（与 /cancel /done 同模板）。空 title
+        // 由 handler 走 missing-argument 反馈。
+        "show" => Some(TgCommand::Show { title }),
         // `/task <title>`：单数，创建。空 title 由 handler 走 missing-argument。
         // 注意先于 `tasks` 判断不必要 — split 已按 token 边界切分，"task" 与
         // "tasks" 是两个独立 token。可选 `!!` / `!!!` 前缀映射 P5 / P7。
@@ -1035,7 +1047,8 @@ pub fn format_help_for_topic(
         "digest" => "📋 /digest [N]\n\n用法：最近 N 条 done 任务的标题 + [result:] 摘要一行式（按 updated_at 倒序）。N 缺省 5，clamp 1..=20。\n\n示例：\n  /digest\n  /digest 10\n\n相关：/recent 同范围但只显标题（无 result 摘要时更紧凑）；/today 只看今日 done。",
         "edit" => "✏️ /edit <title> :: <new desc>\n\n用法：全量覆写指定 butler_task 的 description。`::` 是必填 separator — title 含空格 / 中文标点也能精确切。\n\n示例：\n  /edit 整理 Downloads :: 整理 Downloads [task pri=5 due=2026-05-20] [pinned]\n  /edit 写周报 :: 完整新 body 一段\n\n注意：**全量覆写**语义 — 新 desc 完全替换旧描述。想保留 `[task pri=...]` `[every: ...]` `[pinned]` 等 markers 请自行写进新 desc（命令不会自动续 markers）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。",
         "reflect" => "🪞 /reflect <text>\n\n用法：把任意文本作 ai_insights memory item 存盘（反思 / 自我洞察分类，与 /note 写 general 对偶）。title 自动 `reflect-YYYY-MM-DDTHH-MM-SS`。\n\n示例：\n  /reflect 今天回顾：我对中断接受度过高，应该早点说 no\n  /reflect 观察：长 task 拆细后完成率明显提升\n\n相关：/note 写 general（杂项 brain-dump）；二者按「信号类型」分流避免 ai_insights 段被日常杂项稀释。可在 PanelMemory → AI 洞察 段查看 / 整理。",
-        "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）。",
+        "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）；/show（看单条详情）。",
+        "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）。",
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
         "reset" => "🔄 /reset\n\n用法：清掉 LLM 对话上下文（保留 system / 人设）。无 armed 二次确认（与桌面 `/clear` 不同 — 不同设备 / 多用户文化）。\n\n示例：\n  /reset",
@@ -1084,6 +1097,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
+        "/show <title>  —  显单条任务完整 raw description（含 markers）+ detail.md 预览".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
@@ -2027,6 +2041,64 @@ pub fn format_note_reply(text: &str, save_result: Result<&str, &str>) -> String 
     }
 }
 
+/// `/show <title>` 命令回复文案。pure：
+/// - title 行 + status emoji
+/// - raw_description 全量（含 markers），cap 1500 char 防 TG 4096 上限被
+///   detail 段挤爆
+/// - detail.md 段：非空时显前 `DETAIL_PREVIEW_CHARS` 字符 + 总字数 hint
+///
+/// caller 负责传 task_get_detail 拉的 raw_description / detail_md / status。
+pub const SHOW_RAW_DESC_CAP: usize = 1500;
+pub const SHOW_DETAIL_PREVIEW_CHARS: usize = 300;
+pub fn format_show_reply(
+    title: &str,
+    raw_description: &str,
+    detail_md: &str,
+    status: crate::task_queue::TaskStatus,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let status_emoji = match status {
+        TaskStatus::Pending => "⏳",
+        TaskStatus::Done => "✅",
+        TaskStatus::Error => "⚠️",
+        TaskStatus::Cancelled => "🚫",
+    };
+    let mut out = String::new();
+    out.push_str(&format!("🔬 {} 「{}」", status_emoji, title.trim()));
+    out.push_str("\n\n");
+    // raw_description trim + cap。空 description（极端情况）显占位防"空响应"。
+    let raw = raw_description.trim();
+    let raw_total = raw.chars().count();
+    if raw_total == 0 {
+        out.push_str("（raw_description 为空）");
+    } else if raw_total > SHOW_RAW_DESC_CAP {
+        let head: String = raw.chars().take(SHOW_RAW_DESC_CAP).collect();
+        out.push_str(&head);
+        out.push_str(&format!(
+            "\n…（raw 截断 · 共 {} 字符）",
+            raw_total
+        ));
+    } else {
+        out.push_str(raw);
+    }
+    // detail.md：空文件直接省略；非空显前 N 字符 + 字数 hint
+    let detail = detail_md.trim();
+    if !detail.is_empty() {
+        let detail_total = detail.chars().count();
+        let preview: String = if detail_total > SHOW_DETAIL_PREVIEW_CHARS {
+            let head: String = detail.chars().take(SHOW_DETAIL_PREVIEW_CHARS).collect();
+            format!("{}…", head)
+        } else {
+            detail.to_string()
+        };
+        out.push_str(&format!(
+            "\n\n📝 detail.md（{} 字符）:\n{}",
+            detail_total, preview
+        ));
+    }
+    out
+}
+
 /// `/reflect <text>` 命令回复文案。pure，与 format_note_reply 同模板但
 /// 走 ai_insights 类目（消息文案点明分类不同避免与 /note 混淆）。
 /// - 空 / 全空白 text → usage hint（带 /note 对照例避免 owner 用错入口）
@@ -2766,7 +2838,7 @@ mod tests {
             "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
             "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
             "silenced", "markers", "mood", "whoami", "today", "due", "recent",
-            "digest", "edit", "reflect", "find", "blocked", "snoozed",
+            "digest", "edit", "reflect", "find", "show", "blocked", "snoozed",
             "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -3232,7 +3304,7 @@ mod tests {
         for expected in [
             "task", "tasks", "cancel", "retry", "done", "stats", "mood",
             "whoami", "snooze", "unsnooze", "pin", "unpin", "pinned", "today",
-            "due", "edit", "reflect", "reset", "version", "help",
+            "due", "edit", "reflect", "show", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -4827,6 +4899,92 @@ mod tests {
         let s = format_note_reply("test note", Err("disk full"));
         assert!(s.contains("保存失败"), "{s}");
         assert!(s.contains("disk full"), "{s}");
+    }
+
+    // -------- /show parse + format --------
+
+    #[test]
+    fn show_parses_title_arg() {
+        assert_eq!(
+            parse_tg_command("/show 整理 Downloads"),
+            Some(TgCommand::Show {
+                title: "整理 Downloads".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn show_parses_empty_title() {
+        assert_eq!(
+            parse_tg_command("/show"),
+            Some(TgCommand::Show {
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn show_reply_renders_title_with_status_emoji_per_state() {
+        let s = format_show_reply("写周报", "[task pri=3] 写周报", "", TaskStatus::Pending);
+        assert!(s.contains("⏳"), "pending should show hourglass: {s}");
+        assert!(s.contains("写周报"), "{s}");
+        let s = format_show_reply("写周报", "[task pri=3] 写周报", "", TaskStatus::Done);
+        assert!(s.contains("✅"), "done should show check: {s}");
+        let s = format_show_reply("写周报", "[task pri=3] 写周报", "", TaskStatus::Error);
+        assert!(s.contains("⚠️"), "error should show warning: {s}");
+        let s = format_show_reply("写周报", "[task pri=3] 写周报", "", TaskStatus::Cancelled);
+        assert!(s.contains("🚫"), "cancelled should show cross: {s}");
+    }
+
+    #[test]
+    fn show_reply_shows_raw_description_full() {
+        let raw = "[task pri=5 due=2026-05-20] 写 Q2 周报 [pinned] [silent]";
+        let s = format_show_reply("写周报", raw, "", TaskStatus::Pending);
+        assert!(s.contains(raw), "should include full raw: {s}");
+        assert!(!s.contains("截断"), "short raw should not be truncated: {s}");
+    }
+
+    #[test]
+    fn show_reply_truncates_long_raw_description() {
+        let long_raw = "a".repeat(SHOW_RAW_DESC_CAP + 100);
+        let s = format_show_reply("t", &long_raw, "", TaskStatus::Pending);
+        assert!(s.contains("截断"), "should mark truncation: {s}");
+        assert!(s.contains(&format!("共 {} 字符", SHOW_RAW_DESC_CAP + 100)), "{s}");
+    }
+
+    #[test]
+    fn show_reply_includes_detail_md_preview_when_present() {
+        let detail = "## 进度\n\n- 收集了 5 篇参考\n- 写了 outline";
+        let s = format_show_reply("t", "[task pri=3] body", detail, TaskStatus::Pending);
+        assert!(s.contains("📝 detail.md"), "{s}");
+        assert!(s.contains("收集了 5 篇参考"), "preview: {s}");
+        // length hint
+        let detail_chars: usize = detail.chars().count();
+        assert!(s.contains(&format!("{} 字符", detail_chars)), "{s}");
+    }
+
+    #[test]
+    fn show_reply_omits_detail_section_when_empty() {
+        let s = format_show_reply("t", "[task pri=3] body", "", TaskStatus::Pending);
+        assert!(!s.contains("📝 detail.md"), "should not show empty section: {s}");
+    }
+
+    #[test]
+    fn show_reply_truncates_long_detail_md_with_ellipsis() {
+        let long_detail = "x".repeat(SHOW_DETAIL_PREVIEW_CHARS + 50);
+        let s = format_show_reply("t", "raw", &long_detail, TaskStatus::Pending);
+        assert!(s.contains("…"), "should truncate detail with ellipsis: {s}");
+        assert!(
+            s.contains(&format!("{} 字符", SHOW_DETAIL_PREVIEW_CHARS + 50)),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn show_reply_handles_empty_raw_description_gracefully() {
+        let s = format_show_reply("t", "", "", TaskStatus::Pending);
+        assert!(s.contains("raw_description 为空"), "should hint empty raw: {s}");
+        assert!(!s.contains("📝"), "no detail section either: {s}");
     }
 
     // -------- /reflect parse + format --------

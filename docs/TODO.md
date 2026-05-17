@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot 加 `/show <title>` 命令：显完整 raw_description + detail.md 前 300 字预览，让 owner 在 TG 端看任务详情不必回桌面。
 - PanelTasks 行右键菜单加「📋 复制 raw_description」：含全部 markers 的完整描述文本（debug / 移植 / 跨任务复用 marker 组合用）。
 - PanelMemory item 加「📋 复制 markdown」按钮：拼「# title」+ description + detail.md 整段 markdown 拷贝（外部转载 / 备份用）。
 - TG bot `/whoami` reply 加心情 emoji 前缀：从 mood state 读 emoji 映射，让 reply 第一行视觉化心情。
