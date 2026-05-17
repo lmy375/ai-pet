@@ -9,7 +9,6 @@
 >
 
 - ChatMini bubble 右键菜单加「🔍 search this session」item：选 bubble → 触发 PanelChat scope=current session 搜（与 🔍 找类似互补）。
-- PanelMemory item 加「↗ 跳到任务面板」按钮（仅 butler_tasks cat）：click 切到 PanelTasks tab + 高亮该 task 卡片。
 
 
 
