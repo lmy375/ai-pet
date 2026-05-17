@@ -557,6 +557,66 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     n: number | "";
   } | null>(null);
   const [reminderEditBusy, setReminderEditBusy] = useState(false);
+  /// reminderMin chip click 弹的 mini popover：title 字段 = 哪个 task 的
+  /// chip 打开。比既有 modal 更轻 — 直接 click 5/15/30 preset 写盘，无需
+  /// modal 的解释段 / 草稿 confirm。"自定义"按钮 fallback 到 modal。
+  /// outside-click / Esc 关。
+  const [reminderQuickPickerTitle, setReminderQuickPickerTitle] =
+    useState<string | null>(null);
+  const [reminderQuickBusy, setReminderQuickBusy] = useState(false);
+  useEffect(() => {
+    if (!reminderQuickPickerTitle) return;
+    const close = () => setReminderQuickPickerTitle(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setReminderQuickPickerTitle(null);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [reminderQuickPickerTitle]);
+  /// 快速改 reminderMin marker：strip 旧 [reminderMin: N] + （若 newN > 0）
+  /// append 新 marker，memory_edit("update") 写回，loadIndex 刷视图。newN
+  /// === null → 仅 strip（移除）。失败显 setMessage。
+  const quickSetReminderMin = useCallback(
+    async (title: string, description: string, newN: number | null) => {
+      setReminderQuickBusy(true);
+      try {
+        const stripped = description
+          .replace(/\[reminderMin:\s*\d+\s*\]/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const next =
+          newN === null
+            ? stripped
+            : stripped
+              ? `${stripped} [reminderMin: ${newN}]`
+              : `[reminderMin: ${newN}]`;
+        await invoke<string>("memory_edit", {
+          action: "update",
+          category: "butler_tasks",
+          title,
+          description: next,
+          detailContent: null,
+        });
+        await loadIndex();
+        setMessage(
+          newN === null
+            ? `已移除「${title}」的 reminderMin marker`
+            : `已设「${title}」reminderMin = ${newN}`,
+        );
+      } catch (e) {
+        setMessage(`改 reminderMin 失败：${e}`);
+      } finally {
+        setReminderQuickBusy(false);
+        setReminderQuickPickerTitle(null);
+        window.setTimeout(() => setMessage(""), 3500);
+      }
+    },
+    [],
+  );
   /// 🌱 今日新增 chip click 弹的 drill-down modal：列今日新增 item 标题
   /// 按 cat 分段。让 owner 看到具体内容（不只是 N 计数）+ 评估 "今天宠
   /// 物 / 我自己写了什么"。
@@ -4458,9 +4518,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                           )}
                         {/* reminderMin chip：到点前 N 分钟在桌面 ChatMini
                             软提醒（不打开 Live2D 主动模式）。仅 butler_tasks
-                            + parse 到 [reminderMin: N] marker 时浮。chip 上的
-                            🔔 -Nmin 让 owner 一眼看到"这条会在 N 分前 ping
-                            我"。 */}
+                            + parse 到 [reminderMin: N] marker 时浮。chip click
+                            弹 mini popover（5/15/30 preset + 自定义 + 移除），
+                            比既有 modal 更轻 — 1 步切到常用值。"自定义" 仍
+                            fallback 到 modal 走完整编辑。 */}
                         {catKey === "butler_tasks" &&
                           (() => {
                             const m = item.description.match(
@@ -4469,30 +4530,208 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             if (!m) return null;
                             const n = Number(m[1]);
                             if (!(n > 0 && n <= 1440)) return null;
+                            const open =
+                              reminderQuickPickerTitle === item.title;
                             return (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setReminderEditDraft({
-                                    title: item.title,
-                                    description: item.description,
-                                    n,
-                                  })
-                                }
+                              <span
                                 style={{
-                                  fontSize: 10,
-                                  padding: "1px 6px",
-                                  borderRadius: 4,
-                                  background: "var(--pet-tint-green-bg)",
-                                  color: "var(--pet-tint-green-fg)",
-                                  fontFamily: "'SF Mono', monospace",
-                                  border: "none",
-                                  cursor: "pointer",
+                                  position: "relative",
+                                  display: "inline-block",
                                 }}
-                                title={`到点前 ${n} 分钟在桌面 ChatMini 浮一条软提醒。点击快速编辑（5/15/30 preset 或自定义 / 清除）`}
                               >
-                                🔔 -{n}min
-                              </button>
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setReminderQuickPickerTitle((cur) =>
+                                      cur === item.title ? null : item.title,
+                                    );
+                                  }}
+                                  disabled={reminderQuickBusy}
+                                  style={{
+                                    fontSize: 10,
+                                    padding: "1px 6px",
+                                    borderRadius: 4,
+                                    background: "var(--pet-tint-green-bg)",
+                                    color: "var(--pet-tint-green-fg)",
+                                    fontFamily: "'SF Mono', monospace",
+                                    border: "none",
+                                    cursor: reminderQuickBusy
+                                      ? "default"
+                                      : "pointer",
+                                    opacity: reminderQuickBusy ? 0.5 : 1,
+                                  }}
+                                  title={`到点前 ${n} 分钟在桌面 ChatMini 浮一条软提醒。点击弹 popover：5/15/30 preset / 自定义 / 移除。`}
+                                >
+                                  🔔 -{n}min
+                                </button>
+                                {open && (
+                                  <div
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      position: "absolute",
+                                      top: "calc(100% + 4px)",
+                                      left: 0,
+                                      minWidth: 160,
+                                      padding: 4,
+                                      background: "var(--pet-color-card)",
+                                      border:
+                                        "1px solid var(--pet-color-border)",
+                                      borderRadius: 6,
+                                      boxShadow:
+                                        "0 4px 12px rgba(0,0,0,0.18)",
+                                      zIndex: 30,
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      gap: 2,
+                                    }}
+                                  >
+                                    {[5, 15, 30].map((p) => {
+                                      const active = p === n;
+                                      return (
+                                        <button
+                                          key={p}
+                                          type="button"
+                                          disabled={reminderQuickBusy}
+                                          style={{
+                                            display: "block",
+                                            width: "100%",
+                                            textAlign: "left",
+                                            padding: "5px 9px",
+                                            fontSize: 11,
+                                            border: "none",
+                                            background: active
+                                              ? "var(--pet-tint-green-bg)"
+                                              : "transparent",
+                                            color: active
+                                              ? "var(--pet-tint-green-fg)"
+                                              : "var(--pet-color-fg)",
+                                            fontWeight: active
+                                              ? 600
+                                              : 400,
+                                            cursor: reminderQuickBusy
+                                              ? "default"
+                                              : "pointer",
+                                            fontFamily: "inherit",
+                                            borderRadius: 4,
+                                          }}
+                                          onMouseOver={(e) => {
+                                            if (active) return;
+                                            (
+                                              e.currentTarget as HTMLButtonElement
+                                            ).style.background =
+                                              "var(--pet-color-bg)";
+                                          }}
+                                          onMouseOut={(e) => {
+                                            if (active) return;
+                                            (
+                                              e.currentTarget as HTMLButtonElement
+                                            ).style.background = "transparent";
+                                          }}
+                                          onClick={() =>
+                                            void quickSetReminderMin(
+                                              item.title,
+                                              item.description,
+                                              p,
+                                            )
+                                          }
+                                        >
+                                          🔔 -{p} 分{active ? " ·当前" : ""}
+                                        </button>
+                                      );
+                                    })}
+                                    <div
+                                      style={{
+                                        height: 1,
+                                        background: "var(--pet-color-border)",
+                                        margin: "2px 0",
+                                      }}
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={reminderQuickBusy}
+                                      style={{
+                                        display: "block",
+                                        width: "100%",
+                                        textAlign: "left",
+                                        padding: "5px 9px",
+                                        fontSize: 11,
+                                        border: "none",
+                                        background: "transparent",
+                                        color: "var(--pet-color-fg)",
+                                        cursor: reminderQuickBusy
+                                          ? "default"
+                                          : "pointer",
+                                        fontFamily: "inherit",
+                                        borderRadius: 4,
+                                      }}
+                                      onMouseOver={(e) => {
+                                        (
+                                          e.currentTarget as HTMLButtonElement
+                                        ).style.background =
+                                          "var(--pet-color-bg)";
+                                      }}
+                                      onMouseOut={(e) => {
+                                        (
+                                          e.currentTarget as HTMLButtonElement
+                                        ).style.background = "transparent";
+                                      }}
+                                      onClick={() => {
+                                        setReminderQuickPickerTitle(null);
+                                        setReminderEditDraft({
+                                          title: item.title,
+                                          description: item.description,
+                                          n,
+                                        });
+                                      }}
+                                    >
+                                      ✏️ 自定义…
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={reminderQuickBusy}
+                                      style={{
+                                        display: "block",
+                                        width: "100%",
+                                        textAlign: "left",
+                                        padding: "5px 9px",
+                                        fontSize: 11,
+                                        border: "none",
+                                        background: "transparent",
+                                        color: "var(--pet-color-accent)",
+                                        cursor: reminderQuickBusy
+                                          ? "default"
+                                          : "pointer",
+                                        fontFamily: "inherit",
+                                        borderRadius: 4,
+                                        fontWeight: 600,
+                                      }}
+                                      onMouseOver={(e) => {
+                                        (
+                                          e.currentTarget as HTMLButtonElement
+                                        ).style.background =
+                                          "var(--pet-color-bg)";
+                                      }}
+                                      onMouseOut={(e) => {
+                                        (
+                                          e.currentTarget as HTMLButtonElement
+                                        ).style.background = "transparent";
+                                      }}
+                                      onClick={() =>
+                                        void quickSetReminderMin(
+                                          item.title,
+                                          item.description,
+                                          null,
+                                        )
+                                      }
+                                    >
+                                      🗑 移除
+                                    </button>
+                                  </div>
+                                )}
+                              </span>
                             );
                           })()}
                         {scheduleLabel && (() => {

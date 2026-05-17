@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory butler_tasks 行 reminderMin chip click 弹 mini popover：选 5/15/30/自定义 直接改 marker，不必走"编辑" textarea。
 
 
 
