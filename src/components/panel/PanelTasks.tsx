@@ -10292,6 +10292,99 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
+                        时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
+                        audit。complement 既有 dueUrgency 三档（normal /
+                        soon / overdue）色彩 chip — 那个表达紧急程度，本
+                        chip 给具体数字让 owner 心里有数（与 ⏰ 调期决
+                        策直接对齐）。overdue → 「N 天前已过」红 tint；
+                        future → muted。click 复制 ISO due 字符串到剪贴
+                        板（与 PanelMemory 📅 created chip click 同语义）。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      !isFinished(t.status) &&
+                      t.due && (() => {
+                        // parse due（local time `YYYY-MM-DDThh:mm`，
+                        // 与 PanelTasks ⏭ +1d chip 用同 regex 算法）
+                        const m =
+                          /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(
+                            t.due,
+                          );
+                        if (!m) return null;
+                        const target = new Date(
+                          +m[1],
+                          +m[2] - 1,
+                          +m[3],
+                          +m[4],
+                          +m[5],
+                        );
+                        const diffMs = target.getTime() - Date.now();
+                        const absMin = Math.abs(diffMs) / 60_000;
+                        const days = Math.floor(absMin / (60 * 24));
+                        const hours = Math.floor(
+                          (absMin % (60 * 24)) / 60,
+                        );
+                        const mins = Math.floor(absMin % 60);
+                        // 三级 label：< 1h 显分钟 / < 24h 显小时 / ≥ 24h 显天+小时
+                        let label: string;
+                        if (absMin < 60) {
+                          label = `${mins} 分`;
+                        } else if (absMin < 60 * 24) {
+                          label = `${hours} 小时${mins > 0 ? ` ${mins} 分` : ""}`;
+                        } else {
+                          label = `${days} 天${hours > 0 ? ` ${hours} 小时` : ""}`;
+                        }
+                        const isOverdue = diffMs < 0;
+                        const display = isOverdue
+                          ? `📅 ${label}前已过`
+                          : `📅 ${label}后`;
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                await navigator.clipboard.writeText(t.due!);
+                                setBulkResultMsg(
+                                  `📋 已复制 due: ${t.due}`,
+                                );
+                              } catch (err) {
+                                setBulkResultMsg(`复制 due 失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`task due: ${t.due}\n${
+                              isOverdue
+                                ? "已过期；建议尽快处理 / 改 due / cancel"
+                                : "倒计时精确到分；本 chip 与既有 dueUrgency 色彩 chip 互补 — 那个表达紧急度，本 chip 给具体数字"
+                            }\n\n点击复制 due ISO 字符串到剪贴板。`}
+                            aria-label="task due countdown"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border:
+                                "1px dashed var(--pet-color-border)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: isOverdue
+                                ? "var(--pet-tint-red-fg)"
+                                : "var(--pet-color-muted)",
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                              fontWeight: isOverdue ? 600 : 400,
+                            }}
+                          >
+                            {display}
+                          </button>
+                        );
+                      })()}
                     {/* ↗ inline ref 出度 chip：扫 detail.md 内
                         `[[<cat>/<title>]]` token（iter #414 PanelMemory
                         🔗 写入约定）+ memory ref `「<title>」` token
