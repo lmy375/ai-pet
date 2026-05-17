@@ -10292,6 +10292,57 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* 📜 复制 raw_description chip：含全 markers
+                        ([task pri=…] / [every:] / [pinned] / [silent] /
+                        [blockedBy:] / [origin:tg:…] / [result:] 等）+
+                        正文 body 一键 raw 复制 — debug / 复制此条建
+                        相似 dup task 时省"切到详情 → 选 → 复制"多步。
+                        仅 hover + 有 raw 内容时显（非空 task 应都有；
+                        gate 防极端 empty 兜底）。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      t.raw_description.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              await navigator.clipboard.writeText(
+                                t.raw_description,
+                              );
+                              const chars = t.raw_description.length;
+                              setBulkResultMsg(
+                                `📜 已复制 raw（${chars} 字）：「${t.title}」`,
+                              );
+                            } catch (err) {
+                              setBulkResultMsg(`复制 raw 失败：${err}`);
+                            }
+                            window.setTimeout(
+                              () => setBulkResultMsg(""),
+                              2500,
+                            );
+                          }}
+                          title={`复制本 task 的 raw_description（含全 markers + 正文 body，${t.raw_description.length} 字）— debug / 复制粘到新 task 建 dup / 备份 markers 场景。`}
+                          aria-label="copy raw_description"
+                          style={{
+                            fontSize: 10,
+                            padding: "0 5px",
+                            marginLeft: 6,
+                            border:
+                              "1px dashed var(--pet-color-border)",
+                            borderRadius: 3,
+                            background: "transparent",
+                            color: "var(--pet-color-muted)",
+                            cursor: "pointer",
+                            fontFamily:
+                              "'SF Mono', 'Menlo', monospace",
+                            lineHeight: 1.5,
+                            verticalAlign: "middle",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          📜 复制 raw
+                        </button>
+                      )}
                     {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
                         时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
                         audit。complement 既有 dueUrgency 三档（normal /
