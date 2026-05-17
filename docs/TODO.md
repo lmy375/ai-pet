@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot `/search_today <kw>` 命令：限定今日 updated_at 的 task 内 fuzzy 搜 — 与 /find（全量）/ /touched_today（无 kw）互补。
 
 
 

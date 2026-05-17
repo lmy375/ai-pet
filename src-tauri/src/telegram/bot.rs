@@ -1174,6 +1174,14 @@ async fn handle_tg_command(
             let now = chrono::Local::now().fixed_offset();
             crate::telegram::commands::format_active_recent_reply(&views, n, now)
         }
+        TgCommand::SearchToday { keyword } => {
+            // 与 Find 同 read path；formatter 内部按 today + kw 双重过滤。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_search_today_reply(
+                &views, today, &keyword,
+            )
+        }
         TgCommand::Find { keyword } => {
             // keyword 搜本 chat 派单。reuse 同 read path；空 keyword 由
             // formatter 内部走 missing-argument 模板。
