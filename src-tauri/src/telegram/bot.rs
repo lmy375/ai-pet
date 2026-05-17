@@ -822,6 +822,13 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_today_done_reply(&views, today)
         }
+        TgCommand::TouchedToday => {
+            // 与 TodayDone 同 read + today_str 路径；formatter 不限 status
+            // 仅按 updated_at 命中今日过滤 — 「我今天动过哪些」audit。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_touched_today_reply(&views, today)
+        }
         TgCommand::Quick { text } => {
             // 与 /task 同 backend (memory_edit("create", "butler_tasks")) 但
             // priority 始终 P3、reply 极短。空 text 走 formatter usage hint。
