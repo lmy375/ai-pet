@@ -12872,6 +12872,35 @@ export function PanelTasks({
                 📑 复制为 Markdown
               </button>
             )}
+            {/* 🪞 克隆任务：调 task_clone 后端创建 `${源} (副本)` 新 task
+                （重名累加 (副本 2) ... 至 9）。strip 终态 + snooze 让 clone
+                是 fresh 状态；保留 header / schedule / tag / pinned / silent /
+                blockedBy / reminderMin / detail.md 内容。成功后 reload +
+                toast 显新 title。 */}
+            {t && (
+              <button
+                type="button"
+                style={itemBtn}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={async () => {
+                  setTaskCtxMenu(null);
+                  try {
+                    const newTitle = await invoke<string>("task_clone", {
+                      title: m.title,
+                    });
+                    await reload();
+                    setBulkResultMsg(`🪞 已克隆为「${newTitle}」`);
+                  } catch (e) {
+                    setBulkResultMsg(`克隆失败：${e}`);
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 4000);
+                }}
+                title="一键克隆此 task：strip 终态 / snooze marker 后创建 ${源} (副本) 新 task（重名累加），保留 schedule / tag / pinned / silent / blockedBy / reminderMin / detail.md 内容。"
+              >
+                🪞 克隆任务
+              </button>
+            )}
             {/* 🔗 复制 detail.md 绝对路径：调后端 memory_detail_abs_path
                 把相对路径拼出绝对路径，写剪贴板。owner 可 paste 进 IDE 文件
                 打开框（VSCode ⌘P 接受绝对 path）/ Finder bar / shell `open`

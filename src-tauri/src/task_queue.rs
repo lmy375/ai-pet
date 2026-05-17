@@ -227,6 +227,31 @@ pub fn strip_error_markers(description: &str) -> String {
     collapse_whitespace(&cleaned)
 }
 
+/// 把 task description 处理成 "适合作克隆 source 的 fresh 形态"：剥所有
+/// 终态 / 一次性 marker（`[done]` / `[result:]` / `[error:]` / `[cancelled:]`
+/// / `[archived:]` / `[snooze:]`），保留 schedule / tag / pinned / silent /
+/// blockedBy / reminderMin / task header — owner clone task 时想要的是
+/// "原任务的执行 spec"，而非"它的状态历史 + 当前 defer 状态"。
+///
+/// 与 `strip_archive_markers` 区别：本函数额外剥 `[snooze:]`（archive
+/// unarchive 路径恢复时 snooze 已无意义同样应该剥，但实际 unarchive 路径
+/// 用 strip_archive_markers — 历史决策为保 backward compat 不动）。
+pub fn strip_for_clone(description: &str) -> String {
+    let cleaned = remove_bracketed_segments(
+        description,
+        &[
+            "[done",
+            "[result",
+            "[error",
+            "[cancelled",
+            "[archived:",
+            "[archived",
+            "[snooze:",
+        ],
+    );
+    collapse_whitespace(&cleaned)
+}
+
 /// 把 Done 状态的 description 还原为 pending 形态：剥 `[done]` / `[result: ...]`
 /// 两类终态 marker。保留 `[task pri=...]` header / `[every:]` / `[once:]` /
 /// `[deadline:]` schedule 前缀 / `#tag` / `[snooze:]` / `[pinned]` 等 owner-intent
@@ -1197,6 +1222,50 @@ mod tests {
     fn strip_handles_multiple_error_segments() {
         let cleaned = strip_error_markers("[error: 第一次失败] 进度 [error: 第二次失败]");
         assert_eq!(cleaned, "进度");
+    }
+
+    // ---------------- strip_for_clone ----------------
+
+    #[test]
+    fn strip_for_clone_removes_terminal_and_snooze_markers() {
+        let cleaned = strip_for_clone(
+            "[task pri=3] [every: 09:00] 整理 [done] [result: 50 files] [snooze: 2026-05-20 09:00] [archived: 2026-05-17]",
+        );
+        assert!(cleaned.contains("[task pri=3]"));
+        assert!(cleaned.contains("[every: 09:00]"));
+        assert!(cleaned.contains("整理"));
+        assert!(!cleaned.contains("[done]"));
+        assert!(!cleaned.contains("[result:"));
+        assert!(!cleaned.contains("[snooze:"));
+        assert!(!cleaned.contains("[archived:"));
+    }
+
+    #[test]
+    fn strip_for_clone_keeps_owner_intent_markers() {
+        let cleaned = strip_for_clone(
+            "[task pri=3] [pinned] [silent] [blockedBy: A] [reminderMin: 5] #工作 做事 [done]",
+        );
+        assert!(cleaned.contains("[pinned]"));
+        assert!(cleaned.contains("[silent]"));
+        assert!(cleaned.contains("[blockedBy: A]"));
+        assert!(cleaned.contains("[reminderMin: 5]"));
+        assert!(cleaned.contains("#工作"));
+        assert!(!cleaned.contains("[done]"));
+    }
+
+    #[test]
+    fn strip_for_clone_idempotent_on_fresh_pending() {
+        let cleaned = strip_for_clone("[task pri=2] [every: 工作日 09:00] 跑步");
+        assert_eq!(cleaned, "[task pri=2] [every: 工作日 09:00] 跑步");
+    }
+
+    #[test]
+    fn strip_for_clone_clears_error_for_cloned_task() {
+        // 即便源 task 是 error 状态，clone 应该是 fresh — 剥 error reason
+        let cleaned = strip_for_clone(
+            "[task pri=3] 写报告 [error: API rate limit]",
+        );
+        assert_eq!(cleaned, "[task pri=3] 写报告");
     }
 
     // ---------------- strip_done_markers ----------------

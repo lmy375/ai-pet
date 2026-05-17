@@ -307,6 +307,73 @@ pub fn task_mark_done_inner(
     Ok(())
 }
 
+/// `task_clone`：一键克隆 butler_task。新 task 标题 = `${源} (副本)`（若
+/// 已占用 → `(副本 2)` / `(副本 3)` ... 至 9 都占用时 Err 让 owner 先重命
+/// 名旧 clones）。新 description 走 strip_for_clone 剥所有终态 / 一次性
+/// marker（done / result / error / cancelled / archived / snooze），保留
+/// task header / schedule / tag / pinned / silent / blockedBy / reminderMin
+/// — owner 想克的是 task spec 不是状态历史。detail.md 内容一并拷贝。
+/// decision_log push "TaskClone" 给 audit。返新 title 让前端 toast 显。
+#[tauri::command]
+pub fn task_clone(
+    title: String,
+    decisions: tauri::State<'_, DecisionLogStore>,
+) -> Result<String, String> {
+    task_clone_inner(title, decisions.inner().clone())
+}
+
+pub fn task_clone_inner(
+    title: String,
+    decisions: DecisionLogStore,
+) -> Result<String, String> {
+    let title_trimmed = title.trim();
+    if title_trimmed.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trimmed)
+        .ok_or_else(|| format!("task not found: {}", title_trimmed))?;
+    // 找 unique 新标题：(副本) → (副本 2) → ... → (副本 9)。9 个仍占用时
+    // Err 让 owner 先 rename 旧的，避免 (副本 100) 这种丑陋积累。
+    let new_title = {
+        let base = format!("{} (副本)", item.title);
+        if find_butler_task(&base).is_none() {
+            base
+        } else {
+            let mut found: Option<String> = None;
+            for n in 2..=9 {
+                let candidate = format!("{} (副本 {})", item.title, n);
+                if find_butler_task(&candidate).is_none() {
+                    found = Some(candidate);
+                    break;
+                }
+            }
+            found.ok_or_else(|| {
+                format!(
+                    "task '{}' 已有 9 个克隆副本；先重命名 / 删掉旧的再克隆",
+                    item.title
+                )
+            })?
+        }
+    };
+    // 读源 detail.md 内容（IO 失败兜空字符串：仍能创建新 task，只是 detail
+    // 是空白让 owner 重写）
+    let detail_md = crate::commands::memory::memory_read_detail_full(
+        item.detail_path.clone(),
+    )
+    .unwrap_or_default();
+    // strip 终态 + snooze marker 后写入新 task
+    let cleaned_desc = crate::task_queue::strip_for_clone(&item.description);
+    memory::memory_edit(
+        "create".to_string(),
+        "butler_tasks".to_string(),
+        new_title.clone(),
+        Some(cleaned_desc),
+        Some(detail_md),
+    )?;
+    decisions.push("TaskClone", new_title.clone());
+    Ok(new_title)
+}
+
 /// `task_skip_once`：让 owner 跳过本轮 due 的 butler_task — 把 description
 /// 原样 write 回 memory_edit，触发 updated_at 自动刷到 now。对 `every: HH:MM`
 /// 任务效果是：mostRecentFire 仍是今日 HH:MM，但 last_updated 现在 > fire →
