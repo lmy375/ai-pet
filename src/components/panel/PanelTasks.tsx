@@ -3355,6 +3355,65 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘⇧V「paste as plain text」— 标准 ⌘V 粘贴在 textarea
+  /// 内本身就走 text 模式，但 source 可能含 rich-text artifacts（smart
+  /// quotes / NBSP / 零宽字符 / em dash 等）污染 markdown。本 handler
+  /// 用 navigator.clipboard.readText() 拿剪贴板原文 + normalize 几类
+  /// 常见污染字符 + 插当前光标位置（含选区替换）。
+  ///
+  /// normalize 规则：
+  /// - U+201C / U+201D（"smart" double quotes）→ ASCII `"`
+  /// - U+2018 / U+2019（'smart' single quotes）→ ASCII `'`
+  /// - U+00A0（NBSP）→ 普通空格
+  /// - U+200B / U+200C / U+200D / U+FEFF（zero-width 系列）→ 删除
+  /// - U+2014（em dash）/ U+2013（en dash）→ ASCII `-`（保持单 dash，
+  ///   不映射到 `--` 防 markdown 解析变型 — owner 想要 `--` 自己敲）
+  ///
+  /// 不影响中文标点 / emoji / 既有 ASCII。clipboard 读失败 silent
+  /// fallback 走原生 paste（不阻止默认）。
+  const handleDetailPastePlainText = useCallback(
+    async (e: React.KeyboardEvent<HTMLTextAreaElement>): Promise<boolean> => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "v") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      let text: string;
+      try {
+        text = await navigator.clipboard.readText();
+      } catch {
+        // 剪贴板读权限失败 / API 不可用 → 让 native ⌘⇧V 走（虽然默认
+        // 行为也无 rich text 区分，但至少不卡 owner 输入流）
+        return true;
+      }
+      if (text.length === 0) return true;
+      // Normalize 常见 rich-text artifacts
+      const clean = text
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
+        .replace(/ /g, " ")
+        .replace(/[​‌‍﻿]/g, "")
+        .replace(/[–—]/g, "-");
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      const next = value.slice(0, start) + clean + value.slice(end);
+      setEditingDetailContent(next);
+      const newCursor = start + clean.length;
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = cur.selectionEnd = newCursor;
+        setDetailCursorPos(newCursor);
+        setDetailSelectionEnd(newCursor);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea ⌘B / ⌘I markdown 加粗 / 斜体 wrap：复用既有
   /// `insertMarkdownAtCursor("wrap", "**", "**")` / `("wrap", "*", "*")`
   /// 算法 — 选区 wrap，空选时插模板 + 光标落中间。与既有 markdown
@@ -12532,7 +12591,12 @@ export function PanelTasks({
                                   // 位 pre-select）互补 — 键盘党想跳过"点 🔗
                                   // → 选 url 占位 → 替换" 多步流程。
                                   if (handleDetailLinkPopover(e)) return;
-                                  // ⌘S/Ctrl+S 触发保存：与按钮等价。preventDefault
+                                  // ⌘⇧V paste as plain text — normalize smart
+                                  // quotes / NBSP / 零宽字符 / em dash 等
+                                  // rich-text artifacts，防 markdown 文本被
+                                  // 浏览器 copy 的不可见 unicode 污染。async
+                                  // void — 内部 preventDefault + 自己处理。
+                                  void handleDetailPastePlainText(e);
                                   // 吃掉 webview 默认"另存为页面"行为；savingDetail
                                   // 守卫防止保存进行中重复发请求。
                                   if (
@@ -12585,7 +12649,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘⌥↑/⌘⌥↓ 复制行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / ⌘⇧V 粘贴为纯文本 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘⌥↑/⌘⌥↓ 复制行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -12926,6 +12990,8 @@ export function PanelTasks({
                                   if (handleDetailTabIndent(e)) return;
                                   // ⌘⇧L 弹链接 popover：与 split 模式同 handler。
                                   if (handleDetailLinkPopover(e)) return;
+                                  // ⌘⇧V paste as plain：与 split 模式同 handler。
+                                  void handleDetailPastePlainText(e);
                                   if (
                                     (e.metaKey || e.ctrlKey) &&
                                     e.key.toLowerCase() === "s"
@@ -12952,7 +13018,7 @@ export function PanelTasks({
                                     handleCancelEditDetail();
                                   }
                                 }}
-                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘⌥↑/⌘⌥↓ 复制行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
+                                placeholder="在这里追加 / 修改进度笔记…保存后覆盖 detail.md。（⌘S 保存 / ⌘⇧Enter 保存并关闭 / ⌘⌥Enter 保存并跳下一条 / ⌘B 加粗 / ⌘I 斜体 / ⌘F 行内搜本文 / ⌘D 复制当前行 / ⌘L 选中当前行 / ⌘⇧K 删除当前行 / ⌘⇧L 插入链接 / ⌘⇧V 粘贴为纯文本 / Tab/⇧Tab 多行缩进 / ⌥↑/⌥↓ 上下移行 / ⌘⌥↑/⌘⌥↓ 复制行 / ⌘/ markdown 注释 / ⌘[/⌘] 上 / 下一条 task / ⌘K 跳到任意 task detail / Esc 取消）"
                                 style={{
                                   width: "100%",
                                   minHeight: 120,
@@ -15680,6 +15746,7 @@ export function PanelTasks({
                   ["⌘F", "在 detail.md 内行内搜索（Enter / ↑↓ 切 match · Esc 关）"],
                   ["⌘P", "切到 preview-only 焦点阅读（再按回写作姿态 · VSCode preview-lock 风）"],
                   ["⌘⇧L", "弹链接快速插入 popover（选区当 label 仅输 url；空选区双输入 url + label）"],
+                  ["⌘⇧V", "粘贴为纯文本（normalize smart quotes / NBSP / 零宽字符 / em dash — 防 markdown 文本被浏览器 copy 的 unicode artifacts 污染）"],
                   ["Tab / ⇧Tab", "多行缩进 / 反缩进（选区覆盖行 +/- 2 空格；无选区 Tab 在光标位置插 2 空格）"],
                   ["⌥↑ / ⌥↓", "上下移当前行（或选区多行 — 与 VSCode / Sublime IDE 通用）"],
                   ["⌘⌥↑ / ⌘⌥↓", "复制当前行（或选区多行）向上 / 向下（Sublime 风 — 与 ⌥↑↓ 移动行同字母键、不同 modifier 区分复制 vs 移动）"],
