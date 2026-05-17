@@ -8,6 +8,13 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- PanelDebug 加「📊 近 1h tokens」chip：扫 llm_logs 算近 1 小时 token 累计 — audit 高峰耗用入口。
+- detail.md 编辑器「⌘⇧C 复制当前段」shortcut：复制光标所在 markdown heading 段（heading 到下一 heading 之间）。
+- TG bot `/sleep_until <HH:MM>` 命令：mute 到指定时刻（与 /mute N 互补 — 「安静到 8 点」更自然）。
+- PanelTasks 行右键加「📌+⏰5min 提醒」组合项：钉住 + 5 分钟后软提醒 — sprint 突发场景。
+- ChatMini 顶部加「⏱ pet 沉默 N 分」chip：自上次 pet 主动开口算起 — owner 觉察 pet 卡住入口。
+- PanelMemory 段标题加「🔀 按 created 排」toggle：默认 updated 倒序；切到 created 倒序 — 「我什么顺序加的」audit。
+
 
 
 
