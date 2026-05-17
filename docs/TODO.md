@@ -10,7 +10,6 @@
 
 - PanelMemory 加 sort-by-字数 toggle：找哪些 memory item content 最重，决策 consolidate 优先级。
 - detail.md 选区 toolbar 加「📋 copy as blockquote」：textarea 选区 → button → 复制 `> <text>` 到剪贴板（每行加 `> ` 前缀）。
-- ChatMini 选区 toolbar 加「💬 推到 ChatPanel」：选区 → 切聊天 tab + 预填 "关于「...」"，让继续提问不必离开 mini。
 
 
 

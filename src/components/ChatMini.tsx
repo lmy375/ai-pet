@@ -2405,6 +2405,31 @@ export function ChatMini({
             <button
               type="button"
               style={btnStyle}
+              title={`把选中文字推到 ChatPanel — 预填「关于「...」」让你直接提问 / 评论。与「💾 转 task」（要做）/「📝 记到 note」（想记）/「🔄 让 AI 改写」（rewrite）互补 — 这条是「针对选段在 ChatPanel 继续问」。`}
+              onClick={() => {
+                const text = selectionToolbar.text;
+                setSelectionToolbar(null);
+                // 选段 flatten + 80 char cap：与 ChatMini bubble 内的 30 char
+                // 短摘要不同 — 选区是 owner 显式挑的更长片段，给更宽 cap
+                // 但仍防超长 prefix 撑爆 input UI。
+                const flat = text.replace(/\s+/g, " ").trim();
+                const TEXT_PREFIX_CAP = 80;
+                const excerpt =
+                  flat.length > TEXT_PREFIX_CAP
+                    ? flat.slice(0, TEXT_PREFIX_CAP) + "…"
+                    : flat;
+                window.dispatchEvent(
+                  new CustomEvent("pet-mini-respond-to", {
+                    detail: excerpt,
+                  }),
+                );
+              }}
+            >
+              💬
+            </button>
+            <button
+              type="button"
+              style={btnStyle}
               title="让 AI 改写这段（输入框预填「请改写：...」让你确认 / 微调后发送）"
               onClick={() => {
                 const text = selectionToolbar.text;
