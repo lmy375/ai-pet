@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot 加 `/yesterday` 命令：列昨日 done 任务标题 + result 摘要（与 /today 互补 — audit 昨日产出）。
 - TG bot 加 `/streak` 命令：显本聊天连续有 done 的天数 + 7 天 / 30 天完成率简短统计。
 - PanelTasks 加 ⌘A 全选 visible 进入 multi-select 模式：批量 cancel / done / pin 不必逐条点。
 - PanelMemory 加「🆕 今日新增」filter chip：created_at 是今天的 item 一键过滤聚焦（与 7-day churn 互补）。
