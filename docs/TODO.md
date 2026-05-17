@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 加 ⌘/ 弹快捷键速查 modal：列出全部行内快捷键 + 用途，Esc 关；新 owner / 老用户健忘时一键查。
-- PanelTasks 行 hover preview 内加 detail.md 字数 + 上次编辑时间 chip：让 owner 在 hover 多看一维 detail metadata。
 
 
 
