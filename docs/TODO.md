@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory item 加「⏰ 一次性 5/15/30 分钟后提醒」chip：与既有 reminderMin（fire 前 N 分钟）区分 — 一次性 alarm 到点弹 ChatMini 软提醒，不挂 schedule。
 
 
 

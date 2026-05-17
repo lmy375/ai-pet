@@ -794,6 +794,71 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   const [reminderQuickPickerTitle, setReminderQuickPickerTitle] =
     useState<string | null>(null);
   const [reminderQuickBusy, setReminderQuickBusy] = useState(false);
+
+  /// ⏰ 一次性 alarm chip 弹的 popover key = `${catKey}::${title}`。
+  /// 与 [reminderMin: N]（fire 前 N 分钟）正交 —— 那个挂在 butler_task
+  /// 既有 schedule 上做"提前打招呼"；本 chip 创新条 `todo` 条目带
+  /// `[remind: YYYY-MM-DD HH:MM]` prefix，复用现有 reminder pipeline
+  /// 让 ChatMini 到点弹一次软提醒后该条目自然 expire（consolidate
+  /// 24h 后清扫 Absolute target）。3 preset：5 / 15 / 30 min。
+  /// outside-click + Esc 关；与 reminderQuickPicker 同模板。
+  const [alarmPickerKey, setAlarmPickerKey] = useState<string | null>(null);
+  const [alarmBusy, setAlarmBusy] = useState(false);
+  useEffect(() => {
+    if (!alarmPickerKey) return;
+    const close = () => setAlarmPickerKey(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAlarmPickerKey(null);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [alarmPickerKey]);
+
+  /// 创建 `todo` 条目 with [remind: YYYY-MM-DD HH:MM] prefix — 让既有
+  /// reminder pipeline 接管（proactive 扫到 due 触发 ChatMini 软提醒，
+  /// 24h 后 consolidate 自动清扫 Absolute target）。title 含源 item
+  /// 标题 + 触发分钟数 + HH:MM 让 owner 在 PanelMemory todo 段一眼
+  /// 识别 reminder 出处。
+  const armOneShotAlarm = useCallback(
+    async (srcTitle: string, minutes: number) => {
+      if (alarmBusy) return;
+      setAlarmBusy(true);
+      const now = new Date();
+      const target = new Date(now.getTime() + minutes * 60 * 1000);
+      // YYYY-MM-DD HH:MM 本地时区格式（与 reminder parser 期望一致）
+      const y = target.getFullYear();
+      const mo = String(target.getMonth() + 1).padStart(2, "0");
+      const d = String(target.getDate()).padStart(2, "0");
+      const hh = String(target.getHours()).padStart(2, "0");
+      const mm = String(target.getMinutes()).padStart(2, "0");
+      const targetIso = `${y}-${mo}-${d} ${hh}:${mm}`;
+      const reminderTitle = `⏰ ${srcTitle} @ ${hh}:${mm}`;
+      const description = `[remind: ${targetIso}] ${srcTitle}`;
+      try {
+        await invoke("memory_edit", {
+          action: "create",
+          category: "todo",
+          title: reminderTitle,
+          description,
+        });
+        setMessage(
+          `⏰ 已设 ${minutes} 分钟后软提醒（${hh}:${mm}）「${srcTitle}」`,
+        );
+        setAlarmPickerKey(null);
+        await loadIndex();
+      } catch (e) {
+        setMessage(`设置提醒失败：${e}`);
+      } finally {
+        setAlarmBusy(false);
+        window.setTimeout(() => setMessage(""), 4000);
+      }
+    },
+    [alarmBusy],
+  );
   useEffect(() => {
     if (!reminderQuickPickerTitle) return;
     const close = () => setReminderQuickPickerTitle(null);
@@ -5978,6 +6043,93 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             >
                               {pinned ? "📌" : "📍"}
                             </button>
+                          );
+                        })()}
+                        {/* ⏰ 一次性 alarm chip：点击弹 5/15/30 min preset
+                            popover，选择后创建 `todo` 条目 with
+                            [remind: YYYY-MM-DD HH:MM] prefix — 既有 proactive
+                            reminder pipeline 接管，到点 ChatMini 软提醒。
+                            与 [reminderMin: N]（butler_task fire 前 N 分钟提
+                            醒）正交：reminderMin 挂既有 schedule；本 chip
+                            是"独立 alarm，不挂 schedule"。todo 类目本身已
+                            存在 reminder 时不显本 chip — 嵌套 reminder 无
+                            意义（owner 应直接 edit todo description）。 */}
+                        {catKey !== "todo" && (() => {
+                          const key = `${catKey}::${item.title}`;
+                          const open = alarmPickerKey === key;
+                          return (
+                            <span
+                              style={{ position: "relative", display: "inline-block" }}
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                style={{
+                                  ...s.btn,
+                                  ...(open && {
+                                    background: "var(--pet-tint-blue-bg)",
+                                    color: "var(--pet-tint-blue-fg)",
+                                    border: "1px solid var(--pet-tint-blue-fg)",
+                                    fontWeight: 600,
+                                  }),
+                                }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAlarmPickerKey(open ? null : key);
+                                }}
+                                title="一次性提醒：5/15/30 分钟后到点弹 ChatMini 软提醒。新条目落 `todo` 类目，pet proactive 扫到 due 触发，24h 后 consolidate 自动清扫。与 [reminderMin: N]（既有 schedule 提前 N 分钟提醒）正交 — 这条是不挂 schedule 的独立 alarm。"
+                                aria-label="set one-shot alarm"
+                              >
+                                ⏰
+                              </button>
+                              {open && (
+                                <div
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    position: "absolute",
+                                    top: "calc(100% + 4px)",
+                                    right: 0,
+                                    minWidth: 160,
+                                    padding: 6,
+                                    background: "var(--pet-color-card)",
+                                    border: "1px solid var(--pet-color-border)",
+                                    borderRadius: 6,
+                                    boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                                    zIndex: 50,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 4,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      fontSize: 10,
+                                      color: "var(--pet-color-muted)",
+                                      padding: "2px 6px 2px",
+                                    }}
+                                  >
+                                    一次性提醒：N 分钟后
+                                  </div>
+                                  {[5, 15, 30].map((mins) => (
+                                    <button
+                                      key={mins}
+                                      type="button"
+                                      disabled={alarmBusy}
+                                      onClick={() =>
+                                        void armOneShotAlarm(item.title, mins)
+                                      }
+                                      style={{
+                                        ...s.btn,
+                                        textAlign: "left",
+                                        padding: "4px 10px",
+                                      }}
+                                    >
+                                      {alarmBusy ? "…" : `⏰ ${mins} 分钟后`}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </span>
                           );
                         })()}
                         {/* ▶️ 现在跑一次：仅 butler_tasks 显。绕过 schedule /
