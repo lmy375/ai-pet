@@ -418,6 +418,14 @@ pub enum TgCommand {
     /// 任务详情不必回桌面。空 title 走 missing-arg；title resolve 三层
     /// （数字 index → fuzzy → 错误候选）与 /done /cancel /edit 同源。
     Show { title: String },
+    /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
+    /// task 的所有 create / update / delete 事件，按时序展开每个事件含
+    /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
+    /// / [cancelled:] / [pinned] / [silent] / [blockedBy:] / [archived:]）—
+    /// 让 owner audit "这条 task 经历了啥"。与 /show 显当前 snapshot 互
+    /// 补；本命令是 historical 视角。空 title 走 missing-arg；title
+    /// resolve 与 /done /cancel /show 同三层。
+    Timeline { title: String },
     /// `/due <preset>` —— 列出 pending 任务在指定时间段的 due 清单。preset
     /// 缺省 `tomorrow`（最常用的"明天什么"前向 audit）。支持中英 alias
     /// （tomorrow / 明天 / 本周 / 下周 等）。与 `/today` 互补 —— /today 只
@@ -493,6 +501,7 @@ impl TgCommand {
             TgCommand::Reflect { .. } => "reflect",
             TgCommand::Due { .. } => "due",
             TgCommand::Show { .. } => "show",
+            TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::Last => "last",
             TgCommand::Random => "random",
@@ -539,6 +548,7 @@ impl TgCommand {
             | TgCommand::Note { text: title }
             | TgCommand::Reflect { text: title }
             | TgCommand::Show { title }
+            | TgCommand::Timeline { title }
             | TgCommand::Quick { text: title }
             | TgCommand::Pri { title, .. }
             | TgCommand::EditDue { title, .. }
@@ -672,6 +682,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent", "List recent N done tasks (default 5, cap 20)"),
             ("find", "Search this chat's tasks by keyword (title / description substring)"),
             ("show", "Show full raw description (with markers) + detail.md preview of a task"),
+            ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("snoozed", "List tasks currently in [snooze: …] with time until wake"),
             ("mute", "Mute proactive for N minutes (default 30; 0 to clear)"),
@@ -728,6 +739,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent", "最近 N 条已完成任务标题（默认 5，上限 20）"),
             ("find", "按 keyword 搜本聊天派单（命中标题或描述子串，至多 10 条）"),
             ("show", "显单条任务完整 raw description（含 markers）+ detail.md 预览"),
+            ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("snoozed", "列出当前在 [snooze: …] 中的 task + 还多久醒"),
             ("mute", "临时静音 proactive N 分钟（默认 30；0 = 解除）"),
@@ -992,6 +1004,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/show <title>`：所有参数 = title（与 /cancel /done 同模板）。空 title
         // 由 handler 走 missing-argument 反馈。
         "show" => Some(TgCommand::Show { title }),
+        // `/timeline <title>`：与 /show 同 single-title 模板。空 title 由
+        // handler 走 missing-argument 反馈。butler_history.log 扫描在
+        // handler 端做（IO），parser 仅切 title。
+        "timeline" => Some(TgCommand::Timeline { title }),
         // `/task <title>`：单数，创建。空 title 由 handler 走 missing-argument。
         // 注意先于 `tasks` 判断不必要 — split 已按 token 边界切分，"task" 与
         // "tasks" 是两个独立 token。可选 `!!` / `!!!` 前缀映射 P5 / P7。
@@ -1590,8 +1606,8 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "quick", "due", "recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "find", "show", "blocked", "snoozed", "reset",
-    "version", "help",
+    "cancel_all_error", "find", "show", "timeline", "blocked", "snoozed",
+    "reset", "version", "help",
 ];
 
 /// pure：`/help search <kw>` 实现 — 扫 ALL_HELP_TOPICS 内每条命令的
@@ -1725,6 +1741,7 @@ pub fn format_help_for_topic(
         "reflect" => "🪞 /reflect <text>\n\n用法：把任意文本作 ai_insights memory item 存盘（反思 / 自我洞察分类，与 /note 写 general 对偶）。title 自动 `reflect-YYYY-MM-DDTHH-MM-SS`。\n\n示例：\n  /reflect 今天回顾：我对中断接受度过高，应该早点说 no\n  /reflect 观察：长 task 拆细后完成率明显提升\n\n相关：/note 写 general（杂项 brain-dump）；二者按「信号类型」分流避免 ai_insights 段被日常杂项稀释。可在 PanelMemory → AI 洞察 段查看 / 整理。",
         "find" => "🔍 /find <keyword>\n\n用法：搜本聊天派单（命中标题 / raw_description 子串，case-insensitive），至多 10 条。pending / error 浮顶。\n\n示例：\n  /find Downloads\n  /find 整理 桌面\n  /find #健身\n\n相关：/tasks（看全表）；/blocked（被锁住的）；/show（看单条详情）。",
         "show" => "🔬 /show <title>\n\n用法：显单条任务完整 raw description（含 [task pri=...] / [every:] / [pinned] 等所有 markers）+ detail.md 内容预览（前 300 字符）。Title resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n示例：\n  /show 整理 Downloads\n  /show 1  （/tasks 输出第 1 条）\n\n相关：/find 搜任务；/edit 改 description；/tasks 看清单。让 owner 在 TG 端 audit 任务详情不必回桌面。",
+        "timeline" => "🕰️ /timeline <title>\n\n用法：扫 butler_history.log 取这条 task 的所有 create / update / delete 事件，按时序展开每个事件含哪些「状态变化」markers — audit 这条 task 经历了啥。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n识别的 markers：[done] / [error: ...] / [snooze: ...] / [result: ...] / [cancelled: ...] / [pinned] / [silent] / [blockedBy: ...] / [archived: ...]。\n\n输出格式：\n  🕰️ 「<title>」时间线 · N 个事件\n  📝 MM-DD HH:MM · 创建\n  ✏️ MM-DD HH:MM · [pinned]\n  ✏️ MM-DD HH:MM · [snooze: 2026-05-17 18:00]\n  ✏️ MM-DD HH:MM · [done] [result: 已发送]\n\n示例：\n  /timeline 整理 Downloads\n  /timeline 1  （/tasks 输出第 1 条）\n\n注意：butler_history snippet 单行最多 BUTLER_HISTORY_DESC_CHARS（80 字符），靠后的 markers 可能被截断 → 不显。极长 description 末尾的 marker 在本视图里不可见，是 best-effort 视图。\n\n对比：/show 显当前 snapshot（含所有 markers），/timeline 显历史演化。两者互补 audit 维度。",
         "blocked" => "🔒 /blocked\n\n用法：列出本 chat 派单中被 [blockedBy: ...] 锁住的活跃 task（pending / error），每条下方缩进列出仍未解决的 blocker 标题。无参。\n\n示例：\n  /blocked\n\n相关：/snoozed（被 [snooze:] 暂停的）。",
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
         "reset" => "🔄 /reset\n\n用法：清掉 LLM 对话上下文（保留 system / 人设）。无 armed 二次确认（与桌面 `/clear` 不同 — 不同设备 / 多用户文化）。\n\n示例：\n  /reset",
@@ -1795,6 +1812,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/recent [N]  —  最近 N 条已完成任务标题（默认 5，上限 20）".to_string(),
         "/find <keyword>  —  搜本聊天派单（命中标题或描述子串，至多 10 条）".to_string(),
         "/show <title>  —  显单条任务完整 raw description（含 markers）+ detail.md 预览".to_string(),
+        "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/snoozed  —  列出当前在 [snooze: …] 中的 task + 还多久醒".to_string(),
         "/mute [N]  —  临时静音 proactive N 分钟（默认 30；0 = 解除）".to_string(),
@@ -3966,6 +3984,203 @@ pub fn format_show_reply(
     out
 }
 
+/// `/timeline` 中一行事件条目。`markers` 是该事件 snippet 内扫出的「状态
+/// 变化」marker token 列表（保 `[done]` / `[result: 已发送]` 等完整原文），
+/// 顺序保持 snippet 内出现顺序。
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TimelineEntry {
+    pub timestamp: String,
+    pub action: String,
+    pub markers: Vec<String>,
+}
+
+/// pure：从 butler_history snippet 抽出「状态变化」marker tokens。
+///
+/// 识别白名单：done / error / snooze / result / cancelled / pinned /
+/// silent / blockedBy / archived。每命中一个 `[<key>...]` 段（直到首个
+/// `]` 收口），保留原文整段（含闭合 `]`）— 让 owner 看到 `[result: 已
+/// 发送]` 这种含 payload 的完整原话。
+///
+/// 不识别静态元数据：`[task pri=...]` / `[origin:...]` / `[every:...]` /
+/// `[once:...]` / `[deadline:...]` / `[remind:...]` / `[tags:...]` 等 —
+/// 这些是任务身份元数据非"状态变化"信号。
+///
+/// 同一 marker key 在 snippet 内多次出现都收（如多次 `[error: ...]`），
+/// 由调用方决定是否去重。返回顺序 = 出现顺序。
+pub fn extract_marker_tokens(snippet: &str) -> Vec<String> {
+    // key 大小写敏感（与 task_queue 既有 marker 大小写约定一致：done /
+    // error / snooze / result / cancelled / pinned / silent / blockedBy /
+    // archived）。blockedBy 是唯一 camelCase key，匹配现网约定。
+    const KEYS: &[&str] = &[
+        "done", "error", "snooze", "result", "cancelled", "pinned",
+        "silent", "blockedBy", "archived",
+    ];
+    let bytes = snippet.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        // 找匹配的闭合 ]（不嵌套；snippet 一行已 flatten）
+        let close_rel = match snippet[i..].find(']') {
+            Some(p) => p,
+            None => break,
+        };
+        let inner_start = i + 1;
+        let inner_end = i + close_rel;
+        let inner = &snippet[inner_start..inner_end];
+        // 命中白名单 key？inner 必须以某 key 开头 + 后接 ` ` / `:` /
+        // `：` / `]`（即"key 单独存在"或"key + 值"），避免 "[doneish]"
+        // 这种碰撞。
+        let matched = KEYS.iter().any(|k| {
+            if !inner.starts_with(k) {
+                return false;
+            }
+            let rest = &inner[k.len()..];
+            rest.is_empty()
+                || rest.starts_with(':')
+                || rest.starts_with('：')
+                || rest.starts_with(' ')
+        });
+        if matched {
+            // 收 [..] 完整原文（含两端方括号）
+            out.push(snippet[i..=inner_end].to_string());
+        }
+        i = inner_end + 1;
+    }
+    out
+}
+
+/// pure：把 butler_history events（新→旧 顺序，与 `filter_history_for_task`
+/// 返回一致）转 timeline entries（旧→新 顺序，给前端按时序读）。
+///
+/// 实现：
+/// 1. 反转输入到 chronological（旧→新）
+/// 2. 对每个事件，extract_marker_tokens 拿当前 snapshot 的 markers
+/// 3. 第一个事件 / action != "update" / markers 集合相对前事件有差异 →
+///    保留为 timeline entry；否则丢弃（去除连续无变化的 update 噪声 —
+///    比如 LLM 多次 update detail 但 markers 不动）
+///
+/// 用 marker key 集合（提取 `[<key>` 前缀）作比较 — 让 `[snooze: A]` →
+/// `[snooze: B]` 这种 payload 变化也算变化保留（key 相同但具体 token
+/// 文本不同）。具体: 比对的是去重后的 `marker_keys + marker_full_tokens`
+/// 联合 — 任一变化即保留。
+pub fn compute_timeline_entries(
+    events_newest_first: &[(String, String, String)],
+) -> Vec<TimelineEntry> {
+    // filter_history_for_task 输出已是 newest-first；这里 reverse 到 chronological（旧→新）
+    let chronological: Vec<&(String, String, String)> =
+        events_newest_first.iter().rev().collect();
+    let mut out: Vec<TimelineEntry> = Vec::new();
+    let mut prev_signature: Option<Vec<String>> = None;
+    for (ts, action, snippet) in chronological {
+        let markers = extract_marker_tokens(snippet);
+        let signature = markers.clone();
+        let is_first = prev_signature.is_none();
+        let action_lc = action.to_ascii_lowercase();
+        let force_keep = action_lc != "update"; // create / delete 总保
+        let changed = match &prev_signature {
+            None => true,
+            Some(p) => *p != signature,
+        };
+        if is_first || force_keep || changed {
+            out.push(TimelineEntry {
+                timestamp: ts.clone(),
+                action: action.clone(),
+                markers,
+            });
+        }
+        prev_signature = Some(signature);
+    }
+    out
+}
+
+/// pure：把 `[ts]` 字段格式化成短显示 `MM-DD HH:MM`。butler_history 写
+/// 的是 RFC3339 + tz（如 `2026-05-17T18:30:42+08:00`）— 直接用前 16 字
+/// 节即可剥到日期 + 时刻 + 把 `T` 换成空格再切。解析失败 / 形式不识 →
+/// 兜底返完整 ts 串（不丢信息）。
+pub fn format_timeline_ts(ts: &str) -> String {
+    // 期望形如 "YYYY-MM-DDTHH:MM:SS+08:00"。提取 "MM-DD HH:MM"。
+    // 不引 chrono 重解析 — string slicing 已足够且 robust 对非标准 ts。
+    let bytes = ts.as_bytes();
+    if bytes.len() >= 16
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+    {
+        return format!("{} {}", &ts[5..10], &ts[11..16]);
+    }
+    ts.to_string()
+}
+
+/// pure：`/timeline <title>` 命令回复文案。
+/// - entries 空 → 兜底文案（"无 history 记录"），仍含 task title 让 owner
+///   知道命中了对的 task（与 raw-empty 区分）
+/// - 非空：标题行 `🕰️ 「<title>」时间线 · N 个事件` + 每条事件一行
+///
+/// 事件行格式：`<emoji> MM-DD HH:MM · <body>`。body 视 action / markers：
+/// - action == "create" → `创建`
+/// - action == "delete" → `删除`
+/// - markers 非空 → markers 用空格连接（保原文 `[done]` `[result: ...]`）
+/// - markers 空（仅是 update 但 snippet 截断 / 无状态变化 marker）→
+///   `更新（无 marker 变化）` — 已被 compute_timeline_entries 大多去重
+///   但仍可能落到第一个事件本身就是 update（如重启后首条 update）
+///
+/// 总条数超过 cap 时截前 N + overflow 行 — 防 TG 单消息 4096 字符炸。
+pub fn format_timeline_reply(
+    title: &str,
+    entries: &[TimelineEntry],
+    total_events: usize,
+) -> String {
+    const TIMELINE_ENTRY_CAP: usize = 30;
+    let title = title.trim();
+    if entries.is_empty() {
+        return format!(
+            "🕰️ 「{}」时间线\n\n（butler_history 内无该 task 的事件记录 — 可能是日志被轮转切掉，或 task 刚创建尚未写入。/show {} 查当前 snapshot。）",
+            title, title
+        );
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "🕰️ 「{}」时间线 · {} 个事件",
+        title, total_events
+    ));
+    if entries.len() < total_events {
+        out.push_str(&format!("（去重无变化 update 后保留 {} 条）", entries.len()));
+    }
+    out.push_str("\n\n");
+    let show_count = entries.len().min(TIMELINE_ENTRY_CAP);
+    for e in entries.iter().take(show_count) {
+        let emoji = match e.action.to_ascii_lowercase().as_str() {
+            "create" => "📝",
+            "delete" => "🗑️",
+            _ => "✏️",
+        };
+        let ts_short = format_timeline_ts(&e.timestamp);
+        let body = if e.action.to_ascii_lowercase() == "create" {
+            "创建".to_string()
+        } else if e.action.to_ascii_lowercase() == "delete" {
+            "删除".to_string()
+        } else if e.markers.is_empty() {
+            "更新（无 marker 变化）".to_string()
+        } else {
+            e.markers.join(" ")
+        };
+        out.push_str(&format!("{} {} · {}\n", emoji, ts_short, body));
+    }
+    if entries.len() > TIMELINE_ENTRY_CAP {
+        out.push_str(&format!(
+            "\n…（保留前 {} 条；剩余 {} 条省略）",
+            TIMELINE_ENTRY_CAP,
+            entries.len() - TIMELINE_ENTRY_CAP
+        ));
+    }
+    out
+}
+
 /// `/reflect <text>` 命令回复文案。pure，与 format_note_reply 同模板但
 /// 走 ai_insights 类目（消息文案点明分类不同避免与 /note 混淆）。
 /// - 空 / 全空白 text → usage hint（带 /note 对照例避免 owner 用错入口）
@@ -4709,7 +4924,7 @@ mod tests {
             "due", "recent", "digest", "edit", "pri", "promote", "demote",
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
-            "tag", "edit_due", "cancel_all_error", "find", "show",
+            "tag", "edit_due", "cancel_all_error", "find", "show", "timeline",
             "blocked", "snoozed", "reset", "version", "help",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -5179,7 +5394,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "show", "tags", "tag", "reset", "version", "help",
+            "show", "timeline", "tags", "tag", "reset", "version", "help",
         ] {
             assert!(
                 names.contains(&expected),
@@ -9338,6 +9553,230 @@ mod tests {
         let s = format_show_reply("t", "", "", TaskStatus::Pending);
         assert!(s.contains("raw_description 为空"), "should hint empty raw: {s}");
         assert!(!s.contains("📝"), "no detail section either: {s}");
+    }
+
+    // -------- /timeline parse + extract_marker_tokens + entries + format --------
+
+    #[test]
+    fn timeline_parser_takes_all_args_as_title() {
+        assert_eq!(
+            parse_tg_command("/timeline 整理 Downloads"),
+            Some(TgCommand::Timeline {
+                title: "整理 Downloads".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn timeline_parser_empty_title_parses() {
+        // 与 /show 同模板：空 title 让 handler 走 missing-arg hint，parser
+        // 仍命中变体（避免走 Unknown 兜底）
+        assert_eq!(
+            parse_tg_command("/timeline"),
+            Some(TgCommand::Timeline {
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn timeline_extract_markers_finds_known_keys() {
+        let snippet = "update 写周报 :: [task pri=3] [pinned] body [done] [result: 已发送]";
+        let tokens = extract_marker_tokens(snippet);
+        assert_eq!(
+            tokens,
+            vec![
+                "[pinned]".to_string(),
+                "[done]".to_string(),
+                "[result: 已发送]".to_string()
+            ],
+            "should pick pinned/done/result, skip [task pri=...]: {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn timeline_extract_markers_skips_metadata_brackets() {
+        // [task pri=...] / [origin:...] / [every:...] / [once:...] / [tags:...]
+        // 都是静态元数据 — 不应入 timeline state-change list
+        let snippet = "[task pri=5] [origin:tg:12345] [every: 09:00] [tags: 工作 #urgent] body";
+        let tokens = extract_marker_tokens(snippet);
+        assert!(tokens.is_empty(), "should ignore metadata brackets: {:?}", tokens);
+    }
+
+    #[test]
+    fn timeline_extract_markers_handles_chinese_colon_in_error() {
+        let snippet = "[error：网络超时] body";
+        let tokens = extract_marker_tokens(snippet);
+        assert_eq!(tokens, vec!["[error：网络超时]".to_string()]);
+    }
+
+    #[test]
+    fn timeline_extract_markers_picks_blocked_by_camelcase() {
+        let snippet = "[blockedBy: 整理 Downloads] body";
+        let tokens = extract_marker_tokens(snippet);
+        assert_eq!(tokens, vec!["[blockedBy: 整理 Downloads]".to_string()]);
+    }
+
+    #[test]
+    fn timeline_extract_markers_avoids_false_match_on_similar_prefix() {
+        // "[doneish]" / "[errorlike]" 不应命中（key 需后接 ` ` / `:` / `]`）
+        let snippet = "[doneish] [errorlike: x] body";
+        let tokens = extract_marker_tokens(snippet);
+        assert!(tokens.is_empty(), "should reject prefix-only matches: {:?}", tokens);
+    }
+
+    #[test]
+    fn timeline_extract_markers_handles_unclosed_bracket_gracefully() {
+        // 无闭合 ] 时 break 不 panic
+        let snippet = "[done] [snooze: 永远";
+        let tokens = extract_marker_tokens(snippet);
+        assert_eq!(tokens, vec!["[done]".to_string()]);
+    }
+
+    fn ev(ts: &str, action: &str, snippet: &str) -> (String, String, String) {
+        (ts.to_string(), action.to_string(), snippet.to_string())
+    }
+
+    #[test]
+    fn timeline_compute_entries_reverses_to_chronological() {
+        // filter_history_for_task 输出 newest-first；compute 应输出 oldest-first
+        let events = vec![
+            ev("2026-05-17T18:00:00+08:00", "update", "[done]"),
+            ev("2026-05-15T09:30:00+08:00", "create", ""),
+        ];
+        let entries = compute_timeline_entries(&events);
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].timestamp.starts_with("2026-05-15"));
+        assert!(entries[1].timestamp.starts_with("2026-05-17"));
+    }
+
+    #[test]
+    fn timeline_compute_entries_dedupes_consecutive_unchanged_updates() {
+        // create + 三条都标 [pinned] 的 update → 第二第三条同 marker set 应去重
+        let events = vec![
+            ev("2026-05-17T12:00:00+08:00", "update", "[pinned]"),
+            ev("2026-05-17T11:00:00+08:00", "update", "[pinned]"),
+            ev("2026-05-17T10:00:00+08:00", "update", "[pinned]"),
+            ev("2026-05-17T09:00:00+08:00", "create", ""),
+        ];
+        let entries = compute_timeline_entries(&events);
+        // 期望：create + 第一个 [pinned] update（剩两条 update 因 marker 集合
+        // 与前事件相同被去重）
+        assert_eq!(entries.len(), 2, "{:?}", entries);
+        assert_eq!(entries[0].action, "create");
+        assert_eq!(entries[1].markers, vec!["[pinned]".to_string()]);
+    }
+
+    #[test]
+    fn timeline_compute_entries_keeps_create_and_delete_force() {
+        // create + 一条 update（[pinned]）+ delete → 三条都保。
+        // 验证 force_keep 让 create/delete 不受 marker-dedup 影响 — 哪怕
+        // delete 与上一 update 一样 marker 集合（pinned）也要保（owner 关
+        // 心"任务被删除了"这件事本身，非 marker 变化）。
+        let events = vec![
+            ev("2026-05-17T15:00:00+08:00", "delete", "[pinned]"),
+            ev("2026-05-17T14:00:00+08:00", "update", "[pinned]"),
+            ev("2026-05-17T09:00:00+08:00", "create", ""),
+        ];
+        let entries = compute_timeline_entries(&events);
+        assert_eq!(entries.len(), 3, "{:?}", entries);
+        assert_eq!(entries[0].action, "create");
+        assert_eq!(entries[1].action, "update");
+        assert_eq!(entries[2].action, "delete");
+    }
+
+    #[test]
+    fn timeline_compute_entries_drops_noise_update_with_no_markers() {
+        // create + 中间一条 update（无 markers，与 create 同空集合）→
+        // 中间事件去重，仅保 create。owner 不关心 detail.md silent 写。
+        let events = vec![
+            ev("2026-05-17T14:00:00+08:00", "update", ""),
+            ev("2026-05-17T09:00:00+08:00", "create", ""),
+        ];
+        let entries = compute_timeline_entries(&events);
+        assert_eq!(entries.len(), 1, "{:?}", entries);
+        assert_eq!(entries[0].action, "create");
+    }
+
+    #[test]
+    fn timeline_compute_entries_payload_change_counts_as_change() {
+        // [snooze: A] → [snooze: B] 应保留（payload 变化即 token 文本变化）
+        let events = vec![
+            ev("2026-05-17T14:00:00+08:00", "update", "[snooze: 2026-05-20 18:00]"),
+            ev("2026-05-17T10:00:00+08:00", "update", "[snooze: 2026-05-18 18:00]"),
+            ev("2026-05-17T09:00:00+08:00", "create", ""),
+        ];
+        let entries = compute_timeline_entries(&events);
+        assert_eq!(entries.len(), 3, "{:?}", entries);
+        assert!(entries[1].markers[0].contains("2026-05-18"));
+        assert!(entries[2].markers[0].contains("2026-05-20"));
+    }
+
+    #[test]
+    fn timeline_format_ts_extracts_md_hm() {
+        assert_eq!(format_timeline_ts("2026-05-17T18:30:42+08:00"), "05-17 18:30");
+    }
+
+    #[test]
+    fn timeline_format_ts_falls_back_on_unrecognized_format() {
+        assert_eq!(format_timeline_ts("not-a-ts"), "not-a-ts");
+    }
+
+    #[test]
+    fn timeline_reply_empty_entries_shows_friendly_fallback() {
+        let s = format_timeline_reply("写周报", &[], 0);
+        assert!(s.contains("写周报"), "should include title: {s}");
+        assert!(s.contains("无该 task 的事件记录"), "{s}");
+    }
+
+    #[test]
+    fn timeline_reply_lists_entries_in_order_with_emoji() {
+        let entries = vec![
+            TimelineEntry {
+                timestamp: "2026-05-15T09:30:00+08:00".to_string(),
+                action: "create".to_string(),
+                markers: vec![],
+            },
+            TimelineEntry {
+                timestamp: "2026-05-17T14:00:00+08:00".to_string(),
+                action: "update".to_string(),
+                markers: vec!["[done]".to_string(), "[result: 已发送]".to_string()],
+            },
+        ];
+        let s = format_timeline_reply("写周报", &entries, 2);
+        assert!(s.contains("📝 05-15 09:30 · 创建"), "create line: {s}");
+        assert!(
+            s.contains("✏️ 05-17 14:00 · [done] [result: 已发送]"),
+            "update line: {s}"
+        );
+    }
+
+    #[test]
+    fn timeline_reply_caps_at_30_entries_with_overflow_hint() {
+        let entries: Vec<TimelineEntry> = (0..50)
+            .map(|i| TimelineEntry {
+                timestamp: format!("2026-05-17T{:02}:00:00+08:00", i % 24),
+                action: "update".to_string(),
+                markers: vec![format!("[result: r{}]", i)],
+            })
+            .collect();
+        let s = format_timeline_reply("t", &entries, 50);
+        assert!(s.contains("保留前 30 条"), "should show cap notice: {s}");
+        assert!(s.contains("剩余 20 条"), "{s}");
+    }
+
+    #[test]
+    fn timeline_reply_header_shows_deduped_count_when_smaller() {
+        let entries = vec![TimelineEntry {
+            timestamp: "2026-05-17T09:00:00+08:00".to_string(),
+            action: "create".to_string(),
+            markers: vec![],
+        }];
+        // total_events=5 but entries=1 → header notes dedup
+        let s = format_timeline_reply("t", &entries, 5);
+        assert!(s.contains("5 个事件"), "{s}");
+        assert!(s.contains("保留 1 条"), "{s}");
     }
 
     // -------- /reflect parse + format --------

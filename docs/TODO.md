@@ -9,7 +9,6 @@
 >
 
 - detail.md 编辑器 ⌘⇧F 全文 search & replace popover：既有 ⌘F 只查找，扩 ⌘⇧F 加 replace 半边（VSCode 风：搜框 + 替换框 + Replace / Replace All / ↑↓ 跳）。
-- TG bot 加 `/timeline <title>` 命令：显单条 task description 中 [done] / [error:] / [snooze:] / [result:] 等 markers 时刻清单 — audit 这条 task 经历了啥。
 - PanelChat 加「📌 bookmark 本条」按钮 + bookmark chip strip：让 owner 标重要 chat message + 顶部 chip click 跳回（与 task pin 对偶但 scope chat）。
 
 
