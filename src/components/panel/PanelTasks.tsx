@@ -10775,6 +10775,73 @@ export function PanelTasks({
                         </span>
                       );
                     })()}
+                  {/* ⏭ +1d hover chip：一键把 due +1 天，绕过 📅 调期
+                      popover 三步流程。已有 due → parse + +1d；无 due
+                      → now + 1d。仅 active row + hover 时显（与既有 📂 /
+                      ↗ / 📊 / ↘ 同 taskPreviewHoverTitle 500ms 节奏）。 */}
+                  {!isFinished(t.status) &&
+                    taskPreviewHoverTitle === t.title && (
+                      <button
+                        type="button"
+                        disabled={busyTitle === t.title}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setActionErr("");
+                          setBusyTitle(t.title);
+                          try {
+                            const base = (() => {
+                              if (!t.due) return new Date();
+                              const m =
+                                /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(
+                                  t.due,
+                                );
+                              if (!m) return new Date();
+                              return new Date(
+                                +m[1],
+                                +m[2] - 1,
+                                +m[3],
+                                +m[4],
+                                +m[5],
+                              );
+                            })();
+                            const dueArg = formatDueInput(
+                              new Date(base.getTime() + 86_400_000),
+                            );
+                            await invoke<void>("task_set_due", {
+                              title: t.title,
+                              due: dueArg,
+                            });
+                            await reload();
+                          } catch (err) {
+                            setActionErr(`+1d 失败：${err}`);
+                          } finally {
+                            setBusyTitle(null);
+                          }
+                        }}
+                        title={
+                          t.due
+                            ? `把 due 从 ${t.due} 推到 +1 天后`
+                            : `设置 due 为现在 +1 天后`
+                        }
+                        style={{
+                          padding: "1px 7px",
+                          fontSize: 10,
+                          marginLeft: 4,
+                          border: "1px dashed var(--pet-color-border)",
+                          borderRadius: 999,
+                          background: "transparent",
+                          color: "var(--pet-color-muted)",
+                          cursor:
+                            busyTitle === t.title ? "default" : "pointer",
+                          opacity: busyTitle === t.title ? 0.5 : 1,
+                          fontFamily: "'SF Mono', 'Menlo', monospace",
+                        }}
+                        aria-label="due +1 day"
+                      >
+                        ⏭ +1d
+                      </button>
+                    )}
                   {/* 📅 调期 chip：相对增量 preset 微调 due_at。终态行
                       （done / cancelled）不显——调期对结束态无意义。
                       popover 直接锚 chip 下方；与 💤 snooze 同 outside-click
