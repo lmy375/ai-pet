@@ -277,6 +277,31 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     done: number;
     failed: number;
   } | null>(null);
+
+  /// 「⏸ 全部 silent 1h」批量按钮状态：snapshot 哪些 title 是被本次按
+  /// 钮置 [silent] 的（仅记"原非 silent" 的子集，避免到期把 owner 手动
+  /// 标 silent 的也撤掉），并记 expiresAt。持久化 localStorage 让重启
+  /// 后仍能继续 / 自动恢复。
+  ///
+  /// 行为：
+  /// - 点击触发 → 扫 butler_tasks pending + 非 [silent] 的 item titles，
+  ///   逐条 task_set_silent(title, true) + 存 snapshot { titles,
+  ///   expiresAt = now + 1h } 到 localStorage + 起 timer
+  /// - timer 到期 → 逐条 task_set_silent(title, false) + 清 localStorage
+  /// - 再次点击（active 态） → 立即解除（手动早于到期），同上撤回
+  /// - mount 时 → 读 localStorage：若 expiresAt < now → 立即解除（错过
+  ///   timer 窗口的兜底）；否则 re-arm timer for remaining duration
+  type BulkSilentSnapshot = { titles: string[]; expiresAt: number };
+  const BULK_SILENT_STORAGE_KEY = "pet-panel-memory-bulk-silent-snapshot";
+  const BULK_SILENT_DURATION_MS = 60 * 60 * 1000; // 1h，与按钮命名一致
+  const [bulkSilentSnapshot, setBulkSilentSnapshot] =
+    useState<BulkSilentSnapshot | null>(null);
+  const [bulkSilentBusy, setBulkSilentBusy] = useState(false);
+  const bulkSilentExpiryTimerRef = useRef<number | null>(null);
+  /// "剩 N 分" 显示：每分钟 tick 一次。lazy 起在 snapshot 非空时；
+  /// snapshot 清空时 clear。比每秒 tick 经济（owner 只关心"还剩约几
+  /// 分"，不需要秒级精度）。
+  const [bulkSilentNowMs, setBulkSilentNowMs] = useState(() => Date.now());
   const fireOneArmedTimer = useRef<number | null>(null);
   /// "⏭ skip 一次" armed 状态：butler_task 行内"跳本轮 due"按钮按下后
   /// 3s 内再按确认。复用 fireOneArmedTitle 同模板 — 同时只允许一条 item
@@ -407,6 +432,158 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       setFiringProactive(false);
     }
   };
+
+  /// 「⏸ 全部 silent 1h」批量解除：用 snapshot 里记录的 titles 逐条
+  /// task_set_silent(title, false)。失败容忍（task 可能已被 owner 手动
+  /// unsilent 或删除）— 静默继续下一条。完成后清 state / localStorage /
+  /// timer。loadIndex 刷新让 UI 看到 [silent] 已撤回。
+  const releaseBulkSilent = useCallback(
+    async (snapshot: BulkSilentSnapshot) => {
+      if (bulkSilentBusy) return;
+      setBulkSilentBusy(true);
+      let failed = 0;
+      for (const title of snapshot.titles) {
+        try {
+          await invoke<void>("task_set_silent", { title, silent: false });
+        } catch (e) {
+          console.error(`bulk unsilent 失败 [${title}]:`, e);
+          failed += 1;
+        }
+      }
+      if (bulkSilentExpiryTimerRef.current !== null) {
+        window.clearTimeout(bulkSilentExpiryTimerRef.current);
+        bulkSilentExpiryTimerRef.current = null;
+      }
+      try {
+        window.localStorage.removeItem(BULK_SILENT_STORAGE_KEY);
+      } catch {
+        /* localStorage 写失败不阻塞 */
+      }
+      setBulkSilentSnapshot(null);
+      setBulkSilentBusy(false);
+      await loadIndex();
+      setMessage(
+        failed === 0
+          ? `🔊 已解除 ${snapshot.titles.length} 条 butler_task 的临时 [silent]`
+          : `🔊 已解除 ${snapshot.titles.length - failed}/${snapshot.titles.length} 条（${failed} 条失败）`,
+      );
+      window.setTimeout(() => setMessage(""), 4000);
+    },
+    [bulkSilentBusy],
+  );
+
+  /// 「⏸ 全部 silent 1h」批量触发：扫当前 butler_tasks 段内 "pending +
+  /// 不含 [silent]" 的 item titles（避免到期把 owner 已手动标 silent
+  /// 的也撤掉），逐条 task_set_silent(title, true)，写 snapshot 到
+  /// localStorage，arm 1h timer 自动解除。
+  ///
+  /// 参数 `candidates` 由 caller 在 button onClick 时按 cat.items 计
+  /// 算（IIFE scope，handler 外没法访问 catItems）。
+  const triggerBulkSilent = useCallback(
+    async (candidates: { title: string; description: string }[]) => {
+      if (bulkSilentBusy) return;
+      // 仅选还没 [silent] 的 — 避免到期把"owner 手动标"也撤回
+      const titles = candidates
+        .filter((it) => !/\[silent\]/.test(it.description))
+        .map((it) => it.title);
+      if (titles.length === 0) {
+        setMessage("当前 butler_tasks 已全部 silent，无需重复操作");
+        window.setTimeout(() => setMessage(""), 3000);
+        return;
+      }
+      setBulkSilentBusy(true);
+      let failed = 0;
+      for (const title of titles) {
+        try {
+          await invoke<void>("task_set_silent", { title, silent: true });
+        } catch (e) {
+          console.error(`bulk silent 失败 [${title}]:`, e);
+          failed += 1;
+        }
+      }
+      const expiresAt = Date.now() + BULK_SILENT_DURATION_MS;
+      const snapshot: BulkSilentSnapshot = { titles, expiresAt };
+      try {
+        window.localStorage.setItem(
+          BULK_SILENT_STORAGE_KEY,
+          JSON.stringify(snapshot),
+        );
+      } catch {
+        /* localStorage 满 / 失败不阻塞功能本身 */
+      }
+      setBulkSilentSnapshot(snapshot);
+      if (bulkSilentExpiryTimerRef.current !== null) {
+        window.clearTimeout(bulkSilentExpiryTimerRef.current);
+      }
+      bulkSilentExpiryTimerRef.current = window.setTimeout(() => {
+        void releaseBulkSilent(snapshot);
+      }, BULK_SILENT_DURATION_MS);
+      setBulkSilentBusy(false);
+      await loadIndex();
+      setMessage(
+        failed === 0
+          ? `⏸ 已 silent ${titles.length} 条 butler_task · 1h 后自动解除`
+          : `⏸ 已 silent ${titles.length - failed}/${titles.length} 条（${failed} 失败）· 1h 后自动解除`,
+      );
+      window.setTimeout(() => setMessage(""), 4000);
+    },
+    [bulkSilentBusy, releaseBulkSilent],
+  );
+
+  /// mount 时从 localStorage 恢复 snapshot + 计算 remaining 重 arm。
+  /// 错过 timer 窗口（应用关闭跨过 expiresAt）→ 立即触发解除作兜底。
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      raw = window.localStorage.getItem(BULK_SILENT_STORAGE_KEY);
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    let snap: BulkSilentSnapshot;
+    try {
+      const parsed = JSON.parse(raw);
+      if (
+        !parsed ||
+        !Array.isArray(parsed.titles) ||
+        typeof parsed.expiresAt !== "number"
+      )
+        return;
+      snap = parsed as BulkSilentSnapshot;
+    } catch {
+      return;
+    }
+    const remaining = snap.expiresAt - Date.now();
+    if (remaining <= 0) {
+      // 错过窗口 → 立即解除
+      void releaseBulkSilent(snap);
+      return;
+    }
+    setBulkSilentSnapshot(snap);
+    bulkSilentExpiryTimerRef.current = window.setTimeout(() => {
+      void releaseBulkSilent(snap);
+    }, remaining);
+    return () => {
+      if (bulkSilentExpiryTimerRef.current !== null) {
+        window.clearTimeout(bulkSilentExpiryTimerRef.current);
+        bulkSilentExpiryTimerRef.current = null;
+      }
+    };
+    // mount-only — releaseBulkSilent 依赖闭包是稳的（useCallback）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /// snapshot 非空时每 60s tick 更新 bulkSilentNowMs，让 "剩 N 分"
+  /// 显示自然下落。snapshot 清空时停 tick 省电。
+  useEffect(() => {
+    if (bulkSilentSnapshot === null) return;
+    setBulkSilentNowMs(Date.now());
+    const id = window.setInterval(() => {
+      setBulkSilentNowMs(Date.now());
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, [bulkSilentSnapshot]);
+
   // R95: butler 最近执行折叠状态。> 5 条时默认折叠到前 5（最新），用户点
   // "展开全部 N 条"切到 unbounded。session 内有效，关面板复位（与 R91
   // 长描述折叠同语义）。
@@ -4071,6 +4248,70 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                         title={`把今日要执行的 ${todayItems.length} 条 butler_task 拼成 markdown checkbox 列表复制到剪贴板（标题前带 🔁/📅/⏳ icon + 时间）。早 stand-up / work prep 走人用。`}
                       >
                         📋 今日 todo ({todayItems.length})
+                      </button>
+                    );
+                  })()}
+                {/* 「⏸ 全部 silent 1h」批量按钮：临时静音 butler_tasks 但
+                    不关闭全局 proactive 系统。inactive 态显计数（"⏸ 全部
+                    silent 1h"），active 态显"🔊 解除 (剩 N 分)" — click
+                    即手动早解除。1h 后 frontend timer 自动逐条 unsilent。
+                    与 mute (set_mute_minutes) 区别：mute 让 pet 整体不开
+                    口；本按钮只把 LLM proactive task picker 的候选池清
+                    空 — pet 仍会主动聊天，只是不会"我看你 Downloads
+                    乱了我去整理"。 */}
+                {catKey === "butler_tasks" &&
+                  (() => {
+                    const active = bulkSilentSnapshot !== null;
+                    if (active) {
+                      const remainingMs = Math.max(
+                        0,
+                        bulkSilentSnapshot.expiresAt - bulkSilentNowMs,
+                      );
+                      const remainingMin = Math.max(
+                        1,
+                        Math.ceil(remainingMs / 60000),
+                      );
+                      return (
+                        <button
+                          style={{
+                            ...s.btn,
+                            marginLeft: 4,
+                            background: "var(--pet-tint-amber-bg, #fef3c7)",
+                            color: "var(--pet-tint-amber-fg, #92400e)",
+                            borderColor:
+                              "color-mix(in srgb, var(--pet-tint-amber-fg, #92400e) 40%, transparent)",
+                            fontWeight: 600,
+                          }}
+                          disabled={bulkSilentBusy}
+                          onClick={() =>
+                            void releaseBulkSilent(bulkSilentSnapshot)
+                          }
+                          title={`已 silent ${bulkSilentSnapshot.titles.length} 条 butler_task，${remainingMin} 分钟后自动解除。点击立即解除。`}
+                        >
+                          {bulkSilentBusy
+                            ? "解除中…"
+                            : `🔊 解除 (剩 ${remainingMin} 分)`}
+                        </button>
+                      );
+                    }
+                    // inactive 态：扫候选 — 仅 pending + 非 [silent]
+                    // （done / cancelled / error 不打扰 ；已 silent 不重复）
+                    const candidates = cat.items.filter((it) => {
+                      const desc = it.description;
+                      if (/\[done(?:\s[^\]]*)?\]/.test(desc)) return false;
+                      if (/\[silent\]/.test(desc)) return false;
+                      // butler_tasks 状态 = pending 是默认 (无 [done] 即 active)
+                      return true;
+                    });
+                    if (candidates.length === 0) return null;
+                    return (
+                      <button
+                        style={{ ...s.btn, marginLeft: 4 }}
+                        disabled={bulkSilentBusy}
+                        onClick={() => void triggerBulkSilent(candidates)}
+                        title={`把 ${candidates.length} 条 butler_task 临时标 [silent]（LLM proactive cycle 不会主动选它们），1h 后 frontend timer 自动撤回 [silent]。适合开会 / 集中写作 1 小时不被 pet 打扰；与全局 mute 区别 — mute 让 pet 完全不开口，本按钮只清空 task 候选池 pet 仍可主动聊天。`}
+                      >
+                        ⏸ 全部 silent 1h ({candidates.length})
                       </button>
                     );
                   })()}
