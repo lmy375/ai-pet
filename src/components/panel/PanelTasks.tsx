@@ -4898,6 +4898,143 @@ export function PanelTasks({
   /// `atDismissedAt`: owner Esc 后记录关 popover 时的 @ 位置，让 cursor 还
   /// 在该 @ 内时不重新弹（owner 显式说"不"应该 sticky）；离开 @ 词后重置。
   const [atDismissedAt, setAtDismissedAt] = useState<number | null>(null);
+
+  /// iter #390: search input `#` tag 自动补全 popover — 与 detail.md
+  /// `@` task title 补全对偶。owner 在搜索框打 `#` 时弹既有 tag 候选，
+  /// 按 visibleTasks tags 频次排序。
+  ///
+  /// state：
+  /// - tagTrigger: { hashPos, query } | null — 当前 cursor 是否在 `#`
+  ///   词内（与 atTrigger 同模板）
+  /// - tagDismissedAt: hashPos 锚点 — owner Esc 后 sticky 不重弹
+  /// - tagSelectedIdx: ↑↓ navigation 当前选中
+  /// - searchCursorPos: input cursor 位置，用于 trigger 计算 + accept
+  ///   后 set cursor
+  const [tagDismissedAt, setTagDismissedAt] = useState<number | null>(null);
+  const [tagSelectedIdx, setTagSelectedIdx] = useState<number>(0);
+  const [searchCursorPos, setSearchCursorPos] = useState<number>(0);
+  const tagTrigger = useMemo(() => {
+    const text = search;
+    const cursor = searchCursorPos;
+    if (cursor === 0 || cursor > text.length) return null;
+    // 从 cursor 向回扫找 word-boundary `#`（与 atTrigger 同算法）
+    let hashPos = -1;
+    for (let i = cursor - 1; i >= 0; i--) {
+      const ch = text[i];
+      if (ch === "#") {
+        if (i === 0 || /\s/.test(text[i - 1])) {
+          hashPos = i;
+        }
+        break;
+      }
+      if (/\s/.test(ch)) break;
+    }
+    if (hashPos < 0) return null;
+    if (tagDismissedAt === hashPos) return null;
+    const query = text.slice(hashPos + 1, cursor);
+    return { hashPos, query };
+  }, [search, searchCursorPos, tagDismissedAt]);
+
+  /// cursor 离开 `#` 词后清 tagDismissedAt（同 atDismissedAt 模式）
+  useEffect(() => {
+    if (tagDismissedAt === null) return;
+    if (tagTrigger !== null) return;
+    setTagDismissedAt(null);
+  }, [tagTrigger, tagDismissedAt]);
+
+  /// 从 visibleTasks 抽 tags + 按频次排序。tagSuggestions = 频次高优先
+  /// （与 PanelMemory tag chips frequency 同心智）；query 非空走 case-
+  /// insensitive substring 命中，cap 8。
+  const tagSuggestions = useMemo(() => {
+    if (!tagTrigger) return [] as { tag: string; count: number }[];
+    const q = tagTrigger.query.toLowerCase();
+    const counts = new Map<string, number>();
+    for (const t of visibleTasks) {
+      for (const tg of t.tags) {
+        counts.set(tg, (counts.get(tg) ?? 0) + 1);
+      }
+    }
+    const all = Array.from(counts.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) =>
+        b.count !== a.count ? b.count - a.count : a.tag.localeCompare(b.tag),
+      );
+    const filtered =
+      q.length === 0
+        ? all
+        : all.filter(({ tag }) => tag.toLowerCase().includes(q));
+    return filtered.slice(0, 8);
+  }, [tagTrigger, visibleTasks]);
+
+  /// query 变化时 idx reset 到 0（与 atSelectedIdx 同模式）
+  useEffect(() => {
+    setTagSelectedIdx(0);
+  }, [tagTrigger?.query]);
+
+  /// 接受当前 popover 选中条：用 `#tag` 替换 `#query` 段，cursor 落
+  /// 末尾。replace_range 用 hashPos..cursor（保留 `#` 字符）。
+  const acceptTagSuggestion = useCallback(
+    (tag: string) => {
+      if (!tagTrigger) return;
+      const text = search;
+      const cursor = searchCursorPos;
+      const token = `#${tag}`;
+      const before = text.slice(0, tagTrigger.hashPos);
+      const after = text.slice(cursor);
+      const next = `${before}${token}${after}`;
+      setSearch(next);
+      const newPos = tagTrigger.hashPos + token.length;
+      setSearchCursorPos(newPos);
+      setTagDismissedAt(null);
+      window.requestAnimationFrame(() => {
+        const cur = searchInputRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.setSelectionRange(newPos, newPos);
+      });
+    },
+    [tagTrigger, search, searchCursorPos],
+  );
+
+  /// search input onKeyDown 顶部 hook：popover 激活时拦截 ↑↓ / Enter /
+  /// Tab / Esc。与 handleAtKeyDown 同模板。
+  const handleTagKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>): boolean => {
+      if (!tagTrigger) return false;
+      if (tagSuggestions.length === 0 && e.key !== "Escape") return false;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setTagSelectedIdx((i) =>
+          tagSuggestions.length === 0
+            ? 0
+            : Math.min(i + 1, tagSuggestions.length - 1),
+        );
+        return true;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setTagSelectedIdx((i) => Math.max(0, i - 1));
+        return true;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const safe = Math.max(
+          0,
+          Math.min(tagSelectedIdx, tagSuggestions.length - 1),
+        );
+        const target = tagSuggestions[safe];
+        if (target) acceptTagSuggestion(target.tag);
+        return true;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setTagDismissedAt(tagTrigger.hashPos);
+        return true;
+      }
+      return false;
+    },
+    [tagTrigger, tagSuggestions, tagSelectedIdx, acceptTagSuggestion],
+  );
   const atTrigger = useMemo(() => {
     if (editingDetailTitle === null) return null;
     const cursor = detailCursorPos;
@@ -7100,30 +7237,132 @@ export function PanelTasks({
           </div>
         </div>
         <div style={s.searchRow}>
-          <input
-            ref={searchInputRef}
-            type="text"
-            placeholder="按标题或内容搜索…（⌘F / ⌘K / `/` 聚焦 · Enter 入历史）"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            list="pet-tasks-search-history"
-            onKeyDown={(e) => {
-              // Esc：非空时清掉 query；空时让出键位（让全局 Esc 关 modal 等）。
-              if (e.key === "Escape" && search) {
-                e.preventDefault();
-                setSearch("");
-                return;
-              }
-              // Enter：把当前 query 入 history（与 PanelMemory pushSearchHistory
-              // 同模式）。live filter 已在 onChange 即时生效，Enter 只是"我用
-              // 这条 query 用得满意，记一下"的显式信号。
-              if (e.key === "Enter" && search.trim()) {
-                e.preventDefault();
-                pushTaskSearchHistory(search);
-              }
-            }}
-            style={s.searchInput}
-          />
+          {/* 包 input + tag popover 在 position: relative div 里让 popover
+              绝对定位锚到 input 下方。flex: 1 让 input 占满搜索行宽度，
+              与既有 s.searchInput 的 width: 100% 协调（input 在 wrapper
+              内仍 100% wrapper width = 与无 wrapper 同视觉宽度）。 */}
+          <div style={{ position: "relative", flex: 1 }}>
+            <input
+              ref={searchInputRef}
+              type="text"
+              placeholder="按标题或内容搜索…（⌘F / ⌘K / `/` 聚焦 · # 弹 tag 补全 · Enter 入历史）"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setSearchCursorPos(e.target.selectionStart ?? 0);
+              }}
+              onSelect={(e) => {
+                const el = e.target as HTMLInputElement;
+                setSearchCursorPos(el.selectionStart ?? 0);
+              }}
+              onClick={(e) => {
+                const el = e.target as HTMLInputElement;
+                setSearchCursorPos(el.selectionStart ?? 0);
+              }}
+              onKeyUp={(e) => {
+                setSearchCursorPos(e.currentTarget.selectionStart ?? 0);
+              }}
+              list="pet-tasks-search-history"
+              onKeyDown={(e) => {
+                // iter #390: tag popover 激活时拦 ↑↓/Enter/Tab/Esc — 与
+                // detail.md @ 补全 popover 同优先级模式。
+                if (handleTagKeyDown(e)) return;
+                // Esc：非空时清掉 query；空时让出键位（让全局 Esc 关 modal 等）。
+                if (e.key === "Escape" && search) {
+                  e.preventDefault();
+                  setSearch("");
+                  return;
+                }
+                // Enter：把当前 query 入 history（与 PanelMemory pushSearchHistory
+                // 同模式）。live filter 已在 onChange 即时生效，Enter 只是"我用
+                // 这条 query 用得满意，记一下"的显式信号。
+                if (e.key === "Enter" && search.trim()) {
+                  e.preventDefault();
+                  pushTaskSearchHistory(search);
+                }
+              }}
+              style={s.searchInput}
+            />
+            {/* iter #390: `#` tag 自动补全 popover — 绝对定位贴 input 底，
+                tag 频次降序前 8 条；hover / ↑↓ 高亮，click / Enter / Tab
+                接受。与 detail.md @ task title popover 同 UX 心智，让
+                owner 输 `#工` 时弹既有 #工作 / #工具 候选避免敲错。 */}
+            {tagTrigger && tagSuggestions.length > 0 && (
+              <div
+                onMouseDown={(e) => e.preventDefault()}
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  right: 0,
+                  marginTop: 2,
+                  maxHeight: 220,
+                  overflowY: "auto",
+                  padding: 4,
+                  background: "var(--pet-color-card)",
+                  border: "1px solid var(--pet-color-border)",
+                  borderRadius: 6,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+                  zIndex: 30,
+                  fontFamily: "inherit",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "4px 9px 6px",
+                    fontSize: 10,
+                    color: "var(--pet-color-muted)",
+                    borderBottom: "1px dashed var(--pet-color-border)",
+                    marginBottom: 4,
+                  }}
+                >
+                  #{tagTrigger.query || "…"} · ↑↓ 选 · Enter / Tab 接受 · Esc 关
+                </div>
+                {tagSuggestions.map(({ tag, count }, i) => {
+                  const active = i === tagSelectedIdx;
+                  return (
+                    <div
+                      key={tag}
+                      onMouseEnter={() => setTagSelectedIdx(i)}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        acceptTagSuggestion(tag);
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "4px 9px",
+                        fontSize: 12,
+                        borderRadius: 4,
+                        background: active
+                          ? "var(--pet-tint-purple-bg)"
+                          : "transparent",
+                        color: active
+                          ? "var(--pet-tint-purple-fg)"
+                          : "var(--pet-color-fg)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span>#{tag}</span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: active
+                            ? "var(--pet-tint-purple-fg)"
+                            : "var(--pet-color-muted)",
+                          opacity: 0.85,
+                          fontFamily: "'SF Mono', 'Menlo', monospace",
+                        }}
+                      >
+                        {count}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           {/* 最近 5 条搜索 keyword：native datalist 自动浮 dropdown。Enter
               成功的 query 入栈；空 history 时不渲染 option 即 noop。 */}
           {taskSearchHistory.length > 0 && (
