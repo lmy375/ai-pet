@@ -1701,6 +1701,71 @@ export function PanelTasks({
       return next;
     });
   }, []);
+  /// "📑 fold headings" toggle：preview / split 模式下把 H2 / H3 段
+  /// 内容折叠为占位标记，仅 headings 露出 — 给长 detail.md（≥ 数千
+  /// 字）一种「目录鸟瞰」阅读姿态。textarea 自身无 native fold；本
+  /// toggle 仅作用于 preview pane 渲染。状态持久化 localStorage 与
+  /// previewRawMode 同模板（owner 一次设置后跨 task / 跨 session 都
+  /// 保持）。
+  const [foldHeadings, setFoldHeadings] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-detail-fold-headings") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleFoldHeadings = useCallback(() => {
+    setFoldHeadings((cur) => {
+      const next = !cur;
+      try {
+        window.localStorage.setItem(
+          "pet-detail-fold-headings",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 私密 — session 内仍生效
+      }
+      return next;
+    });
+  }, []);
+  /// pure：把 markdown 文本里 H2 / H3 段的 body 替换成 `> …（折叠 N
+  /// 字）` 占位行。section = heading 行直到下一个同级或更高级 heading
+  /// （遇 H1 / H2 / H3 都收口）。H1 不折叠（通常是全文标题）；H4+
+  /// 也不折（视为段内细分）。空 body 段不渲占位行（避免「## title \n
+  /// > …（折叠 0 字）」噪音）。
+  ///
+  /// chars 统计以 unicode code points 计（与既有字数 chip 一致），
+  /// 让 owner 看到的「N 字」与他/她在底部 status bar 看到的字数粒
+  /// 度一致。
+  const foldHeadingsContent = useCallback((md: string): string => {
+    const lines = md.split("\n");
+    const out: string[] = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const h = line.match(/^(#{2,3})\s+(.+)$/);
+      if (!h) {
+        out.push(line);
+        i++;
+        continue;
+      }
+      out.push(line);
+      i++;
+      // 收 body 直到下一个 H1 / H2 / H3
+      const bodyStart = i;
+      while (i < lines.length && !lines[i].match(/^#{1,3}\s+/)) {
+        i++;
+      }
+      const bodyLines = lines.slice(bodyStart, i);
+      const bodyChars = Array.from(bodyLines.join("\n")).length;
+      const trimmedBody = bodyLines.join("").trim();
+      if (trimmedBody.length > 0) {
+        out.push(`> …（折叠 ${bodyChars} 字 · 关「📑」展开）`);
+        out.push("");
+      }
+    }
+    return out.join("\n");
+  }, []);
   /// "🔢 显行号 gutter" toggle：edit 模式 textarea 左侧浮一列行号。仅按
   /// `\n` 分段（逻辑行）；wrap 多行的逻辑行会在视觉上 mismatch（gutter 仍
   /// 单行高，textarea 占多行）—— 多数 detail.md 行较短可忽略；owner 在意
@@ -11588,6 +11653,43 @@ export function PanelTasks({
                                     🆎 {previewRawMode ? "原文" : "渲染"}
                                   </button>
                                 )}
+                                {/* 📑 fold headings toggle：preview / split
+                                    模式下把 H2/H3 段 body 折叠为占位 — 长
+                                    detail.md「目录鸟瞰」阅读姿态。仅 markdown
+                                    渲染模式（!previewRawMode）下生效；raw 模
+                                    式显原文不折叠（owner 切 raw 是想看完整
+                                    文本）。 */}
+                                {detailViewMode !== "edit" && !previewRawMode && (
+                                  <button
+                                    type="button"
+                                    onClick={toggleFoldHeadings}
+                                    title={
+                                      foldHeadings
+                                        ? "展开 H2/H3 段：preview 显完整内容"
+                                        : "折叠 H2/H3 段：preview 仅显 headings + 占位 — 长 detail 「目录鸟瞰」"
+                                    }
+                                    style={{
+                                      fontSize: 11,
+                                      padding: "2px 8px",
+                                      border: "1px solid",
+                                      borderColor: foldHeadings
+                                        ? "var(--pet-tint-blue-fg)"
+                                        : "var(--pet-color-border)",
+                                      borderRadius: 4,
+                                      background: foldHeadings
+                                        ? "var(--pet-tint-blue-bg)"
+                                        : "var(--pet-color-card)",
+                                      color: foldHeadings
+                                        ? "var(--pet-tint-blue-fg)"
+                                        : "var(--pet-color-muted)",
+                                      cursor: "pointer",
+                                      fontWeight: foldHeadings ? 600 : 400,
+                                    }}
+                                    aria-pressed={foldHeadings}
+                                  >
+                                    📑 {foldHeadings ? "折叠" : "展开"}
+                                  </button>
+                                )}
                                 {/* 📋 复制全文：与既有 PanelMemory 的 📋 detail.md
                                     全文复制对偶 —— 在 PanelTasks detail 编辑器顶
                                     部一键拷整段 markdown 到剪贴板。preview 模式
@@ -13468,14 +13570,19 @@ export function PanelTasks({
                                         {editingDetailContent}
                                       </pre>
                                     ) : (
-                                      parseMarkdown(editingDetailContent, {
-                                        checkboxToggle: {
-                                          lineOffset: 0,
-                                          onToggle: toggleEditChecklistLine,
+                                      parseMarkdown(
+                                        foldHeadings
+                                          ? foldHeadingsContent(editingDetailContent)
+                                          : editingDetailContent,
+                                        {
+                                          checkboxToggle: {
+                                            lineOffset: 0,
+                                            onToggle: toggleEditChecklistLine,
+                                          },
+                                          headingIdPrefix: `pet-detail-${t.title}`,
+                                          onHeadingCopySection: handleCopyHeadingSection,
                                         },
-                                        headingIdPrefix: `pet-detail-${t.title}`,
-                                        onHeadingCopySection: handleCopyHeadingSection,
-                                      })
+                                      )
                                     )}
                                   </div>
                                 </div>
@@ -13518,14 +13625,19 @@ export function PanelTasks({
                                       {editingDetailContent}
                                     </pre>
                                   ) : (
-                                    parseMarkdown(editingDetailContent, {
-                                      checkboxToggle: {
-                                        lineOffset: 0,
-                                        onToggle: toggleEditChecklistLine,
+                                    parseMarkdown(
+                                      foldHeadings
+                                        ? foldHeadingsContent(editingDetailContent)
+                                        : editingDetailContent,
+                                      {
+                                        checkboxToggle: {
+                                          lineOffset: 0,
+                                          onToggle: toggleEditChecklistLine,
+                                        },
+                                        headingIdPrefix: `pet-detail-${t.title}`,
+                                        onHeadingCopySection: handleCopyHeadingSection,
                                       },
-                                      headingIdPrefix: `pet-detail-${t.title}`,
-                                      onHeadingCopySection: handleCopyHeadingSection,
-                                    })
+                                    )
                                   )}
                                 </div>
                               ) : (
