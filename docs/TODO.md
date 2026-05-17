@@ -9,7 +9,6 @@
 >
 
 - PanelTasks 行加「📅 due 倒计时」hover chip：仅有 due 的 active 行显「N 天 X 小时后」精确倒计 — 紧迫度 audit。
-- detail.md 编辑器加「⌘. checklist toggle」shortcut：当前行 `- [ ]` ↔ `- [x]` 切换 — 进度笔记快敲。
 - TG bot `/show_speech <N>` 命令：显最近 N 条 pet 主动开口 — 与 /last_speech 单条对偶（N 缺省 5，clamp 1..=20）。
 - PanelMemory item 右键加「📎 复制 [[cat/title]] inline ref」: 与既有 🔗 chip click 对偶 — ctx menu 入口与 inline chip 互补。
 - PanelDebug 加「📊 LLM 错误率」chip：扫近 1h llm.log 算 ok / err 比例 — 与既有「📊 1h tokens」chip 并排 audit。

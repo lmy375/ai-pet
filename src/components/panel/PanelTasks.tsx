@@ -3393,6 +3393,56 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘. checklist toggle：当前行 `- [ ] ` ↔
+  /// `- [x] ` 反转。GFM checklist 进度笔记最频繁动作 — 既有路径要鼠标
+  /// 点 preview 中的 checkbox（双击触发 onToggle），键盘党 friction。
+  /// 本 shortcut 让 owner 在 textarea 编辑时光标在某 checklist 行直接
+  /// 切换。
+  ///
+  /// 严格模式：仅当行匹配 `^\s*- \[[ xX]\] ` 时切换；其它行 → noop
+  /// （不主动添加 `- [ ] ` 前缀，避免破坏正在写的非 checklist 内容）。
+  /// owner 想创建 checklist 行手敲 `- [ ] ` 或走 markdown toolbar 入口。
+  ///
+  /// ⌘. 选键：键盘党友好（单键）；非 shift / alt 与既有 ⌘B / ⌘I / ⌘U
+  /// 同 family。`.` 在浏览器无默认 — 安全；Tauri webview 也无冲突。
+  const handleDetailChecklistToggle = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (e.shiftKey || e.altKey) return false;
+      if (e.key !== ".") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const value = ta.value;
+      const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const nextNl = value.indexOf("\n", start);
+      const lineEnd = nextNl === -1 ? value.length : nextNl;
+      const line = value.slice(lineStart, lineEnd);
+      // 匹配 `<indent>- [<state>] <rest>` —— state 是 " " / "x" / "X"
+      const m = /^(\s*- \[)([ xX])(\] )(.*)$/.exec(line);
+      if (!m) return false; // 严格模式：非 checklist 行不动
+      e.preventDefault();
+      const indent = m[1];
+      const state = m[2];
+      const closeBracket = m[3];
+      const rest = m[4];
+      const newState = state === " " ? "x" : " ";
+      const newLine = `${indent}${newState}${closeBracket}${rest}`;
+      const next = value.slice(0, lineStart) + newLine + value.slice(lineEnd);
+      setEditingDetailContent(next);
+      // 保 cursor 在原 column（行长度不变 — 1 char `<space>` → `x` 或反向）
+      setDetailCursorPos(start);
+      requestAnimationFrame(() => {
+        const t = detailEditorRef.current;
+        if (!t) return;
+        t.focus();
+        t.selectionStart = t.selectionEnd = start;
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md 编辑器 ⌘⇧L 链接快速插入 popover 状态。与 toolbar 「🔗」
   /// (insertLinkAtCursor) 互补 —— 那个直接插模板 + 占位符 pre-select；
   /// 本路径弹小输入框让 owner 一次性输完整 url + label 再插（键盘党想
@@ -14159,6 +14209,10 @@ export function PanelTasks({
                                   // line-op，与 ⌘D / ⌘L / ⌘⇧K / ⌘⇧X 同
                                   // boundary 算法集群。
                                   if (handleDetailCommentToggle(e)) return;
+                                  // ⌘. checklist toggle — 当前行 - [ ] /
+                                  // - [x] 状态反转（严格模式：非 checklist
+                                  // 行 noop）。进度笔记快敲。
+                                  if (handleDetailChecklistToggle(e)) return;
                                   // ⌘L 选中当前行：VS Code / Sublime "select
                                   // line" 习惯。与 ⌘D 同 modifier 集群相邻 ——
                                   // 两个 IDE-like 行操作在一起便于 owner 心智
@@ -14657,6 +14711,10 @@ export function PanelTasks({
                                   // line-op，与 ⌘D / ⌘L / ⌘⇧K / ⌘⇧X 同
                                   // boundary 算法集群。
                                   if (handleDetailCommentToggle(e)) return;
+                                  // ⌘. checklist toggle — 当前行 - [ ] /
+                                  // - [x] 状态反转（严格模式：非 checklist
+                                  // 行 noop）。进度笔记快敲。
+                                  if (handleDetailChecklistToggle(e)) return;
                                   // ⌥↑ / ⌥↓ 上下移行：与 split 模式同 handler。
                                   if (handleDetailMoveLines(e)) return;
                                   // ⌘⌥↑ / ⌘⌥↓ 复制行：与 split 模式同 handler。
