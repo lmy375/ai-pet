@@ -411,10 +411,37 @@ export function ChatMini({
     };
   }, [visible]);
 
+  /// ⏱ pet 沉默 N 分 chip：自上次 pet 主动 / 回复（role=assistant 含
+  /// valid ts）算起的分钟数。让 owner 觉察「pet 是不是又卡住了 / proactive
+  /// pipeline 是不是有问题」。仅 ≥ 5 分钟显（避免 pet 刚说完就闪 chip
+  /// 噪音）；severity 分三档（5..30 muted / 30..90 黄 / >90 红）。
+  ///
+  /// `silentTick` 每 30s bump 让本 useMemo 重算 — 分钟级 display 的足够
+  /// 节奏；与既有 nowTick（1s, NOW marks 专用）分开避免相互 dependency 干扰。
+  const [silentTick, setSilentTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setSilentTick((t) => t + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const petSilentMins = useMemo<number | null>(() => {
+    void silentTick;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const raw = m.ts;
+      if (!raw) continue;
+      const t = Date.parse(raw);
+      if (Number.isNaN(t)) continue;
+      return Math.floor((Date.now() - t) / 60_000);
+    }
+    return null;
+  }, [messages, silentTick]);
+  const showPetSilentChip = petSilentMins !== null && petSilentMins >= 5;
   const ambientHasContent =
     ambientTransient !== null ||
     ambientAlarms > 0 ||
-    ambientMuteMins !== null;
+    ambientMuteMins !== null ||
+    showPetSilentChip;
   // followTail：用户是否处于"自动跟随最新"状态。挂载时默认 true（贴底）。
   // 用 ref 让 auto-scroll effect 拿到最新值而不必加进 deps；同名 state
   // 仅供「跳到底浮标」按钮可见态用。两者由 onScroll 同步更新。
@@ -1326,6 +1353,76 @@ export function ChatMini({
                 🔇 {ambientMuteMins}m
               </button>
             )}
+            {/* ⏱ pet 沉默 N 分 chip：自上次 assistant 消息（含 valid ts）
+                算起的分钟数。让 owner 觉察「pet 是不是又卡住了 / proactive
+                pipeline 没在跑」。severity 三档：muted / amber / red。仅
+                ≥ 5 分时显（pet 刚说完就闪 chip 是噪音）。click → debug 窗
+                看 proactive 状态。 */}
+            {showPetSilentChip && petSilentMins !== null && (() => {
+              const mins = petSilentMins;
+              let bg: string;
+              let fg: string;
+              if (mins >= 90) {
+                bg = "color-mix(in srgb, #dc2626 14%, transparent)";
+                fg = "#dc2626";
+              } else if (mins >= 30) {
+                bg = "color-mix(in srgb, #d97706 14%, transparent)";
+                fg = "#d97706";
+              } else {
+                bg = "color-mix(in srgb, var(--pet-color-fg) 8%, transparent)";
+                fg = "var(--pet-color-muted)";
+              }
+              const label =
+                mins < 60
+                  ? `${mins}m`
+                  : `${Math.floor(mins / 60)}h${mins % 60 > 0 ? ` ${mins % 60}m` : ""}`;
+              const sev =
+                mins >= 90
+                  ? "🔴 长时间沉默 — 检查 proactive pipeline 是否卡住"
+                  : mins >= 30
+                    ? "🟡 偏久 — 可能正在等 mute / silent / 长 cron 间隔"
+                    : "默认节奏";
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      window.localStorage.setItem(
+                        "pet-debug-deeplink",
+                        JSON.stringify({
+                          tab: "应用",
+                          scrollAnchor: "tone-strip",
+                          ts: Date.now(),
+                        }),
+                      );
+                    } catch (e) {
+                      console.error(
+                        "write pet-debug-deeplink failed:",
+                        e,
+                      );
+                    }
+                    invoke("open_debug").catch(console.error);
+                  }}
+                  title={`pet 自上次主动 / 回复以来已沉默 ${mins} 分钟。${sev}\n\n点击 → 打开 debug 窗 + 滚到 ToneStrip 看 mute / transient / proactive 状态。`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 2,
+                    padding: "1px 6px",
+                    borderRadius: 8,
+                    background: bg,
+                    color: fg,
+                    fontWeight: 500,
+                    border: "none",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    fontSize: "inherit",
+                  }}
+                >
+                  ⏱ {label}
+                </button>
+              );
+            })()}
           </div>
         )}
         {/* ⌘F inline 搜索条：浮在 chat 列表顶部，不挤压列表本身（list 的
