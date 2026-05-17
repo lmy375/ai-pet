@@ -1064,6 +1064,15 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   /// 让 owner 一键回看所有标过 silent 的任务再决定调整 / 解除。不持久化
   /// （filter 是临时 inspect 视图，跨 session 默认全显更符合直觉）。
   const [silentOnlyCats, setSilentOnlyCats] = useState<Set<string>>(new Set());
+  /// 🏃 今日更新 filter：per-cat Set of catKeys with "only today-
+  /// updated" toggle on。filter 应用在 scheduleFilteredItems pool —
+  /// 仅显 updated_at 起始 = 今日本地日期 ISO 的 items。与既有 sort 入
+  /// 口（📅 按时间 / 🔀 按创建）对偶 — 那个排所有 items 按 ts；本
+  /// chip 是 hard filter 只显 today。session 内 state（不持久化 — 与
+  /// 既有 silentOnlyCats / butlerScheduleFilter 同生命周期）。
+  const [todayUpdatedCats, setTodayUpdatedCats] = useState<Set<string>>(
+    new Set(),
+  );
 
   /// ⏰ N pending alarms chip 的 popover 开关。打开时显 todo 段所有
   /// [remind: ...] 协议条目的倒计时清单（target + 剩余/逾期分钟 +
@@ -5608,6 +5617,54 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     📤 .md
                   </button>
                 )}
+                {/* 🏃 今日更新 filter chip：仅显本 cat 内 updated_at 起
+                    始 = 本地今日的 items。让 owner audit「这 cat 今天
+                    动过哪些」一键聚焦，与既有 📅 / 🔀 全局 sort 入口
+                    互补 — 那个排所有 items 按时间；本 chip 是硬过滤
+                    只显 today。仅 todayUpdatedN > 0 时显（避免空状态
+                    chip 噪音）。session 内 toggle 不持久化（与既有
+                    silentOnlyCats 同 lifecycle）。 */}
+                {cat.items.length > 0 && (() => {
+                  const todayLocal = new Date().toLocaleDateString("sv-SE");
+                  const todayUpdatedN = cat.items.filter(
+                    (it) => it.updated_at && it.updated_at.startsWith(todayLocal),
+                  ).length;
+                  if (todayUpdatedN === 0) return null;
+                  const active = todayUpdatedCats.has(catKey);
+                  return (
+                    <button
+                      type="button"
+                      style={{
+                        ...s.btn,
+                        marginLeft: 4,
+                        background: active
+                          ? "var(--pet-tint-blue-bg)"
+                          : s.btn.background,
+                        color: active
+                          ? "var(--pet-tint-blue-fg)"
+                          : s.btn.color,
+                        borderColor: active
+                          ? "var(--pet-tint-blue-fg)"
+                          : undefined,
+                      }}
+                      onClick={() => {
+                        setTodayUpdatedCats((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(catKey)) next.delete(catKey);
+                          else next.add(catKey);
+                          return next;
+                        });
+                      }}
+                      title={
+                        active
+                          ? `当前仅显本 cat ${todayUpdatedN} 条今日 updated 的 item。点击恢复显全部。`
+                          : `本 cat 有 ${todayUpdatedN} 条 item 今日 updated_at 命中。点击仅看这些 — audit「今天动过哪些」。与既有 📅 / 🔀 全局 sort 互补（那个排序；本 chip 过滤）。`
+                      }
+                    >
+                      {active ? "✓ " : ""}🏃 今日更新 ({todayUpdatedN})
+                    </button>
+                  );
+                })()}
                 {/* 🗑 清空 cat：arm/confirm 二次确认（同
                     handleBulkDeleteMem 模式 — 3s 内同 cat 再点真删）。
                     仅非空 cat 显；执行中 busy 灰。armed 时按钮变红 +
@@ -6063,6 +6120,17 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   if (silentOnlyCats.has(catKey)) {
                     pool = pool.filter((it) =>
                       /\[silent\]/.test(it.description),
+                    );
+                  }
+                  // 🏃 仅今日更新 filter（section header chip 点亮时）：
+                  // 把 pool 收窄到 updated_at 起始 = 本地今日 YYYY-MM-DD。
+                  // AND 关系叠加在其它 filter 之后 — 与 todayOnlyFilter
+                  // （created_at 今日）正交，那个看"今天新建"，本 chip 看
+                  // "今天动过"。
+                  if (todayUpdatedCats.has(catKey)) {
+                    const todayLocal = new Date().toLocaleDateString("sv-SE");
+                    pool = pool.filter(
+                      (it) => it.updated_at && it.updated_at.startsWith(todayLocal),
                     );
                   }
                   if (catKey === "butler_tasks" && butlerScheduleFilter.size > 0) {
