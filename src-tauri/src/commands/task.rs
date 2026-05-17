@@ -307,6 +307,54 @@ pub fn task_mark_done_inner(
     Ok(())
 }
 
+/// `task_skip_once`：让 owner 跳过本轮 due 的 butler_task — 把 description
+/// 原样 write 回 memory_edit，触发 updated_at 自动刷到 now。对 `every: HH:MM`
+/// 任务效果是：mostRecentFire 仍是今日 HH:MM，但 last_updated 现在 > fire →
+/// isButlerDue 返 false → 本轮跳过；下一轮（明日 HH:MM）仍按 schedule 触发。
+///
+/// 不动 description / schedule / tags / markers — 仅刷时间戳。也不重写
+/// detail.md。decision_log push "TaskSkipOnce" 给 audit。
+///
+/// 校验：title 空 / 找不到 / 终态（done / cancelled）拒绝；error 状态不拒，
+/// 让 owner 在 LLM 报错后也能"跳本轮回头再说"。
+#[tauri::command]
+pub fn task_skip_once(
+    title: String,
+    decisions: tauri::State<'_, DecisionLogStore>,
+) -> Result<(), String> {
+    task_skip_once_inner(title, decisions.inner().clone())
+}
+
+pub fn task_skip_once_inner(
+    title: String,
+    decisions: DecisionLogStore,
+) -> Result<(), String> {
+    let title_trimmed = title.trim();
+    if title_trimmed.is_empty() {
+        return Err("title is required".to_string());
+    }
+    let item = find_butler_task(title_trimmed)
+        .ok_or_else(|| format!("task not found: {}", title_trimmed))?;
+    let (status, _) = classify_status(&item.description);
+    if matches!(status, TaskStatus::Done | TaskStatus::Cancelled) {
+        return Err(format!(
+            "cannot skip a finished task (current status: {:?})",
+            status
+        ));
+    }
+    // 重 write 同 description → memory_edit 自动 stamp updated_at 到 now，
+    // 实现"跳本轮"。
+    memory::memory_edit(
+        "update".to_string(),
+        "butler_tasks".to_string(),
+        item.title.clone(),
+        Some(item.description.clone()),
+        None,
+    )?;
+    decisions.push("TaskSkipOnce", item.title.clone());
+    Ok(())
+}
+
 /// `task_undo_done`：把 status == Done 的 task 还原为 Pending — 剥 description
 /// 里的 `[done]` / `[result: ...]` marker，写回 butler_tasks。owner 误标 done
 /// 撤销用：与 `task_mark_done` 对偶（同 marker，反向操作）。

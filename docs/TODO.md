@@ -8,6 +8,10 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- TG bot 加 `/help <cmd>` 命令：列单命令详细用法 + 示例（现 /help 只列全表 + 一行描述）。
+- detail.md 编辑器加 `@` 触发 task title 自动补全 popover：inline picker（与 ⌘K palette 不同——更轻量，键入即筛）。
+- PanelTasks task row ctx menu 加 "📋 复制 detail.md 全文" 命令：不必打开 detail 编辑器，一键拷整段 markdown。
+- ChatPanel session list 旁加 "📋 复制最近 N 轮" dropdown：1-50 选 N，一键拷最近对话（user+assistant 拼）便于贴 issue / 分享。
 
 
 
