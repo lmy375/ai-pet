@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- ChatMini 输入框加「📋 paste-as-plain」按钮：粘时 normalize smart quotes / NBSP / 零宽字符 — 去 rich-text 污染。
 
 
 
