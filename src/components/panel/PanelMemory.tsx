@@ -2217,6 +2217,82 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
     }
   };
 
+  /// 📥 import .md modal — owner 粘 markdown 文本 (H2 = cat / H3 = item)，
+  /// 实时预览解析结果，确认后逐条 memory_edit("create", ...) 写入。
+  ///
+  /// 与 `exportMemoriesAsMarkdown` 形成往返通路 — owner 可从其他设备 / 备份
+  /// 文本一次塞回。catKey resolve 不命中时兜底到 `general`（保安全：从不丢
+  /// 数据；owner 可在 PanelMemory 里手工 🏷 改类目挪走）。同 cat 内 title
+  /// 已存在 → skip 不覆盖（防覆盖既有内容）。
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importDraft, setImportDraft] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const parsedImport = useMemo(
+    () => parseMemoryImport(importDraft, index),
+    [importDraft, index],
+  );
+  const handleImportRun = useCallback(async () => {
+    if (!index) return;
+    if (parsedImport.totalItems === 0) return;
+    setImportBusy(true);
+    let ok = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+    for (const group of parsedImport.groups) {
+      const catKey =
+        group.catKey ??
+        (index.categories["general"] ? "general" : null);
+      if (!catKey) {
+        // 既无命中 cat 又无 general 兜底 — 罕见情况（自定义后端可能没 general）
+        errors.push(`段「${group.rawCatLabel}」无目标 cat`);
+        continue;
+      }
+      const existingTitles = new Set(
+        (index.categories[catKey]?.items ?? []).map((i) => i.title),
+      );
+      for (const item of group.items) {
+        if (existingTitles.has(item.title)) {
+          skipped += 1;
+          continue;
+        }
+        try {
+          await invoke<string>("memory_edit", {
+            action: "create",
+            category: catKey,
+            title: item.title,
+            description: item.description,
+          });
+          // 同 cat 内 dedup：刚 create 的 title 加入 set 防本批次后续重名
+          existingTitles.add(item.title);
+          ok += 1;
+        } catch (e: any) {
+          errors.push(`「${item.title}」: ${e}`);
+        }
+      }
+    }
+    // refresh
+    try {
+      const fresh = await invoke<MemoryIndex>("memory_list", {});
+      setIndex(fresh);
+    } catch (e) {
+      console.error("memory_list refresh failed:", e);
+    }
+    setImportBusy(false);
+    setImportModalOpen(false);
+    setImportDraft("");
+    const msgParts: string[] = [];
+    msgParts.push(`📥 导入完成 — 新增 ${ok}`);
+    if (skipped > 0) msgParts.push(`跳过 ${skipped}（title 已存在）`);
+    if (errors.length > 0)
+      msgParts.push(
+        `失败 ${errors.length}${
+          errors.length <= 2 ? `：${errors.join("； ")}` : ""
+        }`,
+      );
+    setMessage(msgParts.join(" · "));
+    setTimeout(() => setMessage(""), 6000);
+  }, [parsedImport, index]);
+
   /// 一键导出 .md 文件：Blob + URL.createObjectURL + a.download 触发系统
   /// 下载对话框 / 直接落到 ~/Downloads（看用户浏览器设置，Tauri WKWebView
   /// 走 OS Save 面板）。比 clipboard 路径少"打开 vim → 粘 → 存"三步，
@@ -2960,6 +3036,17 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         >
           💾 .md
         </button>
+        {/* 📥 import .md：与 💾 导出的往返通路 — 粘 markdown 文本，按 H2=cat
+            / H3=item parse 一次性塞回。catKey 不命中兜底到 general；title
+            已存在跳过不覆盖。 */}
+        <button
+          style={s.btn}
+          onClick={() => setImportModalOpen(true)}
+          disabled={!index}
+          title="粘 markdown 文本一次批量导入：H2 (`## label`) 为 category / H3 (`### title`) 为 item / 其余作 description。与 📋 导出 / 💾 .md 形成往返通路 — 跨设备 / 备份恢复一键完成。"
+        >
+          📥 导入
+        </button>
         {/* category collapse-all / expand-all：让用户在"概要扫读"和"全展开
             细读"两种阅读姿态之间一键切换，不必逐 section 点按钮。状态写
             进 localStorage（与逐 section toggle 同 key）。 */}
@@ -3193,6 +3280,159 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
           ))}
         </div>
       )}
+
+      {/* 📥 import .md modal：粘 markdown 文本 + 实时 parse 预览 + 一键导入。
+          parse 协议：H2 (## label) = cat（按 cat.label / cat key 双向 resolve，
+          不命中兜底 general）；H3 (### title) = item；中间 blockquote (> …)
+          忽略；其余作 description。同 cat 内 title 已存在则跳过不覆盖。 */}
+      <Modal
+        open={importModalOpen}
+        onClose={() => {
+          if (!importBusy) {
+            setImportModalOpen(false);
+            setImportDraft("");
+          }
+        }}
+        maxWidth={620}
+        zIndex={110}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--pet-color-fg)" }}>
+            📥 导入 markdown 记忆
+          </div>
+          <div style={{ fontSize: 11, color: "var(--pet-color-muted)", lineHeight: 1.5 }}>
+            粘 markdown 文本 — H2 (`## label`) 解析为 category，H3 (`### title`)
+            解析为 item，其余作 description。可直接粘 📋 / 💾 导出来的格式。
+            不识别的 category 兜底进 general；同 cat 内 title 已存在则跳过。
+          </div>
+          <textarea
+            value={importDraft}
+            onChange={(e) => setImportDraft(e.target.value)}
+            disabled={importBusy}
+            placeholder={"## AI 洞察\n### 今日反思\n回顾：…\n\n## 待办\n### 写周报\n…"}
+            rows={10}
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              fontSize: 12,
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              lineHeight: 1.5,
+              border: "1px solid var(--pet-color-border)",
+              borderRadius: 6,
+              background: "var(--pet-color-bg)",
+              color: "var(--pet-color-fg)",
+              resize: "vertical",
+              boxSizing: "border-box",
+              outline: "none",
+            }}
+          />
+          {/* parse 预览 — 实时显将导入到哪些 cat / 几条 item。空 textarea
+              时显空状态提示；有未识别 cat 时黄底警告并说明兜底行为。 */}
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--pet-color-fg)",
+              padding: "8px 10px",
+              border: "1px dashed var(--pet-color-border)",
+              borderRadius: 6,
+              background: "var(--pet-color-card)",
+              maxHeight: 200,
+              overflowY: "auto",
+            }}
+          >
+            {parsedImport.totalItems === 0 ? (
+              <span style={{ color: "var(--pet-color-muted)", fontStyle: "italic" }}>
+                {importDraft.trim().length === 0
+                  ? "（粘上面文本后预览将显示在这里）"
+                  : "未识别到任何 ## / ### — 检查 markdown 格式（H2 = cat / H3 = item）"}
+              </span>
+            ) : (
+              <>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  将导入 {parsedImport.totalItems} 条到{" "}
+                  {parsedImport.groups.length} 个 category
+                  {parsedImport.unresolvedHeadings > 0 && (
+                    <span
+                      style={{
+                        marginLeft: 8,
+                        padding: "1px 6px",
+                        background: "var(--pet-tint-yellow-bg)",
+                        color: "var(--pet-tint-yellow-fg)",
+                        borderRadius: 4,
+                        fontSize: 11,
+                      }}
+                    >
+                      ⚠️ {parsedImport.unresolvedHeadings} 个未识别段 →
+                      兜底进 general
+                    </span>
+                  )}
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11 }}>
+                  {parsedImport.groups.map((g, gi) => {
+                    const resolved =
+                      g.catKey ?? (index?.categories.general ? "general" : null);
+                    const dupes =
+                      resolved && index?.categories[resolved]
+                        ? g.items.filter((it) =>
+                            (index.categories[resolved]?.items ?? []).some(
+                              (e) => e.title === it.title,
+                            ),
+                          ).length
+                        : 0;
+                    return (
+                      <li key={gi} style={{ marginBottom: 2 }}>
+                        <span style={{ fontWeight: 600 }}>
+                          {g.catKey
+                            ? index?.categories[g.catKey]?.label ?? g.catKey
+                            : `${g.rawCatLabel} → general`}
+                        </span>{" "}
+                        <span style={{ color: "var(--pet-color-muted)" }}>
+                          {g.items.length} 条
+                          {dupes > 0 && ` (其中 ${dupes} 条 title 已存在将跳过)`}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button
+              type="button"
+              style={s.btn}
+              disabled={importBusy}
+              onClick={() => {
+                setImportModalOpen(false);
+                setImportDraft("");
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              style={{
+                ...s.btn,
+                background: "var(--pet-color-accent)",
+                color: "#fff",
+                border: "1px solid var(--pet-color-accent)",
+                opacity:
+                  parsedImport.totalItems === 0 || importBusy ? 0.5 : 1,
+                cursor:
+                  parsedImport.totalItems === 0 || importBusy
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+              disabled={parsedImport.totalItems === 0 || importBusy}
+              onClick={() => void handleImportRun()}
+            >
+              {importBusy
+                ? "导入中…"
+                : `确认导入 ${parsedImport.totalItems} 条`}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* ✏️ 改 schedule modal：小窗只编辑 time / date+time。保存调
           memory_edit update 把新 prefix + 原 topic 写回 description。
@@ -8695,6 +8935,96 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       })()}
     </div>
   );
+}
+
+/// 📥 import .md：parse markdown 文本，按 H2 = category / H3 = item 切。
+/// 与 `exportMemoriesAsMarkdown` 的输出 schema 对偶（H2 = cat.label / H3 =
+/// item title / 中间 `> 更新于…` blockquote 忽略 / 其余作 description）。
+///
+/// 返 `groups: { catKey | null, rawCatLabel, items }[]`。catKey 走两层
+/// resolve：先匹配 cat.label（中文显示名），再匹配 cat key（如 `ai_insights`），
+/// 都 case-insensitive trim；命中不到 → catKey=null，handler 兜底到 `general`。
+///
+/// 容错：
+/// - H1（`# title`）忽略（既有 export 用 H1 作页眉而非 cat）
+/// - blockquote（`> ...`）忽略（既有 export 用作"更新于 ts"元数据）
+/// - 空 description 允许（owner 可只导 title）
+/// - H2 trailing `(N 条)` count 自动剥（既有 export 加了）
+interface ParsedImportItem {
+  title: string;
+  description: string;
+}
+interface ParsedImportGroup {
+  catKey: string | null;
+  rawCatLabel: string;
+  items: ParsedImportItem[];
+}
+interface ParsedImport {
+  groups: ParsedImportGroup[];
+  totalItems: number;
+  unresolvedHeadings: number;
+}
+function parseMemoryImport(
+  text: string,
+  index: MemoryIndex | null,
+): ParsedImport {
+  const lines = text.split(/\r?\n/);
+  const labelToKey: Record<string, string> = {};
+  if (index) {
+    for (const [key, cat] of Object.entries(index.categories)) {
+      labelToKey[cat.label.trim().toLowerCase()] = key;
+      labelToKey[key.toLowerCase()] = key;
+    }
+  }
+  const groups: ParsedImportGroup[] = [];
+  let curGroup: ParsedImportGroup | null = null;
+  let curItem: ParsedImportItem | null = null;
+  let descLines: string[] = [];
+  let unresolvedHeadings = 0;
+
+  const flushItem = () => {
+    if (!curGroup || !curItem) return;
+    curItem.description = descLines.join("\n").trim();
+    if (curItem.title) curGroup.items.push(curItem);
+    curItem = null;
+    descLines = [];
+  };
+  const flushGroup = () => {
+    flushItem();
+    if (curGroup && curGroup.items.length > 0) groups.push(curGroup);
+    curGroup = null;
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    // H1 忽略（既有 export 把"宠物记忆全部导出"作页眉非 cat）
+    if (/^#\s+/.test(line) && !/^##/.test(line)) continue;
+    // H2 → 起新 cat group（先冲掉旧组）
+    const h2 = /^##\s+(.+?)(?:\s*\(\s*\d+\s*条\s*\))?\s*$/.exec(line);
+    if (h2) {
+      flushGroup();
+      const rawLabel = h2[1].trim();
+      const lookup = rawLabel.toLowerCase();
+      const catKey = labelToKey[lookup] ?? null;
+      if (!catKey) unresolvedHeadings += 1;
+      curGroup = { catKey, rawCatLabel: rawLabel, items: [] };
+      continue;
+    }
+    // H3 → 起新 item（仅在 cat group 内）
+    const h3 = /^###\s+(.+)$/.exec(line);
+    if (h3 && curGroup) {
+      flushItem();
+      curItem = { title: h3[1].trim(), description: "" };
+      continue;
+    }
+    // blockquote 忽略（既有 export 用作 "更新于 ts" 元数据）
+    if (/^>\s/.test(line)) continue;
+    // body 行（仅在 item 内累积 — H2 与首个 H3 之间的散段不归任何 item）
+    if (curItem) descLines.push(raw);
+  }
+  flushGroup();
+  const totalItems = groups.reduce((s, g) => s + g.items.length, 0);
+  return { groups, totalItems, unresolvedHeadings };
 }
 
 /// R98: index → markdown 导出。H1 标题 + ts/总数 摘要；H2 = category（cat.label
