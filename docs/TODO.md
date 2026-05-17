@@ -9,7 +9,6 @@
 >
 
 - PanelMemory item 加「📋 复制 markdown」按钮：拼「# title」+ description + detail.md 整段 markdown 拷贝（外部转载 / 备份用）。
-- TG bot `/whoami` reply 加心情 emoji 前缀：从 mood state 读 emoji 映射，让 reply 第一行视觉化心情。
 
 
 
