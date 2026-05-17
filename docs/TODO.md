@@ -9,7 +9,6 @@
 >
 
 - PanelDebug 加「⏰ 最近主动开口」chip 清单：显最近 N 条 proactive speeches 时刻 + 触发原因（feedback_band / cooldown）— audit pet 何时开口 + 为何。
-- ChatMini 顶部加「💡 ambient」hint 行：一行显当前 transient_note + active alarms 数 + mute 剩余 — 让 owner 一眼看 pet 临时上下文。
 
 
 
