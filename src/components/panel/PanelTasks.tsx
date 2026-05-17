@@ -1327,6 +1327,28 @@ export function PanelTasks({
       console.error("pinnedFilter localStorage save failed:", e);
     }
   }, [pinnedFilter]);
+  /// 🎯 P7+ 高优过滤：one-tap 聚焦"只看 P7-P9 高优 backlog"。与既有
+  /// priorityFilter Set（多选 P0-P9）互补 —— Set 是细颗粒挑选维度，本 chip
+  /// 是 owner 最常用的"高优看板"快捷动作。AND 语义：两者都开时取交集
+  /// （priorityFilter 集合 ∩ priority>=7）。localStorage 持久，与 pinnedFilter
+  /// 同 pattern。
+  const [highPriorityOnly, setHighPriorityOnly] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-task-high-priority-only") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "pet-task-high-priority-only",
+        highPriorityOnly ? "true" : "false",
+      );
+    } catch (e) {
+      console.error("highPriorityOnly localStorage save failed:", e);
+    }
+  }, [highPriorityOnly]);
 
   // 创建表单
   const [title, setTitle] = useState("");
@@ -1839,6 +1861,7 @@ export function PanelTasks({
       setPriorityFilter(new Set());
       setOriginFilter(new Set());
       setPinnedFilter(false);
+      setHighPriorityOnly(false);
       setShowFinished(true);
       setPendingTitleFocus(title);
     },
@@ -3823,6 +3846,7 @@ export function PanelTasks({
     .filter((t) =>
       priorityFilter.size === 0 || priorityFilter.has(t.priority),
     )
+    .filter((t) => (highPriorityOnly ? t.priority >= 7 : true))
     .filter((t) => {
       if (originFilter.size === 0) return true;
       const isTg = taskHasTgOrigin(t);
@@ -4676,7 +4700,8 @@ export function PanelTasks({
     dueFilter !== "all" ||
     priorityFilter.size > 0 ||
     originFilter.size > 0 ||
-    pinnedFilter;
+    pinnedFilter ||
+    highPriorityOnly;
 
   // 键盘导航整段抽到 useTaskKeyboardNav（ref-stable 监听 + visibleTasks
   // 长度 clamp）。hook 内部用 ref 持最新依赖，避免每次 visibleTasks 变化
@@ -5981,6 +6006,7 @@ export function PanelTasks({
                                 setDueFilter("all");
                                 setPriorityFilter(new Set());
                                 setPinnedFilter(false);
+                                setHighPriorityOnly(false);
                                 setShowFinished(true);
                                 setPendingTitleFocus(it.title);
                                 setCompletedListExpanded(false);
@@ -6136,9 +6162,10 @@ export function PanelTasks({
                   setPriorityFilter(new Set());
                   setOriginFilter(new Set());
                   setPinnedFilter(false);
+                  setHighPriorityOnly(false);
                 }}
                 style={s.searchClearBtn}
-                title="一键清掉全部 active filter（search / tag / due / priority / origin / pinned）"
+                title="一键清掉全部 active filter（search / tag / due / priority / origin / pinned / P7+ 高优）"
                 aria-label="清除全部过滤"
               >
                 ✕ 全部
@@ -6371,6 +6398,51 @@ export function PanelTasks({
                 }}
               >
                 📌 {pinnedCount}
+              </span>
+            )}
+            {/* 🎯 P7+ 高优 one-tap chip：与既有 P{n} 多选 chip 互补 —— Set
+                是细颗粒挑选，这是 owner 最常用的"高优 backlog 聚焦"快捷动作。
+                仅在确有 P7+ 活动任务（priorityBands[0].pending > 0）时渲染，
+                否则 chip 是 dead UI。鲜红 rose tint 与中性 P{n} chip 区分
+                ——「高优」语义本就鲜亮。localStorage 持久。 */}
+            {priorityBands[0].pending > 0 && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => setHighPriorityOnly((v) => !v)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setHighPriorityOnly((v) => !v);
+                  }
+                }}
+                aria-pressed={highPriorityOnly}
+                title={
+                  highPriorityOnly
+                    ? `已仅显 P7+ 高优任务（${priorityBands[0].pending} 条活动）。点击恢复全部。`
+                    : `仅显示 P7+ 高优任务（${priorityBands[0].pending} 条活动）`
+                }
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  borderRadius: 999,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  background: highPriorityOnly
+                    ? "var(--pet-tint-rose-fg, #e11d48)"
+                    : "var(--pet-tint-rose-bg, #ffe4e6)",
+                  color: highPriorityOnly
+                    ? "#fff"
+                    : "var(--pet-tint-rose-fg, #9f1239)",
+                  border: highPriorityOnly
+                    ? "1px solid var(--pet-tint-rose-fg, #e11d48)"
+                    : "1px solid color-mix(in srgb, var(--pet-tint-rose-fg, #e11d48) 30%, transparent)",
+                }}
+              >
+                🎯 P7+ {priorityBands[0].pending}
               </span>
             )}
             {/* R104: priority 多选 chip 行。OR 命中（任一进集合即通过）；
@@ -6916,8 +6988,9 @@ export function PanelTasks({
                   setPriorityFilter(new Set());
                   setOriginFilter(new Set());
                   setPinnedFilter(false);
+                  setHighPriorityOnly(false);
                 }}
-                title="清掉全部 active filter（search / tag / due / priority / origin / pinned）"
+                title="清掉全部 active filter（search / tag / due / priority / origin / pinned / P7+ 高优）"
               >
                 ✕ 清除全部过滤
               </button>
