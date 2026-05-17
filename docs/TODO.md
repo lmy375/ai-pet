@@ -8,6 +8,10 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- PanelMemory butler_tasks item 加 "🔀 切 every↔once" 按钮：把循环任务改成一次性 / 反之，配 date picker 写 once 时刻。
+- detail.md 编辑器加 "📋 复制选区为引用块" toolbar 按钮：选中文字 → `> 选中内容` markdown blockquote 写剪贴板。
+- PanelDebug 加 "🚦 LLM 调用耗时直方图"：显近 N 次 LLM call latency 分布，帮 owner 发现"宠物变慢"信号。
+- PanelTasks task ctx menu 加 "📌 mark NOW (60s)" 命令：直接走既有 NOW marker，不必去 detail 编辑器 / panel 头部。
 
 
 
