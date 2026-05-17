@@ -8,6 +8,12 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- TG bot 加 `/last` 命令：显最近创建的 task — title + raw_description + age + status emoji，owner 闪查"我刚加的是啥"。
+- TG bot 加 `/random` 命令：随机抽 1 条 pending / error 任务，给 owner 选择困难时让宠物决定下一步做什么。
+- PanelMemory item action row 加「🏷 加 #tag」按钮：弹 mini input 写入 description 末尾，免走完整 modal 编辑只为加一个 tag。
+- detail.md 编辑器加 ⌘⇧K 删除当前行：VS Code 风行删除快捷键，与既有 ⌘D 复制 / ⌘L 选中 同行操作集群。
+- PanelTasks 行右键加「⏰ 设 reminderMin」popover：与 PanelMemory reminder chip 入口对偶，让 PanelTasks 端也能快设 / 移除提醒分钟数。
+- PanelDebug 加「🗄 detail .history 占盘」chip：扫所有 .history dirs 算大小，让 owner 知 safety net 磁盘成本。
 
 
 
