@@ -1564,6 +1564,40 @@ async fn handle_tg_command(
                 .collect();
             crate::telegram::commands::format_snippets_reply(&views)
         }
+        TgCommand::RecentEvents { title, n } => {
+            // 与 Timeline 同 resolve + 同底层 entries 路径；区别仅在 formatter
+            // 取末尾 N 而非前 30。共享 compute_timeline_entries 让两个命令
+            // 行为 / 去重逻辑天然一致。
+            if title.trim().is_empty() {
+                format_missing_argument("recent_events")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => match crate::commands::task::task_get_detail(t.clone()).await {
+                        Ok(detail) => {
+                            let raw_events: Vec<(String, String, String)> = detail
+                                .history
+                                .iter()
+                                .map(|e| (e.timestamp.clone(), e.action.clone(), e.snippet.clone()))
+                                .collect();
+                            let entries =
+                                crate::telegram::commands::compute_timeline_entries(&raw_events);
+                            crate::telegram::commands::format_recent_events_reply(
+                                &detail.title,
+                                &entries,
+                                raw_events.len(),
+                                n,
+                            )
+                        }
+                        Err(e) => format_command_error(&e),
+                    },
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Timeline { title } => {
             // 与 Show 同 resolve 三层。命中后调 task_get_detail 拿 history（已
             // newest-first 排好），扫 markers 算 entries（旧→新 + 去重无变化
