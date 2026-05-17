@@ -286,6 +286,53 @@ pub fn filter_history_for_task(content: &str, target_title: &str) -> Vec<(String
     events
 }
 
+/// PanelTasks 顶部「📈 24h 事件 sparkline」用 — 把 butler_history 全文
+/// 按近 24 小时 hourly buckets 聚合所有 title 的事件计数（global view，
+/// 不按 title 分）。让 owner 一眼看「今天哪几小时在密集活动」高峰期。
+///
+/// 返 24 个 u32，oldest → newest：
+/// - 桶 0：[`now - 24h`, `now - 23h`)（最早 1 小时）
+/// - 桶 23：[`now - 1h`, `now`)（最近 1 小时）
+///
+/// 早于 24h / 晚于 now（时钟回拨）的事件丢弃。time-parse 失败的行也丢
+/// 弃（与既有 compute_sparkline_buckets 同容忍策略）。
+///
+/// 复杂度：O(lines)，单次扫描；lines 受 BUTLER_HISTORY_CAP 限制。
+pub fn compute_hourly_buckets_24h(
+    content: &str,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Vec<u32> {
+    const HOURS: usize = 24;
+    let mut buckets = vec![0u32; HOURS];
+    for line in content.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((ts_str, _, _, _)) = parse_butler_history_line(line) else {
+            continue;
+        };
+        let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+            continue;
+        };
+        let diff_secs =
+            (now - ts.with_timezone(now.offset())).num_seconds();
+        if diff_secs < 0 {
+            // 时钟回拨 / 异常未来 ts — 当作"最近 1 小时"
+            buckets[HOURS - 1] = buckets[HOURS - 1].saturating_add(1);
+            continue;
+        }
+        let hours_ago = diff_secs / 3_600;
+        if hours_ago >= HOURS as i64 {
+            continue;
+        }
+        // bucket index：hours_ago=0 → bucket 23（最新）；hours_ago=23 →
+        // bucket 0（最老）
+        let bucket = HOURS - 1 - hours_ago as usize;
+        buckets[bucket] = buckets[bucket].saturating_add(1);
+    }
+    buckets
+}
+
 /// 单条 task history sparkline 桶宽（天）。30 天 / 10 桶 = 3 天 / 桶 —
 /// 平衡分辨率（看得出"上周 vs 这周"）与信号密度（butler_history.log
 /// cap 100 行，对单 task 平均覆盖率不高，太细就全空了）。
@@ -714,5 +761,90 @@ also-bad-format
         let out = compute_sparkline_buckets(content, &titles, fixed_now(2026, 5, 17, 18, 0));
         assert_eq!(out["写周报"][8], 1, "{:?}", out["写周报"]);
         assert_eq!(out["写周报"][9], 0);
+    }
+
+    // ---------------- compute_hourly_buckets_24h ----------------
+
+    #[test]
+    fn hourly_24h_empty_content_returns_24_zeros() {
+        let out = compute_hourly_buckets_24h("", fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out.len(), 24);
+        assert!(out.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn hourly_24h_recent_event_lands_in_last_bucket() {
+        // event at now - 30min → hours_ago=0 → bucket 23（最新）
+        let content =
+            "2026-05-17T17:30:00+08:00 update 写周报 :: recent\n";
+        let out = compute_hourly_buckets_24h(content, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out[23], 1);
+        assert!(out[..23].iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn hourly_24h_23h_old_event_lands_in_first_bucket() {
+        // event at now - 23h → hours_ago=23 → bucket 0（最老）
+        let content =
+            "2026-05-16T19:00:00+08:00 update 写周报 :: 23h\n";
+        let out = compute_hourly_buckets_24h(content, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out[0], 1);
+        assert_eq!(out[23], 0);
+    }
+
+    #[test]
+    fn hourly_24h_older_than_window_dropped() {
+        // event at now - 25h → hours_ago=25 → out of window
+        let content =
+            "2026-05-16T17:00:00+08:00 update 写周报 :: 25h\n";
+        let out = compute_hourly_buckets_24h(content, fixed_now(2026, 5, 17, 18, 0));
+        assert!(out.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn hourly_24h_accumulates_multiple_events_in_same_bucket() {
+        // 3 events all at now - 30min..now → all bucket 23
+        let content = "\
+2026-05-17T17:30:00+08:00 update t1 :: a
+2026-05-17T17:45:00+08:00 update t2 :: b
+2026-05-17T17:50:00+08:00 done t3 :: c
+";
+        let out = compute_hourly_buckets_24h(content, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out[23], 3);
+    }
+
+    #[test]
+    fn hourly_24h_global_not_filtered_by_title() {
+        // 多 title 都计入，不像 sparkline 那样按 title 过滤
+        let content = "\
+2026-05-17T17:15:00+08:00 update 写周报 :: a
+2026-05-17T17:30:00+08:00 update 整理 Downloads :: b
+2026-05-17T17:45:00+08:00 done 跑步 :: c
+";
+        let out = compute_hourly_buckets_24h(content, fixed_now(2026, 5, 17, 18, 0));
+        // 三 event 都在 now-1h..now 内 → 都落 bucket 23
+        assert_eq!(out[23], 3);
+    }
+
+    #[test]
+    fn hourly_24h_future_event_clock_skew_lands_in_last_bucket() {
+        // 时钟回拨：event 在 now 之后 → diff_secs < 0 → 当作"最近 1 小时"
+        let content =
+            "2026-05-17T19:00:00+08:00 update 写周报 :: future\n";
+        let out = compute_hourly_buckets_24h(content, fixed_now(2026, 5, 17, 18, 0));
+        assert_eq!(out[23], 1);
+    }
+
+    #[test]
+    fn hourly_24h_skips_malformed_lines() {
+        let content = "\
+bad line no sep
+2026-05-17T17:00:00+08:00 update 写周报 :: ok
+also-bad-format
+";
+        let out = compute_hourly_buckets_24h(content, fixed_now(2026, 5, 17, 18, 0));
+        // ok 行 hours_ago=1 → bucket 22
+        assert_eq!(out[22], 1);
+        assert_eq!(out.iter().sum::<u32>(), 1);
     }
 }

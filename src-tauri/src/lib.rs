@@ -279,6 +279,7 @@ pub fn run() {
             commands::task::task_save_detail,
             commands::task::task_detail_history,
             commands::task::task_history_sparklines,
+            commands::task::task_history_24h_hourly,
             commands::task::task_reveal_history_dir,
             commands::task::task_overdue_count,
             commands::task::task_unarchive,

@@ -588,6 +588,25 @@ pub async fn task_history_sparklines(
     ))
 }
 
+/// `task_history_24h_hourly`：PanelTasks 顶部「📈 24h 事件 sparkline」
+/// chip 用。扫 butler_history.log 按近 24 小时 hourly bucket 聚合所有
+/// title 的事件计数（global view，与 per-title `task_history_sparklines`
+/// 互补 — 那个看「单 task 30 天节奏」，本命令看「今天 24h 全局活跃曲
+/// 线」）。返 24 个 u32，oldest → newest。
+///
+/// 读不到 history.log（NotFound / IO 错）→ 全零 vec（前端 chip 自然
+/// 不渲；与 sparklines 同 best-effort 兜底）。
+#[tauri::command]
+pub async fn task_history_24h_hourly() -> Result<Vec<u32>, String> {
+    let content = crate::butler_history::read_history_content_strict()
+        .await
+        .unwrap_or_default();
+    let now = chrono::Local::now().fixed_offset();
+    Ok(crate::butler_history::compute_hourly_buckets_24h(
+        &content, now,
+    ))
+}
+
 /// `task_detail_history`：列出指定任务 detail.md 的最近 N 个版本快照（最新在
 /// 前）。给「任务详情页」的「📜 历史」chip 用 —— owner 想拿回上一版时一键
 /// 列出 + 选 ts 复制内容。任务不存在 → Err；history 目录不存在 / 空 → Ok([])。
