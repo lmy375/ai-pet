@@ -1026,6 +1026,17 @@ pub fn format_tasks_no_change() -> String {
 /// 多行段。topic 可带或不带 `/` 前缀，大小写不敏感。命中 → 详细段；不命
 /// 中 → 友好兜底（"未知命令 X — /help 看全表"）。custom 命令命中时显
 /// "（自定义命令）"提示 + 描述（owner 自配，详细用法只他自己知道）。
+/// 长版说明书 topic 名单。`format_help_for_topic("all", ...)` 与 drift-
+/// defense 测试都引用这同一矩阵，保两侧不漂移。顺序也用于"all"渲染时
+/// 段次序 — 高频创建命令在前、兜底 help 在末，与 /help 全表同节奏。
+pub const ALL_HELP_TOPICS: &[&str] = &[
+    "task", "tasks", "stats", "done", "cancel", "retry", "snooze",
+    "unsnooze", "pin", "unpin", "pinned", "silent", "unsilent",
+    "silenced", "markers", "tags", "mood", "whoami", "today", "due",
+    "recent", "digest", "edit", "reflect", "find", "show", "blocked",
+    "snoozed", "reset", "version", "help",
+];
+
 pub fn format_help_for_topic(
     topic: &str,
     custom: &[crate::commands::settings::TgCustomCommand],
@@ -1033,6 +1044,27 @@ pub fn format_help_for_topic(
     let name = topic.trim().trim_start_matches('/').to_lowercase();
     if name.is_empty() {
         return format_help_text(custom);
+    }
+    // "all" → 长版说明书：把 ALL_HELP_TOPICS 内每条命令的详细文案串起。
+    // 比 /help 全表（每命令一行简述）更详细 — 适合 owner 离线 audit /
+    // 学习曲线场景。bot 端走既有 format_split_chunks 自动切块发多条 TG
+    // 消息（TG 4096 字符限制）。
+    if name == "all" {
+        let mut out = String::new();
+        out.push_str("📚 /help all（长版说明书）\n\n");
+        let mut first = true;
+        for t in ALL_HELP_TOPICS {
+            let detail = format_help_for_topic(t, &[]);
+            if detail.is_empty() {
+                continue;
+            }
+            if !first {
+                out.push_str("\n\n────\n\n");
+            }
+            first = false;
+            out.push_str(&detail);
+        }
+        return out;
     }
     let detail = match name.as_str() {
         "task" => "📝 /task <title>\n\n用法：把单条任务塞进队列。\n  · 默认优先级 P3\n  · 前缀 `!!` → P5（紧迫）\n  · 前缀 `!!!` → P7（最高）\n\n示例：\n  /task 整理 Downloads\n  /task !! 写周报\n  /task !!! 修复线上 bug\n\n创建后 chat 自动收到确认 + origin marker [origin:tg:<chat_id>]，桌面 watcher 完成时也回传通知。",
@@ -1065,7 +1097,7 @@ pub fn format_help_for_topic(
         "snoozed" => "💤 /snoozed\n\n用法：列出当前在 [snooze: ...] 中的 task + 还多久醒（按醒时间升序）。无参。\n\n示例：\n  /snoozed\n\n相关：/snooze（暂停一条）；/unsnooze（解除）。",
         "reset" => "🔄 /reset\n\n用法：清掉 LLM 对话上下文（保留 system / 人设）。无 armed 二次确认（与桌面 `/clear` 不同 — 不同设备 / 多用户文化）。\n\n示例：\n  /reset",
         "version" => "🐾 /version\n\n用法：查看 pet app 版本 + SQLite schema 版本。无参。bug report 写「什么版本」用。\n\n示例：\n  /version",
-        "help" => "❓ /help [cmd]\n\n用法：\n  · /help（无参）→ 显全表 + 一行描述\n  · /help <cmd> → 显该命令的详细用法 + 示例\n\n示例：\n  /help\n  /help cancel\n  /help /snooze   （`/` 前缀也接受）",
+        "help" => "❓ /help [cmd]\n\n用法：\n  · /help（无参）→ 显全表 + 一行描述\n  · /help <cmd> → 显该命令的详细用法 + 示例\n  · /help all → 长版说明书（每条命令详细用法 + 示例 + 相关命令，自动切多条 TG 消息）\n\n示例：\n  /help\n  /help cancel\n  /help /snooze   （`/` 前缀也接受）\n  /help all",
         _ => "",
     };
     if !detail.is_empty() {
@@ -5074,6 +5106,59 @@ mod tests {
         let s = format_note_reply("test note", Err("disk full"));
         assert!(s.contains("保存失败"), "{s}");
         assert!(s.contains("disk full"), "{s}");
+    }
+
+    // -------- /help all (long-form) --------
+
+    #[test]
+    fn help_all_parses_to_help_with_topic_all() {
+        assert_eq!(
+            parse_tg_command("/help all"),
+            Some(TgCommand::Help {
+                topic: Some("all".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn help_all_returns_long_version_with_header() {
+        let s = format_help_for_topic("all", &[]);
+        assert!(s.contains("长版说明书"), "should have all-version header: head=({})", &s[..s.len().min(80)]);
+        // 长版本应远比短版长
+        let short = format_help_for_topic("", &[]);
+        assert!(s.len() > short.len() * 2, "all-version should be much longer than full-help: short={}, all={}", short.len(), s.len());
+    }
+
+    #[test]
+    fn help_all_concatenates_all_listed_topic_bodies() {
+        let s = format_help_for_topic("all", &[]);
+        // 抽样命令的详细文案 anchors 应该都在
+        for sample in ["📝 /task <title>", "🚫 /cancel <title>", "🏷 /tags", "🔬 /show <title>", "💤 /snooze <title> [preset]"] {
+            assert!(s.contains(sample), "missing anchor for {sample} in all-version");
+        }
+    }
+
+    #[test]
+    fn help_all_uses_separator_between_entries() {
+        let s = format_help_for_topic("all", &[]);
+        // 多个 \n\n────\n\n 分隔（至少 N-1 个，N = ALL_HELP_TOPICS.len()）
+        let sep_count = s.matches("────").count();
+        assert!(
+            sep_count >= ALL_HELP_TOPICS.len() - 1,
+            "expected at least {} separators, got {}",
+            ALL_HELP_TOPICS.len() - 1,
+            sep_count,
+        );
+    }
+
+    #[test]
+    fn help_all_topic_list_includes_all_real_commands() {
+        // ALL_HELP_TOPICS 与 format_help_for_topic 单条详情表保 sync
+        // —— 每个 ALL_HELP_TOPICS 项都应能拿到非空 detail
+        for name in ALL_HELP_TOPICS {
+            let s = format_help_for_topic(name, &[]);
+            assert!(s.contains("用法"), "{name} in ALL_HELP_TOPICS missing detail: {s}");
+        }
     }
 
     // -------- /tags parse + format --------
