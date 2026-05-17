@@ -10,7 +10,6 @@
 
 - TG bot `/snooze_until <title> <HH:MM>` 命令：与 /sleep_until 对偶 — 给 task 设 snooze 到指定时刻。
 - PanelMemory 段标题加「🏃 今日更新」filter chip：仅显 updated_at 在今日的 items — 与既有 sort 对偶 filter 入口。
-- TG bot `/consolidate_now confirm` 命令：与桌面 force consolidate 对偶 — TG 端远程手动触发 sweep。
 
 
 

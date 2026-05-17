@@ -360,6 +360,14 @@ pub enum TgCommand {
     /// 重新冒头 proactive 选单。与 /cancel_all_error 同 confirm token
     /// 防误触模板。已 done / cancelled 跳过；priority < 7 跳过。
     TouchAllP7 { confirmed: bool },
+    /// `/consolidate_now confirm` —— TG 端手动触发一次 consolidate sweep
+    /// （与桌面 PanelMemory「立即整理」/ PanelDebug「🧹 force consolidate」
+    /// 同后端 trigger_consolidate）。consolidate 是 LLM-heavy 操作（多
+    /// 步 sweep + LLM call，~30s..2min；烧 token），必须带 `confirm` token
+    /// 防误触。无 confirm → usage hint；confirmed → 跑后返摘要文案
+    /// （含 elapsed_ms / LLM summary snippet）。owner 在 sprint / 整理
+    /// 后想立即 audit consolidate 行为时用，不必切桌面。
+    ConsolidateNow { confirmed: bool },
     /// `/pin_all_p7 confirm` —— 批量给本 chat 所有 P7+ active task（pending
     /// / error）加 `[pinned]` marker — sprint 收尾「把高优清单全钉住」一
     /// 键。与 /touch_all_p7（刷 updated_at）/ /promote_all_p7（升 priority）
@@ -641,6 +649,7 @@ impl TgCommand {
             TgCommand::PromoteAllP7 { .. } => "promote_all_p7",
             TgCommand::TouchAllP7 { .. } => "touch_all_p7",
             TgCommand::PinAllP7 { .. } => "pin_all_p7",
+            TgCommand::ConsolidateNow { .. } => "consolidate_now",
             TgCommand::Promote { .. } => "promote",
             TgCommand::Demote { .. } => "demote",
             TgCommand::Reset => "reset",
@@ -723,6 +732,7 @@ impl TgCommand {
             | TgCommand::PromoteAllP7 { .. }
             | TgCommand::TouchAllP7 { .. }
             | TgCommand::PinAllP7 { .. }
+            | TgCommand::ConsolidateNow { .. }
             | TgCommand::Reset
             | TgCommand::Version
             | TgCommand::Help { .. }
@@ -822,6 +832,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("promote_all_p7", "Sprint mode: batch +1 priority on all active tasks (clamp 7) — requires `confirm`"),
             ("touch_all_p7", "Batch touch all P7+ active tasks (refresh updated_at) — requires `confirm`"),
             ("pin_all_p7", "Batch pin all P7+ active tasks (add [pinned] marker) — requires `confirm`"),
+            ("consolidate_now", "Manually trigger a consolidate sweep — requires `confirm` (LLM-heavy, costs tokens)"),
             ("promote", "Promote a task's priority by +1 (clamped to 9)"),
             ("demote", "Demote a task's priority by -1 (clamped to 0)"),
             ("due", "List pending tasks due in a window (preset: tomorrow / thisweek / nextweek; default tomorrow)"),
@@ -896,6 +907,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("promote_all_p7", "紧急 sprint：批量给本聊天 active task priority +1（clamp 7）— 需带 `confirm`"),
             ("touch_all_p7", "批量 touch 所有 P7+ active task — 刷 updated_at 让高优重新冒头（需带 `confirm`）"),
             ("pin_all_p7", "批量给所有 P7+ active task 加 [pinned] marker — sprint 一键钉（需带 `confirm`）"),
+            ("consolidate_now", "TG 端手动触发一次 consolidate sweep — 与桌面「立即整理」对偶（需带 `confirm` — LLM-heavy / 烧 token）"),
             ("promote", "任务 priority +1（clamp 9）— 一步升优先级不必算具体 P 值"),
             ("demote", "任务 priority -1（clamp 0）— 一步降优先级，与 /promote 对偶"),
             ("due", "列指定时段 due 的 pending 任务（preset: tomorrow / thisweek / nextweek，缺省 tomorrow）"),
@@ -1512,6 +1524,12 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
             let confirmed = title.trim().eq_ignore_ascii_case("confirm");
             Some(TgCommand::PinAllP7 { confirmed })
         }
+        // `/consolidate_now [confirm]`：与 P7+ 批量族 confirm 模板一致；
+        // consolidate 是 LLM-heavy + token-burning 操作，必须带 token。
+        "consolidate_now" => {
+            let confirmed = title.trim().eq_ignore_ascii_case("confirm");
+            Some(TgCommand::ConsolidateNow { confirmed })
+        }
         // `/promote <title>`：priority +1 — title 全段保（含空格 / 标点）。
         // 空 title 由 handler 走 missing-arg。
         "promote" => Some(TgCommand::Promote { title }),
@@ -1870,7 +1888,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "find", "find_in_detail", "find_speech", "show", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "show", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2006,6 +2024,7 @@ pub fn format_help_for_topic(
         "promote_all_p7" => "🎯 /promote_all_p7 confirm\n\n用法：紧急 sprint 模式 — 批量给本聊天所有 active（pending / error）task priority +1，clamp 7（已 ≥ P7 的不动）。**必须带 `confirm` token** 防误触 — 不带 confirm 时显 usage hint 含可升级 N 条预览。\n\n示例：\n  /promote_all_p7         （查看可升级数 + 提示带 confirm）\n  /promote_all_p7 confirm （执行批量 +1）\n\n场景：deadline 收尾 / 紧急 sprint — 让 LLM 立即优先所有挂着的活儿，把「低优先 dump」暂搁置。\n\n注意：仅本 chat 派单（origin == Tg<chat_id>）；done / cancelled 跳过；已 P7+ 的不动（避免无意义写 + 防把 P9 撞墙）。一次性操作；想精细化走 /pri <title> <N> 单条调。\n\n对比 /cancel_all_error：那个一次性 cancel error 任务（破坏性强 — 终态）；本命令一次性升优先级（重组优先级而非删 — 破坏性更轻）。\n\n相关：/pri <title> <N>（绝对设值）；/promote <title>（单条 +1）；/demote <title>（单条 -1）；/touch_all_p7（已 P7+ 但挂着没动的批量 touch 让其重新冒头）。",
         "touch_all_p7" => "✨ /touch_all_p7 confirm\n\n用法：批量 touch 所有 P7+ active task — 刷 updated_at 不改内容，让挂着没动的高优 task 重新冒头 proactive 选单。**必须带 `confirm` token** 防误触。\n\n示例：\n  /touch_all_p7         （查看可 touch 数 + 提示带 confirm）\n  /touch_all_p7 confirm （执行批量 touch）\n\n场景：sprint 中段「我的高优 P7+ 都已设好但 pet 没在主动关注」— 一键让 LLM 重新审视全部高优清单。\n\n注意：仅本 chat 派单；done / cancelled 跳过；priority < 7 跳过（不在高优集内）。\n\n对比 /promote_all_p7：那个升 priority（让 P3 → P7）；本命令仅刷 P7+ 的 updated_at（已是 P7+ 但挂着的批量唤醒）。两命令互补 — 升优先级 vs 重新冒头。\n\n相关：/touch <title>（单条 touch）；/promote_all_p7（批量升 priority）；/pin_all_p7（批量加 [pinned] marker）；/oldest_n（看堆积最久的活）。",
         "pin_all_p7" => "📌 /pin_all_p7 confirm\n\n用法：批量给本 chat 所有 P7+ active task（pending / error）加 [pinned] marker — sprint 收尾「把高优清单全钉住」一键。**必须带 `confirm` token** 防误触。\n\n示例：\n  /pin_all_p7         （查看可 pin 数 + 提示带 confirm）\n  /pin_all_p7 confirm （执行批量 pin）\n\n场景：sprint 收尾 / 周末整理时把「高优清单」整体钉到 PanelTasks「📌 N」chip 视图，让屏幕 / TG 端的「📌」filter 一眼显这批 task 是 owner 重点关注。\n\n注意：仅本 chat 派单；done / cancelled 跳过；priority < 7 跳过；已 [pinned] 跳过（避免无意义写）。\n\n对比 /promote_all_p7（升 priority 让 P3 → P7）/ /touch_all_p7（刷 P7+ updated_at）：本命令仅加 [pinned] marker。三命令 P7+ 批量族互补 — 升优先级 / 刷时序 / 钉视图。\n\n相关：/pin <title>（单条 pin）；/promote_all_p7 / /touch_all_p7（P7+ 批量族）；/pinned（看本 chat 已钉清单）。",
+        "consolidate_now" => "🧹 /consolidate_now confirm\n\n用法：TG 端手动触发一次 consolidate sweep — 与桌面 PanelMemory「立即整理」/ PanelDebug「🧹 force consolidate」同后端 trigger_consolidate。consolidate 是 LLM-heavy + token-burning 操作（多步 sweep + LLM call，~30s..2min），**必须带 `confirm` token** 防误触。\n\n示例：\n  /consolidate_now         （usage hint — 提示带 confirm）\n  /consolidate_now confirm （触发 sweep）\n\n返回：完成后显「Consolidation finished in N ms · <LLM summary snippet>」（含本次 sweep 实际改了啥 — 合并了几条 / 删了几条等）。失败显错误原因。\n\n场景：owner 在 TG 端 sprint 整理 / 调 prompt 后想立即看 consolidate 行为而不等 cron（默认 6h interval）；或 audit「现在 consolidate 会怎么做」做基线。\n\n相关：/aware（pet 当前感知）；/here（owner 信号 snapshot）；桌面 PanelDebug「⏰ 下次 consolidate」chip 显 cron ETA。",
         "promote" => "🎯 /promote <title>\n\n用法：把任务 priority 升 +1（clamp 9 — 已是 P9 时不动 + 友好 reply）。一步操作不必算具体 P 值（与 /pri <title> <N> 互补 — pri 是绝对值，promote 是相对值）。保留所有其它 markers / due / body 不动（复用 task_set_priority 后端）。\n\n示例：\n  /promote 整理 Downloads\n  /promote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/demote（-1 反方向）。",
         "demote" => "🎯 /demote <title>\n\n用法：把任务 priority 降 -1（clamp 0 — 已是 P0 时不动 + 友好 reply）。与 /promote 对偶 — owner 觉得「这条不那么急了」时一步降。保留所有其它 markers / due / body 不动。\n\n示例：\n  /demote 整理 Downloads\n  /demote 1   （/tasks 输出第 1 条）\n\nTitle resolve 与 /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。相关：/pri（绝对设值）；/promote（+1 反方向）。",
         "due" => "📅 /due [preset]\n\n用法：列指定时段 due 的 pending 任务（含 due 字段 + 落在指定窗口的）。preset 缺省 tomorrow。\n\nPreset：\n  · tomorrow / tmr / tm / 明天 / 明日\n  · thisweek / this-week / week / 本周 / 这周（含 today 在内的 ISO Mon..Sun）\n  · nextweek / next-week / 下周\n\n示例：\n  /due\n  /due tomorrow\n  /due thisweek\n  /due 下周\n\n相关：/today 只看今日；/blocked 看锁住的。",
@@ -2097,6 +2116,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/promote_all_p7 confirm  —  紧急 sprint：批量给本聊天 active task priority +1（clamp 7；需带 confirm）".to_string(),
         "/touch_all_p7 confirm  —  批量 touch 所有 P7+ active task 刷 updated_at（需带 confirm；与 /promote_all_p7 互补）".to_string(),
         "/pin_all_p7 confirm  —  批量给所有 P7+ active task 加 [pinned] marker（需带 confirm；与 /touch_all_p7 / /promote_all_p7 同 P7+ 批量族）".to_string(),
+        "/consolidate_now confirm  —  TG 端手动触发一次 consolidate sweep（需带 confirm — LLM-heavy / 烧 token；与桌面「立即整理」对偶）".to_string(),
         "/promote <title>  —  priority +1（clamp 9）— 升一阶不必算具体 P 值".to_string(),
         "/demote <title>  —  priority -1（clamp 0）— 降一阶，与 /promote 对偶".to_string(),
         "/due [preset]  —  列指定时段 due（tomorrow / thisweek / nextweek 含中英 alias，缺省 tomorrow）".to_string(),
@@ -4312,6 +4332,33 @@ pub fn format_pin_all_p7_reply(
     out
 }
 
+/// `/consolidate_now` 命令回复文案。pure：caller 在 confirmed 路径已
+/// `trigger_consolidate(app).await` 拿到 Result<String, String> 传入；
+/// 本函数仅做字符串拼装。3 态：
+/// - !confirmed → usage hint 含「LLM-heavy + confirm 模板」warning
+/// - confirmed + Ok(summary) → 「🧹 Consolidation finished · summary」
+/// - confirmed + Err(reason) → 「🧹 Consolidate 失败：reason」（含 cancel
+///   / config 错误等具体原因）
+pub fn format_consolidate_now_reply(
+    confirmed: bool,
+    result: Option<Result<String, String>>,
+) -> String {
+    if !confirmed {
+        return "🧹 /consolidate_now confirm\n\nTG 端手动触发一次 consolidate sweep（与桌面「立即整理」同后端）。**LLM-heavy + 烧 token + ~30s..2min 执行**，必须带 `confirm` token 防误触。\n\n用法：/consolidate_now confirm\n\n场景：sprint 整理 / 调 prompt 后想立即 audit consolidate 行为而不等 cron。常态走 cron（默认 6h interval）— 桌面 PanelDebug「⏰ 下次 consolidate」chip 显 ETA。".to_string();
+    }
+    match result {
+        Some(Ok(summary)) => format!("🧹 {}", summary),
+        Some(Err(reason)) => {
+            if reason.contains("用户取消") {
+                "🧹 已取消整理（已完成步骤保留）".to_string()
+            } else {
+                format!("🧹 Consolidate 失败：{}", reason)
+            }
+        }
+        None => "🧹 未执行（confirmed=true 但 caller 没传 result — 这不该发生）".to_string(),
+    }
+}
+
 /// `/demote <title>` 命令回复文案。pure：与 format_promote_reply 对偶 —
 /// 边界态 old == 0（已是 P0）友好 no-op；其它态显 P<old> → P<new>。
 pub fn format_demote_reply(
@@ -6130,7 +6177,7 @@ mod tests {
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
             "show", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
-            "version", "help", "pin_all_p7",
+            "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
             assert!(s.contains("用法"), "{name} missing 用法 section: {s}");
@@ -6600,7 +6647,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "active_recent", "find_in_detail", "find_speech", "show", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "show", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -9689,6 +9736,73 @@ mod tests {
         let s = format_pin_all_p7_reply(true, 0, 0, 0);
         assert!(s.contains("无可 pin"), "idle: {s}");
         assert!(s.contains("✨"), "{s}");
+    }
+
+    // -------- /consolidate_now parse + format --------
+
+    #[test]
+    fn consolidate_now_parses_no_arg_as_unconfirmed() {
+        assert_eq!(
+            parse_tg_command("/consolidate_now"),
+            Some(TgCommand::ConsolidateNow { confirmed: false })
+        );
+    }
+
+    #[test]
+    fn consolidate_now_parses_confirm_case_insensitive() {
+        assert_eq!(
+            parse_tg_command("/consolidate_now confirm"),
+            Some(TgCommand::ConsolidateNow { confirmed: true })
+        );
+        assert_eq!(
+            parse_tg_command("/consolidate_now CONFIRM"),
+            Some(TgCommand::ConsolidateNow { confirmed: true })
+        );
+    }
+
+    #[test]
+    fn consolidate_now_other_trailing_not_confirmed() {
+        assert_eq!(
+            parse_tg_command("/consolidate_now yes"),
+            Some(TgCommand::ConsolidateNow { confirmed: false })
+        );
+    }
+
+    #[test]
+    fn format_consolidate_now_unconfirmed_shows_usage_hint() {
+        let s = format_consolidate_now_reply(false, None);
+        assert!(s.contains("🧹"), "{s}");
+        assert!(s.contains("/consolidate_now confirm"), "{s}");
+        assert!(s.contains("LLM-heavy"), "warns LLM cost: {s}");
+    }
+
+    #[test]
+    fn format_consolidate_now_confirmed_ok_shows_summary() {
+        let s = format_consolidate_now_reply(
+            true,
+            Some(Ok(
+                "Consolidation finished in 12345 ms (50 items at start)".to_string()
+            )),
+        );
+        assert!(s.contains("🧹"), "{s}");
+        assert!(s.contains("Consolidation finished in 12345 ms"), "{s}");
+    }
+
+    #[test]
+    fn format_consolidate_now_confirmed_user_cancel_friendly() {
+        let s = format_consolidate_now_reply(true, Some(Err("用户取消".to_string())));
+        assert!(s.contains("🧹"), "{s}");
+        assert!(s.contains("已取消整理"), "{s}");
+    }
+
+    #[test]
+    fn format_consolidate_now_confirmed_error_shows_reason() {
+        let s = format_consolidate_now_reply(
+            true,
+            Some(Err("LLM call failed: timeout".to_string())),
+        );
+        assert!(s.contains("失败"), "{s}");
+        assert!(s.contains("timeout"), "shows reason: {s}");
     }
 
     // -------- /demote parse + format --------

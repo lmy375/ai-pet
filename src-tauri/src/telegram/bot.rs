@@ -1649,6 +1649,25 @@ async fn handle_tg_command(
                 )
             }
         }
+        TgCommand::ConsolidateNow { confirmed } => {
+            // TG 端手动触发 consolidate sweep — 与桌面 PanelMemory「立即
+            // 整理」/ PanelDebug「🧹 force consolidate」同后端
+            // trigger_consolidate(app)。confirm 模板防误触；confirmed=true
+            // 时 await sweep + 把 Result<String, String> 交给 formatter。
+            if !confirmed {
+                crate::telegram::commands::format_consolidate_now_reply(
+                    false, None,
+                )
+            } else {
+                let app = state.app.clone();
+                let result =
+                    crate::consolidate::trigger_consolidate(app).await;
+                crate::telegram::commands::format_consolidate_now_reply(
+                    true,
+                    Some(result),
+                )
+            }
+        }
         TgCommand::CancelAllError { confirmed } => {
             // 扫本 chat 派单中的 error 任务（按 Tg(chat_id) origin 过滤）
             let views = read_tg_chat_task_views(chat_id.0);
