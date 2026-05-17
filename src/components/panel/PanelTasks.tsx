@@ -12499,6 +12499,29 @@ export function PanelTasks({
             >
               📂 展开详情
             </button>
+            {/* ⚡ mark NOW (60s)：调既有 markTaskNow → 60s 内 task 浮顶
+                + 桌面气泡 nudge。终态行（done / cancelled）也允许 — owner
+                可标 "我现在要看这条 result"，与 pinned 同模式。已 NOW
+                marked 时不重复显（avoid 二次按 reset 60s 计时器歧义；
+                想 reset 的 owner 可走 detail header 的⚡ marker chip）。 */}
+            {t && !nowMarkedTitles.has(m.title) && (
+              <button
+                type="button"
+                style={{
+                  ...itemBtn,
+                  color: "var(--pet-tint-orange-fg)",
+                }}
+                onMouseOver={itemBtnHoverIn}
+                onMouseOut={itemBtnHoverOut}
+                onClick={() => {
+                  setTaskCtxMenu(null);
+                  markTaskNow(m.title);
+                }}
+                title="标 ⚡ NOW：60 秒内此 task 浮到队列顶 + 桌面 pet 气泡 nudge。session 内有效（mark 不跨重启）。"
+              >
+                ⚡ mark NOW (60s)
+              </button>
+            )}
             {/* 📌 钉住 toggle：done / cancelled 行也允许（owner 自标"重要"
                 与状态正交），所以不放在 canMarkDone gate 后面。current pinned
                 state 从 t.pinned 读，label / color 反映"将切换到的方向"。
