@@ -9,7 +9,6 @@
 >
 
 - PanelMemory butler_tasks 段加 "🚀 全部今日 due 一次跑" 按钮：循环 invoke trigger_proactive_turn_for_task 处理所有 due，armed 二次确认 + 进度展示。
-- PanelTasks 顶部加 priority 段进度条：显 P9-P7 高优 / P6-P4 中优 / P3-P0 低优 三段的 done vs pending 比例条。
 - detail.md 编辑器底部 status bar 加 "📐 字数目标" 小字段：owner 设目标后显 N/M 进度（写过 / 写不到时颜色提示）。
 - pet ChatMini 顶部加 "🔕 今日 mute" 计数 chip：显今日 mute proactive 的累计次数（需后端加 mute_history tracking）。
 
