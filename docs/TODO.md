@@ -8,6 +8,13 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- PanelTasks 行加「↘ 展开 detail」chip：hover 即显，一键展开 detail 段并滚到顶端，省两步。
+- TG bot `/pin_all_p7 confirm` 命令：批量给本 chat P7+ active task 加 [pinned] marker — sprint 一键钉。
+- detail.md 编辑器「⌘U 删除线」shortcut：选区 wrap `~~...~~` markdown 删除线，与 ⌘B/⌘I 同 wrap-mode 模板。
+- PanelMemory 段标题加「📋 复制段 title 清单」chip：仅 title 拼 markdown bullet list 复制 — 不含 description。
+- PanelDebug snapshot 顶段加「⌚ 进程已运行 N 分」字段：audit 长跑性能 / 内存问题入口。
+- ChatMini bubble ctx menu 加「💾 转 task」项：把 bubble plain text 当 task description 一键入队（auto-title = 前 30 字）。
+
 
 
 
