@@ -12,7 +12,6 @@
 - detail.md 编辑器加「⌘/ markdown 注释行 toggle」shortcut：当前行 / 多行选区首尾切换 `<!-- ... -->` HTML 注释。
 - PanelMemory 段标题右键加「📤 export 段为 .md 文件」：与既有 📋 剪贴板 export 对偶，直接走系统下载对话框。
 - PanelDebug 加「⏰ 下次 consolidate」chip：显下次 sweep 预计本地时刻 + 剩余分钟 — audit cron 节奏入口。
-- PanelTasks 顶部加「📅 due today」filter chip：一键过滤显仅 due 在今日的 active task — 「今日必做」视图。
 
 
 

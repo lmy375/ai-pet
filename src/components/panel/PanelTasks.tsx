@@ -8316,16 +8316,21 @@ export function PanelTasks({
                 ✓ 今日完成 {completionStats.today}
               </span>
             )}
-            {dueTodayCount > 0 && (
-              <DueChip
-                kind="today"
-                count={dueTodayCount}
-                active={dueFilter === "today"}
-                onToggle={() =>
-                  setDueFilter((prev) => (prev === "today" ? "all" : "today"))
-                }
-              />
-            )}
+            {/* 📅 今日到期 chip：始终显（不像 overdue / createdToday
+                count=0 时隐）— 让「今日必做」filter 成 owner 始终可见
+                的入口。count=0 时显示「📅 今日到期 (0)」+ click 仍可
+                pre-enable filter（让 owner 之后新建的 due 今日 task 自
+                动浮顶）。filter 激活时 ✓ 前缀 + 更深色，与 overdue /
+                createdToday 同视觉协议。 */}
+            <DueChip
+              kind="today"
+              count={dueTodayCount}
+              active={dueFilter === "today"}
+              onToggle={() =>
+                setDueFilter((prev) => (prev === "today" ? "all" : "today"))
+              }
+            />
+
             {createdTodayCount > 0 && (
               <DueChip
                 kind="createdToday"
