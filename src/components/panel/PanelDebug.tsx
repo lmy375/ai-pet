@@ -1135,6 +1135,41 @@ export function PanelDebug() {
     };
   }, []);
 
+  /// 📊 近 24h tokens chip：1h 兄弟 — 调同 `get_llm_tokens_recent_secs`
+  /// 但 secs=86400，给「今天 / 这一轮 sprint 共用了多少 LLM」daily 视角。
+  /// 与 1h 互补 — 1h 看「现在节奏」，24h 看「累计 / 今日总量」。30s poll
+  /// 与 1h 同节奏（避免后端 atomic 读单次扫两遍 log — 后端共享 SQLite
+  /// 索引 / cache 时这开销可忽略，前端代码独立简单）。
+  const [llmTokens24h, setLlmTokens24h] = useState<{
+    turns: number;
+    approxTokens: number;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const t = await invoke<[number, number]>(
+          "get_llm_tokens_recent_secs",
+          { secs: 86_400 },
+        );
+        if (!cancelled) {
+          setLlmTokens24h({ turns: t[0], approxTokens: t[1] });
+        }
+      } catch (e) {
+        console.warn(
+          "get_llm_tokens_recent_secs(24h) failed (non-fatal):",
+          e,
+        );
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   /// ⏰ 下次 consolidate chip：调 `get_consolidate_schedule` Tauri 命令
   /// 拿 next ETA + interval + enabled。后端在 spawn loop 每次 sleep 前
   /// 写 NEXT_RUN_AT 静态 — frontend 30s poll 渲染「⏰ HH:MM (N 分后)」
@@ -2710,6 +2745,44 @@ export function PanelDebug() {
               ? `${(llmTokens1h.approxTokens / 1000).toFixed(1)}k`
               : llmTokens1h.approxTokens}
             t · {llmTokens1h.turns} round
+          </span>
+        )}
+        {/* 📊 近 24h tokens chip：1h chip 的 daily 兄弟 — 让 owner 看
+            「今天 / 这轮 sprint 共用了多少」累计视角，与 1h「现在节奏」
+            互补。click 复制一行「24h: N rounds · ~Xt」到剪贴板，发同
+            事 / 写 sprint review 用。 */}
+        {llmTokens24h && llmTokens24h.turns > 0 && (
+          <span
+            onClick={async () => {
+              const tokensLabel =
+                llmTokens24h.approxTokens >= 1000
+                  ? `${(llmTokens24h.approxTokens / 1000).toFixed(1)}k`
+                  : String(llmTokens24h.approxTokens);
+              const line = `24h: ${llmTokens24h.turns} LLM rounds · ~${tokensLabel} tokens`;
+              try {
+                await navigator.clipboard.writeText(line);
+                console.log(`📊 已复制 24h 用量：${line}`);
+              } catch (err) {
+                console.error("copy 24h chip failed:", err);
+              }
+            }}
+            style={{
+              padding: "4px 10px",
+              fontSize: 11,
+              border: "1px dashed var(--pet-color-border)",
+              borderRadius: 6,
+              background: "transparent",
+              color: "var(--pet-color-muted)",
+              fontFamily: "'SF Mono', 'Menlo', monospace",
+              whiteSpace: "nowrap",
+              cursor: "pointer",
+            }}
+            title={`近 24h：${llmTokens24h.turns} 个 LLM round · 估 ${llmTokens24h.approxTokens} tokens 累计（4 chars/token heuristic — 趋势性参考，与 Anthropic billing 不完全一致；30s 自动刷新）。\n\n与 1h chip 互补：1h = 现在节奏；24h = 今日累计 / sprint review。click 复制一行到剪贴板。`}
+          >
+            📊 24h ~{llmTokens24h.approxTokens >= 1000
+              ? `${(llmTokens24h.approxTokens / 1000).toFixed(1)}k`
+              : llmTokens24h.approxTokens}
+            t · {llmTokens24h.turns} round
           </span>
         )}
         {/* 📊 LLM 错误率 chip：从既有 llmOutcomeStats (spoke / silent /
