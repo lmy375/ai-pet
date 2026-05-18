@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory「📊 audit chip-bar」加在 toolbar 上方：always-visible 显「N pin / K cat 活跃 / P idle / R rename」类 audit_summary 缩略 — 桌面 ambient awareness。
 
 
 

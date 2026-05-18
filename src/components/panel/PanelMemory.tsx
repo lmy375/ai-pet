@@ -3403,6 +3403,76 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
             );
           })}
         </span>
+        {/* 📊 audit chip：memory 维度概览 — total cats / total items /
+            7d 净增 / 活跃 cat 数 / stale cat 数。memory 维度对偶
+            PanelTasks chip-bar「📋 audit · N」（task 维度）。hover
+            tooltip 多行 summary；click 复制 md 文本到剪贴板。仅 index
+            非空时浮。slate-tint 中性色。 */}
+        {index && Object.keys(index.categories).length > 0 && (() => {
+          const sevenDaysAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          let totalItems = 0;
+          let new7d = 0;
+          let activeCats7d = 0;
+          let staleCats7d = 0;
+          let emptyCats = 0;
+          for (const cat of Object.values(index.categories)) {
+            const items = cat.items;
+            totalItems += items.length;
+            if (items.length === 0) {
+              emptyCats += 1;
+              continue;
+            }
+            let maxUpdated = 0;
+            let catNew7d = 0;
+            for (const it of items) {
+              if (it.created_at) {
+                const cMs = Date.parse(it.created_at);
+                if (!isNaN(cMs) && cMs >= sevenDaysAgoMs) catNew7d += 1;
+              }
+              if (it.updated_at) {
+                const uMs = Date.parse(it.updated_at);
+                if (!isNaN(uMs) && uMs > maxUpdated) maxUpdated = uMs;
+              }
+            }
+            new7d += catNew7d;
+            if (catNew7d > 0) activeCats7d += 1;
+            if (maxUpdated > 0 && maxUpdated < sevenDaysAgoMs)
+              staleCats7d += 1;
+          }
+          const totalCats = Object.keys(index.categories).length;
+          const lines = [
+            `📊 memory audit（${new Date().toISOString().slice(0, 10)}）`,
+            `· 总 cat: ${totalCats}（含 ${emptyCats} 空）`,
+            `· 总 items: ${totalItems}`,
+            `· 7d 净增: ${new7d} 条 across ${activeCats7d} cat`,
+            `· 7d stale cat: ${staleCats7d} 条`,
+          ];
+          return (
+            <button
+              type="button"
+              onClick={async () => {
+                const md = lines.join("\n");
+                try {
+                  await navigator.clipboard.writeText(md);
+                  setMessage(`📊 已复制 memory audit summary`);
+                } catch (e: any) {
+                  setMessage(`复制失败：${e}`);
+                }
+                setTimeout(() => setMessage(""), 3000);
+              }}
+              title={`${lines.join("\n")}\n\nclick 复制 md 到剪贴板（与 PanelTasks 📋 audit / TG /audit_summary 对偶）`}
+              style={{
+                ...s.btn,
+                marginLeft: 4,
+                background:
+                  "color-mix(in srgb, var(--pet-color-fg) 10%, transparent)",
+                fontWeight: 600,
+              }}
+            >
+              📊 audit · {new7d}
+            </button>
+          );
+        })()}
         {/* 📌 仅 pinned toggle：全局视图，true 时各 cat 仅显本段 pinned 命中
             的 item，0 钉的 cat 整段隐藏 — 「总览：我钉了哪些」入口。与
             sortBy* 排序 toggle 正交（仍按当前排序排），与 fuzzy / silent /
