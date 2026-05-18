@@ -6027,6 +6027,53 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     </button>
                   );
                 })()}
+                {/* 📅 最早 created chip：单 cat 内 min(items.created_at)
+                    — 「这 cat 多老」cat 寿命 audit。与 📊 净增 chip
+                    （活跃度 axis）互补 — 本 chip 是 capacity / age axis。
+                    显「📅 N 天前 / N 月前 / N 年前」相对时间；click 复
+                    制「<label> · 起于 YYYY-MM-DD（N 天前）」单行供回
+                    顾 / 周报。0 items / 无 created_at 时不渲。 */}
+                {cat.items.length > 0 && (() => {
+                  let earliestMs = Number.MAX_SAFE_INTEGER;
+                  for (const it of cat.items) {
+                    if (!it.created_at) continue;
+                    const cMs = Date.parse(it.created_at);
+                    if (isNaN(cMs)) continue;
+                    if (cMs < earliestMs) earliestMs = cMs;
+                  }
+                  if (earliestMs === Number.MAX_SAFE_INTEGER) return null;
+                  const ageMs = now.getTime() - earliestMs;
+                  const days = Math.floor(ageMs / 86_400_000);
+                  let label: string;
+                  if (days < 1) label = "今日";
+                  else if (days < 7) label = `${days} 天`;
+                  else if (days < 30) label = `${Math.floor(days / 7)} 周`;
+                  else if (days < 365)
+                    label = `${Math.floor(days / 30)} 月`;
+                  else label = `${Math.floor(days / 365)} 年`;
+                  const earliestDate = new Date(earliestMs)
+                    .toISOString()
+                    .slice(0, 10);
+                  return (
+                    <button
+                      style={{ ...s.btn, marginLeft: 4 }}
+                      onClick={async () => {
+                        const label2 = categoryLabels[catKey] || cat.label;
+                        const line = `${label2} · 起于 ${earliestDate}（${label}前）`;
+                        try {
+                          await navigator.clipboard.writeText(line);
+                          setMessage(`📅 已复制：${line}`);
+                        } catch (e: any) {
+                          setMessage(`复制失败：${e}`);
+                        }
+                        setTimeout(() => setMessage(""), 3000);
+                      }}
+                      title={`本 cat 最早 item 起于 ${earliestDate}（${label}前）— 「这 cat 多老」audit。click 复制单行。`}
+                    >
+                      📅 {label}前
+                    </button>
+                  );
+                })()}
                 {/* 📤 export cat as .md file：与顶部「📋 单段…」剪贴板
                     export + 「💾 .md」全 cat 文件 export 对偶 —— 本 chip
                     是「单 cat 文件 export」一键到位（OS Save 对话框）。

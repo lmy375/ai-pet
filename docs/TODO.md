@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelMemory cat header 加「📅 最早 created」chip：单 cat 内 min(items.created_at) — 「这 cat 多老」cat 寿命 audit。
 - TG `/done_streak_chart`：列近 30 天每天 done 数 sparkline 行 — /streak 文本数字的可视化扩展。
 
 
