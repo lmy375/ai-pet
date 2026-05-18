@@ -8,6 +8,12 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- TG `/here_clear`：清除当前 transient_note（与 /transient / /here_pin / /here_idle 等"注入"命令对偶 — 一键撤回）。
+- PanelTasks chip-bar「📋 audit summary」chip：click 弹小 modal 显与 TG /audit_summary 等价 5 信号 — 桌面端对偶。
+- TG `/here_top_cat`：把 top 3 cat（按 items 量）作 「主力 cat context」 注入 transient_note — pet reply 时优先用主力 cat 引用。
+- PanelMemory「📊 audit chip-bar」加在 toolbar 上方：always-visible 显「N pin / K cat 活跃 / P idle / R rename」类 audit_summary 缩略 — 桌面 ambient awareness。
+- TG `/here_recent_done`：近 N 条 done task 注入 transient_note — pet 回顾「我最近完成了什么」reply 时引用。
+
 
 
 
