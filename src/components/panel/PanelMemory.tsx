@@ -7008,6 +7008,44 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             </div>
                           );
                         })()}
+                        {/* 🔥 24h fresh badge：item.updated_at 在 24h
+                            内时浮。直接可见 visual signal（不 hover gate），
+                            让 owner 扫 cat 列表一眼识「这条最近动过」。
+                            与既有 🔄 更新 X 前 chip（在 hover preview 内）
+                            互补 — 那个是 detail 视图、本 badge 是 always-
+                            visible ambient awareness。red tint 与 stale
+                            7d+ idle chip 错开（fresh=tint-green / orange，
+                            stale=tint-red），语义不冲突。tooltip 标
+                            updated_at ISO + 距 now 相对时间。 */}
+                        {(() => {
+                          if (!item.updated_at) return null;
+                          const uMs = Date.parse(item.updated_at);
+                          if (isNaN(uMs)) return null;
+                          const ageMs = now.getTime() - uMs;
+                          if (ageMs < 0 || ageMs > 86_400_000) return null;
+                          // sub-categorize：≤ 1h 显「刚刚」/ 1-24h 显
+                          // 时数；让 ambient 信号尺度内有变化
+                          const rel =
+                            ageMs < 60 * 60 * 1000
+                              ? "1h 内"
+                              : `${Math.floor(ageMs / 3_600_000)}h 前`;
+                          return (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                background: "var(--pet-tint-green-bg)",
+                                color: "var(--pet-tint-green-fg)",
+                                fontFamily: "'SF Mono', monospace",
+                                fontWeight: 500,
+                              }}
+                              title={`本 item 在过去 24 小时内动过（updated_at: ${item.updated_at.replace("T", " ").slice(0, 19)} · ${rel}）。always-visible ambient signal — 与 hover preview 内 🔄 更新 X 前 chip 互补。`}
+                            >
+                              🔥 {rel}
+                            </span>
+                          );
+                        })()}
                         {/* [silent] chip：owner 标"知道存在但不要 pet 主动
                             选择"。proactive cycle 在 format_butler_tasks_block
                             把 silent 任务过滤掉，header 透明告知 LLM "有 N 条
