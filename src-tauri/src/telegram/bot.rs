@@ -841,6 +841,71 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HereUntil { raw } => {
+            // parse HH:MM → 算 minutes from now to today's HH:MM → fetch
+            // current transient text → set_transient_note(text, minutes)。
+            // empty current → no_transient；invalid raw → usage hint；
+            // target ≤ now → expired warning（不 set 避免破坏当前
+            // transient）。
+            use chrono::TimeZone;
+            let parsed = crate::telegram::commands::parse_sleep_until_time(&raw);
+            if let Some((h, m)) = parsed {
+                let (text, _until_iso) =
+                    crate::proactive::get_transient_note();
+                if text.trim().is_empty() {
+                    crate::telegram::commands::format_here_until_reply(
+                        "no_transient",
+                        &raw,
+                        None,
+                        None,
+                        0,
+                    )
+                } else {
+                    let now = chrono::Local::now();
+                    let today = now.date_naive();
+                    let target = today
+                        .and_hms_opt(h as u32, m as u32, 0)
+                        .and_then(|naive| {
+                            chrono::Local
+                                .from_local_datetime(&naive)
+                                .single()
+                        });
+                    if let Some(target_dt) = target {
+                        let minutes = (target_dt - now).num_minutes();
+                        let target_label = format!("{:02}:{:02}", h, m);
+                        if minutes <= 0 {
+                            crate::telegram::commands::format_here_until_reply(
+                                "expired",
+                                &raw,
+                                Some(&text),
+                                Some(&target_label),
+                                minutes,
+                            )
+                        } else {
+                            let _ = crate::proactive::set_transient_note(
+                                text.clone(),
+                                minutes,
+                            );
+                            crate::telegram::commands::format_here_until_reply(
+                                "ok",
+                                &raw,
+                                Some(&text),
+                                Some(&target_label),
+                                minutes,
+                            )
+                        }
+                    } else {
+                        crate::telegram::commands::format_here_until_reply(
+                            "usage", &raw, None, None, 0,
+                        )
+                    }
+                }
+            } else {
+                crate::telegram::commands::format_here_until_reply(
+                    "usage", &raw, None, None, 0,
+                )
+            }
+        }
         TgCommand::HereStatus => {
             // get_transient_note() returns (text, until_iso). empty text =
             // no active transient. parse until_iso → DateTime<Local>;
