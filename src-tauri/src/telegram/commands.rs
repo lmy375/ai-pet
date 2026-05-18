@@ -633,6 +633,10 @@ pub enum TgCommand {
     /// 让 owner 一眼批量看「我钉的 N 条状态如何」— 比 /pinned（仅标题）
     /// 信息密度高，比 /tasks（全量）scope 窄。无参。
     PeekPinned,
+    /// `/random_pinned` —— /random 的 pinned 子集 — 从 pinned task 里随
+    /// 机抽 1 条让 pet 推荐。owner「这几条钉的都重要 / 不知先做哪条」
+    /// 时让 pet 决定。无参。
+    RandomPinned,
     /// `/tags_today` —— /tags 的今日切片：仅列今日 updated_at 的 task
     /// 含的 #tag 计数。让 owner 看「今天我在做什么主题」audit。无参。
     TagsToday,
@@ -763,6 +767,7 @@ impl TgCommand {
             TgCommand::AlarmsToday => "alarms_today",
             TgCommand::AlarmsThisweek => "alarms_thisweek",
             TgCommand::PeekPinned => "peek_pinned",
+            TgCommand::RandomPinned => "random_pinned",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
             TgCommand::TagsThisweek => "tags_thisweek",
@@ -882,6 +887,7 @@ impl TgCommand {
             | TgCommand::AlarmsToday
             | TgCommand::AlarmsThisweek
             | TgCommand::PeekPinned
+            | TgCommand::RandomPinned
             | TgCommand::TagsToday
             | TgCommand::TagsYesterday
             | TgCommand::TagsThisweek
@@ -1034,6 +1040,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("alarms_today", "Show today's pending reminders (today slice of /alarms; no N param — today's scope is small)"),
             ("alarms_thisweek", "This week's counterpart to /alarms_today — reminders firing within Mon→now (no N cap)"),
             ("peek_pinned", "All pinned tasks in one-line compact form — /pinned 's denser sibling using /peek 's row format"),
+            ("random_pinned", "Pick a random pinned task — /random restricted to pinned subset (decision-fatigue helper)"),
             ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("tags_yesterday", "Yesterday's counterpart to /tags_today — yesterday's touched task tag counts"),
             ("tags_thisweek", "This week's counterpart to /tags_today — week-touched task tag counts"),
@@ -1134,6 +1141,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("alarms_today", "今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）"),
             ("alarms_thisweek", "/alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）"),
             ("peek_pinned", "所有 pinned task 一行紧凑视图 — /pinned 的密集版 + /peek 的批量版"),
+            ("random_pinned", "从 pinned task 中随机抽 1 条 — /random 的 pinned 子集（选择困难时让 pet 决定）"),
             ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("tags_yesterday", "/tags_today 的昨日对偶 — 昨日动过 task 含的 #tag 计数"),
             ("tags_thisweek", "/tags_today 的本周对偶 — 本周动过 task 含的 #tag 计数（周报场景）"),
@@ -1733,6 +1741,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/peek_pinned`：无参 — /pinned 紧凑版 + /peek 批量版。handler
         // 内部 filter pinned + 每条调 format_peek_reply 拼总输出。
         "peek_pinned" => Some(TgCommand::PeekPinned),
+        // `/random_pinned`：无参 — /random 的 pinned 子集。
+        "random_pinned" => Some(TgCommand::RandomPinned),
         // `/tags_today`：无参 — /tags 的今日切片。
         "tags_today" => Some(TgCommand::TagsToday),
         // `/tags_yesterday`：与 /tags_today 同模板，scope 昨日。
@@ -2273,7 +2283,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2438,6 +2448,7 @@ pub fn format_help_for_topic(
         "tags_thisweek" => "🏷 /tags_thisweek\n\n用法：/tags_today 的本周对偶 — 仅扫本周（自周一 00:00 起到 now）updated_at 命中的 task 含的 #tag 计数。周报场景下「本周我都在哪些主题工作」audit。无参。\n\n空 → 友好兜底（/tags 全量 / /tags_today 今日 alt）。\n\n输出格式：\n  🏷 本周（YYYY-MM-DD 起）N 个 tag\n  · #健身 ×5\n  · #API ×3\n  ...\n  \n  无 #tag 任务（本周）：N 条\n\n示例：\n  /tags_thisweek\n\n相关：/tags（全量）；/tags_today（今日）；/tags_yesterday（昨日）；/touched_thisweek（本周全谱无 tag 聚合）。",
         "tags_yesterday" => "🏷 /tags_yesterday\n\n用法：/tags_today 的昨日对偶 — 仅扫昨日 updated_at 命中的 task 含的 #tag 计数。复盘视角，写日报 / 早会回顾「昨天我在哪些主题工作」时用。无参。\n\n空 → 友好兜底（/tags 全量 / /tags_today 今日 alt）。\n\n输出格式：\n  🏷 昨日（YYYY-MM-DD）N 个 tag\n  · #健身 ×3\n  · #API ×2\n  ...\n  \n  无 #tag 任务（昨日）：N 条\n\n示例：\n  /tags_yesterday\n\n相关：/tags（全量不限日期）；/tags_today（今日）；/touched_yesterday（昨日全谱无 tag 聚合）。",
         "tags_today" => "🏷 /tags_today\n\n用法：/tags 的今日切片 — 仅扫今日 updated_at 命中的 task 含的 #tag 计数。让 owner 看「今天我在做哪些主题」audit。无参 — 今日范围天然小，不需 cap。\n\n场景：早会前看「今天我在哪些主题上工作」/ 写日报需按 tag 分类列项 / sprint 中段「我今天偏向某主题太多 / 太少」audit。\n\n输出格式：\n  🏷 今日（YYYY-MM-DD）N 个 tag：\n  · #健身 ×3\n  · #API ×2\n  · #周报 ×1\n  ...\n  \n  无 #tag 任务：N 条\n\n空 → 友好兜底「今日动过的 task 都无 #tag」+ 教学 /tags 全量入口。\n\n示例：\n  /tags_today\n\n相关：/tags（全量不限日期）；/touched_today（今日 task 全谱无 tag 聚合）；/tag <name>（按某 tag 搜任务）。",
+        "random_pinned" => "🎲 /random_pinned\n\n用法：/random 的 pinned 子集 — 从 pinned task 里随机抽 1 条让 pet 推荐。owner 钉了几条都重要 / 不知先做哪条时用此命令让 pet 决定下一步。无参；多次调用得不同 pinned task。\n\n空 → 友好兜底（教学指 /pin <title> 设置 + /random 全 active 集 fallback）。\n\n输出格式（与 /random 同）：\n  🎲 抽中 ⏳ 「<title>」（共 N 条 pinned active）\n  \n  <raw_description 前 200 字>\n  \n  —— 选择困难？就先做这条吧。\n\n示例：\n  /random_pinned\n\n相关：/random（全 active 集）；/pinned（看 pinned 清单）；/peek_pinned（pinned 紧凑视图）。",
         "peek_pinned" => "👀 /peek_pinned\n\n用法：所有 pinned task 一行紧凑视图 — /pinned（仅标题）的密集版 + /peek（单条紧凑）的批量版。每行：`<status_emoji> 「<title>」 · 🕐 <schedule> · <markers>`，让 owner 一眼看「我钉的 N 条状态如何」。\n\n场景：早会前确认「我今天必须看的几条 task」状态 / sprint 中段 audit「钉的事情进度怎样」/ 晚上看「我钉了哪些没动」。\n\n空 → 友好兜底「暂无 pinned task」+ 教学指 /pin <title> 设置。\n\n输出格式：\n  📌 N 条 pinned：\n  ⏳ 「<title>」 · 🕐 every 09:00 · 📌 🔇\n  ✅ 「<title>」 · 🕐 once 2026-05-20 14:00\n  ⏳ 「<title>」 · 📌 💤\n  ...\n\n状态 emoji 与 /peek / /find 同：⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled。Schedule 段 + markers 段都仅命中时显（与 /peek 行为一致）。\n\n示例：\n  /peek_pinned\n\n相关：/pinned（仅标题）；/peek <title>（单条紧凑）；/pinned_due（pinned 且有 due）；/tasks（全量含 pinned）。",
         "alarms_thisweek" => "⏰ /alarms_thisweek\n\n用法：/alarms_today 的本周对偶 — 仅显本周（自周一 00:00 起到 now）触发的 reminder（`[remind: ...]` 协议条目）。让 owner 看「本周还会响哪些 / 已逾期未消」。无 N 参 — 本周范围比 today 略广但仍可控（典型 < 30 条）。\n\n场景：周报场景看「这周我设了哪些 reminder / 哪些已 fire 哪些待响」/ 周一早会前 review 上周未消 alarm。\n\n输出格式：\n  ⏰ 本周（YYYY-MM-DD 起）N 条 alarms：\n  · MM-DD HH:MM (剩 / 已逾期 ...) | <topic>\n  · MM-DD HH:MM (剩 ...) | <topic>\n  ...\n\n跨日 scope 行带 MM-DD（与 /alarms 同；/alarms_today 行只 HH:MM 因 single day）。空 → 友好兜底指 /alarms 全量 / /alarms_today。\n\n示例：\n  /alarms_thisweek\n\n相关：/alarms（不限日期 top N）；/alarms_today（仅今日）；/touched_thisweek（本周 task 全谱）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
@@ -2558,6 +2569,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/alarms_thisweek  —  /alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
+        "/random_pinned  —  从 pinned task 中随机抽 1 条 — /random 的 pinned 子集（选择困难时让 pet 决定）".to_string(),
         "/tags_today  —  今日动过 task 含的 #tag 计数（/tags 的 today 切片）— 「今天主题」audit".to_string(),
         "/tags_yesterday  —  /tags_today 的昨日对偶 — 昨日 task 的 #tag 计数（复盘视角）".to_string(),
         "/tags_thisweek  —  /tags_today 的本周对偶 — 本周 task 的 #tag 计数（周报场景）".to_string(),
@@ -6381,6 +6393,50 @@ pub fn format_random_reply(
     out
 }
 
+/// `/random_pinned` 命令回复文案。pure：与 `format_random_reply` 同
+/// 结构但 candidates filter 改为「pinned + active（pending/error）」交
+/// 集 — owner 钉的且没完成的随机选。空集兜底教学指 /pin 设置 / /random
+/// fallback。
+pub fn format_random_pinned_reply(
+    views: &[crate::task_queue::TaskView],
+    index_seed: usize,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let candidates: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| v.pinned)
+        .filter(|v| matches!(v.status, TaskStatus::Pending | TaskStatus::Error))
+        .collect();
+    if candidates.is_empty() {
+        return "🎲 /random_pinned\n\n本聊天无 pinned active task。\n用 /pin <title> 钉一条 / /random 看全 active 集 / /pinned 看 pinned 清单。".to_string();
+    }
+    let chosen = candidates[index_seed % candidates.len()];
+    let status_emoji = match chosen.status {
+        TaskStatus::Pending => "⏳",
+        TaskStatus::Error => "⚠️",
+        _ => "?",
+    };
+    let mut out = format!(
+        "🎲 抽中 {} 「{}」（共 {} 条 pinned active）",
+        status_emoji,
+        chosen.title,
+        candidates.len()
+    );
+    let raw = chosen.raw_description.trim();
+    if !raw.is_empty() {
+        let preview: String = if raw.chars().count() > RANDOM_RAW_DESC_PREVIEW_CHARS {
+            let head: String = raw.chars().take(RANDOM_RAW_DESC_PREVIEW_CHARS).collect();
+            format!("{}…", head)
+        } else {
+            raw.to_string()
+        };
+        out.push_str("\n\n");
+        out.push_str(&preview);
+    }
+    out.push_str("\n\n—— 选择困难？就先做这条吧。");
+    out
+}
+
 /// `/last` 命令回复文案。pure：扫 views 按 created_at desc 拿首条，输出
 /// `🆕 title` header + status emoji + 相对时间 + raw_description 前 200
 /// 字符预览。views 空 → 友好兜底。caller 传 `now` 让相对时间单测稳定。
@@ -8043,7 +8099,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "random_pinned", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -8514,7 +8570,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -14665,6 +14721,79 @@ mod tests {
         assert_eq!(parse_tg_command("/random"), Some(TgCommand::Random));
         assert_eq!(parse_tg_command("/random pick one"), Some(TgCommand::Random));
         assert_eq!(parse_tg_command("/RANDOM"), Some(TgCommand::Random));
+    }
+
+    #[test]
+    // -------- /random_pinned parse + format --------
+
+    #[test]
+    fn random_pinned_parser_no_arg() {
+        assert_eq!(
+            parse_tg_command("/random_pinned"),
+            Some(TgCommand::RandomPinned),
+        );
+        assert_eq!(
+            parse_tg_command("/RANDOM_PINNED"),
+            Some(TgCommand::RandomPinned),
+        );
+        assert_eq!(
+            parse_tg_command("/random_pinned extra"),
+            Some(TgCommand::RandomPinned),
+        );
+    }
+
+    #[test]
+    fn random_pinned_empty_shows_friendly_fallback() {
+        let s = format_random_pinned_reply(&[], 0);
+        assert!(s.contains("无 pinned active task"), "{s}");
+        assert!(s.contains("/pin"), "教学指 /pin 设置: {s}");
+        assert!(s.contains("/random"), "教学指 /random fallback: {s}");
+    }
+
+    #[test]
+    fn random_pinned_picks_pinned_active_only() {
+        // pinned + pending → candidate
+        let mut pinned_pending = view("PP", 3, None, TaskStatus::Pending, None);
+        pinned_pending.pinned = true;
+        // pinned + done → 不算 active
+        let mut pinned_done = view("PD", 3, None, TaskStatus::Done, Some("r"));
+        pinned_done.pinned = true;
+        // 非 pinned + pending → 不在 pinned subset
+        let unpinned_pending = view("UP", 3, None, TaskStatus::Pending, None);
+        // pinned + error → candidate
+        let mut pinned_error = view("PE", 3, None, TaskStatus::Error, Some("oops"));
+        pinned_error.pinned = true;
+        let s = format_random_pinned_reply(
+            &[pinned_pending, pinned_done, unpinned_pending, pinned_error],
+            0, // seed 0 取 candidates[0]
+        );
+        // header 应显「共 2 条 pinned active」（PP + PE）
+        assert!(s.contains("共 2 条 pinned active"), "{s}");
+        // seed 0 → candidates[0] = PP（pinned_pending 在过滤后首位）
+        assert!(s.contains("「PP」"), "seed 0 picks first: {s}");
+        // PD / UP 不是 candidate，但 verify 不在标题位置（出现在 reply 文本里是 OK
+        // 的，因为 raw_description preview 可能含 "PP"… 这里只验 header line）
+    }
+
+    #[test]
+    fn random_pinned_seed_cycles_candidates() {
+        let mut a = view("A", 3, None, TaskStatus::Pending, None);
+        a.pinned = true;
+        let mut b = view("B", 3, None, TaskStatus::Pending, None);
+        b.pinned = true;
+        let mut c = view("C", 3, None, TaskStatus::Pending, None);
+        c.pinned = true;
+        let views = vec![a, b, c];
+        // seed % 3 cycles through 0,1,2
+        let s0 = format_random_pinned_reply(&views, 0);
+        let s1 = format_random_pinned_reply(&views, 1);
+        let s2 = format_random_pinned_reply(&views, 2);
+        let s3 = format_random_pinned_reply(&views, 3);
+        assert!(s0.contains("「A」"), "{s0}");
+        assert!(s1.contains("「B」"), "{s1}");
+        assert!(s2.contains("「C」"), "{s2}");
+        // seed 3 wraps to candidates[0] = A
+        assert!(s3.contains("「A」"), "wrap: {s3}");
     }
 
     #[test]
