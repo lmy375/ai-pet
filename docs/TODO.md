@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- ChatMini bubble role 切换 hover hint：hover assistant bubble 时显「↺ 重发」/ user bubble 显「✏️ 编辑后重发」入口提示（仅提示，不改 action）。
 
 
 
