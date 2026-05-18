@@ -657,6 +657,11 @@ pub enum TgCommand {
     /// sighting（前缀无 [pinned] 的 lookback 较宽）。audit「owner 这周觉得什
     /// 么变重要了」。同 best-effort 语义。无参。
     PinGrow7d,
+    /// `/here_top_cat` —— 把 top 3 cat（按 items 量 desc）作 「主力 cat
+    /// context」注入 transient_note 60 分钟。让 pet 下轮 reply 优先用主力
+    /// cat 知识引用 — 与 /here_pin（task 维度）正交是 cat 维度 priming。
+    /// 无参；空 memory 时友好兜底。
+    HereTopCat,
     /// `/here_clear` —— 清当前 transient_note。与 /transient / /here_pin /
     /// /here_idle 等「注入」命令对偶 — 一键撤回。无参；空 transient 时友
     /// 好提示「已无 transient_note」。
@@ -880,6 +885,7 @@ impl TgCommand {
             TgCommand::HerePin => "here_pin",
             TgCommand::HereIdle => "here_idle",
             TgCommand::HereClear => "here_clear",
+            TgCommand::HereTopCat => "here_top_cat",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
             TgCommand::TagsThisweek => "tags_thisweek",
@@ -996,6 +1002,7 @@ impl TgCommand {
             | TgCommand::HerePin
             | TgCommand::HereIdle
             | TgCommand::HereClear
+            | TgCommand::HereTopCat
             | TgCommand::OldestN { .. }
             | TgCommand::OldestDone { .. }
             | TgCommand::ActiveRecent { .. }
@@ -1193,6 +1200,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("here_pin", "Inject current pinned tasks as transient_note 60min — let pet's next reply focus on pinned"),
             ("here_idle", "Inject 7d+ idle stale tasks as transient_note 60min — let pet's next reply nudge owner to act"),
             ("here_clear", "Clear current transient_note — counterpart to /transient / /here_pin / /here_idle injection"),
+            ("here_top_cat", "Inject top-3 cats by item count as 'main cat context' transient_note 60min"),
             ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("tags_yesterday", "Yesterday's counterpart to /tags_today — yesterday's touched task tag counts"),
             ("tags_thisweek", "This week's counterpart to /tags_today — week-touched task tag counts"),
@@ -1314,6 +1322,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("here_pin", "把当前 pinned 清单作 transient_note 60min 注入 — pet 下轮 reply 聚焦 pinned"),
             ("here_idle", "把 idle 7d+ pending 清单作 transient_note 60min 注入 — pet 下轮主动提醒处理 stale"),
             ("here_clear", "清当前 transient_note — /transient / /here_pin / /here_idle 等注入命令的撤回对偶"),
+            ("here_top_cat", "把 top 3 cat（按 items 量）作主力 cat context 注入 transient_note 60min"),
             ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("tags_yesterday", "/tags_today 的昨日对偶 — 昨日动过 task 含的 #tag 计数"),
             ("tags_thisweek", "/tags_today 的本周对偶 — 本周动过 task 含的 #tag 计数（周报场景）"),
@@ -2257,6 +2266,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "here_idle" => Some(TgCommand::HereIdle),
         // `/here_clear`：无参 — 清当前 transient_note。
         "here_clear" => Some(TgCommand::HereClear),
+        // `/here_top_cat`：无参 — top 3 cat → transient_note 60min。
+        "here_top_cat" => Some(TgCommand::HereTopCat),
         // `/cat_top [N]`：与 /recent 同 clamp 1..=20，缺省 5。
         "cat_top" => {
             let n = title
@@ -2531,7 +2542,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2701,6 +2712,7 @@ pub fn format_help_for_topic(
         "alarms_thisweek" => "⏰ /alarms_thisweek\n\n用法：/alarms_today 的本周对偶 — 仅显本周（自周一 00:00 起到 now）触发的 reminder（`[remind: ...]` 协议条目）。让 owner 看「本周还会响哪些 / 已逾期未消」。无 N 参 — 本周范围比 today 略广但仍可控（典型 < 30 条）。\n\n场景：周报场景看「这周我设了哪些 reminder / 哪些已 fire 哪些待响」/ 周一早会前 review 上周未消 alarm。\n\n输出格式：\n  ⏰ 本周（YYYY-MM-DD 起）N 条 alarms：\n  · MM-DD HH:MM (剩 / 已逾期 ...) | <topic>\n  · MM-DD HH:MM (剩 ...) | <topic>\n  ...\n\n跨日 scope 行带 MM-DD（与 /alarms 同；/alarms_today 行只 HH:MM 因 single day）。空 → 友好兜底指 /alarms 全量 / /alarms_today。\n\n示例：\n  /alarms_thisweek\n\n相关：/alarms（不限日期 top N）；/alarms_today（仅今日）；/touched_thisweek（本周 task 全谱）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
         "find_speech_today" => "🗣 /find_speech_today <keyword>\n\n用法：/find_speech 的今日切片 — 限本地今日触发的 pet utterance 内搜 keyword（case-insensitive 子串）。「今天 pet 提过 X 吗」精准 audit。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_speech 全量 / /last_speech 最近 1 条 alt）。\n\n输出格式：\n  🗣 今日（YYYY-MM-DD）speech 命中「<kw>」N 条：\n  · HH:MM · …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_speech 同。cap 8 条。\n\n示例：\n  /find_speech_today 周报\n  /find_speech_today rebase\n\n相关：/find_speech（不限日期）；/last_speech（最近 1 条）；/touched_today（今日 task 全谱）。",
+        "here_top_cat" => "📊📝 /here_top_cat\n\n用法：把 top 3 cat（按 items 量 desc）作 「主力 cat context」 注入 transient_note 60 分钟。让 pet 下轮 reply 优先用主力 cat 知识引用。与 /here_pin（task 维度 priming）正交是 cat 维度 priming。无参。\n\n场景：开始一段「我想多用 X cat 的知识」对话前 prime pet；新建相关 task 前让 pet 知 owner 当前主力研究范畴；与 /audit_summary cat 信号高时配套使用让 pet 主动用主力 cat 引用。\n\n后端：调 compute_cat_top_rows-equivalent（reuse memory_list iteration）→ 取前 3 → 拼「📊 主力 cat context：butler_tasks (156) · decisions (89) · general (42)」 → set_transient_note(text, 60)。\n\n输出格式：\n  📊 已注入 top 3 cat 到 transient_note（到 HH:MM 失效）\n  · butler_tasks · 156 条\n  · decisions · 89 条\n  · general · 42 条\n\n空（memory 无 cat）→ 友好兜底教学指 /cat_top / /pet。\n\n示例：\n  /here_top_cat\n\n相关：/cat_top（看完整列表）；/here_pin（task 维度 priming 对偶）；/here_clear（撤回 transient）；/aware（看 pet 当前感知）。",
         "here_clear" => "🧹 /here_clear\n\n用法：清当前 transient_note — /transient / /here_pin / /here_idle 等「注入」命令的撤回对偶。让 owner 不必等 60min 自动到期，可主动撤回 pet 当前 context。无参。\n\n场景：试错 — /here_pin 注入后觉得不合适想换 /here_idle；context switching — 早会用 /here_pin 现在想换主题不想被 pin context 影响；privacy — 切换聊天前主动清掉敏感 task 名称的 transient prompt。\n\n后端：set_transient_note(\"\", 0) — 空 text + 0 minutes 即清（与既有 /transient 0 minutes 行为一致）。读 get_transient_note 拿当前文案作 ack reply 让 owner 看到「清的是什么」。\n\n输出格式（有 transient 时）：\n  🧹 已清 transient_note\n  · 之前内容：<text preview 50 字截>\n\n空（已无 transient）→ 友好提示「已无 transient_note — 无需清」。\n\n示例：\n  /here_clear\n\n相关：/transient（自由文本注入）；/here_pin（pinned 注入）；/here_idle（stale 注入）；/aware（看 pet 当前感知 含 transient_note 状态）。",
         "here_idle" => "💤📝 /here_idle\n\n用法：/here_pin 的 stale 维度对偶 — 把 idle 7d+ pending task 清单（updated_at ≥ 7 天前）作 「stale context」注入 transient_note 60 分钟。让 pet 下轮 reply 主动提醒 owner 处理 stale 任务。无参。\n\n场景：周末复盘想让 pet「揪着我清 backlog 的几条」；月底 audit 「这堆搁着没动的怎么办」让 pet 提出 done / cancel / promote 决策建议；与 /audit_summary 看到 idle 数高时一键交给 pet 主动 nudge。\n\n后端：read_tg_chat_task_views filter pending + updated_at ≤ now-7d → 拼「💤 stale context（>7d idle）：「<title1>」「<title2>」...」 → 调 set_transient_note(text, 60)。空时友好兜底教学指 /idle_7d 看清单。\n\n输出格式：\n  💤 已注入 N 条 idle task 到 transient_note（到 HH:MM 失效）\n  · 「整理 Downloads」（idle 14 天）\n  · 「写周报」（idle 9 天）\n  ...\n\n空 → 「无 7d+ idle pending — 健康状态」+ 教学指 /idle_7d。\n\n示例：\n  /here_idle\n\n相关：/here_pin（pinned 对偶）；/transient（自由文本）；/idle_7d（看清单）；/here_clear（清 transient — 撤回 here_* 注入）；/aware（看 pet 当前感知）。",
         "here_pin" => "📌📝 /here_pin\n\n用法：把当前 chat-scoped pinned task 清单作 「pin context」注入 transient_note 60 分钟。让 pet 下轮 proactive cycle / reply 聚焦 owner 当前 pin 任务。无参。\n\n场景：早会前 / sprint start 给 pet 「这是我此刻关注什么」明示 — 让 pet 主动 reply 时围绕 pinned。/transient 自由文本要 owner 自己抄 /pinned 输出再贴；本命令 pipeline 一键到位。\n\n后端：read_tg_chat_task_views filter pinned → 拼「📌 当前 pin context：「<title1>」「<title2>」...」 → 调 set_transient_note(text, 60)。空 pinned 时友好兜底教学指 /pin。\n\n输出格式：\n  📌 已注入 N 条 pinned task 到 transient_note（到 HH:MM 失效）\n  · 「整理 Downloads」\n  · 「写周报」\n  · 「review PR」\n  ...\n\n空 → 「无 pinned task — 试 /pin <title> 钉一条」+ 教学指 /pinned 看清单。\n\n注：transient_note 是 in-memory；pet 重启后失效；与 /reset 不冲突（/reset 仅清 LLM context）。\n\n示例：\n  /here_pin\n\n相关：/transient（自由文本注入）；/pinned（看当前 pin 清单）；/peek_pinned（紧凑视图）；/aware（看 pet 当前感知 含 transient_note）。",
@@ -2854,6 +2866,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/here_pin  —  把当前 pinned 清单作 transient_note 60min 注入 — pet 下轮 reply 聚焦 pinned".to_string(),
         "/here_idle  —  把 idle 7d+ pending 清单作 transient_note 60min 注入 — pet 下轮主动提醒处理 stale".to_string(),
         "/here_clear  —  清当前 transient_note — /transient / /here_pin / /here_idle 等注入命令的撤回对偶".to_string(),
+        "/here_top_cat  —  把 top 3 cat（按 items 量）作主力 cat context 注入 transient_note 60min".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/alarms_thisweek  —  /alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
@@ -4133,7 +4146,7 @@ pub fn format_help_table_reply_full(family: Option<&str>) -> String {
         "  /pin_all_p7 /pinned_drop_7d /pin_grow_7d /recent_pins /streak_pin /here_pin",
         "",
         "🌱 cat 活跃度（memory category）",
-        "  /cat_growth_7d /cat_growth_30d /cat_decay_7d /cat_decay_30d /cat_top",
+        "  /cat_growth_7d /cat_growth_30d /cat_decay_7d /cat_decay_30d /cat_top /here_top_cat",
         "",
         "🔁 rename 重命名 audit",
         "  /edit_title /cascade_rename /aliases /recent_renames",
@@ -4185,6 +4198,31 @@ pub fn format_help_table_reply_full(family: Option<&str>) -> String {
         "相关：/help（flat 全表 + 一行描述）；/help <cmd>（单命令详细用法）；/help search <kw>（全文 keyword 搜）。",
     ]
     .join("\n")
+}
+
+/// `/here_top_cat` 命令回复文案。pure：caller 已 scan memory + sort
+/// top 3 + set_transient_note + 拿 until_local。row：(key, count)。
+/// empty rows → 友好兜底。
+pub fn format_here_top_cat_reply(
+    rows: &[(String, usize)],
+    until_local: Option<chrono::DateTime<chrono::Local>>,
+) -> String {
+    if rows.is_empty() {
+        return "📊 memory 无 cat — 试 /cat_top 看清单 / /pin <title> 钉 task 先。\n相关：/here_pin（task 维度 priming）。".to_string();
+    }
+    let until_label = match until_local {
+        Some(dt) => dt.format("%H:%M").to_string(),
+        None => "?".to_string(),
+    };
+    let mut out = format!(
+        "📊 已注入 top {} cat 到 transient_note（到 {} 失效）",
+        rows.len(),
+        until_label,
+    );
+    for (key, count) in rows {
+        out.push_str(&format!("\n· {} · {} 条", key, count));
+    }
+    out
 }
 
 /// `/here_clear` 命令回复文案。pure：caller 已 fetch 当前 transient
@@ -4375,6 +4413,7 @@ pub fn format_help_table_family(family_key: &str) -> String {
                 ("/cat_decay_7d", "近 7 天 0 update 的 cat（反向 stale）"),
                 ("/cat_decay_30d", "30 天 zombie cat detection"),
                 ("/cat_top [N]", "按 cat items 总量 desc 列前 N（capacity axis）"),
+                ("/here_top_cat", "top 3 cat → transient_note 60min 注入（cat 维度 priming）"),
             ],
         )),
         "rename" | "重命名" | "alias" => Some((
@@ -9475,7 +9514,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -9946,7 +9985,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -15355,6 +15394,48 @@ mod tests {
         assert!(s.contains("今日（2026-05-17）speech 命中「周报」2 条"), "{s}");
         assert!(s.contains("· 14:30 · …今天 pet 说到 周报 的事…"), "{s}");
         assert!(s.contains("· 09:15 · …早晨 pet 提到 周报 进度…"), "{s}");
+    }
+
+    // -------- /here_top_cat parse + format --------
+
+    #[test]
+    fn here_top_cat_parser_no_args() {
+        assert_eq!(
+            parse_tg_command("/here_top_cat"),
+            Some(TgCommand::HereTopCat),
+        );
+        assert_eq!(
+            parse_tg_command("/here_top_cat extra"),
+            Some(TgCommand::HereTopCat),
+        );
+    }
+
+    #[test]
+    fn format_here_top_cat_empty_shows_fallback() {
+        let s = format_here_top_cat_reply(&[], None);
+        assert!(s.contains("memory 无 cat"), "{s}");
+        assert!(s.contains("/cat_top"), "{s}");
+        assert!(s.contains("/here_pin"), "{s}");
+    }
+
+    #[test]
+    fn format_here_top_cat_renders_rows() {
+        let until = chrono::DateTime::parse_from_str(
+            "2026-05-18T15:30:00+08:00",
+            "%Y-%m-%dT%H:%M:%S%:z",
+        )
+        .unwrap()
+        .with_timezone(&chrono::Local);
+        let rows = vec![
+            ("butler_tasks".to_string(), 156),
+            ("decisions".to_string(), 89),
+            ("general".to_string(), 42),
+        ];
+        let s = format_here_top_cat_reply(&rows, Some(until));
+        assert!(s.contains("已注入 top 3 cat 到 transient_note"), "{s}");
+        assert!(s.contains("· butler_tasks · 156 条"), "{s}");
+        assert!(s.contains("· decisions · 89 条"), "{s}");
+        assert!(s.contains("· general · 42 条"), "{s}");
     }
 
     // -------- /here_clear parse + format --------
