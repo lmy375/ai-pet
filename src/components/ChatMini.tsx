@@ -191,6 +191,17 @@ const MINI_CHAT_STYLES = `
 .pet-mini-row:hover .pet-mini-row-chars {
   opacity: 0.5;
 }
+/* 角色操作提示 chip：bubble row hover 时浮 muted 文字提示既有 reroll /
+   resend 入口（user：右键 ↺ 重发本条；assistant：⌘R 重发上句）。仅
+   discoverability — 不挂 onClick，纯文字。与 .pet-mini-row-rel 同侧
+   位置但更 muted（opacity 0 → 0.4）让 ambient 信号不抢眼。 */
+.pet-mini-row .pet-mini-row-action-hint {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.pet-mini-row:hover .pet-mini-row-action-hint {
+  opacity: 0.4;
+}
 /* streaming 时的"宠物在思考"脉冲：opacity 0.4→1→0.4 循环 1.4s；首 chunk 到
    达前唯一可视提示，到达后与 streaming bubble 并列继续脉冲让用户感到"还在
    流"。reduced-motion 媒体查询下退化为常亮，避免对眩晕症用户挑战。 */
@@ -2717,6 +2728,47 @@ export function ChatMini({
                   </span>
                 );
               })()}
+              {/* 🎯 角色操作提示 chip：bubble row hover 时浮 muted 提示
+                  既有 reroll / resend / edit 入口（discoverability nudge
+                  — 仅文字提示，不挂 onClick）。
+                  - user bubble：「✏️ ⌘+click 编辑重发」— 提示 ⌘+click
+                    复制到剪贴板的既有 path（看 ChatMini.tsx onClick：
+                    metaKey+click 走 handleBubbleCopy），owner 再粘到
+                    input 编辑后 send 即「编辑后重发」workflow
+                  - assistant bubble + isLast：「↺ ⌘R 重发」— 提示
+                    ⌘R 重发上句 user message。⌘R 只对最后 user 生效，
+                    给中间 assistant 显误导，故 isLast gate
+                  位置：底部偏外侧（user 左 / assistant 右 — 与 ⏱ rel
+                  chip 反向避免叠加）。 */}
+              {text && (m.role === "user" || (m.role === "assistant" && isLast)) && (
+                <span
+                  className="pet-mini-row-action-hint"
+                  title={
+                    m.role === "user"
+                      ? "⌘+click 本 bubble 复制原文到剪贴板，粘到 input 编辑后再发 — 「编辑后重发」工作流。也可右键弹 ctx menu → ↺ 重发本条（无编辑直接重发）。"
+                      : "⌘R / Ctrl+R 重发上句 — 把最后一条 user message 再发一次让 pet 重新 reply（不必复制再粘贴）"
+                  }
+                  style={{
+                    position: "absolute",
+                    bottom: -10,
+                    // 与 ⏱ rel chip 反向：user 左 / assistant 右
+                    [m.role === "user" ? "left" : "right"]: 8,
+                    fontSize: 9,
+                    color: "var(--pet-color-muted)",
+                    fontFamily: "'SF Mono', 'Menlo', monospace",
+                    fontStyle: "italic",
+                    whiteSpace: "nowrap",
+                    background: "var(--pet-color-card)",
+                    padding: "0 4px",
+                    borderRadius: 3,
+                    lineHeight: "12px",
+                    pointerEvents: "auto",
+                    userSelect: "none",
+                  }}
+                >
+                  {m.role === "user" ? "✏️ ⌘+click 编辑重发" : "↺ ⌘R 重发"}
+                </span>
+              )}
               {/* user 右对齐 → 复制按钮在 bubble 左侧 */}
               {m.role === "user" && saveAsTaskBtn}
               {m.role === "user" && copyBtn}
