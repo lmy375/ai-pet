@@ -88,6 +88,13 @@ const MINI_CHAT_MAX_ITEMS = 20;
 /// 4000 是经验值：8k-128k context 都有，留 50%+ 给后续对话不至于撞墙。
 const MINI_TOKEN_WARN_THRESHOLD = 4000;
 
+/// session token tally 估算 cost 用的 USD / 百万 token blended rate。
+/// 3.0 是经验中点：Claude Sonnet $3 input / $15 output 之间偏 input
+/// （chat 场景输入占多）；Opus 更贵 / Haiku 更便宜，3.0 算个 mid-band
+/// 兜底估。owner 想精算改这个常量即可。本 tally 显示 cost 是 ambient
+/// awareness 用，不当账单 — tooltip 内已注明仅供参考。
+const MINI_TOKEN_COST_PER_MILLION = 3.0;
+
 const MINI_CHAT_STYLES = `
 @keyframes pet-mini-chat-fade-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -3086,6 +3093,43 @@ export function ChatMini({
             {toolStatus}
           </div>
         )}
+        {/* 💰 session token tally 状态行：bubble 列表底部 ambient 信号，
+            显累计 token + 估算 cost（基于 MINI_TOKEN_COST_PER_MILLION
+            blended rate）。任 sessionTokens > 0 即显（无 threshold gate）—
+            与顶部 🌡️ bar（仅 20-100% 区段）/ 💭 CTA chip（> threshold）
+            互补，覆盖 0-20% 早期 ambient 信息盲区。
+            数据局限：backend 无 input/output token 拆分（estimate_tokens
+            是按 char count / 4 估全 session 上下文），cost 用单一 rate
+            $3/1M 估算 — 不当账单用。tooltip 注明 caveat。 */}
+        {sessionTokens !== undefined && sessionTokens > 0 && (() => {
+          const costUsd = (sessionTokens * MINI_TOKEN_COST_PER_MILLION) / 1_000_000;
+          const costLabel =
+            costUsd < 0.01
+              ? `<$0.01`
+              : `≈ $${costUsd.toFixed(costUsd < 1 ? 3 : 2)}`;
+          return (
+            <div
+              style={{
+                marginTop: 4,
+                paddingTop: 4,
+                borderTop: "1px dashed var(--pet-color-border)",
+                fontSize: 10,
+                color: "var(--pet-color-muted)",
+                fontFamily: "'SF Mono', 'Menlo', monospace",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                userSelect: "none",
+              }}
+              title={`本 session 累计 ~${sessionTokens} tokens（含 system + 历史 turns，按 4 chars/token 估），按 blended $${MINI_TOKEN_COST_PER_MILLION}/1M 估算 cost ${costLabel} USD。仅供 ambient awareness — 不区分 input/output，精确账单请看上游 API console。`}
+            >
+              <span>💰</span>
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                ~{sessionTokens} tok · {costLabel}
+              </span>
+            </div>
+          );
+        })()}
         </div>
         {/* 跳到底浮标：用户向上滚翻历史时显。绝对定位在 wrapper 内的右
             下角，点击滚到底 + 重启 follow-tail。 */}
