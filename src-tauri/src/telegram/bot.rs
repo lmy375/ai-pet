@@ -2297,6 +2297,39 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::Aliases { title } => {
+            // 与 Timeline 同 resolve 三层；命中后扫 full butler_history.log
+            // （不限 title — 因为我们要找包括过去 title 的 rename event 链）
+            // → reconstruct_alias_chain → formatter。
+            //
+            // 注：仅 butler_tasks 有 rename event（memory_rename 限 cat ==
+            // butler_tasks 才写 log）。resolve_tg_task_title 已 butler_tasks
+            // 域。
+            if title.trim().is_empty() {
+                format_missing_argument("aliases")
+            } else {
+                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
+                    Some(t) => Ok(t),
+                    None => resolve_tg_task_title(&title),
+                };
+                match actual {
+                    Ok(t) => {
+                        let content =
+                            crate::butler_history::read_history_content().await;
+                        let lines: Vec<String> = content
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .map(String::from)
+                            .collect();
+                        let chain = crate::telegram::commands::reconstruct_alias_chain(
+                            &lines, &t,
+                        );
+                        crate::telegram::commands::format_aliases_reply(&t, &chain)
+                    }
+                    Err(msg) => format_command_error(&msg),
+                }
+            }
+        }
         TgCommand::Timeline { title } => {
             // 与 Show 同 resolve 三层。命中后调 task_get_detail 拿 history（已
             // newest-first 排好），扫 markers 算 entries（旧→新 + 去重无变化
