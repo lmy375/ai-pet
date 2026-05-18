@@ -7467,11 +7467,16 @@ pub fn format_peek_pinned_reply(
 /// `/timeline` 中一行事件条目。`markers` 是该事件 snippet 内扫出的「状态
 /// 变化」marker token 列表（保 `[done]` / `[result: 已发送]` 等完整原文），
 /// 顺序保持 snippet 内出现顺序。
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct TimelineEntry {
     pub timestamp: String,
     pub action: String,
     pub markers: Vec<String>,
+    /// rename event 专属：从 snippet 的 `[was: <old>]` 标记里取 old title。
+    /// 其它 action（create / delete / update）始终 None。让 format_timeline_reply
+    /// / format_recent_events_reply 能渲「重命名 from 「<old>」」而不是
+    /// fallback 到「更新（无 marker 变化）」误判。
+    pub was: Option<String>,
 }
 
 /// pure：从 butler_history snippet 抽出「状态变化」marker tokens。
@@ -7566,15 +7571,53 @@ pub fn compute_timeline_entries(
             Some(p) => *p != signature,
         };
         if is_first || force_keep || changed {
+            // rename event：解 snippet 内的 `[was: <old>]` token 把 old title
+            // 拎出来给 formatter 用。snippet 格式由 memory_rename 写入
+            // butler_history.log 时硬编码（commands/memory.rs 内）。其它
+            // action 始终 was=None。`[was: ...]` 80 字截断可能砍掉尾 `]`
+            // — 兜底取到末尾整段当 old title 文本，prefix `[was: ` 长度固
+            // 定（6 chars），strip 后剥尾 `]`（若存在）。
+            let was = if action_lc == "rename" {
+                extract_was_from_snippet(snippet)
+            } else {
+                None
+            };
             out.push(TimelineEntry {
                 timestamp: ts.clone(),
                 action: action.clone(),
                 markers,
+                was,
             });
         }
         prev_signature = Some(signature);
     }
     out
+}
+
+/// pure：从 butler_history.log 的 rename 事件 snippet 抽 `[was: <old>]`
+/// 标记里的 old title。format 由 memory_rename 写入端约定（commands/
+/// memory.rs::memory_rename）。
+///
+/// 兜底：
+/// - snippet 不含 `[was: ` prefix → None
+/// - 含 prefix 但 80 字截断把尾 `]` 砍了 → 取到 snippet 末尾整段当 old
+///   title（best-effort，old 极长会被截）
+/// - snippet 含多个 `[was: ` token（不应发生但 defensive）→ 取第一个
+pub fn extract_was_from_snippet(snippet: &str) -> Option<String> {
+    let prefix = "[was: ";
+    let start = snippet.find(prefix)?;
+    let after = &snippet[start + prefix.len()..];
+    // 截到首个 `]`；找不到（截断 / 异常）→ 取 after 全段，剥末尾 `…`
+    let old = match after.find(']') {
+        Some(p) => after[..p].to_string(),
+        None => after.trim_end_matches('…').to_string(),
+    };
+    let trimmed = old.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// pure：把 `[ts]` 字段格式化成短显示 `MM-DD HH:MM`。butler_history 写
@@ -7634,16 +7677,24 @@ pub fn format_timeline_reply(
     out.push_str("\n\n");
     let show_count = entries.len().min(TIMELINE_ENTRY_CAP);
     for e in entries.iter().take(show_count) {
-        let emoji = match e.action.to_ascii_lowercase().as_str() {
+        let action_lc = e.action.to_ascii_lowercase();
+        let emoji = match action_lc.as_str() {
             "create" => "📝",
             "delete" => "🗑️",
+            "rename" => "🔁",
             _ => "✏️",
         };
         let ts_short = format_timeline_ts(&e.timestamp);
-        let body = if e.action.to_ascii_lowercase() == "create" {
+        let body = if action_lc == "create" {
             "创建".to_string()
-        } else if e.action.to_ascii_lowercase() == "delete" {
+        } else if action_lc == "delete" {
             "删除".to_string()
+        } else if action_lc == "rename" {
+            match &e.was {
+                Some(old) => format!("重命名 from 「{}」", old),
+                // 截断 / 异常 → 仍可见但不知 old；至少不误判为「无 marker」
+                None => "重命名（old title 不可解）".to_string(),
+            }
         } else if e.markers.is_empty() {
             "更新（无 marker 变化）".to_string()
         } else {
@@ -7698,16 +7749,23 @@ pub fn format_recent_events_reply(
         total_events,
     );
     for e in recent_slice {
-        let emoji = match e.action.to_ascii_lowercase().as_str() {
+        let action_lc = e.action.to_ascii_lowercase();
+        let emoji = match action_lc.as_str() {
             "create" => "📝",
             "delete" => "🗑️",
+            "rename" => "🔁",
             _ => "✏️",
         };
         let ts_short = format_timeline_ts(&e.timestamp);
-        let body = if e.action.to_ascii_lowercase() == "create" {
+        let body = if action_lc == "create" {
             "创建".to_string()
-        } else if e.action.to_ascii_lowercase() == "delete" {
+        } else if action_lc == "delete" {
             "删除".to_string()
+        } else if action_lc == "rename" {
+            match &e.was {
+                Some(old) => format!("重命名 from 「{}」", old),
+                None => "重命名（old title 不可解）".to_string(),
+            }
         } else if e.markers.is_empty() {
             "更新（无 marker 变化）".to_string()
         } else {
@@ -17104,16 +17162,19 @@ mod tests {
                 timestamp: "2026-05-01 09:00:00".to_string(),
                 action: "create".to_string(),
                 markers: vec![],
+                was: None,
             },
             TimelineEntry {
                 timestamp: "2026-05-02 10:00:00".to_string(),
                 action: "update".to_string(),
                 markers: vec!["[pinned]".to_string()],
+                was: None,
             },
             TimelineEntry {
                 timestamp: "2026-05-03 11:00:00".to_string(),
                 action: "update".to_string(),
                 markers: vec!["[done]".to_string()],
+                was: None,
             },
         ];
         // N=2 → 取最后 2 条（pinned + done）
@@ -17132,6 +17193,7 @@ mod tests {
             timestamp: "2026-05-01 09:00:00".to_string(),
             action: "create".to_string(),
             markers: vec![],
+            was: None,
         }];
         // N=20 但仅 1 条 entry → 显 1 条
         let s = format_recent_events_reply("t", &entries, 1, 20);
@@ -17362,11 +17424,13 @@ mod tests {
                 timestamp: "2026-05-15T09:30:00+08:00".to_string(),
                 action: "create".to_string(),
                 markers: vec![],
+                was: None,
             },
             TimelineEntry {
                 timestamp: "2026-05-17T14:00:00+08:00".to_string(),
                 action: "update".to_string(),
                 markers: vec!["[done]".to_string(), "[result: 已发送]".to_string()],
+                was: None,
             },
         ];
         let s = format_timeline_reply("写周报", &entries, 2);
@@ -17378,12 +17442,81 @@ mod tests {
     }
 
     #[test]
+    fn extract_was_from_snippet_basic() {
+        assert_eq!(
+            extract_was_from_snippet("[was: 整理 Downloads]"),
+            Some("整理 Downloads".to_string()),
+        );
+        // 前后有其它文本（不应发生但 defensive）
+        assert_eq!(
+            extract_was_from_snippet("noise [was: A] tail"),
+            Some("A".to_string()),
+        );
+        // 80 字截断把尾 `]` 砍掉 → 取到 snippet 末
+        assert_eq!(
+            extract_was_from_snippet("[was: very long old title cut by snippet limit…"),
+            Some("very long old title cut by snippet limit".to_string()),
+        );
+        // 无 prefix → None
+        assert_eq!(extract_was_from_snippet("just regular snippet"), None);
+        // 空 prefix value → None
+        assert_eq!(extract_was_from_snippet("[was: ]"), None);
+    }
+
+    #[test]
+    fn timeline_reply_renders_rename_with_old_title() {
+        let entries = vec![TimelineEntry {
+            timestamp: "2026-05-17T15:00:00+08:00".to_string(),
+            action: "rename".to_string(),
+            markers: vec![],
+            was: Some("写周报".to_string()),
+        }];
+        let s = format_timeline_reply("写 W21 周报", &entries, 1);
+        assert!(
+            s.contains("🔁 05-17 15:00 · 重命名 from 「写周报」"),
+            "rename line: {s}",
+        );
+        // 不应 fallback 到「更新（无 marker 变化）」误判
+        assert!(!s.contains("无 marker 变化"), "{s}");
+    }
+
+    #[test]
+    fn timeline_reply_renders_rename_with_unknown_old_fallback() {
+        // best-effort：snippet 截断导致 was=None 时仍能识别是 rename
+        let entries = vec![TimelineEntry {
+            timestamp: "2026-05-17T15:00:00+08:00".to_string(),
+            action: "rename".to_string(),
+            markers: vec![],
+            was: None,
+        }];
+        let s = format_timeline_reply("X", &entries, 1);
+        assert!(s.contains("🔁"), "rename emoji even without was: {s}");
+        assert!(s.contains("重命名（old title 不可解）"), "{s}");
+    }
+
+    #[test]
+    fn recent_events_reply_renders_rename() {
+        let entries = vec![TimelineEntry {
+            timestamp: "2026-05-17T15:00:00+08:00".to_string(),
+            action: "rename".to_string(),
+            markers: vec![],
+            was: Some("整理 Downloads".to_string()),
+        }];
+        let s = format_recent_events_reply("清理桌面", &entries, 1, 5);
+        assert!(
+            s.contains("🔁 05-17 15:00 · 重命名 from 「整理 Downloads」"),
+            "rename line in recent_events: {s}",
+        );
+    }
+
+    #[test]
     fn timeline_reply_caps_at_30_entries_with_overflow_hint() {
         let entries: Vec<TimelineEntry> = (0..50)
             .map(|i| TimelineEntry {
                 timestamp: format!("2026-05-17T{:02}:00:00+08:00", i % 24),
                 action: "update".to_string(),
                 markers: vec![format!("[result: r{}]", i)],
+                was: None,
             })
             .collect();
         let s = format_timeline_reply("t", &entries, 50);
@@ -17397,6 +17530,7 @@ mod tests {
             timestamp: "2026-05-17T09:00:00+08:00".to_string(),
             action: "create".to_string(),
             markers: vec![],
+            was: None,
         }];
         // total_events=5 but entries=1 → header notes dedup
         let s = format_timeline_reply("t", &entries, 5);

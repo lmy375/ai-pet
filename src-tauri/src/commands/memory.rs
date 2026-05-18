@@ -776,6 +776,26 @@ pub fn memory_rename(
         _ => {}
     }
 
+    // butler_tasks 的 rename 写入 butler_history.log（其它 cat 不污染
+    // butler_tasks 专用 log）。fire-and-forget：record_event 是 async
+    // 但 memory_rename 是 sync Tauri 命令；tauri::async_runtime::spawn
+    // 让 record IO 在背景跑不阻塞 rename 返回。best-effort 语义与既有
+    // butler_task_edit tool 的 record_event 调用一致 — IO 失败用户的
+    // rename 主操作不受影响。desc 段用 `[was: <old>]` 协议让未来
+    // /aliases / /timeline 等 audit 命令能解析回 old title。
+    if category == "butler_tasks" {
+        let old_for_log = old_title.clone();
+        let new_for_log = new_trimmed.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::butler_history::record_event(
+                "rename",
+                &new_for_log,
+                &format!("[was: {}]", old_for_log),
+            )
+            .await;
+        });
+    }
+
     Ok(format!("Renamed to '{new_trimmed}'."))
 }
 
