@@ -845,6 +845,59 @@ async fn handle_tg_command(
             // pure 函数 — 输出硬编码 family 分组速查表。无 IO。
             crate::telegram::commands::format_help_table_reply()
         }
+        TgCommand::RecentPins { n } => {
+            // scan butler_history.log 取所有含 [pinned] snippet 行 →
+            // dedupe by title 保留最早 ts → 按 ts desc 排 → cap N。
+            // dedupe 让同 title 多次 update（pin 状态不变）只算 1 次
+            // 决策事件。
+            let content =
+                crate::butler_history::read_history_content().await;
+            let mut earliest_per_title: std::collections::HashMap<
+                String,
+                String,
+            > = std::collections::HashMap::new();
+            for line in content.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                let Some((ts_str, body)) = line.split_once(' ') else {
+                    continue;
+                };
+                let mut parts = body.splitn(2, " :: ");
+                let head = parts.next().unwrap_or("");
+                let snippet = parts.next().unwrap_or("");
+                if !snippet.contains("[pinned]") {
+                    continue;
+                }
+                let Some((_action, title)) = head.split_once(' ') else {
+                    continue;
+                };
+                let title = title.trim().to_string();
+                // content 是 chronological (file 顺序 = oldest first)；
+                // entry().or_insert 让首次（最早）保留
+                earliest_per_title
+                    .entry(title)
+                    .or_insert_with(|| ts_str.to_string());
+            }
+            // Vec<(ts, title)> by ts desc。RFC3339 字典序 = 时序对 ASCII
+            // ISO 安全。
+            let mut with_ts: Vec<(String, String)> = earliest_per_title
+                .into_iter()
+                .map(|(title, ts)| (ts, title))
+                .collect();
+            with_ts.sort_by(|a, b| b.0.cmp(&a.0));
+            let total = with_ts.len();
+            with_ts.truncate(n as usize);
+            let rows: Vec<(String, String)> = with_ts
+                .into_iter()
+                .map(|(ts, title)| {
+                    let ts_label =
+                        crate::telegram::commands::format_timeline_ts(&ts);
+                    (ts_label, title)
+                })
+                .collect();
+            crate::telegram::commands::format_recent_pins_reply(&rows, total)
+        }
         TgCommand::RecentRenames { n } => {
             // 扫 butler_history.log 取 action=='rename' 行，取 ts 解析
             // 后 newest-first 排，cap N。复用 extract_was_from_snippet
