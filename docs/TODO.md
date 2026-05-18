@@ -10,7 +10,6 @@
 
 - PanelTasks chip-bar「📋 audit summary」chip：click 弹小 modal 显与 TG /audit_summary 等价 5 信号 — 桌面端对偶。
 - PanelMemory「📊 audit chip-bar」加在 toolbar 上方：always-visible 显「N pin / K cat 活跃 / P idle / R rename」类 audit_summary 缩略 — 桌面 ambient awareness。
-- TG `/here_recent_done`：近 N 条 done task 注入 transient_note — pet 回顾「我最近完成了什么」reply 时引用。
 
 
 
