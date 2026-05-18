@@ -1039,6 +1039,81 @@ async fn handle_tg_command(
                 .unwrap_or(0);
             crate::telegram::commands::format_random_pinned_reply(&views, seed)
         }
+        TgCommand::PinnedDrop7d => {
+            // 「近 7 天疑似被 unpin」detection（best-effort）：
+            // 1. 当前 views 里 task `pinned == false` 的 title 集合 = candidates
+            //    （current_unpinned）
+            // 2. 扫 butler_history.log 取 ts ≥ now-7d 的行；snippet 含 [pinned]
+            //    的 → 记录该 title 的「最后 [pinned] sighting ts」
+            // 3. 交：title ∈ current_unpinned ∧ ∃ recent pin sighting → 候选
+            // 4. 按 sighting ts desc 排，HH:MM 取 ts label（跨日 scope 需要
+            //    日期，故用 MM-DD HH:MM 与 /find_speech 一致）
+            //
+            // 局限：snippet 80 字截断可能漏 [pinned] → false neg；只看到
+            // history retention 内的 pin sighting；不区分「曾 pinned 后被
+            // update 但 marker 留着」与真 unpin。caveats 在 help-detail。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let now_local = chrono::Local::now();
+            let cutoff = now_local - chrono::Duration::days(7);
+            let current_unpinned: std::collections::HashSet<String> = views
+                .iter()
+                .filter(|v| !v.pinned)
+                .map(|v| v.title.clone())
+                .collect();
+            let mut latest_pin_ts: std::collections::HashMap<
+                String,
+                chrono::DateTime<chrono::Local>,
+            > = std::collections::HashMap::new();
+            let content =
+                crate::butler_history::read_history_content().await;
+            for line in content.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                let Some((ts_str, body)) = line.split_once(' ') else {
+                    continue;
+                };
+                let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                    continue;
+                };
+                let ts_local = ts.with_timezone(&chrono::Local);
+                if ts_local < cutoff {
+                    continue;
+                }
+                // body 形如 "<action> <title> :: <snippet>"
+                let mut parts = body.splitn(2, " :: ");
+                let head = parts.next().unwrap_or("");
+                let snippet = parts.next().unwrap_or("");
+                if !snippet.contains("[pinned]") {
+                    continue;
+                }
+                let Some((_action, title)) = head.split_once(' ') else {
+                    continue;
+                };
+                let title = title.trim();
+                if !current_unpinned.contains(title) {
+                    continue;
+                }
+                latest_pin_ts
+                    .entry(title.to_string())
+                    .and_modify(|prev| {
+                        if ts_local > *prev {
+                            *prev = ts_local;
+                        }
+                    })
+                    .or_insert(ts_local);
+            }
+            let mut with_dt: Vec<(String, chrono::DateTime<chrono::Local>)> =
+                latest_pin_ts.into_iter().collect();
+            with_dt.sort_by(|a, b| b.1.cmp(&a.1));
+            let rows: Vec<(String, String)> = with_dt
+                .into_iter()
+                .map(|(title, ts)| {
+                    (title, ts.format("%m-%d %H:%M").to_string())
+                })
+                .collect();
+            crate::telegram::commands::format_pinned_drop_7d_reply(&rows)
+        }
         TgCommand::CatGrowth7d => {
             // 扫所有 cat（memory_list(None)）→ 每个 cat 算 created_at
             // 落入近 7d 窗口的 item 数 → 仅留 delta > 0 → 按 delta desc
