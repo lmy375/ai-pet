@@ -841,6 +841,46 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HereTopCat => {
+            // scan memory_list(None) → per-cat item count → sort desc →
+            // take top 3 → 拼「📊 主力 cat context：cat1 (N1) · cat2
+            // (N2) · cat3 (N3)」 → set_transient_note(text, 60)。
+            let mut rows: Vec<(String, usize)> = Vec::new();
+            if let Ok(index) =
+                crate::commands::memory::memory_list(None)
+            {
+                for (key, cat) in index.categories.iter() {
+                    if cat.items.is_empty() {
+                        continue;
+                    }
+                    rows.push((key.clone(), cat.items.len()));
+                }
+            }
+            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            rows.truncate(3);
+            if rows.is_empty() {
+                crate::telegram::commands::format_here_top_cat_reply(&[], None)
+            } else {
+                let joined = rows
+                    .iter()
+                    .map(|(k, n)| format!("{} ({})", k, n))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let cat_ctx = format!("📊 主力 cat context：{}", joined);
+                let until_iso =
+                    crate::proactive::set_transient_note(cat_ctx, 60);
+                let until_local = chrono::DateTime::parse_from_str(
+                    &until_iso,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Local));
+                crate::telegram::commands::format_here_top_cat_reply(
+                    &rows,
+                    until_local,
+                )
+            }
+        }
         TgCommand::HereClear => {
             // fetch current transient → 清 → ack reply 含 preview。
             // set_transient_note("", 0) 已是 clear sentinel（per proactive.rs
