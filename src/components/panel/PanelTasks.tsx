@@ -4297,6 +4297,39 @@ export function PanelTasks({
     [insertMarkdownAtCursor],
   );
 
+  /// detail.md textarea ⌘⇧A 插 GFM markdown alert callout 模板 — 给
+  /// 决策日志 / 提示 / 警告 / 风险等"特别强调段"快速搭脚架。GFM 4 种
+  /// alert：`[!NOTE]` / `[!TIP]` / `[!WARNING]` / `[!CAUTION]`（GitHub
+  /// 渲染为不同颜色 callout block）。本 shortcut 默认插 `[!NOTE]`，
+  /// owner 可手动编辑成其它 3 种 — 选 default 而非 4 个 shortcut 占
+  /// 键位（owner 写 NOTE 最多，少量 cycle 改成 TIP/WARNING/CAUTION）。
+  ///
+  /// 模板：
+  ///   > [!NOTE]
+  ///   > <cursor>
+  ///
+  /// 前后各加 `\n` 保 callout 独立成块（与 fenced block / table 同 GFM
+  /// 解析约定 — 前后空行才正确识别 `> [!NOTE]` 为 callout 而非普通
+  /// blockquote）。
+  ///
+  /// ⌘⇧A 选择：⌘A 是 "select all"；shift 修饰避开。⌘⇧A 在多 IDE / 编
+  /// 辑器 mostly 空（VS Code 是 "togge sticky scroll"等较冷门绑定），
+  /// 占给 "Alert" 助记。
+  const handleDetailAlertTemplate = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "a") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      // 默认 [!NOTE]；其它 3 种 owner 手动改（NOTE → TIP/WARNING/CAUTION）
+      const template = "\n> [!NOTE]\n> ";
+      insertMarkdownAtCursor("wrap", template, "");
+      return true;
+    },
+    [insertMarkdownAtCursor],
+  );
+
   /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
   /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
   /// modifier check（no shift / no alt）+ IME composing skip。空选 →
@@ -14999,6 +15032,9 @@ export function PanelTasks({
                                   // ⌘⇧M 插 markdown table 3x3 模板 —
                                   // 快速搭表格架构免手敲管道符。
                                   if (handleDetailTableTemplate(e)) return;
+                                  // ⌘⇧A 插 GFM markdown alert callout
+                                  // 模板（`> [!NOTE]` + cursor 落第二行）
+                                  if (handleDetailAlertTemplate(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -15491,6 +15527,9 @@ export function PanelTasks({
                                   // ⌘⇧M 插 markdown table 3x3 模板 —
                                   // 快速搭表格架构免手敲管道符。
                                   if (handleDetailTableTemplate(e)) return;
+                                  // ⌘⇧A 插 GFM markdown alert callout
+                                  // 模板（`> [!NOTE]` + cursor 落第二行）
+                                  if (handleDetailAlertTemplate(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -18808,6 +18847,7 @@ export function PanelTasks({
                   ["⌘⌥L", "选区行排序（auto-detect numeric / alphabetical — IDE Sort Lines；<2 行 noop；已排序幂等）"],
                   ["⌘⇧I", "插完整 ISO 8601 时间戳（YYYY-MM-DDThh:mm:ss±tz）— 精度版 ⌘⇧D"],
                   ["⌘⇧M", "插 markdown table 3x3 模板（header + 分隔 + 2 空行）— 快速搭表"],
+                  ["⌘⇧A", "插 GFM markdown alert callout（默认 [!NOTE]；手改 TIP/WARNING/CAUTION）"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
