@@ -841,6 +841,51 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::RecentRenames { n } => {
+            // 扫 butler_history.log 取 action=='rename' 行，取 ts 解析
+            // 后 newest-first 排，cap N。复用 extract_was_from_snippet
+            // 解 [was: <old>]。format_timeline_ts 给 MM-DD HH:MM 标签。
+            //
+            // 不 chat-scope（与 /streak_pin 同 tradeoff — butler_history
+            // 是 global log，无 chat origin）。
+            let content =
+                crate::butler_history::read_history_content().await;
+            let mut rename_rows: Vec<(String, String, String)> = Vec::new();
+            for line in content.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                let Some((ts_str, body)) = line.split_once(' ') else {
+                    continue;
+                };
+                let mut parts = body.splitn(2, " :: ");
+                let head = parts.next().unwrap_or("");
+                let snippet = parts.next().unwrap_or("");
+                let Some((action, new_title)) = head.split_once(' ') else {
+                    continue;
+                };
+                if action.to_ascii_lowercase() != "rename" {
+                    continue;
+                }
+                let old_title =
+                    crate::telegram::commands::extract_was_from_snippet(snippet)
+                        .unwrap_or_else(|| "（old 不可解）".to_string());
+                let ts_label =
+                    crate::telegram::commands::format_timeline_ts(ts_str);
+                rename_rows.push((
+                    ts_label,
+                    new_title.trim().to_string(),
+                    old_title,
+                ));
+            }
+            // file 是 chronological（oldest first），reverse 到 newest first
+            rename_rows.reverse();
+            let total = rename_rows.len();
+            rename_rows.truncate(n as usize);
+            crate::telegram::commands::format_recent_renames_reply(
+                &rename_rows, total,
+            )
+        }
         TgCommand::StreakPin => {
             // 关注节奏 audit — /streak 的 pin 维度对偶。
             // 1. 扫 butler_history.log 收集 含 [pinned] sighting 的 date set
