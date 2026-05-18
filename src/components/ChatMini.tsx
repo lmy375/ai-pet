@@ -3341,6 +3341,36 @@ export function ChatMini({
                 💾 转 task
               </button>
             )}
+            {/* 📝 转 reflect：把 bubble plain text 一键存为 ai_insights
+                memory item — 与 💾 转 task 对偶（task 是要做的事；reflect
+                是反思 / 自我洞察）。复用既有 onSaveAsAiInsight callback
+                （选区 toolbar 📚 同后端 — memory_edit("create",
+                "ai_insights")，title 自动 reflect-YYYY-MM-DDTHH-MM-SS）。
+                gate `onSaveAsAiInsight && hasText` — 与 💾 转 task 同
+                hasText 防御 + 父无 callback 时不渲染。 */}
+            {hasText && onSaveAsAiInsight && (
+              <button
+                type="button"
+                style={item}
+                onMouseOver={itemHoverIn}
+                onMouseOut={itemHoverOut}
+                onClick={() => {
+                  setCtxMenu(null);
+                  onSaveAsAiInsight(text);
+                  setBubbleCopyIdx(ctxMenu.idx);
+                  window.setTimeout(
+                    () =>
+                      setBubbleCopyIdx((cur) =>
+                        cur === ctxMenu.idx ? null : cur,
+                      ),
+                    1500,
+                  );
+                }}
+                title="把这条 bubble 转 ai_insights memory item — 反思 / 自我洞察分类（title 自动 reflect-YYYY-MM-DDTHH-MM-SS，body = 全文）。与 💾 转 task（要做的事）/ 📝 note 选区版（杂项 brain-dump）三件分类。同 /reflect TG 命令后端。"
+              >
+                📝 转 reflect
+              </button>
+            )}
             {isAssistant && hasText && (
               <button
                 type="button"
