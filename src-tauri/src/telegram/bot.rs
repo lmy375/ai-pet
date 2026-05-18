@@ -1257,6 +1257,72 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_find_reply(&views, &keyword)
         }
+        TgCommand::FindInDetailYesterday { keyword } => {
+            // 与 FindInDetailToday 同结构，date - 1 天。pred_opt 跨月跨年
+            // chrono 自动处理；极端 NaiveDate::MIN 兜底走 today。
+            let kw = keyword.trim().to_string();
+            let yesterday = chrono::Local::now()
+                .date_naive()
+                .pred_opt()
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
+            if kw.is_empty() {
+                crate::telegram::commands::format_find_in_detail_yesterday_reply(
+                    &[],
+                    &keyword,
+                    yesterday,
+                )
+            } else {
+                let yesterday_str = yesterday.format("%Y-%m-%d").to_string();
+                let views = read_tg_chat_task_views(chat_id.0);
+                let mut hits: Vec<crate::telegram::commands::FindInDetailHit> = Vec::new();
+                use crate::task_queue::TaskStatus;
+                let status_rank = |s: &TaskStatus| match s {
+                    TaskStatus::Pending => 0u8,
+                    TaskStatus::Error => 1,
+                    TaskStatus::Done => 2,
+                    TaskStatus::Cancelled => 3,
+                };
+                // filter yesterday 在扫 detail.md 之前 — IO 限定 scope
+                let mut sorted: Vec<&crate::task_queue::TaskView> = views
+                    .iter()
+                    .filter(|v| {
+                        v.updated_at.len() >= 10
+                            && &v.updated_at[..10] == yesterday_str.as_str()
+                    })
+                    .collect();
+                sorted.sort_by_key(|v| status_rank(&v.status));
+                for v in sorted.iter() {
+                    if v.detail_path.is_empty() {
+                        continue;
+                    }
+                    let content = match crate::commands::memory::memory_read_detail_full(
+                        v.detail_path.clone(),
+                    ) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    if content.is_empty() {
+                        continue;
+                    }
+                    if let Some(snippet) =
+                        crate::telegram::commands::extract_find_in_detail_snippet(
+                            &content, &kw,
+                        )
+                    {
+                        hits.push(crate::telegram::commands::FindInDetailHit {
+                            title: v.title.as_str(),
+                            status: v.status,
+                            snippet,
+                        });
+                    }
+                }
+                crate::telegram::commands::format_find_in_detail_yesterday_reply(
+                    &hits,
+                    &keyword,
+                    yesterday,
+                )
+            }
+        }
         TgCommand::FindInDetailToday { keyword } => {
             // 与 FindInDetail 同结构 + today filter on updated_at。
             // 短路：空 kw 直接走 formatter usage hint（节省 IO）；非空 kw
