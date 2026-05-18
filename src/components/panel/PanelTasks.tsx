@@ -9018,6 +9018,71 @@ export function PanelTasks({
         </div>
         {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0 || todayActiveP7Count > 0 || (renameCount7d ?? 0) > 0 || (renameCount30d ?? 0) > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
+            {/* 📋 audit summary chip：与 TG /audit_summary 远程对偶 —
+                hover 看 5 大 audit 信号紧凑总结；click 复制 markdown
+                summary 到剪贴板（粘日报 / 同事 ping / weekly review）。
+                信号取既有 memos：pinnedCount / idleCount / todayActiveP7
+                Count / renameCount7d / completionStats.today。位置首位
+                让 owner 扫 chip-bar 时第一眼看见 sprint kickoff 入口。
+                slate-tint 中性色 — 总览不该色族冲突。 */}
+            {(() => {
+              const lines = [
+                `📋 audit summary（${new Date().toISOString().slice(0, 10)}）`,
+                `· 📌 pinned: ${pinnedCount} 条 active`,
+                `· 💤 idle 7d+: ${idleCount} 条 stale pending`,
+                `· 🚀 今日 P7+: ${todayActiveP7Count} 条`,
+                `· 🏷 近 7d rename: ${renameCount7d ?? 0} 次`,
+                `· ✅ 今日完成: ${completionStats.today} 条`,
+              ];
+              const tooltip = lines.join("\n");
+              const total =
+                pinnedCount +
+                idleCount +
+                todayActiveP7Count +
+                (renameCount7d ?? 0) +
+                completionStats.today;
+              return (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={async () => {
+                    const md = lines.join("\n");
+                    try {
+                      await navigator.clipboard.writeText(md);
+                      setBulkResultMsg(`📋 已复制 audit summary`);
+                    } catch (e) {
+                      setBulkResultMsg(`复制失败：${e}`);
+                    }
+                    window.setTimeout(() => setBulkResultMsg(""), 2500);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      void navigator.clipboard.writeText(lines.join("\n"));
+                    }
+                  }}
+                  title={`${tooltip}\n\nclick 复制全 summary 到剪贴板（与 TG /audit_summary 远程对偶）`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    cursor: "pointer",
+                    userSelect: "none",
+                    background:
+                      "color-mix(in srgb, var(--pet-color-fg) 10%, transparent)",
+                    color: "var(--pet-color-fg)",
+                    fontWeight: 600,
+                    border:
+                      "1px solid color-mix(in srgb, var(--pet-color-fg) 25%, transparent)",
+                  }}
+                >
+                  📋 audit · {total}
+                </span>
+              );
+            })()}
             {/* 一键重试所有 error 任务 chip。> 0 时显，红底突出。点击调
                 handleRetryAllErrors 顺序 invoke task_retry；bulkBusy 期间
                 disabled 防双触。与 due / overdue chip 同列位置便于一眼扫到。 */}
