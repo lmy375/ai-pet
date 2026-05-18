@@ -4444,6 +4444,89 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘⇧H 当前行 markdown heading level 循环：
+  /// none → h1 (`# `) → h2 (`## `) → h3 (`### `) → h4 (`#### `) → none。
+  /// 让 owner 一键调整段落级别（笔记结构调整 / 提级降级常用）。
+  ///
+  /// 算法：扩边到当前行 → 探测 leading `#{1,4} ` 前缀 → 决定下一 state
+  /// → 替换行首 prefix（仅 # + 空格部分，正文内容保留）。无选区时操
+  /// 作行内；有选区时仅处理 cursor 所在行（不批量；批量见 ⌘⌥L
+  /// sort-lines）。
+  ///
+  /// state cycle：
+  /// - 行首无 `# ` → 加 `# `（→ h1）
+  /// - `# ` → 替换为 `## `（→ h2）
+  /// - `## ` → `### `（→ h3）
+  /// - `### ` → `#### `（→ h4）
+  /// - `#### ` → 删（→ none，回到普通段落）
+  /// - `##### ` / `###### `（h5/h6）→ 视为 h4 同 case，删（让 cycle 闭环）
+  ///
+  /// 仅 ATX-style heading 处理（`# ` 前缀）；CommonMark 允许行首 ≤ 3
+  /// 空格，本 helper 简化为「行首直接 `# `」— owner 用 indented
+  /// heading 罕见
+  ///
+  /// ⌘⇧H 选择：⌘H 是 macOS hide app / Chrome history；shift 修饰避开。
+  /// ⌘⇧H 在 IDE mostly 空 — "Heading" 助记一致
+  const handleDetailHeadingCycle = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "h") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const value = ta.value;
+      // 扩边到当前行（仅 start 边 — 不像 sort/blockquote 扩多行）
+      const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const nextNl = value.indexOf("\n", lineStart);
+      const lineEnd = nextNl === -1 ? value.length : nextNl;
+      const line = value.slice(lineStart, lineEnd);
+      // 探测 leading `#{1,6} `
+      const m = /^(#{1,6}) (.*)$/.exec(line);
+      let newLine: string;
+      let cursorOffset = 0; // cursor 相对 lineStart 的偏移调整
+      if (m) {
+        const hashes = m[1];
+        const rest = m[2];
+        const lv = hashes.length;
+        if (lv >= 4) {
+          // h4/h5/h6 → none（回到普通段落，让 cycle 闭环）
+          newLine = rest;
+          // cursor 减去 prefix 长度（h4 prefix 是 4 个 # + 1 空格 = 5 字符；
+          // h5 = 6；h6 = 7 — 计算实际 stripped 长度）。防越界由 Math.max
+          // 兜底
+          cursorOffset = -(hashes.length + 1);
+        } else {
+          // h1/h2/h3 → 下一级（+1 个 #）
+          newLine = `${"#".repeat(lv + 1)} ${rest}`;
+          cursorOffset = 1; // 新增 1 个 #
+        }
+      } else {
+        // 无 heading prefix → 加 `# `（h1）
+        newLine = `# ${line}`;
+        cursorOffset = 2; // 新增 `# ` 2 字符
+      }
+      const before = value.slice(0, lineStart);
+      const after = value.slice(lineEnd);
+      const next = before + newLine + after;
+      setEditingDetailContent(next);
+      // cursor 维持相对位置（cursor - lineStart 在新 line 内的相对位置）
+      const newCursor = Math.max(lineStart, start + cursorOffset);
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = newCursor;
+        cur.selectionEnd = newCursor;
+        setDetailCursorPos(newCursor);
+        setDetailSelectionEnd(newCursor);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
   /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
   /// modifier check（no shift / no alt）+ IME composing skip。空选 →
@@ -15217,6 +15300,9 @@ export function PanelTasks({
                                   // ⌘⇧Q 选区行 wrap markdown blockquote
                                   // （每行加 `> ` 前缀）
                                   if (handleDetailBlockquote(e)) return;
+                                  // ⌘⇧H 当前行 heading level 循环
+                                  // (none→h1→h2→h3→h4→none)
+                                  if (handleDetailHeadingCycle(e)) return;
                                   // ⌘⇧Y 插 YAML frontmatter 模板 — 长
                                   // doc / publishable note 元数据脚手架
                                   if (handleDetailYamlFrontmatter(e)) return;
@@ -15718,6 +15804,9 @@ export function PanelTasks({
                                   // ⌘⇧Q 选区行 wrap markdown blockquote
                                   // （每行加 `> ` 前缀）
                                   if (handleDetailBlockquote(e)) return;
+                                  // ⌘⇧H 当前行 heading level 循环
+                                  // (none→h1→h2→h3→h4→none)
+                                  if (handleDetailHeadingCycle(e)) return;
                                   // ⌘⇧Y 插 YAML frontmatter 模板 — 长
                                   // doc / publishable note 元数据脚手架
                                   if (handleDetailYamlFrontmatter(e)) return;
@@ -19041,6 +19130,7 @@ export function PanelTasks({
                   ["⌘⇧A", "插 GFM markdown alert callout（默认 [!NOTE]；手改 TIP/WARNING/CAUTION）"],
                   ["⌘⇧Q", "选区行 wrap markdown blockquote（每行 `> ` 前缀；空行用 `>`）"],
                   ["⌘⇧Y", "插 YAML frontmatter 模板（title/date/tags；自动填今日 date）— doc 起始位"],
+                  ["⌘⇧H", "当前行 heading level 循环（none→h1→h2→h3→h4→none）"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
