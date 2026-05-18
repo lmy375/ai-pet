@@ -1190,6 +1190,55 @@ async fn handle_tg_command(
                 .collect();
             crate::telegram::commands::format_pinned_drop_7d_reply(&rows)
         }
+        TgCommand::CatDecay7d => {
+            // /cat_growth_7d 反向 — 扫 memory_list(None)，每个 cat 算
+            // max(items.updated_at)。若 max < cutoff (now-7d) 即 stale。
+            // empty cat（0 items）跳过 — 没数据无所谓"未动"语义。
+            // days_since = floor((now - max_updated) / 1day)。
+            // 排：days desc（最老 stale 在上 — owner 先看最该处理的）。
+            let now_ms = chrono::Local::now().timestamp_millis();
+            let seven_d_ms = 7 * 24 * 60 * 60 * 1000_i64;
+            let cutoff_ms = now_ms - seven_d_ms;
+            let mut rows: Vec<(String, String, i64)> = Vec::new();
+            if let Ok(index) =
+                crate::commands::memory::memory_list(None)
+            {
+                for (key, cat) in index.categories.iter() {
+                    if cat.items.is_empty() {
+                        continue;
+                    }
+                    let mut max_u: Option<i64> = None;
+                    for it in &cat.items {
+                        if it.updated_at.is_empty() {
+                            continue;
+                        }
+                        let Ok(t) = chrono::DateTime::parse_from_rfc3339(
+                            &it.updated_at,
+                        ) else {
+                            continue;
+                        };
+                        let ms = t.timestamp_millis();
+                        match max_u {
+                            Some(m) if m >= ms => {}
+                            _ => max_u = Some(ms),
+                        }
+                    }
+                    let Some(max_ms) = max_u else {
+                        // 全部 items 都解析失败 — 不计 stale（避免脏数据误判）
+                        continue;
+                    };
+                    if max_ms < cutoff_ms {
+                        let days = (now_ms - max_ms) / (24 * 60 * 60 * 1000);
+                        rows.push((key.clone(), cat.label.clone(), days));
+                    }
+                }
+            }
+            // days desc；tie 时 key asc 稳定
+            rows.sort_by(|a, b| {
+                b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0))
+            });
+            crate::telegram::commands::format_cat_decay_7d_reply(&rows)
+        }
         TgCommand::CatGrowth7d => {
             // 扫所有 cat（memory_list(None)）→ 每个 cat 算 created_at
             // 落入近 7d 窗口的 item 数 → 仅留 delta > 0 → 按 delta desc
