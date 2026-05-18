@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelTasks row hover「🔄 update 次数」chip：扫 butler_history 算本 task 近 7d 内 update event 数 — 单 task 活跃度。
 - TG `/streak_pin`：连续多少天有 pinned task 在 active — 与 /streak 完成度互补，「我多久没钉过任务」audit。
 
 

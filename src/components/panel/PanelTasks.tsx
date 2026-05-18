@@ -11717,6 +11717,60 @@ export function PanelTasks({
                         </span>
                       );
                     })()}
+                    {/* 🔄 近 7d 活动次数 chip — hover 才显（与其它 hover
+                        chip family 同 gate `taskPreviewHoverTitle === title`）。
+                        从 sparklineBuckets 取末两桶（buckets[8]+buckets[9] =
+                        近 0-6 天 ≈ 7d 窗口）。覆盖 update + create + rename
+                        全谱 event；不精确单做 update 过滤（ambient 信号信
+                        噪比已足）。0 时不渲（sparkline 已 gate「从未 touch」
+                        过的 task），≥ 1 才挂。tooltip 解释取桶意义 + 全谱
+                        语义。click 复制单行供同事分享 / 周报。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      (() => {
+                        const buckets = sparklineBuckets[t.title];
+                        if (!buckets || buckets.length < 10) return null;
+                        const recent =
+                          (buckets[8] || 0) + (buckets[9] || 0);
+                        if (recent === 0) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const line = `「${t.title}」近 7 天 ${recent} 次 history event`;
+                              try {
+                                await navigator.clipboard.writeText(line);
+                                setBulkResultMsg(`🔄 已复制：${line}`);
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={`本 task 近 7 天 ${recent} 次 butler_history event（取 sparkline 末两桶 = 0-6 天窗口；含 update / create / rename 全谱不限 update-only）。click 复制单行。`}
+                            aria-label="copy recent 7d activity count"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border: "1px dashed var(--pet-tint-blue-fg)",
+                              borderRadius: 3,
+                              background: "transparent",
+                              color: "var(--pet-tint-blue-fg)",
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            🔄 7d {recent}
+                          </button>
+                        );
+                      })()}
                     {/* ⚡ NOW 标记：浮顶 + 桌面 nudge 60s 内有效，过期自动消失。 */}
                     {nowMarkedTitles.has(t.title) && (
                       <span
