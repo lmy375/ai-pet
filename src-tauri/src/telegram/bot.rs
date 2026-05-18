@@ -1238,6 +1238,70 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             crate::telegram::commands::format_find_reply(&views, &keyword)
         }
+        TgCommand::FindInDetailToday { keyword } => {
+            // 与 FindInDetail 同结构 + today filter on updated_at。
+            // 短路：空 kw 直接走 formatter usage hint（节省 IO）；非空 kw
+            // 才扫 detail.md。
+            let kw = keyword.trim().to_string();
+            let today = chrono::Local::now().date_naive();
+            if kw.is_empty() {
+                crate::telegram::commands::format_find_in_detail_today_reply(
+                    &[],
+                    &keyword,
+                    today,
+                )
+            } else {
+                let today_str = today.format("%Y-%m-%d").to_string();
+                let views = read_tg_chat_task_views(chat_id.0);
+                let mut hits: Vec<crate::telegram::commands::FindInDetailHit> = Vec::new();
+                use crate::task_queue::TaskStatus;
+                let status_rank = |s: &TaskStatus| match s {
+                    TaskStatus::Pending => 0u8,
+                    TaskStatus::Error => 1,
+                    TaskStatus::Done => 2,
+                    TaskStatus::Cancelled => 3,
+                };
+                // 限今日 updated_at 后再 sort（IO 限定到更小集，开销显著降）
+                let mut sorted: Vec<&crate::task_queue::TaskView> = views
+                    .iter()
+                    .filter(|v| {
+                        v.updated_at.len() >= 10
+                            && &v.updated_at[..10] == today_str.as_str()
+                    })
+                    .collect();
+                sorted.sort_by_key(|v| status_rank(&v.status));
+                for v in sorted.iter() {
+                    if v.detail_path.is_empty() {
+                        continue;
+                    }
+                    let content = match crate::commands::memory::memory_read_detail_full(
+                        v.detail_path.clone(),
+                    ) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    if content.is_empty() {
+                        continue;
+                    }
+                    if let Some(snippet) =
+                        crate::telegram::commands::extract_find_in_detail_snippet(
+                            &content, &kw,
+                        )
+                    {
+                        hits.push(crate::telegram::commands::FindInDetailHit {
+                            title: v.title.as_str(),
+                            status: v.status,
+                            snippet,
+                        });
+                    }
+                }
+                crate::telegram::commands::format_find_in_detail_today_reply(
+                    &hits,
+                    &keyword,
+                    today,
+                )
+            }
+        }
         TgCommand::FindInDetail { keyword } => {
             // 搜每条 task 的 detail.md 内容 — handler 负责 IO（读所有
             // detail.md 文件），formatter 仅做字符串拼装。空 keyword 由
