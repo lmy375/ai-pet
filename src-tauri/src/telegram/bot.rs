@@ -2138,6 +2138,34 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::AlarmsToday => {
+            // 与 Alarms 同 read 路径 — 读 todo memory items + parse_reminder
+            // _prefix 抽 (target, topic, title)；formatter 内部 filter 今
+            // 日 target 后渲染。不需 sort（filter 后小集合 + formatter 单
+            // 次列）。
+            let items = crate::db::todos_as_memory_items();
+            let mut rows: Vec<(
+                crate::proactive::ReminderTarget,
+                String,
+                String,
+            )> = items
+                .iter()
+                .filter_map(|item| {
+                    crate::proactive::parse_reminder_prefix(&item.description)
+                        .map(|(target, topic)| (target, topic, item.title.clone()))
+                })
+                .collect();
+            let now = chrono::Local::now().naive_local();
+            // 与 /alarms 同 target asc sort（最近 fire 在前）
+            rows.sort_by_key(|(t, _, _)| match t {
+                crate::proactive::ReminderTarget::Absolute(dt) => *dt,
+                crate::proactive::ReminderTarget::TodayHour(h, m) => now
+                    .date()
+                    .and_hms_opt(*h as u32, *m as u32, 0)
+                    .unwrap_or(now),
+            });
+            crate::telegram::commands::format_alarms_today_reply(&rows, now)
+        }
         TgCommand::Alarms { n } => {
             // 读 todo memory items → 过滤含 [remind: ...] 协议条目 →
             // 收集 (target, topic, title) → 按 target 升序排（最近 fire
