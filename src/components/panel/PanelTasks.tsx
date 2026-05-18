@@ -10914,6 +10914,71 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* ⏳ pending N 天 stale chip — 仅 pending task 持续
+                        ≥ 14 天时浮（red-tint warning），≥ 30 天时加粗。
+                        complement 既有 ⏱ 历经（done）/ 📅 创建（任意状
+                        态）chip — 本 chip 是 stale backlog 告警视角，
+                        让 owner 看到「这条 pending 我搁了 N 天没动」。
+                        gate：hover + status === pending + 有 created_at
+                        + age ≥ 14 天。click 复制「<title> pending N 天
+                        (since YYYY-MM-DD)」line。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      t.status === "pending" &&
+                      t.created_at.length > 0 &&
+                      (() => {
+                        const cMs = Date.parse(t.created_at);
+                        if (isNaN(cMs)) return null;
+                        const ageMs = nowMs - cMs;
+                        if (ageMs < 0) return null;
+                        const days = Math.floor(ageMs / 86_400_000);
+                        if (days < 14) return null; // 14 天起算 stale
+                        const veryStale = days >= 30;
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const line = `「${t.title}」pending ${days} 天（since ${t.created_at.slice(0, 10)}）`;
+                              try {
+                                await navigator.clipboard.writeText(line);
+                                setBulkResultMsg(`⏳ 已复制：${line}`);
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={
+                              veryStale
+                                ? `⚠ stale backlog：本 task pending 已 ${days} 天（since ${t.created_at.slice(0, 10)}）— 考虑 /done / /cancel / /promote 推动决策。click 复制 line。`
+                                : `本 task pending ${days} 天（since ${t.created_at.slice(0, 10)}）— 长期 backlog 信号；click 复制 line。`
+                            }
+                            aria-label="copy stale pending duration"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border: `1px dashed var(--pet-tint-red-fg)`,
+                              borderRadius: 3,
+                              background: veryStale
+                                ? "var(--pet-tint-red-bg)"
+                                : "transparent",
+                              color: "var(--pet-tint-red-fg)",
+                              fontWeight: veryStale ? 600 : undefined,
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ⏳ pending {days}d
+                          </button>
+                        );
+                      })()}
                     {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
                         时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
                         audit。complement 既有 dueUrgency 三档（normal /
