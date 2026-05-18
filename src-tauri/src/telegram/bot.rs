@@ -1235,46 +1235,15 @@ async fn handle_tg_command(
             crate::telegram::commands::format_cat_decay_reply(&rows, 30)
         }
         TgCommand::CatGrowth7d => {
-            // 扫所有 cat（memory_list(None)）→ 每个 cat 算 created_at
-            // 落入近 7d 窗口的 item 数 → 仅留 delta > 0 → 按 delta desc
-            // 排 → 拼 formatter。read 失败兜底空 list（formatter 走 empty
-            // path）。
-            //
-            // 注：memory_list 已在 read 时把 butler_tasks / todo /
-            // task_archive 段用 SQLite 真相覆盖，所以本命令算的是真实新增
-            // 而非 yaml orphan。
-            let now_ms = chrono::Local::now().timestamp_millis();
-            let seven_d_ms = 7 * 24 * 60 * 60 * 1000_i64;
-            let cutoff_ms = now_ms - seven_d_ms;
-            let mut rows: Vec<(String, String, usize)> = Vec::new();
-            if let Ok(index) =
-                crate::commands::memory::memory_list(None)
-            {
-                for (key, cat) in index.categories.iter() {
-                    let mut delta = 0usize;
-                    for it in &cat.items {
-                        if it.created_at.is_empty() {
-                            continue;
-                        }
-                        let Ok(t) = chrono::DateTime::parse_from_rfc3339(
-                            &it.created_at,
-                        ) else {
-                            continue;
-                        };
-                        if t.timestamp_millis() >= cutoff_ms {
-                            delta += 1;
-                        }
-                    }
-                    if delta > 0 {
-                        rows.push((key.clone(), cat.label.clone(), delta));
-                    }
-                }
-            }
-            // delta desc；tie 时 key asc（稳定输出便于测）
-            rows.sort_by(|a, b| {
-                b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0))
-            });
-            crate::telegram::commands::format_cat_growth_7d_reply(&rows)
+            let rows = compute_cat_growth_rows(7);
+            crate::telegram::commands::format_cat_growth_reply(&rows, 7)
+        }
+        TgCommand::CatGrowth30d => {
+            // 与 /cat_growth_7d 同算法，阈值 30d 长周期 cousin。共用
+            // compute_cat_growth_rows + 通用 format_cat_growth_reply
+            // （threshold 参数注入 header）— 同 /cat_decay refactor 模式。
+            let rows = compute_cat_growth_rows(30);
+            crate::telegram::commands::format_cat_growth_reply(&rows, 30)
         }
         TgCommand::Last => {
             // 闪查最近创建：reuse read_tg_chat_task_views（已 chat-scoped）。
@@ -3316,6 +3285,43 @@ fn compute_cat_decay_rows(threshold_days: i64) -> Vec<(String, String, i64)> {
         }
     }
     // days desc; key asc tie-break — 稳定输出便于测
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    rows
+}
+
+/// /cat_growth_<N>d 共享算法：扫所有 memory cat，按 created_at 落入
+/// 近 N 天窗口的 item 数算 per-cat delta，仅保留 delta > 0 项。返回
+/// rows: (key, label, delta) sorted by delta desc + key asc tie。
+/// 与 compute_cat_decay_rows 镜像（那是 stale 视角；本是 growth 视角）。
+///
+/// memory_list 已在 read 时把 butler_tasks / todo / task_archive 段用
+/// SQLite 真相覆盖 — 算的是真实新增而非 yaml orphan。
+fn compute_cat_growth_rows(threshold_days: i64) -> Vec<(String, String, usize)> {
+    let now_ms = chrono::Local::now().timestamp_millis();
+    let day_ms: i64 = 24 * 60 * 60 * 1000;
+    let cutoff_ms = now_ms - threshold_days * day_ms;
+    let mut rows: Vec<(String, String, usize)> = Vec::new();
+    if let Ok(index) = crate::commands::memory::memory_list(None) {
+        for (key, cat) in index.categories.iter() {
+            let mut delta = 0usize;
+            for it in &cat.items {
+                if it.created_at.is_empty() {
+                    continue;
+                }
+                let Ok(t) =
+                    chrono::DateTime::parse_from_rfc3339(&it.created_at)
+                else {
+                    continue;
+                };
+                if t.timestamp_millis() >= cutoff_ms {
+                    delta += 1;
+                }
+            }
+            if delta > 0 {
+                rows.push((key.clone(), cat.label.clone(), delta));
+            }
+        }
+    }
     rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
     rows
 }
