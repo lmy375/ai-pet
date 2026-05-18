@@ -4527,6 +4527,79 @@ export function PanelTasks({
     [],
   );
 
+  /// detail.md textarea ⌘⇧B 反向 heading level 循环：
+  /// none → h4 (`#### `) → h3 → h2 → h1 → none。⌘⇧H 的镜像 — owner
+  /// 直接降级 / 反向调整时少按几次 ⌘⇧H 节省键击（如 h1 → none 走
+  /// ⌘⇧H 要按 4 次；走 ⌘⇧B 只 1 次）。
+  ///
+  /// state cycle（与 ⌘⇧H 同 5 步闭环）：
+  /// - none → `#### ` (h4)
+  /// - `#### ` → `### ` (h3)
+  /// - `### ` → `## ` (h2)
+  /// - `## ` → `# ` (h1)
+  /// - `# ` → none
+  /// - h5/h6 → none（边界情况；与 ⌘⇧H 同 reset 出口）
+  ///
+  /// ⌘⇧B 选择：⌘B 是 bold；shift 修饰避开。⌘⇧B 在 IDE mostly 空 —
+  /// "Backward heading" 助记
+  const handleDetailHeadingCycleReverse = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "b") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const value = ta.value;
+      const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const nextNl = value.indexOf("\n", lineStart);
+      const lineEnd = nextNl === -1 ? value.length : nextNl;
+      const line = value.slice(lineStart, lineEnd);
+      const m = /^(#{1,6}) (.*)$/.exec(line);
+      let newLine: string;
+      let cursorOffset = 0;
+      if (m) {
+        const hashes = m[1];
+        const rest = m[2];
+        const lv = hashes.length;
+        if (lv === 1) {
+          // h1 → none
+          newLine = rest;
+          cursorOffset = -2; // strip "# "
+        } else if (lv >= 2 && lv <= 4) {
+          // h2/h3/h4 → 上一级（-1 个 #）
+          newLine = `${"#".repeat(lv - 1)} ${rest}`;
+          cursorOffset = -1; // 少一个 #
+        } else {
+          // h5/h6 → none（与 ⌘⇧H 同 reset 出口）
+          newLine = rest;
+          cursorOffset = -(hashes.length + 1);
+        }
+      } else {
+        // 无 heading prefix → 加 `#### `（h4，从 cycle 的「最深」起点开始）
+        newLine = `#### ${line}`;
+        cursorOffset = 5; // "#### " 5 chars
+      }
+      const before = value.slice(0, lineStart);
+      const after = value.slice(lineEnd);
+      const next = before + newLine + after;
+      setEditingDetailContent(next);
+      const newCursor = Math.max(lineStart, start + cursorOffset);
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = newCursor;
+        cur.selectionEnd = newCursor;
+        setDetailCursorPos(newCursor);
+        setDetailSelectionEnd(newCursor);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
   /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
   /// modifier check（no shift / no alt）+ IME composing skip。空选 →
@@ -15303,6 +15376,9 @@ export function PanelTasks({
                                   // ⌘⇧H 当前行 heading level 循环
                                   // (none→h1→h2→h3→h4→none)
                                   if (handleDetailHeadingCycle(e)) return;
+                                  // ⌘⇧B 反向 heading level 循环
+                                  // (none→h4→h3→h2→h1→none)
+                                  if (handleDetailHeadingCycleReverse(e)) return;
                                   // ⌘⇧Y 插 YAML frontmatter 模板 — 长
                                   // doc / publishable note 元数据脚手架
                                   if (handleDetailYamlFrontmatter(e)) return;
@@ -15807,6 +15883,9 @@ export function PanelTasks({
                                   // ⌘⇧H 当前行 heading level 循环
                                   // (none→h1→h2→h3→h4→none)
                                   if (handleDetailHeadingCycle(e)) return;
+                                  // ⌘⇧B 反向 heading level 循环
+                                  // (none→h4→h3→h2→h1→none)
+                                  if (handleDetailHeadingCycleReverse(e)) return;
                                   // ⌘⇧Y 插 YAML frontmatter 模板 — 长
                                   // doc / publishable note 元数据脚手架
                                   if (handleDetailYamlFrontmatter(e)) return;
@@ -19131,6 +19210,7 @@ export function PanelTasks({
                   ["⌘⇧Q", "选区行 wrap markdown blockquote（每行 `> ` 前缀；空行用 `>`）"],
                   ["⌘⇧Y", "插 YAML frontmatter 模板（title/date/tags；自动填今日 date）— doc 起始位"],
                   ["⌘⇧H", "当前行 heading level 循环（none→h1→h2→h3→h4→none）"],
+                  ["⌘⇧B", "当前行 heading level 反向循环（none→h4→h3→h2→h1→none；⌘⇧H 反向）"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
