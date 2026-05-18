@@ -10,7 +10,6 @@
 
 - TG bot `/find_in_detail_today <kw>` 命令：今日 updated_at 限制下的 detail.md 内容搜 — /find_in_detail 的 today 切片。
 - TG bot `/tags_today` 命令：列今日 updated 的 task 含的 #tag 计数 — 今日活跃 tag audit。
-- ChatMini 气泡 hover「📊 字数」chip：显本条 bubble 字符数 — 长 reply audit / 复制前预估。
 
 
 
