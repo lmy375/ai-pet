@@ -4330,6 +4330,64 @@ export function PanelTasks({
     [insertMarkdownAtCursor],
   );
 
+  /// detail.md textarea ⌘⇧Q markdown blockquote 行级 wrap — 选区每行
+  /// 加 `> ` 前缀（多行 blockquote）；无选区时本行插 `> ` 让 owner 写
+  /// 一条引用 / 注解。markdown spec：连续 `> ` 行构成单 blockquote
+  /// block，空 `>` 行作 break — 本 helper 不自动加 break；owner 自行
+  /// 调段落语义。
+  ///
+  /// 行扩展算法与既有 ⌘⌥L sort-lines / ⌥↑↓ move-lines 同：扩到整行
+  /// 边界（lastIndexOf `\n` + indexOf `\n`），保选区半行覆盖时也按整
+  /// 行算。
+  ///
+  /// ⌘⇧Q 选择：⌘Q 在 macOS 是 quit application；shift 修饰避开。⌘⇧Q
+  /// 行业 IDE mostly 空 — 占给 "Quote" 助记。
+  const handleDetailBlockquote = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "q") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? start;
+      const value = ta.value;
+      // 扩边到整行（与 sort-lines / move-lines 同算法）
+      const blockStart = value.lastIndexOf("\n", start - 1) + 1;
+      const probe = end > start ? end - 1 : end;
+      const nextNl = value.indexOf("\n", probe);
+      const blockEnd = nextNl === -1 ? value.length : nextNl;
+      const block = value.slice(blockStart, blockEnd);
+      // 每行加 `> ` 前缀。空行用 `>` 不加 trailing 空格保紧凑 — 与 markdown
+      // 渲染习惯一致（空 `>` 行示 blockquote 段内空行）
+      const lines = block.split("\n");
+      const wrapped = lines
+        .map((line) => (line.length === 0 ? ">" : `> ${line}`))
+        .join("\n");
+      if (wrapped === block) return true; // 已 wrap 不变 — 防御幂等
+      const before = value.slice(0, blockStart);
+      const after = value.slice(blockEnd);
+      const next = before + wrapped + after;
+      setEditingDetailContent(next);
+      // 选区扩到覆盖 wrapped block 让 owner 继续看到全 quote 块（与
+      // sort-lines / move-lines 同 UX）
+      const newStart = blockStart;
+      const newEnd = blockStart + wrapped.length;
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = newStart;
+        cur.selectionEnd = newEnd;
+        setDetailCursorPos(newStart);
+        setDetailSelectionEnd(newEnd);
+      });
+      return true;
+    },
+    [],
+  );
+
   /// detail.md textarea ⌘\` markdown fenced code block wrap：选区 wrap
   /// 成 ```\n<sel>\n``` 三反引号围栏。与既有 ⌘B / ⌘I / ⌘K 一致的
   /// modifier check（no shift / no alt）+ IME composing skip。空选 →
@@ -15100,6 +15158,9 @@ export function PanelTasks({
                                   // ⌘⇧A 插 GFM markdown alert callout
                                   // 模板（`> [!NOTE]` + cursor 落第二行）
                                   if (handleDetailAlertTemplate(e)) return;
+                                  // ⌘⇧Q 选区行 wrap markdown blockquote
+                                  // （每行加 `> ` 前缀）
+                                  if (handleDetailBlockquote(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -15595,6 +15656,9 @@ export function PanelTasks({
                                   // ⌘⇧A 插 GFM markdown alert callout
                                   // 模板（`> [!NOTE]` + cursor 落第二行）
                                   if (handleDetailAlertTemplate(e)) return;
+                                  // ⌘⇧Q 选区行 wrap markdown blockquote
+                                  // （每行加 `> ` 前缀）
+                                  if (handleDetailBlockquote(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -18913,6 +18977,7 @@ export function PanelTasks({
                   ["⌘⇧I", "插完整 ISO 8601 时间戳（YYYY-MM-DDThh:mm:ss±tz）— 精度版 ⌘⇧D"],
                   ["⌘⇧M", "插 markdown table 3x3 模板（header + 分隔 + 2 空行）— 快速搭表"],
                   ["⌘⇧A", "插 GFM markdown alert callout（默认 [!NOTE]；手改 TIP/WARNING/CAUTION）"],
+                  ["⌘⇧Q", "选区行 wrap markdown blockquote（每行 `> ` 前缀；空行用 `>`）"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
