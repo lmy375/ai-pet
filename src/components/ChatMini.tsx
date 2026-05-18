@@ -1016,6 +1016,67 @@ export function ChatMini({
     return () => window.removeEventListener("keydown", handler);
   }, [visible]);
 
+  /// ⌘R / Ctrl+R re-roll：把**最后一条 user message** 重新发送给 pet。
+  /// 与既有 ↺ 重发本条 ctx menu item 同 backend（dispatch
+  /// `pet-mini-resend-message` 让 ChatPanel listener 跳过 textarea
+  /// 直接 onSend）— 但 keyboard 路径不需要先右键找具体 bubble，最常用
+  /// "上一句不满意，让 pet 再 reply 一次" 场景一键完成。
+  ///
+  /// ⌘R 本是 browser / Tauri webview 默认 reload 整页 — preventDefault
+  /// + stopImmediatePropagation 双重吃键防 reload（owner 误触会丢
+  /// session state）。仅在 visible + 找到 user message 时拦；textarea /
+  /// input 内焦点放过（让 native re-paste / 其它编辑器 ⌘R 行为不被吞）。
+  ///
+  /// 取最后一条 user message 而非最后整体 — owner 想 "重发上句"，不是
+  /// "重发 pet 的 reply"（assistant message resend 无语义）。
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  useEffect(() => {
+    if (!visible) return;
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "r") return;
+      // textarea / input / contentEditable 焦点 → 放过（让 owner 在
+      // ChatPanel input 写 prompt 时 ⌘R 仍能 reload — 误防御过度反而
+      // 让 owner 抱怨）。其它焦点（chat scroll / pet)劫持。
+      const ae = document.activeElement;
+      if (
+        ae instanceof HTMLInputElement ||
+        ae instanceof HTMLTextAreaElement ||
+        (ae instanceof HTMLElement && ae.isContentEditable)
+      ) {
+        return;
+      }
+      // 找最后一条 user message（从末向前扫）
+      const msgs = messagesRef.current;
+      let lastUserText = "";
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role !== "user") continue;
+        const t = extractText(m.content).trim();
+        if (t.length === 0) continue;
+        lastUserText = t;
+        break;
+      }
+      if (!lastUserText) return; // 无 user message 不动 — 让 reload 自然走？
+      // 拦截 reload + 触发 resend
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      window.dispatchEvent(
+        new CustomEvent("pet-mini-resend-message", {
+          detail: lastUserText,
+        }),
+      );
+    };
+    // capture phase 让本 handler 先于其它 ⌘R listener / 默认 reload 跑
+    window.addEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [visible]);
+
   // active hit 变化时把目标 bubble 滚到中间。followTail 单独逻辑不受影响
   // —— 搜索期间用户主动跳，followTail effect 不会反向把视图甩到底（其依
   // 赖在 visibleItems.length 等，不在 active hit）。
