@@ -5812,6 +5812,42 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     </button>
                   );
                 })()}
+                {/* 📊 30d 净增 chip：与 7d chip 并排 — 长周期投入度信号。
+                    与 TG /cat_growth_30d 远程对偶（iter #575）— 那个是
+                    跨 cat 排行；本 chip 是 per-cat 单值。30d 比 7d 平
+                    滑：「本周热点 vs 本月持续投入」对比 — 同时显两 chip
+                    让 owner 一眼比较时间尺度差。0 时不渲染。click 复制
+                    「<label> · 30d 净增 N」单行。 */}
+                {cat.items.length > 0 && (() => {
+                  const thirtyDaysAgoMs = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+                  let delta = 0;
+                  for (const it of cat.items) {
+                    if (!it.created_at) continue;
+                    const cMs = Date.parse(it.created_at);
+                    if (isNaN(cMs)) continue;
+                    if (cMs >= thirtyDaysAgoMs) delta += 1;
+                  }
+                  if (delta === 0) return null;
+                  return (
+                    <button
+                      style={{ ...s.btn, marginLeft: 4 }}
+                      onClick={async () => {
+                        const label = categoryLabels[catKey] || cat.label;
+                        const line = `${label} · 30d 净增 ${delta} 条`;
+                        try {
+                          await navigator.clipboard.writeText(line);
+                          setMessage(`📊 已复制：${line}`);
+                        } catch (e: any) {
+                          setMessage(`复制失败：${e}`);
+                        }
+                        setTimeout(() => setMessage(""), 3000);
+                      }}
+                      title={`本 cat 最近 30 天净增 ${delta} 条 item — 长周期投入度。与 7d chip 互补：那是本周热点、本 chip 看本月持续力度。click 复制单行。`}
+                    >
+                      📊 30d +{delta}
+                    </button>
+                  );
+                })()}
                 {/* 📤 export cat as .md file：与顶部「📋 单段…」剪贴板
                     export + 「💾 .md」全 cat 文件 export 对偶 —— 本 chip
                     是「单 cat 文件 export」一键到位（OS Save 对话框）。
