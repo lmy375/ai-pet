@@ -657,6 +657,11 @@ pub enum TgCommand {
     /// sighting（前缀无 [pinned] 的 lookback 较宽）。audit「owner 这周觉得什
     /// 么变重要了」。同 best-effort 语义。无参。
     PinGrow7d,
+    /// `/audit_summary` —— 单命令聚合 5 大 audit 信号 — sprint kickoff
+    /// 一键视图：pin streak / 当前 pinned 数 / cat 7d 净增 cat 数 /
+    /// idle 7d+ 数 / 今日 touched 数 / 7d done 数 / 近期 rename 数 /
+    /// 7d new pin 数。每行单数 + 对应单命令的 deep dive 入口。无参。
+    AuditSummary,
     /// `/help_table [family]` —— 按 audit family 分组的命令速查表。
     /// - 无参 → 全表（13 family + 每行命令清单）— navigation aid
     /// - 有参 → 仅该 family 详细 list（每行 cmd + 一行描述）— family
@@ -852,6 +857,7 @@ impl TgCommand {
             TgCommand::RecentRenames { .. } => "recent_renames",
             TgCommand::RecentPins { .. } => "recent_pins",
             TgCommand::HelpTable { .. } => "help_table",
+            TgCommand::AuditSummary => "audit_summary",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
             TgCommand::TagsThisweek => "tags_thisweek",
@@ -963,6 +969,7 @@ impl TgCommand {
             | TgCommand::RecentRenames { .. }
             | TgCommand::RecentPins { .. }
             | TgCommand::HelpTable { .. }
+            | TgCommand::AuditSummary
             | TgCommand::OldestN { .. }
             | TgCommand::OldestDone { .. }
             | TgCommand::ActiveRecent { .. }
@@ -1155,6 +1162,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent_renames", "Recent N rename events with ts + old→new — /aliases 's cross-task counterpart"),
             ("recent_pins", "Recent N pin decisions (per-title earliest [pinned] sighting, desc) — /pin_grow_7d 's N-cap counterpart"),
             ("help_table", "Audit family-grouped command navigator — sibling to /help (flat list)"),
+            ("audit_summary", "Sprint kickoff one-shot — aggregates pin streak / cat / idle / today / 7d-done audit signals"),
             ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("tags_yesterday", "Yesterday's counterpart to /tags_today — yesterday's touched task tag counts"),
             ("tags_thisweek", "This week's counterpart to /tags_today — week-touched task tag counts"),
@@ -1271,6 +1279,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("recent_renames", "近 N 条 rename event（ts + old→new）— /aliases 的全局对偶（默认 5，上限 20）"),
             ("recent_pins", "近 N 条 pin 决策（每 title 取最早 [pinned] sighting desc）— /pin_grow_7d 的 N-cap 兄弟"),
             ("help_table", "audit family 分组速查表 — /help（flat 全表）的分组兄弟，命令爆炸后 navigation aid"),
+            ("audit_summary", "聚合 5 大 audit 信号 — sprint kickoff 一键视图（pin streak / cat / idle / today / 7d done）"),
             ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("tags_yesterday", "/tags_today 的昨日对偶 — 昨日动过 task 含的 #tag 计数"),
             ("tags_thisweek", "/tags_today 的本周对偶 — 本周动过 task 含的 #tag 计数（周报场景）"),
@@ -2206,6 +2215,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "help_table" => Some(TgCommand::HelpTable {
             family: if title.is_empty() { None } else { Some(title) },
         }),
+        // `/audit_summary`：无参 — 聚合 5 大 audit 信号 sprint kickoff。
+        "audit_summary" => Some(TgCommand::AuditSummary),
         "help" => Some(TgCommand::Help {
             topic: if title.is_empty() {
                 None
@@ -2470,7 +2481,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2640,6 +2651,7 @@ pub fn format_help_for_topic(
         "alarms_thisweek" => "⏰ /alarms_thisweek\n\n用法：/alarms_today 的本周对偶 — 仅显本周（自周一 00:00 起到 now）触发的 reminder（`[remind: ...]` 协议条目）。让 owner 看「本周还会响哪些 / 已逾期未消」。无 N 参 — 本周范围比 today 略广但仍可控（典型 < 30 条）。\n\n场景：周报场景看「这周我设了哪些 reminder / 哪些已 fire 哪些待响」/ 周一早会前 review 上周未消 alarm。\n\n输出格式：\n  ⏰ 本周（YYYY-MM-DD 起）N 条 alarms：\n  · MM-DD HH:MM (剩 / 已逾期 ...) | <topic>\n  · MM-DD HH:MM (剩 ...) | <topic>\n  ...\n\n跨日 scope 行带 MM-DD（与 /alarms 同；/alarms_today 行只 HH:MM 因 single day）。空 → 友好兜底指 /alarms 全量 / /alarms_today。\n\n示例：\n  /alarms_thisweek\n\n相关：/alarms（不限日期 top N）；/alarms_today（仅今日）；/touched_thisweek（本周 task 全谱）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
         "find_speech_today" => "🗣 /find_speech_today <keyword>\n\n用法：/find_speech 的今日切片 — 限本地今日触发的 pet utterance 内搜 keyword（case-insensitive 子串）。「今天 pet 提过 X 吗」精准 audit。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_speech 全量 / /last_speech 最近 1 条 alt）。\n\n输出格式：\n  🗣 今日（YYYY-MM-DD）speech 命中「<kw>」N 条：\n  · HH:MM · …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_speech 同。cap 8 条。\n\n示例：\n  /find_speech_today 周报\n  /find_speech_today rebase\n\n相关：/find_speech（不限日期）；/last_speech（最近 1 条）；/touched_today（今日 task 全谱）。",
+        "audit_summary" => "📋 /audit_summary\n\n用法：单命令聚合 5 大 audit 信号 — sprint kickoff / 月度复盘一键视图。比逐 /streak / /streak_pin / /idle_7d / /touched_today / /pinned 等翻一次性高效。无参。\n\n场景：周一早会前 30 秒看「上周怎么样 / 本周从哪起」；月末看「本月节奏整体如何」；新人首次接触 pet 想看「pet 当前给我提供了哪些信号」入口。\n\n输出格式（每行 audit 数字 + 对应 deep dive 命令入口）：\n  📋 audit summary（YYYY-MM-DD）\n  · 📌 pin streak: N 天连续（当前 M 钉）→ /streak_pin\n  · 🌱 cat 7d 净增: K cat 活跃 → /cat_growth_7d\n  · 💤 idle 7d+: P 条 stale pending → /idle_7d\n  · ✅ 今日 touched: Q 条 → /touched_today\n  · 🏷 近 7d rename: R 次 → /recent_renames\n\n每条 audit 行后 deep dive 入口让 owner 想细看时一步直达。\n\n实现：handler 调既有 helper（compute_pin_streak / read_tg_chat_task_views / butler_history scan）的聚合 — 不引入新 backend 命令。\n\n示例：\n  /audit_summary\n\n相关：/help_table（命令分组速查）；/streak_pin / /idle_7d 等各 audit family deep dive 入口。",
         "help_table" => "📚 /help_table\n\n用法：按 audit family 分组列既有命令 — 命令爆炸（200+）后的 navigation aid。/help 是 flat 一行描述全表；本命令按主题分组（pin / cat / rename / streak / find / speech / digest / ...）让 owner 快定位「这个 audit 在哪个命令族」。无参。\n\n场景：新用户上手「pet 都能干啥」；老用户想用某 audit family 时 jog memory；写 onboarding 文档时按主题列举。\n\n输出格式（每组 emoji + family 名 + 命令清单一行）：\n  📚 命令分组速查表\n  📌 pin 关注度：/pin /unpin /pinned /pinned_due /...\n  🌱 cat 活跃度：/cat_growth_7d /cat_growth_30d /...\n  🔁 rename 重命名：/edit_title /aliases /...\n  💤 idle / stale：/idle_7d /touched_today /...\n  🔥 streak 连续：/streak /streak_pin\n  🔎 find / search：/find /find_in_detail /...\n  🗣 speech / 对话：/last_speech /find_speech /...\n  ⏰ alarm / 通知：/alarms /alarms_today /mute /...\n  📊 status / overview：/tasks /stats /buckets /show /...\n  📋 增删改：/task /done /cancel /edit /...\n  ⚠️ batch / 危险：/cancel_all_error /promote_all_p7 /...\n  ⚙️ system：/version /help /help_table /reset\n\n相关：/help（flat 全表 + 一行描述）；/help <cmd>（单命令详细用法 + 示例）；/help search <kw>（关键词搜全文）。",
         "recent_pins" => "📌 /recent_pins [N]\n\n用法：列近 N 条 pin 决策（每 title 取 history 内最早 [pinned] sighting 后 desc 排）。/pin_grow_7d（7d 窗口）的 N-cap 兄弟 — 那是按时间窗口、本命令是按 N 数。看「最近 N 条 pin 决策」cross-task audit 不限日期。N 缺省 5，clamp 1..=20。\n\n场景：周末 / 月末 review 「最近 N 条 pin 我都钉的什么」list-up；audit 「哪些 task 我曾认真钉过」即使现已 unpin 仍可见；写 onboarding 文档需举 pin 决策案例。\n\n后端：scan butler_history.log 取所有含 [pinned] snippet 行 → dedupe 按 title 保留最早 sighting → 按 ts desc 排 → cap N。dedupe 让同 title 多次 update（pin 状态不变）只算 1 次「决策事件」。\n\n输出格式：\n  📌 近 N 条 pin 决策（共 M 条 retention 内）：\n  · MM-DD HH:MM · 「整理 Downloads」\n  · MM-DD HH:MM · 「写周报」\n  ...\n\n空 → 友好兜底「butler_history 内无 [pinned] sighting」+ 教学指 /pin / /pinned。\n\n注（与 /pin_grow_7d / /pinned_drop_7d 共享 best-effort 局限）：\n- iter #568 之前的 pin 行不一定有 [pinned] snippet 完整保留\n- snippet 80 字截断可能漏 [pinned] → false neg\n- retention 限（典型 100 entry cap）\n- 含已 unpin / done / archived 的 task — 「pin 决策」是历史事件不必当前仍 active\n\n示例：\n  /recent_pins        （近 5 条）\n  /recent_pins 10     （近 10 条）\n\n相关：/pin_grow_7d（7d 窗口）；/pinned_drop_7d（反向 unpin）；/pinned（当前 pinned 清单）；/streak_pin（连续天数）。",
         "recent_renames" => "🔁 /recent_renames [N]\n\n用法：列近 N 条 butler_history rename event — 每行 `ts · 「<old>」→「<new>」`。/aliases <title> 的全局对偶 — 那是单 task 历史 chain，本命令是 cross-task 最近 N 条 audit。N 缺省 5，clamp 1..=20。\n\n场景：周末复盘「我最近改了几个 task 名」behavior 节奏；audit「我是不是 rename 太频繁」/「我哪个项目下重命名集中」；写 onboarding 文档时找历史命名演化案例。\n\n后端：scan butler_history.log 反向（newest first）取 action == 'rename' 行 + 解 `[was: <old>]` snippet。复用 extract_was_from_snippet helper。\n\n输出格式：\n  🔁 近 N 条 rename（共 M 条 retention 内）：\n  · MM-DD HH:MM · 「整理 Downloads」→「清理桌面」\n  · MM-DD HH:MM · 「写周报」→「写 W21 周报」\n  ...\n\n空 → 友好兜底「butler_history 内无 rename event」+ 教学指 /aliases 看单 task。\n\n注（best-effort 局限，与 /aliases / /pinned_drop_7d 共享）：\n- iter #568 之前的 rename 不可见（log 不曾记 rename event）\n- snippet 80 字截断可能漏 [was: X] 末尾；fallback 「old title 不可解」\n- butler_history retention 限（典型 100 entry cap）\n\n示例：\n  /recent_renames        （近 5 条）\n  /recent_renames 10     （近 10 条）\n\n相关：/aliases <title>（单 task chain）；/timeline（全 history 含 rename 行）；/edit_title / /cascade_rename（rename 入口）。",
@@ -2783,6 +2795,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/recent_renames [N]  —  近 N 条 rename event（ts + old → new）— /aliases 的全局对偶（默认 5，上限 20）".to_string(),
         "/recent_pins [N]  —  近 N 条 pin 决策（每 title 取最早 [pinned] sighting desc）— /pin_grow_7d 的 N-cap 兄弟（默认 5，上限 20）".to_string(),
         "/help_table  —  audit family 分组速查表 — /help（flat 全表）的分组兄弟，命令爆炸后 navigation aid".to_string(),
+        "/audit_summary  —  聚合 5 大 audit 信号 — sprint kickoff 一键视图".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/alarms_thisweek  —  /alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
@@ -4109,11 +4122,50 @@ pub fn format_help_table_reply_full(family: Option<&str>) -> String {
         "  /pin_all_p7 /consolidate_now /silent_all",
         "",
         "⚙️ system",
-        "  /version /help /help_table /reset",
+        "  /version /help /help_table /audit_summary /reset",
         "",
         "相关：/help（flat 全表 + 一行描述）；/help <cmd>（单命令详细用法）；/help search <kw>（全文 keyword 搜）。",
     ]
     .join("\n")
+}
+
+/// `/audit_summary` 命令回复文案。pure：caller 已聚合 5 大 audit 信
+/// 号 + today date。formatter 拼输出 + 每行 deep dive 入口。
+/// 输入: (today, pin_streak, current_pinned, cat_active_7d_count,
+///        idle_7d_count, touched_today_count, recent_renames_7d_count)
+#[allow(clippy::too_many_arguments)]
+pub fn format_audit_summary_reply(
+    today: chrono::NaiveDate,
+    pin_streak: usize,
+    current_pinned: usize,
+    cat_active_7d_count: usize,
+    idle_7d_count: usize,
+    touched_today_count: usize,
+    recent_renames_7d_count: usize,
+) -> String {
+    let date_str = today.format("%Y-%m-%d").to_string();
+    let mut out = format!("📋 audit summary（{}）\n", date_str);
+    out.push_str(&format!(
+        "· 📌 pin streak: {} 天连续（当前 {} 钉）→ /streak_pin\n",
+        pin_streak, current_pinned,
+    ));
+    out.push_str(&format!(
+        "· 🌱 cat 7d 净增: {} cat 活跃 → /cat_growth_7d\n",
+        cat_active_7d_count,
+    ));
+    out.push_str(&format!(
+        "· 💤 idle 7d+: {} 条 stale pending → /idle_7d\n",
+        idle_7d_count,
+    ));
+    out.push_str(&format!(
+        "· ✅ 今日 touched: {} 条 → /touched_today\n",
+        touched_today_count,
+    ));
+    out.push_str(&format!(
+        "· 🏷 近 7d rename: {} 次 → /recent_renames",
+        recent_renames_7d_count,
+    ));
+    out
 }
 
 /// pure：`/help_table <family>` 实现 — 取该 family 详细命令清单 +
@@ -4334,6 +4386,7 @@ pub fn format_help_table_family(family_key: &str) -> String {
                 ("/version", "pet app 版本 + SQLite schema 版本"),
                 ("/help [cmd | all | search <kw>]", "命令帮助（详见 /help all）"),
                 ("/help_table [family]", "audit family 分组速查表"),
+                ("/audit_summary", "聚合 5 大 audit 信号 sprint kickoff 视图"),
                 ("/reset", "清掉 LLM chat context（保 persona）"),
             ],
         )),
@@ -9264,7 +9317,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -9735,7 +9788,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -15144,6 +15197,52 @@ mod tests {
         assert!(s.contains("今日（2026-05-17）speech 命中「周报」2 条"), "{s}");
         assert!(s.contains("· 14:30 · …今天 pet 说到 周报 的事…"), "{s}");
         assert!(s.contains("· 09:15 · …早晨 pet 提到 周报 进度…"), "{s}");
+    }
+
+    // -------- /audit_summary parse + format --------
+
+    #[test]
+    fn audit_summary_parser_no_args() {
+        assert_eq!(
+            parse_tg_command("/audit_summary"),
+            Some(TgCommand::AuditSummary),
+        );
+        assert_eq!(
+            parse_tg_command("/audit_summary extra"),
+            Some(TgCommand::AuditSummary),
+        );
+    }
+
+    #[test]
+    fn format_audit_summary_renders_all_signals_with_deep_dive_links() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let s = format_audit_summary_reply(today, 5, 3, 4, 12, 7, 2);
+        // header 含日期
+        assert!(s.contains("audit summary（2026-05-18）"), "{s}");
+        // 5 大 audit 信号每行
+        assert!(s.contains("📌 pin streak: 5 天连续（当前 3 钉）"), "{s}");
+        assert!(s.contains("🌱 cat 7d 净增: 4 cat 活跃"), "{s}");
+        assert!(s.contains("💤 idle 7d+: 12 条 stale pending"), "{s}");
+        assert!(s.contains("✅ 今日 touched: 7 条"), "{s}");
+        assert!(s.contains("🏷 近 7d rename: 2 次"), "{s}");
+        // deep dive 入口
+        assert!(s.contains("/streak_pin"), "{s}");
+        assert!(s.contains("/cat_growth_7d"), "{s}");
+        assert!(s.contains("/idle_7d"), "{s}");
+        assert!(s.contains("/touched_today"), "{s}");
+        assert!(s.contains("/recent_renames"), "{s}");
+    }
+
+    #[test]
+    fn format_audit_summary_zero_values_still_render_all_rows() {
+        // 全 0 signals — 仍应每行渲染（避免「这条 audit 是不是没数据」歧义）
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let s = format_audit_summary_reply(today, 0, 0, 0, 0, 0, 0);
+        assert!(s.contains("pin streak: 0 天连续"), "{s}");
+        assert!(s.contains("cat 7d 净增: 0 cat"), "{s}");
+        assert!(s.contains("idle 7d+: 0 条"), "{s}");
+        assert!(s.contains("今日 touched: 0 条"), "{s}");
+        assert!(s.contains("近 7d rename: 0 次"), "{s}");
     }
 
     // -------- /help_table parse + format --------
