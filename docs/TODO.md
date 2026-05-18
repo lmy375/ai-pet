@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG `/help_table`：按 audit family 分组（pin / cat / idle / streak / ...）列既有命令 — 命令爆炸后的 navigation aid。
 - PanelMemory cat sort option「按 cat 内 items 最近 update_at desc 排」— 让最近活跃的 cat 自动上头（与 7d 净增 sort 互补）。
 - ChatMini bubble 顶 chip 加 「📊 全谱 chip rack」hover-展开 — 把分散在四角的 ⏱/📊/💭/✏️/↺ chip 收纳。
 - TG `/recent_pins [N]`：近 N 条 [pinned] sighting event（ts + title）— 与 /pin_grow_7d 7d 范围互补，看 N 条最近 pin 决策。
