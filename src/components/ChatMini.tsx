@@ -173,6 +173,17 @@ const MINI_CHAT_STYLES = `
 .pet-mini-row:hover .pet-mini-row-rel {
   opacity: 0.5;
 }
+/* 顶字数 chip：与 .pet-mini-row-time 顶时钟同 hover-reveal 模式但位
+   置在 bubble 对侧（user 左 / assistant 右）— 让两顶 chip 不挤一边。
+   信号优先级 ambient 级（看长度 audit / 复制前预估），默认透明 +
+   hover 升 0.5。 */
+.pet-mini-row .pet-mini-row-chars {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.pet-mini-row:hover .pet-mini-row-chars {
+  opacity: 0.5;
+}
 /* streaming 时的"宠物在思考"脉冲：opacity 0.4→1→0.4 循环 1.4s；首 chunk 到
    达前唯一可视提示，到达后与 streaming bubble 并列继续脉冲让用户感到"还在
    流"。reduced-motion 媒体查询下退化为常亮，避免对眩晕症用户挑战。 */
@@ -2655,6 +2666,50 @@ export function ChatMini({
                     </span>
                   );
                 })()}
+              {/* 📊 字数 chip：bubble text 字数（Unicode code points 计数
+                  via Array.from + length，让中文 / emoji 不被高估 / 低估）。
+                  hover-reveal 与顶 ⏱ ts / 底 ⏱ rel chip 同模式但位置在
+                  对侧（user 左顶 / assistant 右顶）— 让两顶 chip 不挤一
+                  边。仅 hasText 时显（纯图 bubble 没有文本字数概念）。
+                  click 复制「N chars」一行（粘 chat report / 写复制前
+                  预估）。 */}
+              {text && (() => {
+                const chars = Array.from(text).length;
+                if (chars === 0) return null;
+                return (
+                  <span
+                    className="pet-mini-row-chars"
+                    title={`本 bubble 字数 ${chars} 字（Unicode code points）— 点击复制「${chars} chars」`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const line = `${chars} chars`;
+                      navigator.clipboard
+                        .writeText(line)
+                        .catch((err) =>
+                          console.error("chars chip copy failed:", err),
+                        );
+                    }}
+                    style={{
+                      position: "absolute",
+                      top: -12,
+                      // 对侧 — user 左 / assistant 右（与 ts chip 反向）
+                      [m.role === "user" ? "left" : "right"]: 8,
+                      fontSize: 9,
+                      color: "var(--pet-color-muted)",
+                      fontFamily: "'SF Mono', 'Menlo', monospace",
+                      whiteSpace: "nowrap",
+                      background: "var(--pet-color-card)",
+                      padding: "0 4px",
+                      borderRadius: 3,
+                      lineHeight: "12px",
+                      pointerEvents: "auto",
+                      cursor: "pointer",
+                    }}
+                  >
+                    📊 {chars}
+                  </span>
+                );
+              })()}
               {/* user 右对齐 → 复制按钮在 bubble 左侧 */}
               {m.role === "user" && saveAsTaskBtn}
               {m.role === "user" && copyBtn}
