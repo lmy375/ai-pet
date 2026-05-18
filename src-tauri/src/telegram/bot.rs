@@ -775,6 +775,15 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_tags_today_reply(&views, today)
         }
+        TgCommand::TagsYesterday => {
+            // 与 TagsToday 同 read path；formatter 限 yesterday。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let yesterday = chrono::Local::now()
+                .date_naive()
+                .pred_opt()
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
+            crate::telegram::commands::format_tags_yesterday_reply(&views, yesterday)
+        }
         TgCommand::Tags => {
             // /tags：统计本 chat 派单的 #tag 矩阵。read path 同 /markers /
             // /today 等：read_tg_chat_task_views 已 chat-scoped。formatter
