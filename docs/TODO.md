@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG `/cat_growth_7d`：列各 cat 近 7 天 created 数 desc 排 — 跨 cat 活跃度对比 audit。
 - PanelMemory cat 排序新增「按 7d 净增 desc」option — 活跃 cat 自动顶上，与 7d chip 呼应。
 - PanelTasks row hover「⏳ N 天未动」chip：显本 pending task 距上次 detail.md update 天数。
 - TG `/pinned_drop_7d`：列近 7 天被 unpinned 的 items — 反向关注度审计，owner 放下了啥。

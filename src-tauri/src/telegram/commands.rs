@@ -647,6 +647,10 @@ pub enum TgCommand {
     /// 机抽 1 条让 pet 推荐。owner「这几条钉的都重要 / 不知先做哪条」
     /// 时让 pet 决定。无参。
     RandomPinned,
+    /// `/cat_growth_7d` —— 各 memory category 近 7 天 created 数 desc 排
+    /// — 跨 cat 活跃度对比，让 owner 看「我哪类知识在长 / 哪类已停滞」。
+    /// 与 PanelMemory cat header「📊 7d 净增」chip 远程对偶。无参。
+    CatGrowth7d,
     /// `/tags_today` —— /tags 的今日切片：仅列今日 updated_at 的 task
     /// 含的 #tag 计数。让 owner 看「今天我在做什么主题」audit。无参。
     TagsToday,
@@ -781,6 +785,7 @@ impl TgCommand {
             TgCommand::AlarmsThisweek => "alarms_thisweek",
             TgCommand::PeekPinned => "peek_pinned",
             TgCommand::RandomPinned => "random_pinned",
+            TgCommand::CatGrowth7d => "cat_growth_7d",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
             TgCommand::TagsThisweek => "tags_thisweek",
@@ -904,6 +909,7 @@ impl TgCommand {
             | TgCommand::AlarmsThisweek
             | TgCommand::PeekPinned
             | TgCommand::RandomPinned
+            | TgCommand::CatGrowth7d
             | TgCommand::TagsToday
             | TgCommand::TagsYesterday
             | TgCommand::TagsThisweek
@@ -1060,6 +1066,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("alarms_thisweek", "This week's counterpart to /alarms_today — reminders firing within Mon→now (no N cap)"),
             ("peek_pinned", "All pinned tasks in one-line compact form — /pinned 's denser sibling using /peek 's row format"),
             ("random_pinned", "Pick a random pinned task — /random restricted to pinned subset (decision-fatigue helper)"),
+            ("cat_growth_7d", "Per-cat memory growth over last 7 days (desc) — cross-cat activity audit; PanelMemory chip's remote dual"),
             ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("tags_yesterday", "Yesterday's counterpart to /tags_today — yesterday's touched task tag counts"),
             ("tags_thisweek", "This week's counterpart to /tags_today — week-touched task tag counts"),
@@ -1164,6 +1171,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("alarms_thisweek", "/alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）"),
             ("peek_pinned", "所有 pinned task 一行紧凑视图 — /pinned 的密集版 + /peek 的批量版"),
             ("random_pinned", "从 pinned task 中随机抽 1 条 — /random 的 pinned 子集（选择困难时让 pet 决定）"),
+            ("cat_growth_7d", "各 memory cat 近 7 天 created 数 desc — 跨 cat 活跃度对比（PanelMemory 📊 7d chip 远程对偶）"),
             ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("tags_yesterday", "/tags_today 的昨日对偶 — 昨日动过 task 含的 #tag 计数"),
             ("tags_thisweek", "/tags_today 的本周对偶 — 本周动过 task 含的 #tag 计数（周报场景）"),
@@ -1765,6 +1773,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "peek_pinned" => Some(TgCommand::PeekPinned),
         // `/random_pinned`：无参 — /random 的 pinned 子集。
         "random_pinned" => Some(TgCommand::RandomPinned),
+        // `/cat_growth_7d`：无参 — 各 memory cat 近 7 天 created 数 desc。
+        "cat_growth_7d" => Some(TgCommand::CatGrowth7d),
         // `/tags_today`：无参 — /tags 的今日切片。
         "tags_today" => Some(TgCommand::TagsToday),
         // `/tags_yesterday`：与 /tags_today 同模板，scope 昨日。
@@ -2321,7 +2331,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2491,6 +2501,7 @@ pub fn format_help_for_topic(
         "alarms_thisweek" => "⏰ /alarms_thisweek\n\n用法：/alarms_today 的本周对偶 — 仅显本周（自周一 00:00 起到 now）触发的 reminder（`[remind: ...]` 协议条目）。让 owner 看「本周还会响哪些 / 已逾期未消」。无 N 参 — 本周范围比 today 略广但仍可控（典型 < 30 条）。\n\n场景：周报场景看「这周我设了哪些 reminder / 哪些已 fire 哪些待响」/ 周一早会前 review 上周未消 alarm。\n\n输出格式：\n  ⏰ 本周（YYYY-MM-DD 起）N 条 alarms：\n  · MM-DD HH:MM (剩 / 已逾期 ...) | <topic>\n  · MM-DD HH:MM (剩 ...) | <topic>\n  ...\n\n跨日 scope 行带 MM-DD（与 /alarms 同；/alarms_today 行只 HH:MM 因 single day）。空 → 友好兜底指 /alarms 全量 / /alarms_today。\n\n示例：\n  /alarms_thisweek\n\n相关：/alarms（不限日期 top N）；/alarms_today（仅今日）；/touched_thisweek（本周 task 全谱）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
         "find_speech_today" => "🗣 /find_speech_today <keyword>\n\n用法：/find_speech 的今日切片 — 限本地今日触发的 pet utterance 内搜 keyword（case-insensitive 子串）。「今天 pet 提过 X 吗」精准 audit。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_speech 全量 / /last_speech 最近 1 条 alt）。\n\n输出格式：\n  🗣 今日（YYYY-MM-DD）speech 命中「<kw>」N 条：\n  · HH:MM · …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_speech 同。cap 8 条。\n\n示例：\n  /find_speech_today 周报\n  /find_speech_today rebase\n\n相关：/find_speech（不限日期）；/last_speech（最近 1 条）；/touched_today（今日 task 全谱）。",
+        "cat_growth_7d" => "🌱 /cat_growth_7d\n\n用法：扫所有 memory category，统计每个 cat 最近 7 天 created_at 落入窗口的 item 数（净增），按 desc 排。「我哪类知识在长 / 哪类已停滞」跨 cat 活跃度对比 audit。无参。\n\n空（所有 cat 7d 净增 == 0）→ 友好兜底教学指 /find / /touched_thisweek 看广 scope alt。\n\n输出格式：\n  🌱 近 7 天各类新增（共 N 条 across M cats）：\n  · butler_tasks · +12\n  · decisions · +5\n  · general · +3\n  ...\n  \n  （7d 无新增的 cat 不列）\n\n0 净增 cat 不列 — 避免输出列 stale cat 噪音。\n\n场景：周报场景看「本周我哪类知识投入最多」；季度复盘「我近 1 月哪些 cat 在长」（多次 invoke 看趋势）；新建 cat 后 audit「这周该 cat 真的有用上吗」。\n\n与 PanelMemory cat header「📊 7d +N」chip 对偶 — 那是桌面端 per-cat 单 chip，本命令是 TG 端 cross-cat 排行 list。\n\n示例：\n  /cat_growth_7d\n\n相关：/touched_thisweek（本周 task 全谱 — 任务维度复盘）；/find（不限日期 fuzzy 搜）。",
         "find_speech_yesterday" => "🗣 /find_speech_yesterday <keyword>\n\n用法：/find_speech_today 的昨日对偶 — 限本地昨日触发的 pet utterance 内搜 keyword（case-insensitive 子串）。「昨天 pet 提过 X 吗」复盘视角，完成 speech × date 三件套（today / yesterday / 全量）。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_speech 全量 / /find_speech_today 今日 alt）。\n\n输出格式：\n  🗣 昨日（YYYY-MM-DD）speech 命中「<kw>」N 条：\n  · HH:MM · …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_speech 同。cap 8 条。\n\n场景：早会前回顾「昨天 pet 跟我聊过 X 没」；写日报 audit「昨天 pet 提到的进度点」；周末整理「上周末 pet 跟我聊到的决策」。\n\n示例：\n  /find_speech_yesterday 周报\n  /find_speech_yesterday rebase\n\n相关：/find_speech（不限日期）；/find_speech_today（今日切片）；/last_speech（最近 1 条）；/touched_yesterday（昨日 task 全谱）。",
         "find_in_detail_yesterday" => "🔬 /find_in_detail_yesterday <keyword>\n\n用法：/find_in_detail_today 的昨日对偶 — 限昨日 updated_at task 的 detail.md 内容搜（case-insensitive 子串 + 60 字 snippet）。「昨天我在某主题写过什么笔记」复盘视角。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_in_detail 全量 / /touched_yesterday 全谱 alt）。\n\n输出格式：\n  🔬 昨日（YYYY-MM-DD）命中「<kw>」N 条（detail.md 内容）：\n  🟢 <title>\n     …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_in_detail 同。状态 emoji 同 /find_in_detail 系列。cap 8 条。\n\n示例：\n  /find_in_detail_yesterday rebase\n  /find_in_detail_yesterday API\n\n相关：/find_in_detail（不限日期）；/find_in_detail_today（今日）；/touched_yesterday（昨日全谱无 kw）。",
         "find_in_detail_today" => "🔬 /find_in_detail_today <keyword>\n\n用法：/find_in_detail 的今日切片 — 仅扫今日 updated_at 命中的 task 的 detail.md 内容，找含 keyword（case-insensitive 子串）的 task + 命中点 60 字 snippet。「我今天在某主题写过什么笔记」精准 audit。\n\n场景：早会前回忆「今天我在 detail.md 写过 X 相关的进度」/ 深夜 review「今天我的笔记记了哪些 API 相关」/ 决策日志 audit「今天关于 deploy 的决策点」。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_in_detail 全量 / /touched_today 全谱 alt）。\n\n输出格式：\n  🔬 今日（YYYY-MM-DD）命中「<kw>」N 条（detail.md 内容）：\n  🟢 <title>\n     …<snippet 含 keyword 60 字 context>…\n  ⚠️ <title>\n     …\n  ...\n\nsnippet 算法与 /find_in_detail 同（命中点附近 60 字，换行 flatten 单空格）。状态 emoji 同 /find_in_detail 系列：🟢 pending · ⚠️ error · ✅ done · 🚫 cancelled。cap 8 条（与 /find_in_detail 同上限）。\n\n注：每次命令读今日所有 task 的 detail.md（IO 重，但今日 scope 比 /find_in_detail 全量 IO 少）— 仍不必过分频繁。\n\n示例：\n  /find_in_detail_today rebase\n  /find_in_detail_today API\n  /find_in_detail_today 决策\n\n相关：/find_in_detail（不限日期 detail.md 内容搜）；/search_today（限今日扫标题 + description）；/touched_today（今日全谱无 kw）。",
@@ -2610,6 +2621,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/find_in_detail_yesterday <kw>  —  /find_in_detail_today 的昨日对偶 — 昨日 task 的 detail.md 内容搜".to_string(),
         "/find_speech_today <kw>  —  /find_speech 的今日切片 — 限今日 pet utterance 内搜 keyword".to_string(),
         "/find_speech_yesterday <kw>  —  /find_speech_today 的昨日对偶 — 限昨日 pet utterance 内搜 keyword（复盘视角）".to_string(),
+        "/cat_growth_7d  —  各 memory cat 近 7 天 created 数 desc 排（cross-cat 活跃度对比；PanelMemory 📊 7d chip 远程对偶）".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/alarms_thisweek  —  /alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
@@ -3846,6 +3858,32 @@ pub fn format_find_speech_reply(
             "\n…还有 {} 条命中（关键词太宽？试更精确的词）",
             hits.len() - cap
         ));
+    }
+    out
+}
+
+/// `/cat_growth_7d` 命令回复文案。pure：caller (bot.rs handler) 已
+/// 扫 memory_list + 算 7d 净增 + 按 delta desc 排 → 传入
+/// `Vec<(cat_key, label, delta)>` 仅含 delta > 0 项（0 净增 cat 已剔）。
+/// formatter 只负责文案拼装 + 空兜底。
+pub fn format_cat_growth_7d_reply(rows: &[(String, String, usize)]) -> String {
+    if rows.is_empty() {
+        return "🌱 近 7 天各 cat 都没有 created 新 item。\n试 /touched_thisweek 看本周 task 全谱 / /find <kw> 全量搜。".to_string();
+    }
+    let total: usize = rows.iter().map(|(_, _, n)| n).sum();
+    let mut out = format!(
+        "🌱 近 7 天各类新增（共 {} 条 across {} cats）：",
+        total,
+        rows.len(),
+    );
+    for (key, label, delta) in rows {
+        // label 与 key 同 → 只显 key；不同 → 「key · label · +N」
+        // （避免冗余「butler_tasks · butler_tasks · +N」）
+        if label.is_empty() || label == key {
+            out.push_str(&format!("\n· {} · +{}", key, delta));
+        } else {
+            out.push_str(&format!("\n· {} ({}) · +{}", key, label, delta));
+        }
     }
     out
 }
@@ -8296,7 +8334,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -8767,7 +8805,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -14176,6 +14214,74 @@ mod tests {
         assert!(s.contains("今日（2026-05-17）speech 命中「周报」2 条"), "{s}");
         assert!(s.contains("· 14:30 · …今天 pet 说到 周报 的事…"), "{s}");
         assert!(s.contains("· 09:15 · …早晨 pet 提到 周报 进度…"), "{s}");
+    }
+
+    // -------- /cat_growth_7d parse + format --------
+    // 无参命令 — parser test + 4 formatter test（empty / 单 cat / 多
+    // cat desc sort / label==key 不冗余）。
+
+    #[test]
+    fn cat_growth_7d_parser_no_args() {
+        assert_eq!(
+            parse_tg_command("/cat_growth_7d"),
+            Some(TgCommand::CatGrowth7d)
+        );
+        // 尾部多余 args 同 /tasks / /stats 容忍策略 — 走默认
+        assert_eq!(
+            parse_tg_command("/cat_growth_7d  extra args"),
+            Some(TgCommand::CatGrowth7d)
+        );
+    }
+
+    #[test]
+    fn cat_growth_7d_empty_shows_fallback() {
+        let s = format_cat_growth_7d_reply(&[]);
+        assert!(s.contains("近 7 天各 cat 都没有"), "{s}");
+        // 兜底教学指 sibling scope alt（避免 self-loop）
+        assert!(s.contains("/touched_thisweek"), "{s}");
+        assert!(s.contains("/find"), "{s}");
+    }
+
+    #[test]
+    fn cat_growth_7d_renders_multi_cat_desc() {
+        // delta desc — butler_tasks (12) 在前，general (3) 在后
+        let rows = vec![
+            ("butler_tasks".to_string(), "任务".to_string(), 12),
+            ("decisions".to_string(), "决策".to_string(), 5),
+            ("general".to_string(), "通用".to_string(), 3),
+        ];
+        let s = format_cat_growth_7d_reply(&rows);
+        assert!(
+            s.contains("共 20 条 across 3 cats"),
+            "total + cat count: {s}",
+        );
+        // 行格式 `· key (label) · +N`（label != key）
+        assert!(s.contains("· butler_tasks (任务) · +12"), "{s}");
+        assert!(s.contains("· decisions (决策) · +5"), "{s}");
+        assert!(s.contains("· general (通用) · +3"), "{s}");
+        // 顺序：butler_tasks 在 general 前（desc 排）
+        let b_idx = s.find("butler_tasks").unwrap();
+        let g_idx = s.find("general").unwrap();
+        assert!(b_idx < g_idx, "butler_tasks should appear before general: {s}");
+    }
+
+    #[test]
+    fn cat_growth_7d_skips_redundant_label_when_equal_to_key() {
+        // label == key → 仅显 key（不重复）
+        let rows = vec![
+            ("butler_tasks".to_string(), "butler_tasks".to_string(), 4),
+            ("general".to_string(), "".to_string(), 2),
+        ];
+        let s = format_cat_growth_7d_reply(&rows);
+        // 不该出现 `butler_tasks (butler_tasks)`
+        assert!(
+            !s.contains("butler_tasks (butler_tasks)"),
+            "no redundant duplicate: {s}",
+        );
+        // 仍含 key + delta
+        assert!(s.contains("· butler_tasks · +4"), "{s}");
+        // empty label 也走简短分支
+        assert!(s.contains("· general · +2"), "{s}");
     }
 
     // -------- /find_speech_yesterday parse + format --------

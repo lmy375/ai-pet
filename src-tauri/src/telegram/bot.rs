@@ -1039,6 +1039,48 @@ async fn handle_tg_command(
                 .unwrap_or(0);
             crate::telegram::commands::format_random_pinned_reply(&views, seed)
         }
+        TgCommand::CatGrowth7d => {
+            // 扫所有 cat（memory_list(None)）→ 每个 cat 算 created_at
+            // 落入近 7d 窗口的 item 数 → 仅留 delta > 0 → 按 delta desc
+            // 排 → 拼 formatter。read 失败兜底空 list（formatter 走 empty
+            // path）。
+            //
+            // 注：memory_list 已在 read 时把 butler_tasks / todo /
+            // task_archive 段用 SQLite 真相覆盖，所以本命令算的是真实新增
+            // 而非 yaml orphan。
+            let now_ms = chrono::Local::now().timestamp_millis();
+            let seven_d_ms = 7 * 24 * 60 * 60 * 1000_i64;
+            let cutoff_ms = now_ms - seven_d_ms;
+            let mut rows: Vec<(String, String, usize)> = Vec::new();
+            if let Ok(index) =
+                crate::commands::memory::memory_list(None)
+            {
+                for (key, cat) in index.categories.iter() {
+                    let mut delta = 0usize;
+                    for it in &cat.items {
+                        if it.created_at.is_empty() {
+                            continue;
+                        }
+                        let Ok(t) = chrono::DateTime::parse_from_rfc3339(
+                            &it.created_at,
+                        ) else {
+                            continue;
+                        };
+                        if t.timestamp_millis() >= cutoff_ms {
+                            delta += 1;
+                        }
+                    }
+                    if delta > 0 {
+                        rows.push((key.clone(), cat.label.clone(), delta));
+                    }
+                }
+            }
+            // delta desc；tie 时 key asc（稳定输出便于测）
+            rows.sort_by(|a, b| {
+                b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0))
+            });
+            crate::telegram::commands::format_cat_growth_7d_reply(&rows)
+        }
         TgCommand::Last => {
             // 闪查最近创建：reuse read_tg_chat_task_views（已 chat-scoped）。
             // formatter 内部 max_by created_at + 截 raw 预览。本地 now 注入
