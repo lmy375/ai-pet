@@ -841,6 +841,40 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HerePin => {
+            // chat-scoped pinned views → 拼「📌 当前 pin context：...」
+            // 文本 → set_transient_note(text, 60)。empty pinned 走
+            // formatter 兜底教学，跳过 backend 调用。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let titles: Vec<String> = views
+                .iter()
+                .filter(|v| v.pinned)
+                .map(|v| v.title.clone())
+                .collect();
+            if titles.is_empty() {
+                crate::telegram::commands::format_here_pin_reply(&[], None)
+            } else {
+                // 文本：紧凑「📌 当前 pin context：「<t1>」「<t2>」...」
+                // 一行 — 让 pet 系统 prompt 注入时 token 经济
+                let joined = titles
+                    .iter()
+                    .map(|t| format!("「{}」", t))
+                    .collect::<Vec<_>>()
+                    .join("");
+                let pin_ctx = format!("📌 当前 pin context：{}", joined);
+                let until_iso = crate::proactive::set_transient_note(pin_ctx, 60);
+                let until_local = chrono::DateTime::parse_from_str(
+                    &until_iso,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Local));
+                crate::telegram::commands::format_here_pin_reply(
+                    &titles,
+                    until_local,
+                )
+            }
+        }
         TgCommand::CatTop { n } => {
             // scan memory_list(None) → 每 cat item count → sort desc +
             // cap N。empty cat 仍计入（0 count）— 但 sort desc 后排末
