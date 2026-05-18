@@ -657,6 +657,11 @@ pub enum TgCommand {
     /// sighting（前缀无 [pinned] 的 lookback 较宽）。audit「owner 这周觉得什
     /// 么变重要了」。同 best-effort 语义。无参。
     PinGrow7d,
+    /// `/streak_pin` —— 连续多少天有 pinned task 在 active — 与 /streak (done
+    /// 完成度) 互补的 attention 维度。从今日往前 walk：每天检查 butler_history
+    /// 含 [pinned] sighting（含今日 fallback：当前有 pinned task → 今日计数）。
+    /// 「我多久没钉过任务」audit。无参；best-effort（history retention 内可见）。
+    StreakPin,
     /// `/aliases <title>` —— 扫 butler_history 内 rename event 重建 alias chain。
     /// iter #568 起 memory_rename 把 rename 事件写到 butler_history.log（snippet
     /// 内嵌 `[was: <old>]`），本命令双向 walk 把 old title 链表展示。「这条 task
@@ -826,6 +831,7 @@ impl TgCommand {
             TgCommand::PinnedDrop7d => "pinned_drop_7d",
             TgCommand::PinGrow7d => "pin_grow_7d",
             TgCommand::Aliases { .. } => "aliases",
+            TgCommand::StreakPin => "streak_pin",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
             TgCommand::TagsThisweek => "tags_thisweek",
@@ -973,6 +979,7 @@ impl TgCommand {
             | TgCommand::Yesterday
             | TgCommand::TodayDone
             | TgCommand::Streak
+            | TgCommand::StreakPin
             | TgCommand::CancelAllError { .. }
             | TgCommand::PromoteAllP7 { .. }
             | TgCommand::TouchAllP7 { .. }
@@ -1121,6 +1128,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pinned_drop_7d", "Tasks that lost [pinned] in last 7 days — reverse attention audit; what owner stopped caring about"),
             ("pin_grow_7d", "Tasks newly pinned in last 7 days — positive attention audit; /pinned_drop_7d 's dual"),
             ("aliases", "Reconstruct task rename chain from butler_history rename events — 「what this task was called before」audit"),
+            ("streak_pin", "Consecutive days with active pinned task — /streak (done) 's attention-dimension cousin"),
             ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("tags_yesterday", "Yesterday's counterpart to /tags_today — yesterday's touched task tag counts"),
             ("tags_thisweek", "This week's counterpart to /tags_today — week-touched task tag counts"),
@@ -1233,6 +1241,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pinned_drop_7d", "近 7 天疑似被 unpin 的 task — 反向关注度审计「owner 最近放下了啥」（best-effort）"),
             ("pin_grow_7d", "近 7 天新获 [pinned] 的 task — /pinned_drop_7d 的正向对偶「owner 这周觉得什么变重要了」"),
             ("aliases", "扫 butler_history rename event 重建 alias chain — 「这条 task 曾叫什么」audit"),
+            ("streak_pin", "连续多少天有 pinned task active — /streak (done) 的 attention 维度对偶"),
             ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("tags_yesterday", "/tags_today 的昨日对偶 — 昨日动过 task 含的 #tag 计数"),
             ("tags_thisweek", "/tags_today 的本周对偶 — 本周动过 task 含的 #tag 计数（周报场景）"),
@@ -1717,6 +1726,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "today_done" => Some(TgCommand::TodayDone),
         // `/streak` 无参；多余尾部忽略
         "streak" => Some(TgCommand::Streak),
+        // `/streak_pin`：无参 — 连续多少天有 pinned task active 的 audit。
+        "streak_pin" => Some(TgCommand::StreakPin),
         // `/pri <title> <N>`：rsplit 末尾 whitespace token 作 priority u8
         // (≤ 9)；解析失败 → priority=None 让 handler 走 usage hint。title
         // 含空格 / 中文标点都保（与 /snooze trailing token 同模板）。
@@ -2406,7 +2417,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2576,6 +2587,7 @@ pub fn format_help_for_topic(
         "alarms_thisweek" => "⏰ /alarms_thisweek\n\n用法：/alarms_today 的本周对偶 — 仅显本周（自周一 00:00 起到 now）触发的 reminder（`[remind: ...]` 协议条目）。让 owner 看「本周还会响哪些 / 已逾期未消」。无 N 参 — 本周范围比 today 略广但仍可控（典型 < 30 条）。\n\n场景：周报场景看「这周我设了哪些 reminder / 哪些已 fire 哪些待响」/ 周一早会前 review 上周未消 alarm。\n\n输出格式：\n  ⏰ 本周（YYYY-MM-DD 起）N 条 alarms：\n  · MM-DD HH:MM (剩 / 已逾期 ...) | <topic>\n  · MM-DD HH:MM (剩 ...) | <topic>\n  ...\n\n跨日 scope 行带 MM-DD（与 /alarms 同；/alarms_today 行只 HH:MM 因 single day）。空 → 友好兜底指 /alarms 全量 / /alarms_today。\n\n示例：\n  /alarms_thisweek\n\n相关：/alarms（不限日期 top N）；/alarms_today（仅今日）；/touched_thisweek（本周 task 全谱）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
         "find_speech_today" => "🗣 /find_speech_today <keyword>\n\n用法：/find_speech 的今日切片 — 限本地今日触发的 pet utterance 内搜 keyword（case-insensitive 子串）。「今天 pet 提过 X 吗」精准 audit。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_speech 全量 / /last_speech 最近 1 条 alt）。\n\n输出格式：\n  🗣 今日（YYYY-MM-DD）speech 命中「<kw>」N 条：\n  · HH:MM · …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_speech 同。cap 8 条。\n\n示例：\n  /find_speech_today 周报\n  /find_speech_today rebase\n\n相关：/find_speech（不限日期）；/last_speech（最近 1 条）；/touched_today（今日 task 全谱）。",
+        "streak_pin" => "📌🔥 /streak_pin\n\n用法：连续多少天有 pinned task active — 「我多久没钉过任务」audit。与既有 /streak (连续 done 天数) 互补 — 那是「完成度连续」、本命令是「关注度连续」。从今日往前 walk butler_history.log，每天检查是否有 [pinned] sighting（含今日 fallback：当前有 pinned task → 今日计数）；遇到第一天无 sighting 即 break。无参。\n\n场景：周末复盘「我最近是否有任何重点 task」；月度看「关注力度是否 monthlong 持续 vs 间歇」；新建 pinned task 后 audit「我重新拾起 pinning 习惯了」。\n\n输出格式：\n  📌🔥 连续 N 天有 pinned task active\n  · 当前 pinned: M 条\n  · 最早 sighting: YYYY-MM-DD（streak 起点）\n  · 历史最长 streak（retention 内）: K 天\n\n0 streak（既无 current pinned 又今日 history 无 sighting）→ 友好兜底「最近无 pin 活动 — 试 /pin <title> 钉一条 sprint task」+ 教学指 /pinned。\n\n注（best-effort 局限）：\n- butler_history retention 限（典型 100 entry cap）— 极老 streak 不可见\n- snippet 80 字截断可能漏 [pinned] → false neg；与 /pinned_drop_7d 同 caveats\n- 「pin 一次后再不 update」的 long-pinned task 不会每天产生 sighting；fallback「今日 fallback + 历史 sighting」可能不完美\n\n示例：\n  /streak_pin\n\n相关：/streak（done 连续）；/pinned（当前 pinned 清单）；/pin_grow_7d（近 7d 新 pin）；/pinned_drop_7d（近 7d unpin）。",
         "aliases" => "🏷 /aliases <title>\n\n用法：扫 butler_history.log 内 `rename` 事件，按时序重建本 task 的 alias chain（曾用过的所有标题）。「这条 task 曾叫过什么」audit — 与 /timeline 含 rename 行互补：那个是事件流，本命令是 alias-only 集中视图。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n场景：cascade rename 后 audit「我把 X 改成什么了」；季度复盘看「这条 task 跨多版命名」；写文档需引用 task 历史名时一眼查。\n\n后端：iter #568 起 memory_rename 调 record_event('rename', new_title, '[was: <old>]') 写到 butler_history.log。本命令扫 history 找 action=='rename' 且 (title == current OR title in [was: ...] OR new_title 链上某节点) → 双向 walk 拼出完整 chain。\n\n输出格式：\n  🏷 「<current_title>」alias chain · N 条历史名：\n  · 整理 Downloads → 清理桌面 → 桌面整理（最早 → 最新）\n  · 2026-05-18 14:30 → 2026-05-18 15:45 → 现在\n  \n  （每段过渡含 ts；最右是当前 title）\n\n空（无 rename 历史）→ 友好兜底「本 task 从未被重命名」+ 教学指 /timeline 看全 history。\n\n注（best-effort 局限）：\n- iter #568 之前的 rename 不可见（log 不曾记 rename event）\n- snippet 80 字截断可能漏 `[was: X]` 末尾 — 链 reconstruction 缺一段；fallback 显部分链 + 标 `…`\n- 仅 butler_tasks cat（rename event 限 butler_tasks 写入）\n\n示例：\n  /aliases 清理桌面\n  /aliases 1  （/tasks 第 1 条）\n\n相关：/timeline（全 history 含 rename 行）；/show（当前 snapshot）；/cascade_rename（rename 时同步 detail.md ref）。",
         "pin_grow_7d" => "📌🌱 /pin_grow_7d\n\n用法：列「近 7 天新获 [pinned] 的 task」— /pinned_drop_7d 的正向对偶。即：当前 task 带 [pinned] marker，且 butler_history.log 7d 内最早能看到 [pinned] sighting（lookback 之外含 [pinned] 的不算 — 跨界点视为「在 7d 窗口内被首次 pin」）。audit「owner 这周觉得什么变重要了」。无参。\n\n场景：周末 review「我这周钉了哪几条 — 还活跃吗 / 该 done 了没」；月度复盘「优先级管理是否在更新 — 新关注点」；与 /pinned 当前清单对比看「老 pinned vs 新 pinned」分布。\n\n输出格式：\n  📌🌱 近 7 天新 pinned 候选 N 条（首次 [pinned] sighting 在 7d 内）：\n  · 「<title>」 · 首次 [pinned] MM-DD HH:MM\n  · 「<title>」 · 首次 [pinned] MM-DD HH:MM\n  ...\n\n按首次 sighting ts desc 排（最近被 pin 的在上）。cap 8 条。\n\n空 → 友好兜底教学指 /pinned 看当前 pinned 清单 / /pinned_drop_7d 反向 audit。\n\n注（best-effort 局限）：\n- 「首次」是 within history retention 内的首次；history 之前已 pinned 的 task 也可能被列（误判为「新 pin」）— 配合 retention age 解释\n- snippet 80 字截断可能漏 [pinned]（false negative）\n- 与 /pinned_drop_7d 同 caveat 体系\n\n示例：\n  /pin_grow_7d\n\n相关：/pinned_drop_7d（反向 — 近 7 天 unpin 候选）；/pinned（当前 pinned 清单）；/peek_pinned（pinned 紧凑视图）；/timeline <title>（看单 task pin/unpin 历史）。",
         "pinned_drop_7d" => "📌💤 /pinned_drop_7d\n\n用法：列「近 7 天疑似被 unpin」的 task — 即：当前 task 不带 [pinned] marker，但 butler_history.log 7d 内出现过含 [pinned] 的 update event。反向关注度审计 — 「owner 最近放下了啥 / 哪几条曾经重要现在不在意」。无参。\n\n场景：周末 review 「我这周 unpin 了哪几条 — 是真的不重要了还是该重新 pin」；月度复盘「优先级管理是否在动 — pin/unpin 是否健康循环」；audit「我是不是钉了又不动一直 stale 然后撤」。\n\n输出格式：\n  📌💤 近 7 天 unpin 候选 N 条（pin → 当前 unpinned）：\n  · 「<title>」 · 最后 [pinned] 见于 MM-DD HH:MM\n  · 「<title>」 · 最后 [pinned] 见于 MM-DD\n  ...\n\n按最后 [pinned] sighting ts desc 排（最近被取消的在上）。cap 8 条。\n\n空 → 友好兜底教学指 /pinned 看当前 pinned 清单 / /touched_thisweek 全谱本周复盘。\n\n注（best-effort 局限）：\n- butler_history snippet 80 字截断可能漏 [pinned]（false negative — 该 task 实际仍 pinned 但 snippet 没看到 [pinned] → 误判为 unpin 候选）。典型 description 短不会触发\n- 仅 history.log retention 内（典型 90+ 天 / 100 entry cap）可看到的 pin sighting 计入。极老的 pin 记录已被 rotate 掉则不可见\n- 「unpin 候选」非严格 — 实际可能是「曾 pinned 后被 update 写了但 marker 留着」，需 owner 确认\n\n示例：\n  /pinned_drop_7d\n\n相关：/pinned（当前 pinned 清单）；/peek_pinned（pinned 紧凑视图）；/timeline <title>（看单 task pin/unpin 历史）。",
@@ -2711,6 +2723,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/pinned_drop_7d  —  近 7 天疑似被 unpin 的 task — 反向关注度审计「owner 最近放下了啥」（best-effort，history 80 字截断可能漏）".to_string(),
         "/pin_grow_7d  —  近 7 天新获 [pinned] 的 task — /pinned_drop_7d 的正向对偶「owner 这周觉得什么变重要了」（best-effort）".to_string(),
         "/aliases <title>  —  扫 butler_history rename events 重建 alias chain — 「这条 task 曾叫什么」audit".to_string(),
+        "/streak_pin  —  连续多少天有 pinned task active — /streak (done) 的 attention 维度对偶".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/alarms_thisweek  —  /alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
@@ -3949,6 +3962,98 @@ pub fn format_find_speech_reply(
         ));
     }
     out
+}
+
+/// `/streak_pin` 命令回复文案。pure：caller (bot.rs) 已：
+/// - streak: 连续天数（≥ 0）
+/// - current_pinned: 当前 pinned 任务数（≥ 0）
+/// - earliest_sighting: streak 起点 YYYY-MM-DD（streak > 0 时；否则 None）
+/// - max_streak_in_window: history retention 内最长 streak
+pub fn format_streak_pin_reply(
+    streak: usize,
+    current_pinned: usize,
+    earliest_sighting: Option<&str>,
+    max_streak_in_window: usize,
+) -> String {
+    if streak == 0 && current_pinned == 0 {
+        return "📌🔥 最近无 pin 活动 — 试 /pin <title> 钉一条 sprint task 重启 attention 节奏。\n相关：/pinned 看当前钉清单；/pin_grow_7d 看近 7 天新 pin。".to_string();
+    }
+    let mut out = format!("📌🔥 连续 {} 天有 pinned task active\n", streak);
+    out.push_str(&format!("· 当前 pinned: {} 条\n", current_pinned));
+    if let Some(date) = earliest_sighting {
+        out.push_str(&format!("· 最早 sighting: {}（streak 起点）\n", date));
+    }
+    out.push_str(&format!(
+        "· 历史最长 streak（retention 内）: {} 天",
+        max_streak_in_window,
+    ));
+    out
+}
+
+/// pure：从 butler_history 行集 + 今日 fallback 算 pin streak。
+/// - dates_with_sighting: 集合，含 YYYY-MM-DD 字符串（每行 ts 前 10 字
+///   且 snippet 包含 [pinned] 的 date）
+/// - has_current_pinned: 当前是否有 active pinned task（若 true 且今日
+///   不在 dates_with_sighting，今日 fallback 算 +1）
+/// - today: 今日 YYYY-MM-DD（caller 传入便测）
+///
+/// 算法：从 today 往前 walk，每天 check date ∈ dates_with_sighting
+/// （含 today fallback）；连续命中天数 = streak。第一天 miss 即 break。
+///
+/// 返回 (streak, earliest_sighting_date_or_none, max_streak_in_window)。
+/// max_streak: 在 dates_with_sighting 集合内找最长连续段（含 today
+/// fallback）— audit 历史峰值。
+pub fn compute_pin_streak(
+    dates_with_sighting: &std::collections::HashSet<String>,
+    has_current_pinned: bool,
+    today: chrono::NaiveDate,
+) -> (usize, Option<String>, usize) {
+    let date_str = |d: chrono::NaiveDate| d.format("%Y-%m-%d").to_string();
+    // current streak: walk 后退
+    let mut streak = 0usize;
+    let mut earliest: Option<String> = None;
+    let mut cursor = today;
+    loop {
+        let s = date_str(cursor);
+        let hit = dates_with_sighting.contains(&s)
+            || (cursor == today && has_current_pinned);
+        if !hit {
+            break;
+        }
+        streak += 1;
+        earliest = Some(s);
+        cursor = cursor - chrono::Duration::days(1);
+    }
+    // max streak in retention window：扫 dates_with_sighting 找最长连续
+    // segment。把今日 fallback 也并入临时 set 后算。
+    let mut all_dates: std::collections::BTreeSet<String> =
+        dates_with_sighting.iter().cloned().collect();
+    if has_current_pinned {
+        all_dates.insert(date_str(today));
+    }
+    // dates 已 BTreeSet 排序；iterate + walk consecutive
+    let mut max_streak = 0usize;
+    let mut cur_streak = 0usize;
+    let mut prev_date: Option<chrono::NaiveDate> = None;
+    for s in &all_dates {
+        let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") else {
+            continue;
+        };
+        let consecutive = match prev_date {
+            Some(pd) => (d - pd).num_days() == 1,
+            None => false,
+        };
+        if consecutive {
+            cur_streak += 1;
+        } else {
+            cur_streak = 1;
+        }
+        if cur_streak > max_streak {
+            max_streak = cur_streak;
+        }
+        prev_date = Some(d);
+    }
+    (streak, earliest, max_streak)
 }
 
 /// pure：reconstruct alias chain for a given current title by scanning
@@ -8719,7 +8824,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -9190,7 +9295,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -14599,6 +14704,100 @@ mod tests {
         assert!(s.contains("今日（2026-05-17）speech 命中「周报」2 条"), "{s}");
         assert!(s.contains("· 14:30 · …今天 pet 说到 周报 的事…"), "{s}");
         assert!(s.contains("· 09:15 · …早晨 pet 提到 周报 进度…"), "{s}");
+    }
+
+    // -------- /streak_pin parse + compute + format --------
+
+    #[test]
+    fn streak_pin_parser_no_args() {
+        assert_eq!(parse_tg_command("/streak_pin"), Some(TgCommand::StreakPin));
+        assert_eq!(
+            parse_tg_command("/streak_pin extra"),
+            Some(TgCommand::StreakPin),
+        );
+    }
+
+    #[test]
+    fn compute_pin_streak_empty_returns_zero() {
+        let dates = std::collections::HashSet::new();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let (streak, earliest, max_s) = compute_pin_streak(&dates, false, today);
+        assert_eq!(streak, 0);
+        assert!(earliest.is_none());
+        assert_eq!(max_s, 0);
+    }
+
+    #[test]
+    fn compute_pin_streak_today_fallback_when_current_pinned() {
+        // 当前有 pinned 但 history 无 sighting → 今日仍计 1 天
+        let dates = std::collections::HashSet::new();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let (streak, earliest, max_s) = compute_pin_streak(&dates, true, today);
+        assert_eq!(streak, 1);
+        assert_eq!(earliest.as_deref(), Some("2026-05-18"));
+        assert_eq!(max_s, 1);
+    }
+
+    #[test]
+    fn compute_pin_streak_consecutive_days() {
+        // 连续 3 天 sighting + 今日 fallback
+        let mut dates = std::collections::HashSet::new();
+        dates.insert("2026-05-16".to_string());
+        dates.insert("2026-05-17".to_string());
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let (streak, earliest, max_s) = compute_pin_streak(&dates, true, today);
+        // today (fallback) + 17 + 16 = 3 天
+        assert_eq!(streak, 3);
+        assert_eq!(earliest.as_deref(), Some("2026-05-16"));
+        assert_eq!(max_s, 3);
+    }
+
+    #[test]
+    fn compute_pin_streak_break_on_gap() {
+        // 5-16 / 5-17 / 5-18 yesterday (sighting), today 无 sighting + 无
+        // current pinned → 今日不算，streak 0
+        let mut dates = std::collections::HashSet::new();
+        dates.insert("2026-05-16".to_string());
+        dates.insert("2026-05-17".to_string());
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let (streak, earliest, max_s) = compute_pin_streak(&dates, false, today);
+        assert_eq!(streak, 0, "today break → 0 current streak");
+        assert!(earliest.is_none());
+        // 但 max_streak 还是 5-16,5-17 = 2 day chain
+        assert_eq!(max_s, 2);
+    }
+
+    #[test]
+    fn compute_pin_streak_max_finds_longest_historical_chain() {
+        // 5-10..5-13 (4 day chain) + 5-15 (1 day) + today fallback
+        let mut dates = std::collections::HashSet::new();
+        for d in ["2026-05-10", "2026-05-11", "2026-05-12", "2026-05-13"] {
+            dates.insert(d.to_string());
+        }
+        dates.insert("2026-05-15".to_string());
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let (streak, _earliest, max_s) = compute_pin_streak(&dates, true, today);
+        // current streak 仅今日 fallback（17 没 sighting → break）= 1
+        assert_eq!(streak, 1);
+        // max 历史最长链 5-10..5-13 = 4 天
+        assert_eq!(max_s, 4);
+    }
+
+    #[test]
+    fn format_streak_pin_empty_shows_fallback() {
+        let s = format_streak_pin_reply(0, 0, None, 0);
+        assert!(s.contains("最近无 pin 活动"), "{s}");
+        assert!(s.contains("/pin"), "{s}");
+        assert!(s.contains("/pinned"), "{s}");
+    }
+
+    #[test]
+    fn format_streak_pin_renders_full_summary() {
+        let s = format_streak_pin_reply(5, 3, Some("2026-05-14"), 12);
+        assert!(s.contains("连续 5 天有 pinned task active"), "{s}");
+        assert!(s.contains("当前 pinned: 3 条"), "{s}");
+        assert!(s.contains("最早 sighting: 2026-05-14"), "{s}");
+        assert!(s.contains("历史最长 streak（retention 内）: 12 天"), "{s}");
     }
 
     // -------- /aliases parse + reconstruct + format --------

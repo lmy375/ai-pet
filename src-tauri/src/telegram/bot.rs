@@ -841,6 +841,51 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::StreakPin => {
+            // 关注节奏 audit — /streak 的 pin 维度对偶。
+            // 1. 扫 butler_history.log 收集 含 [pinned] sighting 的 date set
+            //    （前 10 字 RFC3339 = YYYY-MM-DD prefix）
+            // 2. 当前 chat-scoped views 内 pinned task count 作 today fallback
+            // 3. pure compute_pin_streak 算 streak / earliest / max_in_window
+            // 4. formatter 拼输出
+            let views = read_tg_chat_task_views(chat_id.0);
+            let current_pinned = views.iter().filter(|v| v.pinned).count();
+            let has_current_pinned = current_pinned > 0;
+            let content =
+                crate::butler_history::read_history_content().await;
+            let mut dates_with_sighting: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for line in content.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                // body 含 [pinned]？ts 前 10 字 = date prefix（RFC3339 YYYY-MM-DD…）
+                let Some((ts_str, body)) = line.split_once(' ') else {
+                    continue;
+                };
+                if !body.contains("[pinned]") {
+                    continue;
+                }
+                if ts_str.len() < 10 {
+                    continue;
+                }
+                let date_prefix: String = ts_str.chars().take(10).collect();
+                dates_with_sighting.insert(date_prefix);
+            }
+            let today = chrono::Local::now().date_naive();
+            let (streak, earliest, max_streak) =
+                crate::telegram::commands::compute_pin_streak(
+                    &dates_with_sighting,
+                    has_current_pinned,
+                    today,
+                );
+            crate::telegram::commands::format_streak_pin_reply(
+                streak,
+                current_pinned,
+                earliest.as_deref(),
+                max_streak,
+            )
+        }
         TgCommand::Yesterday => {
             // 昨日 done 视图：reuse read_tg_chat_task_views（已 chat-scoped）。
             // formatter 内部从 today 算 yesterday 边界并过滤 + sort。
