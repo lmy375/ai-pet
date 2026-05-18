@@ -9,7 +9,6 @@
 >
 
 - TG bot `/alarms_today` 命令：今日触发的 reminder 集中视图 — 既有 /alarms 全量的 today 切片。
-- ChatMini 气泡右键「📝 转 reflect」菜单项：把气泡内容存为 ai_insights memory item — 与 💾 转 task 对偶（task vs 反思）。
 - PanelDebug 「📊 7d LLM 调用 sparkline」chip：近 7 天每日 LLM round 数 mini-chart — 长视角节奏。
 
 
