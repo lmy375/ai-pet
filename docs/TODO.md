@@ -9,7 +9,6 @@
 >
 
 - TG bot `/touched_thisweek` 命令：本周 updated_at 命中 task — 周维度复盘视角，与 /touched_today / /touched_yesterday 三件套。
-- TG bot `/peek_pinned` 命令：列所有 pinned task 一行紧凑视图（status + schedule + markers）— /peek 批量版 + /pinned 紧凑版。
 - ChatPanel input 历史 popover 加 fuzzy filter — 输 kw 过滤 sentHistory，长历史中找特定 prompt。
 - ChatMini 「⌘R 重发最后一条 user」keyboard shortcut — 快速 re-roll 上次 prompt 拿新 reply。
 
