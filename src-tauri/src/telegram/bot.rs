@@ -728,6 +728,15 @@ async fn handle_tg_command(
                 .collect();
             crate::telegram::commands::format_pinned_tasks_list(&views)
         }
+        TgCommand::PeekPinned => {
+            // 与 Pinned 同 chat-scope + pinned filter；formatter 走 peek
+            // 单行紧凑格式 + header「📌 N 条 pinned」。
+            let views: Vec<crate::task_queue::TaskView> = read_tg_chat_task_views(chat_id.0)
+                .into_iter()
+                .filter(|v| v.pinned)
+                .collect();
+            crate::telegram::commands::format_peek_pinned_reply(&views)
+        }
         TgCommand::PinnedDue => {
             // read 路径与 /pinned / /silenced 同；formatter 内部 filter
             // active + pinned + due.is_some() + sort by due asc。本 handler
