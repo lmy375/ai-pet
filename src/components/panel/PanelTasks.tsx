@@ -4342,6 +4342,62 @@ export function PanelTasks({
   ///
   /// ⌘⇧Q 选择：⌘Q 在 macOS 是 quit application；shift 修饰避开。⌘⇧Q
   /// 行业 IDE mostly 空 — 占给 "Quote" 助记。
+  /// detail.md textarea ⌘⇧Y 插 YAML frontmatter 模板 — 给长 doc /
+  /// publishable note 搭元数据脚手架。模板含 title/date/tags 3 个最常用
+  /// 字段；自动填 date = 当前 ISO date（owner 不必手敲今日日期）。
+  ///
+  /// 模板：
+  ///   ---
+  ///   title: <cursor>
+  ///   date: YYYY-MM-DD
+  ///   tags: []
+  ///   ---
+  ///
+  /// 模板插在 doc 起始（无论光标在哪）— YAML frontmatter 必须文件最顶
+  /// 才被识别（jekyll / hugo / obsidian 等都按 spec）；插中段无意义。
+  /// 若 doc 已有 frontmatter（起始 `---\n`）→ noop 防重复。
+  ///
+  /// ⌘⇧Y 选择：⌘Y 是 redo（macOS Chrome / Edge）；shift 修饰避开。
+  /// ⌘⇧Y 行业 IDE mostly 空 — "YAML" 助记一致。
+  const handleDetailYamlFrontmatter = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (!(e.metaKey || e.ctrlKey)) return false;
+      if (!e.shiftKey || e.altKey) return false;
+      if (e.key.toLowerCase() !== "y") return false;
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return false;
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const value = ta.value;
+      // 已有 frontmatter → noop。frontmatter 必须 doc 第 1 行起 `---`
+      if (value.startsWith("---\n")) return true;
+      // 算今日本地日期 YYYY-MM-DD
+      const now = new Date();
+      const y = now.getFullYear();
+      const mo = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      const dateStr = `${y}-${mo}-${d}`;
+      // 模板：插在 doc 顶。title 后留空让 owner 输；trailing `\n` 让既
+      // 有内容自然换段。
+      const template = `---\ntitle: \ndate: ${dateStr}\ntags: []\n---\n\n`;
+      const next = template + value;
+      setEditingDetailContent(next);
+      // 光标落 title: 行末（"title: " 后）— owner 立即可输标题
+      // 「---\ntitle: 」长度 = 4 + 7 = 11
+      const cursorPos = 4 + "title: ".length;
+      requestAnimationFrame(() => {
+        const cur = detailEditorRef.current;
+        if (!cur) return;
+        cur.focus();
+        cur.selectionStart = cursorPos;
+        cur.selectionEnd = cursorPos;
+        setDetailCursorPos(cursorPos);
+        setDetailSelectionEnd(cursorPos);
+      });
+      return true;
+    },
+    [],
+  );
+
   const handleDetailBlockquote = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
       if (!(e.metaKey || e.ctrlKey)) return false;
@@ -15161,6 +15217,9 @@ export function PanelTasks({
                                   // ⌘⇧Q 选区行 wrap markdown blockquote
                                   // （每行加 `> ` 前缀）
                                   if (handleDetailBlockquote(e)) return;
+                                  // ⌘⇧Y 插 YAML frontmatter 模板 — 长
+                                  // doc / publishable note 元数据脚手架
+                                  if (handleDetailYamlFrontmatter(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -15659,6 +15718,9 @@ export function PanelTasks({
                                   // ⌘⇧Q 选区行 wrap markdown blockquote
                                   // （每行加 `> ` 前缀）
                                   if (handleDetailBlockquote(e)) return;
+                                  // ⌘⇧Y 插 YAML frontmatter 模板 — 长
+                                  // doc / publishable note 元数据脚手架
+                                  if (handleDetailYamlFrontmatter(e)) return;
                                   // ⌘⇧C 复制当前 heading 段（光标定位）—
                                   // 与 preview 「📋 复制此节」按钮入口对偶。
                                   if (handleDetailCopySection(e)) return;
@@ -18978,6 +19040,7 @@ export function PanelTasks({
                   ["⌘⇧M", "插 markdown table 3x3 模板（header + 分隔 + 2 空行）— 快速搭表"],
                   ["⌘⇧A", "插 GFM markdown alert callout（默认 [!NOTE]；手改 TIP/WARNING/CAUTION）"],
                   ["⌘⇧Q", "选区行 wrap markdown blockquote（每行 `> ` 前缀；空行用 `>`）"],
+                  ["⌘⇧Y", "插 YAML frontmatter 模板（title/date/tags；自动填今日 date）— doc 起始位"],
                   ["⌘/", "切换 markdown 注释 <!-- … --> （无选区 → 整行；有选区 → 块包裹；再按解注释）"],
                   ["⌘B / ⌘I", "加粗 / 斜体（选区 wrap **/*；空选时插模板）"],
                   ["⌘D", "复制 / 重复当前行（IDE 风格）"],
