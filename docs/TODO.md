@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- ChatMini bubble 顶 chip 加 「📊 全谱 chip rack」hover-展开 — 把分散在四角的 ⏱/📊/💭/✏️/↺ chip 收纳。
 - TG `/recent_pins [N]`：近 N 条 [pinned] sighting event（ts + title）— 与 /pin_grow_7d 7d 范围互补，看 N 条最近 pin 决策。
 
 
