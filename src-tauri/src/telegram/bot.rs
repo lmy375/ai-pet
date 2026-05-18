@@ -841,6 +841,32 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HereStatus => {
+            // get_transient_note() returns (text, until_iso). empty text =
+            // no active transient. parse until_iso → DateTime<Local>;
+            // remaining_minutes = (until - now) in minutes.
+            let (text, until_iso) =
+                crate::proactive::get_transient_note();
+            let until_local = if until_iso.is_empty() {
+                None
+            } else {
+                chrono::DateTime::parse_from_str(
+                    &until_iso,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Local))
+            };
+            let remaining_minutes = until_local.map(|until| {
+                let now = chrono::Local::now();
+                (until - now).num_minutes()
+            });
+            crate::telegram::commands::format_here_status_reply(
+                &text,
+                until_local,
+                remaining_minutes,
+            )
+        }
         TgCommand::HereRecentDone => {
             // chat-scoped views → filter done + sort by updated_at desc
             // + take 5 → 拼「✅ 最近完成 context：「t1」「t2」...」 →

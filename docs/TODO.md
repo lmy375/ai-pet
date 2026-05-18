@@ -8,6 +8,12 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- PanelTasks 📋 audit chip 加 per-signal click 触发对应 filter：📌→pinnedFilter / 💤→idleFilter — 让 chip 从信息变 navigation entry。
+- TG `/cat_growth_today`：今日 created item 数 per cat — 与 7d/30d cousin 完成 day×cat 矩阵第一档。
+- TG `/here_status` 后做 `/here_until <HH:MM>`：把当前 transient_note 延长 / 缩短到指定时刻 — /here_extend 替代品。
+- PanelMemory cat header 加「📅 最早 created」chip：单 cat 内 min(items.created_at) — 「这 cat 多老」cat 寿命 audit。
+- TG `/done_streak_chart`：列近 30 天每天 done 数 sparkline 行 — /streak 文本数字的可视化扩展。
+
 
 
 
