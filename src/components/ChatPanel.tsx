@@ -43,8 +43,24 @@ export function ChatPanel({ onSend, isLoading }: Props) {
   /// click 按钮 toggle；click outside / Esc 关。选 row → setInput(value) +
   /// 同步 historyCursorRef + recalledValueRef，让接下来按 ↑ 顺序仍正确。
   const [historyPopoverOpen, setHistoryPopoverOpen] = useState(false);
+  /// History popover fuzzy filter query — 让 owner 在长 sentHistory 中
+  /// 找特定 prompt（如「上次写周报怎么开头的」）。空 query 走 default
+  /// 「top 5」视图；非空 query 走「top 10 匹配」让 sample 略大让 fuzzy
+  /// search 命中率高。popover 关闭时自动 reset 避免 stale state 在再
+  /// 次打开时混淆。case-insensitive substring match — 与 /find / 其它
+  /// fuzzy search 入口同协议。
+  const [historyFilterQuery, setHistoryFilterQuery] = useState("");
+  const historyFilterInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (!historyPopoverOpen) return;
+    if (!historyPopoverOpen) {
+      // popover 关时清 filter query — 避免下次打开 stale state
+      if (historyFilterQuery) setHistoryFilterQuery("");
+      return;
+    }
+    // popover 开时自动 focus filter input，让 owner 立即可输
+    window.setTimeout(() => {
+      historyFilterInputRef.current?.focus();
+    }, 0);
     const close = () => setHistoryPopoverOpen(false);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setHistoryPopoverOpen(false);
@@ -728,28 +744,91 @@ export function ChatPanel({ onSend, isLoading }: Props) {
                 zIndex: 60,
               }}
             >
-              <div
-                style={{
-                  padding: "4px 9px 6px",
-                  fontSize: 10,
-                  color: "var(--pet-color-muted)",
-                  borderBottom: "1px solid var(--pet-color-border)",
-                  marginBottom: 4,
-                }}
-              >
-                💡 最近 {Math.min(5, sentHistory.length)} 条输入
-              </div>
-              {sentHistory.slice(0, 5).map((entry, i) => {
+              {(() => {
+                const q = historyFilterQuery.trim().toLowerCase();
+                const filtered = q
+                  ? sentHistory
+                      .map((entry, originalIdx) => ({ entry, originalIdx }))
+                      .filter((x) => x.entry.toLowerCase().includes(q))
+                  : sentHistory.map((entry, originalIdx) => ({ entry, originalIdx }));
+                // 空 query 走 top 5（与历史 default 一致）；filter 时 top 10 让 fuzzy 命中样本略大
+                const cap = q ? 10 : 5;
+                const shown = filtered.slice(0, cap);
+                return (
+                  <>
+                    {/* fuzzy filter input：popover 顶。owner 输 kw 实时
+                        过滤；空时回到 default top-5 视图。Esc 仍关 popover
+                        （由外层 keydown listener 处理），Enter 在 input
+                        内空 noop（防误关）。auto-focus 在 useEffect 内
+                        setTimeout 完成。 */}
+                    <input
+                      ref={historyFilterInputRef}
+                      type="text"
+                      value={historyFilterQuery}
+                      placeholder="搜历史 prompt（kw 子串）…"
+                      onChange={(e) => setHistoryFilterQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        // 阻止 Enter 触发外层任何 default；Esc 走外层 close
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                        }
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        boxSizing: "border-box",
+                        padding: "5px 9px",
+                        fontSize: 11,
+                        fontFamily: "inherit",
+                        border: "1px solid var(--pet-color-border)",
+                        borderRadius: 4,
+                        background: "var(--pet-color-bg)",
+                        color: "var(--pet-color-fg)",
+                        marginBottom: 6,
+                      }}
+                    />
+                    <div
+                      style={{
+                        padding: "0 9px 6px",
+                        fontSize: 10,
+                        color: "var(--pet-color-muted)",
+                        borderBottom: "1px solid var(--pet-color-border)",
+                        marginBottom: 4,
+                      }}
+                    >
+                      {q
+                        ? shown.length === 0
+                          ? `🔍 无匹配「${historyFilterQuery.trim()}」`
+                          : `🔍 命中 ${filtered.length} 条「${historyFilterQuery.trim()}」（显 ${shown.length}）`
+                        : `💡 最近 ${shown.length} 条输入`}
+                    </div>
+                  </>
+                );
+              })()}
+              {(() => {
+                const q = historyFilterQuery.trim().toLowerCase();
+                const filtered = q
+                  ? sentHistory
+                      .map((entry, originalIdx) => ({ entry, originalIdx }))
+                      .filter((x) => x.entry.toLowerCase().includes(q))
+                  : sentHistory.map((entry, originalIdx) => ({ entry, originalIdx }));
+                const cap = q ? 10 : 5;
+                const shown = filtered.slice(0, cap);
+                return shown;
+              })().map(({ entry, originalIdx }) => {
+                // originalIdx 用作 historyCursorRef 写入（保 ↑↓ 翻仍按
+                // 真实历史顺序）+ key（filter 视图下也唯一）。filter 命中
+                // 顺序 = filtered slice 顺序，不必额外解纠
                 const oneLine = entry.replace(/\s+/g, " ").trim();
                 const preview =
                   oneLine.length > 80 ? oneLine.slice(0, 80) + "…" : oneLine;
                 return (
                   <button
-                    key={i}
+                    key={originalIdx}
                     type="button"
                     onClick={() => {
                       setInput(entry);
-                      historyCursorRef.current = i;
+                      historyCursorRef.current = originalIdx;
                       recalledValueRef.current = entry;
                       setHistoryPopoverOpen(false);
                       window.setTimeout(() => {
