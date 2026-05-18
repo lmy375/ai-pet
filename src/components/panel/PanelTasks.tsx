@@ -7176,6 +7176,10 @@ export function PanelTasks({
   }, [tasks]);
   /// 完成统计小卡展开态。点小卡 toggle；点 title 触发定位后自动关闭。
   const [completedListExpanded, setCompletedListExpanded] = useState(false);
+  // 📋 audit chip 展开态：click 主 chip 展开 5 个 signal pills；再 click
+  // 收起。仅本 session 态（不持久 — 每次 panel mount 默认收起，紧凑
+  // chip-bar）。
+  const [auditExpanded, setAuditExpanded] = useState(false);
   /// 🔁 撤销最后一条 done：armed 二次确认。最后一条 = completionStats.weekList[0]
   /// （已按 updated_at desc 排序）。armed 期间按钮文字变红显"再点确认 ⟲ X"
   /// 露具体 title，让 owner 知道会撤哪条；5s 自动 disarm。
@@ -9018,13 +9022,14 @@ export function PanelTasks({
         </div>
         {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0 || todayActiveP7Count > 0 || (renameCount7d ?? 0) > 0 || (renameCount30d ?? 0) > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
-            {/* 📋 audit summary chip：与 TG /audit_summary 远程对偶 —
-                hover 看 5 大 audit 信号紧凑总结；click 复制 markdown
-                summary 到剪贴板（粘日报 / 同事 ping / weekly review）。
-                信号取既有 memos：pinnedCount / idleCount / todayActiveP7
-                Count / renameCount7d / completionStats.today。位置首位
-                让 owner 扫 chip-bar 时第一眼看见 sprint kickoff 入口。
-                slate-tint 中性色 — 总览不该色族冲突。 */}
+            {/* 📋 audit summary chip cluster：与 TG /audit_summary 远程
+                对偶。主 chip click 展 / 收 inline signal pills；展开后
+                每个 signal 一个 mini-pill：📌/💤 click 触发对应 filter
+                （pinnedFilter / idleFilter）让 chip 从「信息」变
+                「navigation entry」；🚀/🏷/✅ informational 仅 hover
+                tooltip 不接 filter。📋 main chip 右上角 mini「copy」
+                按钮始终可点复制 md。slate-tint 中性色，单层 chip 不
+                改 chip-bar 视觉密度。 */}
             {(() => {
               const lines = [
                 `📋 audit summary（${new Date().toISOString().slice(0, 10)}）`,
@@ -9034,34 +9039,74 @@ export function PanelTasks({
                 `· 🏷 近 7d rename: ${renameCount7d ?? 0} 次`,
                 `· ✅ 今日完成: ${completionStats.today} 条`,
               ];
-              const tooltip = lines.join("\n");
               const total =
                 pinnedCount +
                 idleCount +
                 todayActiveP7Count +
                 (renameCount7d ?? 0) +
                 completionStats.today;
+              const copyMd = async () => {
+                const md = lines.join("\n");
+                try {
+                  await navigator.clipboard.writeText(md);
+                  setBulkResultMsg(`📋 已复制 audit summary`);
+                } catch (e) {
+                  setBulkResultMsg(`复制失败：${e}`);
+                }
+                window.setTimeout(() => setBulkResultMsg(""), 2500);
+              };
+              const signalPill = (
+                emoji: string,
+                count: number,
+                title: string,
+                active: boolean,
+                onClick: (() => void) | null,
+              ) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onClick) onClick();
+                  }}
+                  disabled={!onClick}
+                  title={title}
+                  style={{
+                    fontSize: 10,
+                    padding: "0 5px",
+                    borderRadius: 999,
+                    cursor: onClick ? "pointer" : "default",
+                    border: active
+                      ? "1px solid var(--pet-tint-amber-fg, #d97706)"
+                      : "1px solid color-mix(in srgb, var(--pet-color-fg) 15%, transparent)",
+                    background: active
+                      ? "var(--pet-tint-amber-fg, #d97706)"
+                      : "var(--pet-color-card)",
+                    color: active
+                      ? "#fff"
+                      : "var(--pet-color-muted)",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {emoji} {count}
+                </button>
+              );
               return (
                 <span
                   role="button"
                   tabIndex={0}
-                  onClick={async () => {
-                    const md = lines.join("\n");
-                    try {
-                      await navigator.clipboard.writeText(md);
-                      setBulkResultMsg(`📋 已复制 audit summary`);
-                    } catch (e) {
-                      setBulkResultMsg(`复制失败：${e}`);
-                    }
-                    window.setTimeout(() => setBulkResultMsg(""), 2500);
-                  }}
+                  onClick={() => setAuditExpanded((v) => !v)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      void navigator.clipboard.writeText(lines.join("\n"));
+                      setAuditExpanded((v) => !v);
                     }
                   }}
-                  title={`${tooltip}\n\nclick 复制全 summary 到剪贴板（与 TG /audit_summary 远程对偶）`}
+                  title={
+                    auditExpanded
+                      ? "click 收起 signal pills"
+                      : `${lines.join("\n")}\n\nclick 展开 signal pills（📌/💤 可作 filter 入口）`
+                  }
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -9080,6 +9125,71 @@ export function PanelTasks({
                   }}
                 >
                   📋 audit · {total}
+                  {auditExpanded && (
+                    <>
+                      <span style={{ opacity: 0.6 }}>|</span>
+                      {signalPill(
+                        "📌",
+                        pinnedCount,
+                        `pinned: ${pinnedCount} 条 active。click 触发 pinnedFilter（当前 ${pinnedFilter ? "ON" : "OFF"}）。`,
+                        pinnedFilter,
+                        pinnedCount > 0
+                          ? () => setPinnedFilter((v) => !v)
+                          : null,
+                      )}
+                      {signalPill(
+                        "💤",
+                        idleCount,
+                        `idle 7d+: ${idleCount} 条 stale pending。click 触发 idleFilter（当前 ${idleFilter ? "ON" : "OFF"}）。`,
+                        idleFilter,
+                        idleCount > 0
+                          ? () => setIdleFilter((v) => !v)
+                          : null,
+                      )}
+                      {signalPill(
+                        "🚀",
+                        todayActiveP7Count,
+                        `今日 P7+: ${todayActiveP7Count} 条 (informational — 与 🎯 紧迫 filter 互补)`,
+                        false,
+                        null,
+                      )}
+                      {signalPill(
+                        "🏷",
+                        renameCount7d ?? 0,
+                        `近 7d rename: ${renameCount7d ?? 0} 次 (informational — refactoring 节奏)`,
+                        false,
+                        null,
+                      )}
+                      {signalPill(
+                        "✅",
+                        completionStats.today,
+                        `今日完成: ${completionStats.today} 条 (informational — momentum 信号)`,
+                        false,
+                        null,
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void copyMd();
+                        }}
+                        title="复制 md summary 到剪贴板"
+                        style={{
+                          fontSize: 10,
+                          padding: "0 5px",
+                          borderRadius: 999,
+                          cursor: "pointer",
+                          border:
+                            "1px solid color-mix(in srgb, var(--pet-color-fg) 15%, transparent)",
+                          background: "var(--pet-color-card)",
+                          color: "var(--pet-color-muted)",
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        📋 copy
+                      </button>
+                    </>
+                  )}
                 </span>
               );
             })()}
