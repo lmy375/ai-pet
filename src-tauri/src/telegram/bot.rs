@@ -841,6 +841,10 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HelpTable => {
+            // pure 函数 — 输出硬编码 family 分组速查表。无 IO。
+            crate::telegram::commands::format_help_table_reply()
+        }
         TgCommand::RecentRenames { n } => {
             // 扫 butler_history.log 取 action=='rename' 行，取 ts 解析
             // 后 newest-first 排，cap N。复用 extract_was_from_snippet
