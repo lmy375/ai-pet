@@ -1190,6 +1190,38 @@ async fn handle_tg_command(
                 .collect();
             crate::telegram::commands::format_pinned_drop_7d_reply(&rows)
         }
+        TgCommand::Idle7d => {
+            // PanelTasks 💤 chip 的 TG 对偶 — 扫 chat-scoped views，
+            // 过滤 pending + updated_at ≥ now-7d，按 idle 天数 desc 排，
+            // 交 pure formatter。
+            // 局限：仅本 chat 派单（read_tg_chat_task_views 已 filter）；
+            // pinned / 高优 / origin 等不再交叉过滤（用 TG 端 sole 单
+            // audit；想细看用 /show / /timeline）。
+            use crate::task_queue::TaskStatus;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let now_ms = chrono::Local::now().timestamp_millis();
+            let cutoff_ms = now_ms - 7 * 24 * 60 * 60 * 1000_i64;
+            let mut rows: Vec<(String, i64, String)> = Vec::new();
+            for v in &views {
+                if v.status != TaskStatus::Pending {
+                    continue;
+                }
+                let Ok(t) = chrono::DateTime::parse_from_rfc3339(&v.updated_at) else {
+                    continue;
+                };
+                let ms = t.timestamp_millis();
+                if ms > cutoff_ms {
+                    continue;
+                }
+                let days = (now_ms - ms) / (24 * 60 * 60 * 1000);
+                // YYYY-MM-DD 取前 10 字（ISO 前缀，安全 ASCII）
+                let last_date = v.updated_at.chars().take(10).collect();
+                rows.push((v.title.clone(), days, last_date));
+            }
+            // idle 天数 desc；tie 时 title asc 稳定输出
+            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            crate::telegram::commands::format_idle_7d_reply(&rows)
+        }
         TgCommand::CatDecay7d => {
             // /cat_growth_7d 反向 — 扫 memory_list(None)，每个 cat 算
             // max(items.updated_at)。若 max < cutoff (now-7d) 即 stale。
