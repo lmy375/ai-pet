@@ -832,6 +832,34 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return next;
     });
   };
+  /// 🔥 cat 按 7d 净增 desc 排（cat-level，与上述 item-level sort* 正交）：
+  /// true 时把 cat 段顺序覆盖为「7d delta desc」— 活跃 cat 自动顶上。
+  /// 与 PanelMemory cat header 📊 7d +N chip 呼应（chip 显单 cat delta，
+  /// 本 toggle 让活跃 cat 段排前）。激活时拖拽 reorder 暂时无效（虽然
+  /// onDrop 仍持久化 savedCatOrder — 但本 sort 覆盖之，关 toggle 后恢复
+  /// 用户拖过的顺序）。0 delta cat 排末尾（按既有 default 顺序）—
+  /// 避免一关 toggle 就乱掉 inactive cat。持久化到 localStorage。
+  const [sortCatsByGrowth7d, setSortCatsByGrowth7d] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-memory-sort-cats-7d") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSortCatsByGrowth7d = () => {
+    setSortCatsByGrowth7d((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          "pet-memory-sort-cats-7d",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
   /// 📌 仅 pinned 全局 toggle：true 时把每段 pool 收窄到本段 pinned items
   /// （catKey::title 命中 pinnedKeys）— "总览：我钉了哪些"。与排序 toggle
   /// 正交（仍按 sortByRecent / sortByCreated / sortByCharCount /
@@ -3270,6 +3298,32 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         >
           🔀 {sortByCreated ? "按创建" : "创建 -"}
         </button>
+        {/* 🔥 cat 按 7d 净增 toggle：cat-LEVEL 排序（与上述 item-level
+            sort* 正交 — 那些控制段内 item 序，本 toggle 控制段间序）。
+            激活时把 cat 段按近 7 天 created_at 落入窗口的 item 数 desc
+            排（与 PanelMemory cat header 📊 7d +N chip 呼应）。0 delta
+            cat 排末尾保 default 顺序 — 避免关 toggle 后 inactive cat
+            乱掉。底色染 tint-orange 让"现按活跃度排"一眼可识别。 */}
+        <button
+          style={
+            sortCatsByGrowth7d
+              ? {
+                  ...s.btn,
+                  background: "var(--pet-tint-orange-bg, color-mix(in srgb, #f97316 12%, transparent))",
+                  color: "var(--pet-tint-orange-fg, #c2410c)",
+                  borderColor: "var(--pet-tint-orange-fg, #c2410c)",
+                }
+              : s.btn
+          }
+          onClick={toggleSortCatsByGrowth7d}
+          title={
+            sortCatsByGrowth7d
+              ? "现按 cat 7d 净增 desc 排（活跃 cat 顶上；0 净增 cat 末尾保默认序）。点击切回拖拽 / 默认 cat 顺序。"
+              : "切到 cat 按近 7 天净增 desc 排 — 活跃 cat 段自动顶上，与 cat header 📊 7d chip 呼应。0 净增 cat 末尾保默认序。"
+          }
+        >
+          🔥 {sortCatsByGrowth7d ? "cat 按 7d" : "cat 7d -"}
+        </button>
         {/* 📌 仅 pinned toggle：全局视图，true 时各 cat 仅显本段 pinned 命中
             的 item，0 钉的 cat 整段隐藏 — 「总览：我钉了哪些」入口。与
             sortBy* 排序 toggle 正交（仍按当前排序排），与 fuzzy / silent /
@@ -4587,6 +4641,35 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
               seen.add(k);
               ordered.push(k);
             }
+          }
+          // 🔥 cat 按 7d 净增 desc toggle 激活时：算各 cat 7d delta，
+          // delta > 0 cat 按 desc 提到顶，0 delta cat 保 default 顺序在
+          // 后。这样关 toggle 后 inactive cat 顺序不变 — 避免视觉跳。
+          if (sortCatsByGrowth7d) {
+            const sevenDaysAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            const deltaOf = (k: string): number => {
+              const cat = index.categories[k];
+              if (!cat) return 0;
+              let n = 0;
+              for (const it of cat.items) {
+                if (!it.created_at) continue;
+                const cMs = Date.parse(it.created_at);
+                if (isNaN(cMs)) continue;
+                if (cMs >= sevenDaysAgoMs) n += 1;
+              }
+              return n;
+            };
+            const active: { k: string; d: number; i: number }[] = [];
+            const inactive: string[] = [];
+            ordered.forEach((k, i) => {
+              const d = deltaOf(k);
+              if (d > 0) active.push({ k, d, i });
+              else inactive.push(k);
+            });
+            // delta desc；tie 时按原 ordered 位置（stable）— 让 owner
+            // 一眼"为什么 A 在 B 前"可解释
+            active.sort((a, b) => b.d - a.d || a.i - b.i);
+            return [...active.map((x) => x.k), ...inactive];
           }
           return ordered;
         })().map((catKey) => {
