@@ -1450,6 +1450,29 @@ export function PanelTasks({
       console.error("highPriorityOnly localStorage save failed:", e);
     }
   }, [highPriorityOnly]);
+  /// 💤 idle 过滤：true 时仅显「pending + updated_at 距 now ≥ 7 天」的 task —
+  /// 一键聚焦 stale backlog。与 row hover「💤 Nd 未动」chip（iter #559）呼应：
+  /// chip 是 per-row hover audit，本 filter 是 panel-wide 视图 — 让 owner
+  /// 不必逐行 hover 也能批量看「我哪些 task 搁着没动」。pinnedFilter /
+  /// highPriorityOnly AND 叠加（多 filter 都开取交集）— stale 高优 / stale
+  /// pinned 子集快速 audit。localStorage 持久。
+  const [idleFilter, setIdleFilter] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-task-idle-filter") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "pet-task-idle-filter",
+        idleFilter ? "true" : "false",
+      );
+    } catch (e) {
+      console.error("idleFilter localStorage save failed:", e);
+    }
+  }, [idleFilter]);
 
   // 创建表单
   const [title, setTitle] = useState("");
@@ -5986,6 +6009,16 @@ export function PanelTasks({
     })
     .filter((t) => (pinnedFilter ? !!t.pinned : true))
     .filter((t) => {
+      // 💤 idle filter：pending + updated_at ≥ 7d 前 — 与 hover chip 同
+      // 阈值。非 pending 不参与（不让 done / cancelled 出现在 stale audit
+      // 视图里）；updated_at 解析失败兜底过滤掉
+      if (!idleFilter) return true;
+      if (t.status !== "pending") return false;
+      const u = Date.parse(t.updated_at);
+      if (isNaN(u)) return false;
+      return u <= nowMs - 7 * 24 * 60 * 60 * 1000;
+    })
+    .filter((t) => {
       if (!trimmedSearch) return true;
       return (
         t.title.toLowerCase().includes(trimmedSearch) ||
@@ -6763,6 +6796,22 @@ export function PanelTasks({
     return n;
   }, [tasks]);
 
+  // 💤 idle 计数：pending 且 updated_at ≥ 7 天前的 task 数。与 row hover
+  // 「💤 Nd 未动」chip 同 7d 阈值；只数 pending（done / error / cancelled
+  // 不在 inactivity 语义里）。memo 依赖 nowMs 仅秒级变化时 recompute，
+  // 数 cents 量 task 量计算 cheap；不为微优化牺牲一致性。
+  const idleCount = useMemo(() => {
+    const cutoff = nowMs - 7 * 24 * 60 * 60 * 1000;
+    let n = 0;
+    for (const t of tasks) {
+      if (t.status !== "pending") continue;
+      const u = Date.parse(t.updated_at);
+      if (isNaN(u)) continue;
+      if (u <= cutoff) n += 1;
+    }
+    return n;
+  }, [tasks, nowMs]);
+
   /// ⏱ 近 30 天 done task 平均完成耗时（小时）：扫 status=done 且 updated_at
   /// 在 [now-30d, now] 窗口的 task，算 (updated - created) 平均小时 — 给
   /// owner 一个"我最近通量是几小时" 量化信号（不像 streak 是次数维度，
@@ -7121,7 +7170,8 @@ export function PanelTasks({
     priorityFilter.size > 0 ||
     originFilter.size > 0 ||
     pinnedFilter ||
-    highPriorityOnly;
+    highPriorityOnly ||
+    idleFilter;
 
   /// ⌘D 快捷键：把焦点行 title 复制到剪贴板。useCallback 让 hook ref
   /// 不必每次 visibleTasks 变化都重 sync —— title 是字符串 by value，
@@ -8893,7 +8943,7 @@ export function PanelTasks({
             📋 标题 ({visibleTasks.length})
           </button>
         </div>
-        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0) && (
+        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
             {/* 一键重试所有 error 任务 chip。> 0 时显，红底突出。点击调
                 handleRetryAllErrors 顺序 invoke task_retry；bulkBusy 期间
@@ -9085,6 +9135,50 @@ export function PanelTasks({
                 }}
               >
                 📌 {pinnedCount}
+              </span>
+            )}
+            {/* 💤 idle 7d+ chip：> 0 时常驻 chip 行。激活态走 red tint
+                与 row hover「💤 Nd 未动」chip 配色统一（red = stale
+                语义）。click toggle idleFilter — 让 owner 一键聚焦
+                stale backlog，比逐行 hover audit 信息密度高。pinnedFilter
+                / highPriorityOnly AND 叠加 — stale 高优 / stale 钉的
+                子集 audit。 */}
+            {idleCount > 0 && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => setIdleFilter((v) => !v)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setIdleFilter((v) => !v);
+                  }
+                }}
+                aria-pressed={idleFilter}
+                title={
+                  idleFilter
+                    ? `已仅显 7d+ 未动的 pending（${idleCount} 条）。点击恢复全部。`
+                    : `仅显 pending 且 updated_at ≥ 7 天前的 task（${idleCount} 条 stale backlog）— 与 row hover「💤 Nd 未动」chip 同阈值，批量 stale audit 入口。`
+                }
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  borderRadius: 999,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  background: idleFilter
+                    ? "var(--pet-tint-red-fg)"
+                    : "var(--pet-tint-red-bg)",
+                  color: idleFilter ? "#fff" : "var(--pet-tint-red-fg)",
+                  border: idleFilter
+                    ? "1px solid var(--pet-tint-red-fg)"
+                    : "1px solid color-mix(in srgb, var(--pet-tint-red-fg) 30%, transparent)",
+                }}
+              >
+                💤 {idleCount}
               </span>
             )}
             {/* ⏱ 近 30 天平均完成耗时 chip：扫 done 且 updated_at ≥ 30d

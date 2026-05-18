@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- PanelTasks toolbar 加「仅显 💤 7d+ idle」filter toggle — 一键聚焦 stale backlog（与 hover chip 呼应）。
 - TG `/cat_decay_7d`：列 7d updated_at 都没动的 cat — stale cat detection，与 /cat_growth_7d 反向。
 - PanelMemory item hover「📊 7d updates」chip：扫本 item updated_at 算近 7 天有几次 update — 单 item 活跃度。
 - ChatMini bubble hover「⏱ N 分前」chip：与 bubble ts 互补，显距 now 相对时间（精度比 ts 高 — ambient awareness）。
