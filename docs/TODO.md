@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG `/idle_7d`：列 pending + updated_at ≥ 7d 前的 task — PanelTasks 💤 filter 的 TG 端对偶。
 - PanelMemory item 「🔥 24h fresh」visual badge：item.updated_at 在 24h 内时浮 chip — 直接信号无需 hover。
 - PanelTasks chip-bar「🚀 今日 active P7+」chip：created_at 今日 + priority ≥ 7 的 task 数 — 高优 sprint 起步信号。
 - TG `/cat_decay_30d`：/cat_decay_7d 30 天 cousin — 长周期 zombie cat 检测（区分「停滞 1 周」vs「停滞 1 月」严重度）。
