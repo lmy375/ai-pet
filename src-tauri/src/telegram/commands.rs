@@ -610,6 +610,10 @@ pub enum TgCommand {
     /// `/search_yesterday <kw>` —— /search_today 的昨日对偶。「昨天我
     /// 做的与 X 相关的」精准 audit — 早会回顾 / 复盘场景。
     SearchYesterday { keyword: String },
+    /// `/search_thisweek <kw>` —— /search_today 的本周对偶。「本周与
+    /// X 相关的」精准 audit — 周报 / 周复盘场景。完成 search × date
+    /// 三件套（today × yesterday × thisweek）。
+    SearchThisweek { keyword: String },
     /// `/alarms_today` —— /alarms 的今日切片：仅显本地今日触发的 reminder。
     /// 让 owner 一眼看「今天还会响哪些 alarm / 已逾期的还没消」。无参 —
     /// 今日范围天然小，不需 N cap。
@@ -734,6 +738,7 @@ impl TgCommand {
             TgCommand::DigestYesterday { .. } => "digest_yesterday",
             TgCommand::SearchToday { .. } => "search_today",
             TgCommand::SearchYesterday { .. } => "search_yesterday",
+            TgCommand::SearchThisweek { .. } => "search_thisweek",
             TgCommand::AlarmsToday => "alarms_today",
             TgCommand::PeekPinned => "peek_pinned",
             TgCommand::Timeline { .. } => "timeline",
@@ -790,6 +795,7 @@ impl TgCommand {
             | TgCommand::Find { keyword: title }
             | TgCommand::SearchToday { keyword: title }
             | TgCommand::SearchYesterday { keyword: title }
+            | TgCommand::SearchThisweek { keyword: title }
             | TgCommand::FindInDetail { keyword: title }
             | TgCommand::FindSpeech { keyword: title }
             | TgCommand::Tag { name: title }
@@ -991,6 +997,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("digest_yesterday", "Yesterday's done tasks with [result:] summaries (default 5, cap 20) — /digest counterpart"),
             ("search_today", "Search tasks whose updated_at is today by keyword (title / description substring) — narrowed /find"),
             ("search_yesterday", "Yesterday's counterpart to /search_today — yesterday + keyword intersection audit"),
+            ("search_thisweek", "This week's counterpart to /search_today — week + keyword intersection (weekly review)"),
             ("alarms_today", "Show today's pending reminders (today slice of /alarms; no N param — today's scope is small)"),
             ("peek_pinned", "All pinned tasks in one-line compact form — /pinned 's denser sibling using /peek 's row format"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
@@ -1084,6 +1091,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("digest_yesterday", "昨日 done 任务 + [result:] 一行式（默认 5，上限 20）— /digest 的昨日对偶"),
             ("search_today", "限定今日 updated_at 的 task 内 fuzzy 搜 keyword — 「今天我做的与 X 相关的」精准 audit"),
             ("search_yesterday", "/search_today 的昨日对偶 — 「昨天我做的与 X 相关的」精准 audit（复盘视角）"),
+            ("search_thisweek", "/search_today 的本周对偶 — 「本周与 X 相关的」精准 audit（周报场景）"),
             ("alarms_today", "今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）"),
             ("peek_pinned", "所有 pinned task 一行紧凑视图 — /pinned 的密集版 + /peek 的批量版"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
@@ -1671,6 +1679,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "search_today" => Some(TgCommand::SearchToday { keyword: title }),
         // `/search_yesterday <keyword>`：与 /search_today 同模板，scope 昨日。
         "search_yesterday" => Some(TgCommand::SearchYesterday { keyword: title }),
+        // `/search_thisweek <keyword>`：与 /search_today 同模板，scope 本周。
+        "search_thisweek" => Some(TgCommand::SearchThisweek { keyword: title }),
         // `/alarms_today`：无参 — 多余尾部一律忽略（与 /touched_today /
         // /mute_today 同协议）。handler 走同 /alarms backend 但 formatter
         // 限定今日 target。
@@ -2206,7 +2216,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "search_today", "search_yesterday", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2370,6 +2380,7 @@ pub fn format_help_for_topic(
         "oldest_done" => "🪦 /oldest_done [N]\n\n用法：列**最早完成**的 N 条 done task（按 updated_at 升序）— 与 /recent done（最近完成）反向。让 owner 看「这些任务我做了多久 / 哪些是 ancient backlog 终于完成」的考古视角。\n\nN 缺省 5；clamp 1..=20（与 /recent / /digest / /show_speech 同协议）。无 done task → 友好兜底教学指向 /done 标完成。\n\n输出格式：\n  🪦 最早完成的 N 条（共 M done）：\n  · YYYY-MM-DD HH:MM · <title>\n  · YYYY-MM-DD HH:MM · <title>\n  ...\n\n（与 /recent 同 line 格式 — 让 owner 切换视角时心智一致）\n\n场景：\n- 「这条 task 我做了多久」考古 — 比对源 create_at（/show 含）vs 最早 done updated_at\n- audit 「最老的 done 是何时」— sprint 复盘 / quarterly review\n- 与 /recent done 形成「最近完成 vs 最早完成」镜像\n\n示例：\n  /oldest_done           （显最早 5 条）\n  /oldest_done 10        （显最早 10 条）\n\n相关：/recent（最近完成 — 与本命令反向）；/oldest_n（最老 pending — pending 维度反向）；/yesterday / /today_done（按日期范围而非「最老/最新」）。",
         "peek_pinned" => "👀 /peek_pinned\n\n用法：所有 pinned task 一行紧凑视图 — /pinned（仅标题）的密集版 + /peek（单条紧凑）的批量版。每行：`<status_emoji> 「<title>」 · 🕐 <schedule> · <markers>`，让 owner 一眼看「我钉的 N 条状态如何」。\n\n场景：早会前确认「我今天必须看的几条 task」状态 / sprint 中段 audit「钉的事情进度怎样」/ 晚上看「我钉了哪些没动」。\n\n空 → 友好兜底「暂无 pinned task」+ 教学指 /pin <title> 设置。\n\n输出格式：\n  📌 N 条 pinned：\n  ⏳ 「<title>」 · 🕐 every 09:00 · 📌 🔇\n  ✅ 「<title>」 · 🕐 once 2026-05-20 14:00\n  ⏳ 「<title>」 · 📌 💤\n  ...\n\n状态 emoji 与 /peek / /find 同：⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled。Schedule 段 + markers 段都仅命中时显（与 /peek 行为一致）。\n\n示例：\n  /peek_pinned\n\n相关：/pinned（仅标题）；/peek <title>（单条紧凑）；/pinned_due（pinned 且有 due）；/tasks（全量含 pinned）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
+        "search_thisweek" => "🔎 /search_thisweek <keyword>\n\n用法：/search_today 的本周对偶 — 在本周（自周一 00:00 起到 now）updated_at 命中的本聊天派单内 fuzzy 搜 title / raw_description（case-insensitive 子串）。「本周与 X 相关的」精准 audit。\n\n场景：周五写周报 / 周末整理本周产出 / 写月报需筛本周某主题 — 比 /find 全量更聚焦，比 /touched_thisweek 全谱更精准。完成 kw × today/yesterday/thisweek 三件套矩阵。\n\n输出格式：\n  🔎 本周（YYYY-MM-DD 起）命中「<kw>」N 条：\n  🟢 <title>\n  ⚠️ <title>\n  ✅ <title>\n  ...\n\n空 keyword → usage hint；无命中 → 友好兜底（/find 全量 / /touched_thisweek 全谱 alt）。状态 emoji 同 /search_today 系列。cap 10 条。\n\n示例：\n  /search_thisweek API\n  /search_thisweek 周报\n\n相关：/search_today（仅今日）；/search_yesterday（仅昨日）；/find（不限日期）；/touched_thisweek（本周全谱）。",
         "search_yesterday" => "🔎 /search_yesterday <keyword>\n\n用法：/search_today 的昨日对偶 — 在**昨日 updated_at**命中的本聊天派单内 fuzzy 搜 title / raw_description（case-insensitive 子串）。「昨天我做的与 X 相关的」复盘视角。\n\n场景：早会前回顾「昨天处理过的 API 相关 task」/ 周一回顾「上周五碰过的 deploy issue」（注：昨日 = 本地日历日，跨周末取周日为昨日）/ 写日报需要昨天进展时筛 X 相关。\n\n空 keyword → usage hint。无命中 → 友好兜底 + alt 入口（/find / /touched_yesterday）。\n\n输出格式：\n  🔎 昨日（YYYY-MM-DD）命中「<kw>」N 条：\n  🟢 <title>\n  ⚠️ <title>\n  ✅ <title>\n  ...\n\n状态 emoji 同 /search_today / /find：🟢 pending · ⚠️ error · ✅ done · 🚫 cancelled。cap 10 条。\n\n示例：\n  /search_yesterday API\n  /search_yesterday 周报\n  /search_yesterday #健身\n\n相关：/search_today（今日同模板）；/find（全量不限日期）；/touched_yesterday（昨日全谱不限 kw）；/digest_yesterday（昨日 done + result）。",
         "search_today" => "🔎 /search_today <keyword>\n\n用法：在**今日 updated_at**命中的本聊天派单内 fuzzy 搜 title / raw_description（case-insensitive 子串）。「今天我做的与 X 相关的」精准 audit 入口 — /find（全量）vs /touched_today（无 kw，列今日全谱）vs 本命令（今日 + kw）三件套。\n\n场景：早会前回顾「今早处理过的 'API' 相关 task」/ 下午找「今天碰过的 deploy 相关 issue」/ 写日报时筛「今天关于 X 的进度」。\n\n空 keyword → usage hint。无命中 → 友好兜底 + alt 入口（/find / /touched_today）。\n\n输出格式：\n  🔎 今日（YYYY-MM-DD）命中「<kw>」N 条：\n  🟢 <title>\n  ⚠️ <title>\n  ✅ <title>\n  ...\n\n状态 emoji 同 /find：🟢 pending · ⚠️ error · ✅ done · 🚫 cancelled。同状态保 views 原序（compare_for_queue 综合序）。cap 10 条（与 /find 同上限）。\n\n示例：\n  /search_today API\n  /search_today 周报\n  /search_today #健身\n\n相关：/find（不限日期 fuzzy 搜）；/touched_today（今日全谱不限 kw）；/digest_yesterday（昨日 done + result）；/show <title>（看单条 raw + detail）。",
         "digest_yesterday" => "📋 /digest_yesterday [N]\n\n用法：昨日（本地日历日）done task 标题 + [result:] 摘要一行式。与 /digest 的区别：那个按 updated_at 倒序取最近 N 条（可能跨多日 / 今日为主），本命令限定昨日 calendar day — 「昨天我完成了哪些 + 产物是什么」复盘视角。\n\nN 缺省 5，clamp 1..=20（与 /digest / /recent 同协议）。空（昨日无 done）→ 友好兜底教学指向 /digest / /yesterday / /touched_yesterday。\n\n输出格式：\n  📋 昨日（YYYY-MM-DD）完成 N 条（共 M done）：\n  · HH:MM · <title> — <result 前 80 字>\n  · HH:MM · <title> — <result>\n  ...\n\nresult 截 80 字 + …（与 /digest / /yesterday 同 cap）。\n\n场景：早会前看「昨天我做了什么 + 怎么做的」；周五整理本周产出；与 /yesterday（昨日 done 仅标题）/ /touched_yesterday（昨日任意状态全谱）三件套形成完整 yesterday audit 矩阵。\n\n示例：\n  /digest_yesterday        （昨日 done 5 条）\n  /digest_yesterday 10     （昨日 done 10 条）\n\n相关：/digest（按更新时序 N 条 done，不限日期）；/yesterday（昨日 done 仅标题无 result）；/touched_yesterday（昨日任意状态）。",
@@ -2478,6 +2489,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/digest_yesterday [N]  —  昨日 done 任务 + [result:] 一行式（默认 5，上限 20）— /digest 的昨日对偶".to_string(),
         "/search_today <kw>  —  限定今日 updated_at 的 task 内 fuzzy 搜 keyword — 「今天我做的与 X 相关的」精准 audit".to_string(),
         "/search_yesterday <kw>  —  /search_today 的昨日对偶 — 「昨天我做的与 X 相关的」精准 audit（复盘视角）".to_string(),
+        "/search_thisweek <kw>  —  /search_today 的本周对偶 — 「本周与 X 相关的」精准 audit（周报场景）".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
@@ -5688,6 +5700,73 @@ pub fn format_search_yesterday_reply(
     out
 }
 
+/// `/search_thisweek <keyword>` 命令回复文案。pure。与 `format_search_
+/// today_reply` 同结构（filter / status rank / cap / emoji 一致）但
+/// 限定 updated_at >= week_start 日期前缀（ISO 字典序 = 时间序）。
+///
+/// 与 format_touched_thisweek_reply 同 week filter 算法。空集兜底教学
+/// 指 /find（全量）/ /touched_thisweek（本周全谱）— 避免 self-loop。
+pub fn format_search_thisweek_reply(
+    views: &[crate::task_queue::TaskView],
+    week_start: chrono::NaiveDate,
+    keyword: &str,
+) -> String {
+    use crate::task_queue::TaskStatus;
+    let kw = keyword.trim();
+    if kw.is_empty() {
+        return "🔎 用法：/search_thisweek <keyword>\n限定本周 updated_at（自周一 00:00 起）的 task 内 fuzzy 搜 title / description（不分大小写，至多 10 条）。\n例：/search_thisweek API / /search_thisweek 周报\n\n相关：/search_today（今日同模板）；/find（全量）；/touched_thisweek（本周全谱）。".to_string();
+    }
+    let week_start_str = week_start.format("%Y-%m-%d").to_string();
+    let kw_lower = kw.to_lowercase();
+    let mut hits: Vec<&crate::task_queue::TaskView> = views
+        .iter()
+        .filter(|v| {
+            v.updated_at.len() >= 10 && &v.updated_at[..10] >= week_start_str.as_str()
+        })
+        .filter(|v| {
+            v.title.to_lowercase().contains(&kw_lower)
+                || v.raw_description.to_lowercase().contains(&kw_lower)
+        })
+        .collect();
+    let status_rank = |s: &TaskStatus| match s {
+        TaskStatus::Pending => 0u8,
+        TaskStatus::Error => 1,
+        TaskStatus::Done => 2,
+        TaskStatus::Cancelled => 3,
+    };
+    hits.sort_by_key(|v| status_rank(&v.status));
+    if hits.is_empty() {
+        return format!(
+            "🔎 本周（{} 起）无任务命中「{}」（搜了标题 + description 子串）。\n试 /find 看全量历史 / /touched_thisweek 看本周全谱。",
+            week_start_str, kw,
+        );
+    }
+    let cap = SEARCH_TODAY_MAX_HITS;
+    let shown = &hits[..hits.len().min(cap)];
+    let mut out = format!(
+        "🔎 本周（{} 起）命中「{}」{} 条：",
+        week_start_str,
+        kw,
+        hits.len(),
+    );
+    for v in shown {
+        let emoji = match v.status {
+            TaskStatus::Pending => "🟢",
+            TaskStatus::Error => "⚠️",
+            TaskStatus::Done => "✅",
+            TaskStatus::Cancelled => "🚫",
+        };
+        out.push_str(&format!("\n{} {}", emoji, v.title));
+    }
+    if hits.len() > cap {
+        out.push_str(&format!(
+            "\n…还有 {} 条命中（关键词太宽？试更精确的词）",
+            hits.len() - cap,
+        ));
+    }
+    out
+}
+
 /// `/digest_yesterday <N>` 命令回复文案。pure：与 `format_digest_reply`
 /// 同结构（done filter + result preview），但额外限定 updated_at 起始
 /// 匹配 `yesterday` 日期前缀。caller 已 clamp n 1..=20。
@@ -7569,7 +7648,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "alarms_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -8040,7 +8119,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "search_today", "search_yesterday", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -13144,6 +13223,65 @@ mod tests {
         let s = format_touched_thisweek_reply(&[snoozed], week_start);
         assert!(s.contains("💤"), "snoozed pending → 💤: {s}");
         assert!(!s.contains("⏳"), "non-snoozed emoji suppressed: {s}");
+    }
+
+    // -------- /search_thisweek parse + format --------
+
+    #[test]
+    fn search_thisweek_parser_takes_all_args_as_keyword() {
+        assert_eq!(
+            parse_tg_command("/search_thisweek API"),
+            Some(TgCommand::SearchThisweek {
+                keyword: "API".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/search_thisweek 写 周报"),
+            Some(TgCommand::SearchThisweek {
+                keyword: "写 周报".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn search_thisweek_empty_keyword_shows_usage_hint() {
+        let ws = chrono::NaiveDate::from_ymd_opt(2026, 5, 11).unwrap();
+        let s = format_search_thisweek_reply(&[], ws, "");
+        assert!(s.contains("用法"), "{s}");
+        assert!(s.contains("/search_today"), "alt /search_today: {s}");
+        assert!(s.contains("/touched_thisweek"), "alt /touched_thisweek: {s}");
+    }
+
+    #[test]
+    fn search_thisweek_no_hits_shows_week_specific_fallback() {
+        let ws = chrono::NaiveDate::from_ymd_opt(2026, 5, 11).unwrap();
+        let mut t = view("api unrelated thisweek", 3, None, TaskStatus::Done, Some("r"));
+        t.updated_at = "2026-05-13T10:00:00+08:00".to_string();
+        let s = format_search_thisweek_reply(&[t], ws, "missing-kw");
+        assert!(s.contains("本周（2026-05-11 起）无任务命中"), "{s}");
+        assert!(s.contains("/find"), "{s}");
+        assert!(s.contains("/touched_thisweek"), "{s}");
+        // 不指向 /search_today（不同 scope 让 owner 困惑）
+        assert!(!s.contains("/search_today"), "loop prevention: {s}");
+    }
+
+    #[test]
+    fn search_thisweek_filters_week_and_keyword() {
+        let ws = chrono::NaiveDate::from_ymd_opt(2026, 5, 11).unwrap();
+        // 周内 + 命中
+        let mut wed_hit = view("API design", 3, None, TaskStatus::Pending, None);
+        wed_hit.updated_at = "2026-05-13T09:00:00+08:00".to_string();
+        // 周内 + 不命中
+        let mut wed_miss = view("doc cleanup", 3, None, TaskStatus::Pending, None);
+        wed_miss.updated_at = "2026-05-13T10:00:00+08:00".to_string();
+        // 上周 + 命中（应被日期 filter 排除）
+        let mut last_hit = view("API last week", 3, None, TaskStatus::Done, Some("r"));
+        last_hit.updated_at = "2026-05-10T20:00:00+08:00".to_string();
+        let s = format_search_thisweek_reply(&[wed_hit, wed_miss, last_hit], ws, "API");
+        assert!(s.contains("命中「API」1 条"), "{s}");
+        assert!(s.contains("API design"), "this-week hit included: {s}");
+        assert!(!s.contains("doc cleanup"), "this-week non-hit excluded: {s}");
+        assert!(!s.contains("API last week"), "last-week hit excluded: {s}");
     }
 
     // -------- /search_yesterday parse + format --------

@@ -1214,6 +1214,18 @@ async fn handle_tg_command(
                 &views, yesterday, &keyword,
             )
         }
+        TgCommand::SearchThisweek { keyword } => {
+            // 与 SearchToday 同模板 + 与 TouchedThisweek 同 week_start 算
+            // 法：chrono num_days_from_monday 算距周一天数。
+            use chrono::Datelike;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            let days_from_mon = today.weekday().num_days_from_monday() as i64;
+            let week_start = today - chrono::Duration::days(days_from_mon);
+            crate::telegram::commands::format_search_thisweek_reply(
+                &views, week_start, &keyword,
+            )
+        }
         TgCommand::Find { keyword } => {
             // keyword 搜本 chat 派单。reuse 同 read path；空 keyword 由
             // formatter 内部走 missing-argument 模板。
