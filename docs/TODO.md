@@ -8,6 +8,13 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- TG bot `/touched_thisweek` 命令：本周 updated_at 命中 task — 周维度复盘视角，与 /touched_today / /touched_yesterday 三件套。
+- TG bot `/peek_pinned` 命令：列所有 pinned task 一行紧凑视图（status + schedule + markers）— /peek 批量版 + /pinned 紧凑版。
+- PanelTasks 行 hover 「⏳ pending N 天」chip：pending task ≥ 14 天时浮 — stale backlog 告警信号。
+- detail.md 编辑器「⌘⇧A」插 markdown alert callout（`> [!NOTE]` / `> [!WARNING]` 4 种）— GFM alert 模板。
+- ChatPanel input 历史 popover 加 fuzzy filter — 输 kw 过滤 sentHistory，长历史中找特定 prompt。
+- ChatMini 「⌘R 重发最后一条 user」keyboard shortcut — 快速 re-roll 上次 prompt 拿新 reply。
+
 
 
 
