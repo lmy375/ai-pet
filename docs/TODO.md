@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG bot `/alarms_today` 命令：今日触发的 reminder 集中视图 — 既有 /alarms 全量的 today 切片。
 - PanelDebug 「📊 7d LLM 调用 sparkline」chip：近 7 天每日 LLM round 数 mini-chart — 长视角节奏。
 
 
