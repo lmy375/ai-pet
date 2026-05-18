@@ -1223,53 +1223,16 @@ async fn handle_tg_command(
             crate::telegram::commands::format_idle_7d_reply(&rows)
         }
         TgCommand::CatDecay7d => {
-            // /cat_growth_7d 反向 — 扫 memory_list(None)，每个 cat 算
-            // max(items.updated_at)。若 max < cutoff (now-7d) 即 stale。
-            // empty cat（0 items）跳过 — 没数据无所谓"未动"语义。
-            // days_since = floor((now - max_updated) / 1day)。
-            // 排：days desc（最老 stale 在上 — owner 先看最该处理的）。
-            let now_ms = chrono::Local::now().timestamp_millis();
-            let seven_d_ms = 7 * 24 * 60 * 60 * 1000_i64;
-            let cutoff_ms = now_ms - seven_d_ms;
-            let mut rows: Vec<(String, String, i64)> = Vec::new();
-            if let Ok(index) =
-                crate::commands::memory::memory_list(None)
-            {
-                for (key, cat) in index.categories.iter() {
-                    if cat.items.is_empty() {
-                        continue;
-                    }
-                    let mut max_u: Option<i64> = None;
-                    for it in &cat.items {
-                        if it.updated_at.is_empty() {
-                            continue;
-                        }
-                        let Ok(t) = chrono::DateTime::parse_from_rfc3339(
-                            &it.updated_at,
-                        ) else {
-                            continue;
-                        };
-                        let ms = t.timestamp_millis();
-                        match max_u {
-                            Some(m) if m >= ms => {}
-                            _ => max_u = Some(ms),
-                        }
-                    }
-                    let Some(max_ms) = max_u else {
-                        // 全部 items 都解析失败 — 不计 stale（避免脏数据误判）
-                        continue;
-                    };
-                    if max_ms < cutoff_ms {
-                        let days = (now_ms - max_ms) / (24 * 60 * 60 * 1000);
-                        rows.push((key.clone(), cat.label.clone(), days));
-                    }
-                }
-            }
-            // days desc；tie 时 key asc 稳定
-            rows.sort_by(|a, b| {
-                b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0))
-            });
-            crate::telegram::commands::format_cat_decay_7d_reply(&rows)
+            let rows = compute_cat_decay_rows(7);
+            crate::telegram::commands::format_cat_decay_reply(&rows, 7)
+        }
+        TgCommand::CatDecay30d => {
+            // 与 /cat_decay_7d 同算法，阈值 30d 长周期 cousin。区分
+            // 「停滞 1 周可能正常」vs「停滞 1 月该 archive」严重度。
+            // 共用 compute_cat_decay_rows helper + 通用
+            // format_cat_decay_reply（threshold 参数注入 header）。
+            let rows = compute_cat_decay_rows(30);
+            crate::telegram::commands::format_cat_decay_reply(&rows, 30)
         }
         TgCommand::CatGrowth7d => {
             // 扫所有 cat（memory_list(None)）→ 每个 cat 算 created_at
@@ -3280,6 +3243,50 @@ fn read_butler_task_titles() -> Vec<String> {
 /// 读 butler_tasks → 过滤 origin==Tg(chat_id) → build_task_view → 按 queue
 /// 顺序排序的 views 列表。`/tasks` `/stats` 共用此读路径，不再各自拷一份过滤
 /// 逻辑。memory_list 失败 / 类目缺失视作"无任务"，返回空 Vec。
+/// /cat_decay_<N>d 共享算法：扫所有 memory cat，过滤「max items.updated_at
+/// < now - <N>d」的 cat — 即 N 天内 0 update 活动。返回 rows: (key, label,
+/// days_since_update) sorted by days desc + key asc tie。empty cat（0
+/// items）跳过；全 items 解析失败的 cat 也跳过（脏数据兜底）。供
+/// CatDecay7d / CatDecay30d 共用 — 阈值参数化避免代码重复。
+fn compute_cat_decay_rows(threshold_days: i64) -> Vec<(String, String, i64)> {
+    let now_ms = chrono::Local::now().timestamp_millis();
+    let day_ms: i64 = 24 * 60 * 60 * 1000;
+    let cutoff_ms = now_ms - threshold_days * day_ms;
+    let mut rows: Vec<(String, String, i64)> = Vec::new();
+    if let Ok(index) = crate::commands::memory::memory_list(None) {
+        for (key, cat) in index.categories.iter() {
+            if cat.items.is_empty() {
+                continue;
+            }
+            let mut max_u: Option<i64> = None;
+            for it in &cat.items {
+                if it.updated_at.is_empty() {
+                    continue;
+                }
+                let Ok(t) = chrono::DateTime::parse_from_rfc3339(&it.updated_at)
+                else {
+                    continue;
+                };
+                let ms = t.timestamp_millis();
+                match max_u {
+                    Some(m) if m >= ms => {}
+                    _ => max_u = Some(ms),
+                }
+            }
+            let Some(max_ms) = max_u else {
+                continue;
+            };
+            if max_ms < cutoff_ms {
+                let days = (now_ms - max_ms) / day_ms;
+                rows.push((key.clone(), cat.label.clone(), days));
+            }
+        }
+    }
+    // days desc; key asc tie-break — 稳定输出便于测
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    rows
+}
+
 fn read_tg_chat_task_views(chat_id: i64) -> Vec<crate::task_queue::TaskView> {
     let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
         return Vec::new();

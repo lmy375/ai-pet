@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG `/cat_decay_30d`：/cat_decay_7d 30 天 cousin — 长周期 zombie cat 检测（区分「停滞 1 周」vs「停滞 1 月」严重度）。
 - ChatMini bubble role 切换 hover hint：hover assistant bubble 时显「↺ 重发」/ user bubble 显「✏️ 编辑后重发」入口提示（仅提示，不改 action）。
 
 
