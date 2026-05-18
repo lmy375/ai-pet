@@ -2324,6 +2324,40 @@ async fn handle_tg_command(
                 }
             }
         }
+        TgCommand::AlarmsThisweek => {
+            // 与 AlarmsToday 同 read + sort 路径，formatter 限 week range
+            // (week_start..=week_start+6d)。week_start 与 /touched_thisweek /
+            // /search_thisweek / /tags_thisweek 同算法（Mon-based）。
+            use chrono::Datelike;
+            let items = crate::db::todos_as_memory_items();
+            let mut rows: Vec<(
+                crate::proactive::ReminderTarget,
+                String,
+                String,
+            )> = items
+                .iter()
+                .filter_map(|item| {
+                    crate::proactive::parse_reminder_prefix(&item.description)
+                        .map(|(target, topic)| (target, topic, item.title.clone()))
+                })
+                .collect();
+            let now = chrono::Local::now().naive_local();
+            rows.sort_by_key(|(t, _, _)| match t {
+                crate::proactive::ReminderTarget::Absolute(dt) => *dt,
+                crate::proactive::ReminderTarget::TodayHour(h, m) => now
+                    .date()
+                    .and_hms_opt(*h as u32, *m as u32, 0)
+                    .unwrap_or(now),
+            });
+            let today = chrono::Local::now().date_naive();
+            let days_from_mon = today.weekday().num_days_from_monday() as i64;
+            let week_start = today - chrono::Duration::days(days_from_mon);
+            crate::telegram::commands::format_alarms_thisweek_reply(
+                &rows,
+                now,
+                week_start,
+            )
+        }
         TgCommand::AlarmsToday => {
             // 与 Alarms 同 read 路径 — 读 todo memory items + parse_reminder
             // _prefix 抽 (target, topic, title)；formatter 内部 filter 今

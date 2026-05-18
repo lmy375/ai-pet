@@ -625,6 +625,9 @@ pub enum TgCommand {
     /// 让 owner 一眼看「今天还会响哪些 alarm / 已逾期的还没消」。无参 —
     /// 今日范围天然小，不需 N cap。
     AlarmsToday,
+    /// `/alarms_thisweek` —— /alarms_today 的本周对偶 — 本周内触发的
+    /// reminder 集中视图。无参，与 alarms 系列同。
+    AlarmsThisweek,
     /// `/peek_pinned` —— /pinned 的紧凑版 + /peek 的批量版：列所有 pinned
     /// task 一行紧凑视图（status emoji + 标题 + schedule + 关键 markers）。
     /// 让 owner 一眼批量看「我钉的 N 条状态如何」— 比 /pinned（仅标题）
@@ -758,6 +761,7 @@ impl TgCommand {
             TgCommand::FindInDetailToday { .. } => "find_in_detail_today",
             TgCommand::FindInDetailYesterday { .. } => "find_in_detail_yesterday",
             TgCommand::AlarmsToday => "alarms_today",
+            TgCommand::AlarmsThisweek => "alarms_thisweek",
             TgCommand::PeekPinned => "peek_pinned",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
@@ -876,6 +880,7 @@ impl TgCommand {
             | TgCommand::SilentAll { .. }
             | TgCommand::Alarms { .. }
             | TgCommand::AlarmsToday
+            | TgCommand::AlarmsThisweek
             | TgCommand::PeekPinned
             | TgCommand::TagsToday
             | TgCommand::TagsYesterday
@@ -1027,6 +1032,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find_in_detail_today", "Today's counterpart to /find_in_detail — today task's detail.md content + keyword intersection"),
             ("find_in_detail_yesterday", "Yesterday's counterpart to /find_in_detail_today — detail.md content × yesterday axis"),
             ("alarms_today", "Show today's pending reminders (today slice of /alarms; no N param — today's scope is small)"),
+            ("alarms_thisweek", "This week's counterpart to /alarms_today — reminders firing within Mon→now (no N cap)"),
             ("peek_pinned", "All pinned tasks in one-line compact form — /pinned 's denser sibling using /peek 's row format"),
             ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("tags_yesterday", "Yesterday's counterpart to /tags_today — yesterday's touched task tag counts"),
@@ -1126,6 +1132,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("find_in_detail_today", "/find_in_detail 的今日切片 — 限今日 updated_at task 的 detail.md 内容搜"),
             ("find_in_detail_yesterday", "/find_in_detail_today 的昨日对偶 — 昨日 task 的 detail.md 内容搜"),
             ("alarms_today", "今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）"),
+            ("alarms_thisweek", "/alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）"),
             ("peek_pinned", "所有 pinned task 一行紧凑视图 — /pinned 的密集版 + /peek 的批量版"),
             ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("tags_yesterday", "/tags_today 的昨日对偶 — 昨日动过 task 含的 #tag 计数"),
@@ -1721,6 +1728,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // /mute_today 同协议）。handler 走同 /alarms backend 但 formatter
         // 限定今日 target。
         "alarms_today" => Some(TgCommand::AlarmsToday),
+        // `/alarms_thisweek`：与 /alarms_today 同模板，scope 本周。
+        "alarms_thisweek" => Some(TgCommand::AlarmsThisweek),
         // `/peek_pinned`：无参 — /pinned 紧凑版 + /peek 批量版。handler
         // 内部 filter pinned + 每条调 format_peek_reply 拼总输出。
         "peek_pinned" => Some(TgCommand::PeekPinned),
@@ -2264,7 +2273,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "tags_today", "tags_yesterday", "tags_thisweek", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2430,6 +2439,7 @@ pub fn format_help_for_topic(
         "tags_yesterday" => "🏷 /tags_yesterday\n\n用法：/tags_today 的昨日对偶 — 仅扫昨日 updated_at 命中的 task 含的 #tag 计数。复盘视角，写日报 / 早会回顾「昨天我在哪些主题工作」时用。无参。\n\n空 → 友好兜底（/tags 全量 / /tags_today 今日 alt）。\n\n输出格式：\n  🏷 昨日（YYYY-MM-DD）N 个 tag\n  · #健身 ×3\n  · #API ×2\n  ...\n  \n  无 #tag 任务（昨日）：N 条\n\n示例：\n  /tags_yesterday\n\n相关：/tags（全量不限日期）；/tags_today（今日）；/touched_yesterday（昨日全谱无 tag 聚合）。",
         "tags_today" => "🏷 /tags_today\n\n用法：/tags 的今日切片 — 仅扫今日 updated_at 命中的 task 含的 #tag 计数。让 owner 看「今天我在做哪些主题」audit。无参 — 今日范围天然小，不需 cap。\n\n场景：早会前看「今天我在哪些主题上工作」/ 写日报需按 tag 分类列项 / sprint 中段「我今天偏向某主题太多 / 太少」audit。\n\n输出格式：\n  🏷 今日（YYYY-MM-DD）N 个 tag：\n  · #健身 ×3\n  · #API ×2\n  · #周报 ×1\n  ...\n  \n  无 #tag 任务：N 条\n\n空 → 友好兜底「今日动过的 task 都无 #tag」+ 教学 /tags 全量入口。\n\n示例：\n  /tags_today\n\n相关：/tags（全量不限日期）；/touched_today（今日 task 全谱无 tag 聚合）；/tag <name>（按某 tag 搜任务）。",
         "peek_pinned" => "👀 /peek_pinned\n\n用法：所有 pinned task 一行紧凑视图 — /pinned（仅标题）的密集版 + /peek（单条紧凑）的批量版。每行：`<status_emoji> 「<title>」 · 🕐 <schedule> · <markers>`，让 owner 一眼看「我钉的 N 条状态如何」。\n\n场景：早会前确认「我今天必须看的几条 task」状态 / sprint 中段 audit「钉的事情进度怎样」/ 晚上看「我钉了哪些没动」。\n\n空 → 友好兜底「暂无 pinned task」+ 教学指 /pin <title> 设置。\n\n输出格式：\n  📌 N 条 pinned：\n  ⏳ 「<title>」 · 🕐 every 09:00 · 📌 🔇\n  ✅ 「<title>」 · 🕐 once 2026-05-20 14:00\n  ⏳ 「<title>」 · 📌 💤\n  ...\n\n状态 emoji 与 /peek / /find 同：⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled。Schedule 段 + markers 段都仅命中时显（与 /peek 行为一致）。\n\n示例：\n  /peek_pinned\n\n相关：/pinned（仅标题）；/peek <title>（单条紧凑）；/pinned_due（pinned 且有 due）；/tasks（全量含 pinned）。",
+        "alarms_thisweek" => "⏰ /alarms_thisweek\n\n用法：/alarms_today 的本周对偶 — 仅显本周（自周一 00:00 起到 now）触发的 reminder（`[remind: ...]` 协议条目）。让 owner 看「本周还会响哪些 / 已逾期未消」。无 N 参 — 本周范围比 today 略广但仍可控（典型 < 30 条）。\n\n场景：周报场景看「这周我设了哪些 reminder / 哪些已 fire 哪些待响」/ 周一早会前 review 上周未消 alarm。\n\n输出格式：\n  ⏰ 本周（YYYY-MM-DD 起）N 条 alarms：\n  · MM-DD HH:MM (剩 / 已逾期 ...) | <topic>\n  · MM-DD HH:MM (剩 ...) | <topic>\n  ...\n\n跨日 scope 行带 MM-DD（与 /alarms 同；/alarms_today 行只 HH:MM 因 single day）。空 → 友好兜底指 /alarms 全量 / /alarms_today。\n\n示例：\n  /alarms_thisweek\n\n相关：/alarms（不限日期 top N）；/alarms_today（仅今日）；/touched_thisweek（本周 task 全谱）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
         "find_in_detail_yesterday" => "🔬 /find_in_detail_yesterday <keyword>\n\n用法：/find_in_detail_today 的昨日对偶 — 限昨日 updated_at task 的 detail.md 内容搜（case-insensitive 子串 + 60 字 snippet）。「昨天我在某主题写过什么笔记」复盘视角。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_in_detail 全量 / /touched_yesterday 全谱 alt）。\n\n输出格式：\n  🔬 昨日（YYYY-MM-DD）命中「<kw>」N 条（detail.md 内容）：\n  🟢 <title>\n     …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_in_detail 同。状态 emoji 同 /find_in_detail 系列。cap 8 条。\n\n示例：\n  /find_in_detail_yesterday rebase\n  /find_in_detail_yesterday API\n\n相关：/find_in_detail（不限日期）；/find_in_detail_today（今日）；/touched_yesterday（昨日全谱无 kw）。",
         "find_in_detail_today" => "🔬 /find_in_detail_today <keyword>\n\n用法：/find_in_detail 的今日切片 — 仅扫今日 updated_at 命中的 task 的 detail.md 内容，找含 keyword（case-insensitive 子串）的 task + 命中点 60 字 snippet。「我今天在某主题写过什么笔记」精准 audit。\n\n场景：早会前回忆「今天我在 detail.md 写过 X 相关的进度」/ 深夜 review「今天我的笔记记了哪些 API 相关」/ 决策日志 audit「今天关于 deploy 的决策点」。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_in_detail 全量 / /touched_today 全谱 alt）。\n\n输出格式：\n  🔬 今日（YYYY-MM-DD）命中「<kw>」N 条（detail.md 内容）：\n  🟢 <title>\n     …<snippet 含 keyword 60 字 context>…\n  ⚠️ <title>\n     …\n  ...\n\nsnippet 算法与 /find_in_detail 同（命中点附近 60 字，换行 flatten 单空格）。状态 emoji 同 /find_in_detail 系列：🟢 pending · ⚠️ error · ✅ done · 🚫 cancelled。cap 8 条（与 /find_in_detail 同上限）。\n\n注：每次命令读今日所有 task 的 detail.md（IO 重，但今日 scope 比 /find_in_detail 全量 IO 少）— 仍不必过分频繁。\n\n示例：\n  /find_in_detail_today rebase\n  /find_in_detail_today API\n  /find_in_detail_today 决策\n\n相关：/find_in_detail（不限日期 detail.md 内容搜）；/search_today（限今日扫标题 + description）；/touched_today（今日全谱无 kw）。",
@@ -2546,6 +2556,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/find_in_detail_today <kw>  —  /find_in_detail 的今日切片 — 限今日 task 的 detail.md 内容搜".to_string(),
         "/find_in_detail_yesterday <kw>  —  /find_in_detail_today 的昨日对偶 — 昨日 task 的 detail.md 内容搜".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
+        "/alarms_thisweek  —  /alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
         "/tags_today  —  今日动过 task 含的 #tag 计数（/tags 的 today 切片）— 「今天主题」audit".to_string(),
         "/tags_yesterday  —  /tags_today 的昨日对偶 — 昨日 task 的 #tag 计数（复盘视角）".to_string(),
@@ -4636,6 +4647,84 @@ pub fn format_alarms_today_reply(
         } else {
             // 今日切片不太可能有 ≥ 1 天 delta（target 落今日 → max 24h）；
             // 防御性兜底
+            let d = mins.abs() / (60 * 24);
+            if mins >= 0 {
+                format!("剩 {} 天", d)
+            } else {
+                format!("已逾期 {} 天", d)
+            }
+        };
+        out.push_str(&format!(
+            "\n· {} ({}) | {}",
+            when_label, remaining_label, topic,
+        ));
+    }
+    out
+}
+
+/// `/alarms_thisweek` 命令回复文案。pure：与 `format_alarms_today_reply`
+/// 同结构，filter 改为 target 落在本周（week_start..=week_end_inclusive，
+/// week_end 为 week_start + 6 天）。跨日 scope 行带 MM-DD HH:MM（与
+/// /alarms 一致）。空集兜底教学指 /alarms 全量 / /alarms_today。
+pub fn format_alarms_thisweek_reply(
+    rows: &[(
+        crate::proactive::ReminderTarget,
+        String, // topic
+        String, // title
+    )],
+    now: chrono::NaiveDateTime,
+    week_start: chrono::NaiveDate,
+) -> String {
+    let week_end = week_start + chrono::Duration::days(6);
+    let week_start_str = week_start.format("%Y-%m-%d").to_string();
+    let filtered: Vec<&(crate::proactive::ReminderTarget, String, String)> = rows
+        .iter()
+        .filter(|(target, _, _)| match target {
+            crate::proactive::ReminderTarget::TodayHour(_, _) => true, // 今日按定义算本周
+            crate::proactive::ReminderTarget::Absolute(dt) => {
+                let d = dt.date();
+                d >= week_start && d <= week_end
+            }
+        })
+        .collect();
+    if filtered.is_empty() {
+        return format!(
+            "⏰ 本周（{} 起）暂无 alarm。\n用 /alarms 看不限日期 / /alarms_today 看仅今日 / /touched_thisweek 看本周 task 全谱。",
+            week_start_str,
+        );
+    }
+    let mut out = format!(
+        "⏰ 本周（{} 起）{} 条 alarms：",
+        week_start_str,
+        filtered.len(),
+    );
+    for (target, topic, _title) in &filtered {
+        let target_dt = match target {
+            crate::proactive::ReminderTarget::Absolute(dt) => *dt,
+            crate::proactive::ReminderTarget::TodayHour(h, m) => now
+                .date()
+                .and_hms_opt(*h as u32, *m as u32, 0)
+                .unwrap_or(now),
+        };
+        let delta = target_dt - now;
+        let mins = delta.num_minutes();
+        // 跨日 scope — 行 MM-DD HH:MM（与 /alarms 同；/alarms_today 是仅
+        // HH:MM 因 single day scope）
+        let when_label = format_target_short(target);
+        let remaining_label = if mins.abs() < 60 {
+            if mins >= 0 {
+                format!("剩 {} 分", mins.max(1))
+            } else {
+                format!("已逾期 {} 分", (-mins).max(1))
+            }
+        } else if mins.abs() < 60 * 24 {
+            let h = mins.abs() / 60;
+            if mins >= 0 {
+                format!("剩 {} 小时", h)
+            } else {
+                format!("已逾期 {} 小时", h)
+            }
+        } else {
             let d = mins.abs() / (60 * 24);
             if mins >= 0 {
                 format!("剩 {} 天", d)
@@ -7954,7 +8043,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -8425,7 +8514,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "tags_today", "tags_yesterday", "tags_thisweek", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -12510,6 +12599,92 @@ mod tests {
         assert!(s.contains("🔇"), "silent marker emoji from v2: {s}");
         assert!(s.contains("P3"), "priority 3 from v1: {s}");
         assert!(s.contains("P5"), "priority 5 from v2: {s}");
+    }
+
+    // -------- /alarms_thisweek parse + format --------
+
+    #[test]
+    fn alarms_thisweek_parser_no_arg() {
+        assert_eq!(
+            parse_tg_command("/alarms_thisweek"),
+            Some(TgCommand::AlarmsThisweek),
+        );
+    }
+
+    #[test]
+    fn alarms_thisweek_empty_shows_week_specific_fallback() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 13)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let ws = chrono::NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(); // Mon
+        let s = format_alarms_thisweek_reply(&[], now, ws);
+        assert!(s.contains("本周（2026-05-11 起）"), "{s}");
+        assert!(s.contains("/alarms"), "alt /alarms: {s}");
+        assert!(s.contains("/alarms_today"), "alt /alarms_today: {s}");
+    }
+
+    #[test]
+    fn alarms_thisweek_filters_inclusive_week_range() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 13)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let ws = chrono::NaiveDate::from_ymd_opt(2026, 5, 11).unwrap();
+        // 周内 Mon
+        let mon_target = chrono::NaiveDate::from_ymd_opt(2026, 5, 11)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        // 周内 Sun
+        let sun_target = chrono::NaiveDate::from_ymd_opt(2026, 5, 17)
+            .unwrap()
+            .and_hms_opt(20, 0, 0)
+            .unwrap();
+        // 上周
+        let last_sun_target = chrono::NaiveDate::from_ymd_opt(2026, 5, 10)
+            .unwrap()
+            .and_hms_opt(20, 0, 0)
+            .unwrap();
+        // 下周
+        let next_mon_target = chrono::NaiveDate::from_ymd_opt(2026, 5, 18)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let rows = vec![
+            (
+                crate::proactive::ReminderTarget::Absolute(mon_target),
+                "Mon".to_string(),
+                "x1".to_string(),
+            ),
+            (
+                crate::proactive::ReminderTarget::Absolute(sun_target),
+                "Sun".to_string(),
+                "x2".to_string(),
+            ),
+            (
+                crate::proactive::ReminderTarget::Absolute(last_sun_target),
+                "LastSun".to_string(),
+                "x3".to_string(),
+            ),
+            (
+                crate::proactive::ReminderTarget::Absolute(next_mon_target),
+                "NextMon".to_string(),
+                "x4".to_string(),
+            ),
+            (
+                crate::proactive::ReminderTarget::TodayHour(20, 0),
+                "TodayHour".to_string(),
+                "x5".to_string(),
+            ),
+        ];
+        let s = format_alarms_thisweek_reply(&rows, now, ws);
+        assert!(s.contains("本周（2026-05-11 起）3 条 alarms"), "{s}");
+        assert!(s.contains("Mon"), "Mon included: {s}");
+        assert!(s.contains("Sun"), "Sun included: {s}");
+        assert!(s.contains("TodayHour"), "TodayHour included: {s}");
+        assert!(!s.contains("LastSun"), "last week excluded: {s}");
+        assert!(!s.contains("NextMon"), "next week excluded: {s}");
     }
 
     // -------- /alarms_today parse + format --------
