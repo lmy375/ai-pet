@@ -841,6 +841,21 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HereClear => {
+            // fetch current transient → 清 → ack reply 含 preview。
+            // set_transient_note("", 0) 已是 clear sentinel（per proactive.rs
+            // doc：Empty text or 0 minutes clears）。
+            let (current_text, _until) =
+                crate::proactive::get_transient_note();
+            let prior = if current_text.is_empty() {
+                None
+            } else {
+                Some(current_text.as_str())
+            };
+            // 清 — 无论是否 None 都安全 (no-op for None)
+            crate::proactive::set_transient_note(String::new(), 0);
+            crate::telegram::commands::format_here_clear_reply(prior)
+        }
         TgCommand::HereIdle => {
             // chat-scoped views → filter pending + updated_at ≤ now-7d
             // → 拼「💤 stale context (>7d idle)：「t1」「t2」...」 →
