@@ -841,6 +841,91 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::AuditSummary => {
+            // 聚合 5 大 audit 信号。read views (chat-scoped) + scan
+            // butler_history.log 一次 → 派生多个 signal：
+            // - pin_streak：复用 compute_pin_streak
+            // - cat_active_7d：reuse compute_cat_growth_rows helper
+            // - idle_7d：filter pending + updated_at ≥ 7d 前
+            // - touched_today：filter updated_at on today
+            // - recent_renames_7d：scan history action=='rename' + ts in 7d
+            use crate::task_queue::TaskStatus;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let now = chrono::Local::now();
+            let today = now.date_naive();
+            let now_ms = now.timestamp_millis();
+            let day_ms: i64 = 24 * 60 * 60 * 1000;
+            let cutoff_7d_ms = now_ms - 7 * day_ms;
+
+            // pin streak: scan history [pinned] sightings + today fallback
+            let current_pinned = views.iter().filter(|v| v.pinned).count();
+            let has_current_pinned = current_pinned > 0;
+            let content =
+                crate::butler_history::read_history_content().await;
+            let mut dates_with_pin: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut recent_renames_7d_count: usize = 0;
+            for line in content.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                let Some((ts_str, body)) = line.split_once(' ') else {
+                    continue;
+                };
+                // recent renames 7d
+                if body.starts_with("rename ") {
+                    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) {
+                        if ts.timestamp_millis() >= cutoff_7d_ms {
+                            recent_renames_7d_count += 1;
+                        }
+                    }
+                }
+                // pin sightings dates
+                if body.contains("[pinned]") && ts_str.len() >= 10 {
+                    let date_prefix: String = ts_str.chars().take(10).collect();
+                    dates_with_pin.insert(date_prefix);
+                }
+            }
+            let (pin_streak, _earliest, _max) =
+                crate::telegram::commands::compute_pin_streak(
+                    &dates_with_pin,
+                    has_current_pinned,
+                    today,
+                );
+
+            // cat 7d 净增 active count (cats with delta > 0)
+            let cat_rows = compute_cat_growth_rows(7);
+            let cat_active_7d_count = cat_rows.len();
+
+            // idle_7d_count: pending + updated_at ≤ cutoff_7d
+            let mut idle_7d_count: usize = 0;
+            let mut touched_today_count: usize = 0;
+            let today_prefix = today.format("%Y-%m-%d").to_string();
+            for v in &views {
+                // touched today（任意状态）
+                if v.updated_at.starts_with(&today_prefix) {
+                    touched_today_count += 1;
+                }
+                // idle 7d+（pending only）
+                if v.status == TaskStatus::Pending {
+                    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(&v.updated_at) {
+                        if t.timestamp_millis() <= cutoff_7d_ms {
+                            idle_7d_count += 1;
+                        }
+                    }
+                }
+            }
+
+            crate::telegram::commands::format_audit_summary_reply(
+                today,
+                pin_streak,
+                current_pinned,
+                cat_active_7d_count,
+                idle_7d_count,
+                touched_today_count,
+                recent_renames_7d_count,
+            )
+        }
         TgCommand::HelpTable { family } => {
             // pure 函数 — 输出硬编码 family 分组速查表。family=Some 走
             // 单 family 详细分支；None 走全表。无 IO。
