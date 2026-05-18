@@ -1276,6 +1276,46 @@ export function PanelTasks({
   /// 失败；空数组 / 全 0 不渲 chip 避免视觉噪音。mount 时 fetch + 每 5
   /// 分钟 refresh（不必精确实时；24h 视野下分钟级延迟无影响）。
   const [hourly24h, setHourly24h] = useState<number[] | null>(null);
+  /// 近 7 天 rename event 计数：scan butler_history.log 取 action ==
+  /// 'rename' 且 ts ≥ now-7d 的行数。owner refactoring 节奏信号 — 与
+  /// TG /recent_renames 远程对偶（那是列表；本 chip 是数字 + click
+  /// 复制单行）。mount 时 fetch + 每 5 分钟 refresh（与 hourly24h 同
+  /// cadence）。null = 未加载 / 加载失败；0 / null 不渲 chip 避免噪音。
+  const [renameCount7d, setRenameCount7d] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const lines = await invoke<string[]>("get_butler_history", {
+          n: 100,
+        });
+        const cutoffMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        let n = 0;
+        for (const line of lines) {
+          if (!line) continue;
+          const spaceIdx = line.indexOf(" ");
+          if (spaceIdx < 0) continue;
+          const tsStr = line.slice(0, spaceIdx);
+          const body = line.slice(spaceIdx + 1);
+          const tsMs = Date.parse(tsStr);
+          if (isNaN(tsMs) || tsMs < cutoffMs) continue;
+          // body 形如 "rename <title> :: [was: ...]"
+          if (!body.startsWith("rename ")) continue;
+          n += 1;
+        }
+        if (!cancelled) setRenameCount7d(n);
+      } catch (e) {
+        console.warn("rename_count_7d fetch failed (non-fatal):", e);
+        if (!cancelled) setRenameCount7d(null);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -8965,7 +9005,7 @@ export function PanelTasks({
             📋 标题 ({visibleTasks.length})
           </button>
         </div>
-        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0 || todayActiveP7Count > 0) && (
+        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0 || todayActiveP7Count > 0 || (renameCount7d ?? 0) > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
             {/* 一键重试所有 error 任务 chip。> 0 时显，红底突出。点击调
                 handleRetryAllErrors 顺序 invoke task_retry；bulkBusy 期间
@@ -9089,6 +9129,55 @@ export function PanelTasks({
                 title={`今日新增的 P7+ 活动 task ${todayActiveP7Count} 条 — 「sprint 起步」信号。与 🎯 紧迫（全谱 P0-P2 未完不限日期）正交：那是积压视角、本 chip 是今日新增视角。`}
               >
                 🚀 今日 P7+ {todayActiveP7Count}
+              </span>
+            )}
+            {/* 🏷 7d rename chip：近 7 天 butler_history rename event 数。
+                owner refactoring 节奏信号 — 与既有「修改」/「重命名」
+                workflow audit 对应。与 TG /recent_renames 远程对偶
+                （那是列表；本 chip 是数字概览 + click 复制单行）。
+                null / 0 不渲。click 复制「近 7d N 次 rename」单行
+                供周报。slate-tint 与 amber / red 等 chip 错开 = 中性
+                信息维度。 */}
+            {(renameCount7d ?? 0) > 0 && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={async () => {
+                  const line = `近 7d ${renameCount7d} 次 rename`;
+                  try {
+                    await navigator.clipboard.writeText(line);
+                    setBulkResultMsg(`🏷 已复制：${line}`);
+                  } catch (e) {
+                    setBulkResultMsg(`复制失败：${e}`);
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 2500);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void navigator.clipboard.writeText(
+                      `近 7d ${renameCount7d} 次 rename`,
+                    );
+                  }
+                }}
+                title={`近 7 天 butler_history 内 ${renameCount7d} 次 rename event — refactoring 节奏信号。与 TG /recent_renames 远程对偶。click 复制「近 7d N 次 rename」单行。`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  borderRadius: 999,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  background:
+                    "color-mix(in srgb, var(--pet-color-fg) 8%, transparent)",
+                  color: "var(--pet-color-muted)",
+                  border:
+                    "1px solid color-mix(in srgb, var(--pet-color-fg) 15%, transparent)",
+                }}
+              >
+                🏷 7d rename {renameCount7d}
               </span>
             )}
             {/* ✓ 今日已完成 N 绿 chip：与 🔴 逾期 / 📅 今日到期 chip 同行
