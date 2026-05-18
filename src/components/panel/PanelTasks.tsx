@@ -11249,6 +11249,75 @@ export function PanelTasks({
                           </button>
                         );
                       })()}
+                    {/* 💤 N 天未动 chip — pending task hover 时显
+                        距上次 updated_at 的天数，≥ 7 天才浮（避免对刚
+                        动过的 task 噪音）；≥ 21 天加粗 + 红 bg 当
+                        stale 告警。complement 既有 ⏳ pending Nd（按
+                        created_at 算 task 总寿）— 那是 age 视角，本
+                        chip 是 inactivity 视角：「这条搁了多久没动」
+                        而非「这条出生多久」。新建几天后频繁动的 task
+                        在 ⏳ 上看不出 stale，但本 chip 仍 0 不浮；老
+                        task 偶被 touch 一次：⏳ 显几十天，本 chip 显
+                        几天 — 真实反映「现在还活跃吗」。
+                        gate：hover + status==pending + 有 updated_at
+                        + idle ≥ 7 天。click 复制单行。 */}
+                    {taskPreviewHoverTitle === t.title &&
+                      t.status === "pending" &&
+                      t.updated_at.length > 0 &&
+                      (() => {
+                        const uMs = Date.parse(t.updated_at);
+                        if (isNaN(uMs)) return null;
+                        const idleMs = nowMs - uMs;
+                        if (idleMs < 0) return null;
+                        const idleDays = Math.floor(idleMs / 86_400_000);
+                        if (idleDays < 7) return null;
+                        const veryStale = idleDays >= 21;
+                        return (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const line = `「${t.title}」${idleDays} 天未动（last update ${t.updated_at.slice(0, 10)}）`;
+                              try {
+                                await navigator.clipboard.writeText(line);
+                                setBulkResultMsg(`💤 已复制：${line}`);
+                              } catch (err) {
+                                setBulkResultMsg(`复制失败：${err}`);
+                              }
+                              window.setTimeout(
+                                () => setBulkResultMsg(""),
+                                2500,
+                              );
+                            }}
+                            title={
+                              veryStale
+                                ? `⚠ 本 task ${idleDays} 天未动（last update ${t.updated_at.slice(0, 10)}）— 严重 inactivity；考虑 /touch 重新冒头、/done 闭环、或 /cancel 弃单。click 复制 line。`
+                                : `本 task ${idleDays} 天没 update（last ${t.updated_at.slice(0, 10)}）— 区别于 ⏳ pending（按 create 算）；本 chip 是 inactivity 视角。click 复制 line。`
+                            }
+                            aria-label="copy idle days since last update"
+                            style={{
+                              fontSize: 10,
+                              padding: "0 5px",
+                              marginLeft: 6,
+                              border: `1px dashed var(--pet-tint-red-fg)`,
+                              borderRadius: 3,
+                              background: veryStale
+                                ? "var(--pet-tint-red-bg)"
+                                : "transparent",
+                              color: "var(--pet-tint-red-fg)",
+                              fontWeight: veryStale ? 600 : undefined,
+                              cursor: "pointer",
+                              fontFamily:
+                                "'SF Mono', 'Menlo', monospace",
+                              lineHeight: 1.5,
+                              verticalAlign: "middle",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            💤 {idleDays}d 未动
+                          </button>
+                        );
+                      })()}
                     {/* 📅 due 倒计时 chip：仅 active row + 有 due 字段
                         时 hover 显「N 天 X 小时后」精确倒计 — 紧迫度
                         audit。complement 既有 dueUrgency 三档（normal /
