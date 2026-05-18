@@ -1277,11 +1277,14 @@ export function PanelTasks({
   /// 分钟 refresh（不必精确实时；24h 视野下分钟级延迟无影响）。
   const [hourly24h, setHourly24h] = useState<number[] | null>(null);
   /// 近 7 天 rename event 计数：scan butler_history.log 取 action ==
-  /// 'rename' 且 ts ≥ now-7d 的行数。owner refactoring 节奏信号 — 与
-  /// TG /recent_renames 远程对偶（那是列表；本 chip 是数字 + click
-  /// 复制单行）。mount 时 fetch + 每 5 分钟 refresh（与 hourly24h 同
-  /// cadence）。null = 未加载 / 加载失败；0 / null 不渲 chip 避免噪音。
+  /// 'rename' 且 ts ≥ now-7d / now-30d 的行数。owner refactoring 节奏
+  /// 信号双尺度 — 7d 看本周热度、30d 看长周期。与 TG /recent_renames
+  /// 远程对偶（那是列表；本 chips 是数字 + click 复制单行）。共享一次
+  /// get_butler_history fetch + 单 scan 算两 cutoff — IO 1 次。mount 时
+  /// fetch + 每 5 分钟 refresh（与 hourly24h 同 cadence）。null = 未加
+  /// 载 / 加载失败；0 / null 不渲 chip 避免噪音。
   const [renameCount7d, setRenameCount7d] = useState<number | null>(null);
+  const [renameCount30d, setRenameCount30d] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -1289,8 +1292,10 @@ export function PanelTasks({
         const lines = await invoke<string[]>("get_butler_history", {
           n: 100,
         });
-        const cutoffMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        let n = 0;
+        const cutoff7dMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const cutoff30dMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        let n7 = 0;
+        let n30 = 0;
         for (const line of lines) {
           if (!line) continue;
           const spaceIdx = line.indexOf(" ");
@@ -1298,15 +1303,21 @@ export function PanelTasks({
           const tsStr = line.slice(0, spaceIdx);
           const body = line.slice(spaceIdx + 1);
           const tsMs = Date.parse(tsStr);
-          if (isNaN(tsMs) || tsMs < cutoffMs) continue;
-          // body 形如 "rename <title> :: [was: ...]"
+          if (isNaN(tsMs)) continue;
           if (!body.startsWith("rename ")) continue;
-          n += 1;
+          if (tsMs >= cutoff30dMs) n30 += 1;
+          if (tsMs >= cutoff7dMs) n7 += 1;
         }
-        if (!cancelled) setRenameCount7d(n);
+        if (!cancelled) {
+          setRenameCount7d(n7);
+          setRenameCount30d(n30);
+        }
       } catch (e) {
-        console.warn("rename_count_7d fetch failed (non-fatal):", e);
-        if (!cancelled) setRenameCount7d(null);
+        console.warn("rename_count fetch failed (non-fatal):", e);
+        if (!cancelled) {
+          setRenameCount7d(null);
+          setRenameCount30d(null);
+        }
       }
     };
     void tick();
@@ -9005,7 +9016,7 @@ export function PanelTasks({
             📋 标题 ({visibleTasks.length})
           </button>
         </div>
-        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0 || todayActiveP7Count > 0 || (renameCount7d ?? 0) > 0) && (
+        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0 || todayActiveP7Count > 0 || (renameCount7d ?? 0) > 0 || (renameCount30d ?? 0) > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
             {/* 一键重试所有 error 任务 chip。> 0 时显，红底突出。点击调
                 handleRetryAllErrors 顺序 invoke task_retry；bulkBusy 期间
@@ -9178,6 +9189,53 @@ export function PanelTasks({
                 }}
               >
                 🏷 7d rename {renameCount7d}
+              </span>
+            )}
+            {/* 🏷 30d rename chip：近 30 天 butler_history rename event
+                数。与 7d chip 并排，长周期 refactoring 节奏对比 — 7d 看
+                本周突击、30d 看本月持续力度。共享 useEffect 已 fetch 一
+                次得双 count（IO 1 次而非 2）。slate-tint 比 7d 略深表
+                达「更广 scope」语义。click 复制单行。 */}
+            {(renameCount30d ?? 0) > 0 && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={async () => {
+                  const line = `近 30d ${renameCount30d} 次 rename`;
+                  try {
+                    await navigator.clipboard.writeText(line);
+                    setBulkResultMsg(`🏷 已复制：${line}`);
+                  } catch (e) {
+                    setBulkResultMsg(`复制失败：${e}`);
+                  }
+                  window.setTimeout(() => setBulkResultMsg(""), 2500);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void navigator.clipboard.writeText(
+                      `近 30d ${renameCount30d} 次 rename`,
+                    );
+                  }
+                }}
+                title={`近 30 天 butler_history 内 ${renameCount30d} 次 rename event — 长周期 refactoring 节奏。与 7d chip 互补：7d 看本周突击、30d 看本月持续力度。`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  borderRadius: 999,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  background:
+                    "color-mix(in srgb, var(--pet-color-fg) 12%, transparent)",
+                  color: "var(--pet-color-muted)",
+                  border:
+                    "1px solid color-mix(in srgb, var(--pet-color-fg) 20%, transparent)",
+                }}
+              >
+                🏷 30d rename {renameCount30d}
               </span>
             )}
             {/* ✓ 今日已完成 N 绿 chip：与 🔴 逾期 / 📅 今日到期 chip 同行
