@@ -846,20 +846,8 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return false;
     }
   });
-  const toggleSortCatsByGrowth7d = () => {
-    setSortCatsByGrowth7d((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(
-          "pet-memory-sort-cats-7d",
-          next ? "1" : "0",
-        );
-      } catch {
-        // 配额满 / 隐私窗口 → session 内仍生效
-      }
-      return next;
-    });
-  };
+  // toggleSortCatsByGrowth7d 已被 selectCatSortMode 取代（iter #590
+  // radio refactor）— 旧 toggle 不再 export 给 toolbar。
   /// 🕒 cat 按最近 update desc 排（cat-level，与上述 7d 净增 sort 互斥）：
   /// true 时把 cat 段顺序覆盖为「max(items.updated_at) desc」— 最近动过
   /// 的 cat 自动顶上。与 7d 净增 sort 的差异：7d 净增看「新增数」（量化
@@ -875,20 +863,35 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return false;
     }
   });
-  const toggleSortCatsByRecentUpdate = () => {
-    setSortCatsByRecentUpdate((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(
-          "pet-memory-sort-cats-recent",
-          next ? "1" : "0",
-        );
-      } catch {
-        // 配额满 / 隐私窗口 → session 内仍生效
-      }
-      return next;
-    });
+  // toggleSortCatsByRecentUpdate 已被 selectCatSortMode 取代（iter #590
+  // radio refactor）— 旧 toggle 不再 export 给 toolbar。
+  /// `selectCatSortMode`：radio-style 单选 cat-level sort 模式。原 7d /
+  /// recent 两 boolean toggle 各自独立，可同时开 → ordering 分支用
+  /// 优先级 fallback。本 setter 让两 state mutually exclusive — 选
+  /// '7d' 时强制 recent=false，选 'recent' 时强制 7d=false，选
+  /// 'default' 全关。toolbar UI 用 3-button radio group 调它。
+  const selectCatSortMode = (mode: "default" | "7d" | "recent") => {
+    const want7d = mode === "7d";
+    const wantRecent = mode === "recent";
+    setSortCatsByGrowth7d(want7d);
+    setSortCatsByRecentUpdate(wantRecent);
+    try {
+      window.localStorage.setItem("pet-memory-sort-cats-7d", want7d ? "1" : "0");
+      window.localStorage.setItem(
+        "pet-memory-sort-cats-recent",
+        wantRecent ? "1" : "0",
+      );
+    } catch {
+      // 容量满 / 隐私窗口 → session 内仍生效
+    }
   };
+  /// 当前 cat sort mode derived from booleans。7d 优先（与 ordering
+  /// 分支优先级一致），让 radio UI active 态稳定。
+  const catSortMode: "default" | "7d" | "recent" = sortCatsByGrowth7d
+    ? "7d"
+    : sortCatsByRecentUpdate
+      ? "recent"
+      : "default";
   /// 📌 仅 pinned 全局 toggle：true 时把每段 pool 收窄到本段 pinned items
   /// （catKey::title 命中 pinnedKeys）— "总览：我钉了哪些"。与排序 toggle
   /// 正交（仍按 sortByRecent / sortByCreated / sortByCharCount /
@@ -3327,58 +3330,79 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         >
           🔀 {sortByCreated ? "按创建" : "创建 -"}
         </button>
-        {/* 🔥 cat 按 7d 净增 toggle：cat-LEVEL 排序（与上述 item-level
-            sort* 正交 — 那些控制段内 item 序，本 toggle 控制段间序）。
-            激活时把 cat 段按近 7 天 created_at 落入窗口的 item 数 desc
-            排（与 PanelMemory cat header 📊 7d +N chip 呼应）。0 delta
-            cat 排末尾保 default 顺序 — 避免关 toggle 后 inactive cat
-            乱掉。底色染 tint-orange 让"现按活跃度排"一眼可识别。 */}
-        <button
-          style={
-            sortCatsByGrowth7d
-              ? {
-                  ...s.btn,
-                  background: "var(--pet-tint-orange-bg, color-mix(in srgb, #f97316 12%, transparent))",
-                  color: "var(--pet-tint-orange-fg, #c2410c)",
-                  borderColor: "var(--pet-tint-orange-fg, #c2410c)",
-                }
-              : s.btn
-          }
-          onClick={toggleSortCatsByGrowth7d}
-          title={
-            sortCatsByGrowth7d
-              ? "现按 cat 7d 净增 desc 排（活跃 cat 顶上；0 净增 cat 末尾保默认序）。点击切回拖拽 / 默认 cat 顺序。"
-              : "切到 cat 按近 7 天净增 desc 排 — 活跃 cat 段自动顶上，与 cat header 📊 7d chip 呼应。0 净增 cat 末尾保默认序。"
-          }
+        {/* ⊕ cat-sort radio：3 模式互斥单选 — 替代旧的 7d / recent 两
+            独立 toggle（可能同时开）。option labels：
+            - 「⊕ cat 默认」: 拖拽 / 默认 cat 顺序（不 cat 级排）
+            - 「🔥 cat 7d 净增」: 按 7d created delta desc，活跃 cat 顶
+            - 「🕒 cat 近期」: 按 max(items.updated_at) desc，最近动 cat 顶
+            布局：紧凑 3 按钮 group 行内；active 态染 tint 与既有色
+            族协调（default→muted / 7d→orange / recent→cyan）。 */}
+        <span
+          role="radiogroup"
+          aria-label="cat sort mode"
+          style={{
+            display: "inline-flex",
+            gap: 0,
+            borderRadius: 4,
+            overflow: "hidden",
+          }}
         >
-          🔥 {sortCatsByGrowth7d ? "cat 按 7d" : "cat 7d -"}
-        </button>
-        {/* 🕒 cat 按最近 update desc toggle：cat-LEVEL 排序，与 🔥 7d 净
-            增 sort 互补 — 那个看「新增数」（growth quantity）、本 toggle
-            看「最近触摸时刻」（latest activity recency）。同 cat-level
-            sort 类别。激活时把 cat 段按 max(items.updated_at) desc 排，
-            空 cat 末尾。底色染 tint-cyan 与 🔥 tint-orange 错开让两 sort
-            状态视觉可区分。 */}
-        <button
-          style={
-            sortCatsByRecentUpdate
-              ? {
+          {(
+            [
+              {
+                mode: "default" as const,
+                label: "⊕ 默认",
+                title:
+                  "cat 段不级排 — 走拖拽 / CATEGORY_ORDER 默认顺序。",
+                activeBg: "var(--pet-color-border)",
+                activeFg: "var(--pet-color-fg)",
+              },
+              {
+                mode: "7d" as const,
+                label: "🔥 7d",
+                title:
+                  "cat 段按近 7 天 created_at 落入窗口的 item 数 desc 排 — 活跃 cat 顶上。0 净增 cat 末尾保默认序。",
+                activeBg:
+                  "var(--pet-tint-orange-bg, color-mix(in srgb, #f97316 12%, transparent))",
+                activeFg: "var(--pet-tint-orange-fg, #c2410c)",
+              },
+              {
+                mode: "recent" as const,
+                label: "🕒 近期",
+                title:
+                  "cat 段按 max(items.updated_at) desc 排 — 最近触摸 cat 顶上。空 cat 末尾。",
+                activeBg:
+                  "var(--pet-tint-cyan-bg, color-mix(in srgb, #06b6d4 12%, transparent))",
+                activeFg: "var(--pet-tint-cyan-fg, #0e7490)",
+              },
+            ] as const
+          ).map((opt) => {
+            const active = catSortMode === opt.mode;
+            return (
+              <button
+                key={opt.mode}
+                role="radio"
+                aria-checked={active}
+                onClick={() => selectCatSortMode(opt.mode)}
+                title={opt.title}
+                style={{
                   ...s.btn,
-                  background: "var(--pet-tint-cyan-bg, color-mix(in srgb, #06b6d4 12%, transparent))",
-                  color: "var(--pet-tint-cyan-fg, #0e7490)",
-                  borderColor: "var(--pet-tint-cyan-fg, #0e7490)",
-                }
-              : s.btn
-          }
-          onClick={toggleSortCatsByRecentUpdate}
-          title={
-            sortCatsByRecentUpdate
-              ? "现按 cat 内最近 update desc 排（最近动过 cat 顶上；空 cat 末尾）。点击切回拖拽 / 默认 cat 顺序。"
-              : "切到 cat 按最近 update desc 排 — 最近触摸的 cat 段自动顶上，与 🔥 7d 净增（量化 growth）互补：本 toggle 看最近 recency。"
-          }
-        >
-          🕒 {sortCatsByRecentUpdate ? "cat 按近期" : "cat 近期 -"}
-        </button>
+                  borderRadius: 0,
+                  marginLeft: 0,
+                  ...(active
+                    ? {
+                        background: opt.activeBg,
+                        color: opt.activeFg,
+                        borderColor: opt.activeFg,
+                      }
+                    : {}),
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </span>
         {/* 📌 仅 pinned toggle：全局视图，true 时各 cat 仅显本段 pinned 命中
             的 item，0 钉的 cat 整段隐藏 — 「总览：我钉了哪些」入口。与
             sortBy* 排序 toggle 正交（仍按当前排序排），与 fuzzy / silent /
