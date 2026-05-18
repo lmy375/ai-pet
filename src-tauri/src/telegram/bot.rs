@@ -841,9 +841,12 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
-        TgCommand::HelpTable => {
-            // pure 函数 — 输出硬编码 family 分组速查表。无 IO。
-            crate::telegram::commands::format_help_table_reply()
+        TgCommand::HelpTable { family } => {
+            // pure 函数 — 输出硬编码 family 分组速查表。family=Some 走
+            // 单 family 详细分支；None 走全表。无 IO。
+            crate::telegram::commands::format_help_table_reply_full(
+                family.as_deref(),
+            )
         }
         TgCommand::RecentPins { n } => {
             // scan butler_history.log 取所有含 [pinned] snippet 行 →

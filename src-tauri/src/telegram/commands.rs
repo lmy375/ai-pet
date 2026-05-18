@@ -657,11 +657,13 @@ pub enum TgCommand {
     /// sighting（前缀无 [pinned] 的 lookback 较宽）。audit「owner 这周觉得什
     /// 么变重要了」。同 best-effort 语义。无参。
     PinGrow7d,
-    /// `/help_table` —— 按 audit family 分组的命令速查表 — 命令爆炸（200+）
-    /// 后的 navigation aid。/help 是 flat 一行描述全表；本命令按主题分组
-    /// （pin / cat / rename / streak / find / speech / digest / ...）让
-    /// owner 快定位「这个 audit 在哪个命令族」。无参。
-    HelpTable,
+    /// `/help_table [family]` —— 按 audit family 分组的命令速查表。
+    /// - 无参 → 全表（13 family + 每行命令清单）— navigation aid
+    /// - 有参 → 仅该 family 详细 list（每行 cmd + 一行描述）— family
+    ///   focused 视图，省 owner 翻全表
+    /// family 关键字 case-insensitive，常用：pin / cat / rename / idle /
+    /// streak / find / tag / speech / alarm / status / batch / system。
+    HelpTable { family: Option<String> },
     /// `/recent_renames [N]` —— 列近 N 条 butler_history rename event（含
     /// ts + old → new 转换）。/aliases <title> 的全局对偶 — 那个是单 task
     /// 历史 chain，本命令是 cross-task 最近 N 条 audit。N 缺省 5，clamp
@@ -849,7 +851,7 @@ impl TgCommand {
             TgCommand::StreakPin => "streak_pin",
             TgCommand::RecentRenames { .. } => "recent_renames",
             TgCommand::RecentPins { .. } => "recent_pins",
-            TgCommand::HelpTable => "help_table",
+            TgCommand::HelpTable { .. } => "help_table",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
             TgCommand::TagsThisweek => "tags_thisweek",
@@ -960,7 +962,7 @@ impl TgCommand {
             | TgCommand::Recent { .. }
             | TgCommand::RecentRenames { .. }
             | TgCommand::RecentPins { .. }
-            | TgCommand::HelpTable
+            | TgCommand::HelpTable { .. }
             | TgCommand::OldestN { .. }
             | TgCommand::OldestDone { .. }
             | TgCommand::ActiveRecent { .. }
@@ -2200,8 +2202,10 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/help` 同 /tasks：无参，多余尾部忽略
         // `/help` 无参 = 显全表；`/help <cmd>` = 显该命令详细用法。topic
         // 可以带 `/` 前缀或不带，大小写不敏感 — 都在 format helper 内规整。
-        // `/help_table`：无参 — audit family 分组速查表。
-        "help_table" => Some(TgCommand::HelpTable),
+        // `/help_table [family]`：无参全表；有参单 family 详细 list。
+        "help_table" => Some(TgCommand::HelpTable {
+            family: if title.is_empty() { None } else { Some(title) },
+        }),
         "help" => Some(TgCommand::Help {
             topic: if title.is_empty() {
                 None
@@ -4029,7 +4033,27 @@ pub fn format_find_speech_reply(
 ///
 /// 顺序：高频常用在前（pin / cat / rename / idle / streak），audit 系
 /// 列中段（find / speech），系统 / 增删改 / 危险在后。
+///
+/// 兼容 wrapper — 旧调用走全表路径。
+#[allow(dead_code)]
 pub fn format_help_table_reply() -> String {
+    format_help_table_reply_full(None)
+}
+
+/// `/help_table [family]` 实现：family=None 显全表；family=Some 显
+/// 该 family 的详细命令清单 + 一行描述。family key case-insensitive
+/// + 含「pin / cat / rename / idle / stale / streak / find / search /
+/// tag / speech / 对话 / alarm / mute / status / overview / 增删改 /
+/// task / batch / 危险 / system / 系统」alias。
+///
+/// 未知 family → 列出 available family 名 + 全表 entry 兜底教学。
+pub fn format_help_table_reply_full(family: Option<&str>) -> String {
+    let family = family.map(|s| s.trim().to_ascii_lowercase());
+    if let Some(key) = family.as_deref() {
+        if !key.is_empty() {
+            return format_help_table_family(key);
+        }
+    }
     [
         "📚 命令分组速查表（按 audit family）",
         "",
@@ -4090,6 +4114,245 @@ pub fn format_help_table_reply() -> String {
         "相关：/help（flat 全表 + 一行描述）；/help <cmd>（单命令详细用法）；/help search <kw>（全文 keyword 搜）。",
     ]
     .join("\n")
+}
+
+/// pure：`/help_table <family>` 实现 — 取该 family 详细命令清单 +
+/// 一行描述。`family_key` 已 lowercase。
+///
+/// 命令清单复制自 format_help_table_reply_full 的对应 group，并附上
+/// /help 一行描述（从 ALL_HELP_TOPICS_EN_CHIP 抽取，或硬编码）。这
+/// 让 owner /help_table pin 一次性看 family 内所有命令的简短用途，
+/// 比逐 /help <cmd> 翻一次性高效。
+///
+/// alias key 接受：
+/// - pin / 关注度 / 钉
+/// - cat / 类目 / 活跃度
+/// - rename / 重命名 / alias
+/// - idle / stale / 闲置
+/// - streak / 连续
+/// - find / search / 搜
+/// - tag / 标签
+/// - speech / 对话 / 说话
+/// - alarm / mute / 通知 / 静音
+/// - status / overview / 概览
+/// - task / 增删改 / edit
+/// - batch / 危险 / 批量
+/// - system / 系统
+pub fn format_help_table_family(family_key: &str) -> String {
+    let key = family_key.trim().to_ascii_lowercase();
+    // family canonical name + emoji + (cmd, desc) tuples
+    let family: Option<(&str, &str, Vec<(&str, &str)>)> = match key.as_str() {
+        "pin" | "钉" | "关注度" => Some((
+            "📌 pin 关注度",
+            "钉住关键 task；与 priority 正交标 owner intent",
+            vec![
+                ("/pin <title>", "钉住任务（写 [pinned] marker）"),
+                ("/unpin <title>", "取消钉住"),
+                ("/pinned", "列本聊天派单所有钉住 task"),
+                ("/pinned_due", "列 pinned + 含 due 的 active task"),
+                ("/peek_pinned", "所有 pinned task 一行紧凑视图"),
+                ("/random_pinned", "从 pinned 抽 1 条 — 选择困难入口"),
+                ("/pin_all_p7", "批量给所有 P7+ active task 加 [pinned]（需 confirm）"),
+                ("/pinned_drop_7d", "近 7 天疑似被 unpin 的 task（反向 audit）"),
+                ("/pin_grow_7d", "近 7 天新获 [pinned] 的 task（正向 audit）"),
+                ("/recent_pins [N]", "近 N 条 pin 决策（dedupe by title earliest sighting）"),
+                ("/streak_pin", "连续多少天有 pinned task active（attention streak）"),
+            ],
+        )),
+        "cat" | "类目" | "活跃度" => Some((
+            "🌱 cat 活跃度（memory category）",
+            "跨 cat 活跃度 audit；与 PanelMemory chip 远程对偶",
+            vec![
+                ("/cat_growth_7d", "各 cat 近 7 天 created 数 desc（正向 growth）"),
+                ("/cat_growth_30d", "30 天 cousin — 长周期投入度"),
+                ("/cat_decay_7d", "近 7 天 0 update 的 cat（反向 stale）"),
+                ("/cat_decay_30d", "30 天 zombie cat detection"),
+            ],
+        )),
+        "rename" | "重命名" | "alias" => Some((
+            "🔁 rename 重命名 audit",
+            "rename event 来自 iter #568 backend lift，pre-lift 不可见",
+            vec![
+                ("/edit_title <title> :: <new>", "仅改 task 标题（不动 desc / detail.md）"),
+                ("/cascade_rename <title> :: <new>", "rename + 扫所有 detail.md 替换「<old>」ref"),
+                ("/aliases <title>", "单 task rename chain 重建（曾叫什么）"),
+                ("/recent_renames [N]", "近 N 条 rename event（cross-task）"),
+            ],
+        )),
+        "idle" | "stale" | "闲置" => Some((
+            "💤 idle / stale backlog",
+            "pending 但 updated_at 旧的 task — 「我搁着没动了」audit",
+            vec![
+                ("/idle_7d", "pending + updated_at ≥ 7 天前的 task list"),
+                ("/touched_today", "今日 updated_at 命中 task（任意状态）"),
+                ("/touched_yesterday", "昨日对偶"),
+                ("/touched_thisweek", "本周对偶（自周一起）"),
+                ("/oldest_n [N]", "最老 N 条 pending（created_at asc）"),
+                ("/oldest_done [N]", "最早完成的 N 条 done（updated_at asc）"),
+                ("/active_recent [N]", "最近 N 条新建 active task（pending / error）"),
+            ],
+        )),
+        "streak" | "连续" => Some((
+            "🔥 streak 连续节奏",
+            "audit 完成度 / 关注度的连续天数",
+            vec![
+                ("/streak", "连续 done 天数 + 近 7/30 天 done 总数"),
+                ("/streak_pin", "连续多少天有 pinned task active"),
+            ],
+        )),
+        "find" | "search" | "搜" => Some((
+            "🔎 find / search keyword",
+            "按 keyword 搜 — title / description / detail.md / speech 多 axis × date 矩阵",
+            vec![
+                ("/find <kw>", "按 keyword 搜 title / desc（至多 10 条）"),
+                ("/find_in_detail <kw>", "搜 detail.md 内容（含 snippet）"),
+                ("/find_speech <kw>", "搜 pet 说过的话（speech_history）"),
+                ("/find_in_detail_today <kw>", "今日切片"),
+                ("/find_in_detail_yesterday <kw>", "昨日对偶"),
+                ("/find_speech_today <kw>", "今日 speech 切片"),
+                ("/find_speech_yesterday <kw>", "昨日对偶"),
+                ("/search_today <kw>", "限今日 updated_at 的 task fuzzy 搜"),
+                ("/search_yesterday <kw>", "昨日对偶"),
+                ("/search_thisweek <kw>", "本周对偶"),
+            ],
+        )),
+        "tag" | "标签" => Some((
+            "🏷 tag",
+            "#tag exact 等值 audit（与 fuzzy /find 互补）",
+            vec![
+                ("/tag <name>", "列含某 #tag 的所有 task"),
+                ("/tags", "列本聊天用过的所有 #tag + 计数"),
+                ("/tags_for <title>", "单条 task 的 #tag 清单"),
+                ("/tags_today", "今日 task 含的 #tag 计数"),
+                ("/tags_yesterday", "昨日对偶"),
+                ("/tags_thisweek", "本周对偶"),
+            ],
+        )),
+        "speech" | "对话" | "说话" => Some((
+            "🗣 pet speech / 对话",
+            "pet 主动 utterance + chat 历史 + reflect / note 入口",
+            vec![
+                ("/last_speech", "pet 最近一条主动开口"),
+                ("/show_speech [N]", "最近 N 条 pet 主动开口"),
+                ("/find_speech <kw>", "搜 pet 说过的话"),
+                ("/recent_chats [N]", "最近 N 条 user ↔ pet 聊天往返"),
+                ("/reflect <text>", "存为 ai_insights memory（自我反思）"),
+                ("/note <text>", "存为 general memory（脑暴）"),
+                ("/transient <text>", "N 分钟临时上下文给 pet"),
+                ("/feedback <text>", "给 pet 留反馈（写 feedback_history）"),
+                ("/feedback_history [N]", "列最近 N 条 feedback 记录"),
+            ],
+        )),
+        "alarm" | "mute" | "通知" | "静音" => Some((
+            "⏰ alarm / 通知 / mute",
+            "reminder / snooze / mute proactive 全谱",
+            vec![
+                ("/alarms [N]", "列最近 N 条 pending reminders"),
+                ("/alarms_today", "今日 alarm 切片"),
+                ("/alarms_thisweek", "本周对偶"),
+                ("/mute [N]", "mute proactive N 分钟（缺省 30）"),
+                ("/mute_today", "静音到本地午夜"),
+                ("/sleep", "一键 mute 8h + 「晚安」"),
+                ("/sleep_until <HH:MM>", "mute 到指定时刻"),
+                ("/snooze <title> [preset]", "暂停 task"),
+                ("/snooze_until <title> <HH:MM>", "snooze 到绝对时刻"),
+                ("/unsnooze <title>", "解除 snooze"),
+                ("/snoozed", "列当前 snooze 中的 task"),
+            ],
+        )),
+        "status" | "overview" | "概览" => Some((
+            "📊 status / overview",
+            "queue 总览 + 状态 snapshot",
+            vec![
+                ("/tasks", "列本会话派出的任务清单"),
+                ("/stats", "待办 / 逾期 / 今日完成 状态计数"),
+                ("/buckets", "active task 按 priority 分桶"),
+                ("/show <title>", "显单条完整 raw description + detail 预览"),
+                ("/peek <title>", "一行紧凑视图"),
+                ("/timeline <title>", "时间线视图（butler_history 全 audit）"),
+                ("/recent_events <title> [N]", "单 task 最近 N 个 history 事件"),
+                ("/aware", "pet 当前感知 snapshot"),
+                ("/here", "owner 视角 snapshot（mute / feedback 等）"),
+                ("/now", "一句话快速状态"),
+                ("/today", "今日叙事视图"),
+                ("/today_done", "今日 done + result"),
+                ("/yesterday", "昨日 done + result"),
+                ("/digest [N]", "近 N 条 done + result 一行式"),
+                ("/digest_yesterday [N]", "昨日对偶"),
+                ("/digest_thisweek [N]", "本周对偶"),
+                ("/recent [N]", "最近 N 条 done"),
+                ("/due [preset]", "指定时段 due 的 task"),
+                ("/last", "最近新建的 task"),
+                ("/random", "随机抽 1 条 active task"),
+                ("/streak", "连续 done 天数"),
+                ("/mood", "pet 当前心情"),
+                ("/whoami", "pet 自我介绍"),
+                ("/blocked", "列被 [blockedBy:] 卡的 active task"),
+                ("/forks <title>", "反向 — 列等这条解锁的 task"),
+                ("/blocked_by <title>", "单条 task 等谁解锁"),
+                ("/snippets", "列含 [snippet:] marker 的可复用模板 task"),
+            ],
+        )),
+        "task" | "增删改" | "edit" => Some((
+            "📋 task 增删改",
+            "task lifecycle CRUD + marker 微改",
+            vec![
+                ("/task <title>", "派单（!! P5 / !!! P7 修饰）"),
+                ("/done <title>", "标 done"),
+                ("/cancel <title>", "取消"),
+                ("/retry <title>", "把失败 task 重置回 pending"),
+                ("/quick <text>", "静默创 P3 task + 极短 reply"),
+                ("/dup <title>", "复制 task 为新 pending（保 schedule / 剥终态 markers）"),
+                ("/edit <title> :: <new desc>", "覆写 description"),
+                ("/edit_due <title> <preset>", "用 friendly preset 改 due"),
+                ("/edit_title <title> :: <new>", "仅改标题"),
+                ("/pri <title> <0-9>", "改单条 priority"),
+                ("/promote <title>", "priority +1（clamp 9）"),
+                ("/demote <title>", "priority -1（clamp 0）"),
+                ("/swap_priority <a> :: <b>", "两 task 优先级互换"),
+                ("/pin / /unpin <title>", "钉 / 取消钉"),
+                ("/silent / /unsilent <title>", "标静默 / 解除"),
+                ("/touch <title>", "刷 updated_at 不改内容"),
+            ],
+        )),
+        "batch" | "危险" | "批量" => Some((
+            "⚠️ batch / 危险（需带 confirm token）",
+            "大范围 sweep — 操作前需带 `confirm` 二次确认",
+            vec![
+                ("/cancel_all_error confirm", "批量 cancel 所有 error task"),
+                ("/promote_all_p7 confirm", "所有 active +1 priority（clamp 7）"),
+                ("/touch_all_p7 confirm", "批量 touch 所有 P7+ active"),
+                ("/pin_all_p7 confirm", "批量给所有 P7+ 加 [pinned]"),
+                ("/consolidate_now confirm", "手动触发 consolidate sweep（LLM-heavy）"),
+                ("/silent_all [N]", "批量给所有 butler_task 加 [silent] N 分钟（缺省 60）"),
+            ],
+        )),
+        "system" | "系统" => Some((
+            "⚙️ system",
+            "基础元命令",
+            vec![
+                ("/version", "pet app 版本 + SQLite schema 版本"),
+                ("/help [cmd | all | search <kw>]", "命令帮助（详见 /help all）"),
+                ("/help_table [family]", "audit family 分组速查表"),
+                ("/reset", "清掉 LLM chat context（保 persona）"),
+            ],
+        )),
+        _ => None,
+    };
+    let Some((header, hint, cmds)) = family else {
+        return format!(
+            "❌ 未知 family「{}」。\n\n可用 family 名：pin / cat / rename / idle / streak / find / tag / speech / alarm / status / task / batch / system\n\n试 /help_table （无参）看全表概览。",
+            family_key.trim(),
+        );
+    };
+    let mut out = String::new();
+    out.push_str(&format!("📚 {} 家族详细清单\n", header));
+    out.push_str(&format!("{}\n\n", hint));
+    for (cmd, desc) in cmds {
+        out.push_str(&format!("· {}\n   {}\n", cmd, desc));
+    }
+    out.push_str("\n相关：/help <cmd>（单命令详细用法）；/help_table（无参全表概览）。");
+    out
 }
 
 /// `/recent_pins [N]` 命令回复文案。pure：caller 已 scan butler_history
@@ -14887,11 +15150,71 @@ mod tests {
 
     #[test]
     fn help_table_parser_no_args() {
-        assert_eq!(parse_tg_command("/help_table"), Some(TgCommand::HelpTable));
         assert_eq!(
-            parse_tg_command("/help_table extra"),
-            Some(TgCommand::HelpTable),
+            parse_tg_command("/help_table"),
+            Some(TgCommand::HelpTable { family: None }),
         );
+    }
+
+    #[test]
+    fn help_table_parser_with_family() {
+        assert_eq!(
+            parse_tg_command("/help_table pin"),
+            Some(TgCommand::HelpTable {
+                family: Some("pin".to_string()),
+            }),
+        );
+        // 含全角 / Chinese family name
+        assert_eq!(
+            parse_tg_command("/help_table 关注度"),
+            Some(TgCommand::HelpTable {
+                family: Some("关注度".to_string()),
+            }),
+        );
+    }
+
+    #[test]
+    fn format_help_table_family_pin_shows_detail() {
+        let s = format_help_table_family("pin");
+        // header + hint
+        assert!(s.contains("📌 pin 关注度 家族详细清单"), "{s}");
+        assert!(s.contains("钉住关键 task"), "hint: {s}");
+        // 每条命令 + 一行描述
+        assert!(s.contains("/pin <title>"), "{s}");
+        assert!(s.contains("/streak_pin"), "{s}");
+        assert!(s.contains("/recent_pins"), "{s}");
+        // 一行描述存在（spot check）
+        assert!(s.contains("钉住任务"), "{s}");
+        assert!(s.contains("attention streak"), "{s}");
+    }
+
+    #[test]
+    fn format_help_table_family_alias_case_insensitive() {
+        // 中文 alias
+        let s_zh = format_help_table_family("关注度");
+        assert!(s_zh.contains("📌 pin"), "{s_zh}");
+        // 大写
+        let s_upper = format_help_table_family("PIN");
+        assert!(s_upper.contains("📌 pin"), "{s_upper}");
+    }
+
+    #[test]
+    fn format_help_table_family_unknown_shows_available_list() {
+        let s = format_help_table_family("xyz_unknown");
+        assert!(s.contains("未知 family"), "{s}");
+        assert!(s.contains("xyz_unknown"), "{s}");
+        // 可用 family 列表
+        for f in ["pin", "cat", "rename", "idle", "streak"] {
+            assert!(s.contains(f), "missing {f}: {s}");
+        }
+        assert!(s.contains("/help_table"), "fallback hint: {s}");
+    }
+
+    #[test]
+    fn format_help_table_full_no_family_shows_overview() {
+        let s = format_help_table_reply_full(None);
+        // 应走全表分支 — 必含分组速查表 header
+        assert!(s.contains("命令分组速查表"), "{s}");
     }
 
     #[test]
