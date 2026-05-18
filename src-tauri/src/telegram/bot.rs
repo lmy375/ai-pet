@@ -841,6 +841,57 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HereIdle => {
+            // chat-scoped views → filter pending + updated_at ≤ now-7d
+            // → 拼「💤 stale context (>7d idle)：「t1」「t2」...」 →
+            // set_transient_note(text, 60)。空时 formatter 兜底教学。
+            use crate::task_queue::TaskStatus;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let now_ms = chrono::Local::now().timestamp_millis();
+            let cutoff_ms = now_ms - 7 * 24 * 60 * 60 * 1000_i64;
+            let mut rows: Vec<(String, i64)> = Vec::new();
+            for v in &views {
+                if v.status != TaskStatus::Pending {
+                    continue;
+                }
+                let Ok(t) = chrono::DateTime::parse_from_rfc3339(&v.updated_at)
+                else {
+                    continue;
+                };
+                let ms = t.timestamp_millis();
+                if ms > cutoff_ms {
+                    continue;
+                }
+                let days = (now_ms - ms) / (24 * 60 * 60 * 1000);
+                rows.push((v.title.clone(), days));
+            }
+            // idle 天数 desc — 最老 stale 在上（与 /idle_7d 一致）
+            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            if rows.is_empty() {
+                crate::telegram::commands::format_here_idle_reply(&[], None)
+            } else {
+                let joined = rows
+                    .iter()
+                    .map(|(t, _)| format!("「{}」", t))
+                    .collect::<Vec<_>>()
+                    .join("");
+                let stale_ctx = format!(
+                    "💤 stale context（>7d idle）：{}",
+                    joined,
+                );
+                let until_iso = crate::proactive::set_transient_note(stale_ctx, 60);
+                let until_local = chrono::DateTime::parse_from_str(
+                    &until_iso,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Local));
+                crate::telegram::commands::format_here_idle_reply(
+                    &rows,
+                    until_local,
+                )
+            }
+        }
         TgCommand::HerePin => {
             // chat-scoped pinned views → 拼「📌 当前 pin context：...」
             // 文本 → set_transient_note(text, 60)。empty pinned 走
