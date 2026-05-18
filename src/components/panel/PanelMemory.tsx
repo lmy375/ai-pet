@@ -860,6 +860,35 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
       return next;
     });
   };
+  /// 🕒 cat 按最近 update desc 排（cat-level，与上述 7d 净增 sort 互斥）：
+  /// true 时把 cat 段顺序覆盖为「max(items.updated_at) desc」— 最近动过
+  /// 的 cat 自动顶上。与 7d 净增 sort 的差异：7d 净增看「新增数」（量化
+  /// growth），本 toggle 看「最近触摸时刻」（latest activity recency）。
+  /// 二者同时开时 — 7d 净增 sort 优先（先排，本 toggle 只在 7d 净增 == 0
+  /// 的 cat 内 fallback）— 但通常 owner 只开其中一个。激活时拖拽 reorder
+  /// 暂时无效（与 7d toggle 同模式）。空 cat 排末尾保 default 序。持久化
+  /// 到 localStorage。
+  const [sortCatsByRecentUpdate, setSortCatsByRecentUpdate] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("pet-memory-sort-cats-recent") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSortCatsByRecentUpdate = () => {
+    setSortCatsByRecentUpdate((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          "pet-memory-sort-cats-recent",
+          next ? "1" : "0",
+        );
+      } catch {
+        // 配额满 / 隐私窗口 → session 内仍生效
+      }
+      return next;
+    });
+  };
   /// 📌 仅 pinned 全局 toggle：true 时把每段 pool 收窄到本段 pinned items
   /// （catKey::title 命中 pinnedKeys）— "总览：我钉了哪些"。与排序 toggle
   /// 正交（仍按 sortByRecent / sortByCreated / sortByCharCount /
@@ -3324,6 +3353,32 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         >
           🔥 {sortCatsByGrowth7d ? "cat 按 7d" : "cat 7d -"}
         </button>
+        {/* 🕒 cat 按最近 update desc toggle：cat-LEVEL 排序，与 🔥 7d 净
+            增 sort 互补 — 那个看「新增数」（growth quantity）、本 toggle
+            看「最近触摸时刻」（latest activity recency）。同 cat-level
+            sort 类别。激活时把 cat 段按 max(items.updated_at) desc 排，
+            空 cat 末尾。底色染 tint-cyan 与 🔥 tint-orange 错开让两 sort
+            状态视觉可区分。 */}
+        <button
+          style={
+            sortCatsByRecentUpdate
+              ? {
+                  ...s.btn,
+                  background: "var(--pet-tint-cyan-bg, color-mix(in srgb, #06b6d4 12%, transparent))",
+                  color: "var(--pet-tint-cyan-fg, #0e7490)",
+                  borderColor: "var(--pet-tint-cyan-fg, #0e7490)",
+                }
+              : s.btn
+          }
+          onClick={toggleSortCatsByRecentUpdate}
+          title={
+            sortCatsByRecentUpdate
+              ? "现按 cat 内最近 update desc 排（最近动过 cat 顶上；空 cat 末尾）。点击切回拖拽 / 默认 cat 顺序。"
+              : "切到 cat 按最近 update desc 排 — 最近触摸的 cat 段自动顶上，与 🔥 7d 净增（量化 growth）互补：本 toggle 看最近 recency。"
+          }
+        >
+          🕒 {sortCatsByRecentUpdate ? "cat 按近期" : "cat 近期 -"}
+        </button>
         {/* 📌 仅 pinned toggle：全局视图，true 时各 cat 仅显本段 pinned 命中
             的 item，0 钉的 cat 整段隐藏 — 「总览：我钉了哪些」入口。与
             sortBy* 排序 toggle 正交（仍按当前排序排），与 fuzzy / silent /
@@ -4670,6 +4725,36 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
             // 一眼"为什么 A 在 B 前"可解释
             active.sort((a, b) => b.d - a.d || a.i - b.i);
             return [...active.map((x) => x.k), ...inactive];
+          }
+          // 🕒 cat 按最近 update desc toggle：与 7d 净增 sort 互斥优先级。
+          // 算各 cat max(items.updated_at)，max 存在的 cat 按 desc 提顶；
+          // 空 cat / 无 updated_at 的排末尾保 default 顺序。tie 时按原
+          // ordered 位置稳定。
+          if (sortCatsByRecentUpdate) {
+            const maxUpdateMsOf = (k: string): number | null => {
+              const cat = index.categories[k];
+              if (!cat) return null;
+              let maxMs: number | null = null;
+              for (const it of cat.items) {
+                if (!it.updated_at) continue;
+                const uMs = Date.parse(it.updated_at);
+                if (isNaN(uMs)) continue;
+                if (maxMs === null || uMs > maxMs) maxMs = uMs;
+              }
+              return maxMs;
+            };
+            const withUpdate: { k: string; ms: number; i: number }[] = [];
+            const withoutUpdate: string[] = [];
+            ordered.forEach((k, i) => {
+              const ms = maxUpdateMsOf(k);
+              if (ms !== null) withUpdate.push({ k, ms, i });
+              else withoutUpdate.push(k);
+            });
+            withUpdate.sort((a, b) => b.ms - a.ms || a.i - b.i);
+            return [
+              ...withUpdate.map((x) => x.k),
+              ...withoutUpdate,
+            ];
           }
           return ordered;
         })().map((catKey) => {
