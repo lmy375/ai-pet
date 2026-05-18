@@ -9,7 +9,6 @@
 >
 
 - TG bot `/find_speech_today <kw>` 命令：今日 speech_history.log 内 fuzzy 搜 — /find_speech 的 today 切片。
-- TG bot `/digest_thisweek [N]` 命令：本周 done task 标题 + result 一行式 — /digest 的本周对偶。
 - ChatMini 「⌘⇧D 删除最后一条 user」keyboard shortcut — 误发 prompt 后快速撤回（与 ⌘R reroll 对偶）。
 - PanelMemory cat header 「📊 7d items 增量」chip：显本 cat 近 7 天净增 item 数 — cat 活跃度信号。
 

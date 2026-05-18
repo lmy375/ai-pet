@@ -1761,6 +1761,21 @@ async fn handle_tg_command(
                 n,
             )
         }
+        TgCommand::DigestThisweek { n } => {
+            // 与 Digest 同 read path；formatter 按 week_start prefix 过滤。
+            // week_start 与 /touched_thisweek / /search_thisweek / /tags_
+            // thisweek / /alarms_thisweek 同 num_days_from_monday 算法。
+            use chrono::Datelike;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            let days_from_mon = today.weekday().num_days_from_monday() as i64;
+            let week_start = today - chrono::Duration::days(days_from_mon);
+            crate::telegram::commands::format_digest_thisweek_reply(
+                &views,
+                week_start,
+                n,
+            )
+        }
         TgCommand::Digest { n } => {
             // 最近 done 任务标题 + result 摘要清单。reuse 同 read path（与
             // /recent / /tasks / /today 同源），formatter 内部 sort updated_at
