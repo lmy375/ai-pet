@@ -6796,6 +6796,28 @@ export function PanelTasks({
     return n;
   }, [tasks]);
 
+  // 🚀 今日 active P7+ 计数：created_at 在本地今日 + priority ≥ 7 + 活动
+  // 态（pending/error，未 done/cancelled）。「今日高优 sprint 起步」信号 —
+  // owner 在早会 / 决策前一眼看「今天新增的紧急活有几条」。与既有
+  // urgentTopPriorityCount（全谱 P0-P2 未完成，不限日期）正交；那是「积压
+  // 的紧迫」、本 chip 是「今日新增的紧迫」。
+  const todayActiveP7Count = useMemo(() => {
+    const now = new Date(nowMs);
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    const todayPrefix = `${y}-${m}-${d}`;
+    let n = 0;
+    for (const t of tasks) {
+      if (isFinished(t.status)) continue;
+      if (t.priority < 7) continue;
+      if (t.created_at.length < 10) continue;
+      if (t.created_at.slice(0, 10) !== todayPrefix) continue;
+      n += 1;
+    }
+    return n;
+  }, [tasks, nowMs]);
+
   // 💤 idle 计数：pending 且 updated_at ≥ 7 天前的 task 数。与 row hover
   // 「💤 Nd 未动」chip 同 7d 阈值；只数 pending（done / error / cancelled
   // 不在 inactivity 语义里）。memo 依赖 nowMs 仅秒级变化时 recompute，
@@ -8943,7 +8965,7 @@ export function PanelTasks({
             📋 标题 ({visibleTasks.length})
           </button>
         </div>
-        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0) && (
+        {(dueTodayCount > 0 || overdueCount > 0 || createdTodayCount > 0 || pinnedCount > 0 || idleCount > 0 || priorityCounts.length > 0 || originCounts.tg > 0 || errorTaskCount > 0 || finishedTaskCount > 0 || completionStats.today > 0 || urgentTopPriorityCount > 0 || todayActiveP7Count > 0) && (
           <div style={{ ...s.tagFilterRow, marginBottom: 6 }}>
             {/* 一键重试所有 error 任务 chip。> 0 时显，红底突出。点击调
                 handleRetryAllErrors 顺序 invoke task_retry；bulkBusy 期间
@@ -9044,6 +9066,29 @@ export function PanelTasks({
                 title={`高优先级 (P0-P2) 未完成任务 ${urgentTopPriorityCount} 条。owner 应优先处理这些；queue 顶有积压时考虑暂缓低优先级。`}
               >
                 🎯 紧迫 {urgentTopPriorityCount}
+              </span>
+            )}
+            {/* 🚀 今日 active P7+ chip：created_at 在本地今日 + priority
+                ≥ 7 + 活动态。「今日 sprint 起步」信号 — 早会前 / 决策前
+                一眼看「今天新加了几条紧急活」。与 🎯 紧迫（P0-P2 全谱
+                未完，不限日期）正交：那是「老积压的紧迫」、本 chip 是
+                「今日新增的紧迫」。informational 不接 filter — 与 🎯 同
+                model。purple tint 与 🎯 amber 错开避免 conflate；与
+                createdTodayCount 同日期 axis 但不同 priority dimension。 */}
+            {todayActiveP7Count > 0 && (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: "2px 8px",
+                  borderRadius: 8,
+                  background: "var(--pet-tint-purple-bg, color-mix(in srgb, #a855f7 12%, transparent))",
+                  color: "var(--pet-tint-purple-fg, #7e22ce)",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+                title={`今日新增的 P7+ 活动 task ${todayActiveP7Count} 条 — 「sprint 起步」信号。与 🎯 紧迫（全谱 P0-P2 未完不限日期）正交：那是积压视角、本 chip 是今日新增视角。`}
+              >
+                🚀 今日 P7+ {todayActiveP7Count}
               </span>
             )}
             {/* ✓ 今日已完成 N 绿 chip：与 🔴 逾期 / 📅 今日到期 chip 同行
