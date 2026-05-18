@@ -769,6 +769,12 @@ async fn handle_tg_command(
                     .collect();
             crate::telegram::commands::format_markers_list(&views)
         }
+        TgCommand::TagsToday => {
+            // 与 Tags 同 read path；formatter 内部按 today filter + 聚合
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_tags_today_reply(&views, today)
+        }
         TgCommand::Tags => {
             // /tags：统计本 chat 派单的 #tag 矩阵。read path 同 /markers /
             // /today 等：read_tg_chat_task_views 已 chat-scoped。formatter

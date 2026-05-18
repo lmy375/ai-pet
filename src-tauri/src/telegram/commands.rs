@@ -623,6 +623,9 @@ pub enum TgCommand {
     /// 让 owner 一眼批量看「我钉的 N 条状态如何」— 比 /pinned（仅标题）
     /// 信息密度高，比 /tasks（全量）scope 窄。无参。
     PeekPinned,
+    /// `/tags_today` —— /tags 的今日切片：仅列今日 updated_at 的 task
+    /// 含的 #tag 计数。让 owner 看「今天我在做什么主题」audit。无参。
+    TagsToday,
     /// `/timeline <title>` —— 时间线视图：扫 butler_history.log 取这条
     /// task 的所有 create / update / delete 事件，按时序展开每个事件含
     /// 哪些"状态变化"markers（[done] / [error:] / [snooze:] / [result:]
@@ -741,6 +744,7 @@ impl TgCommand {
             TgCommand::SearchThisweek { .. } => "search_thisweek",
             TgCommand::AlarmsToday => "alarms_today",
             TgCommand::PeekPinned => "peek_pinned",
+            TgCommand::TagsToday => "tags_today",
             TgCommand::Timeline { .. } => "timeline",
             TgCommand::Now => "now",
             TgCommand::LastSpeech => "last_speech",
@@ -854,6 +858,7 @@ impl TgCommand {
             | TgCommand::Alarms { .. }
             | TgCommand::AlarmsToday
             | TgCommand::PeekPinned
+            | TgCommand::TagsToday
             | TgCommand::RecentChats { .. }
             | TgCommand::Due { .. }
             | TgCommand::Now
@@ -1000,6 +1005,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("search_thisweek", "This week's counterpart to /search_today — week + keyword intersection (weekly review)"),
             ("alarms_today", "Show today's pending reminders (today slice of /alarms; no N param — today's scope is small)"),
             ("peek_pinned", "All pinned tasks in one-line compact form — /pinned 's denser sibling using /peek 's row format"),
+            ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("timeline", "Timeline view: each butler_history event for a task with state-change markers"),
             ("blocked", "List active tasks blocked by [blockedBy: …] with their unresolved blockers"),
             ("forks", "Reverse: list active tasks that reference [blockedBy: <this>] — unlock impact audit"),
@@ -1094,6 +1100,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("search_thisweek", "/search_today 的本周对偶 — 「本周与 X 相关的」精准 audit（周报场景）"),
             ("alarms_today", "今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）"),
             ("peek_pinned", "所有 pinned task 一行紧凑视图 — /pinned 的密集版 + /peek 的批量版"),
+            ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("timeline", "时间线：列出某任务历经的所有 butler_history 事件 + 当时的状态变化 markers"),
             ("blocked", "列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker 标题"),
             ("forks", "反向 audit：列引用 [blockedBy: <this>] 的活跃 task — 这条解锁后会让谁动起来"),
@@ -1688,6 +1695,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // `/peek_pinned`：无参 — /pinned 紧凑版 + /peek 批量版。handler
         // 内部 filter pinned + 每条调 format_peek_reply 拼总输出。
         "peek_pinned" => Some(TgCommand::PeekPinned),
+        // `/tags_today`：无参 — /tags 的今日切片。
+        "tags_today" => Some(TgCommand::TagsToday),
         // `/find_in_detail <keyword>`：所有 arg 作 keyword（含空格保留）。
         // 空 keyword 由 handler 走 missing-argument。snake_case 命名避开
         // dash drift-defense（与 /oldest_n / /active_recent 同模板）。
@@ -2216,7 +2225,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "tags_today", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2378,6 +2387,7 @@ pub fn format_help_for_topic(
         "touched_thisweek" => "📅 /touched_thisweek\n\n用法：本周（自周一 00:00 起到 now）updated_at 命中的本聊天派单（任意状态），按时间倒序。「这周我动过哪些 task」周维度复盘视角。\n\n场景：周五整理本周产出 / 周末看「这周我都做了 / 调了 / 推后了哪些」/ 写周报需要本周完整动作清单。与 /touched_today / /touched_yesterday 三件套形成日 × 周 多 scope。\n\n周边界：周一 00:00 起算（ISO weekday：1=Mon ... 7=Sun）— 周日晚上 23:59 时仍算本周；周一 00:00 起算「新本周」。\n\n输出格式：\n  📅 本周（YYYY-MM-DD 起）动过 N 条（按时间倒序）：\n  · ⏳ MM-DD HH:MM 整理 Downloads\n  · ✅ MM-DD HH:MM 写周报 — done with result\n  · 💤 MM-DD HH:MM 写报告\n  ...\n\n状态 emoji 同 /touched_today（⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled · 💤 snoozed pending）。每行带 MM-DD HH:MM（跨日 scope 不能省 date）。\n\n空 → 友好兜底（教学指 /touched_today / /tasks）。\n\n示例：\n  /touched_thisweek\n\n相关：/touched_today（仅今日）；/touched_yesterday（仅昨日）；/digest_yesterday（昨日 done + result）；/yesterday（昨日 done 仅标题）。",
         "touched_yesterday" => "📅 /touched_yesterday\n\n用法：/touched_today 的昨日对偶 — 列昨日（本地日历日）updated_at 命中的本聊天派单（任意状态），按时间倒序。复盘视角：「昨天我动过哪些 task」。\n\n场景：早上 standup 前回顾「昨天做了 / 调了 / 推后了哪些」；周末 audit 工作日 backlog 变化；与 /yesterday（仅 done）/ /today_done 三件套形成完整 today-yesterday × 全谱-完成 audit 矩阵。\n\n输出格式：\n  📅 昨日（YYYY-MM-DD）动过 N 条（按时间倒序）：\n  · ⏳ HH:MM 整理 Downloads\n  · ✅ HH:MM 写周报 — done with result\n  · 💤 HH:MM 写报告\n  · ⏳ HH:MM review PR\n\n状态 emoji 同 /touched_today（⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled · 💤 snoozed pending）。\n\n空 → 友好兜底（教学指向 /touched_today / /yesterday / /tasks）。\n\n示例：\n  /touched_yesterday\n\n相关：/touched_today（今日全谱）；/yesterday（昨日 done）；/today_done（今日 done）；/recent_events <title>（单 task TL;DR）。",
         "oldest_done" => "🪦 /oldest_done [N]\n\n用法：列**最早完成**的 N 条 done task（按 updated_at 升序）— 与 /recent done（最近完成）反向。让 owner 看「这些任务我做了多久 / 哪些是 ancient backlog 终于完成」的考古视角。\n\nN 缺省 5；clamp 1..=20（与 /recent / /digest / /show_speech 同协议）。无 done task → 友好兜底教学指向 /done 标完成。\n\n输出格式：\n  🪦 最早完成的 N 条（共 M done）：\n  · YYYY-MM-DD HH:MM · <title>\n  · YYYY-MM-DD HH:MM · <title>\n  ...\n\n（与 /recent 同 line 格式 — 让 owner 切换视角时心智一致）\n\n场景：\n- 「这条 task 我做了多久」考古 — 比对源 create_at（/show 含）vs 最早 done updated_at\n- audit 「最老的 done 是何时」— sprint 复盘 / quarterly review\n- 与 /recent done 形成「最近完成 vs 最早完成」镜像\n\n示例：\n  /oldest_done           （显最早 5 条）\n  /oldest_done 10        （显最早 10 条）\n\n相关：/recent（最近完成 — 与本命令反向）；/oldest_n（最老 pending — pending 维度反向）；/yesterday / /today_done（按日期范围而非「最老/最新」）。",
+        "tags_today" => "🏷 /tags_today\n\n用法：/tags 的今日切片 — 仅扫今日 updated_at 命中的 task 含的 #tag 计数。让 owner 看「今天我在做哪些主题」audit。无参 — 今日范围天然小，不需 cap。\n\n场景：早会前看「今天我在哪些主题上工作」/ 写日报需按 tag 分类列项 / sprint 中段「我今天偏向某主题太多 / 太少」audit。\n\n输出格式：\n  🏷 今日（YYYY-MM-DD）N 个 tag：\n  · #健身 ×3\n  · #API ×2\n  · #周报 ×1\n  ...\n  \n  无 #tag 任务：N 条\n\n空 → 友好兜底「今日动过的 task 都无 #tag」+ 教学 /tags 全量入口。\n\n示例：\n  /tags_today\n\n相关：/tags（全量不限日期）；/touched_today（今日 task 全谱无 tag 聚合）；/tag <name>（按某 tag 搜任务）。",
         "peek_pinned" => "👀 /peek_pinned\n\n用法：所有 pinned task 一行紧凑视图 — /pinned（仅标题）的密集版 + /peek（单条紧凑）的批量版。每行：`<status_emoji> 「<title>」 · 🕐 <schedule> · <markers>`，让 owner 一眼看「我钉的 N 条状态如何」。\n\n场景：早会前确认「我今天必须看的几条 task」状态 / sprint 中段 audit「钉的事情进度怎样」/ 晚上看「我钉了哪些没动」。\n\n空 → 友好兜底「暂无 pinned task」+ 教学指 /pin <title> 设置。\n\n输出格式：\n  📌 N 条 pinned：\n  ⏳ 「<title>」 · 🕐 every 09:00 · 📌 🔇\n  ✅ 「<title>」 · 🕐 once 2026-05-20 14:00\n  ⏳ 「<title>」 · 📌 💤\n  ...\n\n状态 emoji 与 /peek / /find 同：⏳ pending · ✅ done · ⚠️ error · 🚫 cancelled。Schedule 段 + markers 段都仅命中时显（与 /peek 行为一致）。\n\n示例：\n  /peek_pinned\n\n相关：/pinned（仅标题）；/peek <title>（单条紧凑）；/pinned_due（pinned 且有 due）；/tasks（全量含 pinned）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
         "search_thisweek" => "🔎 /search_thisweek <keyword>\n\n用法：/search_today 的本周对偶 — 在本周（自周一 00:00 起到 now）updated_at 命中的本聊天派单内 fuzzy 搜 title / raw_description（case-insensitive 子串）。「本周与 X 相关的」精准 audit。\n\n场景：周五写周报 / 周末整理本周产出 / 写月报需筛本周某主题 — 比 /find 全量更聚焦，比 /touched_thisweek 全谱更精准。完成 kw × today/yesterday/thisweek 三件套矩阵。\n\n输出格式：\n  🔎 本周（YYYY-MM-DD 起）命中「<kw>」N 条：\n  🟢 <title>\n  ⚠️ <title>\n  ✅ <title>\n  ...\n\n空 keyword → usage hint；无命中 → 友好兜底（/find 全量 / /touched_thisweek 全谱 alt）。状态 emoji 同 /search_today 系列。cap 10 条。\n\n示例：\n  /search_thisweek API\n  /search_thisweek 周报\n\n相关：/search_today（仅今日）；/search_yesterday（仅昨日）；/find（不限日期）；/touched_thisweek（本周全谱）。",
@@ -2492,6 +2502,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/search_thisweek <kw>  —  /search_today 的本周对偶 — 「本周与 X 相关的」精准 audit（周报场景）".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
+        "/tags_today  —  今日动过 task 含的 #tag 计数（/tags 的 today 切片）— 「今天主题」audit".to_string(),
         "/timeline <title>  —  时间线：列 butler_history 事件 + 当时状态变化 markers（[done]/[error:]/[snooze:]/[result:] 等）".to_string(),
         "/blocked  —  列出被 [blockedBy: …] 锁住的活跃 task + 仍未解决的 blocker".to_string(),
         "/forks <title>  —  反向 audit：哪些活跃 task 在 [blockedBy: <this>]（这条解锁会让谁动起来）".to_string(),
@@ -4623,6 +4634,58 @@ pub fn format_note_reply(text: &str, save_result: Result<&str, &str>) -> String 
 /// 度，不只看 active）。按数量 desc + 名字 asc 二阶排序保结果稳定。空
 /// tag 矩阵 → 友好兜底文案；超 TAGS_CAP 个 → 列前 15 + "其它 N 个" 汇
 /// 总。同时输出"无 #tag 任务"数让 owner 看到分母。
+/// `/tags_today` 命令回复文案。pure：filter views by updated_at 起始
+/// 匹配 today 日期前缀，扫 tags 计数。与 /tags 同算法但 scope 限今日。
+/// 无 cap — 今日范围天然小（典型 < 10 个不同 tag）。
+pub fn format_tags_today_reply(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+) -> String {
+    use std::collections::BTreeMap;
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut untagged: u32 = 0;
+    for v in views {
+        // 仅扫今日 updated_at 命中
+        if v.updated_at.len() < 10 || &v.updated_at[..10] != today_str.as_str() {
+            continue;
+        }
+        if v.tags.is_empty() {
+            untagged += 1;
+        } else {
+            for t in &v.tags {
+                let key = t.trim();
+                if key.is_empty() {
+                    continue;
+                }
+                *counts.entry(key.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    if counts.is_empty() {
+        return format!(
+            "🏷 今日（{}）动过的 task 都无 #tag。\n创建任务时在 description 写 `#name` 自动收录；/tags 看全量 #tag 矩阵。",
+            today_str,
+        );
+    }
+    // 与 /tags 同 sort：desc by count，ties 字典序（BTreeMap 默认 key asc）
+    let mut sorted: Vec<(String, u32)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let total_tags = sorted.len();
+    let mut out = format!(
+        "🏷 今日（{}）{} 个 tag",
+        today_str,
+        total_tags,
+    );
+    for (name, count) in &sorted {
+        out.push_str(&format!("\n· #{} ×{}", name, count));
+    }
+    if untagged > 0 {
+        out.push_str(&format!("\n\n无 #tag 任务（今日）：{} 条", untagged));
+    }
+    out
+}
+
 pub const TAGS_CAP: usize = 15;
 pub fn format_tags_reply(views: &[crate::task_queue::TaskView]) -> String {
     use std::collections::BTreeMap;
@@ -7648,7 +7711,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "tags_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -8119,7 +8182,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_speech", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "alarms_today", "tags_today", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -11962,6 +12025,89 @@ mod tests {
             parse_tg_command("/alarms blah"),
             Some(TgCommand::Alarms { n: 5 })
         );
+    }
+
+    // -------- /tags_today parse + format --------
+
+    #[test]
+    fn tags_today_parser_no_arg() {
+        assert_eq!(parse_tg_command("/tags_today"), Some(TgCommand::TagsToday));
+        assert_eq!(parse_tg_command("/TAGS_TODAY"), Some(TgCommand::TagsToday));
+        // 尾部 token 容忍
+        assert_eq!(
+            parse_tg_command("/tags_today extra"),
+            Some(TgCommand::TagsToday),
+        );
+    }
+
+    #[test]
+    fn tags_today_empty_shows_friendly_fallback() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let s = format_tags_today_reply(&[], today);
+        assert!(s.contains("今日（2026-05-17）"), "{s}");
+        assert!(s.contains("都无 #tag"), "{s}");
+        assert!(s.contains("/tags"), "should mention alt /tags: {s}");
+    }
+
+    #[test]
+    fn tags_today_aggregates_today_tags_only() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        // 今日 + 含 tag
+        let mut t1 = view("写 API doc", 3, None, TaskStatus::Pending, None);
+        t1.updated_at = "2026-05-17T09:00:00+08:00".to_string();
+        t1.tags = vec!["work".to_string(), "API".to_string()];
+        let mut t2 = view("review PR", 3, None, TaskStatus::Done, Some("done"));
+        t2.updated_at = "2026-05-17T11:00:00+08:00".to_string();
+        t2.tags = vec!["work".to_string()];
+        // 昨日 + 含 tag（应被日期过滤排除）
+        let mut y = view("yest", 3, None, TaskStatus::Done, Some("r"));
+        y.updated_at = "2026-05-16T15:00:00+08:00".to_string();
+        y.tags = vec!["yesterday-only-tag".to_string()];
+        let s = format_tags_today_reply(&[t1, t2, y], today);
+        // 今日 tag 命中
+        assert!(s.contains("· #work ×2"), "work counted twice: {s}");
+        assert!(s.contains("· #API ×1"), "API counted once: {s}");
+        // 昨日 tag 不出现
+        assert!(!s.contains("yesterday-only-tag"), "yesterday tag excluded: {s}");
+        assert!(s.contains("2 个 tag"), "count: {s}");
+    }
+
+    #[test]
+    fn tags_today_includes_untagged_count() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        // 今日含 tag + 今日无 tag 各一条
+        let mut tagged = view("a", 3, None, TaskStatus::Pending, None);
+        tagged.updated_at = "2026-05-17T09:00:00+08:00".to_string();
+        tagged.tags = vec!["tag1".to_string()];
+        let mut untagged = view("b", 3, None, TaskStatus::Pending, None);
+        untagged.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        // tags 空
+        let s = format_tags_today_reply(&[tagged, untagged], today);
+        assert!(s.contains("· #tag1 ×1"), "{s}");
+        assert!(s.contains("无 #tag 任务（今日）：1 条"), "untagged count: {s}");
+    }
+
+    #[test]
+    fn tags_today_sorts_by_count_desc() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let mut t1 = view("a", 3, None, TaskStatus::Pending, None);
+        t1.updated_at = "2026-05-17T09:00:00+08:00".to_string();
+        t1.tags = vec!["rare".to_string()];
+        let mut t2 = view("b", 3, None, TaskStatus::Pending, None);
+        t2.updated_at = "2026-05-17T10:00:00+08:00".to_string();
+        t2.tags = vec!["common".to_string()];
+        let mut t3 = view("c", 3, None, TaskStatus::Pending, None);
+        t3.updated_at = "2026-05-17T11:00:00+08:00".to_string();
+        t3.tags = vec!["common".to_string()];
+        let mut t4 = view("d", 3, None, TaskStatus::Pending, None);
+        t4.updated_at = "2026-05-17T12:00:00+08:00".to_string();
+        t4.tags = vec!["common".to_string()];
+        let s = format_tags_today_reply(&[t1, t2, t3, t4], today);
+        let idx_common = s.find("#common").expect("common in output");
+        let idx_rare = s.find("#rare").expect("rare in output");
+        assert!(idx_common < idx_rare, "count desc: {s}");
+        assert!(s.contains("#common ×3"), "{s}");
+        assert!(s.contains("#rare ×1"), "{s}");
     }
 
     // -------- /peek_pinned parse + format --------
