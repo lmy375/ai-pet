@@ -8,6 +8,13 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- TG bot `/find_in_detail_yesterday <kw>` 命令：昨日 task 的 detail.md 内容搜 — /find_in_detail_today 的昨日对偶（detail × yesterday axis）。
+- TG bot `/tags_yesterday` 命令：昨日动过 task 含的 #tag 计数 — /tags_today 的昨日对偶（tags × yesterday axis）。
+- TG bot `/tags_thisweek` 命令：本周动过 task 含的 #tag 计数 — 完成 tags × today/yesterday/thisweek 三件套。
+- TG bot `/alarms_thisweek` 命令：本周内触发 alarm 集中视图 — /alarms_today 的本周对偶（reminder × thisweek axis）。
+- detail.md 编辑器「⌘⇧H」当前行 heading level 循环（none → h1 → h2 → h3 → h4 → none）— markdown 编辑常用 toggle。
+- PanelDebug 「📊 24h LLM 错误率」chip：扫 llm.log 算 24h 内 error round 占比 — 既有进程级 err% 的 daily 窗口版。
+
 
 
 
