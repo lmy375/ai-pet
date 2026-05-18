@@ -8,6 +8,13 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
+- TG bot `/find_speech_today <kw>` 命令：今日 speech_history.log 内 fuzzy 搜 — /find_speech 的 today 切片。
+- TG bot `/digest_thisweek [N]` 命令：本周 done task 标题 + result 一行式 — /digest 的本周对偶。
+- TG bot `/random_pinned` 命令：从 pinned task 中随机选一条 — /random 的 pinned 子集（备选 audit 入口）。
+- detail.md 编辑器「⌘⇧B」反向 heading cycle（none → h4 → h3 → h2 → h1 → none）— ⌘⇧H 的反向。
+- ChatMini 「⌘⇧D 删除最后一条 user」keyboard shortcut — 误发 prompt 后快速撤回（与 ⌘R reroll 对偶）。
+- PanelMemory cat header 「📊 7d items 增量」chip：显本 cat 近 7 天净增 item 数 — cat 活跃度信号。
+
 
 
 
