@@ -848,6 +848,16 @@ async fn handle_tg_command(
                 .unwrap_or_else(|| chrono::Local::now().date_naive());
             crate::telegram::commands::format_touched_yesterday_reply(&views, yesterday)
         }
+        TgCommand::TouchedThisweek => {
+            // 算本周一日期：今日 weekday (Mon=1..Sun=7) — 1 = 距周一天数。
+            // chrono::Datelike::weekday().num_days_from_monday() 返 0..=6（Mon=0）。
+            use chrono::Datelike;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            let days_from_mon = today.weekday().num_days_from_monday() as i64;
+            let week_start = today - chrono::Duration::days(days_from_mon);
+            crate::telegram::commands::format_touched_thisweek_reply(&views, week_start)
+        }
         TgCommand::MuteToday => {
             // 算 now → 次日 00:00 的分钟数：以本地 calendar 算明日同
             // ymd + (00:00:00)。clamp 1..=1440 防 DST 边界 / 跨日时区抖
