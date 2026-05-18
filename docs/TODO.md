@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG `/help_table <family>`：按 family 名给出该家族详细命令清单 + 一行描述 — /help_table 全表的 family-focused 版本。
 - TG `/audit_summary`：单命令聚合 5 大 audit 信号（pin streak / cat 活跃数 / idle 数 / 今日动过数 / 7d done 数）— sprint kickoff 一键视图。
 - PanelTasks chip-bar「🏷 30d rename」chip：与既有 7d rename chip 并排显近 30 天 rename 数 — 长周期 refactoring 节奏。
 - TG `/cat_top [N]`：按 cat items 总量 desc 列前 N — 跨 cat 容量对比 audit（与 growth/decay 活跃度正交）。
