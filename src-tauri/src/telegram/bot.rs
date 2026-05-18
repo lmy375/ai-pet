@@ -841,6 +841,28 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::CatTop { n } => {
+            // scan memory_list(None) → 每 cat item count → sort desc +
+            // cap N。empty cat 仍计入（0 count）— 但 sort desc 后排末
+            // 尾自然不显（N cap 砍掉）。
+            let mut rows: Vec<(String, usize)> = Vec::new();
+            let mut total_cats = 0usize;
+            if let Ok(index) =
+                crate::commands::memory::memory_list(None)
+            {
+                total_cats = index.categories.len();
+                for (key, cat) in index.categories.iter() {
+                    if cat.items.is_empty() {
+                        continue;
+                    }
+                    rows.push((key.clone(), cat.items.len()));
+                }
+            }
+            // count desc; tie 时 key asc 稳定输出
+            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            rows.truncate(n as usize);
+            crate::telegram::commands::format_cat_top_reply(&rows, total_cats)
+        }
         TgCommand::AuditSummary => {
             // 聚合 5 大 audit 信号。read views (chat-scoped) + scan
             // butler_history.log 一次 → 派生多个 signal：
