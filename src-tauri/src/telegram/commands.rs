@@ -657,6 +657,12 @@ pub enum TgCommand {
     /// sighting（前缀无 [pinned] 的 lookback 较宽）。audit「owner 这周觉得什
     /// 么变重要了」。同 best-effort 语义。无参。
     PinGrow7d,
+    /// `/aliases <title>` —— 扫 butler_history 内 rename event 重建 alias chain。
+    /// iter #568 起 memory_rename 把 rename 事件写到 butler_history.log（snippet
+    /// 内嵌 `[was: <old>]`），本命令双向 walk 把 old title 链表展示。「这条 task
+    /// 曾叫过什么」audit。Title resolve 与 /show / /done / /cancel 同三层
+    /// （数字 index → fuzzy → 错误候选）。
+    Aliases { title: String },
     /// `/cat_growth_7d` —— 各 memory category 近 7 天 created 数 desc 排
     /// — 跨 cat 活跃度对比，让 owner 看「我哪类知识在长 / 哪类已停滞」。
     /// 与 PanelMemory cat header「📊 7d 净增」chip 远程对偶。无参。
@@ -814,6 +820,7 @@ impl TgCommand {
             TgCommand::Idle7d => "idle_7d",
             TgCommand::PinnedDrop7d => "pinned_drop_7d",
             TgCommand::PinGrow7d => "pin_grow_7d",
+            TgCommand::Aliases { .. } => "aliases",
             TgCommand::TagsToday => "tags_today",
             TgCommand::TagsYesterday => "tags_yesterday",
             TgCommand::TagsThisweek => "tags_thisweek",
@@ -888,6 +895,7 @@ impl TgCommand {
             | TgCommand::Dup { title }
             | TgCommand::RecentEvents { title, .. }
             | TgCommand::Timeline { title }
+            | TgCommand::Aliases { title }
             | TgCommand::Forks { title }
             | TgCommand::BlockedBy { title }
             | TgCommand::Quick { text: title }
@@ -1105,6 +1113,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("idle_7d", "Pending tasks idle ≥ 7 days (updated_at desc) — stale backlog audit; PanelTasks 💤 chip's TG dual"),
             ("pinned_drop_7d", "Tasks that lost [pinned] in last 7 days — reverse attention audit; what owner stopped caring about"),
             ("pin_grow_7d", "Tasks newly pinned in last 7 days — positive attention audit; /pinned_drop_7d 's dual"),
+            ("aliases", "Reconstruct task rename chain from butler_history rename events — 「what this task was called before」audit"),
             ("tags_today", "Today's active #tag counts (today's touched tasks slice of /tags)"),
             ("tags_yesterday", "Yesterday's counterpart to /tags_today — yesterday's touched task tag counts"),
             ("tags_thisweek", "This week's counterpart to /tags_today — week-touched task tag counts"),
@@ -1215,6 +1224,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("idle_7d", "pending 且 updated_at ≥ 7 天前的 task（idle 天数 desc）— stale backlog audit；PanelTasks 💤 chip TG 对偶"),
             ("pinned_drop_7d", "近 7 天疑似被 unpin 的 task — 反向关注度审计「owner 最近放下了啥」（best-effort）"),
             ("pin_grow_7d", "近 7 天新获 [pinned] 的 task — /pinned_drop_7d 的正向对偶「owner 这周觉得什么变重要了」"),
+            ("aliases", "扫 butler_history rename event 重建 alias chain — 「这条 task 曾叫什么」audit"),
             ("tags_today", "今日动过 task 含的 #tag 计数（/tags 的 today 切片）"),
             ("tags_yesterday", "/tags_today 的昨日对偶 — 昨日动过 task 含的 #tag 计数"),
             ("tags_thisweek", "/tags_today 的本周对偶 — 本周动过 task 含的 #tag 计数（周报场景）"),
@@ -1538,6 +1548,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         // handler 走 missing-argument 反馈。butler_history.log 扫描在
         // handler 端做（IO），parser 仅切 title。
         "timeline" => Some(TgCommand::Timeline { title }),
+        // `/aliases <title>`：扫 butler_history rename events 重建 alias chain。
+        "aliases" => Some(TgCommand::Aliases { title }),
         // `/forks <title>`：与 /show / /timeline 同 single-title 模板。空
         // title 由 handler 走 missing-argument。反向 blockedBy 扫描在
         // formatter 端做（pure），parser 仅切 title。
@@ -2384,7 +2396,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2554,6 +2566,7 @@ pub fn format_help_for_topic(
         "alarms_thisweek" => "⏰ /alarms_thisweek\n\n用法：/alarms_today 的本周对偶 — 仅显本周（自周一 00:00 起到 now）触发的 reminder（`[remind: ...]` 协议条目）。让 owner 看「本周还会响哪些 / 已逾期未消」。无 N 参 — 本周范围比 today 略广但仍可控（典型 < 30 条）。\n\n场景：周报场景看「这周我设了哪些 reminder / 哪些已 fire 哪些待响」/ 周一早会前 review 上周未消 alarm。\n\n输出格式：\n  ⏰ 本周（YYYY-MM-DD 起）N 条 alarms：\n  · MM-DD HH:MM (剩 / 已逾期 ...) | <topic>\n  · MM-DD HH:MM (剩 ...) | <topic>\n  ...\n\n跨日 scope 行带 MM-DD（与 /alarms 同；/alarms_today 行只 HH:MM 因 single day）。空 → 友好兜底指 /alarms 全量 / /alarms_today。\n\n示例：\n  /alarms_thisweek\n\n相关：/alarms（不限日期 top N）；/alarms_today（仅今日）；/touched_thisweek（本周 task 全谱）。",
         "alarms_today" => "⏰ /alarms_today\n\n用法：/alarms 的今日切片 — 仅显本地今日触发的 reminder（`[remind: HH:MM]` 协议 + 今日 `[remind: YYYY-MM-DD HH:MM]` Absolute target）。让 owner 一眼看「今天还会响哪些 / 哪些已逾期未消」。\n\n无 N 参 — 今日范围天然小（典型 < 10 条），不需 cap；与 /alarms 全量按 N（缺省 5）有意区分。\n\n输出格式：\n  ⏰ 今日（YYYY-MM-DD）N 条 alarms：\n  · HH:MM (剩 N 分 / 已逾期 N 分) | <topic>\n  · HH:MM (剩 N 分) | <topic>\n  ...\n\n空 → 友好兜底「今日暂无 alarm」+ 教学指 /alarms 看 N day window。\n\n场景：早上看「今天会响哪些 reminder」/ 中午想「下午还有几个 alarm」/ 晚上 audit 「今天有几个被我忽视的」。\n\n示例：\n  /alarms_today\n\n相关：/alarms（不限日期 N 条）；/touched_today（今日动过的 task，含 reminder）；/today（今日 due task）。",
         "find_speech_today" => "🗣 /find_speech_today <keyword>\n\n用法：/find_speech 的今日切片 — 限本地今日触发的 pet utterance 内搜 keyword（case-insensitive 子串）。「今天 pet 提过 X 吗」精准 audit。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_speech 全量 / /last_speech 最近 1 条 alt）。\n\n输出格式：\n  🗣 今日（YYYY-MM-DD）speech 命中「<kw>」N 条：\n  · HH:MM · …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_speech 同。cap 8 条。\n\n示例：\n  /find_speech_today 周报\n  /find_speech_today rebase\n\n相关：/find_speech（不限日期）；/last_speech（最近 1 条）；/touched_today（今日 task 全谱）。",
+        "aliases" => "🏷 /aliases <title>\n\n用法：扫 butler_history.log 内 `rename` 事件，按时序重建本 task 的 alias chain（曾用过的所有标题）。「这条 task 曾叫过什么」audit — 与 /timeline 含 rename 行互补：那个是事件流，本命令是 alias-only 集中视图。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n场景：cascade rename 后 audit「我把 X 改成什么了」；季度复盘看「这条 task 跨多版命名」；写文档需引用 task 历史名时一眼查。\n\n后端：iter #568 起 memory_rename 调 record_event('rename', new_title, '[was: <old>]') 写到 butler_history.log。本命令扫 history 找 action=='rename' 且 (title == current OR title in [was: ...] OR new_title 链上某节点) → 双向 walk 拼出完整 chain。\n\n输出格式：\n  🏷 「<current_title>」alias chain · N 条历史名：\n  · 整理 Downloads → 清理桌面 → 桌面整理（最早 → 最新）\n  · 2026-05-18 14:30 → 2026-05-18 15:45 → 现在\n  \n  （每段过渡含 ts；最右是当前 title）\n\n空（无 rename 历史）→ 友好兜底「本 task 从未被重命名」+ 教学指 /timeline 看全 history。\n\n注（best-effort 局限）：\n- iter #568 之前的 rename 不可见（log 不曾记 rename event）\n- snippet 80 字截断可能漏 `[was: X]` 末尾 — 链 reconstruction 缺一段；fallback 显部分链 + 标 `…`\n- 仅 butler_tasks cat（rename event 限 butler_tasks 写入）\n\n示例：\n  /aliases 清理桌面\n  /aliases 1  （/tasks 第 1 条）\n\n相关：/timeline（全 history 含 rename 行）；/show（当前 snapshot）；/cascade_rename（rename 时同步 detail.md ref）。",
         "pin_grow_7d" => "📌🌱 /pin_grow_7d\n\n用法：列「近 7 天新获 [pinned] 的 task」— /pinned_drop_7d 的正向对偶。即：当前 task 带 [pinned] marker，且 butler_history.log 7d 内最早能看到 [pinned] sighting（lookback 之外含 [pinned] 的不算 — 跨界点视为「在 7d 窗口内被首次 pin」）。audit「owner 这周觉得什么变重要了」。无参。\n\n场景：周末 review「我这周钉了哪几条 — 还活跃吗 / 该 done 了没」；月度复盘「优先级管理是否在更新 — 新关注点」；与 /pinned 当前清单对比看「老 pinned vs 新 pinned」分布。\n\n输出格式：\n  📌🌱 近 7 天新 pinned 候选 N 条（首次 [pinned] sighting 在 7d 内）：\n  · 「<title>」 · 首次 [pinned] MM-DD HH:MM\n  · 「<title>」 · 首次 [pinned] MM-DD HH:MM\n  ...\n\n按首次 sighting ts desc 排（最近被 pin 的在上）。cap 8 条。\n\n空 → 友好兜底教学指 /pinned 看当前 pinned 清单 / /pinned_drop_7d 反向 audit。\n\n注（best-effort 局限）：\n- 「首次」是 within history retention 内的首次；history 之前已 pinned 的 task 也可能被列（误判为「新 pin」）— 配合 retention age 解释\n- snippet 80 字截断可能漏 [pinned]（false negative）\n- 与 /pinned_drop_7d 同 caveat 体系\n\n示例：\n  /pin_grow_7d\n\n相关：/pinned_drop_7d（反向 — 近 7 天 unpin 候选）；/pinned（当前 pinned 清单）；/peek_pinned（pinned 紧凑视图）；/timeline <title>（看单 task pin/unpin 历史）。",
         "pinned_drop_7d" => "📌💤 /pinned_drop_7d\n\n用法：列「近 7 天疑似被 unpin」的 task — 即：当前 task 不带 [pinned] marker，但 butler_history.log 7d 内出现过含 [pinned] 的 update event。反向关注度审计 — 「owner 最近放下了啥 / 哪几条曾经重要现在不在意」。无参。\n\n场景：周末 review 「我这周 unpin 了哪几条 — 是真的不重要了还是该重新 pin」；月度复盘「优先级管理是否在动 — pin/unpin 是否健康循环」；audit「我是不是钉了又不动一直 stale 然后撤」。\n\n输出格式：\n  📌💤 近 7 天 unpin 候选 N 条（pin → 当前 unpinned）：\n  · 「<title>」 · 最后 [pinned] 见于 MM-DD HH:MM\n  · 「<title>」 · 最后 [pinned] 见于 MM-DD\n  ...\n\n按最后 [pinned] sighting ts desc 排（最近被取消的在上）。cap 8 条。\n\n空 → 友好兜底教学指 /pinned 看当前 pinned 清单 / /touched_thisweek 全谱本周复盘。\n\n注（best-effort 局限）：\n- butler_history snippet 80 字截断可能漏 [pinned]（false negative — 该 task 实际仍 pinned 但 snippet 没看到 [pinned] → 误判为 unpin 候选）。典型 description 短不会触发\n- 仅 history.log retention 内（典型 90+ 天 / 100 entry cap）可看到的 pin sighting 计入。极老的 pin 记录已被 rotate 掉则不可见\n- 「unpin 候选」非严格 — 实际可能是「曾 pinned 后被 update 写了但 marker 留着」，需 owner 确认\n\n示例：\n  /pinned_drop_7d\n\n相关：/pinned（当前 pinned 清单）；/peek_pinned（pinned 紧凑视图）；/timeline <title>（看单 task pin/unpin 历史）。",
         "idle_7d" => "💤 /idle_7d\n\n用法：列「pending 且 updated_at ≥ 7 天前」的 task — stale backlog audit。PanelTasks 「💤 N 条 7d+ idle」chip 的 TG 端对偶。无参。\n\n场景：周末整理 backlog「这周搁着的有几条 — 推 / 完 / 弃 决定」；早会前看「卡了多久的活」决定优先；月度复盘「stale 累积是否健康循环」。\n\n输出格式：\n  💤 stale backlog N 条（pending + updated_at ≥ 7 天前）：\n  · 「<title>」 · idle 14 天（last update 2026-05-04）\n  · 「<title>」 · idle 9 天（last update 2026-05-09）\n  ...\n\n按 idle 天数 desc 排（最老 stale 在上）— owner 先看最该处理的。cap 12 条。\n\n空 → 友好兜底「无 7d+ idle pending — 健康状态」+ 教学指 /touched_thisweek（看本周活跃 task）。\n\n注：本命令只看 pending 状态 — done / cancelled / error 不进 inactivity 语义。snoozed pending（含 [snooze:] marker）仍算 idle — 因为 snooze 也是 owner action，超 7d 没醒来 audit 是合理的。\n\n示例：\n  /idle_7d\n\n相关：/touched_thisweek（本周活跃 task）；/oldest_n（按 created_at 最老）；PanelTasks「💤 N 条」chip（桌面端同 audit）。",
@@ -2685,6 +2698,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/idle_7d  —  pending 且 updated_at ≥ 7 天前的 task — stale backlog audit（PanelTasks 💤 chip TG 对偶）".to_string(),
         "/pinned_drop_7d  —  近 7 天疑似被 unpin 的 task — 反向关注度审计「owner 最近放下了啥」（best-effort，history 80 字截断可能漏）".to_string(),
         "/pin_grow_7d  —  近 7 天新获 [pinned] 的 task — /pinned_drop_7d 的正向对偶「owner 这周觉得什么变重要了」（best-effort）".to_string(),
+        "/aliases <title>  —  扫 butler_history rename events 重建 alias chain — 「这条 task 曾叫什么」audit".to_string(),
         "/alarms_today  —  今日待触发 alarm（/alarms 的 today 切片；无 N 参 — 今日范围天然小）".to_string(),
         "/alarms_thisweek  —  /alarms_today 的本周对偶 — 本周内触发 alarm 集中视图（无 N 参）".to_string(),
         "/peek_pinned  —  所有 pinned task 一行紧凑视图（status + schedule + markers）— /pinned 密集版".to_string(),
@@ -3922,6 +3936,95 @@ pub fn format_find_speech_reply(
             hits.len() - cap
         ));
     }
+    out
+}
+
+/// pure：reconstruct alias chain for a given current title by scanning
+/// butler_history rename events. 输入 history events (newest first，与
+/// filter_history_for_task 输出顺序一致) + 当前 title。
+///
+/// 算法 (双向 walk):
+/// 1. 把 history 反转到 chronological (旧→新)
+/// 2. 维护 chain: Vec<(ts, title)> 起始为 [(_, current_title)]
+/// 3. 对每个 rename event 提取 (ts, new_title, old_title)。若 new_title
+///    在 chain 中 → 在该位置之前插入 (ts, old_title)。多次扫直到稳定。
+/// 4. 输出 chain — 但去除起点 placeholder ts，仅保留 old→new transitions
+///
+/// 返回 Vec<(ts_label, old_title)> — chain 从最早 alias 到最新 alias，
+/// 不含 current_title（caller 显「→ current」尾）。
+/// 空 input / 无 rename event → 空 Vec（caller 走兜底）。
+pub fn reconstruct_alias_chain(
+    history_lines: &[String],
+    current_title: &str,
+) -> Vec<(String, String)> {
+    // parse history 行 → (ts, action, title, snippet)
+    let mut events: Vec<(String, String, String, String)> = Vec::new();
+    for line in history_lines {
+        let Some((ts, body)) = line.split_once(' ') else { continue };
+        let mut parts = body.splitn(2, " :: ");
+        let head = parts.next().unwrap_or("");
+        let snippet = parts.next().unwrap_or("");
+        let Some((action, title)) = head.split_once(' ') else { continue };
+        events.push((
+            ts.to_string(),
+            action.to_string(),
+            title.trim().to_string(),
+            snippet.to_string(),
+        ));
+    }
+    // chronological reverse — history 行存档顺序按 record_event 调用
+    // 顺序追加（older first 已是 chronological）。但 read_history_content
+    // 返回时 lines 是 file 顺序 = 旧→新；本 caller (handler) 已不动顺序
+    // 直接传入 → 已 chronological。defensive：不反转。
+    //
+    // 维护 chain：以 current_title 为终点向上 walk
+    // 一次扫完即可（chain 单向，rename only writes new title）
+    let mut chain: Vec<(String, String)> = Vec::new();
+    let mut head_title = current_title.to_string();
+    // 从最新 rename 倒过来：找 action=="rename" 且 title==head_title 的，
+    // 把 [was: old] 提出来作上一步 — head_title := old，继续
+    for (ts, action, title, snippet) in events.iter().rev() {
+        if action.to_ascii_lowercase() != "rename" {
+            continue;
+        }
+        if *title != head_title {
+            continue;
+        }
+        let Some(old) = extract_was_from_snippet(snippet) else { continue };
+        if old == head_title { continue; } // defensive：rename 到自己
+        chain.push((ts.clone(), old.clone()));
+        head_title = old;
+    }
+    // 此时 chain 是 [(ts_n, old_n), (ts_{n-1}, old_{n-1}), ..., (ts_1, old_1)]
+    // 反转到旧→新 alias 顺序
+    chain.reverse();
+    chain
+}
+
+/// `/aliases <title>` 命令回复文案。pure：caller 已 reconstruct chain
+/// + 知道 current title。format 拼文案 + 空兜底。chain row：(ts_label,
+/// old_title)。
+pub fn format_aliases_reply(
+    current_title: &str,
+    chain: &[(String, String)],
+) -> String {
+    if chain.is_empty() {
+        return format!(
+            "🏷 「{}」从未被重命名（butler_history 内无 rename event）。\n试 /timeline {} 看全 history。",
+            current_title, current_title,
+        );
+    }
+    let mut out = format!(
+        "🏷 「{}」alias chain · {} 条历史名：\n",
+        current_title,
+        chain.len(),
+    );
+    // chain 是 旧→新；每行 "· <ts_label> · <old>"
+    for (ts, old) in chain {
+        let ts_label = format_timeline_ts(ts);
+        out.push_str(&format!("· {} · 曾叫「{}」\n", ts_label, old));
+    }
+    out.push_str(&format!("→ 现叫「{}」", current_title));
     out
 }
 
@@ -8590,7 +8693,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -9061,7 +9164,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -14470,6 +14573,93 @@ mod tests {
         assert!(s.contains("今日（2026-05-17）speech 命中「周报」2 条"), "{s}");
         assert!(s.contains("· 14:30 · …今天 pet 说到 周报 的事…"), "{s}");
         assert!(s.contains("· 09:15 · …早晨 pet 提到 周报 进度…"), "{s}");
+    }
+
+    // -------- /aliases parse + reconstruct + format --------
+
+    #[test]
+    fn aliases_parser_takes_title_with_spaces() {
+        assert_eq!(
+            parse_tg_command("/aliases 整理 Downloads"),
+            Some(TgCommand::Aliases {
+                title: "整理 Downloads".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_tg_command("/aliases X"),
+            Some(TgCommand::Aliases { title: "X".to_string() })
+        );
+    }
+
+    #[test]
+    fn reconstruct_alias_chain_empty_no_rename() {
+        let lines = vec![
+            "2026-05-17T10:00:00+08:00 update writeup :: [pinned]".to_string(),
+            "2026-05-17T11:00:00+08:00 update writeup :: [done]".to_string(),
+        ];
+        let chain = reconstruct_alias_chain(&lines, "writeup");
+        assert!(chain.is_empty(), "no rename → empty chain: {:?}", chain);
+    }
+
+    #[test]
+    fn reconstruct_alias_chain_single_rename() {
+        // 整理 Downloads → 清理桌面（rename event 记 new_title=清理桌面，
+        // snippet=[was: 整理 Downloads]）
+        let lines = vec![
+            "2026-05-17T10:00:00+08:00 update 整理 Downloads :: pri=3".to_string(),
+            "2026-05-17T14:30:00+08:00 rename 清理桌面 :: [was: 整理 Downloads]".to_string(),
+        ];
+        let chain = reconstruct_alias_chain(&lines, "清理桌面");
+        assert_eq!(chain.len(), 1, "{:?}", chain);
+        assert_eq!(chain[0].1, "整理 Downloads");
+        assert!(chain[0].0.starts_with("2026-05-17T14:30"), "{:?}", chain);
+    }
+
+    #[test]
+    fn reconstruct_alias_chain_multi_step() {
+        // A → B → C; current = C
+        let lines = vec![
+            "2026-05-15T09:00:00+08:00 update A :: pri=3".to_string(),
+            "2026-05-16T10:00:00+08:00 rename B :: [was: A]".to_string(),
+            "2026-05-17T11:00:00+08:00 rename C :: [was: B]".to_string(),
+        ];
+        let chain = reconstruct_alias_chain(&lines, "C");
+        assert_eq!(chain.len(), 2, "{:?}", chain);
+        // 旧→新 顺序：A 第一、B 第二
+        assert_eq!(chain[0].1, "A");
+        assert_eq!(chain[1].1, "B");
+    }
+
+    #[test]
+    fn reconstruct_alias_chain_ignores_unrelated_renames() {
+        // 当前 = C，但 history 内还有不相关 rename X → Y
+        let lines = vec![
+            "2026-05-15T09:00:00+08:00 rename Y :: [was: X]".to_string(),
+            "2026-05-16T10:00:00+08:00 rename C :: [was: B]".to_string(),
+        ];
+        let chain = reconstruct_alias_chain(&lines, "C");
+        assert_eq!(chain.len(), 1, "{:?}", chain);
+        assert_eq!(chain[0].1, "B"); // 只走 B → C 链，X/Y 不沾
+    }
+
+    #[test]
+    fn format_aliases_empty_shows_fallback() {
+        let s = format_aliases_reply("X", &[]);
+        assert!(s.contains("从未被重命名"), "{s}");
+        assert!(s.contains("/timeline X"), "{s}");
+    }
+
+    #[test]
+    fn format_aliases_renders_chain_with_arrow_to_current() {
+        let chain = vec![
+            ("2026-05-16T10:00:00+08:00".to_string(), "A".to_string()),
+            ("2026-05-17T11:00:00+08:00".to_string(), "B".to_string()),
+        ];
+        let s = format_aliases_reply("C", &chain);
+        assert!(s.contains("「C」alias chain · 2 条历史名"), "{s}");
+        assert!(s.contains("· 05-16 10:00 · 曾叫「A」"), "{s}");
+        assert!(s.contains("· 05-17 11:00 · 曾叫「B」"), "{s}");
+        assert!(s.contains("→ 现叫「C」"), "{s}");
     }
 
     // -------- /pin_grow_7d parse + format --------

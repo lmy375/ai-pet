@@ -8,7 +8,6 @@
 > 4. 开发完成后将上面的文件移动到 `done` 中。保持本文件处于一个简洁的状态。如果这项任务完成了一个值得用户关心的产品亮点，将其更新到根目录下的 `README.md` 中。每次修改提交一个 git commit。
 >
 
-- TG `/aliases <title>`：扫 butler_history rename events（iter #568 lift 后已有数据）重建 alias 链 — 「这条曾叫什么」audit。
 - TG `/cat_growth_30d`：/cat_growth_7d 的 30 天 cousin — 重构共享算法 + 阈值参数化（与 cat_decay 同 pattern）。
 - PanelMemory cat header「📊 30d 净增」chip：与 7d chip 并排显本 cat 近 30 天 created — 长周期 cat 投入度。
 - PanelTasks row hover「🔄 update 次数」chip：扫 butler_history 算本 task 近 7d 内 update event 数 — 单 task 活跃度。
