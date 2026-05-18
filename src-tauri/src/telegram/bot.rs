@@ -1454,6 +1454,59 @@ async fn handle_tg_command(
                 )
             }
         }
+        TgCommand::FindSpeechToday { keyword } => {
+            // 与 FindSpeech 同 read path（speech_history.log），多一层
+            // ts 落今日 filter（解析 RFC3339 → 本地 date == today）。短
+            // 路：空 kw 直接走 formatter usage hint（避免无谓 IO）。
+            let kw = keyword.trim().to_string();
+            let today = chrono::Local::now().date_naive();
+            if kw.is_empty() {
+                crate::telegram::commands::format_find_speech_today_reply(
+                    &[],
+                    &keyword,
+                    today,
+                )
+            } else {
+                let content = crate::speech_history::read_history_content().await;
+                let kw_lower = kw.to_lowercase();
+                let mut hits: Vec<(String, String)> = Vec::new();
+                for line in content.lines().rev() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let Some((ts_str, _)) = line.split_once(' ') else {
+                        continue;
+                    };
+                    // ts 解析 + 本地日期 filter（只算今日 utterance）
+                    let Ok(ts_parsed) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                        continue;
+                    };
+                    let ts_local = ts_parsed.with_timezone(&chrono::Local);
+                    if ts_local.date_naive() != today {
+                        continue;
+                    }
+                    let text = crate::speech_history::strip_timestamp(line);
+                    if !text.to_lowercase().contains(&kw_lower) {
+                        continue;
+                    }
+                    // 今日 scope — ts label 只显 HH:MM（date 已在 header）
+                    let ts_label = ts_local.format("%H:%M").to_string();
+                    let Some(snippet) =
+                        crate::telegram::commands::extract_find_in_detail_snippet(
+                            text, &kw,
+                        )
+                    else {
+                        continue;
+                    };
+                    hits.push((ts_label, snippet));
+                }
+                crate::telegram::commands::format_find_speech_today_reply(
+                    &hits,
+                    &keyword,
+                    today,
+                )
+            }
+        }
         TgCommand::FindSpeech { keyword } => {
             // 搜 speech_history.log — handler 读全文 + 逐行 case-insensitive
             // 子串过滤 + 抽 ts + snippet。空 keyword 由 formatter 走 usage
