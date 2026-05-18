@@ -841,6 +841,55 @@ async fn handle_tg_command(
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
         }
+        TgCommand::HereRecentDone => {
+            // chat-scoped views → filter done + sort by updated_at desc
+            // + take 5 → 拼「✅ 最近完成 context：「t1」「t2」...」 →
+            // set_transient_note(text, 60)。
+            use crate::task_queue::TaskStatus;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let mut done: Vec<&crate::task_queue::TaskView> = views
+                .iter()
+                .filter(|v| v.status == TaskStatus::Done)
+                .collect();
+            // updated_at RFC3339 字典序 = chron 序；desc 排
+            done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            done.truncate(5);
+            let rows: Vec<(String, String)> = done
+                .iter()
+                .map(|v| {
+                    // updated_at 前 10 字 = YYYY-MM-DD；取 MM-DD（chars
+                    // 5..10）— ASCII ISO 安全
+                    let date_label = if v.updated_at.len() >= 10 {
+                        v.updated_at[5..10].to_string()
+                    } else {
+                        String::new()
+                    };
+                    (v.title.clone(), date_label)
+                })
+                .collect();
+            if rows.is_empty() {
+                crate::telegram::commands::format_here_recent_done_reply(&[], None)
+            } else {
+                let joined = rows
+                    .iter()
+                    .map(|(t, _)| format!("「{}」", t))
+                    .collect::<Vec<_>>()
+                    .join("");
+                let done_ctx = format!("✅ 最近完成 context：{}", joined);
+                let until_iso =
+                    crate::proactive::set_transient_note(done_ctx, 60);
+                let until_local = chrono::DateTime::parse_from_str(
+                    &until_iso,
+                    "%Y-%m-%dT%H:%M:%S%:z",
+                )
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Local));
+                crate::telegram::commands::format_here_recent_done_reply(
+                    &rows,
+                    until_local,
+                )
+            }
+        }
         TgCommand::HereTopCat => {
             // scan memory_list(None) → per-cat item count → sort desc →
             // take top 3 → 拼「📊 主力 cat context：cat1 (N1) · cat2
