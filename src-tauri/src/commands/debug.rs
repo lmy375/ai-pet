@@ -324,6 +324,58 @@ pub fn get_llm_logs(limit: Option<usize>) -> Vec<String> {
     }
 }
 
+/// PanelDebug 「📊 7d LLM sparkline」chip 用：扫 llm.log 取最近 `days`
+/// 天每日 LLM round 数（按 done_time 落入哪个本地日历日）。返
+/// `Vec<u32>` 长度 = `days`，**最旧在 [0]、今日在 [days-1]**（左旧右
+/// 新与前端 sparkline 视觉一致）。
+///
+/// 与 `get_llm_tokens_recent_secs` 互补：那个是单 (turns, tokens) 总和
+/// 用于「最近 1h / 24h」chip；本命令是 daily bucket 数组用于 mini
+/// chart 趋势视图（owner 看一周节奏分布）。
+///
+/// done_time 缺失 / 解析失败 / 落窗外 → 跳过该行。clamp days 1..=30
+/// 防极端调用（30d 范围内 llm.log 单次扫成本可控）。
+#[tauri::command]
+pub fn get_llm_calls_per_day(days: u32) -> Vec<u32> {
+    let n = days.clamp(1, 30) as usize;
+    let path = log_dir().join("llm.log");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return vec![0u32; n],
+    };
+    let now = chrono::Local::now();
+    let today = now.date_naive();
+    // 最早窗口边界：today - (n-1) 天，让今日落在 buckets[n-1]
+    let earliest = today - chrono::Duration::days((n as i64) - 1);
+    let mut buckets = vec![0u32; n];
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(done_time) = entry.get("done_time").and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Ok(ts) = chrono::DateTime::parse_from_rfc3339(done_time) else {
+            continue;
+        };
+        // 转本地日历日比对
+        let ts_local = ts.with_timezone(&chrono::Local);
+        let day = ts_local.date_naive();
+        if day < earliest || day > today {
+            continue;
+        }
+        let idx = (day - earliest).num_days() as usize;
+        if idx < n {
+            buckets[idx] = buckets[idx].saturating_add(1);
+        }
+    }
+    buckets
+}
+
 /// PanelDebug 「📊 近 1h tokens」chip 用：扫 llm.log 中 `done_time` 在
 /// 最近 N 秒内的条目，按 (request + response_text + tool_calls JSON
 /// serialized) 字符数 / 4 估算 token 累计（heuristic — 与 Anthropic

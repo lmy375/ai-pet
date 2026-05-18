@@ -1170,6 +1170,37 @@ export function PanelDebug() {
     };
   }, []);
 
+  /// 📊 7d LLM sparkline chip：调 `get_llm_calls_per_day(7)` 扫 llm.log
+  /// 取近 7 天每日 round 数（最旧在 [0]、今日在 [6]）。给 owner 看
+  /// **一周节奏分布** — 比 1h（现在）/ 24h（今日累计）更长视角；与
+  /// PanelTasks 30 天 sparkline 同视觉风格但 daily 粒度。30s poll 与
+  /// 1h / 24h chip 同节奏。
+  const [llmCalls7d, setLlmCalls7d] = useState<number[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const buckets = await invoke<number[]>("get_llm_calls_per_day", {
+          days: 7,
+        });
+        if (!cancelled) {
+          setLlmCalls7d(buckets);
+        }
+      } catch (e) {
+        console.warn(
+          "get_llm_calls_per_day(7d) failed (non-fatal):",
+          e,
+        );
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   /// ⏰ 下次 consolidate chip：调 `get_consolidate_schedule` Tauri 命令
   /// 拿 next ETA + interval + enabled。后端在 spawn loop 每次 sleep 前
   /// 写 NEXT_RUN_AT 静态 — frontend 30s poll 渲染「⏰ HH:MM (N 分后)」
@@ -2785,6 +2816,82 @@ export function PanelDebug() {
             t · {llmTokens24h.turns} round
           </span>
         )}
+        {/* 📊 7d LLM sparkline chip：mini 7-bar 视图显近 7 天每日 round
+            数（最旧在左、今日在右）。complement 1h / 24h 两 chip — 那
+            两条是数字 metric，本 chip 是 visual 趋势。与 PanelTasks 30
+            天 sparkline 同视觉风格（max 归一让 bar 高度反映 task 自身
+            节奏）。仅总和 > 0 时显避免空状态。click 复制 「7d: a/b/c/
+            d/e/f/g」一行到剪贴板。 */}
+        {llmCalls7d &&
+          llmCalls7d.length === 7 &&
+          (() => {
+            const total = llmCalls7d.reduce((a, b) => a + b, 0);
+            if (total === 0) return null;
+            const max = Math.max(...llmCalls7d, 1);
+            const labels = ["6天前", "5天前", "4天前", "3天前", "前天", "昨天", "今天"];
+            const tooltipLines: string[] = [
+              `📊 近 7 天每日 LLM round 数（总 ${total}；左旧右新；max 归一）`,
+            ];
+            llmCalls7d.forEach((c, i) => {
+              tooltipLines.push(`· ${labels[i]}：${c} 条`);
+            });
+            return (
+              <span
+                onClick={async () => {
+                  const line = `7d LLM rounds: ${llmCalls7d.join("/")}（${labels[0]}→${labels[6]}，总 ${total}）`;
+                  try {
+                    await navigator.clipboard.writeText(line);
+                    console.log(`📊 已复制 7d sparkline：${line}`);
+                  } catch (err) {
+                    console.error("copy 7d sparkline failed:", err);
+                  }
+                }}
+                title={tooltipLines.join("\n") + "\n\nclick 复制一行到剪贴板"}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  border: "1px dashed var(--pet-color-border)",
+                  borderRadius: 6,
+                  background: "transparent",
+                  color: "var(--pet-color-muted)",
+                  fontFamily: "'SF Mono', 'Menlo', monospace",
+                  whiteSpace: "nowrap",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span style={{ flexShrink: 0 }}>📊 7d</span>
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "flex-end",
+                    height: 12,
+                    gap: 1,
+                  }}
+                  aria-label={`7-day LLM call sparkline (total ${total})`}
+                >
+                  {llmCalls7d.map((count, i) => (
+                    <span
+                      key={i}
+                      style={{
+                        width: 3,
+                        height: `${count > 0 ? Math.max(20, (count / max) * 100) : 12}%`,
+                        background:
+                          count > 0
+                            ? "var(--pet-tint-blue-fg)"
+                            : "var(--pet-color-border)",
+                        borderRadius: 1,
+                        display: "inline-block",
+                      }}
+                    />
+                  ))}
+                </span>
+                <span style={{ flexShrink: 0 }}>{total}</span>
+              </span>
+            );
+          })()}
         {/* 📊 LLM 错误率 chip：从既有 llmOutcomeStats (spoke / silent /
             error) 派生 — 进程启动以来的错误占比。注：与 「📊 1h tokens」
             的 1h 窗口不同，本 chip 是 process-wide（llm.log 不存 error

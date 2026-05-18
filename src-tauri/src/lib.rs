@@ -155,6 +155,7 @@ pub fn run() {
             commands::debug::get_process_uptime_secs,
             commands::debug::get_llm_logs,
             commands::debug::get_llm_tokens_recent_secs,
+            commands::debug::get_llm_calls_per_day,
             commands::debug::get_cache_stats,
             commands::debug::reset_cache_stats,
             commands::debug::get_mood_tag_stats,
