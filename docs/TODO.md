@@ -9,7 +9,6 @@
 >
 
 - TG bot `/find_in_detail_yesterday <kw>` 命令：昨日 task 的 detail.md 内容搜 — /find_in_detail_today 的昨日对偶（detail × yesterday axis）。
-- TG bot `/tags_thisweek` 命令：本周动过 task 含的 #tag 计数 — 完成 tags × today/yesterday/thisweek 三件套。
 - TG bot `/alarms_thisweek` 命令：本周内触发 alarm 集中视图 — /alarms_today 的本周对偶（reminder × thisweek axis）。
 - detail.md 编辑器「⌘⇧H」当前行 heading level 循环（none → h1 → h2 → h3 → h4 → none）— markdown 编辑常用 toggle。
 - PanelDebug 「📊 24h LLM 错误率」chip：扫 llm.log 算 24h 内 error round 占比 — 既有进程级 err% 的 daily 窗口版。

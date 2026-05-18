@@ -784,6 +784,16 @@ async fn handle_tg_command(
                 .unwrap_or_else(|| chrono::Local::now().date_naive());
             crate::telegram::commands::format_tags_yesterday_reply(&views, yesterday)
         }
+        TgCommand::TagsThisweek => {
+            // 与 TagsToday 同 read path + 与 TouchedThisweek 同 week_start
+            // 算法（chrono::Datelike::num_days_from_monday()）。
+            use chrono::Datelike;
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            let days_from_mon = today.weekday().num_days_from_monday() as i64;
+            let week_start = today - chrono::Duration::days(days_from_mon);
+            crate::telegram::commands::format_tags_thisweek_reply(&views, week_start)
+        }
         TgCommand::Tags => {
             // /tags：统计本 chat 派单的 #tag 矩阵。read path 同 /markers /
             // /today 等：read_tg_chat_task_views 已 chat-scoped。formatter
