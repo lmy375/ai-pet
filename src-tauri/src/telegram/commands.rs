@@ -730,6 +730,10 @@ pub enum TgCommand {
     /// 投入度 audit。区分「本周热点」vs「本月持续投入」两尺度。同算法
     /// 阈值 30d；按 30d 内 created 数 desc 排。无参。
     CatGrowth30d,
+    /// `/cat_growth_today` —— /cat_growth_7d 的今日切片 — 今日 created
+    /// per cat。完成 day × cat 矩阵第一档。「今天我在哪类知识投入了」
+    /// audit。无参。
+    CatGrowthToday,
     /// `/idle_7d` —— 列 pending 且 updated_at ≥ 7 天前的 task — stale backlog
     /// audit。PanelTasks「💤 N 条 7d+ idle」chip 的 TG 端对偶。无参，按 idle
     /// 天数 desc 排（最老 stale 在上 — owner 先看最该处理的）。
@@ -879,6 +883,7 @@ impl TgCommand {
             TgCommand::RandomPinned => "random_pinned",
             TgCommand::CatGrowth7d => "cat_growth_7d",
             TgCommand::CatGrowth30d => "cat_growth_30d",
+            TgCommand::CatGrowthToday => "cat_growth_today",
             TgCommand::CatDecay7d => "cat_decay_7d",
             TgCommand::CatDecay30d => "cat_decay_30d",
             TgCommand::Idle7d => "idle_7d",
@@ -1034,6 +1039,7 @@ impl TgCommand {
             | TgCommand::RandomPinned
             | TgCommand::CatGrowth7d
             | TgCommand::CatGrowth30d
+            | TgCommand::CatGrowthToday
             | TgCommand::CatDecay7d
             | TgCommand::CatDecay30d
             | TgCommand::Idle7d
@@ -1198,6 +1204,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("random_pinned", "Pick a random pinned task — /random restricted to pinned subset (decision-fatigue helper)"),
             ("cat_growth_7d", "Per-cat memory growth over last 7 days (desc) — cross-cat activity audit; PanelMemory chip's remote dual"),
             ("cat_growth_30d", "30-day cousin of /cat_growth_7d — long-period investment audit (本月持续投入 vs 本周热点)"),
+            ("cat_growth_today", "Today's slice of /cat_growth_7d — 今日 created per cat（day × cat matrix）"),
             ("cat_decay_7d", "Categories with no update activity in last 7 days — /cat_growth_7d 's dual; stale cat detection"),
             ("cat_decay_30d", "30-day cousin of /cat_decay_7d — distinguishes brief vs deep stale (archive candidates)"),
             ("idle_7d", "Pending tasks idle ≥ 7 days (updated_at desc) — stale backlog audit; PanelTasks 💤 chip's TG dual"),
@@ -1322,6 +1329,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("random_pinned", "从 pinned task 中随机抽 1 条 — /random 的 pinned 子集（选择困难时让 pet 决定）"),
             ("cat_growth_7d", "各 memory cat 近 7 天 created 数 desc — 跨 cat 活跃度对比（PanelMemory 📊 7d chip 远程对偶）"),
             ("cat_growth_30d", "/cat_growth_7d 的 30 天 cousin — 长周期投入度 audit（本月持续投入 vs 本周热点）"),
+            ("cat_growth_today", "/cat_growth_7d 的今日切片 — 今日 created per cat（day × cat 矩阵）"),
             ("cat_decay_7d", "近 7 天 0 update 的 cat — /cat_growth_7d 反向；stale cat detection 「该 archive / 重投入」audit"),
             ("cat_decay_30d", "/cat_decay_7d 的 30 天 cousin — 区分「停滞 1 周可能正常」vs「停滞 1 月该 archive」严重度"),
             ("idle_7d", "pending 且 updated_at ≥ 7 天前的 task（idle 天数 desc）— stale backlog audit；PanelTasks 💤 chip TG 对偶"),
@@ -1969,6 +1977,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "cat_growth_7d" => Some(TgCommand::CatGrowth7d),
         // `/cat_growth_30d`：无参 — 30 天 cousin（长周期投入度 audit）。
         "cat_growth_30d" => Some(TgCommand::CatGrowth30d),
+        // `/cat_growth_today`：无参 — 今日切片。
+        "cat_growth_today" => Some(TgCommand::CatGrowthToday),
         // `/cat_decay_7d`：无参 — 列 7d 内 0 update 的 cat（stale detection）。
         "cat_decay_7d" => Some(TgCommand::CatDecay7d),
         // `/cat_decay_30d`：无参 — 30d 长周期 cousin。
@@ -2563,7 +2573,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "cat_growth_today", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2751,6 +2761,7 @@ pub fn format_help_for_topic(
         "idle_7d" => "💤 /idle_7d\n\n用法：列「pending 且 updated_at ≥ 7 天前」的 task — stale backlog audit。PanelTasks 「💤 N 条 7d+ idle」chip 的 TG 端对偶。无参。\n\n场景：周末整理 backlog「这周搁着的有几条 — 推 / 完 / 弃 决定」；早会前看「卡了多久的活」决定优先；月度复盘「stale 累积是否健康循环」。\n\n输出格式：\n  💤 stale backlog N 条（pending + updated_at ≥ 7 天前）：\n  · 「<title>」 · idle 14 天（last update 2026-05-04）\n  · 「<title>」 · idle 9 天（last update 2026-05-09）\n  ...\n\n按 idle 天数 desc 排（最老 stale 在上）— owner 先看最该处理的。cap 12 条。\n\n空 → 友好兜底「无 7d+ idle pending — 健康状态」+ 教学指 /touched_thisweek（看本周活跃 task）。\n\n注：本命令只看 pending 状态 — done / cancelled / error 不进 inactivity 语义。snoozed pending（含 [snooze:] marker）仍算 idle — 因为 snooze 也是 owner action，超 7d 没醒来 audit 是合理的。\n\n示例：\n  /idle_7d\n\n相关：/touched_thisweek（本周活跃 task）；/oldest_n（按 created_at 最老）；PanelTasks「💤 N 条」chip（桌面端同 audit）。",
         "cat_decay_30d" => "🍂🍂 /cat_decay_30d\n\n用法：/cat_decay_7d 的 30 天 cousin — 列「30 天内 0 update 活动」的 cat。区分两种 stale 严重度：「停滞 1 周可能正常」vs「停滞 1 月该 archive」。同算法但阈值 30d；按 idle 天数 desc 排（最老 stale 在上）。无参。\n\n场景：季度 / 半年 review「我哪 cat 真的死了 — archive / merge 决定」；spring cleaning「整理 memory yaml 把 deep zombie cat 收一收」；audit「久不动的 cat 是否还需保留」。\n\n输出格式：\n  🍂🍂 30 天内 0 update 活动的 cat（共 N 条 deep stale）：\n  · old_drafts · 最后 update 90 天前\n  · ideas_2024 · 最后 update 120 天前\n  ...\n  \n  （empty cat 与 30d 内有 update 的 cat 不列）\n\n空 → 友好兜底「所有 cat 30d 内都有动 — 极健康状态」+ 教学指 /cat_decay_7d 看短周期 stale alt。\n\n与 /cat_decay_7d 关系：本命令是更严格的 deep stale 子集。一个 cat 若 30d 都没动，必然也 7d 没动。owner 应先用 /cat_decay_30d audit zombie，再用 /cat_decay_7d 看温和 stale 决策 archive 候选。\n\n示例：\n  /cat_decay_30d\n\n相关：/cat_decay_7d（短周期）；/cat_growth_7d（正向：近 7 天活跃 cat）；/touched_thisweek（task 维度本周复盘）。",
         "cat_decay_7d" => "🍂 /cat_decay_7d\n\n用法：扫所有 memory category，列「7 天内 0 update 活动」的 cat — 即 max(items.updated_at) < now-7d。stale cat detection：「这个类目我搁着没动了」audit。empty cat（0 items）不算 stale — 没数据时「未动」无意义。无参。\n\n场景：季度复盘「我哪个 cat 已经停滞 — 该 archive 吗 / 还是该重新投入」；spring cleaning「整理 memory yaml 把 stale cat 收一收」；audit「我有多少 cat 是「创建后从未维护过」的 zombie」。\n\n输出格式：\n  🍂 近 7 天 0 update 活动的 cat（共 N 条 stale）：\n  · butler_archive · 最后 update 30 天前\n  · drafts · 最后 update 45 天前\n  · ideas · 最后 update 60 天前\n  ...\n  \n  （empty cat 与 7d 内有 update 的 cat 不列）\n\n按「最后 update 的 ts asc」排（最久没动的在上）— 让 owner 先看到最老的 stale。stale 时长用相对时间（天数）方便扫读。\n\n空 → 友好兜底：所有 cat 7d 内都有动 — 健康状态；教学指 /cat_growth_7d 看正向 audit。\n\n注：本 cat decay 与 /pinned_drop_7d 反向关注度（task 级）正交 — 那是单 task pin 状态变；本命令是整 cat 维度活跃度。\n\n示例：\n  /cat_decay_7d\n\n相关：/cat_growth_7d（正向：近 7 天活跃 cat）；/touched_thisweek（task 维度本周复盘）；/pinned_drop_7d（task 维度反向）。",
+        "cat_growth_today" => "🌱 /cat_growth_today\n\n用法：/cat_growth_7d 的今日切片 — 列各 memory category 今日 created_at 落入的 item 数（本地日历日）。「今天我在哪类知识投入了」audit 入口。无参；按 desc 排，0 净增 cat 不列。\n\n场景：晚上回顾「今天我都新建了什么内容」；早会前看「昨天到现在我新增了哪类记录」（结合 /cat_growth_yesterday 未来加）；与 /audit_summary 配合看「今日 cat 维度活跃度」。\n\n后端：scan memory_list + 每 cat 算 today_str (YYYY-MM-DD) 落入 created_at 的 item 数 → 仅留 delta > 0 → sort desc。复用既有 compute_cat_growth_rows pattern 但 cutoff = 今日 00:00 而非 now - 7d。\n\n输出格式：\n  🌱 今日（YYYY-MM-DD）各类新增（共 N 条 across M cats）：\n  · butler_tasks · +5\n  · decisions · +2\n  ...\n  \n  （0 净增 cat 不列）\n\n空（今日无 cat created）→ 友好兜底教学指 /cat_growth_7d 看更广 scope。\n\n示例：\n  /cat_growth_today\n\n相关：/cat_growth_7d（7d）；/cat_growth_30d（30d）；/cat_decay_7d（反向）；/cat_top（capacity axis）。",
         "cat_growth_30d" => "🌱🌱 /cat_growth_30d\n\n用法：/cat_growth_7d 的 30 天 cousin — 长周期 cat 投入度 audit。同算法但阈值 30d；按 30d 内 created 数 desc 排。区分两尺度：「本周热点 vs 本月持续投入」— 7d 仅看近爆点，30d 看持续力度。无参。\n\n场景：月度复盘「这个月我哪类知识投入最多」；季度规划「上月哪类继续投入哪类该停」；与 /cat_growth_7d 对比看「本周突击 vs 本月稳定」分布差异。\n\n输出格式：\n  🌱🌱 近 30 天各类新增（共 N 条 across M cats）：\n  · butler_tasks · +45\n  · decisions · +18\n  · general · +12\n  ...\n  \n  （30d 无新增 cat 不列）\n\n空（所有 cat 30d 净增 == 0）→ 友好兜底教学指 /find / /touched_thisweek 看广 scope alt。\n\n与 /cat_decay_30d 反向：那是 30d 内 0 update 的 stale cat；本命令是 30d 内有 created 的活跃 cat。\n\n示例：\n  /cat_growth_30d\n\n相关：/cat_growth_7d（短周期）；/cat_decay_7d / /cat_decay_30d（反向）；/touched_thisweek（task 维度本周）。",
         "cat_growth_7d" => "🌱 /cat_growth_7d\n\n用法：扫所有 memory category，统计每个 cat 最近 7 天 created_at 落入窗口的 item 数（净增），按 desc 排。「我哪类知识在长 / 哪类已停滞」跨 cat 活跃度对比 audit。无参。\n\n空（所有 cat 7d 净增 == 0）→ 友好兜底教学指 /find / /touched_thisweek 看广 scope alt。\n\n输出格式：\n  🌱 近 7 天各类新增（共 N 条 across M cats）：\n  · butler_tasks · +12\n  · decisions · +5\n  · general · +3\n  ...\n  \n  （7d 无新增的 cat 不列）\n\n0 净增 cat 不列 — 避免输出列 stale cat 噪音。\n\n场景：周报场景看「本周我哪类知识投入最多」；季度复盘「我近 1 月哪些 cat 在长」（多次 invoke 看趋势）；新建 cat 后 audit「这周该 cat 真的有用上吗」。\n\n与 PanelMemory cat header「📊 7d +N」chip 对偶 — 那是桌面端 per-cat 单 chip，本命令是 TG 端 cross-cat 排行 list。\n\n示例：\n  /cat_growth_7d\n\n相关：/touched_thisweek（本周 task 全谱 — 任务维度复盘）；/find（不限日期 fuzzy 搜）。",
         "find_speech_yesterday" => "🗣 /find_speech_yesterday <keyword>\n\n用法：/find_speech_today 的昨日对偶 — 限本地昨日触发的 pet utterance 内搜 keyword（case-insensitive 子串）。「昨天 pet 提过 X 吗」复盘视角，完成 speech × date 三件套（today / yesterday / 全量）。\n\n空 keyword → usage hint；无命中 → 友好兜底（/find_speech 全量 / /find_speech_today 今日 alt）。\n\n输出格式：\n  🗣 昨日（YYYY-MM-DD）speech 命中「<kw>」N 条：\n  · HH:MM · …<snippet 60 字 context>…\n  ...\n\nsnippet 算法与 /find_speech 同。cap 8 条。\n\n场景：早会前回顾「昨天 pet 跟我聊过 X 没」；写日报 audit「昨天 pet 提到的进度点」；周末整理「上周末 pet 跟我聊到的决策」。\n\n示例：\n  /find_speech_yesterday 周报\n  /find_speech_yesterday rebase\n\n相关：/find_speech（不限日期）；/find_speech_today（今日切片）；/last_speech（最近 1 条）；/touched_yesterday（昨日 task 全谱）。",
@@ -2874,6 +2885,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/find_speech_yesterday <kw>  —  /find_speech_today 的昨日对偶 — 限昨日 pet utterance 内搜 keyword（复盘视角）".to_string(),
         "/cat_growth_7d  —  各 memory cat 近 7 天 created 数 desc 排（cross-cat 活跃度对比；PanelMemory 📊 7d chip 远程对偶）".to_string(),
         "/cat_growth_30d  —  /cat_growth_7d 的 30 天 cousin — 长周期投入度 audit（本月持续投入 vs 本周热点）".to_string(),
+        "/cat_growth_today  —  /cat_growth_7d 的今日切片 — 今日 created per cat（day × cat 矩阵）".to_string(),
         "/cat_decay_7d  —  近 7 天 0 update 的 cat — /cat_growth_7d 反向；stale cat detection 「该 archive / 重投入」audit".to_string(),
         "/cat_decay_30d  —  /cat_decay_7d 的 30 天 cousin — 区分「停滞 1 周可能正常」vs「停滞 1 月该 archive」严重度".to_string(),
         "/idle_7d  —  pending 且 updated_at ≥ 7 天前的 task — stale backlog audit（PanelTasks 💤 chip TG 对偶）".to_string(),
@@ -4171,7 +4183,7 @@ pub fn format_help_table_reply_full(family: Option<&str>) -> String {
         "  /pin_all_p7 /pinned_drop_7d /pin_grow_7d /recent_pins /streak_pin /here_pin",
         "",
         "🌱 cat 活跃度（memory category）",
-        "  /cat_growth_7d /cat_growth_30d /cat_decay_7d /cat_decay_30d /cat_top /here_top_cat",
+        "  /cat_growth_today /cat_growth_7d /cat_growth_30d /cat_decay_7d /cat_decay_30d /cat_top /here_top_cat",
         "",
         "🔁 rename 重命名 audit",
         "  /edit_title /cascade_rename /aliases /recent_renames",
@@ -4483,6 +4495,7 @@ pub fn format_help_table_family(family_key: &str) -> String {
             "🌱 cat 活跃度（memory category）",
             "跨 cat 活跃度 audit；与 PanelMemory chip 远程对偶",
             vec![
+                ("/cat_growth_today", "今日 created per cat（day × cat 矩阵第一档）"),
                 ("/cat_growth_7d", "各 cat 近 7 天 created 数 desc（正向 growth）"),
                 ("/cat_growth_30d", "30 天 cousin — 长周期投入度"),
                 ("/cat_decay_7d", "近 7 天 0 update 的 cat（反向 stale）"),
@@ -5085,6 +5098,36 @@ pub fn format_cat_growth_reply(
 #[allow(dead_code)] // 保留作 7d-specific 入口；30d 路径走通用
 pub fn format_cat_growth_7d_reply(rows: &[(String, String, usize)]) -> String {
     format_cat_growth_reply(rows, 7)
+}
+
+/// `/cat_growth_today` 命令回复文案。pure：caller 已 filter rows 仅
+/// 含 delta > 0 + sort desc。header 含 today date 让 owner 一眼确认
+/// scope；空兜底教学指 /cat_growth_7d 看更广 scope。
+pub fn format_cat_growth_today_reply(
+    rows: &[(String, String, usize)],
+    today: chrono::NaiveDate,
+) -> String {
+    let today_str = today.format("%Y-%m-%d").to_string();
+    if rows.is_empty() {
+        return format!(
+            "🌱 今日（{today_str}）各 cat 都没新建 item。\n试 /cat_growth_7d 看更广 scope（近 7 天）。"
+        );
+    }
+    let total: usize = rows.iter().map(|(_, _, n)| n).sum();
+    let mut out = format!(
+        "🌱 今日（{}）各类新增（共 {} 条 across {} cats）：",
+        today_str,
+        total,
+        rows.len(),
+    );
+    for (key, label, delta) in rows {
+        if label.is_empty() || label == key {
+            out.push_str(&format!("\n· {} · +{}", key, delta));
+        } else {
+            out.push_str(&format!("\n· {} ({}) · +{}", key, label, delta));
+        }
+    }
+    out
 }
 
 /// `/find_speech_yesterday <keyword>` 命令回复文案。pure：与
@@ -9591,7 +9634,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "cat_growth_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -10062,7 +10105,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "cat_growth_today", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -16408,6 +16451,41 @@ mod tests {
         assert!(s.contains("· 「task_11」"), "12th visible: {s}");
         assert!(!s.contains("· 「task_12」"), "13th capped: {s}");
         assert!(s.contains("还有 3 条"), "tail hint: {s}");
+    }
+
+    // -------- /cat_growth_today parse + format --------
+
+    #[test]
+    fn cat_growth_today_parser_no_args() {
+        assert_eq!(
+            parse_tg_command("/cat_growth_today"),
+            Some(TgCommand::CatGrowthToday),
+        );
+        assert_eq!(
+            parse_tg_command("/cat_growth_today extra"),
+            Some(TgCommand::CatGrowthToday),
+        );
+    }
+
+    #[test]
+    fn format_cat_growth_today_empty_shows_fallback() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let s = format_cat_growth_today_reply(&[], today);
+        assert!(s.contains("今日（2026-05-18）各 cat 都没新建"), "{s}");
+        assert!(s.contains("/cat_growth_7d"), "{s}");
+    }
+
+    #[test]
+    fn format_cat_growth_today_renders_rows() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let rows = vec![
+            ("butler_tasks".to_string(), "任务".to_string(), 5),
+            ("decisions".to_string(), "".to_string(), 2),
+        ];
+        let s = format_cat_growth_today_reply(&rows, today);
+        assert!(s.contains("今日（2026-05-18）各类新增（共 7 条 across 2 cats）"), "{s}");
+        assert!(s.contains("· butler_tasks (任务) · +5"), "{s}");
+        assert!(s.contains("· decisions · +2"), "label==empty 走仅 key 分支: {s}");
     }
 
     // -------- /cat_growth_30d parse + format --------

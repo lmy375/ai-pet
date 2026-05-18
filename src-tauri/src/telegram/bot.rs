@@ -1710,6 +1710,33 @@ async fn handle_tg_command(
             let rows = compute_cat_growth_rows(7);
             crate::telegram::commands::format_cat_growth_reply(&rows, 7)
         }
+        TgCommand::CatGrowthToday => {
+            // 今日切片 — created_at.starts_with(today_str) prefix match
+            // （与 /tags_today / /touched_today 同 pattern）。比 ts ≥
+            // cutoff_ms 简单且与既有 today-family 一致。
+            let today = chrono::Local::now().date_naive();
+            let today_str = today.format("%Y-%m-%d").to_string();
+            let mut rows: Vec<(String, String, usize)> = Vec::new();
+            if let Ok(index) =
+                crate::commands::memory::memory_list(None)
+            {
+                for (key, cat) in index.categories.iter() {
+                    let mut delta = 0usize;
+                    for it in &cat.items {
+                        if it.created_at.starts_with(&today_str) {
+                            delta += 1;
+                        }
+                    }
+                    if delta > 0 {
+                        rows.push((key.clone(), cat.label.clone(), delta));
+                    }
+                }
+            }
+            rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+            crate::telegram::commands::format_cat_growth_today_reply(
+                &rows, today,
+            )
+        }
         TgCommand::CatGrowth30d => {
             // 与 /cat_growth_7d 同算法，阈值 30d 长周期 cousin。共用
             // compute_cat_growth_rows + 通用 format_cat_growth_reply
