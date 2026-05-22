@@ -716,6 +716,11 @@ pub enum TgCommand {
     /// N 条 pin 决策」cross-task audit。每 title 取 history 内最早 [pinned]
     /// sighting（= owner 首次钉它）后按 ts desc 排。N 缺省 5，clamp 1..=20。
     RecentPins { n: u32 },
+    /// `/done_streak_chart` —— 列近 30 天每天 done 数 sparkline 行 +
+    /// 当前 streak / 7d 总 / 30d 总。/streak 文本数字的可视化扩展。
+    /// 8-level unicode bar 表 daily count 归一化高度；today 在最右。
+    /// 无参。
+    DoneStreakChart,
     /// `/streak_pin` —— 连续多少天有 pinned task 在 active — 与 /streak (done
     /// 完成度) 互补的 attention 维度。从今日往前 walk：每天检查 butler_history
     /// 含 [pinned] sighting（含今日 fallback：当前有 pinned task → 今日计数）。
@@ -896,6 +901,7 @@ impl TgCommand {
             TgCommand::PinGrow7d => "pin_grow_7d",
             TgCommand::Aliases { .. } => "aliases",
             TgCommand::StreakPin => "streak_pin",
+            TgCommand::DoneStreakChart => "done_streak_chart",
             TgCommand::RecentRenames { .. } => "recent_renames",
             TgCommand::RecentPins { .. } => "recent_pins",
             TgCommand::HelpTable { .. } => "help_table",
@@ -1069,6 +1075,7 @@ impl TgCommand {
             | TgCommand::TodayDone
             | TgCommand::Streak
             | TgCommand::StreakPin
+            | TgCommand::DoneStreakChart
             | TgCommand::CancelAllError { .. }
             | TgCommand::PromoteAllP7 { .. }
             | TgCommand::TouchAllP7 { .. }
@@ -1219,6 +1226,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pin_grow_7d", "Tasks newly pinned in last 7 days — positive attention audit; /pinned_drop_7d 's dual"),
             ("aliases", "Reconstruct task rename chain from butler_history rename events — 「what this task was called before」audit"),
             ("streak_pin", "Consecutive days with active pinned task — /streak (done) 's attention-dimension cousin"),
+            ("done_streak_chart", "30-day done count sparkline — /streak text-number's visual extension"),
             ("recent_renames", "Recent N rename events with ts + old→new — /aliases 's cross-task counterpart"),
             ("recent_pins", "Recent N pin decisions (per-title earliest [pinned] sighting, desc) — /pin_grow_7d 's N-cap counterpart"),
             ("help_table", "Audit family-grouped command navigator — sibling to /help (flat list)"),
@@ -1345,6 +1353,7 @@ pub fn tg_command_registry_localized(lang: &str) -> Vec<(&'static str, &'static 
             ("pin_grow_7d", "近 7 天新获 [pinned] 的 task — /pinned_drop_7d 的正向对偶「owner 这周觉得什么变重要了」"),
             ("aliases", "扫 butler_history rename event 重建 alias chain — 「这条 task 曾叫什么」audit"),
             ("streak_pin", "连续多少天有 pinned task active — /streak (done) 的 attention 维度对偶"),
+            ("done_streak_chart", "近 30 天 done 数 sparkline 可视化 — /streak 文本数字的扩展"),
             ("recent_renames", "近 N 条 rename event（ts + old→new）— /aliases 的全局对偶（默认 5，上限 20）"),
             ("recent_pins", "近 N 条 pin 决策（每 title 取最早 [pinned] sighting desc）— /pin_grow_7d 的 N-cap 兄弟"),
             ("help_table", "audit family 分组速查表 — /help（flat 全表）的分组兄弟，命令爆炸后 navigation aid"),
@@ -1843,6 +1852,8 @@ pub fn parse_tg_command(text: &str) -> Option<TgCommand> {
         "streak" => Some(TgCommand::Streak),
         // `/streak_pin`：无参 — 连续多少天有 pinned task active 的 audit。
         "streak_pin" => Some(TgCommand::StreakPin),
+        // `/done_streak_chart`：无参 — 30d done sparkline 可视化。
+        "done_streak_chart" => Some(TgCommand::DoneStreakChart),
         // `/recent_renames [N]`：与 /recent 同 clamp 1..=20 缺省 5。
         "recent_renames" => {
             let n = title
@@ -2584,7 +2595,7 @@ pub const ALL_HELP_TOPICS: &[&str] = &[
     "last", "random", "sleep", "sleep_until", "snooze_until", "quick", "due", "recent", "oldest_n", "active_recent", "recent_chats",
     "digest", "alarms", "edit", "edit_due", "pri", "promote", "demote", "swap_priority",
     "reflect", "feedback", "feedback_history", "transient",
-    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "here_until", "cat_growth_today", "timeline",
+    "cancel_all_error", "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "find", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "here_until", "cat_growth_today", "done_streak_chart", "timeline",
     "blocked", "forks", "blocked_by", "snoozed", "reset", "version", "help",
 ];
 
@@ -2766,6 +2777,7 @@ pub fn format_help_for_topic(
         "help_table" => "📚 /help_table\n\n用法：按 audit family 分组列既有命令 — 命令爆炸（200+）后的 navigation aid。/help 是 flat 一行描述全表；本命令按主题分组（pin / cat / rename / streak / find / speech / digest / ...）让 owner 快定位「这个 audit 在哪个命令族」。无参。\n\n场景：新用户上手「pet 都能干啥」；老用户想用某 audit family 时 jog memory；写 onboarding 文档时按主题列举。\n\n输出格式（每组 emoji + family 名 + 命令清单一行）：\n  📚 命令分组速查表\n  📌 pin 关注度：/pin /unpin /pinned /pinned_due /...\n  🌱 cat 活跃度：/cat_growth_7d /cat_growth_30d /...\n  🔁 rename 重命名：/edit_title /aliases /...\n  💤 idle / stale：/idle_7d /touched_today /...\n  🔥 streak 连续：/streak /streak_pin\n  🔎 find / search：/find /find_in_detail /...\n  🗣 speech / 对话：/last_speech /find_speech /...\n  ⏰ alarm / 通知：/alarms /alarms_today /mute /...\n  📊 status / overview：/tasks /stats /buckets /show /...\n  📋 增删改：/task /done /cancel /edit /...\n  ⚠️ batch / 危险：/cancel_all_error /promote_all_p7 /...\n  ⚙️ system：/version /help /help_table /reset\n\n相关：/help（flat 全表 + 一行描述）；/help <cmd>（单命令详细用法 + 示例）；/help search <kw>（关键词搜全文）。",
         "recent_pins" => "📌 /recent_pins [N]\n\n用法：列近 N 条 pin 决策（每 title 取 history 内最早 [pinned] sighting 后 desc 排）。/pin_grow_7d（7d 窗口）的 N-cap 兄弟 — 那是按时间窗口、本命令是按 N 数。看「最近 N 条 pin 决策」cross-task audit 不限日期。N 缺省 5，clamp 1..=20。\n\n场景：周末 / 月末 review 「最近 N 条 pin 我都钉的什么」list-up；audit 「哪些 task 我曾认真钉过」即使现已 unpin 仍可见；写 onboarding 文档需举 pin 决策案例。\n\n后端：scan butler_history.log 取所有含 [pinned] snippet 行 → dedupe 按 title 保留最早 sighting → 按 ts desc 排 → cap N。dedupe 让同 title 多次 update（pin 状态不变）只算 1 次「决策事件」。\n\n输出格式：\n  📌 近 N 条 pin 决策（共 M 条 retention 内）：\n  · MM-DD HH:MM · 「整理 Downloads」\n  · MM-DD HH:MM · 「写周报」\n  ...\n\n空 → 友好兜底「butler_history 内无 [pinned] sighting」+ 教学指 /pin / /pinned。\n\n注（与 /pin_grow_7d / /pinned_drop_7d 共享 best-effort 局限）：\n- iter #568 之前的 pin 行不一定有 [pinned] snippet 完整保留\n- snippet 80 字截断可能漏 [pinned] → false neg\n- retention 限（典型 100 entry cap）\n- 含已 unpin / done / archived 的 task — 「pin 决策」是历史事件不必当前仍 active\n\n示例：\n  /recent_pins        （近 5 条）\n  /recent_pins 10     （近 10 条）\n\n相关：/pin_grow_7d（7d 窗口）；/pinned_drop_7d（反向 unpin）；/pinned（当前 pinned 清单）；/streak_pin（连续天数）。",
         "recent_renames" => "🔁 /recent_renames [N]\n\n用法：列近 N 条 butler_history rename event — 每行 `ts · 「<old>」→「<new>」`。/aliases <title> 的全局对偶 — 那是单 task 历史 chain，本命令是 cross-task 最近 N 条 audit。N 缺省 5，clamp 1..=20。\n\n场景：周末复盘「我最近改了几个 task 名」behavior 节奏；audit「我是不是 rename 太频繁」/「我哪个项目下重命名集中」；写 onboarding 文档时找历史命名演化案例。\n\n后端：scan butler_history.log 反向（newest first）取 action == 'rename' 行 + 解 `[was: <old>]` snippet。复用 extract_was_from_snippet helper。\n\n输出格式：\n  🔁 近 N 条 rename（共 M 条 retention 内）：\n  · MM-DD HH:MM · 「整理 Downloads」→「清理桌面」\n  · MM-DD HH:MM · 「写周报」→「写 W21 周报」\n  ...\n\n空 → 友好兜底「butler_history 内无 rename event」+ 教学指 /aliases 看单 task。\n\n注（best-effort 局限，与 /aliases / /pinned_drop_7d 共享）：\n- iter #568 之前的 rename 不可见（log 不曾记 rename event）\n- snippet 80 字截断可能漏 [was: X] 末尾；fallback 「old title 不可解」\n- butler_history retention 限（典型 100 entry cap）\n\n示例：\n  /recent_renames        （近 5 条）\n  /recent_renames 10     （近 10 条）\n\n相关：/aliases <title>（单 task chain）；/timeline（全 history 含 rename 行）；/edit_title / /cascade_rename（rename 入口）。",
+        "done_streak_chart" => "📊 /done_streak_chart\n\n用法：列近 30 天每天 done 数的 sparkline 行 — 用 8-level unicode bar `▁▂▃▄▅▆▇█` 可视化 daily count 归一化高度（today 在最右）。/streak 文本数字的扩展 — 让 owner 一眼看「这月节奏分布」。无参。\n\n场景：月底复盘看「我这月哪几天爆发 / 哪几天空」节奏分布；早会前看「最近完成度脉冲」；audit 「我是否周末密集 / 周中稳定」工作 pattern。\n\n后端：scan chat-scoped views filter Done + group by date → 30 个 bucket（today 在 [29]）→ 算 max → 每 bucket count normalize → 映射到 8-level bar char。空（30d 无 done）→ 友好兜底教学指 /streak / /digest。\n\n输出格式：\n  📊 30 天 done streak（today 在右）\n  峰值：N 条/天\n  ▁▂▁▃▆█▇▃▁▂▁ ... (30 chars)\n  · 当前 streak: N 天连续\n  · 7d done: K · 30d done: M\n\n空 → 「📊 30 天内无 done — 试 /digest / /streak 看更多 audit」。\n\n注：bar 归一化是 per-window — 同 chart 内最高峰柱 = █ 满高。跨 month 之间不可比（max 不同）；想 cross-month 对比需 absolute scale，按需 propose。\n\n示例：\n  /done_streak_chart\n\n相关：/streak（文本 streak）；/streak_pin（attention streak）；/digest_thisweek（本周 done + result）。",
         "streak_pin" => "📌🔥 /streak_pin\n\n用法：连续多少天有 pinned task active — 「我多久没钉过任务」audit。与既有 /streak (连续 done 天数) 互补 — 那是「完成度连续」、本命令是「关注度连续」。从今日往前 walk butler_history.log，每天检查是否有 [pinned] sighting（含今日 fallback：当前有 pinned task → 今日计数）；遇到第一天无 sighting 即 break。无参。\n\n场景：周末复盘「我最近是否有任何重点 task」；月度看「关注力度是否 monthlong 持续 vs 间歇」；新建 pinned task 后 audit「我重新拾起 pinning 习惯了」。\n\n输出格式：\n  📌🔥 连续 N 天有 pinned task active\n  · 当前 pinned: M 条\n  · 最早 sighting: YYYY-MM-DD（streak 起点）\n  · 历史最长 streak（retention 内）: K 天\n\n0 streak（既无 current pinned 又今日 history 无 sighting）→ 友好兜底「最近无 pin 活动 — 试 /pin <title> 钉一条 sprint task」+ 教学指 /pinned。\n\n注（best-effort 局限）：\n- butler_history retention 限（典型 100 entry cap）— 极老 streak 不可见\n- snippet 80 字截断可能漏 [pinned] → false neg；与 /pinned_drop_7d 同 caveats\n- 「pin 一次后再不 update」的 long-pinned task 不会每天产生 sighting；fallback「今日 fallback + 历史 sighting」可能不完美\n\n示例：\n  /streak_pin\n\n相关：/streak（done 连续）；/pinned（当前 pinned 清单）；/pin_grow_7d（近 7d 新 pin）；/pinned_drop_7d（近 7d unpin）。",
         "aliases" => "🏷 /aliases <title>\n\n用法：扫 butler_history.log 内 `rename` 事件，按时序重建本 task 的 alias chain（曾用过的所有标题）。「这条 task 曾叫过什么」audit — 与 /timeline 含 rename 行互补：那个是事件流，本命令是 alias-only 集中视图。Title resolve 与 /show / /done / /cancel 同三层（数字 index → fuzzy → 错误候选）。\n\n场景：cascade rename 后 audit「我把 X 改成什么了」；季度复盘看「这条 task 跨多版命名」；写文档需引用 task 历史名时一眼查。\n\n后端：iter #568 起 memory_rename 调 record_event('rename', new_title, '[was: <old>]') 写到 butler_history.log。本命令扫 history 找 action=='rename' 且 (title == current OR title in [was: ...] OR new_title 链上某节点) → 双向 walk 拼出完整 chain。\n\n输出格式：\n  🏷 「<current_title>」alias chain · N 条历史名：\n  · 整理 Downloads → 清理桌面 → 桌面整理（最早 → 最新）\n  · 2026-05-18 14:30 → 2026-05-18 15:45 → 现在\n  \n  （每段过渡含 ts；最右是当前 title）\n\n空（无 rename 历史）→ 友好兜底「本 task 从未被重命名」+ 教学指 /timeline 看全 history。\n\n注（best-effort 局限）：\n- iter #568 之前的 rename 不可见（log 不曾记 rename event）\n- snippet 80 字截断可能漏 `[was: X]` 末尾 — 链 reconstruction 缺一段；fallback 显部分链 + 标 `…`\n- 仅 butler_tasks cat（rename event 限 butler_tasks 写入）\n\n示例：\n  /aliases 清理桌面\n  /aliases 1  （/tasks 第 1 条）\n\n相关：/timeline（全 history 含 rename 行）；/show（当前 snapshot）；/cascade_rename（rename 时同步 detail.md ref）。",
         "pin_grow_7d" => "📌🌱 /pin_grow_7d\n\n用法：列「近 7 天新获 [pinned] 的 task」— /pinned_drop_7d 的正向对偶。即：当前 task 带 [pinned] marker，且 butler_history.log 7d 内最早能看到 [pinned] sighting（lookback 之外含 [pinned] 的不算 — 跨界点视为「在 7d 窗口内被首次 pin」）。audit「owner 这周觉得什么变重要了」。无参。\n\n场景：周末 review「我这周钉了哪几条 — 还活跃吗 / 该 done 了没」；月度复盘「优先级管理是否在更新 — 新关注点」；与 /pinned 当前清单对比看「老 pinned vs 新 pinned」分布。\n\n输出格式：\n  📌🌱 近 7 天新 pinned 候选 N 条（首次 [pinned] sighting 在 7d 内）：\n  · 「<title>」 · 首次 [pinned] MM-DD HH:MM\n  · 「<title>」 · 首次 [pinned] MM-DD HH:MM\n  ...\n\n按首次 sighting ts desc 排（最近被 pin 的在上）。cap 8 条。\n\n空 → 友好兜底教学指 /pinned 看当前 pinned 清单 / /pinned_drop_7d 反向 audit。\n\n注（best-effort 局限）：\n- 「首次」是 within history retention 内的首次；history 之前已 pinned 的 task 也可能被列（误判为「新 pin」）— 配合 retention age 解释\n- snippet 80 字截断可能漏 [pinned]（false negative）\n- 与 /pinned_drop_7d 同 caveat 体系\n\n示例：\n  /pin_grow_7d\n\n相关：/pinned_drop_7d（反向 — 近 7 天 unpin 候选）；/pinned（当前 pinned 清单）；/peek_pinned（pinned 紧凑视图）；/timeline <title>（看单 task pin/unpin 历史）。",
@@ -2905,6 +2917,7 @@ pub fn format_help_text(custom: &[crate::commands::settings::TgCustomCommand]) -
         "/pin_grow_7d  —  近 7 天新获 [pinned] 的 task — /pinned_drop_7d 的正向对偶「owner 这周觉得什么变重要了」（best-effort）".to_string(),
         "/aliases <title>  —  扫 butler_history rename events 重建 alias chain — 「这条 task 曾叫什么」audit".to_string(),
         "/streak_pin  —  连续多少天有 pinned task active — /streak (done) 的 attention 维度对偶".to_string(),
+        "/done_streak_chart  —  近 30 天 done 数 sparkline 可视化 — /streak 文本数字的扩展".to_string(),
         "/recent_renames [N]  —  近 N 条 rename event（ts + old → new）— /aliases 的全局对偶（默认 5，上限 20）".to_string(),
         "/recent_pins [N]  —  近 N 条 pin 决策（每 title 取最早 [pinned] sighting desc）— /pin_grow_7d 的 N-cap 兄弟（默认 5，上限 20）".to_string(),
         "/help_table  —  audit family 分组速查表 — /help（flat 全表）的分组兄弟，命令爆炸后 navigation aid".to_string(),
@@ -4806,6 +4819,91 @@ pub fn format_recent_renames_reply(
         ));
     }
     out
+}
+
+/// pure：算近 N 天每天 done 数 — 返回 Vec<u32>，[0] 是 (today - N+1)，
+/// [N-1] 是 today。空 / 无 done 时返全 0。
+pub fn compute_daily_done_counts(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+    days: u32,
+) -> Vec<u32> {
+    use crate::task_queue::TaskStatus;
+    let days = days.max(1);
+    let mut counts: Vec<u32> = vec![0; days as usize];
+    let start = today - chrono::Duration::days((days - 1) as i64);
+    for v in views {
+        if !matches!(v.status, TaskStatus::Done) {
+            continue;
+        }
+        if v.updated_at.len() < 10 {
+            continue;
+        }
+        let Ok(d) =
+            chrono::NaiveDate::parse_from_str(&v.updated_at[..10], "%Y-%m-%d")
+        else {
+            continue;
+        };
+        if d < start || d > today {
+            continue;
+        }
+        let idx = (d - start).num_days() as usize;
+        if idx < counts.len() {
+            counts[idx] += 1;
+        }
+    }
+    counts
+}
+
+/// pure：counts → unicode 8-level sparkline string `▁▂▃▄▅▆▇█`。
+/// 0 → 空格让 zero-day 看着像 dip；max == 0 → 全空格（caller 决定
+/// 是否渲）。归一化 per-counts (max 是本 vec 最大值)。
+pub fn render_sparkline(counts: &[u32]) -> String {
+    const LEVELS: &[char] =
+        &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = *counts.iter().max().unwrap_or(&0);
+    if max == 0 {
+        return " ".repeat(counts.len());
+    }
+    let mut out = String::new();
+    for &c in counts {
+        if c == 0 {
+            out.push(' ');
+        } else {
+            let idx = ((c as f64 / max as f64) * 8.0).ceil() as usize;
+            let idx = idx.clamp(1, 8);
+            out.push(LEVELS[idx]);
+        }
+    }
+    out
+}
+
+/// `/done_streak_chart` 命令回复文案。pure：caller 注入 views + today；
+/// 内部 compute_daily_done_counts + render_sparkline + 复用既有
+/// streak / count 计算拼 footer。
+pub fn format_done_streak_chart_reply(
+    views: &[crate::task_queue::TaskView],
+    today: chrono::NaiveDate,
+) -> String {
+    let counts = compute_daily_done_counts(views, today, 30);
+    let max = *counts.iter().max().unwrap_or(&0);
+    if max == 0 {
+        return "📊 30 天内无 done — 试 /digest / /streak 看更多 audit。".to_string();
+    }
+    let sparkline = render_sparkline(&counts);
+    let done_dates = done_dates_from_views(views);
+    let streak = compute_done_streak(&done_dates, today);
+    let week = count_done_in_window(views, today, 7);
+    let month = count_done_in_window(views, today, 30);
+    let streak_line = if streak == 0 {
+        "🌱 streak 中断 — 今日 / 昨日均无完成".to_string()
+    } else {
+        format!("🔥 当前 streak: {} 天连续", streak)
+    };
+    format!(
+        "📊 30 天 done streak（today 在右）\n峰值：{} 条/天\n{}\n· {}\n· 7d done: {} · 30d done: {}",
+        max, sparkline, streak_line, week, month,
+    )
 }
 
 /// `/streak_pin` 命令回复文案。pure：caller (bot.rs) 已：
@@ -9698,7 +9796,7 @@ mod tests {
             "reflect", "feedback", "feedback_history", "transient",
             "silent_all", "alarms", "recent_chats", "aware", "here",
             "tag", "tags_for", "touch", "edit_due", "cancel_all_error", "promote_all_p7", "touch_all_p7", "find", "find_in_detail", "find_speech",
-            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "here_until", "cat_growth_today", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
+            "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "search_today", "search_yesterday", "search_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "find_in_detail_today", "find_in_detail_yesterday", "find_speech_today", "find_speech_yesterday", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "here_until", "cat_growth_today", "done_streak_chart", "timeline", "blocked", "forks", "blocked_by", "snoozed", "reset",
             "version", "help", "pin_all_p7", "consolidate_now",
         ] {
             let s = format_help_for_topic(name, &[]);
@@ -10169,7 +10267,7 @@ mod tests {
             "due", "edit", "edit_due", "pri", "swap_priority", "promote", "demote", "reflect",
             "feedback", "feedback_history", "transient", "silent_all",
             "alarms", "recent_chats", "aware", "here", "cancel_all_error",
-            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "here_until", "cat_growth_today", "timeline", "forks", "blocked_by",
+            "promote_all_p7", "touch_all_p7", "pin_all_p7", "consolidate_now", "active_recent", "find_in_detail", "find_in_detail_today", "find_in_detail_yesterday", "find_speech", "find_speech_today", "find_speech_yesterday", "search_today", "search_yesterday", "search_thisweek", "show", "peek", "peek_pinned", "dup", "snippets", "recent_events", "touched_today", "touched_yesterday", "touched_thisweek", "oldest_done", "edit_title", "cascade_rename", "mute_today", "digest_yesterday", "digest_thisweek", "alarms_today", "alarms_thisweek", "tags_today", "tags_yesterday", "tags_thisweek", "random_pinned", "cat_growth_7d", "cat_growth_30d", "cat_decay_7d", "cat_decay_30d", "pinned_drop_7d", "pin_grow_7d", "idle_7d", "aliases", "streak_pin", "recent_renames", "recent_pins", "help_table", "audit_summary", "cat_top", "here_pin", "here_idle", "here_clear", "here_top_cat", "here_recent_done", "here_status", "here_until", "cat_growth_today", "done_streak_chart", "timeline", "forks", "blocked_by",
             "tags", "tag", "tags_for", "touch", "reset", "version", "help",
         ] {
             assert!(
@@ -16238,6 +16336,82 @@ mod tests {
         // 显 1 条但 retention 内总 10 条
         let s = format_recent_renames_reply(&rows, 10);
         assert!(s.contains("近 1 条 rename（共 10 条 retention 内）"), "{s}");
+    }
+
+    // -------- /done_streak_chart parse + compute + format --------
+
+    #[test]
+    fn done_streak_chart_parser_no_args() {
+        assert_eq!(
+            parse_tg_command("/done_streak_chart"),
+            Some(TgCommand::DoneStreakChart),
+        );
+    }
+
+    #[test]
+    fn compute_daily_done_counts_empty_returns_zeros() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let counts = compute_daily_done_counts(&[], today, 7);
+        assert_eq!(counts, vec![0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn compute_daily_done_counts_buckets_by_day() {
+        use crate::task_queue::TaskStatus;
+        let mut v1 = crate::task_queue::TaskView::default();
+        v1.status = TaskStatus::Done;
+        v1.updated_at = "2026-05-17T14:00:00+08:00".to_string();
+        let mut v2 = crate::task_queue::TaskView::default();
+        v2.status = TaskStatus::Done;
+        v2.updated_at = "2026-05-17T16:00:00+08:00".to_string();
+        let mut v3 = crate::task_queue::TaskView::default();
+        v3.status = TaskStatus::Done;
+        v3.updated_at = "2026-05-18T09:00:00+08:00".to_string();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let counts = compute_daily_done_counts(&[v1, v2, v3], today, 3);
+        // bucket [0]=5-16 (=0), [1]=5-17 (2), [2]=5-18 (1)
+        assert_eq!(counts, vec![0, 2, 1]);
+    }
+
+    #[test]
+    fn render_sparkline_empty_string_for_all_zero() {
+        let s = render_sparkline(&[0, 0, 0]);
+        assert_eq!(s, "   "); // 3 spaces
+    }
+
+    #[test]
+    fn render_sparkline_normalizes_to_max() {
+        // max=4 → bar 0 = ' '；1 → '▂' (idx 2)；2 → '▄' (idx 4)；
+        // 4 → '█' (idx 8)
+        let s = render_sparkline(&[0, 1, 2, 4]);
+        // 用 chars 比较避 multibyte byte 比较错
+        let chars: Vec<char> = s.chars().collect();
+        assert_eq!(chars[0], ' ');
+        assert_eq!(chars[1], '▂');
+        assert_eq!(chars[2], '▄');
+        assert_eq!(chars[3], '█');
+    }
+
+    #[test]
+    fn format_done_streak_chart_empty_shows_fallback() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let s = format_done_streak_chart_reply(&[], today);
+        assert!(s.contains("30 天内无 done"), "{s}");
+        assert!(s.contains("/digest"), "{s}");
+    }
+
+    #[test]
+    fn format_done_streak_chart_renders_sparkline_and_footer() {
+        use crate::task_queue::TaskStatus;
+        let mut v = crate::task_queue::TaskView::default();
+        v.status = TaskStatus::Done;
+        v.updated_at = "2026-05-18T09:00:00+08:00".to_string();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let s = format_done_streak_chart_reply(&[v], today);
+        assert!(s.contains("30 天 done streak"), "{s}");
+        assert!(s.contains("峰值：1 条/天"), "{s}");
+        assert!(s.contains("7d done: 1"), "{s}");
+        assert!(s.contains("30d done: 1"), "{s}");
     }
 
     // -------- /streak_pin parse + compute + format --------
