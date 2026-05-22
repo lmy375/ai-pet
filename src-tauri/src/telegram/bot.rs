@@ -1333,6 +1333,15 @@ async fn handle_tg_command(
                 &rename_rows, total,
             )
         }
+        TgCommand::DoneStreakChart => {
+            // chat-scoped views + today date — formatter 内部聚合 done
+            // dates + 算 daily counts + render sparkline。
+            let views = read_tg_chat_task_views(chat_id.0);
+            let today = chrono::Local::now().date_naive();
+            crate::telegram::commands::format_done_streak_chart_reply(
+                &views, today,
+            )
+        }
         TgCommand::StreakPin => {
             // 关注节奏 audit — /streak 的 pin 维度对偶。
             // 1. 扫 butler_history.log 收集 含 [pinned] sighting 的 date set
