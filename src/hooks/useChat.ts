@@ -100,11 +100,18 @@ export function useChat(systemPrompt: string) {
     }
   }, [systemPrompt]);
 
+  /// proactive 路径附带的 transient image 表（GOAL 003 早安图）：key = 消
+  /// 息 ts，value = image data/http URL。**仅 in-memory**，刻意绕开
+  /// itemsRef / messages 的 content payload，避免 saveSession 把 base64
+  /// 落盘 —— 满足「不持久化二进制；history 只留 [早安图] marker」。重启后
+  /// 图就消失，但 messages 里的文字 marker 仍在让 LLM 知道「之前发过图」。
+  const [proactiveImages, setProactiveImages] = useState<Record<string, string>>({});
+
   // Listen for proactive (pet-initiated) messages — backend already persisted them.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
-      unlisten = await listen<{ text: string; timestamp: string }>(
+      unlisten = await listen<{ text: string; timestamp: string; image_url?: string }>(
         "proactive-message",
         (event) => {
           const text = event.payload.text;
@@ -115,6 +122,11 @@ export function useChat(systemPrompt: string) {
           const assistantMsg: ChatMessage = { role: "assistant", content: text, ts };
           setMessages((prev) => [...prev, assistantMsg]);
           itemsRef.current = [...itemsRef.current, { type: "assistant", content: text }];
+          // 早安图：把 ts → url 入 transient map；ChatMini 渲染 assistant
+          // bubble 时按 ts 查表叠缩略图。content / items 故意都不带 url。
+          if (event.payload.image_url) {
+            setProactiveImages((prev) => ({ ...prev, [ts]: event.payload.image_url! }));
+          }
         },
       );
     })();
@@ -149,7 +161,18 @@ export function useChat(systemPrompt: string) {
   );
 
   const sendMessage = useCallback(
-    async (content: string, images?: string[]) => {
+    async (
+      content: string,
+      images?: string[],
+      /// `historyText` 非空时启用「图片不入历史」模式：本轮 LLM 仍看到完整
+      /// multimodal payload（updatedMessages 走出去给后端），`done` 事件 fire
+      /// 后把最近一条 user message 的 content 改写为 historyText 纯字符串，
+      /// 同时 ChatItem.images 留空、content 用 historyText。截屏链路（GOAL
+      /// 002「不持久化二进制 / 仅留 caption + [屏幕截图]」）走这条；常规
+      /// drag-drop / paste image 仍走 historyText === undefined 的旧路径，
+      /// 让用户能在面板里翻回去看附图。
+      opts?: { historyText?: string },
+    ) => {
       // 多模态：images 非空时 OpenAI compatible parts 数组；否则裸字符串保持
       // 与原路径与测试断言一致。
       const hasImages = !!images && images.length > 0;
@@ -178,10 +201,14 @@ export function useChat(systemPrompt: string) {
       updatedMessagesRef.current = updatedMessages;
 
       // Track items for session saving — images 携带到 ChatItem 供 ChatMini /
-      // PanelChat 跨视图统一渲染。
+      // PanelChat 跨视图统一渲染。historyText 模式（截屏）下显式留空 images
+      // 并把 content 替换为占位文本，保证面板列表里也看不到 transient 图。
+      const stripBinary = typeof opts?.historyText === "string";
+      const itemContent = stripBinary ? opts!.historyText! : content;
+      const itemImages = stripBinary ? undefined : hasImages ? images : undefined;
       itemsRef.current = [
         ...itemsRef.current,
-        { type: "user", content, ...(hasImages ? { images } : {}) },
+        { type: "user", content: itemContent, ...(itemImages ? { images: itemImages } : {}) },
       ];
 
       const onEvent = new Channel<StreamEvent>();
@@ -207,7 +234,19 @@ export function useChat(systemPrompt: string) {
               content: accumulated,
               ts: new Date().toISOString(),
             };
-            const newMsgs = [...updatedMessages, assistantMsg];
+            // historyText 模式（截屏）：把刚发出去的 user message 的多模态
+            // payload 替换成纯文本占位，再追加 assistant。下一轮 LLM 看到
+            // history 里只有 `[屏幕截图]` 一行 —— 既省 token 又对齐 GOAL
+            // 002「不持久化二进制」。常规图片路径 historyText 未传，走原
+            // 来分支保留多模态内容供面板复显。
+            const finalUserMessages = stripBinary
+              ? updatedMessages.map((m, i) =>
+                  i === updatedMessages.length - 1 && m.role === "user"
+                    ? { ...m, content: opts!.historyText! }
+                    : m,
+                )
+              : updatedMessages;
+            const newMsgs = [...finalUserMessages, assistantMsg];
             setMessages(newMsgs);
             itemsRef.current = [...itemsRef.current, { type: "assistant", content: accumulated }];
             saveSession(newMsgs, itemsRef.current);
@@ -332,5 +371,6 @@ export function useChat(systemPrompt: string) {
     displayMessage,
     showBubble,
     resetContext,
+    proactiveImages,
   };
 }

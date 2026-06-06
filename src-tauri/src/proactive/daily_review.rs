@@ -17,6 +17,8 @@
 
 use chrono::NaiveDate;
 
+use super::session_helpers::{daily_review_exists, read_daily_plan_description};
+
 /// First hour at which the daily review fires. After this hour, the next
 /// proactive turn whose `LAST_DAILY_REVIEW_DATE` doesn't equal today runs
 /// the review once. 22:00 ≈ "winding-down" — late enough that most of the
@@ -213,6 +215,53 @@ pub fn format_daily_review_description(
         None => String::new(),
     };
     format!("[review] 今天主动开口 {} 次{}", speech_count, plan_part)
+}
+
+/// Iter R12: gate + write the end-of-day review. Idempotent per day via
+/// `LAST_DAILY_REVIEW_DATE` (in-process) + `daily_review_exists` (cross
+/// restart). Speech lines are redacted + timestamp-stripped before writing.
+/// Errors from `memory_edit` are swallowed — review is best-effort, not
+/// load-bearing for the proactive turn that called it.
+pub(super) async fn maybe_run(now_local: chrono::DateTime<chrono::Local>) {
+    use chrono::Timelike;
+    let today = now_local.date_naive();
+    let hour = now_local.hour() as u8;
+    let last = LAST_DAILY_REVIEW_DATE.lock().ok().and_then(|g| *g);
+    if !should_trigger_daily_review(hour, today, last) {
+        return;
+    }
+    let title = format!("daily_review_{}", today);
+    if daily_review_exists(&title) {
+        // Already on disk from a prior process — just mark in-memory and move on.
+        if let Ok(mut g) = LAST_DAILY_REVIEW_DATE.lock() {
+            *g = Some(today);
+        }
+        return;
+    }
+    // Cap at 100 entries — typical day is well under 30; bound just keeps the
+    // review file size sane on pathological cases.
+    let raw = crate::speech_history::speeches_for_date_async(today, 100).await;
+    let lines: Vec<String> = raw
+        .iter()
+        .map(|line| crate::speech_history::strip_timestamp(line).to_string())
+        .collect();
+    let plan_raw = read_daily_plan_description();
+    let detail = format_daily_review_detail(&lines, &plan_raw, today);
+    // Iter R12b: pull `[N/M]` progress markers out of the plan into the
+    // index description when parseable; falls back to "有计划" otherwise.
+    let plan_progress = parse_plan_progress(&plan_raw);
+    let description =
+        format_daily_review_description(lines.len(), plan_progress, !plan_raw.trim().is_empty());
+    let _ = crate::commands::memory::memory_edit(
+        "create".to_string(),
+        "ai_insights".to_string(),
+        title,
+        Some(description),
+        Some(detail),
+    );
+    if let Ok(mut g) = LAST_DAILY_REVIEW_DATE.lock() {
+        *g = Some(today);
+    }
 }
 
 #[cfg(test)]

@@ -9,6 +9,26 @@
 //! M1 阶段产物（见 docs/index-20260504-1150-morning-briefing.md）。
 
 use chrono::{NaiveDate, NaiveDateTime};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::commands::chat::{run_chat_pipeline, ChatMessage};
+use crate::commands::debug::{write_log, LogStore};
+use crate::commands::settings::get_soul;
+use crate::commands::shell::ShellStore;
+use crate::config::AiConfig;
+use crate::mcp::McpManagerStore;
+use crate::mood::{read_current_mood_parsed, read_mood_for_event};
+use crate::tools::ToolContext;
+
+use super::clock::InteractionClockStore;
+use super::gate::mute_remaining_seconds;
+use super::prompt_assembler::is_silent_reply;
+use super::session_helpers::{
+    load_active_session, morning_briefing_exists, persist_assistant_message,
+    read_daily_review_description, record_morning_briefing_done,
+};
+use super::telemetry;
+use super::ProactiveMessage;
 
 /// 默认触发小时。为什么是 8 而非 9：上班族普遍 8:30 出门前后，简报最
 /// 有用；用户嫌早可在设置里改成 9 或更晚。
@@ -105,9 +125,20 @@ pub fn format_morning_briefing_intent(
         out.push('\n');
     }
     out.push_str(
-        "请你扮演宠物角色，用一段自然口语对主人说「早安」。可以调用 \
-         get_weather / get_upcoming_events / memory_list 工具核实今天的天气、日程与待办，\
-         并把要点融进早安里——不是机械罗列，而是像朋友顺嘴提醒。控制在 80 字内。",
+        "请你扮演宠物角色对主人说「早安」，把这早安做成「管家式问候」而非寒暄。\n\n\
+         **请按顺序主动调用以下工具**（GOAL 016 enrich）：\n\
+         1. `get_weather` —— 拿今天天气，提炼一句话（温度 / 雨 / 风的关键信号）；\n\
+         2. `get_upcoming_events` —— 取今天前 3 条日程（时间 + 标题）；\n\
+         3. `memory_list` —— 翻 ai_insights/transient_note 和最近 reminder（含 \
+         `[remind: today]` / `[recur-daily: ...]`）作背景上下文。\n\n\
+         然后按这个**结构**输出（每行 ≤ 30 字、总共 ≤ 6 行）：\n\
+         · 行 1：早安 + 称呼\n\
+         · 行 2：天气一句（只要 get_weather 拿到了数据）\n\
+         · 行 3..N：今日日程（每条一行，最多 3 行；get_upcoming_events 拿到的取前 3）\n\
+         · 倒数行：当下心情 / 一句小关怀\n\n\
+         **失败处理**：weather / calendar 工具调用任何一个失败（返回 \
+         `{\"error\": ...}`）—— 静默跳过对应行，不在早安里抱怨工具炸了。\n\
+         **不要罗列**：日程行写「14:00 客户视频」即可，不要写「日程 1: 14:00 客户视频」。",
     );
     out
 }
@@ -134,25 +165,255 @@ pub fn morning_briefing_block_reason(enabled: bool, muted: bool) -> Option<&'sta
     None
 }
 
-/// 拼装写入 `ai_insights/morning_briefing_YYYY-MM-DD` 的索引描述。和
-/// daily_review 的 `[review] ...` 同形：保留 `[briefing]` 机器标签便于
-/// 未来 LLM 整理或前端筛选；正文截到 80 字符（中文按 char 计），避免
-/// 把整段早安挤进索引摘要。
-pub const BRIEFING_DESCRIPTION_CHAR_CAP: usize = 80;
+/// 早安简报触发器。门控通过后调用 LLM 生成一段早安播报，写入 speech_history、
+/// 当前 session、ai_insights 标记，并通过 `proactive-message` 事件推送到前端
+/// 气泡。与 daily_review 的等价：本函数承担所有 IO，纯门控 + 文本拼装在
+/// 上面的 pure helpers。
+///
+/// 与现有节奏控制层的关系（与文档 docs/20260504-1150-morning-briefing.md
+/// 的「与 mute / 主动发言冷却」节对齐）：
+/// - 尊重 mute（用户主动按下"安静一会儿"时早安也跟着安静，免得打破期待）；
+/// - **绕过**主动发言冷却 — 早安自带"每日 1 次"语义，不参与一般 cooldown 节流；
+///   触发后通过 `mark_proactive_spoken` 让常规 proactive 循环之后照常 cooldown。
+///
+/// 任何 IO 失败都不冒泡 — 早安是 best-effort 信号，失败时静默返回，下一 tick
+/// 仍可重试（如未越过 grace 窗口）。
+/// GOAL 016：自定 sink 在 LLM tool_result 事件里嗅探 `"error":` 字符串，
+/// 命中 get_weather / get_upcoming_events 时 bump 对应 telemetry 计数器。
+/// 行为透明（不改 reply），副作用只在静态 atomic 累加 —— 与 CollectingSink
+/// 同构（无 reply 收集需求；run_chat_pipeline 已直接返回 reply）。
+struct BriefingFailCountingSink;
 
-pub fn format_morning_briefing_description(spoken: &str) -> String {
-    let trimmed = spoken.trim();
-    if trimmed.is_empty() {
-        return "[briefing]".to_string();
+impl crate::commands::chat::ChatEventSink for BriefingFailCountingSink {
+    fn send_chunk(&self, _text: &str) {}
+    fn send_tool_start(&self, _name: &str, _arguments: &str) {}
+    fn send_tool_result(&self, name: &str, result: &str) {
+        use std::sync::atomic::Ordering;
+        if !result.contains("\"error\":") {
+            return;
+        }
+        match name {
+            "get_weather" => {
+                telemetry::BRIEFING_WEATHER_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            "get_upcoming_events" => {
+                telemetry::BRIEFING_CALENDAR_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
     }
-    let truncated: String = if trimmed.chars().count() <= BRIEFING_DESCRIPTION_CHAR_CAP {
-        trimmed.to_string()
-    } else {
-        let mut s: String = trimmed.chars().take(BRIEFING_DESCRIPTION_CHAR_CAP).collect();
-        s.push('…');
-        s
+    fn send_done(&self) {}
+    fn send_error(&self, _message: &str) {}
+}
+
+pub(super) async fn maybe_run(
+    app: &AppHandle,
+    settings: &crate::commands::settings::AppSettings,
+    now_local: chrono::DateTime<chrono::Local>,
+) -> Option<String> {
+    let cfg = &settings.morning_briefing;
+    let muted = mute_remaining_seconds().is_some();
+    if morning_briefing_block_reason(cfg.enabled, muted).is_some() {
+        return None;
+    }
+    let now_naive = now_local.naive_local();
+    let today = now_local.date_naive();
+    let last = LAST_MORNING_BRIEFING_DATE.lock().ok().and_then(|g| *g);
+    if !should_trigger_morning_briefing(
+        now_naive,
+        cfg.hour,
+        cfg.minute,
+        MORNING_BRIEFING_DEFAULT_GRACE_MINUTES,
+        last,
+    ) {
+        return None;
+    }
+    let today_iso = today.format("%Y-%m-%d").to_string();
+    if morning_briefing_exists(&today_iso) {
+        if let Ok(mut g) = LAST_MORNING_BRIEFING_DATE.lock() {
+            *g = Some(today);
+        }
+        return None;
+    }
+
+    let log_store = app.state::<LogStore>().inner().clone();
+
+    // 拼装 intent
+    let yesterday = today.pred_opt().unwrap_or(today);
+    let yesterday_excerpt = read_daily_review_description(yesterday);
+    let mood_hint = read_current_mood_parsed()
+        .map(|(t, _)| t)
+        .filter(|t| !t.trim().is_empty());
+    let intent = format_morning_briefing_intent(
+        settings.user_name.trim(),
+        yesterday_excerpt.as_deref(),
+        mood_hint.as_deref(),
+        today,
+    );
+    let config = match AiConfig::from_settings() {
+        Ok(c) => c,
+        Err(e) => {
+            write_log(
+                &log_store.0,
+                &format!("MorningBriefing: AiConfig error: {}", e),
+            );
+            return None;
+        }
     };
-    format!("[briefing] {}", truncated)
+    let mcp_store = app.state::<McpManagerStore>().inner().clone();
+    let shell_store = app.state::<ShellStore>().inner().clone();
+    let process_counters = app
+        .state::<crate::commands::debug::ProcessCountersStore>()
+        .inner()
+        .clone();
+    let tool_review = app
+        .state::<crate::tool_review::ToolReviewRegistryStore>()
+        .inner()
+        .clone();
+    let decisions = app
+        .state::<crate::decision_log::DecisionLogStore>()
+        .inner()
+        .clone();
+    let ctx = ToolContext::new(log_store.clone(), shell_store, process_counters)
+        .with_tool_review(tool_review)
+        .with_decision_log(decisions.clone());
+
+    let soul = get_soul().unwrap_or_default();
+    let messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: serde_json::Value::String(soul),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: serde_json::Value::String(intent),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ];
+    // GOAL 016：用自定 sink 取代默认 CollectingSink — 让 weather / calendar
+    // tool 调用失败时 bump telemetry::BRIEFING_*_FAIL_COUNT。reply 仍走
+    // run_chat_pipeline 的 Result<String> return path。
+    let sink = BriefingFailCountingSink;
+    let reply = match run_chat_pipeline(messages, &sink, &config, &mcp_store, &ctx).await {
+        Ok(r) => r,
+        Err(e) => {
+            write_log(
+                &log_store.0,
+                &format!("MorningBriefing: chat pipeline error: {}", e),
+            );
+            return None;
+        }
+    };
+    let reply_trimmed = reply.trim();
+    if is_silent_reply(reply_trimmed) {
+        // 模型主动选择沉默时仍占用今天的"额度"，否则会在 grace 窗口内反复重试。
+        write_log(&log_store.0, "MorningBriefing: pet returned empty / silent");
+        if let Ok(mut g) = LAST_MORNING_BRIEFING_DATE.lock() {
+            *g = Some(today);
+        }
+        return None;
+    }
+
+    // 先读 mood —— briefing LLM 可能在跑工具时更新过情绪，要用最新值给
+    // 早安图当 prompt 素材。把原来 L2466 的 mood read 提到这里，下游
+    // record_mood / payload / image prompt 共用一份快照。
+    let (mood_after, motion_after) = read_mood_for_event(&ctx, "MorningBriefing");
+    if let Some(text) = &mood_after {
+        crate::mood_history::record_mood(text, &motion_after).await;
+    }
+
+    // GOAL 003：按 mood 生成一张可爱风格早安问候图，与 briefing 文字一起
+    // 推。失败 / 未配置 image_model 时 None，下游退回「仅文字」原行为。
+    // 一天一次硬上限由 LAST_MORNING_BRIEFING_DATE 与 morning_briefing_last
+    // .txt 已经守好 —— briefing 触发一次 = 图也只尝试一次。
+    let image_url = generate_morning_image(mood_after.as_deref()).await;
+
+    // 拼"持久化文本"：成图时尾巴附 `[早安图]` marker，让磁盘 history /
+    // 未来 LLM context / 面板列表都能稳定看到"这条带图"信号。没图就纯
+    // 文字（与历史行为一致），不挂空 marker 误导未来 turn。
+    let persisted_text = if image_url.is_some() {
+        format!("{} [早安图]", reply_trimmed)
+    } else {
+        reply_trimmed.to_string()
+    };
+
+    // 持久化 + 推送给前端：与 run_proactive_turn 末段保持平行。session 落盘失败
+    // 不致命（气泡仍会显示）— 仅对它做静默忽略。
+    if let Some(id) = load_active_session().0 {
+        let _ = persist_assistant_message(&id, &persisted_text);
+    }
+    let clock = app.state::<InteractionClockStore>().inner().clone();
+    clock.mark_proactive_spoken().await;
+    // Iter #389: same meta-recording wrapper as run_proactive_turn — let
+    // morning briefing speeches 也带触发上下文进 sidecar。
+    super::record_speech_with_current_meta(&persisted_text).await;
+
+    // 把"今天的早安已发"写入 morning_briefing_last.txt 而不是 memory ——
+    // 早安是事件，不是技能 / 偏好；剥出 memory 让记忆视图保持纯净。
+    record_morning_briefing_done(&today_iso);
+
+    let payload = ProactiveMessage {
+        text: persisted_text.clone(),
+        timestamp: now_local.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
+        mood: mood_after,
+        motion: motion_after,
+        image_url,
+    };
+    let _ = app.emit("proactive-message", payload);
+    super::unread_tray::record_emitted(app);
+
+    if let Ok(mut g) = LAST_MORNING_BRIEFING_DATE.lock() {
+        *g = Some(today);
+    }
+    decisions.push(
+        "MorningBriefing",
+        format!("{} chars", persisted_text.chars().count()),
+    );
+
+    Some(persisted_text)
+}
+
+/// 早安图 prompt 拼装 + 调用 image_generate 的 best-effort wrapper。
+/// mood 为 None 时 fallback 到「平静温暖」让 prompt 仍可生成；失败返回
+/// None 让 caller 退回纯文字早安。
+///
+/// 风格约束（与 GOAL「UI 要美观可爱」对齐）：
+/// - 水彩 / 治愈 / 暖色调 —— 不容易和宠物气泡的卡通风格打架；
+/// - 「不要文字」—— DALL·E 系列模型默认爱在图里塞字，明确禁掉避免乱码；
+/// - 正方形 —— 桌面气泡缩略图 / TG 预览都按 1:1 看着最稳。
+///
+/// 不传 size override：尊重 settings.image_size，让用户对画幅有控制权。
+async fn generate_morning_image(mood: Option<&str>) -> Option<String> {
+    let mood_phrase = mood
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("平静温暖");
+    let prompt = format!(
+        "为桌面宠物生成一张早安问候小图。情绪基调：{}。\
+         风格：温暖明亮的水彩、可爱治愈、宫崎骏式色彩。\
+         画面：晨光、植物或宠物本身；简洁正方形构图；\
+         画面中不要出现任何文字。",
+        mood_phrase
+    );
+    match crate::commands::image::run_image_generate(&prompt, 1, None).await {
+        Ok(result) if !result.urls.is_empty() => result.urls.into_iter().next(),
+        Ok(result) => {
+            log::warn!(
+                "MorningBriefing image: empty urls (errors: {:?})",
+                result.errors
+            );
+            None
+        }
+        Err(e) => {
+            log::warn!("MorningBriefing image: setup error: {}", e);
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -281,20 +542,6 @@ mod tests {
     }
 
     #[test]
-    fn description_handles_empty_spoken() {
-        assert_eq!(format_morning_briefing_description("   "), "[briefing]");
-        assert_eq!(format_morning_briefing_description(""), "[briefing]");
-    }
-
-    #[test]
-    fn description_passes_short_spoken_through() {
-        assert_eq!(
-            format_morning_briefing_description("早上好，今天 25 度，记得带伞"),
-            "[briefing] 早上好，今天 25 度，记得带伞"
-        );
-    }
-
-    #[test]
     fn block_reason_passes_when_all_clear() {
         assert_eq!(morning_briefing_block_reason(true, false), None);
     }
@@ -321,14 +568,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn description_truncates_long_spoken() {
-        let long: String = "记".repeat(BRIEFING_DESCRIPTION_CHAR_CAP + 30);
-        let out = format_morning_briefing_description(&long);
-        assert!(out.starts_with("[briefing] "));
-        assert!(out.ends_with('…'));
-        // [briefing]<space> + cap chars + …  →  cap+1 chars in body
-        let body = out.trim_start_matches("[briefing] ");
-        assert_eq!(body.chars().count(), BRIEFING_DESCRIPTION_CHAR_CAP + 1);
-    }
 }

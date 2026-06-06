@@ -927,19 +927,16 @@ export function PanelSettings() {
           </button>
         )}
       </div>
-      {/* 外观：主题切换。顶部 tab bar 已经有 🌙/☀️ 一键 toggle，但藏在右上角；
-          这里把控件再露一次，并解释跨窗同步行为。 */}
+      {/* 外观：accent 主品牌色选择。051-part1：theme（light/dark）整体删除
+          后只剩 accent 一个偏好控件。 */}
       <SearchableSection
         title="外观"
-        keywords={["theme", "外观", "主题", "深色", "浅色", "dark", "light"]}
+        keywords={["accent", "外观", "主色", "color"]}
         query={searchQuery}
       >
       <div style={sectionStyle}>
         <SectionTitle><HighlightedText text="外观" query={searchQuery} /></SectionTitle>
-        <ThemeToggleRow />
-        <div style={{ marginTop: 12 }}>
-          <AccentPickerRow />
-        </div>
+        <AccentPickerRow />
         {/* 复制对话历史时的角色前缀。默认 🧑 / 🐾，让用户自定义"我"/"猫娘"等。
             ChatMini 顶部 📋 复制 N 条 / 跨会话搜索导出 markdown 都走这俩字段。 */}
         <div
@@ -2570,74 +2567,6 @@ const twoColRow: React.CSSProperties = {
  * Ctrl+G 跳下一处；shift+Enter 跳上一处；显 N/M 计数。
  */
 /**
- * 主题 pill 双键切换：浅色 / 深色。本地立刻 applyTheme + setStoredTheme，并
- * emit("theme-change") 让桌面 pet / 调试 webview 同步。PanelApp 顶部已经有个
- * 月亮图标快捷 toggle —— 这里把控件露在设置页，让用户更容易找到。
- */
-function ThemeToggleRow() {
-  // 用 module-level theme helpers；不和 PanelApp 共享 useState（跨组件树）。
-  // 渲染态从 getStoredTheme 拉，切换后 setStoredTheme 持久化，PanelApp 通过
-  // theme-change listener 同步它的 state。
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    const t =
-      typeof window !== "undefined" &&
-      window.localStorage?.getItem("pet-theme") === "dark"
-        ? "dark"
-        : "light";
-    return t;
-  });
-  const apply = async (next: "light" | "dark") => {
-    setTheme(next);
-    const themeMod = await import("../../theme");
-    themeMod.applyTheme(next);
-    themeMod.setStoredTheme(next);
-    const eventMod = await import("@tauri-apps/api/event");
-    void eventMod.emit("theme-change", next);
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 0,
-          padding: 2,
-          background: "var(--pet-color-bg)",
-          borderRadius: 6,
-          border: "1px solid var(--pet-color-border)",
-        }}
-      >
-        {(["light", "dark"] as const).map((t) => {
-          const active = theme === t;
-          return (
-            <button
-              key={t}
-              type="button"
-              onClick={() => apply(t)}
-              style={{
-                padding: "4px 12px",
-                fontSize: 12,
-                border: "none",
-                borderRadius: 4,
-                background: active ? "var(--pet-color-card)" : "transparent",
-                color: active ? "var(--pet-color-fg)" : "var(--pet-color-muted)",
-                cursor: active ? "default" : "pointer",
-                fontWeight: active ? 600 : 400,
-              }}
-              title={t === "light" ? "浅色主题" : "深色主题"}
-            >
-              {t === "light" ? "☀️ 浅色" : "🌙 深色"}
-            </button>
-          );
-        })}
-      </div>
-      <span style={{ fontSize: 11, color: "var(--pet-color-muted)" }}>
-        切换立即同步到桌面宠物 / 调试窗口
-      </span>
-    </div>
-  );
-}
-
-/**
  * Accent 调色板选择器：5 个色样按钮 + label。选中后立刻 applyTheme 覆盖
  * --pet-color-accent + setStoredAccent 持久化 + emit("accent-change") 让
  * 桌面 / 调试窗口同步。default 沿用既有 sky 蓝（兼容老用户视觉）。
@@ -2657,7 +2586,7 @@ function AccentPickerRow() {
   const apply = async (next: import("../../theme").Accent) => {
     setAccent(next);
     const themeMod = await import("../../theme");
-    themeMod.applyTheme(themeMod.getStoredTheme(), next);
+    themeMod.applyTheme(next);
     themeMod.setStoredAccent(next);
     const eventMod = await import("@tauri-apps/api/event");
     void eventMod.emit("accent-change", next);

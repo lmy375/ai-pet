@@ -407,14 +407,22 @@ pub fn memory_search(keyword: String) -> Result<Vec<(String, MemoryItem)>, Strin
     let mut results = Vec::new();
     for (cat_name, cat_data) in &index.categories {
         for item in &cat_data.items {
-            if item.title.to_lowercase().contains(&kw)
-                || item.description.to_lowercase().contains(&kw)
-            {
+            if item_matches_query(cat_name, &cat_data.label, item, &kw) {
                 results.push((cat_name.clone(), item.clone()));
             }
         }
     }
     Ok(results)
+}
+
+/// 056-part1：纯匹配函数 —— 用 cat_name / cat label / item.title / item.description
+/// 任一字段做 substring 匹配。提到 cat 名也算命中，避免用户搜「butler」时
+/// 必须每条 item 自带这词才出。`kw_lc` 必须已经 to_lowercase。
+fn item_matches_query(cat_name: &str, cat_label: &str, item: &MemoryItem, kw_lc: &str) -> bool {
+    cat_name.to_lowercase().contains(kw_lc)
+        || cat_label.to_lowercase().contains(kw_lc)
+        || item.title.to_lowercase().contains(kw_lc)
+        || item.description.to_lowercase().contains(kw_lc)
 }
 
 #[tauri::command]
@@ -575,6 +583,10 @@ pub fn memory_edit(
             if full_path.exists() {
                 let _ = fs::remove_file(&full_path);
             }
+            // GOAL 009：item description 含 `[visual: <rel_path>]` 前缀
+            // 时同步清掉 attachments/ 下的缩略图。best-effort：失败不
+            // 阻断主删除。
+            crate::visual_memory::cleanup_thumbnail_on_delete(&removed.description);
 
             write_index(&index)?;
             match category.as_str() {
@@ -1173,59 +1185,11 @@ pub fn memory_category_churn_7d() -> Result<BTreeMap<String, [u32; 7]>, String> 
     Ok(out)
 }
 
+
 #[cfg(test)]
-mod churn_tests {
-    use super::*;
-    use chrono::{Duration, Local};
+#[path = "memory_search_match_tests.rs"]
+mod search_match_tests;
 
-    #[test]
-    fn churn_buckets_distribute_by_local_date() {
-        // 构造 3 个 item：今日 1 + 3 天前 1 + 8 天前 1（应被滤）
-        let today = Local::now();
-        let today_iso = today.format("%Y-%m-%dT%H:%M:%S%:z").to_string();
-        let three_ago_iso = (today - Duration::days(3))
-            .format("%Y-%m-%dT%H:%M:%S%:z")
-            .to_string();
-        let eight_ago_iso = (today - Duration::days(8))
-            .format("%Y-%m-%dT%H:%M:%S%:z")
-            .to_string();
-
-        let mut cat = CategoryData {
-            label: "test".to_string(),
-            items: vec![],
-        };
-        for (title, ts) in [
-            ("a", today_iso.clone()),
-            ("b", three_ago_iso.clone()),
-            ("c", eight_ago_iso.clone()),
-        ] {
-            cat.items.push(MemoryItem {
-                title: title.to_string(),
-                description: String::new(),
-                detail_path: String::new(),
-                created_at: ts.clone(),
-                updated_at: ts,
-            });
-        }
-
-        // 内联模拟 memory_category_churn_7d 对一个 cat 的处理逻辑（避开实际
-        // memory_list 读盘）—— 确认日期换算 + bucket idx 正确。
-        let today_date = today.date_naive();
-        let mut buckets = [0u32; 7];
-        for item in &cat.items {
-            let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&item.updated_at)
-            else {
-                continue;
-            };
-            let local_date = dt.with_timezone(&Local).date_naive();
-            let delta = (today_date - local_date).num_days();
-            if (0..7).contains(&delta) {
-                let idx = (6 - delta) as usize;
-                buckets[idx] += 1;
-            }
-        }
-        assert_eq!(buckets[6], 1, "today should land at idx 6");
-        assert_eq!(buckets[3], 1, "3 days ago should land at idx 3");
-        assert_eq!(buckets.iter().sum::<u32>(), 2, "8-days-ago item filtered out");
-    }
-}
+#[cfg(test)]
+#[path = "memory_churn_tests.rs"]
+mod churn_tests;

@@ -4,7 +4,13 @@ import { ImageLightbox } from "./common/ImageLightbox";
 import { readSentHistory, pushSentHistory } from "./chatHistoryStore";
 
 interface Props {
-  onSend: (message: string, images?: string[]) => void;
+  /// `opts.historyText` 非空时本轮 user message 不在 session 里留 binary —
+  /// 截屏专用。常规 paste / drop 图依旧不传 opts，旧行为不变。
+  onSend: (
+    message: string,
+    images?: string[],
+    opts?: { historyText?: string },
+  ) => void;
   isLoading: boolean;
 }
 
@@ -81,6 +87,16 @@ export function ChatPanel({ onSend, isLoading }: Props) {
   const recalledValueRef = useRef<string | null>(null);
   // 多模态：粘贴 / 拖拽进来的图片 data URL，发送时与文本拼成 multipart。
   const [pendingImages, setPendingImages] = useState<string[]>([]);
+  /// 📸 截屏 staging：与 [[pendingImages]] 互斥（点 📸 时清空它，反之亦
+  /// 然）。单张 data URL（后端 `screenshot_capture` 已 resize + JPEG +
+  /// base64）。submit 时通过 onSend 的 opts.historyText 走「不入历史」分
+  /// 支：本轮 LLM 看完整 vision payload，落盘只剩 `[屏幕截图]` 占位 ——
+  /// 满足 GOAL 002「history 只留 caption + [屏幕截图]」。
+  const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(null);
+  /// 截屏按钮自身的 in-flight 标志。screencapture 子进程通常 200-500ms 完
+  /// 成，期间禁用按钮 + 改文案，避免用户连点导致 N 个截屏任务并发抢同名
+  /// /tmp 文件。
+  const [screenshotInFlight, setScreenshotInFlight] = useState(false);
   // 拖拽态高亮 + 子元素 enter/leave 抖动防抖计数。
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
@@ -259,16 +275,19 @@ export function ChatPanel({ onSend, isLoading }: Props) {
   const submit = useCallback(async () => {
     const trimmed = input.trim();
     const hasImages = pendingImages.length > 0;
-    if (!hasImages && !trimmed) return;
+    const hasShot = pendingScreenshot !== null;
+    if (!hasImages && !hasShot && !trimmed) return;
     if (isLoading) return;
-    if (hasImages) {
+    if (hasImages || hasShot) {
       // 守门：非多模态模型时拒绝并提示。守门走后端 settings 真值，让用户切
       // model 后立刻生效（不缓存）。
       try {
         const ok = await invoke<boolean>("is_current_model_multimodal");
         if (!ok) {
-          showErrorToast(`当前模型不支持图片输入，已忽略 ${pendingImages.length} 张图`);
+          const count = hasShot ? 1 : pendingImages.length;
+          showErrorToast(`当前模型不支持图片输入，已忽略 ${count} 张图`);
           setPendingImages([]);
+          setPendingScreenshot(null);
           return;
         }
       } catch (e) {
@@ -276,15 +295,45 @@ export function ChatPanel({ onSend, isLoading }: Props) {
         return;
       }
     }
-    onSend(trimmed, hasImages ? pendingImages : undefined);
+    if (hasShot) {
+      // 截屏：LLM 仍收到完整 vision payload，但 useChat 走 historyText 分支
+      // 把落盘内容压成纯文本占位。caption 为空时仅 `[屏幕截图]`，避免历史
+      // 里出现空 user message。
+      const historyText = trimmed ? `${trimmed} [屏幕截图]` : "[屏幕截图]";
+      onSend(trimmed, [pendingScreenshot!], { historyText });
+    } else {
+      onSend(trimmed, hasImages ? pendingImages : undefined);
+    }
     setPendingImages([]);
+    setPendingScreenshot(null);
     setInput("");
     // shell 风历史栈：dedup + move-to-front + cap，写盘后同步本地 state。
     // 与 PanelChat（大面板聊天框）共用同一份 localStorage，跨窗口召回。
     setSentHistory(pushSentHistory(trimmed));
     historyCursorRef.current = null;
     recalledValueRef.current = null;
-  }, [input, isLoading, pendingImages, onSend, showErrorToast]);
+  }, [input, isLoading, pendingImages, pendingScreenshot, onSend, showErrorToast]);
+
+  /// 📸 click handler：调后端 `screenshot_capture`，拿到 data URL → 进
+  /// staging。捕获过程对 isLoading 独立（用户可以在 LLM 生成时先把下一张
+  /// 截图拍好），但同一时刻只允许一个 in-flight 抓屏 task（防同 /tmp 文
+  /// 件竞争）。失败时把后端返回的中文用户文案直接 toast — 后端已经把权限
+  /// 未授等错误格式化成可读引导文案。
+  const captureScreenshot = useCallback(async () => {
+    if (screenshotInFlight) return;
+    setScreenshotInFlight(true);
+    try {
+      const url = await invoke<string>("screenshot_capture");
+      setPendingScreenshot(url);
+      // 互斥：截屏 staging 时清空 pendingImages，避免「一轮里既有持久化
+      // 图、又有临时截图」导致 historyText 分支把所有图都压掉的歧义。
+      setPendingImages([]);
+    } catch (e) {
+      showErrorToast(`${e}`);
+    } finally {
+      setScreenshotInFlight(false);
+    }
+  }, [screenshotInFlight, showErrorToast]);
 
   /// ↑/↓ 在合适状态下拦截作历史召回。其余按键交由 textarea 默认。
   /// ↑：仅 `input === ""` 或处于历史浏览模式（recalledValue === 当前 input）时拦截
@@ -466,6 +515,67 @@ export function ChatPanel({ onSend, isLoading }: Props) {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {pendingScreenshot && (
+          /* 截屏 staging 行：单张缩略图 + 「📸 不入历史」标签 + ✕ 移除。
+             与 pendingImages 视觉区分：背景带 tint，提示用户「这张图发
+             完即焚」与拖入的持久化附件不同。 */
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 6px",
+              background: "var(--pet-tint-blue-bg)",
+              border: "1px dashed var(--pet-tint-blue-fg)",
+              borderRadius: 8,
+              alignSelf: "stretch",
+            }}
+            title="本张截图本轮 LLM 看到、不入历史；下一轮 history 里只剩 [屏幕截图] 占位"
+          >
+            <img
+              src={pendingScreenshot}
+              alt="screenshot preview"
+              onClick={() => setLightboxSrc(pendingScreenshot)}
+              style={{
+                width: 44,
+                height: 44,
+                objectFit: "cover",
+                borderRadius: 4,
+                cursor: "zoom-in",
+                display: "block",
+              }}
+            />
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--pet-tint-blue-fg)",
+                flex: 1,
+              }}
+            >
+              📸 待发截图 · 仅本轮可见
+            </span>
+            <button
+              type="button"
+              title="移除截图"
+              aria-label="remove screenshot"
+              onClick={() => setPendingScreenshot(null)}
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: "50%",
+                border: "none",
+                background: "rgba(15,23,42,0.78)",
+                color: "#fff",
+                fontSize: 11,
+                lineHeight: 1,
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              ✕
+            </button>
           </div>
         )}
         <div style={{ position: "relative" }}>
@@ -688,6 +798,54 @@ export function ChatPanel({ onSend, isLoading }: Props) {
               💡
             </button>
           )}
+          {/* 📸 截屏按钮：点击 → 后端 screencapture 主显示器 → 缩放 → 进
+              pendingScreenshot staging。位置 right: 92（💡 8 / 📋 36 /
+              📜 64 之后第四 chip 位）。inflight 时禁用 + 半透明 + tooltip
+              改文案，避免连点。pendingScreenshot 已 staged 时按钮改 tint
+              视觉反馈，再点等价 retake（替换前一张）。 */}
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              void captureScreenshot();
+            }}
+            disabled={screenshotInFlight}
+            title={
+              screenshotInFlight
+                ? "正在抓主显示器截图…"
+                : pendingScreenshot
+                  ? "📸 已有待发截图，点击重新抓取替换 / 旁边 ✕ 移除"
+                  : "📸 抓主显示器当前截图作为本轮 vision 输入（不入历史，仅留 [屏幕截图] 占位）"
+            }
+            aria-label="capture screenshot"
+            style={{
+              position: "absolute",
+              top: 6,
+              right: 92,
+              width: 22,
+              height: 22,
+              borderRadius: "50%",
+              border: "1px solid var(--pet-color-border)",
+              background: pendingScreenshot
+                ? "var(--pet-tint-blue-bg)"
+                : "var(--pet-color-card)",
+              color: pendingScreenshot
+                ? "var(--pet-tint-blue-fg)"
+                : "var(--pet-color-muted)",
+              fontSize: 11,
+              lineHeight: 1,
+              cursor: screenshotInFlight ? "wait" : "pointer",
+              opacity: screenshotInFlight ? 0.55 : 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              zIndex: 5,
+            }}
+          >
+            📸
+          </button>
           {/* 📏 长 input 字符徽章：input ≥ 500 字时浮 bottom-right inline 灰字
               「Nch」+ ≥ 2000 切红 tint 告警。避免 owner 在长 prompt 写作中
               失去对 textarea 体积的感知（textarea 默认 overflow: hidden 不

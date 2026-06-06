@@ -29,6 +29,18 @@ use crate::mood::{MOOD_CATEGORY, MOOD_TITLE};
 /// pet skips the turn without writing to speech_history.
 pub const SILENT_MARKER: &str = "<silent>";
 
+/// 064-part1：是否应视为「沉默回合」。空回复或回复**任何大小写形式**
+/// 含 `<silent>` 一律静默 —— LLM 时常会大写首字母（`<Silent>`）或在
+/// marker 后追加决策推理（"我选择安静等待"），那段 reasoning 不应
+/// 漏到 ChatMini chat bubble。命中即返沉默，无视 marker 后内容。
+pub fn is_silent_reply(reply: &str) -> bool {
+    let trimmed = reply.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    trimmed.to_lowercase().contains(SILENT_MARKER)
+}
+
 /// Bag of every signal the proactive prompt depends on. Adding a new prompt
 /// hint is now: (a) extend this struct, (b) push it via `push_if_nonempty` in
 /// `build_proactive_prompt`. Tests use `base_inputs()` (in `prompt_tests`)
@@ -148,6 +160,10 @@ pub struct PromptInputs<'a> {
     /// can occasionally call the user by name. Mirrors the persona_layer
     /// injection added in Iter Cτ but lives in proactive's own prompt path.
     pub user_name: &'a str,
+    /// GOAL 055: pet's own name from `settings.pet_name`. Empty = user 还没
+    /// 取名 → 插入"邀请取名"提示让 pet 被问时柔和回避并邀请；非空 = 注入
+    /// "你的名字是「X」"让 self-reference 用此名。与 `user_name` 平行。
+    pub pet_name: &'a str,
     /// Iter R1: feedback from the previous proactive turn. Empty when there's
     /// no prior turn or the prior is still ambiguous; non-empty carries a
     /// one-line nudge ("上次你说『...』，用户没回应 — ...") so the LLM
@@ -381,6 +397,19 @@ pub fn build_proactive_prompt(inputs: &PromptInputs) -> String {
     s.push(String::new());
     s.push(inputs.mood_hint.to_string());
     s.push(format_companionship_line(inputs.companionship_days));
+    // GOAL 055: pet name line. Same framing as format_persona_layer chat path.
+    // 空 → 插入"邀请取名"提示；非空 → "你的名字是「X」"。
+    if !inputs.pet_name.trim().is_empty() {
+        s.push(format!(
+            "你的名字是「{}」——self-reference / 自我介绍时用这个名字。",
+            inputs.pet_name.trim()
+        ));
+    } else {
+        s.push(
+            "你还没有名字——主人还没给你取。被问到「你叫什么」时柔和回避并邀请主人取名，不要自己编一个。"
+                .to_string(),
+        );
+    }
     // Iter Cυ: optional owner-name line. Reuses the same wording as
     // format_persona_layer (Iter Cτ) so reactive chat and proactive give
     // consistent "你的主人是「X」" framing.
@@ -459,5 +488,58 @@ pub fn format_plan_hint(description: &str, redact: &dyn Fn(&str) -> String) -> S
         String::new()
     } else {
         format!("你今天的小目标 / 计划：\n{}", redact(trimmed))
+    }
+}
+
+#[cfg(test)]
+mod silent_reply_tests {
+    use super::is_silent_reply;
+
+    #[test]
+    fn empty_or_whitespace_is_silent() {
+        assert!(is_silent_reply(""));
+        assert!(is_silent_reply("   "));
+        assert!(is_silent_reply("\n\t  \n"));
+    }
+
+    #[test]
+    fn lowercase_marker_alone_is_silent() {
+        assert!(is_silent_reply("<silent>"));
+        assert!(is_silent_reply("  <silent>  "));
+    }
+
+    #[test]
+    fn capitalized_marker_is_silent() {
+        // 064-part1：截图证据里 LLM 写的是 `<Silent>` 大写首字母 ——
+        // 旧 case-sensitive contains 漏掉，新检查覆盖。
+        assert!(is_silent_reply("<Silent>"));
+        assert!(is_silent_reply("<SILENT>"));
+        assert!(is_silent_reply("<SiLeNt>"));
+    }
+
+    #[test]
+    fn marker_followed_by_reasoning_is_silent() {
+        // 决策推理泄漏路径：LLM 在 marker 后追加「我选择安静等待」一类
+        // 解释——本身就是说话，self-contradictory。命中即沉默。
+        assert!(is_silent_reply(
+            "<Silent> 用户键鼠空闲 100 分钟，今天主动开过 8 次，这次安静等待。"
+        ));
+        assert!(is_silent_reply("<silent> 我选择不打扰。"));
+    }
+
+    #[test]
+    fn marker_anywhere_in_reply_is_silent() {
+        // 即使 LLM 用 marker 当作 inline 标点也算沉默 —— 与「该说时直接
+        // 说话，不要包含 marker」的 prompt 约定一致。
+        assert!(is_silent_reply("好的 <silent> 不打扰你了"));
+    }
+
+    #[test]
+    fn normal_speech_is_not_silent() {
+        assert!(!is_silent_reply("今天天气不错呀。"));
+        assert!(!is_silent_reply("Hello!"));
+        // marker 字面相似但非该 token 不命中
+        assert!(!is_silent_reply("silent mode is great"));
+        assert!(!is_silent_reply("我很 silent"));
     }
 }

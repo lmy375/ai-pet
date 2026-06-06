@@ -13,8 +13,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-opener = "2"
+# GOAL 052：proactive utterance 走 OS notification 通道——pet 不在前台时
+# 用户仍能感知。Tauri 2 官方 plugin；权限走 capabilities/default.json 的
+# `notification:default`。
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
@@ -32,8 +36,18 @@ rmcp = { version = "1.2", features = [
     "reqwest",
 ] }
 teloxide = { version = "0.13", features = ["macros"] }
+# 启用 jpeg + png：jpeg 是 TG photo 通道的固定格式；png 给桌面截屏
+# 链路用（macOS `screencapture` 默认输出 PNG）。其它格式不需要随包
+# 带入 → 显著减小二进制体积与编译时间。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 log = "0.4"
 regex = "1"
 # bundled feature 编译时静态打包 SQLite C 源码，无外部依赖。
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+[features]
+# release 构建默认不暴露 webview devtools；想在 release 包里调试 panel 时
+# `cargo build --release --features devtools` 显式开启。debug 构建已通过
+# `debug_assertions` 自动允许，不依赖本 feature。
+devtools = []
 

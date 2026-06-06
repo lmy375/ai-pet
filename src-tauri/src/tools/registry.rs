@@ -11,6 +11,8 @@ use super::memory_tools::{
     ButlerTaskEditTool, MemoryEditTool, MemoryListTool, MemorySearchTool, TodoEditTool,
 };
 use super::shell_tools::{BashTool, CheckShellStatusTool};
+use super::retrieve_memory_tool::RetrieveMemoryTool;
+use super::snooze_reminder_tool::SnoozeReminderTool;
 use super::system_tools::GetActiveWindowTool;
 use super::task_create_tool::TaskCreateTool;
 use super::task_tool::ProposeTaskTool;
@@ -46,6 +48,8 @@ pub const BUILTIN_TOOL_NAMES: &[&str] = &[
     "propose_task",
     "task_create",
     "give_image",
+    "cancel_task",
+    "set_topic_arc",
 ];
 
 /// Registry holding all available tools (built-in + MCP)
@@ -91,6 +95,8 @@ impl ToolRegistry {
             Box::new(ProposeTaskTool),
             Box::new(TaskCreateTool),
             Box::new(GiveImageTool),
+            Box::new(SnoozeReminderTool),
+            Box::new(RetrieveMemoryTool),
         ];
         Self::with_tools(tools, mcp_definitions)
     }

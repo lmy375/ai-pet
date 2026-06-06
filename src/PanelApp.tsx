@@ -1,6 +1,6 @@
 import { Component, ErrorInfo, ReactNode, useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { PanelSettings } from "./components/panel/PanelSettings";
 import { PanelChat } from "./components/panel/PanelChat";
 import { PanelMemory } from "./components/panel/PanelMemory";
@@ -11,12 +11,9 @@ import { usePollingState } from "./hooks/usePollingState";
 import { useTabKeyboardShortcut } from "./hooks/useTabKeyboardShortcut";
 import {
   applyTheme,
-  getStoredTheme,
-  setStoredTheme,
   getStoredAccent,
   setStoredAccent,
   type Accent,
-  type Theme,
 } from "./theme";
 
 /**
@@ -262,47 +259,23 @@ export function PanelApp() {
     consumePanelDeeplink();
   }, [consumePanelDeeplink]);
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
-  // 主题：迭代 1 仅框架级 surface 切换（顶层 bg / tab bar）。组件内部
-  // inline color 留给后续迭代按 panel 逐步迁移到 CSS var。启动时从
-  // localStorage 读偏好并 apply，避免 light flash。
-  const [theme, setTheme] = useState<Theme>(() => {
-    const t = getStoredTheme();
-    applyTheme(t, getStoredAccent());
-    return t;
-  });
-  const toggleTheme = () => {
-    const next: Theme = theme === "light" ? "dark" : "light";
-    applyTheme(next, getStoredAccent());
-    setStoredTheme(next);
-    setTheme(next);
-    // 跨 webview 广播：让桌面宠物 / 调试窗口也立即切主题。各 window 的
-    // listener 自己 setStoredTheme + applyTheme 持久化。
-    void emit("theme-change", next);
-  };
-
-  // 监听其它 window（如设置页内联 toggle 后续会有）发出的主题切换。本 window
-  // 已经是 emit 方时也会收到（Tauri emit 行为）—— 用 next !== theme 守护避
-  // 免 setTheme(next) 触发不必要的 re-apply。
+  // 051-part1：启动时把存的 accent 刷到 documentElement，避免 light flash。
+  // theme（light/dark）已删除，仅 accent 仍允许用户偏好定制。
   useEffect(() => {
-    const pTheme = listen<string>("theme-change", (event) => {
-      const next = event.payload === "dark" ? "dark" : "light";
-      setTheme((cur) => {
-        if (cur === next) return cur;
-        applyTheme(next, getStoredAccent());
-        setStoredTheme(next);
-        return next;
-      });
-    });
+    applyTheme(getStoredAccent());
+  }, []);
+
+  // 监听其它 window（设置页 accent picker）发出的 accent 切换。
+  useEffect(() => {
     const pAccent = listen<string>("accent-change", (event) => {
       const valid: Accent[] = ["default", "green", "purple", "orange", "rose"];
       const raw = event.payload as Accent;
       const next = valid.includes(raw) ? raw : "default";
       if (getStoredAccent() === next) return;
       setStoredAccent(next);
-      applyTheme(getStoredTheme(), next);
+      applyTheme(next);
     });
     return () => {
-      pTheme.then((un) => un());
       pAccent.then((un) => un());
     };
   }, []);
@@ -662,26 +635,6 @@ export function PanelApp() {
           title="键盘快捷键速查（也可按 ?）"
         >
           ?
-        </button>
-        <button
-          className="pet-panel-tab"
-          onClick={toggleTheme}
-          style={{
-            padding: "13px 12px 11px",
-            border: "none",
-            borderBottom: "2px solid transparent",
-            background: "transparent",
-            color: "var(--pet-color-muted)",
-            fontSize: "13.5px",
-            cursor: "pointer",
-          }}
-          title={
-            theme === "light"
-              ? "切到深色主题（夜间不刺眼）"
-              : "切到浅色主题"
-          }
-        >
-          {theme === "light" ? "🌙" : "☀️"}
         </button>
         <button
           className="pet-panel-tab"

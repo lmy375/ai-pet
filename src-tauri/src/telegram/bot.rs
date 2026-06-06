@@ -4,6 +4,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tauri::Manager;
 use teloxide::dispatching::ShutdownToken;
+use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, Me};
 use tokio::sync::Mutex as TokioMutex;
@@ -20,6 +21,7 @@ use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
 use crate::mood::read_mood_for_event;
+use crate::telegram::photo;
 use crate::tools::ToolContext;
 
 /// A running Telegram bot instance.
@@ -68,6 +70,12 @@ struct HandlerState {
     /// 尾自动列出 —— 让用户配完忘了输的命令名能从 /help 找回。规则同
     /// `custom_command_names`：合并过滤后的版本。
     custom_command_objects: Vec<crate::commands::settings::TgCustomCommand>,
+    /// album 去抖 buffer：`media_group_id` → 累积中的多图。TG 把同一相
+    /// 册的每张图作为独立 Message 推送，本 buffer 在第一张到达时启动
+    /// `ALBUM_DEBOUNCE_MS` 计时器，后续图追加进来；计时器触发后整体作
+    /// 为一轮 vision turn 送给 LLM。聚合失败的极端情况退化为「相册被
+    /// 拆成多轮」—— 体验下降但不会丢消息。
+    album_buffer: photo::AlbumBuffer,
 }
 
 /// 任务回传 watcher 跟踪的最近一轮快照：title → status。读 butler_tasks
@@ -100,18 +108,24 @@ impl TelegramBot {
             .await
             .map_err(|e| format!("Telegram bot auth failed: {}", e))?;
 
-        // 注册命令清单：让 TG 客户端在用户输 `/` 时弹出补全候选。装饰性
-        // API，失败 log 即可不阻断启动 —— 命令本身仍在 parse_tg_command 里
-        // 工作，只是用户得记住或翻 /help。
+        // 注册命令清单：让 TG 客户端在用户输 `/` 时弹出补全候选。GOAL 061：
+        // Telegram setMyCommands 上限 100 / 单 scope；本项目命令矩阵已 >100
+        // 触发 BOT_COMMANDS_TOO_MUCH。改用 essential_tg_command_registry 仅
+        // 注册 ≤ 20 essential + ≤ 20 custom，全套命令仍通过 parse_tg_command
+        // 文字解析工作——只是 / 弹窗补全只显精选条目。失败 log + 提示「bot
+        // 仍可用 / 命令补全不全」，不阻断启动。
         let cmds: Vec<BotCommand> =
-            crate::telegram::commands::merged_command_registry(&config.custom_commands, &config.command_lang)
+            crate::telegram::commands::essential_tg_command_registry(&config.custom_commands, &config.command_lang)
                 .into_iter()
                 .map(|(name, desc)| BotCommand::new(name, desc))
                 .collect();
         match bot.set_my_commands(cmds).await {
-            Ok(_) => eprintln!("Telegram commands registered for autocomplete"),
+            Ok(_) => eprintln!("Telegram commands registered for autocomplete (essential subset)"),
             Err(e) => {
-                let msg = e.to_string();
+                let msg = format!(
+                    "{} — bot 仍可用，但 / 命令补全弹窗不全；可文字打全名运行",
+                    e
+                );
                 eprintln!("set_my_commands failed (non-fatal): {}", msg);
                 crate::telegram::warnings::push(&warnings, "set_my_commands", msg);
             }
@@ -164,11 +178,12 @@ impl TelegramBot {
             last_tasks_titles: TokioMutex::new(HashMap::new()),
             custom_command_names,
             custom_command_objects,
+            album_buffer: TokioMutex::new(HashMap::new()),
         });
 
-        let handler = Update::filter_message()
-            .filter_map(|msg: Message| msg.text().map(|t| t.to_string()))
-            .endpoint(handle_message);
+        // 注意：不再 filter_map 出 text —— photo / album 消息也需要进
+        // handler。文本提取放到 `handle_message` 内部按 message kind 分流。
+        let handler = Update::filter_message().endpoint(handle_message);
 
         // Bot 内部已是 Arc 共享 client；clone 仅复制句柄，无 IO 成本。
         // watcher_bot 在 dispatcher 之前 clone，保证 dispatcher 拿到原句柄。
@@ -242,7 +257,6 @@ fn load_or_create_session() -> (String, Vec<serde_json::Value>) {
 async fn handle_message(
     bot: Bot,
     msg: Message,
-    text: String,
     state: Arc<HandlerState>,
 ) -> ResponseResult<()> {
     // Check allowed username
@@ -265,6 +279,33 @@ async fn handle_message(
         return Ok(());
     }
 
+    // 消息 kind 分流：先 text、后 photo（包括 album）、其它 media 忽略。
+    // text 分支保留命令调度链路；photo 分支是 Iter 多模态第一步。
+    if let Some(text) = msg.text().map(|t| t.to_string()) {
+        handle_text_message(bot, msg, text, state).await
+    } else if msg
+        .photo()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false)
+    {
+        handle_photo_message(bot, msg, state).await
+    } else if msg.document().is_some() {
+        // GOAL 031：text 文档（.md / .txt / 源码等白名单）下载后入 prompt。
+        // 不支持格式 / 二进制 / 超大文件 → 用户可见的拒绝消息。
+        handle_document_message(bot, msg, state).await
+    } else {
+        // video / voice / sticker 等暂未支持。静默忽略 —— 不
+        // 回错误提示，避免群里非定向消息打扰用户。
+        Ok(())
+    }
+}
+
+async fn handle_text_message(
+    bot: Bot,
+    msg: Message,
+    text: String,
+    state: Arc<HandlerState>,
+) -> ResponseResult<()> {
     // 命令分流：以 `/` 开头的消息走命令调度而不是 chat pipeline。直接
     // 复用现有 Tauri 命令（task_cancel / task_retry），共用 decision_log
     // 与 butler_history 路径，与桌面面板上的"取消 / 重试"语义一致。
@@ -287,11 +328,286 @@ async fn handle_message(
         }
     }
 
-    // Send typing indicator
+    let user_msg = serde_json::json!({ "role": "user", "content": text.clone() });
+    run_chat_turn(bot, msg.chat.id, state, user_msg, text).await
+}
+
+/// Photo / album 入口。单图直接处理；带 `media_group_id` 的进 album
+/// buffer 做去抖聚合，由 spawn 的 timer 任务后续 flush 成一轮 vision turn。
+async fn handle_photo_message(
+    bot: Bot,
+    msg: Message,
+    state: Arc<HandlerState>,
+) -> ResponseResult<()> {
+    // teloxide 把同一张图的多个尺寸装在数组里（升序），取最后一个 = 最大
+    // 尺寸。也是 GOAL.md「按模型上限缩放」的输入侧上界。
+    let largest = match msg.photo().and_then(|p| p.last()) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    let file_id = largest.file.id.clone();
+    let caption = msg.caption().map(|s| s.to_string());
+
+    if let Some(group_id) = msg.media_group_id() {
+        let group_key = group_id.to_string();
+        let chat_id = msg.chat.id;
+
+        // 第一张图到达时返回 true → 启动 debounce timer；后续仅追加，不
+        // 重复 spawn。timer 内部 take buffer 一次性 flush。
+        let should_spawn = {
+            let mut buf = state.album_buffer.lock().await;
+            let entry = buf
+                .entry(group_key.clone())
+                .or_insert_with(|| photo::AlbumPending {
+                    chat_id,
+                    photos: Vec::new(),
+                });
+            let was_first = entry.photos.is_empty();
+            entry.photos.push((file_id, caption));
+            was_first
+        };
+
+        if should_spawn {
+            let state2 = state.clone();
+            let bot2 = bot.clone();
+            let key = group_key;
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(photo::ALBUM_DEBOUNCE_MS)).await;
+                let pending = {
+                    let mut buf = state2.album_buffer.lock().await;
+                    buf.remove(&key)
+                };
+                if let Some(p) = pending {
+                    if let Err(e) =
+                        run_photo_turn(bot2, p.chat_id, p.photos, state2).await
+                    {
+                        log::warn!("album turn failed: {:?}", e);
+                    }
+                }
+            });
+        }
+        return Ok(());
+    }
+
+    // 单图：直接走 vision turn。
+    run_photo_turn(bot, msg.chat.id, vec![(file_id, caption)], state).await
+}
+
+/// 把一组（>=1 张）TG 图下载、缩放、base64 编码后组成 Anthropic vision
+/// content，再走共享的 [`run_chat_turn`]。同时把「历史里存什么」算好：
+/// 第一张图的 caption（如有）+ `[图片]` / `[图片 ×N]` 占位 —— GOAL.md
+/// 「history 中不保存图片二进制」的实现侧。
+async fn run_photo_turn(
+    bot: Bot,
+    chat_id: ChatId,
+    photos: Vec<(String, Option<String>)>,
+    state: Arc<HandlerState>,
+) -> ResponseResult<()> {
+    let _ = bot.send_chat_action(chat_id, ChatAction::Typing).await;
+
+    let mut image_parts: Vec<serde_json::Value> = Vec::with_capacity(photos.len());
+    let mut first_caption: Option<String> = None;
+    for (file_id, caption) in &photos {
+        // album 通常只在第一条带 caption，但我们扫全部更稳健 —— 防止用
+        // 户用某些客户端把 caption 放在第二张图上。
+        if first_caption.is_none() {
+            if let Some(c) = caption.as_ref().filter(|c| !c.trim().is_empty()) {
+                first_caption = Some(c.clone());
+            }
+        }
+        match photo::download_and_prepare(&bot, file_id).await {
+            Ok(b64) => {
+                image_parts.push(serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": b64,
+                    }
+                }));
+            }
+            Err(e) => {
+                // 任意一张失败就整体中止 + 用户反馈，避免「部分图丢失但
+                // LLM 不知道」导致回应基于不完整素材。
+                let _ = bot
+                    .send_message(chat_id, format!("图片处理失败：{}", e))
+                    .await;
+                return Ok(());
+            }
+        }
+    }
+
+    if image_parts.is_empty() {
+        return Ok(());
+    }
+
+    let n = image_parts.len();
+    let caption_text = first_caption.unwrap_or_default();
+
+    // GOAL 009：caption 含 keep intent 关键词时把首图物化为 PanelMemory
+    // visual item。从 image_parts[0].source.data 取 base64 → decode →
+    // save_thumbnail。fire-and-forget；与 chat history (image_parts 还会
+    // 走 LLM) 互不冲突 —— 这是用户 opt-in 的写入动作。
+    if crate::visual_memory::is_keep_intent(&caption_text) {
+        if let Some(b64) = image_parts
+            .first()
+            .and_then(|p| p.get("source"))
+            .and_then(|s| s.get("data"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+        {
+            let cap = caption_text.clone();
+            tokio::spawn(async move {
+                use base64::Engine;
+                match base64::engine::general_purpose::STANDARD.decode(&b64) {
+                    Ok(bytes) => {
+                        if let Err(e) = crate::visual_memory::keep_image_as_memory(
+                            bytes,
+                            &cap,
+                            "",
+                            "ai_insights",
+                        )
+                        .await
+                        {
+                            log::warn!("visual_memory: TG keep failed: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("visual_memory: TG b64 decode failed: {}", e);
+                    }
+                }
+            });
+        }
+    }
+
+    // Anthropic content parts：caption 为空时直接送 image-only，避免
+    // 空字符串 text part 触发部分模型的「empty text」校验。
+    let mut content_parts: Vec<serde_json::Value> = Vec::new();
+    if !caption_text.is_empty() {
+        content_parts.push(serde_json::json!({ "type": "text", "text": caption_text }));
+    }
+    content_parts.extend(image_parts);
+    let user_msg = serde_json::json!({ "role": "user", "content": content_parts });
+
+    // 历史占位文本：单图 `[图片]`，多图 `[图片 ×N]`；有 caption 时拼前面。
+    // 这是下一轮 history 里 LLM 看到的形态 —— 文字够 LLM 知道「上轮有图」。
+    let marker = if n == 1 {
+        "[图片]".to_string()
+    } else {
+        format!("[图片 ×{}]", n)
+    };
+    let history_text = if caption_text.is_empty() {
+        marker
+    } else {
+        format!("{} {}", caption_text, marker)
+    };
+
+    run_chat_turn(bot, chat_id, state, user_msg, history_text).await
+}
+
+/// GOAL 031：TG document（白名单文本类）入口。下载 → cap + binary check →
+/// 与 caption 一并拼成 user 消息走 chat pipeline。session history 仅留
+/// `[文件: name] <caption>` 占位（与 photo `[图片]` 同 contract——不让
+/// 大文件内容长期占 session token）。
+///
+/// 拒绝路径都把 user-facing message 回去（非文本格式 / 二进制 / 太大 / 空）；
+/// 静默吞会让用户以为 bot 没收到——GOAL「不静默吞」明确反对。
+async fn handle_document_message(
+    bot: Bot,
+    msg: Message,
+    state: Arc<HandlerState>,
+) -> ResponseResult<()> {
+    let doc = match msg.document() {
+        Some(d) => d.clone(),
+        None => return Ok(()),
+    };
+    let file_id = doc.file.id.clone();
+    let file_size = doc.file.size as usize;
+    let file_name = doc
+        .file_name
+        .clone()
+        .unwrap_or_else(|| "未命名文件".to_string());
+    let caption = msg.caption().unwrap_or("").to_string();
+
+    // 预闸：TG 已知 size > 2× MAX_BYTES 直接拒，不浪费下载带宽。给 2×
+    // buffer 是为了 zip / 压缩文本「实际解压后内容不算大」的场景仍走流程
+    // 让 read_text_bytes_capped 二次裁——虽然本 v1 不解压，留个对称口子。
+    if file_size > crate::local_file_input::MAX_BYTES * 2 {
+        let _ = bot
+            .send_message(
+                msg.chat.id,
+                format!(
+                    "「{}」太大了（{} bytes，超过 {} 上限），先裁一下或挑关键段贴过来。",
+                    file_name,
+                    file_size,
+                    crate::local_file_input::MAX_BYTES * 2
+                ),
+            )
+            .await;
+        return Ok(());
+    }
+    // 预闸：扩展白名单。在下载前判断避免无效带宽。
+    let ext = crate::local_file_input::extension_lower(&file_name);
+    if !crate::local_file_input::is_text_extension(&ext) {
+        let err = crate::local_file_input::FileReadErr::UnsupportedExtension(ext);
+        let _ = bot.send_message(msg.chat.id, err.user_message(&file_name)).await;
+        return Ok(());
+    }
+
     let _ = bot.send_chat_action(msg.chat.id, ChatAction::Typing).await;
 
-    // Build ChatMessage list from session history + new user message
-    let user_msg = serde_json::json!({ "role": "user", "content": text });
+    // 下载 raw 字节。teloxide download_file 直接拿原文件，不缩放（缩放是
+    // photo path 才需要的，文档保留原内容）。
+    let file_meta = match bot.get_file(file_id).await {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = bot
+                .send_message(msg.chat.id, format!("get_file 失败：{}", e))
+                .await;
+            return Ok(());
+        }
+    };
+    let mut raw: Vec<u8> = Vec::new();
+    if let Err(e) = bot.download_file(&file_meta.path, &mut raw).await {
+        let _ = bot
+            .send_message(msg.chat.id, format!("download 失败：{}", e))
+            .await;
+        return Ok(());
+    }
+
+    let outcome = match crate::local_file_input::read_text_bytes_capped(&file_name, &raw) {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = bot
+                .send_message(msg.chat.id, e.user_message(&file_name))
+                .await;
+            return Ok(());
+        }
+    };
+
+    let prompt_text = crate::local_file_input::format_for_prompt(&file_name, &caption, &outcome);
+    let history_marker = if caption.trim().is_empty() {
+        format!("[文件: {}]", file_name)
+    } else {
+        format!("[文件: {}] {}", file_name, caption.trim())
+    };
+    let user_msg = serde_json::json!({ "role": "user", "content": prompt_text });
+    run_chat_turn(bot, msg.chat.id, state, user_msg, history_marker).await
+}
+
+/// 共享的 chat pipeline 执行：把 `user_msg`（可富 / 可纯文本）压入 session
+/// → 触发 LLM → 落盘。`history_text` 是 user 消息**落盘时**的纯文本表示，
+/// 用于把 vision payload 替换成 `[图片]` 占位，满足「history 不保存图片
+/// 二进制」。文本 path 传 `history_text == user_msg.content` 即可（无替换效果）。
+async fn run_chat_turn(
+    bot: Bot,
+    chat_id: ChatId,
+    state: Arc<HandlerState>,
+    user_msg: serde_json::Value,
+    history_text: String,
+) -> ResponseResult<()> {
+    // Send typing indicator
+    let _ = bot.send_chat_action(chat_id, ChatAction::Typing).await;
 
     // Snapshot the full session, then let the shared trim/inject helpers prune to the
     // configured context window. Keeps trim semantics identical between desktop and
@@ -331,7 +647,13 @@ async fn handle_message(
     // Telegram 派单层：告诉 LLM 当前在 TG 通道，应当用 task_create 直接
     // 落盘（而非 propose_task —— TG 没有确认卡 UI）。chat_id 注入到提示
     // 里，让 LLM 调 task_create 时能填正确的 origin。
-    let chat_messages = inject_telegram_dispatch_layer(chat_messages, msg.chat.id.0);
+    let chat_messages = inject_telegram_dispatch_layer(chat_messages, chat_id.0);
+    // GOAL 022：模糊时间词澄清协议同 desktop。
+    let chat_messages = crate::time_ambiguity::inject_time_ambiguity_layer(chat_messages);
+    // GOAL 005：TG 也对齐 desktop —— user 消息含 URL 时抓取标题 + 正文摘要
+    // prepend system note，让宠物能基于真实内容回。--no-fetch 后缀短路；
+    // 注入仅对本轮 LLM 生效，session_msgs 已先 snapshot 不受影响。
+    let chat_messages = crate::url_fetch::inject_url_context_layer(chat_messages).await;
 
     // Run the LLM pipeline
     let reply_text = match AiConfig::from_settings() {
@@ -368,6 +690,19 @@ async fn handle_message(
     {
         let assistant_msg = serde_json::json!({ "role": "assistant", "content": reply_text });
         let mut session_msgs = state.session_messages.lock().await;
+
+        // 回写：把最近一条 user 消息的 content 改成纯文本占位。photo path
+        // 这里把 vision payload 剥离掉，只留 caption + `[图片]`；text path
+        // 这里是 no-op（history_text 与原 content 相同）。这样保证：
+        //   - 本轮 LLM 已经看到完整富内容（chat_messages 已发出去）
+        //   - session_messages（=下一轮 history 输入）只剩文本
+        //   - items（=面板显示）也自动纯文本
+        for m in session_msgs.iter_mut().rev() {
+            if m.get("role").and_then(|v| v.as_str()) == Some("user") {
+                m["content"] = serde_json::Value::String(history_text.clone());
+                break;
+            }
+        }
         session_msgs.push(assistant_msg);
 
         // Persist to disk
@@ -415,12 +750,12 @@ async fn handle_message(
 
     // Send reply (split if exceeds Telegram limit)
     if reply_text.len() <= TELEGRAM_MSG_LIMIT {
-        bot.send_message(msg.chat.id, &reply_text).await?;
+        bot.send_message(chat_id, &reply_text).await?;
     } else {
         // 超长 → 切块并给每块加 `(i/n) ` 前缀，避免接收方把第 2、3 块误读为
         // 新一轮发言（特别是 TG 群组多人场景）。
         for chunk in format_split_chunks(&reply_text, TELEGRAM_MSG_LIMIT) {
-            bot.send_message(msg.chat.id, chunk).await?;
+            bot.send_message(chat_id, chunk).await?;
         }
     }
 
@@ -833,6 +1168,22 @@ async fn handle_tg_command(
                 &top_tools,
             )
         }
+        TgCommand::Recall { query } => {
+            // GOAL 038：跨数据源 retrospective 检索（等价 retrieve_memory tool
+            // 直调，sources=all / top_n=10）。空 query 给用法；无命中给诚实
+            // 「没找到」（不编造）。
+            if query.trim().is_empty() {
+                "用法：/recall <query>\n例：/recall 咖啡店".to_string()
+            } else {
+                let items = crate::memory_retrieval::retrieve(
+                    &query,
+                    10,
+                    crate::memory_retrieval::ALL_SOURCES,
+                )
+                .await;
+                crate::memory_retrieval::format_for_listing(&query, &items)
+            }
+        }
         TgCommand::Streak => {
             // 完成节奏 audit：reuse read_tg_chat_task_views（已 chat-scoped）。
             // formatter 内部 connect compute_done_streak / count_done_in_
@@ -840,286 +1191,6 @@ async fn handle_tg_command(
             let views = read_tg_chat_task_views(chat_id.0);
             let today = chrono::Local::now().date_naive();
             crate::telegram::commands::format_streak_reply(&views, today)
-        }
-        TgCommand::HereUntil { raw } => {
-            // parse HH:MM → 算 minutes from now to today's HH:MM → fetch
-            // current transient text → set_transient_note(text, minutes)。
-            // empty current → no_transient；invalid raw → usage hint；
-            // target ≤ now → expired warning（不 set 避免破坏当前
-            // transient）。
-            use chrono::TimeZone;
-            let parsed = crate::telegram::commands::parse_sleep_until_time(&raw);
-            if let Some((h, m)) = parsed {
-                let (text, _until_iso) =
-                    crate::proactive::get_transient_note();
-                if text.trim().is_empty() {
-                    crate::telegram::commands::format_here_until_reply(
-                        "no_transient",
-                        &raw,
-                        None,
-                        None,
-                        0,
-                    )
-                } else {
-                    let now = chrono::Local::now();
-                    let today = now.date_naive();
-                    let target = today
-                        .and_hms_opt(h as u32, m as u32, 0)
-                        .and_then(|naive| {
-                            chrono::Local
-                                .from_local_datetime(&naive)
-                                .single()
-                        });
-                    if let Some(target_dt) = target {
-                        let minutes = (target_dt - now).num_minutes();
-                        let target_label = format!("{:02}:{:02}", h, m);
-                        if minutes <= 0 {
-                            crate::telegram::commands::format_here_until_reply(
-                                "expired",
-                                &raw,
-                                Some(&text),
-                                Some(&target_label),
-                                minutes,
-                            )
-                        } else {
-                            let _ = crate::proactive::set_transient_note(
-                                text.clone(),
-                                minutes,
-                            );
-                            crate::telegram::commands::format_here_until_reply(
-                                "ok",
-                                &raw,
-                                Some(&text),
-                                Some(&target_label),
-                                minutes,
-                            )
-                        }
-                    } else {
-                        crate::telegram::commands::format_here_until_reply(
-                            "usage", &raw, None, None, 0,
-                        )
-                    }
-                }
-            } else {
-                crate::telegram::commands::format_here_until_reply(
-                    "usage", &raw, None, None, 0,
-                )
-            }
-        }
-        TgCommand::HereStatus => {
-            // get_transient_note() returns (text, until_iso). empty text =
-            // no active transient. parse until_iso → DateTime<Local>;
-            // remaining_minutes = (until - now) in minutes.
-            let (text, until_iso) =
-                crate::proactive::get_transient_note();
-            let until_local = if until_iso.is_empty() {
-                None
-            } else {
-                chrono::DateTime::parse_from_str(
-                    &until_iso,
-                    "%Y-%m-%dT%H:%M:%S%:z",
-                )
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Local))
-            };
-            let remaining_minutes = until_local.map(|until| {
-                let now = chrono::Local::now();
-                (until - now).num_minutes()
-            });
-            crate::telegram::commands::format_here_status_reply(
-                &text,
-                until_local,
-                remaining_minutes,
-            )
-        }
-        TgCommand::HereRecentDone => {
-            // chat-scoped views → filter done + sort by updated_at desc
-            // + take 5 → 拼「✅ 最近完成 context：「t1」「t2」...」 →
-            // set_transient_note(text, 60)。
-            use crate::task_queue::TaskStatus;
-            let views = read_tg_chat_task_views(chat_id.0);
-            let mut done: Vec<&crate::task_queue::TaskView> = views
-                .iter()
-                .filter(|v| v.status == TaskStatus::Done)
-                .collect();
-            // updated_at RFC3339 字典序 = chron 序；desc 排
-            done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-            done.truncate(5);
-            let rows: Vec<(String, String)> = done
-                .iter()
-                .map(|v| {
-                    // updated_at 前 10 字 = YYYY-MM-DD；取 MM-DD（chars
-                    // 5..10）— ASCII ISO 安全
-                    let date_label = if v.updated_at.len() >= 10 {
-                        v.updated_at[5..10].to_string()
-                    } else {
-                        String::new()
-                    };
-                    (v.title.clone(), date_label)
-                })
-                .collect();
-            if rows.is_empty() {
-                crate::telegram::commands::format_here_recent_done_reply(&[], None)
-            } else {
-                let joined = rows
-                    .iter()
-                    .map(|(t, _)| format!("「{}」", t))
-                    .collect::<Vec<_>>()
-                    .join("");
-                let done_ctx = format!("✅ 最近完成 context：{}", joined);
-                let until_iso =
-                    crate::proactive::set_transient_note(done_ctx, 60);
-                let until_local = chrono::DateTime::parse_from_str(
-                    &until_iso,
-                    "%Y-%m-%dT%H:%M:%S%:z",
-                )
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Local));
-                crate::telegram::commands::format_here_recent_done_reply(
-                    &rows,
-                    until_local,
-                )
-            }
-        }
-        TgCommand::HereTopCat => {
-            // scan memory_list(None) → per-cat item count → sort desc →
-            // take top 3 → 拼「📊 主力 cat context：cat1 (N1) · cat2
-            // (N2) · cat3 (N3)」 → set_transient_note(text, 60)。
-            let mut rows: Vec<(String, usize)> = Vec::new();
-            if let Ok(index) =
-                crate::commands::memory::memory_list(None)
-            {
-                for (key, cat) in index.categories.iter() {
-                    if cat.items.is_empty() {
-                        continue;
-                    }
-                    rows.push((key.clone(), cat.items.len()));
-                }
-            }
-            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            rows.truncate(3);
-            if rows.is_empty() {
-                crate::telegram::commands::format_here_top_cat_reply(&[], None)
-            } else {
-                let joined = rows
-                    .iter()
-                    .map(|(k, n)| format!("{} ({})", k, n))
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                let cat_ctx = format!("📊 主力 cat context：{}", joined);
-                let until_iso =
-                    crate::proactive::set_transient_note(cat_ctx, 60);
-                let until_local = chrono::DateTime::parse_from_str(
-                    &until_iso,
-                    "%Y-%m-%dT%H:%M:%S%:z",
-                )
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Local));
-                crate::telegram::commands::format_here_top_cat_reply(
-                    &rows,
-                    until_local,
-                )
-            }
-        }
-        TgCommand::HereClear => {
-            // fetch current transient → 清 → ack reply 含 preview。
-            // set_transient_note("", 0) 已是 clear sentinel（per proactive.rs
-            // doc：Empty text or 0 minutes clears）。
-            let (current_text, _until) =
-                crate::proactive::get_transient_note();
-            let prior = if current_text.is_empty() {
-                None
-            } else {
-                Some(current_text.as_str())
-            };
-            // 清 — 无论是否 None 都安全 (no-op for None)
-            crate::proactive::set_transient_note(String::new(), 0);
-            crate::telegram::commands::format_here_clear_reply(prior)
-        }
-        TgCommand::HereIdle => {
-            // chat-scoped views → filter pending + updated_at ≤ now-7d
-            // → 拼「💤 stale context (>7d idle)：「t1」「t2」...」 →
-            // set_transient_note(text, 60)。空时 formatter 兜底教学。
-            use crate::task_queue::TaskStatus;
-            let views = read_tg_chat_task_views(chat_id.0);
-            let now_ms = chrono::Local::now().timestamp_millis();
-            let cutoff_ms = now_ms - 7 * 24 * 60 * 60 * 1000_i64;
-            let mut rows: Vec<(String, i64)> = Vec::new();
-            for v in &views {
-                if v.status != TaskStatus::Pending {
-                    continue;
-                }
-                let Ok(t) = chrono::DateTime::parse_from_rfc3339(&v.updated_at)
-                else {
-                    continue;
-                };
-                let ms = t.timestamp_millis();
-                if ms > cutoff_ms {
-                    continue;
-                }
-                let days = (now_ms - ms) / (24 * 60 * 60 * 1000);
-                rows.push((v.title.clone(), days));
-            }
-            // idle 天数 desc — 最老 stale 在上（与 /idle_7d 一致）
-            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            if rows.is_empty() {
-                crate::telegram::commands::format_here_idle_reply(&[], None)
-            } else {
-                let joined = rows
-                    .iter()
-                    .map(|(t, _)| format!("「{}」", t))
-                    .collect::<Vec<_>>()
-                    .join("");
-                let stale_ctx = format!(
-                    "💤 stale context（>7d idle）：{}",
-                    joined,
-                );
-                let until_iso = crate::proactive::set_transient_note(stale_ctx, 60);
-                let until_local = chrono::DateTime::parse_from_str(
-                    &until_iso,
-                    "%Y-%m-%dT%H:%M:%S%:z",
-                )
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Local));
-                crate::telegram::commands::format_here_idle_reply(
-                    &rows,
-                    until_local,
-                )
-            }
-        }
-        TgCommand::HerePin => {
-            // chat-scoped pinned views → 拼「📌 当前 pin context：...」
-            // 文本 → set_transient_note(text, 60)。empty pinned 走
-            // formatter 兜底教学，跳过 backend 调用。
-            let views = read_tg_chat_task_views(chat_id.0);
-            let titles: Vec<String> = views
-                .iter()
-                .filter(|v| v.pinned)
-                .map(|v| v.title.clone())
-                .collect();
-            if titles.is_empty() {
-                crate::telegram::commands::format_here_pin_reply(&[], None)
-            } else {
-                // 文本：紧凑「📌 当前 pin context：「<t1>」「<t2>」...」
-                // 一行 — 让 pet 系统 prompt 注入时 token 经济
-                let joined = titles
-                    .iter()
-                    .map(|t| format!("「{}」", t))
-                    .collect::<Vec<_>>()
-                    .join("");
-                let pin_ctx = format!("📌 当前 pin context：{}", joined);
-                let until_iso = crate::proactive::set_transient_note(pin_ctx, 60);
-                let until_local = chrono::DateTime::parse_from_str(
-                    &until_iso,
-                    "%Y-%m-%dT%H:%M:%S%:z",
-                )
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Local));
-                crate::telegram::commands::format_here_pin_reply(
-                    &titles,
-                    until_local,
-                )
-            }
         }
         TgCommand::CatTop { n } => {
             // scan memory_list(None) → 每 cat item count → sort desc +
@@ -1144,10 +1215,9 @@ async fn handle_tg_command(
             crate::telegram::commands::format_cat_top_reply(&rows, total_cats)
         }
         TgCommand::AuditSummary => {
-            // 聚合 5 大 audit 信号。read views (chat-scoped) + scan
+            // 聚合 audit 信号。read views (chat-scoped) + scan
             // butler_history.log 一次 → 派生多个 signal：
             // - pin_streak：复用 compute_pin_streak
-            // - cat_active_7d：reuse compute_cat_growth_rows helper
             // - idle_7d：filter pending + updated_at ≥ 7d 前
             // - touched_today：filter updated_at on today
             // - recent_renames_7d：scan history action=='rename' + ts in 7d
@@ -1195,10 +1265,6 @@ async fn handle_tg_command(
                     today,
                 );
 
-            // cat 7d 净增 active count (cats with delta > 0)
-            let cat_rows = compute_cat_growth_rows(7);
-            let cat_active_7d_count = cat_rows.len();
-
             // idle_7d_count: pending + updated_at ≤ cutoff_7d
             let mut idle_7d_count: usize = 0;
             let mut touched_today_count: usize = 0;
@@ -1222,7 +1288,6 @@ async fn handle_tg_command(
                 today,
                 pin_streak,
                 current_pinned,
-                cat_active_7d_count,
                 idle_7d_count,
                 touched_today_count,
                 recent_renames_7d_count,
@@ -1287,105 +1352,6 @@ async fn handle_tg_command(
                 })
                 .collect();
             crate::telegram::commands::format_recent_pins_reply(&rows, total)
-        }
-        TgCommand::RecentRenames { n } => {
-            // 扫 butler_history.log 取 action=='rename' 行，取 ts 解析
-            // 后 newest-first 排，cap N。复用 extract_was_from_snippet
-            // 解 [was: <old>]。format_timeline_ts 给 MM-DD HH:MM 标签。
-            //
-            // 不 chat-scope（与 /streak_pin 同 tradeoff — butler_history
-            // 是 global log，无 chat origin）。
-            let content =
-                crate::butler_history::read_history_content().await;
-            let mut rename_rows: Vec<(String, String, String)> = Vec::new();
-            for line in content.lines() {
-                if line.is_empty() {
-                    continue;
-                }
-                let Some((ts_str, body)) = line.split_once(' ') else {
-                    continue;
-                };
-                let mut parts = body.splitn(2, " :: ");
-                let head = parts.next().unwrap_or("");
-                let snippet = parts.next().unwrap_or("");
-                let Some((action, new_title)) = head.split_once(' ') else {
-                    continue;
-                };
-                if action.to_ascii_lowercase() != "rename" {
-                    continue;
-                }
-                let old_title =
-                    crate::telegram::commands::extract_was_from_snippet(snippet)
-                        .unwrap_or_else(|| "（old 不可解）".to_string());
-                let ts_label =
-                    crate::telegram::commands::format_timeline_ts(ts_str);
-                rename_rows.push((
-                    ts_label,
-                    new_title.trim().to_string(),
-                    old_title,
-                ));
-            }
-            // file 是 chronological（oldest first），reverse 到 newest first
-            rename_rows.reverse();
-            let total = rename_rows.len();
-            rename_rows.truncate(n as usize);
-            crate::telegram::commands::format_recent_renames_reply(
-                &rename_rows, total,
-            )
-        }
-        TgCommand::DoneStreakChart => {
-            // chat-scoped views + today date — formatter 内部聚合 done
-            // dates + 算 daily counts + render sparkline。
-            let views = read_tg_chat_task_views(chat_id.0);
-            let today = chrono::Local::now().date_naive();
-            crate::telegram::commands::format_done_streak_chart_reply(
-                &views, today,
-            )
-        }
-        TgCommand::StreakPin => {
-            // 关注节奏 audit — /streak 的 pin 维度对偶。
-            // 1. 扫 butler_history.log 收集 含 [pinned] sighting 的 date set
-            //    （前 10 字 RFC3339 = YYYY-MM-DD prefix）
-            // 2. 当前 chat-scoped views 内 pinned task count 作 today fallback
-            // 3. pure compute_pin_streak 算 streak / earliest / max_in_window
-            // 4. formatter 拼输出
-            let views = read_tg_chat_task_views(chat_id.0);
-            let current_pinned = views.iter().filter(|v| v.pinned).count();
-            let has_current_pinned = current_pinned > 0;
-            let content =
-                crate::butler_history::read_history_content().await;
-            let mut dates_with_sighting: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            for line in content.lines() {
-                if line.is_empty() {
-                    continue;
-                }
-                // body 含 [pinned]？ts 前 10 字 = date prefix（RFC3339 YYYY-MM-DD…）
-                let Some((ts_str, body)) = line.split_once(' ') else {
-                    continue;
-                };
-                if !body.contains("[pinned]") {
-                    continue;
-                }
-                if ts_str.len() < 10 {
-                    continue;
-                }
-                let date_prefix: String = ts_str.chars().take(10).collect();
-                dates_with_sighting.insert(date_prefix);
-            }
-            let today = chrono::Local::now().date_naive();
-            let (streak, earliest, max_streak) =
-                crate::telegram::commands::compute_pin_streak(
-                    &dates_with_sighting,
-                    has_current_pinned,
-                    today,
-                );
-            crate::telegram::commands::format_streak_pin_reply(
-                streak,
-                current_pinned,
-                earliest.as_deref(),
-                max_streak,
-            )
         }
         TgCommand::Yesterday => {
             // 昨日 done 视图：reuse read_tg_chat_task_views（已 chat-scoped）。
@@ -1585,157 +1551,6 @@ async fn handle_tg_command(
                 .unwrap_or(0);
             crate::telegram::commands::format_random_pinned_reply(&views, seed)
         }
-        TgCommand::PinGrow7d => {
-            // 「近 7 天新获 [pinned]」detection（best-effort）：
-            // 1. 当前 views 里 task `pinned == true` 的 title 集合 = candidates
-            //    （current_pinned）
-            // 2. 扫 butler_history.log：取每个 title 的「首次（最早）[pinned]
-            //    sighting ts」（含 [pinned] snippet 的最早 row）
-            // 3. 候选 = title ∈ current_pinned ∧ first_pin_ts ≥ now-7d
-            // 4. 按 first_pin_ts desc（最近 pin 的在上）+ cap 8
-            //
-            // /pinned_drop_7d 镜像：那个看「曾 pin → 当前 unpin」7d 内末次
-            // sighting；本命令看「当前 pin + 首次 sighting 在 7d 内」（即
-            // history 内之前没 pin 过）。共用同 IO + snippet 含 marker 检
-            // 测；差只在 first 而非 last + 当前 pinned 而非 unpinned。
-            let views = read_tg_chat_task_views(chat_id.0);
-            let now_local = chrono::Local::now();
-            let cutoff = now_local - chrono::Duration::days(7);
-            let current_pinned: std::collections::HashSet<String> = views
-                .iter()
-                .filter(|v| v.pinned)
-                .map(|v| v.title.clone())
-                .collect();
-            let mut first_pin_ts: std::collections::HashMap<
-                String,
-                chrono::DateTime<chrono::Local>,
-            > = std::collections::HashMap::new();
-            let content =
-                crate::butler_history::read_history_content().await;
-            for line in content.lines() {
-                if line.is_empty() {
-                    continue;
-                }
-                let Some((ts_str, body)) = line.split_once(' ') else {
-                    continue;
-                };
-                let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
-                    continue;
-                };
-                let ts_local = ts.with_timezone(&chrono::Local);
-                let mut parts = body.splitn(2, " :: ");
-                let head = parts.next().unwrap_or("");
-                let snippet = parts.next().unwrap_or("");
-                if !snippet.contains("[pinned]") {
-                    continue;
-                }
-                let Some((_action, title)) = head.split_once(' ') else {
-                    continue;
-                };
-                let title = title.trim();
-                if !current_pinned.contains(title) {
-                    continue;
-                }
-                // 取 FIRST（min）ts per title — 与 /pinned_drop_7d 取 max 反向
-                first_pin_ts
-                    .entry(title.to_string())
-                    .and_modify(|prev| {
-                        if ts_local < *prev {
-                            *prev = ts_local;
-                        }
-                    })
-                    .or_insert(ts_local);
-            }
-            // 候选 filter：first_pin_ts ≥ cutoff
-            let mut with_dt: Vec<(String, chrono::DateTime<chrono::Local>)> =
-                first_pin_ts
-                    .into_iter()
-                    .filter(|(_, ts)| *ts >= cutoff)
-                    .collect();
-            with_dt.sort_by(|a, b| b.1.cmp(&a.1));
-            let rows: Vec<(String, String)> = with_dt
-                .into_iter()
-                .map(|(title, ts)| {
-                    (title, ts.format("%m-%d %H:%M").to_string())
-                })
-                .collect();
-            crate::telegram::commands::format_pin_grow_7d_reply(&rows)
-        }
-        TgCommand::PinnedDrop7d => {
-            // 「近 7 天疑似被 unpin」detection（best-effort）：
-            // 1. 当前 views 里 task `pinned == false` 的 title 集合 = candidates
-            //    （current_unpinned）
-            // 2. 扫 butler_history.log 取 ts ≥ now-7d 的行；snippet 含 [pinned]
-            //    的 → 记录该 title 的「最后 [pinned] sighting ts」
-            // 3. 交：title ∈ current_unpinned ∧ ∃ recent pin sighting → 候选
-            // 4. 按 sighting ts desc 排，HH:MM 取 ts label（跨日 scope 需要
-            //    日期，故用 MM-DD HH:MM 与 /find_speech 一致）
-            //
-            // 局限：snippet 80 字截断可能漏 [pinned] → false neg；只看到
-            // history retention 内的 pin sighting；不区分「曾 pinned 后被
-            // update 但 marker 留着」与真 unpin。caveats 在 help-detail。
-            let views = read_tg_chat_task_views(chat_id.0);
-            let now_local = chrono::Local::now();
-            let cutoff = now_local - chrono::Duration::days(7);
-            let current_unpinned: std::collections::HashSet<String> = views
-                .iter()
-                .filter(|v| !v.pinned)
-                .map(|v| v.title.clone())
-                .collect();
-            let mut latest_pin_ts: std::collections::HashMap<
-                String,
-                chrono::DateTime<chrono::Local>,
-            > = std::collections::HashMap::new();
-            let content =
-                crate::butler_history::read_history_content().await;
-            for line in content.lines() {
-                if line.is_empty() {
-                    continue;
-                }
-                let Some((ts_str, body)) = line.split_once(' ') else {
-                    continue;
-                };
-                let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
-                    continue;
-                };
-                let ts_local = ts.with_timezone(&chrono::Local);
-                if ts_local < cutoff {
-                    continue;
-                }
-                // body 形如 "<action> <title> :: <snippet>"
-                let mut parts = body.splitn(2, " :: ");
-                let head = parts.next().unwrap_or("");
-                let snippet = parts.next().unwrap_or("");
-                if !snippet.contains("[pinned]") {
-                    continue;
-                }
-                let Some((_action, title)) = head.split_once(' ') else {
-                    continue;
-                };
-                let title = title.trim();
-                if !current_unpinned.contains(title) {
-                    continue;
-                }
-                latest_pin_ts
-                    .entry(title.to_string())
-                    .and_modify(|prev| {
-                        if ts_local > *prev {
-                            *prev = ts_local;
-                        }
-                    })
-                    .or_insert(ts_local);
-            }
-            let mut with_dt: Vec<(String, chrono::DateTime<chrono::Local>)> =
-                latest_pin_ts.into_iter().collect();
-            with_dt.sort_by(|a, b| b.1.cmp(&a.1));
-            let rows: Vec<(String, String)> = with_dt
-                .into_iter()
-                .map(|(title, ts)| {
-                    (title, ts.format("%m-%d %H:%M").to_string())
-                })
-                .collect();
-            crate::telegram::commands::format_pinned_drop_7d_reply(&rows)
-        }
         TgCommand::Idle7d => {
             // PanelTasks 💤 chip 的 TG 对偶 — 扫 chat-scoped views，
             // 过滤 pending + updated_at ≥ now-7d，按 idle 天数 desc 排，
@@ -1767,56 +1582,6 @@ async fn handle_tg_command(
             // idle 天数 desc；tie 时 title asc 稳定输出
             rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             crate::telegram::commands::format_idle_7d_reply(&rows)
-        }
-        TgCommand::CatDecay7d => {
-            let rows = compute_cat_decay_rows(7);
-            crate::telegram::commands::format_cat_decay_reply(&rows, 7)
-        }
-        TgCommand::CatDecay30d => {
-            // 与 /cat_decay_7d 同算法，阈值 30d 长周期 cousin。区分
-            // 「停滞 1 周可能正常」vs「停滞 1 月该 archive」严重度。
-            // 共用 compute_cat_decay_rows helper + 通用
-            // format_cat_decay_reply（threshold 参数注入 header）。
-            let rows = compute_cat_decay_rows(30);
-            crate::telegram::commands::format_cat_decay_reply(&rows, 30)
-        }
-        TgCommand::CatGrowth7d => {
-            let rows = compute_cat_growth_rows(7);
-            crate::telegram::commands::format_cat_growth_reply(&rows, 7)
-        }
-        TgCommand::CatGrowthToday => {
-            // 今日切片 — created_at.starts_with(today_str) prefix match
-            // （与 /tags_today / /touched_today 同 pattern）。比 ts ≥
-            // cutoff_ms 简单且与既有 today-family 一致。
-            let today = chrono::Local::now().date_naive();
-            let today_str = today.format("%Y-%m-%d").to_string();
-            let mut rows: Vec<(String, String, usize)> = Vec::new();
-            if let Ok(index) =
-                crate::commands::memory::memory_list(None)
-            {
-                for (key, cat) in index.categories.iter() {
-                    let mut delta = 0usize;
-                    for it in &cat.items {
-                        if it.created_at.starts_with(&today_str) {
-                            delta += 1;
-                        }
-                    }
-                    if delta > 0 {
-                        rows.push((key.clone(), cat.label.clone(), delta));
-                    }
-                }
-            }
-            rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-            crate::telegram::commands::format_cat_growth_today_reply(
-                &rows, today,
-            )
-        }
-        TgCommand::CatGrowth30d => {
-            // 与 /cat_growth_7d 同算法，阈值 30d 长周期 cousin。共用
-            // compute_cat_growth_rows + 通用 format_cat_growth_reply
-            // （threshold 参数注入 header）— 同 /cat_decay refactor 模式。
-            let rows = compute_cat_growth_rows(30);
-            crate::telegram::commands::format_cat_growth_reply(&rows, 30)
         }
         TgCommand::Last => {
             // 闪查最近创建：reuse read_tg_chat_task_views（已 chat-scoped）。
@@ -2229,164 +1994,6 @@ async fn handle_tg_command(
                     }
                 }
                 crate::telegram::commands::format_find_in_detail_reply(
-                    &hits, &keyword,
-                )
-            }
-        }
-        TgCommand::FindSpeechToday { keyword } => {
-            // 与 FindSpeech 同 read path（speech_history.log），多一层
-            // ts 落今日 filter（解析 RFC3339 → 本地 date == today）。短
-            // 路：空 kw 直接走 formatter usage hint（避免无谓 IO）。
-            let kw = keyword.trim().to_string();
-            let today = chrono::Local::now().date_naive();
-            if kw.is_empty() {
-                crate::telegram::commands::format_find_speech_today_reply(
-                    &[],
-                    &keyword,
-                    today,
-                )
-            } else {
-                let content = crate::speech_history::read_history_content().await;
-                let kw_lower = kw.to_lowercase();
-                let mut hits: Vec<(String, String)> = Vec::new();
-                for line in content.lines().rev() {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let Some((ts_str, _)) = line.split_once(' ') else {
-                        continue;
-                    };
-                    // ts 解析 + 本地日期 filter（只算今日 utterance）
-                    let Ok(ts_parsed) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
-                        continue;
-                    };
-                    let ts_local = ts_parsed.with_timezone(&chrono::Local);
-                    if ts_local.date_naive() != today {
-                        continue;
-                    }
-                    let text = crate::speech_history::strip_timestamp(line);
-                    if !text.to_lowercase().contains(&kw_lower) {
-                        continue;
-                    }
-                    // 今日 scope — ts label 只显 HH:MM（date 已在 header）
-                    let ts_label = ts_local.format("%H:%M").to_string();
-                    let Some(snippet) =
-                        crate::telegram::commands::extract_find_in_detail_snippet(
-                            text, &kw,
-                        )
-                    else {
-                        continue;
-                    };
-                    hits.push((ts_label, snippet));
-                }
-                crate::telegram::commands::format_find_speech_today_reply(
-                    &hits,
-                    &keyword,
-                    today,
-                )
-            }
-        }
-        TgCommand::FindSpeechYesterday { keyword } => {
-            // FindSpeechToday 的昨日对偶 — 同 read path + ts filter，只换
-            // target_date = today - 1。空 kw 短路 formatter。
-            let kw = keyword.trim().to_string();
-            let yesterday = chrono::Local::now().date_naive()
-                - chrono::Duration::days(1);
-            if kw.is_empty() {
-                crate::telegram::commands::format_find_speech_yesterday_reply(
-                    &[],
-                    &keyword,
-                    yesterday,
-                )
-            } else {
-                let content = crate::speech_history::read_history_content().await;
-                let kw_lower = kw.to_lowercase();
-                let mut hits: Vec<(String, String)> = Vec::new();
-                for line in content.lines().rev() {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let Some((ts_str, _)) = line.split_once(' ') else {
-                        continue;
-                    };
-                    let Ok(ts_parsed) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
-                        continue;
-                    };
-                    let ts_local = ts_parsed.with_timezone(&chrono::Local);
-                    if ts_local.date_naive() != yesterday {
-                        continue;
-                    }
-                    let text = crate::speech_history::strip_timestamp(line);
-                    if !text.to_lowercase().contains(&kw_lower) {
-                        continue;
-                    }
-                    // 昨日 scope — ts label HH:MM（date 在 header）
-                    let ts_label = ts_local.format("%H:%M").to_string();
-                    let Some(snippet) =
-                        crate::telegram::commands::extract_find_in_detail_snippet(
-                            text, &kw,
-                        )
-                    else {
-                        continue;
-                    };
-                    hits.push((ts_label, snippet));
-                }
-                crate::telegram::commands::format_find_speech_yesterday_reply(
-                    &hits,
-                    &keyword,
-                    yesterday,
-                )
-            }
-        }
-        TgCommand::FindSpeech { keyword } => {
-            // 搜 speech_history.log — handler 读全文 + 逐行 case-insensitive
-            // 子串过滤 + 抽 ts + snippet。空 keyword 由 formatter 走 usage
-            // hint。每行格式 "<RFC3339 ts> <text>"；reverse 让最新 hit 在
-            // 前（owner 通常关心近期 utterance）。
-            let kw = keyword.trim().to_string();
-            if kw.is_empty() {
-                crate::telegram::commands::format_find_speech_reply(
-                    &[],
-                    &keyword,
-                )
-            } else {
-                let content =
-                    crate::speech_history::read_history_content().await;
-                let kw_lower = kw.to_lowercase();
-                let mut hits: Vec<(String, String)> = Vec::new();
-                for line in content.lines().rev() {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    // 行格式：`<ts> <text>` — strip_timestamp 提供 text；
-                    // ts 部分手动取首段
-                    let Some((ts_str, _)) = line.split_once(' ') else {
-                        continue;
-                    };
-                    let text =
-                        crate::speech_history::strip_timestamp(line);
-                    if !text.to_lowercase().contains(&kw_lower) {
-                        continue;
-                    }
-                    // ts → 本地 MM-DD HH:MM
-                    let ts_label =
-                        chrono::DateTime::parse_from_rfc3339(ts_str)
-                            .map(|t| {
-                                t.with_timezone(&chrono::Local)
-                                    .format("%m-%d %H:%M")
-                                    .to_string()
-                            })
-                            .unwrap_or_else(|_| ts_str.to_string());
-                    let Some(snippet) =
-                        crate::telegram::commands::extract_find_in_detail_snippet(
-                            text, &kw,
-                        )
-                    else {
-                        continue;
-                    };
-                    hits.push((ts_label, snippet));
-                }
-                crate::telegram::commands::format_find_speech_reply(
                     &hits, &keyword,
                 )
             }
@@ -2835,39 +2442,6 @@ async fn handle_tg_command(
                         }
                         Err(e) => format_command_error(&e),
                     },
-                    Err(msg) => format_command_error(&msg),
-                }
-            }
-        }
-        TgCommand::Aliases { title } => {
-            // 与 Timeline 同 resolve 三层；命中后扫 full butler_history.log
-            // （不限 title — 因为我们要找包括过去 title 的 rename event 链）
-            // → reconstruct_alias_chain → formatter。
-            //
-            // 注：仅 butler_tasks 有 rename event（memory_rename 限 cat ==
-            // butler_tasks 才写 log）。resolve_tg_task_title 已 butler_tasks
-            // 域。
-            if title.trim().is_empty() {
-                format_missing_argument("aliases")
-            } else {
-                let actual = match try_resolve_by_index(&title, chat_id.0, state).await {
-                    Some(t) => Ok(t),
-                    None => resolve_tg_task_title(&title),
-                };
-                match actual {
-                    Ok(t) => {
-                        let content =
-                            crate::butler_history::read_history_content().await;
-                        let lines: Vec<String> = content
-                            .lines()
-                            .filter(|l| !l.is_empty())
-                            .map(String::from)
-                            .collect();
-                        let chain = crate::telegram::commands::reconstruct_alias_chain(
-                            &lines, &t,
-                        );
-                        crate::telegram::commands::format_aliases_reply(&t, &chain)
-                    }
                     Err(msg) => format_command_error(&msg),
                 }
             }
@@ -3817,88 +3391,7 @@ fn read_butler_task_titles() -> Vec<String> {
 
 /// 读 butler_tasks → 过滤 origin==Tg(chat_id) → build_task_view → 按 queue
 /// 顺序排序的 views 列表。`/tasks` `/stats` 共用此读路径，不再各自拷一份过滤
-/// 逻辑。memory_list 失败 / 类目缺失视作"无任务"，返回空 Vec。
-/// /cat_decay_<N>d 共享算法：扫所有 memory cat，过滤「max items.updated_at
-/// < now - <N>d」的 cat — 即 N 天内 0 update 活动。返回 rows: (key, label,
-/// days_since_update) sorted by days desc + key asc tie。empty cat（0
-/// items）跳过；全 items 解析失败的 cat 也跳过（脏数据兜底）。供
-/// CatDecay7d / CatDecay30d 共用 — 阈值参数化避免代码重复。
-fn compute_cat_decay_rows(threshold_days: i64) -> Vec<(String, String, i64)> {
-    let now_ms = chrono::Local::now().timestamp_millis();
-    let day_ms: i64 = 24 * 60 * 60 * 1000;
-    let cutoff_ms = now_ms - threshold_days * day_ms;
-    let mut rows: Vec<(String, String, i64)> = Vec::new();
-    if let Ok(index) = crate::commands::memory::memory_list(None) {
-        for (key, cat) in index.categories.iter() {
-            if cat.items.is_empty() {
-                continue;
-            }
-            let mut max_u: Option<i64> = None;
-            for it in &cat.items {
-                if it.updated_at.is_empty() {
-                    continue;
-                }
-                let Ok(t) = chrono::DateTime::parse_from_rfc3339(&it.updated_at)
-                else {
-                    continue;
-                };
-                let ms = t.timestamp_millis();
-                match max_u {
-                    Some(m) if m >= ms => {}
-                    _ => max_u = Some(ms),
-                }
-            }
-            let Some(max_ms) = max_u else {
-                continue;
-            };
-            if max_ms < cutoff_ms {
-                let days = (now_ms - max_ms) / day_ms;
-                rows.push((key.clone(), cat.label.clone(), days));
-            }
-        }
-    }
-    // days desc; key asc tie-break — 稳定输出便于测
-    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-    rows
-}
-
-/// /cat_growth_<N>d 共享算法：扫所有 memory cat，按 created_at 落入
-/// 近 N 天窗口的 item 数算 per-cat delta，仅保留 delta > 0 项。返回
-/// rows: (key, label, delta) sorted by delta desc + key asc tie。
-/// 与 compute_cat_decay_rows 镜像（那是 stale 视角；本是 growth 视角）。
-///
-/// memory_list 已在 read 时把 butler_tasks / todo / task_archive 段用
-/// SQLite 真相覆盖 — 算的是真实新增而非 yaml orphan。
-fn compute_cat_growth_rows(threshold_days: i64) -> Vec<(String, String, usize)> {
-    let now_ms = chrono::Local::now().timestamp_millis();
-    let day_ms: i64 = 24 * 60 * 60 * 1000;
-    let cutoff_ms = now_ms - threshold_days * day_ms;
-    let mut rows: Vec<(String, String, usize)> = Vec::new();
-    if let Ok(index) = crate::commands::memory::memory_list(None) {
-        for (key, cat) in index.categories.iter() {
-            let mut delta = 0usize;
-            for it in &cat.items {
-                if it.created_at.is_empty() {
-                    continue;
-                }
-                let Ok(t) =
-                    chrono::DateTime::parse_from_rfc3339(&it.created_at)
-                else {
-                    continue;
-                };
-                if t.timestamp_millis() >= cutoff_ms {
-                    delta += 1;
-                }
-            }
-            if delta > 0 {
-                rows.push((key.clone(), cat.label.clone(), delta));
-            }
-        }
-    }
-    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-    rows
-}
-
+/// 逻辑。memory_list 失败 / 类目缺失视作「无任务」，返回空 Vec。
 fn read_tg_chat_task_views(chat_id: i64) -> Vec<crate::task_queue::TaskView> {
     let Ok(index) = crate::commands::memory::memory_list(Some("butler_tasks".to_string())) else {
         return Vec::new();
@@ -4227,280 +3720,7 @@ fn format_split_chunks(text: &str, max_len: usize) -> Vec<String> {
         .collect()
 }
 
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::task_queue::TaskStatus;
-
-    fn msg(role: &str, content: &str) -> ChatMessage {
-        serde_json::from_value(serde_json::json!({
-            "role": role,
-            "content": content,
-        }))
-        .unwrap()
-    }
-
-    // -------- inject_telegram_dispatch_layer --------
-
-    #[test]
-    fn dispatch_layer_inserted_after_system_messages() {
-        let messages = vec![
-            msg("system", "soul"),
-            msg("user", "你好"),
-            msg("assistant", "你好"),
-        ];
-        let out = inject_telegram_dispatch_layer(messages, 12345);
-        // soul → tg layer → user → assistant
-        assert_eq!(out[0].role, "system");
-        assert_eq!(out[0].content.as_str().unwrap(), "soul");
-        assert_eq!(out[1].role, "system");
-        assert!(out[1].content.as_str().unwrap().contains("Telegram dispatch"));
-        assert!(out[1].content.as_str().unwrap().contains("tg:12345"));
-        assert_eq!(out[2].role, "user");
-        assert_eq!(out[3].role, "assistant");
-    }
-
-    #[test]
-    fn dispatch_layer_negative_chat_id_rendered_as_is() {
-        // Telegram 群组 chat_id 是负数
-        let out = inject_telegram_dispatch_layer(vec![msg("system", "x")], -1001234567890);
-        assert!(out[1].content.as_str().unwrap().contains("tg:-1001234567890"));
-    }
-
-    #[test]
-    fn dispatch_layer_inserts_at_top_when_no_system_message() {
-        let out = inject_telegram_dispatch_layer(vec![msg("user", "你好")], 1);
-        assert_eq!(out[0].role, "system");
-        assert_eq!(out[1].role, "user");
-    }
-
-    // -------- just_finished --------
-
-    #[test]
-    fn just_finished_pending_to_done() {
-        assert!(just_finished(Some(TaskStatus::Pending), TaskStatus::Done));
-        assert!(just_finished(Some(TaskStatus::Pending), TaskStatus::Cancelled));
-        assert!(just_finished(Some(TaskStatus::Pending), TaskStatus::Error));
-    }
-
-    #[test]
-    fn just_finished_ignores_first_appearance() {
-        // 任务在本轮才出现就已经是终态 — 静默
-        assert!(!just_finished(None, TaskStatus::Done));
-        assert!(!just_finished(None, TaskStatus::Cancelled));
-    }
-
-    #[test]
-    fn just_finished_pending_stays_quiet() {
-        // 还没结束 → 不发
-        assert!(!just_finished(Some(TaskStatus::Pending), TaskStatus::Pending));
-        assert!(!just_finished(None, TaskStatus::Pending));
-    }
-
-    #[test]
-    fn just_finished_no_repeat_for_same_terminal() {
-        // 上一轮 Done → 这一轮还是 Done：不重发
-        assert!(!just_finished(Some(TaskStatus::Done), TaskStatus::Done));
-        assert!(!just_finished(Some(TaskStatus::Cancelled), TaskStatus::Cancelled));
-    }
-
-    #[test]
-    fn just_finished_error_to_cancelled_fires() {
-        // 状态变化（哪怕都是终态）—— Error → Cancelled 是用户取消了之前
-        // 失败的任务，发一次"已取消"通知合理
-        assert!(just_finished(Some(TaskStatus::Error), TaskStatus::Cancelled));
-    }
-
-    // -------- format_completion_message --------
-
-    #[test]
-    fn done_message_uses_check_mark() {
-        let s = format_completion_message("整理 Downloads", TaskStatus::Done, None);
-        assert!(s.starts_with("✅"));
-        assert!(s.contains("整理 Downloads"));
-        assert!(s.contains("已完成"));
-    }
-
-    #[test]
-    fn error_message_includes_reason_when_present() {
-        let s = format_completion_message("跑步", TaskStatus::Error, Some("下雨了"));
-        assert!(s.starts_with("⚠️"));
-        assert!(s.contains("跑步"));
-        assert!(s.contains("下雨了"));
-    }
-
-    #[test]
-    fn error_message_omits_reason_when_blank() {
-        let s = format_completion_message("跑步", TaskStatus::Error, Some("   "));
-        // 空白原因等同无原因
-        assert!(!s.contains("："));
-    }
-
-    #[test]
-    fn cancelled_message_uses_prohibition_emoji() {
-        let s = format_completion_message("跑步", TaskStatus::Cancelled, Some("不做了"));
-        assert!(s.starts_with("🚫"));
-        assert!(s.contains("不做了"));
-    }
-
-    // -------- format_heartbeat_message --------
-
-    #[test]
-    fn heartbeat_message_includes_title_minutes_and_command_templates() {
-        let s = format_heartbeat_message("整理 Downloads", 30);
-        assert!(s.starts_with("⏳"));
-        assert!(s.contains("「整理 Downloads」"));
-        assert!(s.contains("30 分钟"));
-        // 命令模板必须能被 TG 输入栏 tap 进 /retry / /cancel 前缀
-        assert!(s.contains("/retry 整理 Downloads"));
-        assert!(s.contains("/cancel 整理 Downloads"));
-    }
-
-    #[test]
-    fn heartbeat_message_trims_title_whitespace() {
-        let s = format_heartbeat_message("  跑步  ", 45);
-        assert!(s.contains("「跑步」"));
-        assert!(!s.contains("「  跑步  」"));
-    }
-
-    // -------- format_split_chunks --------
-
-    #[test]
-    fn split_chunks_two_parts_have_prefix_and_fit_within_max_len() {
-        // ASCII 文本，两块场景：长度 ~ 2x effective budget（6000 < 4096*2 = 8192）。
-        let text = "a".repeat(6000);
-        let max = 4096;
-        let chunks = format_split_chunks(&text, max);
-        assert!(chunks.len() >= 2, "expected at least 2 chunks, got {}", chunks.len());
-        let n = chunks.len();
-        for (i, c) in chunks.iter().enumerate() {
-            assert!(
-                c.starts_with(&format!("({}/{}) ", i + 1, n)),
-                "chunk {} should start with ({}/{}) prefix; got: {:?}",
-                i + 1,
-                i + 1,
-                n,
-                c.chars().take(20).collect::<String>(),
-            );
-            assert!(
-                c.len() <= max,
-                "chunk {} length {} exceeds max {}",
-                i + 1,
-                c.len(),
-                max,
-            );
-        }
-    }
-
-    #[test]
-    fn split_chunks_preserve_content_when_concatenated() {
-        // 拼回去（剥前缀）应等于原文，验证 split_message 边界没破坏内容
-        let text: String = (0..30)
-            .map(|i| format!("line{:02} content here\n", i))
-            .collect();
-        let chunks = format_split_chunks(&text, 200);
-        // 每块剥掉前缀（开头 `(i/n) ` 直到第一个空格之后）
-        let body: String = chunks
-            .iter()
-            .map(|c| {
-                let after_close_paren = c.find(") ").map(|i| i + 2).unwrap_or(0);
-                c[after_close_paren..].to_string()
-            })
-            .collect();
-        assert_eq!(body, text);
-    }
-
-    #[test]
-    fn split_chunks_handles_three_part_split() {
-        // 验证 N>2 时索引 i 与 n 都正确递进
-        let text = "x".repeat(9000);
-        let chunks = format_split_chunks(&text, 4096);
-        let n = chunks.len();
-        assert!(n >= 3, "9000 / ~4084 effective budget should yield ≥3 chunks");
-        // 最后一块 prefix 是 (n/n)
-        assert!(chunks.last().unwrap().starts_with(&format!("({}/{}) ", n, n)));
-    }
-
-    #[test]
-    fn split_chunks_min_max_len_does_not_panic() {
-        // saturating_sub 保护：max_len 比预算小时 effective 至少为 1，不 panic
-        let chunks = format_split_chunks("hello world", 4);
-        assert!(!chunks.is_empty());
-        // 每块仍 ≤ max_len（短 max_len 下会切很碎，但前缀必出现）
-        for c in &chunks {
-            assert!(c.starts_with("("));
-        }
-    }
-
-    // -------- format_completion_batch --------
-
-    fn ev(title: &str, reason: Option<&str>) -> (String, Option<String>) {
-        (title.to_string(), reason.map(String::from))
-    }
-
-    #[test]
-    fn batch_done_lists_count_and_titles_separated_by_middot() {
-        let evs = vec![ev("整理 A", None), ev("打扫 B", None), ev("写 C", None)];
-        let s = format_completion_batch(TaskStatus::Done, &evs);
-        assert!(s.contains("✅"), "should have done emoji: {}", s);
-        assert!(s.contains("3 条"), "should mention count: {}", s);
-        assert!(s.contains("整理 A"));
-        assert!(s.contains("打扫 B"));
-        assert!(s.contains("写 C"));
-        assert!(s.contains(" · "), "should use middot separator: {}", s);
-    }
-
-    #[test]
-    fn batch_error_attaches_per_task_reason_in_parens() {
-        // error / cancelled 的 reason 各自附加，方便用户当场判断每条的失败原因
-        let evs = vec![
-            ev("脚本 X", Some("permission denied")),
-            ev("脚本 Y", Some("timeout")),
-        ];
-        let s = format_completion_batch(TaskStatus::Error, &evs);
-        assert!(s.contains("⚠️"), "error emoji: {}", s);
-        assert!(s.contains("2 条"));
-        assert!(s.contains("脚本 X（permission denied）"));
-        assert!(s.contains("脚本 Y（timeout）"));
-    }
-
-    #[test]
-    fn batch_error_omits_paren_when_reason_blank() {
-        let evs = vec![ev("脚本 X", None), ev("脚本 Y", Some("   "))];
-        let s = format_completion_batch(TaskStatus::Error, &evs);
-        // 没有 reason 时不该出现空括号
-        assert!(!s.contains("（）"));
-        assert!(!s.contains("（   ）"));
-        assert!(s.contains("脚本 X"));
-        assert!(s.contains("脚本 Y"));
-    }
-
-    #[test]
-    fn batch_done_ignores_reason_field() {
-        // done 没有 reason 语义；即便 caller 误传也不显示
-        let evs = vec![ev("A", Some("some leftover")), ev("B", None)];
-        let s = format_completion_batch(TaskStatus::Done, &evs);
-        assert!(!s.contains("some leftover"), "done must not show reason: {}", s);
-        assert!(s.contains("A"));
-        assert!(s.contains("B"));
-    }
-
-    #[test]
-    fn batch_cancelled_shows_block_emoji_and_count() {
-        let evs = vec![ev("X", Some("用户取消")), ev("Y", None)];
-        let s = format_completion_batch(TaskStatus::Cancelled, &evs);
-        assert!(s.contains("🚫"));
-        assert!(s.contains("2 条"));
-        assert!(s.contains("X（用户取消）"));
-        assert!(s.contains("Y"));
-    }
-
-    #[test]
-    fn batch_two_titles_with_emoji_preserved() {
-        // 标题含 emoji / 中文符号原样保留（Telegram 直接渲染）
-        let evs = vec![ev("🐱 喂猫", None), ev("买菜！", None)];
-        let s = format_completion_batch(TaskStatus::Done, &evs);
-        assert!(s.contains("🐱 喂猫"));
-        assert!(s.contains("买菜！"));
-    }
-}
+#[path = "bot_tests.rs"]
+mod tests;

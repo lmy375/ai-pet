@@ -1,6 +1,7 @@
 pub mod bot;
 pub mod bulk_silent;
 pub mod commands;
+pub mod photo;
 pub mod warnings;
 
 use bot::TelegramBot;

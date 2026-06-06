@@ -11,10 +11,9 @@ html, body, #root {
   box-sizing: border-box;
 }
 
-/* 全窗口共享 shadow token：迭代 1 从 PanelApp.tsx 注入的 :root 规则提到
-   全局 CSS 里 —— 桌面宠物 App.tsx / 调试 DebugApp.tsx 等独立 webview 也
-   需要这套 token。data-theme="dark" 由 applyTheme() 在 documentElement 上
-   切换，浅深主题阴影自动跟随。 */
+/* 全窗口共享 shadow token：桌面宠物 App.tsx / 调试 DebugApp.tsx 等独立
+   webview 也需要这套 token。051-part1：GOAL.md「不做深色 / 浅色主题」整改
+   后只剩 light 一档。 */
 :root {
   --pet-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04),
                    0 1px 3px rgba(15, 23, 42, 0.06);
@@ -22,14 +21,6 @@ html, body, #root {
                    0 2px 4px rgba(15, 23, 42, 0.04);
   --pet-shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.22),
                    0 8px 20px rgba(15, 23, 42, 0.12);
-}
-[data-theme="dark"] {
-  --pet-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25),
-                   0 1px 3px rgba(0, 0, 0, 0.30);
-  --pet-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.40),
-                   0 2px 4px rgba(0, 0, 0, 0.25);
-  --pet-shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.55),
-                   0 8px 20px rgba(0, 0, 0, 0.35);
 }
 
 /* 全局 modal 进入动画：Modal.tsx 组件本身已 inject 相同 keyframes（mount
