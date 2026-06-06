@@ -78,6 +78,12 @@ interface Props {
   /// PanelToneStrip ✍️ 写入口 / iter #363 TG /transient 同后端，第三
   /// 个 surface 让 owner "选 pet 说的这句话直接用" 免再敲字。
   onSetTransientNote?: (text: string, minutes: number) => void;
+  /// 早安播报附图（GOAL 003）：transient map，key = 消息 ts，value = 图
+  /// data/http URL。由 [[useChat]] 维护、本组件按 m.ts 查表叠到 assistant
+  /// bubble 的图片栏。**不**入 `m.content` 也不入 itemsRef，避免持久化
+  /// 二进制；重启即失效。常规 user / assistant 多模态图仍走 `m.content`
+  /// + `extractImages` 老路径，互不干扰。
+  proactiveImages?: Record<string, string>;
 }
 
 /// 最近 N 条的硬上限。窗口很小，DOM 太长既不好读也耗渲染。
@@ -87,13 +93,6 @@ const MINI_CHAT_MAX_ITEMS = 20;
 /// 同值 —— 让"DebugApp 显警告" 和 "桌面 chip 显警告" 触发条件一致。
 /// 4000 是经验值：8k-128k context 都有，留 50%+ 给后续对话不至于撞墙。
 const MINI_TOKEN_WARN_THRESHOLD = 4000;
-
-/// session token tally 估算 cost 用的 USD / 百万 token blended rate。
-/// 3.0 是经验中点：Claude Sonnet $3 input / $15 output 之间偏 input
-/// （chat 场景输入占多）；Opus 更贵 / Haiku 更便宜，3.0 算个 mid-band
-/// 兜底估。owner 想精算改这个常量即可。本 tally 显示 cost 是 ambient
-/// awareness 用，不当账单 — tooltip 内已注明仅供参考。
-const MINI_TOKEN_COST_PER_MILLION = 3.0;
 
 const MINI_CHAT_STYLES = `
 @keyframes pet-mini-chat-fade-in {
@@ -178,17 +177,6 @@ const MINI_CHAT_STYLES = `
   transition: opacity 120ms ease-out;
 }
 .pet-mini-row:hover .pet-mini-row-rel {
-  opacity: 0.5;
-}
-/* 顶字数 chip：与 .pet-mini-row-time 顶时钟同 hover-reveal 模式但位
-   置在 bubble 对侧（user 左 / assistant 右）— 让两顶 chip 不挤一边。
-   信号优先级 ambient 级（看长度 audit / 复制前预估），默认透明 +
-   hover 升 0.5。 */
-.pet-mini-row .pet-mini-row-chars {
-  opacity: 0;
-  transition: opacity 120ms ease-out;
-}
-.pet-mini-row:hover .pet-mini-row-chars {
   opacity: 0.5;
 }
 /* 角色操作提示 chip：bubble row hover 时浮 muted 文字提示既有 reroll /
@@ -364,6 +352,7 @@ export function ChatMini({
   onSaveAsNote,
   onSaveAsAiInsight,
   onSetTransientNote,
+  proactiveImages,
 }: Props) {
   // armed-confirm: 第一次点击进 "再点确认" 态 + 3s 内不点就回 idle，防误触。
   // 与桌面 ChatPanel 顶部「清空」按钮 / 任务面板「清结束」按钮同模式。
@@ -378,119 +367,6 @@ export function ChatMini({
   const effectiveAssistantGlyph = assistantGlyph?.trim() || "🐾";
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  /// 💡 ambient hint 行：顶部一行显当前 transient_note + active alarms
-  /// 数 + mute 剩余。30s 轮询足够（这三个信号都是分钟级粒度变化）。
-  /// 三段全空时整行不渲，避免占垂直空间。
-  /// - tn: { text, mins } | null
-  /// - alarms: count
-  /// - muteMins: number | null（None = 未静音）
-  const [ambientTransient, setAmbientTransient] = useState<{
-    text: string;
-    mins: number;
-  } | null>(null);
-  const [ambientAlarms, setAmbientAlarms] = useState<number>(0);
-  const [ambientMuteMins, setAmbientMuteMins] = useState<number | null>(null);
-  useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const [tnTuple, reminders, muteUntil] = await Promise.all([
-          invoke<[string, string]>("get_transient_note").catch(() => [
-            "",
-            "",
-          ] as [string, string]),
-          invoke<{ time: string; topic: string; title: string; due_now: boolean }[]>(
-            "get_pending_reminders",
-          ).catch(() => []),
-          invoke<string>("get_mute_until").catch(() => ""),
-        ]);
-        if (cancelled) return;
-        const [tnText, tnUntilIso] = tnTuple;
-        if (tnText.length === 0) {
-          setAmbientTransient(null);
-        } else {
-          const untilMs = Date.parse(tnUntilIso);
-          const mins = Number.isNaN(untilMs)
-            ? 0
-            : Math.max(1, Math.ceil((untilMs - Date.now()) / 60000));
-          setAmbientTransient({ text: tnText, mins });
-        }
-        setAmbientAlarms(reminders.length);
-        if (muteUntil.length === 0) {
-          setAmbientMuteMins(null);
-        } else {
-          const untilMs = Date.parse(muteUntil);
-          if (Number.isNaN(untilMs)) {
-            setAmbientMuteMins(null);
-          } else {
-            const mins = Math.max(1, Math.ceil((untilMs - Date.now()) / 60000));
-            setAmbientMuteMins(mins);
-          }
-        }
-      } catch (e) {
-        console.error("ambient poll failed:", e);
-      }
-    };
-    void tick();
-    const id = window.setInterval(tick, 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [visible]);
-
-  /// ⏱ pet 沉默 N 分 chip：自上次 pet 主动 / 回复（role=assistant 含
-  /// valid ts）算起的分钟数。让 owner 觉察「pet 是不是又卡住了 / proactive
-  /// pipeline 是不是有问题」。仅 ≥ 5 分钟显（避免 pet 刚说完就闪 chip
-  /// 噪音）；severity 分三档（5..30 muted / 30..90 黄 / >90 红）。
-  ///
-  /// `silentTick` 每 30s bump 让本 useMemo 重算 — 分钟级 display 的足够
-  /// 节奏；与既有 nowTick（1s, NOW marks 专用）分开避免相互 dependency 干扰。
-  const [silentTick, setSilentTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setSilentTick((t) => t + 1), 30_000);
-    return () => window.clearInterval(id);
-  }, []);
-  const petSilentMins = useMemo<number | null>(() => {
-    void silentTick;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role !== "assistant") continue;
-      const raw = m.ts;
-      if (!raw) continue;
-      const t = Date.parse(raw);
-      if (Number.isNaN(t)) continue;
-      return Math.floor((Date.now() - t) / 60_000);
-    }
-    return null;
-  }, [messages, silentTick]);
-  const showPetSilentChip = petSilentMins !== null && petSilentMins >= 5;
-  /// 今日消息计数：scan `messages` prop 中 ts 落在本地今日的 user +
-  /// assistant 总数。活跃度信号 — owner 想「今天和 pet 聊了多少」时
-  /// ambient chip 给即时数。`messages` 是 raw prop，覆盖比 visibleItems
-  /// 更全（visibleItems 还没在此 scope 声明 — TDZ）。session 切换 / 新
-  /// 消息进来时自然 re-derive；跨午夜时 silentTick 30s 推过自然刷新。
-  /// 仅 ≥ 1 时显（idle 态省垂直空间，与既有 ambient gates 一致）。
-  const messagesToday = useMemo(() => {
-    const todayStr = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD 本地
-    let count = 0;
-    for (const m of messages) {
-      if (!m.ts) continue;
-      const d = new Date(m.ts);
-      if (isNaN(d.getTime())) continue;
-      const itemStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      if (itemStr === todayStr) count += 1;
-    }
-    return count;
-  }, [messages, silentTick]);
-  const ambientHasContent =
-    ambientTransient !== null ||
-    ambientAlarms > 0 ||
-    ambientMuteMins !== null ||
-    showPetSilentChip ||
-    messagesToday > 0;
-  // followTail：用户是否处于"自动跟随最新"状态。挂载时默认 true（贴底）。
   // 用 ref 让 auto-scroll effect 拿到最新值而不必加进 deps；同名 state
   // 仅供「跳到底浮标」按钮可见态用。两者由 onScroll 同步更新。
   const followTailRef = useRef(true);
@@ -500,8 +376,6 @@ export function ChatMini({
   const [copyToast, setCopyToast] = useState<"none" | "done" | "err">("none");
   // 顶部 📋 复制最近 N 条按钮的弹出菜单状态。
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
-  // 🌐 时区 chip click 复制 IANA 名后的 ✓ 1.5s 反馈态。
-  const [tzCopyOk, setTzCopyOk] = useState(false);
   // 复制 N 条时是否带 [HH:MM] 时间前缀。开启后老消息（没 ts）显 "[?]"，提
   // 醒用户那条是 session 加载回来的旧条。
   const [copyIncludeTime, setCopyIncludeTime] = useState(false);
@@ -1317,264 +1191,6 @@ export function ChatMini({
           transition: "opacity 600ms ease-out",
         }}
       >
-        {/* 💡 ambient hint 行：顶部一行显当前 pet 临时上下文 — transient_note
-            preview + active alarms 数 + mute 剩余。让 owner 不必开 panel 即
-            可一眼看「pet 现在感知到什么」。三段全空 → 整行不渲（idle 态省
-            垂直空间）。30s 轮询足够（这三个信号都是分钟级粒度）。 */}
-        {ambientHasContent && (
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 6,
-              padding: "2px 4px 6px",
-              fontSize: 10,
-              color: "var(--pet-color-muted)",
-              fontFamily: "'SF Mono', 'Menlo', monospace",
-              userSelect: "none",
-            }}
-            aria-label="pet 当前上下文 ambient hint"
-          >
-            {/* iter #395: chip click → deeplink 跳 PanelDebug 对应卡片。
-                写 pet-debug-deeplink localStorage + invoke open_debug；
-                DebugApp 读后切到 "应用" tab + scrollIntoView 锚点元素。
-                与 pet-panel-deeplink 同 TTL=10s 模板。chips 改 button 以
-                获 cursor: pointer + keyboard accessible。 */}
-            {ambientTransient && (() => {
-              const preview =
-                ambientTransient.text.length > 30
-                  ? ambientTransient.text.slice(0, 30) + "…"
-                  : ambientTransient.text;
-              return (
-                <button
-                  type="button"
-                  onClick={() => {
-                    try {
-                      window.localStorage.setItem(
-                        "pet-debug-deeplink",
-                        JSON.stringify({
-                          tab: "应用",
-                          scrollAnchor: "tone-strip",
-                          ts: Date.now(),
-                        }),
-                      );
-                    } catch (e) {
-                      console.error("write pet-debug-deeplink failed:", e);
-                    }
-                    invoke("open_debug").catch(console.error);
-                  }}
-                  title={`pet 当前 transient_note（剩 ${ambientTransient.mins} 分钟）：${ambientTransient.text}\n\n点击 → 打开 debug 窗 + 滚到 ToneStrip 查看 / 改 transient_note`}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 2,
-                    padding: "1px 6px",
-                    borderRadius: 8,
-                    background: "color-mix(in srgb, #0891b2 14%, transparent)",
-                    color: "#0891b2",
-                    fontWeight: 500,
-                    maxWidth: 220,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    border: "none",
-                    cursor: "pointer",
-                    fontFamily: "inherit",
-                    fontSize: "inherit",
-                  }}
-                >
-                  📝 {preview} · {ambientTransient.mins}m
-                </button>
-              );
-            })()}
-            {ambientAlarms > 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  try {
-                    window.localStorage.setItem(
-                      "pet-debug-deeplink",
-                      JSON.stringify({
-                        tab: "应用",
-                        scrollAnchor: "pending-reminders",
-                        ts: Date.now(),
-                      }),
-                    );
-                  } catch (e) {
-                    console.error("write pet-debug-deeplink failed:", e);
-                  }
-                  invoke("open_debug").catch(console.error);
-                }}
-                title={`${ambientAlarms} 条 pending alarm（todo 段 [remind:] 条目）— pet proactive 扫到 due 时会软提醒。\n\n点击 → 打开 debug 窗 + 滚到「待提醒事项」卡片`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 2,
-                  padding: "1px 6px",
-                  borderRadius: 8,
-                  background:
-                    "color-mix(in srgb, var(--pet-tint-blue-fg) 14%, transparent)",
-                  color: "var(--pet-tint-blue-fg)",
-                  fontWeight: 500,
-                  border: "none",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  fontSize: "inherit",
-                }}
-              >
-                ⏰ {ambientAlarms}
-              </button>
-            )}
-            {ambientMuteMins !== null && (
-              <button
-                type="button"
-                onClick={() => {
-                  try {
-                    window.localStorage.setItem(
-                      "pet-debug-deeplink",
-                      JSON.stringify({
-                        tab: "应用",
-                        scrollAnchor: "tone-strip",
-                        ts: Date.now(),
-                      }),
-                    );
-                  } catch (e) {
-                    console.error("write pet-debug-deeplink failed:", e);
-                  }
-                  invoke("open_debug").catch(console.error);
-                }}
-                title={`pet 当前被静音 — 剩 ${ambientMuteMins} 分钟。期间 proactive 不主动开口；ChatMini / panel 仍可手动发起。\n\n点击 → 打开 debug 窗 + 滚到 ToneStrip 查看 / 改 mute`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 2,
-                  padding: "1px 6px",
-                  borderRadius: 8,
-                  background: "color-mix(in srgb, #7c3aed 14%, transparent)",
-                  color: "#7c3aed",
-                  fontWeight: 500,
-                  border: "none",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  fontSize: "inherit",
-                }}
-              >
-                🔇 {ambientMuteMins}m
-              </button>
-            )}
-            {/* ⏱ pet 沉默 N 分 chip：自上次 assistant 消息（含 valid ts）
-                算起的分钟数。让 owner 觉察「pet 是不是又卡住了 / proactive
-                pipeline 没在跑」。severity 三档：muted / amber / red。仅
-                ≥ 5 分时显（pet 刚说完就闪 chip 是噪音）。click → debug 窗
-                看 proactive 状态。 */}
-            {showPetSilentChip && petSilentMins !== null && (() => {
-              const mins = petSilentMins;
-              let bg: string;
-              let fg: string;
-              if (mins >= 90) {
-                bg = "color-mix(in srgb, #dc2626 14%, transparent)";
-                fg = "#dc2626";
-              } else if (mins >= 30) {
-                bg = "color-mix(in srgb, #d97706 14%, transparent)";
-                fg = "#d97706";
-              } else {
-                bg = "color-mix(in srgb, var(--pet-color-fg) 8%, transparent)";
-                fg = "var(--pet-color-muted)";
-              }
-              const label =
-                mins < 60
-                  ? `${mins}m`
-                  : `${Math.floor(mins / 60)}h${mins % 60 > 0 ? ` ${mins % 60}m` : ""}`;
-              const sev =
-                mins >= 90
-                  ? "🔴 长时间沉默 — 检查 proactive pipeline 是否卡住"
-                  : mins >= 30
-                    ? "🟡 偏久 — 可能正在等 mute / silent / 长 cron 间隔"
-                    : "默认节奏";
-              return (
-                <button
-                  type="button"
-                  onClick={() => {
-                    try {
-                      window.localStorage.setItem(
-                        "pet-debug-deeplink",
-                        JSON.stringify({
-                          tab: "应用",
-                          scrollAnchor: "tone-strip",
-                          ts: Date.now(),
-                        }),
-                      );
-                    } catch (e) {
-                      console.error(
-                        "write pet-debug-deeplink failed:",
-                        e,
-                      );
-                    }
-                    invoke("open_debug").catch(console.error);
-                  }}
-                  title={`pet 自上次主动 / 回复以来已沉默 ${mins} 分钟。${sev}\n\n点击 → 打开 debug 窗 + 滚到 ToneStrip 看 mute / transient / proactive 状态。`}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 2,
-                    padding: "1px 6px",
-                    borderRadius: 8,
-                    background: bg,
-                    color: fg,
-                    fontWeight: 500,
-                    border: "none",
-                    cursor: "pointer",
-                    fontFamily: "inherit",
-                    fontSize: "inherit",
-                  }}
-                >
-                  ⏱ {label}
-                </button>
-              );
-            })()}
-            {/* 📊 今日消息计数 chip：scan messages 中 ts 落在本地今日的
-                user + assistant 总数。活跃度信号 — 与既有 transient /
-                alarms / mute / silent chip 同 ambient pattern。点击复制
-                「今日 N 消息」一行到剪贴板（粘日记 / 同事 ping 场景）。
-                ≥ 1 时浮（≥ 1 才有意义 — gate 与 ambientHasContent 一致
-                避免 0 时单独显占垂直空间）。 */}
-            {messagesToday > 0 && (
-              <button
-                type="button"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  const todayStr = new Date().toLocaleDateString("sv-SE");
-                  const line = `今日（${todayStr}）${messagesToday} 条消息`;
-                  try {
-                    await navigator.clipboard.writeText(line);
-                    console.log(`📊 已复制：${line}`);
-                  } catch (err) {
-                    console.error("copy today msg count failed:", err);
-                  }
-                }}
-                title={`本会话今日（本地日历日）共 ${messagesToday} 条 user + assistant 消息。点击复制「今日 N 消息」一行到剪贴板。`}
-                aria-label="today messages count"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 2,
-                  padding: "1px 6px",
-                  borderRadius: 8,
-                  background:
-                    "color-mix(in srgb, var(--pet-color-fg) 6%, transparent)",
-                  color: "var(--pet-color-muted)",
-                  fontWeight: 500,
-                  border: "none",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  fontSize: "inherit",
-                }}
-              >
-                📊 今日 {messagesToday}
-              </button>
-            )}
-          </div>
-        )}
         {/* ⌘F inline 搜索条：浮在 chat 列表顶部，不挤压列表本身（list 的
             paddingTop 用 visibility 切换的方式吸收 38px，避免空间被搜索条
             盖住）。Enter / Shift+Enter / Esc 在 input keydown 里处理。 */}
@@ -2157,66 +1773,6 @@ export function ChatMini({
             ⛶
           </button>
         )}
-        {/* 🌐 当前时区 mini chip：跨时区出差 / 远程 owner 想知道"宠物记下的
-            时间是哪个 tz" 时一眼可见。click 把 IANA 名（"Asia/Shanghai"）
-            复制到剪贴板，方便在 task description / chat 里写绝对时区
-            （"明天 14:00（Asia/Shanghai）"）。位置在 ⛶ / 📋 之左。 */}
-        {(() => {
-          const tzName =
-            Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-          const offsetMin = -new Date().getTimezoneOffset();
-          const sign = offsetMin >= 0 ? "+" : "-";
-          const absMin = Math.abs(offsetMin);
-          const hr = Math.floor(absMin / 60);
-          const min = absMin % 60;
-          const offsetShort =
-            min === 0 ? `${sign}${hr}` : `${sign}${hr}:${String(min).padStart(2, "0")}`;
-          const offsetFull = `UTC${sign}${String(hr).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
-          return (
-            <button
-              type="button"
-              className="pet-mini-maxbtn"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={async (e) => {
-                e.stopPropagation();
-                try {
-                  await navigator.clipboard.writeText(tzName);
-                  setTzCopyOk(true);
-                  window.setTimeout(() => setTzCopyOk(false), 1500);
-                } catch (err) {
-                  console.error("tz chip copy failed:", err);
-                }
-              }}
-              title={`本机当前时区：${tzName}（${offsetFull}）· 点击复制 IANA 名到剪贴板`}
-              aria-label="copy current timezone IANA name"
-              style={{
-                position: "absolute",
-                top: "14px",
-                right: onOpenPanel ? "76px" : "48px",
-                height: "20px",
-                padding: "0 6px",
-                borderRadius: 10,
-                border: "1px solid var(--pet-color-border)",
-                background: "var(--pet-color-card)",
-                color: tzCopyOk
-                  ? "var(--pet-tint-green-fg)"
-                  : "var(--pet-color-muted)",
-                fontSize: "10px",
-                lineHeight: 1,
-                cursor: "pointer",
-                zIndex: 12,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 2,
-                boxShadow: "var(--pet-shadow-sm)",
-                fontFamily: "inherit",
-              }}
-            >
-              {tzCopyOk ? "✓" : `🌐${offsetShort}`}
-            </button>
-          );
-        })()}
         <div
           className="pet-mini-chat"
           ref={scrollRef}
@@ -2236,65 +1792,6 @@ export function ChatMini({
             boxSizing: "border-box",
           }}
         >
-        {/* 🌡️ context 健康 mini progress bar：常态可见（仅 sessionTokens
-            > 20% threshold = 800 时显，避免空 session 噪音），让 owner 在
-            撞 4000 警示线前提前感知。色按 < 50% 绿 / 50-75% amber / ≥ 75%
-            red 三档；cap 100% width。撞警示线后由下方更显眼的警示 chip
-            接力（同一信号两层视觉权重 — bar 是 ambient peek，chip 是 CTA）。 */}
-        {sessionTokens !== undefined &&
-          sessionTokens > MINI_TOKEN_WARN_THRESHOLD * 0.2 &&
-          sessionTokens <= MINI_TOKEN_WARN_THRESHOLD && (
-            <div
-              style={{
-                marginBottom: 6,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 10,
-                color: "var(--pet-color-muted)",
-                fontFamily: "'SF Mono', 'Menlo', monospace",
-              }}
-              title={`当前 session 累计 ~${sessionTokens} / ${MINI_TOKEN_WARN_THRESHOLD} tokens（${Math.round((sessionTokens / MINI_TOKEN_WARN_THRESHOLD) * 100)}%）· 撞警示线后会浮 /reset CTA chip`}
-            >
-              <span>🌡️</span>
-              <div
-                style={{
-                  flex: 1,
-                  height: 4,
-                  borderRadius: 2,
-                  background: "var(--pet-color-border)",
-                  overflow: "hidden",
-                  position: "relative",
-                }}
-              >
-                {(() => {
-                  const pct = Math.min(
-                    1,
-                    sessionTokens / MINI_TOKEN_WARN_THRESHOLD,
-                  );
-                  const fg =
-                    pct < 0.5
-                      ? "var(--pet-tint-green-fg)"
-                      : pct < 0.75
-                        ? "var(--pet-tint-amber-fg, #d97706)"
-                        : "var(--pet-tint-red-fg)";
-                  return (
-                    <div
-                      style={{
-                        width: `${pct * 100}%`,
-                        height: "100%",
-                        background: fg,
-                        transition: "width 200ms ease-out",
-                      }}
-                    />
-                  );
-                })()}
-              </div>
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>
-                {sessionTokens}/{MINI_TOKEN_WARN_THRESHOLD}
-              </span>
-            </div>
-          )}
         {/* 上下文 token 警示 chip：与 DebugApp 统计 tab 「当前会话 LLM 上下
             文」卡片同源信号（4000 阈值）。一键 reset 走 armed-confirm 二次
             确认（首点变"再点确认"+3s 自清）防止误触丢历史。 */}
@@ -2384,7 +1881,13 @@ export function ChatMini({
           const isLast = idx === lastIdx;
           const isAssistant = m.role === "assistant";
           const text = extractText(m.content);
-          const imgs = extractImages(m.content);
+          // proactive 早安图按 ts 查 transient map；命中时叠进 imgs 让下方
+          // ImageThumb 渲染照旧。assistant 才查（user 路径不该混入早安图）；
+          // 缺 ts 或未命中时回退老路径，与既有 paste/drop 图共存不冲突。
+          const proactiveImg =
+            isAssistant && m.ts ? proactiveImages?.[m.ts] : undefined;
+          const contentImgs = extractImages(m.content);
+          const imgs = proactiveImg ? [...contentImgs, proactiveImg] : contentImgs;
           const hasImg = imgs.length > 0;
           const isSearchHit = searchHits.includes(idx);
           const isActiveSearchHit =
@@ -2684,50 +2187,6 @@ export function ChatMini({
                     </span>
                   );
                 })()}
-              {/* 📊 字数 chip：bubble text 字数（Unicode code points 计数
-                  via Array.from + length，让中文 / emoji 不被高估 / 低估）。
-                  hover-reveal 与顶 ⏱ ts / 底 ⏱ rel chip 同模式但位置在
-                  对侧（user 左顶 / assistant 右顶）— 让两顶 chip 不挤一
-                  边。仅 hasText 时显（纯图 bubble 没有文本字数概念）。
-                  click 复制「N chars」一行（粘 chat report / 写复制前
-                  预估）。 */}
-              {text && (() => {
-                const chars = Array.from(text).length;
-                if (chars === 0) return null;
-                return (
-                  <span
-                    className="pet-mini-row-chars"
-                    title={`本 bubble 字数 ${chars} 字（Unicode code points）— 点击复制「${chars} chars」`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const line = `${chars} chars`;
-                      navigator.clipboard
-                        .writeText(line)
-                        .catch((err) =>
-                          console.error("chars chip copy failed:", err),
-                        );
-                    }}
-                    style={{
-                      position: "absolute",
-                      top: -12,
-                      // 对侧 — user 左 / assistant 右（与 ts chip 反向）
-                      [m.role === "user" ? "left" : "right"]: 8,
-                      fontSize: 9,
-                      color: "var(--pet-color-muted)",
-                      fontFamily: "'SF Mono', 'Menlo', monospace",
-                      whiteSpace: "nowrap",
-                      background: "var(--pet-color-card)",
-                      padding: "0 4px",
-                      borderRadius: 3,
-                      lineHeight: "12px",
-                      pointerEvents: "auto",
-                      cursor: "pointer",
-                    }}
-                  >
-                    📊 {chars}
-                  </span>
-                );
-              })()}
               {/* 🎯 角色操作提示 chip：bubble row hover 时浮 muted 提示
                   既有 reroll / resend / edit 入口（discoverability nudge
                   — 仅文字提示，不挂 onClick）。
@@ -3145,43 +2604,6 @@ export function ChatMini({
             {toolStatus}
           </div>
         )}
-        {/* 💰 session token tally 状态行：bubble 列表底部 ambient 信号，
-            显累计 token + 估算 cost（基于 MINI_TOKEN_COST_PER_MILLION
-            blended rate）。任 sessionTokens > 0 即显（无 threshold gate）—
-            与顶部 🌡️ bar（仅 20-100% 区段）/ 💭 CTA chip（> threshold）
-            互补，覆盖 0-20% 早期 ambient 信息盲区。
-            数据局限：backend 无 input/output token 拆分（estimate_tokens
-            是按 char count / 4 估全 session 上下文），cost 用单一 rate
-            $3/1M 估算 — 不当账单用。tooltip 注明 caveat。 */}
-        {sessionTokens !== undefined && sessionTokens > 0 && (() => {
-          const costUsd = (sessionTokens * MINI_TOKEN_COST_PER_MILLION) / 1_000_000;
-          const costLabel =
-            costUsd < 0.01
-              ? `<$0.01`
-              : `≈ $${costUsd.toFixed(costUsd < 1 ? 3 : 2)}`;
-          return (
-            <div
-              style={{
-                marginTop: 4,
-                paddingTop: 4,
-                borderTop: "1px dashed var(--pet-color-border)",
-                fontSize: 10,
-                color: "var(--pet-color-muted)",
-                fontFamily: "'SF Mono', 'Menlo', monospace",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                userSelect: "none",
-              }}
-              title={`本 session 累计 ~${sessionTokens} tokens（含 system + 历史 turns，按 4 chars/token 估），按 blended $${MINI_TOKEN_COST_PER_MILLION}/1M 估算 cost ${costLabel} USD。仅供 ambient awareness — 不区分 input/output，精确账单请看上游 API console。`}
-            >
-              <span>💰</span>
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>
-                ~{sessionTokens} tok · {costLabel}
-              </span>
-            </div>
-          );
-        })()}
         </div>
         {/* 跳到底浮标：用户向上滚翻历史时显。绝对定位在 wrapper 内的右
             下角，点击滚到底 + 重启 follow-tail。 */}

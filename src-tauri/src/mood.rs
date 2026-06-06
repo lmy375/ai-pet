@@ -169,6 +169,246 @@ pub fn parse_mood_string(raw: &str) -> (String, Option<String>) {
     (raw.to_string(), None)
 }
 
+/// GOAL 047：mood-tag → emoji 映射表。常量集中可扩展。按特异度排序——
+/// 更具体的 mood 关键词放前面，让混合表达（"开心但有点累"）命中第一项
+/// "累"→😴，与 017 classify_mood_policy「混合时 Postpone 优先」spirit 不
+/// 完全同：本表为视觉 cue，强情绪信号优先于平淡积极信号。
+///
+/// 关键词 case-insensitive 子串匹配；首条命中即返。
+pub const MOOD_EMOJI_TABLE: &[(&str, &str)] = &[
+    // 高优先级——强负面 / 强信号情绪
+    ("崩溃", "😭"),
+    ("沮丧", "😞"),
+    ("低落", "😞"),
+    ("难过", "😢"),
+    ("伤心", "😢"),
+    ("焦虑", "😟"),
+    ("担心", "😟"),
+    ("不安", "😟"),
+    ("烦躁", "😤"),
+    ("焦躁", "😤"),
+    ("生气", "😤"),
+    ("愤怒", "😡"),
+    // 中等优先级——疲惫 / 思考状态（用户场景高频）
+    ("累", "😴"),
+    ("困", "😴"),
+    ("疲惫", "😴"),
+    ("无助", "🥺"),
+    ("孤独", "🥺"),
+    ("迷茫", "🤔"),
+    ("琢磨", "🤔"),
+    ("思考", "🤔"),
+    ("在想", "🤔"),
+    // 强正面情绪
+    ("兴奋", "🤩"),
+    ("雀跃", "🤩"),
+    ("惊喜", "🤩"),
+    ("开心", "😊"),
+    ("愉悦", "😊"),
+    ("快乐", "😊"),
+    ("高兴", "😊"),
+    ("满足", "🥰"),
+    ("幸福", "🥰"),
+    ("感动", "🥰"),
+    ("喜欢", "🥰"),
+    // 平静档（弱信号 / 中性）
+    ("平静", "😌"),
+    ("舒缓", "😌"),
+    ("安宁", "😌"),
+    ("放松", "😌"),
+    // 英文备用
+    ("happy", "😊"),
+    ("excited", "🤩"),
+    ("sad", "😢"),
+    ("anxious", "😟"),
+    ("tired", "😴"),
+    ("calm", "😌"),
+    ("frustrated", "😤"),
+    ("angry", "😡"),
+];
+
+/// Pure：mood text + motion 合并查表，case-insensitive 子串首条命中返
+/// emoji。**spec 反指令**：「没有 mood 数据 → 角标隐藏」对应 None；
+/// **关键策略**：text + motion 都为空 → None（无数据隐藏）；非空但无匹配 →
+/// 返中性 fallback "🙂"（user 已显式 record 了 mood，hide 反而违和）。
+pub fn mood_to_emoji(text: &str, motion: Option<&str>) -> Option<&'static str> {
+    let combined = format!(
+        "{} {}",
+        motion.unwrap_or("").trim(),
+        text.trim()
+    );
+    let lower = combined.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    for (kw, emoji) in MOOD_EMOJI_TABLE {
+        if lower.contains(&kw.to_ascii_lowercase()) {
+            return Some(*emoji);
+        }
+    }
+    // text 非空但无关键词命中 → 中性 fallback。user 已显式 record，不该完全
+    // 隐藏。"🙂" 比默认 "无表情" 更轻量。
+    Some("🙂")
+}
+
+/// Tauri 命令：返当前 mood 对应的 emoji（GOAL 047 figure 角标用）。
+/// 文件缺失 / 空 mood → None（前端据此**隐藏**角标）；有数据 → Some(emoji)。
+#[tauri::command]
+pub fn get_mood_emoji() -> Option<String> {
+    let (text, motion) = read_current_mood_parsed()?;
+    mood_to_emoji(&text, motion.as_deref()).map(String::from)
+}
+
+/// GOAL 048：输入框 placeholder 按 pet mood 切换候选句。每个 mood "bucket"
+/// 准备 3–5 条，每次启动 / mood 切换从命中 bucket 随机选一条（避免固定句固
+/// 化为"标签"）。语气保持 placeholder 级（轻 / 非"开口级"，与 016
+/// morning_briefing / 008 welcome_back 不重叠）。
+///
+/// 分桶策略（与 [`MOOD_EMOJI_TABLE`] 共用 keyword 表 spirit）：先扫强信号
+/// 关键词→桶（negative / tired_thoughtful / positive / calm）；都不命中
+/// fall back 到 `default` 桶（user 已 record 但词条意外）；mood 完全缺失走
+/// `no_data` 桶（启动初）。
+pub const PLACEHOLDER_BUCKETS: &[(&str, &[&str])] = &[
+    (
+        "negative",
+        &[
+            "怎么了？聊聊",
+            "在这儿，慢慢说",
+            "想聊就说，不想也行",
+            "我在",
+            "想说点啥都可以",
+        ],
+    ),
+    (
+        "tired_thoughtful",
+        &[
+            "在想什么？",
+            "今天有点重，跟我说说",
+            "脑子里在转啥",
+            "歇会儿，聊一句",
+            "想到什么就发",
+        ],
+    ),
+    (
+        "positive",
+        &[
+            "今天怎么样？",
+            "听起来不错，说说看？",
+            "有啥好玩的？",
+            "分享一下吧",
+            "继续呀",
+        ],
+    ),
+    (
+        "calm",
+        &[
+            "聊点什么？",
+            "随便说说",
+            "在听呢",
+            "今天还顺利？",
+            "想说啥",
+        ],
+    ),
+    // user 已 record mood 但词条不在分类里——比起退回固定句更友好
+    (
+        "default",
+        &[
+            "在的，说说？",
+            "聊聊？",
+            "想说什么都行",
+            "嗯，在听",
+        ],
+    ),
+    // mood 文件不存在 / 解析失败——启动初最常见，比纯空 placeholder 友好
+    ("no_data", &["聊点什么吧"]),
+];
+
+/// Pure：根据 mood text + motion 决定桶 key。**负面信号优先**（与
+/// [`mood_to_emoji`] 同 spirit）；都不命中 → "default"。
+pub fn placeholder_bucket(text: &str, motion: Option<&str>) -> &'static str {
+    let combined = format!("{} {}", motion.unwrap_or("").trim(), text.trim());
+    let lower = combined.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return "no_data";
+    }
+    const NEGATIVE_KW: &[&str] = &[
+        "焦虑", "担心", "不安", "烦躁", "焦躁", "生气", "愤怒", "崩溃", "沮丧",
+        "低落", "难过", "伤心", "anxious", "sad", "frustrated", "angry",
+    ];
+    const TIRED_THOUGHTFUL_KW: &[&str] = &[
+        "累", "困", "疲惫", "无助", "孤独", "迷茫", "琢磨", "思考", "在想",
+        "tired",
+    ];
+    const POSITIVE_KW: &[&str] = &[
+        "兴奋", "雀跃", "惊喜", "开心", "愉悦", "快乐", "高兴", "满足", "幸福",
+        "感动", "喜欢", "happy", "excited",
+    ];
+    const CALM_KW: &[&str] = &["平静", "舒缓", "安宁", "放松", "calm"];
+    for k in NEGATIVE_KW {
+        if lower.contains(&k.to_ascii_lowercase()) {
+            return "negative";
+        }
+    }
+    for k in TIRED_THOUGHTFUL_KW {
+        if lower.contains(&k.to_ascii_lowercase()) {
+            return "tired_thoughtful";
+        }
+    }
+    for k in POSITIVE_KW {
+        if lower.contains(&k.to_ascii_lowercase()) {
+            return "positive";
+        }
+    }
+    for k in CALM_KW {
+        if lower.contains(&k.to_ascii_lowercase()) {
+            return "calm";
+        }
+    }
+    "default"
+}
+
+/// Pure：bucket → 候选句列表。无此 bucket 返空 slice（防护性，PLACEHOLDER_
+/// BUCKETS 包了 6 桶但 caller 调用 unknown key 时不应 panic）。
+pub fn placeholder_candidates(bucket: &str) -> &'static [&'static str] {
+    for (k, list) in PLACEHOLDER_BUCKETS {
+        if *k == bucket {
+            return list;
+        }
+    }
+    &[]
+}
+
+/// Pure：在 bucket 候选里**确定性**选一条。`salt` 给 caller 传一个轻量
+/// "随机因子"（ts 秒 / mood-change counter / 任意 u64），同 salt 永远返同
+/// 一条——前端用启动时刻 + mood 切换计数当 salt 时，单 mood 段内 placeholder
+/// 稳定（不在用户输入时跳字符）。
+///
+/// 不引 thread_rng——避免 placeholder 高频读时的 RNG 开销 + 让测试可预期。
+pub fn pick_placeholder(bucket: &str, salt: u64) -> &'static str {
+    let list = placeholder_candidates(bucket);
+    if list.is_empty() {
+        return "聊点什么吧"; // 终极 fallback（PLACEHOLDER_BUCKETS 不可能为空，此分支防御性）
+    }
+    list[(salt as usize) % list.len()]
+}
+
+/// Tauri 命令：返当前应展示的 input placeholder。`salt` 由前端传（同一段
+/// mood + 同一 salt 永远返同一句，避免 re-render 时跳字符）。建议前端
+/// `salt = app_session_id + mood_change_count` 一类组合。
+///
+/// spec「mood 数据不可用 → 退回固定句『聊点什么吧』」由 no_data bucket
+/// 自然满足。
+#[tauri::command]
+pub fn get_input_placeholder(salt: Option<u64>) -> String {
+    let s = salt.unwrap_or(0);
+    let (text, motion) = match read_current_mood_parsed() {
+        Some(p) => p,
+        None => return pick_placeholder("no_data", s).to_string(),
+    };
+    let bucket = placeholder_bucket(&text, motion.as_deref());
+    pick_placeholder(bucket, s).to_string()
+}
+
 /// Shared post-turn mood read used by every LLM entry point (proactive, chat, telegram,
 /// consolidate). Reads the current mood, parses the optional `[motion: X]` prefix, emits
 /// a compliance log line when the prefix is missing, and bumps the process-wide
@@ -265,5 +505,154 @@ mod tests {
         let (text, motion) = parse_mood_string("   [motion: Tap] hello");
         assert_eq!(motion.as_deref(), Some("Tap"));
         assert_eq!(text, "hello");
+    }
+
+    // ===== GOAL 047 mood_to_emoji tests =====
+    use super::mood_to_emoji;
+
+    #[test]
+    fn mood_to_emoji_none_when_text_and_motion_empty() {
+        assert_eq!(mood_to_emoji("", None), None);
+        assert_eq!(mood_to_emoji("  ", Some("  ")), None);
+    }
+
+    #[test]
+    fn mood_to_emoji_negative_signals_priority() {
+        // 强负面信号优先于积极信号——混合表达"焦虑但还开心"取 😟
+        assert_eq!(mood_to_emoji("焦虑但还开心", None), Some("😟"));
+        assert_eq!(mood_to_emoji("烦躁", None), Some("😤"));
+        assert_eq!(mood_to_emoji("难过", None), Some("😢"));
+        assert_eq!(mood_to_emoji("崩溃了", None), Some("😭"));
+    }
+
+    #[test]
+    fn mood_to_emoji_tired_thoughtful_detected() {
+        assert_eq!(mood_to_emoji("有点累", None), Some("😴"));
+        assert_eq!(mood_to_emoji("困得不行", None), Some("😴"));
+        assert_eq!(mood_to_emoji("在想这件事", None), Some("🤔"));
+        assert_eq!(mood_to_emoji("迷茫", None), Some("🤔"));
+    }
+
+    #[test]
+    fn mood_to_emoji_positive_signals() {
+        assert_eq!(mood_to_emoji("开心", None), Some("😊"));
+        assert_eq!(mood_to_emoji("兴奋", None), Some("🤩"));
+        assert_eq!(mood_to_emoji("满足", None), Some("🥰"));
+        assert_eq!(mood_to_emoji("平静放松", None), Some("😌"));
+    }
+
+    #[test]
+    fn mood_to_emoji_english_keywords() {
+        assert_eq!(mood_to_emoji("feeling tired today", None), Some("😴"));
+        assert_eq!(mood_to_emoji("ANXIOUS", None), Some("😟"));
+        assert_eq!(mood_to_emoji("a bit sad", None), Some("😢"));
+        assert_eq!(mood_to_emoji("calm and steady", None), Some("😌"));
+    }
+
+    #[test]
+    fn mood_to_emoji_falls_back_to_neutral_when_no_match() {
+        // text 非空但无关键词命中——user 已记录 mood，hide 反而违和，返中性
+        assert_eq!(mood_to_emoji("今天还行", None), Some("🙂"));
+        assert_eq!(mood_to_emoji("not a known mood word", None), Some("🙂"));
+    }
+
+    #[test]
+    fn mood_to_emoji_combines_motion_into_scan() {
+        // motion 槽里的关键词也参与扫描（虽然 Live2D motion 名通常无情绪词，
+        // 但偶发 LLM 把情绪写 motion 时仍命中）
+        assert_eq!(mood_to_emoji("hello", Some("Excited")), Some("🤩"));
+        assert_eq!(mood_to_emoji("text without keyword", Some("Tired")), Some("😴"));
+    }
+
+    // ===== GOAL 048 placeholder bucket tests =====
+    use super::{pick_placeholder, placeholder_bucket, placeholder_candidates, PLACEHOLDER_BUCKETS};
+
+    #[test]
+    fn placeholder_bucket_empty_text_and_motion_returns_no_data() {
+        assert_eq!(placeholder_bucket("", None), "no_data");
+        assert_eq!(placeholder_bucket("  ", Some("  ")), "no_data");
+    }
+
+    #[test]
+    fn placeholder_bucket_negative_priority_over_positive() {
+        // 与 mood_to_emoji 同 spirit：混合时负面信号优先
+        assert_eq!(
+            placeholder_bucket("焦虑但还开心", None),
+            "negative"
+        );
+        assert_eq!(placeholder_bucket("难过", None), "negative");
+    }
+
+    #[test]
+    fn placeholder_bucket_tired_thoughtful_detected() {
+        assert_eq!(placeholder_bucket("有点累", None), "tired_thoughtful");
+        assert_eq!(placeholder_bucket("在想", None), "tired_thoughtful");
+        assert_eq!(placeholder_bucket("迷茫", None), "tired_thoughtful");
+    }
+
+    #[test]
+    fn placeholder_bucket_positive_and_calm() {
+        assert_eq!(placeholder_bucket("开心", None), "positive");
+        assert_eq!(placeholder_bucket("兴奋", None), "positive");
+        assert_eq!(placeholder_bucket("平静", None), "calm");
+    }
+
+    #[test]
+    fn placeholder_bucket_unmatched_falls_back_to_default() {
+        // user 已 record mood 但不在 5 关键词桶里——返 default 给友好句
+        assert_eq!(placeholder_bucket("今天还行", None), "default");
+        assert_eq!(placeholder_bucket("奇怪的描述", None), "default");
+    }
+
+    #[test]
+    fn placeholder_candidates_all_buckets_non_empty() {
+        // 所有桶必须有至少 1 句——否则 pick_placeholder 走 fallback 路径
+        for (k, list) in PLACEHOLDER_BUCKETS {
+            assert!(
+                !list.is_empty(),
+                "bucket {} 候选不能为空（spec 每桶 3-5 条）",
+                k
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_candidates_unknown_bucket_returns_empty() {
+        assert!(placeholder_candidates("bogus_bucket").is_empty());
+    }
+
+    #[test]
+    fn pick_placeholder_deterministic_for_same_salt() {
+        // 同 salt 永远返同一条——前端用启动时刻 + mood-change counter
+        // 当 salt 时，单 mood 段内 placeholder 稳定不跳字符
+        let a = pick_placeholder("positive", 7);
+        let b = pick_placeholder("positive", 7);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn pick_placeholder_different_salts_can_differ() {
+        // 至少在桶有 ≥ 2 条时，不同 salt 应能落到不同候选
+        let list = placeholder_candidates("positive");
+        assert!(list.len() >= 2);
+        let s0 = pick_placeholder("positive", 0);
+        let s1 = pick_placeholder("positive", 1);
+        assert_ne!(s0, s1, "salt 0 vs 1 在多候选桶内应落到不同句");
+    }
+
+    #[test]
+    fn pick_placeholder_unknown_bucket_falls_back_to_generic() {
+        let s = pick_placeholder("nonexistent", 0);
+        assert_eq!(s, "聊点什么吧");
+    }
+
+    #[test]
+    fn no_data_bucket_serves_fixed_fallback() {
+        // spec 反指令：mood 不可用 → 固定句『聊点什么吧』
+        let s = pick_placeholder("no_data", 0);
+        assert_eq!(s, "聊点什么吧");
+        // no_data 桶只有 1 条——salt 任意永远返同一句
+        let s2 = pick_placeholder("no_data", 999);
+        assert_eq!(s2, "聊点什么吧");
     }
 }

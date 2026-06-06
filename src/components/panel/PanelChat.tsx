@@ -2362,12 +2362,18 @@ export function PanelChat({
               count: number;
               last_used_at: string;
             }>);
-            const [userName, days, mood, persona, tools] = await Promise.all([
+            // GOAL 006：30d 意图直方图（rule-based 分类后落 intent_history.log）。
+            // 失败兜空数组让后续渲染走"空就跳渲"分支，与 mood/persona 一致。
+            const intentsP = invoke<Array<{ intent: string; count: number }>>(
+              "get_top_intents_30d",
+            ).catch(() => [] as Array<{ intent: string; count: number }>);
+            const [userName, days, mood, persona, tools, intents] = await Promise.all([
               userNameP,
               daysP,
               moodP,
               personaP,
               toolsP,
+              intentsP,
             ]);
             const lines: string[] = ["🪪 **/whoami**"];
             if (userName && userName.trim()) {
@@ -2404,6 +2410,21 @@ export function PanelChat({
               const top3 = tools.slice(0, 3);
               const segs = top3.map((t) => `\`${t.name}\`×${t.count}`).join(" · ");
               lines.push(`🛠 近常用工具：${segs}`);
+            }
+            if (intents.length > 0) {
+              // 后端已 count desc 排好；中文 label 由后端 intent_zh 决定，
+              // 但走 IPC 时只传英文 key 给前端 —— 这里做轻量本地映射保持
+              // PanelChat 不依赖额外 ipc 调用。新 intent key 出现 (后端
+              // 加新桶) 时前端 fallback「其它」，与后端 intent_zh 行为
+              // 对齐。
+              const ZH: Record<string, string> = {
+                chat: "闲聊", qa: "问答", translate: "翻译", summarize: "总结",
+                code: "写代码", vent: "情绪倾诉", command: "指令执行", other: "其它",
+              };
+              const top3i = intents.slice(0, 3)
+                .map((i) => `${ZH[i.intent] ?? "其它"}·${i.count}`)
+                .join("  ");
+              lines.push(`🧠 最近 30d 你最常找我：${top3i}`);
             }
             if (lines.length === 1) {
               // 所有源都空 —— 刚装机 / 全清状态，给一个温和兜底

@@ -11,6 +11,108 @@ import { formatBytes } from "../../utils/formatBytes";
 import { formatRelativeAgeBuckets } from "../../utils/formatRelativeAge";
 import { useSearchHistory } from "../../hooks/useSearchHistory";
 
+/// GOAL 009：解析 visual memory 前缀 `[visual: attachments/xxx.jpg] body`。
+/// 命中返回 `{ rel: 缩略图相对路径, rest: 剩余 description }`；否则 null。
+/// 与后端 `visual_memory::parse_visual_prefix` 镜像 —— 协议权威在 Rust，
+/// 这里是渲染层 mirror。
+function parseVisualPrefix(
+  description: string,
+): { rel: string; rest: string } | null {
+  const m = description.trimStart().match(/^\[visual:\s*([^\]]+?)\s*\]\s*([\s\S]*)$/);
+  if (!m) return null;
+  const rel = m[1].trim();
+  if (rel.length === 0) return null;
+  return { rel, rest: m[2].trim() };
+}
+
+/// 模块级缓存：rel path → data URL（Tauri `read_attachment` 命令返回）。
+/// 同张图在不同 item / 不同 panel 刷新里只 invoke 一次后端，省掉重复 IO
+/// + base64 编码。组件级 state 会随 PanelMemory 切 tab 重建而丢，所以放
+/// 模块级。size cap：~50 张同时活跃，b64 一张 ~10KB → 500KB 内存预算。
+const attachmentCache = new Map<string, string>();
+const attachmentInflight = new Map<string, Promise<string>>();
+
+async function loadAttachment(rel: string): Promise<string> {
+  const cached = attachmentCache.get(rel);
+  if (cached) return cached;
+  const inflight = attachmentInflight.get(rel);
+  if (inflight) return inflight;
+  const p = invoke<string>("read_attachment", { relPath: rel })
+    .then((url) => {
+      attachmentCache.set(rel, url);
+      attachmentInflight.delete(rel);
+      return url;
+    })
+    .catch((e) => {
+      attachmentInflight.delete(rel);
+      throw e;
+    });
+  attachmentInflight.set(rel, p);
+  return p;
+}
+
+/// PanelMemory visual item 的缩略图小组件。lazy fetch（mount 时拉一次），
+/// 点击触发 `onOpen` 让父组件弹 lightbox。失败时不渲染（避免红叉占位）。
+function VisualThumb({
+  rel,
+  onOpen,
+}: {
+  rel: string;
+  onOpen?: (dataUrl: string) => void;
+}) {
+  const [url, setUrl] = useState<string>(attachmentCache.get(rel) ?? "");
+  useEffect(() => {
+    if (url) return;
+    let cancelled = false;
+    loadAttachment(rel)
+      .then((u) => {
+        if (!cancelled) setUrl(u);
+      })
+      .catch((e) => console.warn("read_attachment failed:", rel, e));
+    return () => {
+      cancelled = true;
+    };
+  }, [rel, url]);
+  if (!url) {
+    // 占位框：让 layout 不跳。fetch 完成 / 失败前都显灰底空块。
+    return (
+      <span
+        style={{
+          display: "inline-block",
+          width: 36,
+          height: 36,
+          marginRight: 6,
+          background: "var(--pet-color-card)",
+          border: "1px solid var(--pet-color-border)",
+          borderRadius: 4,
+          verticalAlign: "middle",
+        }}
+        aria-hidden
+      />
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt="visual memory"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen?.(url);
+      }}
+      title="点击查看大图"
+      style={{
+        width: 36,
+        height: 36,
+        objectFit: "cover",
+        borderRadius: 4,
+        marginRight: 6,
+        verticalAlign: "middle",
+        cursor: onOpen ? "zoom-in" : "default",
+      }}
+    />
+  );
+}
+
 interface MemoryItem {
   title: string;
   description: string;
@@ -105,6 +207,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
   /// `${catKey}::${title}`；async create 期间 disable 按钮 + 显灰色。
   /// 与既有 alarmBusy / renameMemoryBusy 同模式。
   const [copyingItemKey, setCopyingItemKey] = useState<string | null>(null);
+  /// GOAL 009：visual memory item 缩略图点击放大用。null = 关闭。
+  /// 用 Modal 自己渲（PanelMemory 不引 ImageLightbox 额外依赖；attachment
+  /// data URL 已是 jpeg，直接 <img src> 显大图够用）。
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   /// 右键 ctx menu 状态：聚合既有 chip 动作（✏️ 改名 / 📑 副本 /
   /// 🗑 删 / 🔗 inline ref / 📋 detail 路径）让 owner 一次发现入口。
   /// 与既有 inline chip 互补 — 右键是 quick-action 入口（mouse 党
@@ -2942,7 +3048,7 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         <input
           ref={searchInputRef}
           style={{ ...s.input, flex: 1 }}
-          placeholder="搜索记忆…（输入即段内过滤 · Enter 跨 cat 命中清单 · ⌘F 聚焦）"
+          placeholder='例：「妈妈生日」「明早喝水」「butler」… · Enter 跨 cat · ⌘F'
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           onKeyDown={(e) => {
@@ -4762,6 +4868,39 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
         )}
       </Modal>
 
+      {/* GOAL 009：visual memory 缩略图放大 lightbox。点击空白 / Esc 关闭。 */}
+      <Modal open={lightboxSrc !== null} onClose={() => setLightboxSrc(null)} maxWidth={720}>
+        {lightboxSrc && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+            <img
+              src={lightboxSrc}
+              alt="visual memory full"
+              style={{
+                maxWidth: "100%",
+                maxHeight: "70vh",
+                objectFit: "contain",
+                borderRadius: 4,
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => setLightboxSrc(null)}
+              style={{
+                fontSize: 12,
+                padding: "6px 12px",
+                borderRadius: 6,
+                border: "1px solid var(--pet-color-border)",
+                background: "var(--pet-color-card)",
+                color: "var(--pet-color-fg)",
+                cursor: "pointer",
+              }}
+            >
+              关闭
+            </button>
+          </div>
+        )}
+      </Modal>
+
       {/* Categories */}
       {searchResults === null &&
         index &&
@@ -6245,48 +6384,10 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                   tint + 🧠 emoji + 简短一行解释，与既有 butler_tasks 黄底
                   butlerDaily banner 风格对偶。空 cat 也显（onboarding 价
                   值最大的时机）。 */}
-              {catKey === "ai_insights" && (
-                <div
-                  style={{
-                    background: "var(--pet-tint-purple-bg, var(--pet-color-bg))",
-                    border: "1px solid var(--pet-color-border)",
-                    borderRadius: 6,
-                    padding: "6px 10px",
-                    marginBottom: 8,
-                    fontSize: 11,
-                    color: "var(--pet-color-muted)",
-                    lineHeight: 1.5,
-                  }}
-                >
-                  🧠 <strong>这里是宠物自己写的</strong>：proactive cycle
-                  / consolidate 自动维护 <code>persona_summary</code> /
-                  <code>current_mood</code> / <code>daily_plan</code> /
-                  <code>daily_review_&lt;date&gt;</code> 等。手动编辑可以，
-                  但通常让宠物自己慢慢沉淀更自然。删除一条 = 让宠物"忘记"
-                  这段反思。
-                  {/* daily_review 历史计数：扫 ai_insights items title 以
-                      "daily_review_" 开头计数。0 时不显（noise）；> 0 时
-                      append " · 📦 N 条 daily_review 历史" inline。让 owner
-                      一眼看到宠物已积累的复盘量。 */}
-                  {(() => {
-                    const count = cat.items.filter((it) =>
-                      it.title.startsWith("daily_review_"),
-                    ).length;
-                    if (count === 0) return null;
-                    return (
-                      <>
-                        {" "}
-                        ·{" "}
-                        <span
-                          title={`本 cat 含 ${count} 条 daily_review_<date> 历史复盘条目（每日 consolidate cycle 写一条；retention 由 consolidate 配置控制）`}
-                        >
-                          📦 {count} 条 daily_review 历史
-                        </span>
-                      </>
-                    );
-                  })()}
-                </div>
-              )}
+              {/* 058-part1：常驻 🧠 explainer banner + 📦 daily_review 计数
+                  chip 已删。banner 是 audit-style 元数据（不服务 5 核心），
+                  daily_review 计数同属 audit。如有需要走 ⓘ icon popover
+                  （part-2，需 dev session 视觉验证）。 */}
               {/* Iter Cη: per-day "今日小结" rolled up by consolidate. Each line is
                   "<date> <summary>". Newest day rendered at the top in a slightly
                   bolder treatment than the per-event timeline below. */}
@@ -6859,8 +6960,13 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                     .replace(/\[done(?:\]|\s[^\]]*\])\s*/gi, "")
                     .replace(/\[result\s*[:：]?\s*[^\]]*\]\s*/gi, "")
                     .trim();
+                // GOAL 009：先剥 visual 前缀 —— 后续 displayDesc 不带
+                // `[visual: ...]` 噪音，且把 rel 路径单独取出渲缩略图。
+                const visualParsed = parseVisualPrefix(item.description);
+                const visualRel = visualParsed?.rel ?? null;
                 const displayDesc = (() => {
                   let base = parsed ? parsed.topic : item.description;
+                  if (visualParsed) base = visualParsed.rest;
                   if (errInfo.hasError) base = stripErrorBlock(base).trim();
                   if (doneInfo.isDone) base = stripDoneBlocks(base);
                   return base;
@@ -7611,6 +7717,49 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                               title={hint}
                             >
                               {icon} {scheduleLabel}
+                            </span>
+                          );
+                        })()}
+                        {/* GOAL 010：butler_task 拆解进度 chip。仅 butler_tasks
+                            category + 本条有同 cat 的 child（child desc 含
+                            `[parent: <my_title>]`）时显「N/M」。0/0 不渲染。
+                            child item 本身也带 `[parent:]` 前缀但**不会**
+                            再被当 parent —— 子任务标题与 parent 不同，扫
+                            siblings 时它的 `[parent: X]` 指向 X 而非自己。
+                            */}
+                        {catKey === "butler_tasks" && (() => {
+                          const myTitle = item.title;
+                          let done = 0;
+                          let total = 0;
+                          const parentRe = /\[parent:\s*([^\]]+?)\s*\]/;
+                          for (const sib of cat.items) {
+                            if (sib.title === myTitle) continue;
+                            const m = sib.description.match(parentRe);
+                            if (!m) continue;
+                            if (m[1].trim() !== myTitle) continue;
+                            total += 1;
+                            if (/\[done\]/i.test(sib.description)) done += 1;
+                          }
+                          if (total === 0) return null;
+                          const allDone = done === total;
+                          return (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                background: allDone
+                                  ? "var(--pet-tint-blue-bg)"
+                                  : "var(--pet-color-card)",
+                                color: allDone
+                                  ? "var(--pet-tint-blue-fg)"
+                                  : "var(--pet-color-muted)",
+                                border: "1px solid var(--pet-color-border)",
+                                fontFamily: "'SF Mono', monospace",
+                              }}
+                              title={`已完成 ${done}/${total} 个子任务（child butler_task 通过 description 内 [parent: ${myTitle}] 标记关联）`}
+                            >
+                              📋 {done}/{total}
                             </span>
                           );
                         })()}
@@ -9317,6 +9466,12 @@ export function PanelMemory({ onRequestFocusTask }: PanelMemoryProps = {}) {
                             : displayDesc;
                           return (
                             <>
+                              {visualRel && (
+                                <VisualThumb
+                                  rel={visualRel}
+                                  onOpen={(u) => setLightboxSrc(u)}
+                                />
+                              )}
                               {renderContentWithTaskRefs(
                                 shown,
                                 refTaskMap,

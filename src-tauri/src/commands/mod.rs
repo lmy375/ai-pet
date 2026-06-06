@@ -4,6 +4,7 @@ pub mod debug;
 pub mod image;
 pub mod mcp;
 pub mod memory;
+pub mod screenshot;
 pub mod session;
 pub mod settings;
 pub mod shell;

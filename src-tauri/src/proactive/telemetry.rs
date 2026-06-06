@@ -21,7 +21,33 @@
 //! Public surface preserved via glob `pub use self::telemetry::*` at the
 //! top of `proactive.rs`.
 
+use std::sync::atomic::AtomicU64;
+
 use super::ProactiveTurnOutcome;
+
+// ---- GOAL 016: morning_briefing enrich tool failure counters ----------------
+// 简单进程内 AtomicU64 累加器，让面板 / debug 工具能看到「最近 morning_
+// briefing 跑的时候 weather / calendar 失败几次」。重启清零（观测信号 ≠
+// 关键状态，与现有 telemetry stash 同款 in-memory 取舍）。
+
+/// 早安播报触发期间，`get_weather` 工具被 LLM 调用后返回 `error` 的次数。
+/// caller: maybe_run_morning_briefing 在 LLM 跑完后用 `ToolContext::
+/// called_tools_with_errors` 之类信号 bump（v1 未接，等需要时再 wire）。
+pub static BRIEFING_WEATHER_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// 同上但针对 `get_upcoming_events` 工具。
+pub static BRIEFING_CALENDAR_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Tauri 命令：给外部（panel / debug）查当前累计失败次数。返回 [weather,
+/// calendar] 数组方便单次 IPC 拿全。重启清零（与 in-memory stash 风格一致）。
+#[tauri::command]
+pub fn get_briefing_tool_fail_counts() -> [u64; 2] {
+    use std::sync::atomic::Ordering;
+    [
+        BRIEFING_WEATHER_FAIL_COUNT.load(Ordering::Relaxed),
+        BRIEFING_CALENDAR_FAIL_COUNT.load(Ordering::Relaxed),
+    ]
+}
 
 // ---- Iter E1-E4 / R1 static stashes ----------------------------------------
 

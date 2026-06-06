@@ -423,6 +423,12 @@ pub struct AppSettings {
     /// users put weird values they'll see them echoed.
     #[serde(default)]
     pub user_name: String,
+    /// GOAL 055：宠物名字。空 = user 还没取名，persona layer 注入"邀请取名"
+    /// 提示，pet 被问 "你叫什么" 时柔和回避。非空 = 注入 "你的名字是「X」"
+    /// 让 pet self-reference / 自我介绍 / 029 self_note / 034 surprise 等场景
+    /// 统一用此名。桌面与 TG 共用同一 settings name（spec「单 store」）。
+    #[serde(default)]
+    pub pet_name: String,
     /// 复制对话历史时用的角色前缀。默认 🧑 / 🐾；用户自定义 SOUL（如猫娘 / 助手）
     /// 时可以换成「我」「猫娘」等中文短串。空串 = fallback 内置默认（前端处理）。
     #[serde(default = "default_user_glyph")]
@@ -486,6 +492,7 @@ impl Default for AppSettings {
             memory_consolidate: MemoryConsolidateConfig::default(),
             chat: ChatConfig::default(),
             user_name: String::new(),
+            pet_name: String::new(),
             user_glyph: default_user_glyph(),
             assistant_glyph: default_assistant_glyph(),
             tool_review_overrides: HashMap::new(),

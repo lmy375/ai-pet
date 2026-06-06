@@ -67,6 +67,18 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
         setStatus("");
         onModelReady?.(model);
 
+        // 054-part1：显式 kick-start Idle motion 让 pet figure 不再静态。pixi-
+        // live2d-display 的 motion manager 在 model 入 stage 后理应自动巡回
+        // Idle group，但实测启动后保持完全静止；显式调一次 Idle (priority 1
+        // = IDLE) 启动巡回，随后 motion manager 会自然循环 Idle group 内的
+        // 多条 motion。priority 1 让 Tap / Flick / Flick3（priority 2）能正
+        // 常打断 idle。空 Idle group 或加载异常时 try/catch 静默吞。
+        try {
+          (model as any).motion("Idle", undefined, 1);
+        } catch (e) {
+          console.debug("Live2D idle kick-start failed:", e);
+        }
+
         // Cleanup on destroy
         const cleanup = () => {
           destroyed = true;

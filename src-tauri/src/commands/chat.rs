@@ -22,6 +22,59 @@ pub struct ChatDonePayload {
     pub timestamp: String,
 }
 
+/// GOAL 046：从 LLM 输出剥 `<think>...</think>` 块。返 (visible_text, think_blocks)。
+///
+/// 行为：
+/// - 大小写不敏感匹配（reasoning 模型偶有 `<Think>` 变体）
+/// - 多对 think 块全部移除
+/// - 未闭合的 `<think>` 后续内容**保留**（模型半路截断时不应把全部正文吃掉）
+/// - 块外多余空白做 trim—— 防 think 块两端留下连续换行 / 空格
+/// - 嵌套 think 不支持（实践中模型不嵌套；遇到时按 outer 配对处理）
+///
+/// 不动其它 tag（保留 markdown / 自定义 marker），仅剥 think。
+pub fn strip_think_blocks(s: &str) -> (String, Vec<String>) {
+    let mut visible = String::with_capacity(s.len());
+    let mut think_blocks: Vec<String> = Vec::new();
+    let lower = s.to_ascii_lowercase();
+    let mut i = 0usize;
+    while i < s.len() {
+        // 找下一个 `<think>` 起点（lower 索引与原串字节同步——ASCII tag 不
+        // 跨多字节边界）
+        match lower[i..].find("<think>") {
+            Some(rel_open) => {
+                let open = i + rel_open;
+                // 把 [i..open) 的内容追加进 visible
+                visible.push_str(&s[i..open]);
+                let after_open = open + "<think>".len();
+                // 找闭合
+                match lower[after_open..].find("</think>") {
+                    Some(rel_close) => {
+                        let close = after_open + rel_close;
+                        think_blocks.push(s[after_open..close].to_string());
+                        i = close + "</think>".len();
+                    }
+                    None => {
+                        // 未闭合：把 `<think>` 后剩余作为 think，但 visible
+                        // 已加完前缀；这里**不**再保留后续到 visible（防 think
+                        // 内容混入 final）。同时记 partial block。
+                        think_blocks.push(s[after_open..].to_string());
+                        i = s.len();
+                    }
+                }
+            }
+            None => {
+                visible.push_str(&s[i..]);
+                break;
+            }
+        }
+    }
+    // 块外多余连续空白做轻量 normalize——若原文本有 `...内容</think>\n\n后续`，
+    // 剥完后变 `...内容\n\n后续` 仍 OK，但若 think 在最前面剥完后留下 leading
+    // newline，trim_start 让 final 显示干净。
+    let cleaned = visible.trim_start_matches(|c: char| c == '\n' || c == '\r').to_string();
+    (cleaned, think_blocks)
+}
+
 /// Trim conversation history to at most `max` user/assistant messages, preserving the
 /// leading system messages (SOUL.md and any other anchors). When `max == 0` the gate is
 /// disabled and the input is returned untouched. When the history is shorter than `max`
@@ -126,8 +179,27 @@ pub fn inject_mood_note(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 /// content. Closes with a guidance tail asking the LLM to absorb these into tone
 /// rather than echo them back to the user verbatim. Iter Cτ: optional `user_name`
 /// is prepended when set so the LLM can address the owner by name.
-pub fn format_persona_layer(days: u64, persona: &str, mood_trend: &str, user_name: &str) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(4);
+pub fn format_persona_layer(
+    days: u64,
+    persona: &str,
+    mood_trend: &str,
+    user_name: &str,
+    pet_name: &str,
+) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(5);
+    // GOAL 055：pet name 行。非空 → "你的名字是「X」" 让 self-reference 用此名；
+    // 空 → "user 还没给你取名" 邀请取名（被问 "你叫什么" 时柔和回避并邀请）。
+    if !pet_name.trim().is_empty() {
+        parts.push(format!(
+            "你的名字是「{}」——self-reference / 自我介绍时用这个名字，主人和你之间叫你也可以用这个名字。",
+            pet_name.trim()
+        ));
+    } else {
+        parts.push(
+            "你还没有名字——主人还没给你取。被问到「你叫什么」时柔和回避并邀请主人取名（例如「我还没有名字，主人想叫我什么呀？」），不要自己编一个。"
+                .to_string(),
+        );
+    }
     if !user_name.trim().is_empty() {
         parts.push(format!(
             "你的主人是「{}」——开口时可以用这个称呼或「你」自然交替，不必每句都喊名字。",
@@ -156,10 +228,14 @@ pub async fn build_persona_layer_async() -> String {
     let days = crate::companionship::companionship_days().await;
     let persona = crate::proactive::build_persona_hint();
     let trend = crate::mood_history::build_trend_hint(50, 5).await;
-    let user_name = crate::commands::settings::get_settings()
-        .map(|s| s.user_name)
-        .unwrap_or_default();
-    format_persona_layer(days, &persona, &trend, &user_name)
+    let settings = crate::commands::settings::get_settings().unwrap_or_default();
+    format_persona_layer(
+        days,
+        &persona,
+        &trend,
+        &settings.user_name,
+        &settings.pet_name,
+    )
 }
 
 /// Inject the persona-layer system note into a chat message list. Uses the same
@@ -764,7 +840,12 @@ pub async fn run_chat_pipeline(
                 }
             }
             sink.send_done();
-            return Ok(result.text);
+            // GOAL 046：从 final reply 剥 `<think>...</think>` 块——给所有
+            // 非流式 caller（proactive / TG / consolidate / 各种 maybe_run_*）
+            // 一个干净的字符串。流式 chunk 已经在 send_chunk 阶段直接发给
+            // 前端，本剥仅作用于"持久化 + 给上层 caller 的最终值"。
+            let (clean, _think_blocks) = strip_think_blocks(&result.text);
+            return Ok(clean);
         }
 
         ctx.log(&format!("Tool calls: {}", result.tool_calls.len()));
@@ -1276,6 +1357,63 @@ pub async fn chat(
     // can answer "我有什么 deadline" reactively. R77/R78 covered proactive
     // + LLM teaching + panel; R79 closes reactive chat path.
     let augmented = inject_deadline_context_layer(augmented);
+    // GOAL 022：模糊时间词澄清协议常驻 system 段；LLM-mediated 规则，
+    // 每轮约 ~200 字，LLM 自判触发反问 / 直接落库。
+    let augmented = crate::time_ambiguity::inject_time_ambiguity_layer(augmented);
+    // GOAL 005：用户消息含 URL 时抓取标题 + 正文摘要，prepend system note 让
+    // 宠物能基于真实内容回答（而非凭链接标题猜）。--no-fetch 后缀短路；
+    // 失败 / 无 URL 无副作用。注入仅对本次 LLM 生效，不入 session 持久化。
+    let augmented = crate::url_fetch::inject_url_context_layer(augmented).await;
+    // GOAL 006：fire-and-forget 把最近一条 user message 按规则分类后写入
+    // intent_history.log。/whoami 后续读这条日志聚 30d 直方图。不阻塞主回
+    // 复；分类返回 None 时 silently skip。
+    if let Some(last_user) = augmented.iter().rev().find(|m| m.role == "user") {
+        // GOAL 009：用户消息含「记一下 / 存一下 / /keep」等关键词且带
+        // 图时，把这张图物化为 PanelMemory 一条 visual item。完全独立
+        // 于 chat history 不留二进制的契约（001）——这是用户 opt-in 的
+        // 主动写入动作。fire-and-forget；失败仅 log。
+        if let Some(arr) = last_user.content.as_array() {
+            let mut caption = String::new();
+            let mut image_url: Option<String> = None;
+            for part in arr {
+                match part.get("type").and_then(|v| v.as_str()) {
+                    Some("text") => {
+                        if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                            if !caption.is_empty() {
+                                caption.push(' ');
+                            }
+                            caption.push_str(t);
+                        }
+                    }
+                    Some("image_url") => {
+                        if image_url.is_none() {
+                            if let Some(u) = part
+                                .get("image_url")
+                                .and_then(|p| p.get("url"))
+                                .and_then(|v| v.as_str())
+                            {
+                                image_url = Some(u.to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if image_url.is_some()
+                && crate::visual_memory::is_keep_intent(&caption)
+            {
+                let url = image_url.unwrap();
+                let cap = caption.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) =
+                        crate::visual_memory::keep_visual_memory(url, cap).await
+                    {
+                        log::warn!("visual_memory: keep failed: {}", e);
+                    }
+                });
+            }
+        }
+    }
     let result = run_chat_pipeline(augmented, &on_event, &config, &mcp, &ctx).await;
     clock.touch().await;
     result?;
@@ -1296,501 +1434,16 @@ pub async fn chat(
     Ok(())
 }
 
+
+// ============================================================================
+// GOAL 046 strip_think_blocks tests
+// ============================================================================
+
+
 #[cfg(test)]
-mod trim_tests {
-    use super::*;
+#[path = "chat_trim_tests.rs"]
+mod trim_tests;
 
-    fn msg(role: &str, content: &str) -> ChatMessage {
-        serde_json::from_value(serde_json::json!({
-            "role": role,
-            "content": content,
-        }))
-        .unwrap()
-    }
-
-    fn roles(msgs: &[ChatMessage]) -> Vec<&str> {
-        msgs.iter().map(|m| m.role.as_str()).collect()
-    }
-
-    #[test]
-    fn trim_zero_disables_gate() {
-        let msgs = vec![
-            msg("system", "soul"),
-            msg("user", "hi"),
-            msg("assistant", "hi"),
-        ];
-        let out = trim_to_context(msgs.clone(), 0);
-        assert_eq!(out.len(), msgs.len(), "max=0 should leave input alone");
-    }
-
-    #[test]
-    fn trim_below_cap_is_no_op() {
-        let msgs = vec![
-            msg("system", "soul"),
-            msg("user", "hi"),
-            msg("assistant", "hi"),
-        ];
-        let out = trim_to_context(msgs.clone(), 10);
-        assert_eq!(out.len(), msgs.len());
-    }
-
-    #[test]
-    fn trim_drops_oldest_history_keeps_system() {
-        // 1 system + 6 user/assistant pairs = 13 total, history = 12. With max=4 we keep
-        // system + the last 4 messages.
-        let mut msgs = vec![msg("system", "soul")];
-        for i in 0..6 {
-            msgs.push(msg("user", &format!("u{}", i)));
-            msgs.push(msg("assistant", &format!("a{}", i)));
-        }
-        let out = trim_to_context(msgs, 4);
-        assert_eq!(out.len(), 5, "system + 4 history");
-        assert_eq!(out[0].role, "system");
-        // Last 4 should be u4, a4, u5, a5.
-        assert_eq!(
-            roles(&out[1..]),
-            vec!["user", "assistant", "user", "assistant"]
-        );
-    }
-
-    #[test]
-    fn trim_preserves_multiple_leading_systems() {
-        let msgs = vec![
-            msg("system", "soul"),
-            msg("system", "mood"),
-            msg("user", "u1"),
-            msg("assistant", "a1"),
-            msg("user", "u2"),
-            msg("assistant", "a2"),
-        ];
-        let out = trim_to_context(msgs, 2);
-        assert_eq!(out.len(), 4, "2 systems + 2 history");
-        assert_eq!(roles(&out), vec!["system", "system", "user", "assistant"]);
-    }
-
-    #[test]
-    fn trim_with_no_system_messages() {
-        let msgs = vec![
-            msg("user", "u1"),
-            msg("assistant", "a1"),
-            msg("user", "u2"),
-            msg("assistant", "a2"),
-        ];
-        let out = trim_to_context(msgs, 2);
-        assert_eq!(out.len(), 2);
-        assert_eq!(roles(&out), vec!["user", "assistant"]);
-    }
-
-    // -- Iter R5: refresh_leading_soul ---------------------------------------
-
-    fn content_str(m: &ChatMessage) -> &str {
-        m.content.as_str().unwrap_or("")
-    }
-
-    #[test]
-    fn refresh_leading_soul_replaces_first_system_content() {
-        let msgs = vec![msg("system", "OLD soul"), msg("user", "hi")];
-        let out = refresh_leading_soul(msgs, "FRESH soul");
-        assert_eq!(out.len(), 2, "no message count change");
-        assert_eq!(content_str(&out[0]), "FRESH soul");
-        assert_eq!(content_str(&out[1]), "hi", "user message untouched");
-    }
-
-    #[test]
-    fn refresh_leading_soul_no_op_when_first_is_not_system() {
-        // Histories with a leading user message exist when sessions were created
-        // pre-Iter R5 or via paths that don't bake SOUL in. Don't synthesize one.
-        let msgs = vec![msg("user", "u1"), msg("system", "embedded later")];
-        let out = refresh_leading_soul(msgs, "FRESH soul");
-        assert_eq!(content_str(&out[0]), "u1");
-        assert_eq!(content_str(&out[1]), "embedded later");
-    }
-
-    #[test]
-    fn refresh_leading_soul_only_touches_first_system_when_multiple() {
-        // The chat pipeline injects mood / persona system messages AFTER the
-        // session's leading SOUL slot. R5 must replace the SOUL slot only and
-        // leave subsequent system messages alone — they carry transient prompt
-        // context that doesn't come from SOUL.md.
-        let msgs = vec![
-            msg("system", "SOUL slot — stale"),
-            msg("system", "mood note slot"),
-            msg("user", "hi"),
-        ];
-        let out = refresh_leading_soul(msgs, "FRESH soul");
-        assert_eq!(content_str(&out[0]), "FRESH soul");
-        assert_eq!(content_str(&out[1]), "mood note slot");
-        assert_eq!(content_str(&out[2]), "hi");
-    }
-
-    #[test]
-    fn refresh_leading_soul_skips_when_current_is_blank() {
-        // Empty / whitespace SOUL would zero out the system slot — better to
-        // leave the prior content intact so the LLM still has *something*.
-        let msgs = vec![msg("system", "PRIOR soul"), msg("user", "hi")];
-        let out = refresh_leading_soul(msgs, "   \n  ");
-        assert_eq!(content_str(&out[0]), "PRIOR soul");
-    }
-
-    #[test]
-    fn refresh_leading_soul_empty_messages_passes_through() {
-        let out: Vec<ChatMessage> = refresh_leading_soul(vec![], "FRESH");
-        assert_eq!(out.len(), 0);
-    }
-
-    // -- Iter R9: format_recent_speech_layer ----------------------------------
-
-    #[test]
-    fn format_recent_speech_layer_returns_empty_for_no_lines() {
-        assert_eq!(format_recent_speech_layer(&[]), "");
-    }
-
-    #[test]
-    fn format_recent_speech_layer_skips_blank_lines() {
-        // Empty / whitespace-only entries shouldn't render as ghost bullets.
-        let lines = vec!["".to_string(), "   ".to_string(), "".to_string()];
-        assert_eq!(format_recent_speech_layer(&lines), "");
-    }
-
-    #[test]
-    fn format_recent_speech_layer_renders_bullets_in_order() {
-        // recent_speeches returns oldest-first; preserve that ordering so the
-        // bullet list reads chronologically and the latest utterance is
-        // closest to the user's incoming message.
-        let lines = vec![
-            "2026-05-03T10:00:00+08:00 早上好".to_string(),
-            "2026-05-03T11:30:00+08:00 看你还在工作".to_string(),
-        ];
-        let out = format_recent_speech_layer(&lines);
-        assert!(out.starts_with("[最近主动开口]"));
-        let m = out.find("早上好").unwrap();
-        let n = out.find("看你还在工作").unwrap();
-        assert!(m < n, "oldest first preserved");
-        // Header signals the LLM how to use the section.
-        assert!(
-            out.contains("旧→新") && out.contains("接住话题"),
-            "header should explain ordering + intent"
-        );
-    }
-
-    #[test]
-    fn format_recent_speech_layer_strips_timestamps_for_readability() {
-        // Bullets shouldn't include the ISO timestamp prefix — the LLM
-        // doesn't need it and it'd just spend tokens.
-        let lines = vec!["2026-05-03T10:00:00+08:00 早上好".to_string()];
-        let out = format_recent_speech_layer(&lines);
-        assert!(!out.contains("2026-05-03T10:00:00"));
-        assert!(out.contains("早上好"));
-    }
-
-    use chrono::NaiveDate;
-
-    // -- Iter R79: format_deadline_chat_layer tests -------------------------
-
-    #[test]
-    fn deadline_chat_layer_returns_empty_when_all_distant_or_none() {
-        let now = NaiveDate::from_ymd_opt(2026, 5, 10)
-            .unwrap()
-            .and_hms_opt(8, 0, 0)
-            .unwrap();
-        // Empty input.
-        assert_eq!(format_deadline_chat_layer(&[], now), "");
-        // All distant (≥6h away).
-        let items = vec![(
-            NaiveDate::from_ymd_opt(2026, 5, 12)
-                .unwrap()
-                .and_hms_opt(14, 0, 0)
-                .unwrap(),
-            "future".to_string(),
-        )];
-        assert_eq!(format_deadline_chat_layer(&items, now), "");
-    }
-
-    #[test]
-    fn deadline_chat_layer_includes_approaching_unlike_proactive_filter() {
-        // R79 distinction: chat layer surfaces Approaching too (user might ask),
-        // even though R77's proactive format would also include it.
-        let now = NaiveDate::from_ymd_opt(2026, 5, 10)
-            .unwrap()
-            .and_hms_opt(11, 0, 0)
-            .unwrap();
-        let items = vec![(
-            NaiveDate::from_ymd_opt(2026, 5, 10)
-                .unwrap()
-                .and_hms_opt(14, 0, 0)
-                .unwrap(),
-            "review PR".to_string(),
-        )];
-        let out = format_deadline_chat_layer(&items, now);
-        assert!(out.contains("[当前 deadline 概况]"));
-        assert!(out.contains("review PR"));
-        assert!(out.contains("约 3 小时后"));
-        // Chat-specific tail wording differs from proactive.
-        assert!(out.contains("不必主动列举"));
-    }
-
-    #[test]
-    fn deadline_chat_layer_handles_overdue_minutes_then_hours() {
-        let now = NaiveDate::from_ymd_opt(2026, 5, 10)
-            .unwrap()
-            .and_hms_opt(14, 30, 0)
-            .unwrap();
-        let items = vec![(
-            NaiveDate::from_ymd_opt(2026, 5, 10)
-                .unwrap()
-                .and_hms_opt(14, 0, 0)
-                .unwrap(),
-            "missed".to_string(),
-        )];
-        let out = format_deadline_chat_layer(&items, now);
-        assert!(out.contains("已过 30 分钟"));
-        // > 1 hour formats as hours.
-        let now2 = NaiveDate::from_ymd_opt(2026, 5, 10)
-            .unwrap()
-            .and_hms_opt(17, 0, 0)
-            .unwrap();
-        let out2 = format_deadline_chat_layer(&items, now2);
-        assert!(out2.contains("已过 3 小时"));
-    }
-
-    #[test]
-    fn format_persona_layer_includes_companionship_at_day_zero() {
-        let body = format_persona_layer(0, "", "", "");
-        assert!(body.starts_with("[宠物的长期人格画像]"));
-        assert!(body.contains("第一天"));
-        // Tail guidance always present so the LLM is told how to use the section.
-        assert!(body.contains("自然渗进语气"));
-    }
-
-    #[test]
-    fn format_persona_layer_includes_persona_when_set() {
-        let body = format_persona_layer(30, "我倾向短句，话题偏当下场景。", "", "");
-        assert!(body.contains("30 天"));
-        assert!(body.contains("我倾向短句"));
-        assert!(!body.contains("情绪谱"));
-    }
-
-    #[test]
-    fn format_persona_layer_includes_trend_when_set() {
-        let body =
-            format_persona_layer(45, "", "你最近 30 次心情记录里：Tap × 12、Idle × 10。", "");
-        assert!(body.contains("45 天"));
-        assert!(body.contains("Tap × 12"));
-    }
-
-    #[test]
-    fn format_persona_layer_includes_all_three_when_present() {
-        let body = format_persona_layer(
-            120,
-            "我倾向短句。",
-            "你最近 50 次心情记录里：Tap × 30、Flick × 15。",
-            "",
-        );
-        assert!(body.contains("120 天"));
-        assert!(body.contains("我倾向短句"));
-        assert!(body.contains("Tap × 30"));
-        // Companionship comes before persona, persona before trend — matches the
-        // section ordering chosen for the proactive prompt for visual consistency.
-        let p_companionship = body.find("120 天").unwrap();
-        let p_persona = body.find("我倾向短句").unwrap();
-        let p_trend = body.find("Tap × 30").unwrap();
-        assert!(p_companionship < p_persona && p_persona < p_trend);
-    }
-
-    #[test]
-    fn format_persona_layer_blank_inputs_still_safe() {
-        // Whitespace-only persona/trend should be treated as absent — no empty
-        // sections injected into the system note.
-        let body = format_persona_layer(7, "   \n  ", "\t", "");
-        assert!(body.contains("7 天"));
-        // Body should have header + companionship + tail = 3 sections joined by \n\n.
-        let blocks: Vec<&str> = body.split("\n\n").collect();
-        assert_eq!(blocks.len(), 3, "unexpected block count: {:#?}", blocks);
-    }
-
-    #[test]
-    fn format_persona_layer_includes_user_name_when_set() {
-        // Iter Cτ: user_name should prepend a "你的主人是「X」" line and sit before
-        // the companionship line so the LLM reads "who I'm with" before "how long".
-        let body = format_persona_layer(30, "", "", "moon");
-        assert!(body.contains("你的主人是「moon」"));
-        let p_user = body.find("你的主人是").unwrap();
-        let p_companion = body.find("30 天").unwrap();
-        assert!(p_user < p_companion);
-    }
-
-    #[test]
-    fn format_persona_layer_omits_user_name_when_empty() {
-        // Whitespace-only user_name treated as absent — no awkward "「  」" line.
-        let body = format_persona_layer(30, "", "", "   ");
-        assert!(!body.contains("你的主人是"));
-    }
-
-    #[test]
-    fn format_persona_layer_trims_user_name_whitespace() {
-        let body = format_persona_layer(30, "", "", "  moon  ");
-        assert!(body.contains("你的主人是「moon」"));
-    }
-
-    #[test]
-    fn tool_usage_prompt_teaches_butler_delegation() {
-        // Iter Cι: pin the butler_tasks delegation guidance so a future refactor
-        // can't silently drop it. Without this section the LLM falls back to
-        // verbal-only acknowledgments and the user's "帮我每天 9 点 X" never lands
-        // in butler_tasks.
-        assert!(
-            TOOL_USAGE_PROMPT.contains("butler_tasks"),
-            "tool prompt must mention butler_tasks"
-        );
-        assert!(
-            TOOL_USAGE_PROMPT.contains("[every:") && TOOL_USAGE_PROMPT.contains("[once:"),
-            "tool prompt must teach the schedule prefixes by example"
-        );
-        assert!(
-            TOOL_USAGE_PROMPT.contains("todo") && TOOL_USAGE_PROMPT.contains("提醒我"),
-            "tool prompt must contrast butler_tasks with todo[remind:]"
-        );
-        // Iter R78: pin the [deadline:] prefix so the LLM creates the right
-        // kind of butler entry when user describes their own due-date task.
-        // Without this, "之前要..." phrasing collapses into [once:] which
-        // implies pet auto-executes — wrong semantics for user-completion items.
-        assert!(
-            TOOL_USAGE_PROMPT.contains("[deadline:"),
-            "tool prompt must teach the deadline prefix by example"
-        );
-        assert!(
-            TOOL_USAGE_PROMPT.contains("user 必须在那之前自己完成")
-                || TOOL_USAGE_PROMPT.contains("user 必须在那之前"),
-            "tool prompt must contrast [once:] (pet executes) vs [deadline:] (user completes)"
-        );
-    }
-
-    #[test]
-    fn tool_usage_prompt_teaches_user_profile_capture() {
-        // Iter Cσ: pin the user_profile capture guidance — symmetric to Cι's
-        // butler delegation. Without this the LLM might absorb stable facts
-        // verbally and forget them, defeating Iter Cα's user_profile_hint
-        // injection (the prompt has nothing to inject if nothing was captured).
-        assert!(
-            TOOL_USAGE_PROMPT.contains("user_profile"),
-            "tool prompt must mention user_profile capture"
-        );
-        // Test the contrast examples — stable facts vs ephemeral state.
-        assert!(
-            TOOL_USAGE_PROMPT.contains("不是临时心情") || TOOL_USAGE_PROMPT.contains("临时状态"),
-            "tool prompt must contrast stable facts with ephemeral state"
-        );
-        // Test the dedup guidance — update existing rather than re-create.
-        assert!(
-            TOOL_USAGE_PROMPT.contains("update") && TOOL_USAGE_PROMPT.contains("相近"),
-            "tool prompt must instruct dedup via update for similar entries"
-        );
-    }
-
-    #[test]
-    fn enforce_tool_round_limit_passes_under_max() {
-        assert_eq!(enforce_tool_round_limit(0, 8), None);
-        assert_eq!(enforce_tool_round_limit(7, 8), None);
-    }
-
-    #[test]
-    fn enforce_tool_round_limit_aborts_at_or_over_max() {
-        let at = enforce_tool_round_limit(8, 8).expect("must abort at limit");
-        assert!(at.contains("8"));
-        assert!(at.contains("max=8"));
-
-        let over = enforce_tool_round_limit(99, 8).expect("must abort over limit");
-        assert!(over.contains("99"));
-    }
-
-    #[test]
-    fn tool_call_limit_message_is_user_meaningful() {
-        // The error surfaces both to app.log and to the frontend stream — must explain
-        // *why* the turn stopped, not just "error". Check the key signal words.
-        let msg = tool_call_limit_message(8, 8);
-        assert!(msg.contains("工具调用循环"), "must name the failure mode");
-        assert!(
-            msg.contains("已中止") || msg.contains("无限循环"),
-            "must signal abort"
-        );
-        assert!(msg.contains("8"), "must include round count for debug");
-    }
-
-    // -- Iter TR1: tool-call purpose gate -----------------------------------------
-
-    #[test]
-    fn extract_tool_purpose_returns_some_for_valid_one_liner() {
-        let args = r#"{"file_path":"~/.zshrc","purpose":"check shell config"}"#;
-        assert_eq!(
-            extract_tool_purpose(args),
-            Some("check shell config".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_tool_purpose_trims_surrounding_whitespace() {
-        let args = r#"{"purpose":"  spaced reason  "}"#;
-        assert_eq!(
-            extract_tool_purpose(args),
-            Some("spaced reason".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_tool_purpose_returns_none_for_missing_field() {
-        let args = r#"{"file_path":"foo"}"#;
-        assert!(extract_tool_purpose(args).is_none());
-    }
-
-    #[test]
-    fn extract_tool_purpose_returns_none_for_blank_string() {
-        // Empty string and whitespace-only must both fail — accepting them would
-        // defeat the protocol (LLMs would game the gate by passing "").
-        assert!(extract_tool_purpose(r#"{"purpose":""}"#).is_none());
-        assert!(extract_tool_purpose(r#"{"purpose":"   "}"#).is_none());
-    }
-
-    #[test]
-    fn extract_tool_purpose_returns_none_for_non_string_value() {
-        // Numbers, bools, nulls, objects must all fail rather than coerce — the
-        // contract is "string sentence", anything else is malformed.
-        assert!(extract_tool_purpose(r#"{"purpose":42}"#).is_none());
-        assert!(extract_tool_purpose(r#"{"purpose":null}"#).is_none());
-        assert!(extract_tool_purpose(r#"{"purpose":true}"#).is_none());
-        assert!(extract_tool_purpose(r#"{"purpose":{"x":1}}"#).is_none());
-    }
-
-    #[test]
-    fn extract_tool_purpose_returns_none_for_unparseable_json() {
-        // Garbage args (rare but possible — proxy bug, model misformat) must not panic.
-        assert!(extract_tool_purpose("not json").is_none());
-        assert!(extract_tool_purpose("").is_none());
-    }
-
-    #[test]
-    fn missing_purpose_error_result_carries_retry_hint() {
-        let r = missing_purpose_error_result();
-        // Must be parseable JSON so the LLM's tool-result handler can introspect it.
-        let v: serde_json::Value = serde_json::from_str(&r).expect("must be valid JSON");
-        assert!(v.get("error").is_some(), "must carry error field");
-        let hint = v.get("hint").and_then(|h| h.as_str()).unwrap_or("");
-        assert!(hint.contains("purpose"), "hint must name the missing field");
-        assert!(hint.contains("重新调用"), "hint must instruct retry");
-    }
-
-    #[test]
-    fn tool_usage_prompt_teaches_purpose_protocol() {
-        // Iter TR1: pin the purpose-protocol guidance — without it the LLM's first
-        // tool call after a fresh prompt will be rejected; the gate's recoverable
-        // error gets the model to comply, but only if the prompt has set the
-        // expectation up front.
-        assert!(
-            TOOL_USAGE_PROMPT.contains("purpose"),
-            "tool prompt must teach purpose convention"
-        );
-        assert!(
-            TOOL_USAGE_PROMPT.contains("强制") || TOOL_USAGE_PROMPT.contains("必须"),
-            "tool prompt must signal that purpose is required, not optional"
-        );
-    }
-}
+#[cfg(test)]
+#[path = "chat_think_strip_tests.rs"]
+mod think_strip_tests;

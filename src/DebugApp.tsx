@@ -5,14 +5,14 @@ import { PanelDebugStats } from "./components/panel/PanelDebugStats";
 import { PanelDebugLogs } from "./components/panel/PanelDebugLogs";
 import { useTabKeyboardShortcut } from "./hooks/useTabKeyboardShortcut";
 import { useThemeChangeSync } from "./hooks/useThemeChangeSync";
-import { applyTheme, getStoredAccent, getStoredTheme } from "./theme";
+import { applyTheme, getStoredAccent } from "./theme";
 
 const TABS = ["应用", "日志", "LLM 日志", "统计"] as const;
 type Tab = (typeof TABS)[number];
 
-// 启动时立刻把存的主题刷到 documentElement —— 与 PanelApp / App 入口一致，
-// 避免 light flash + 让 CSS var（shadow / tint / accent）立刻可用。
-applyTheme(getStoredTheme(), getStoredAccent());
+// 启动时立刻把 accent 刷到 documentElement —— 与 PanelApp / App 入口一致，
+// 让 CSS var（shadow / tint / accent）立刻可用。
+applyTheme(getStoredAccent());
 
 export function DebugApp() {
   // sessionStorage hop：PanelDebug "🔄 reload" 在 reload 前写当前 tab，

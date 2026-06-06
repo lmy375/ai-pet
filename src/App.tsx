@@ -11,7 +11,7 @@ import { useSettings } from "./hooks/useSettings";
 import { usePollingState } from "./hooks/usePollingState";
 import { useThemeChangeSync } from "./hooks/useThemeChangeSync";
 import { useMoodAnimation, playPetMotion } from "./hooks/useMoodAnimation";
-import { applyTheme, getStoredTheme, getStoredAccent, setStoredTheme } from "./theme";
+import { applyTheme, getStoredAccent } from "./theme";
 import { extractText } from "./utils/messageContent";
 import {
   formatImageHelpText,
@@ -23,7 +23,7 @@ import {
 // 它落 token —— 导致 ChatMini 用 var(--pet-color-accent) 渲染 user 气泡
 // 时拿到空字符串 + 白字看不清。模块加载时一次性 apply（与 PanelApp
 // useState initializer 同模式）。
-applyTheme(getStoredTheme(), getStoredAccent());
+applyTheme(getStoredAccent());
 
 interface CurrentMood {
   text: string;
@@ -399,7 +399,7 @@ const SPARKLE_PARTICLES: Array<{
 
 function App() {
   const { settings, soul, loaded } = useSettings();
-  const { messages, currentResponse, toolStatus, isLoading, sendMessage, cancel, appendAssistant, resetContext } = useChat(soul);
+  const { messages, currentResponse, toolStatus, isLoading, sendMessage, cancel, appendAssistant, resetContext, proactiveImages } = useChat(soul);
   const modelRef = useRef<any>(null);
   const { hidden, handleMouseEnter, collapse } = useAutoHide();
   // 把 settings.motion_mapping 传给动画 hook，让用户在「设置」改了映射立即
@@ -805,7 +805,11 @@ function App() {
   /// 其它 slash 命令（/clear / /tasks / /sleep 等）面板专属，桌面下落到 LLM 自
   /// 然处理（让宠物用文字回应"为啥不识别这个命令"也是体验的一部分）。
   const handleSend = useCallback(
-    async (msg: string, images?: string[]) => {
+    async (
+      msg: string,
+      images?: string[],
+      opts?: { historyText?: string },
+    ) => {
       const trimmed = msg.trim();
       if (trimmed.startsWith("/")) {
         const action = parseSlashCommand(trimmed);
@@ -866,7 +870,7 @@ function App() {
           return;
         }
       }
-      sendMessage(msg, images);
+      sendMessage(msg, images, opts);
     },
     [sendMessage, appendAssistant, messages],
   );
@@ -1727,6 +1731,7 @@ function App() {
             onSaveAsNote={handleMiniSaveAsNote}
             onSaveAsAiInsight={handleMiniSaveAsAiInsight}
             onSetTransientNote={handleMiniSetTransientNote}
+            proactiveImages={proactiveImages}
           />
           <ChatPanel onSend={handleSend} isLoading={isLoading} />
         </>
@@ -1837,24 +1842,6 @@ function App() {
                 title="在系统文件管理器里打开宠物数据目录（~/.config/pet/）—— 含 config.yaml / SOUL.md / memories/ / sessions/ 等。"
               >
                 📂 打开数据目录
-              </button>
-              {sep}
-              <button
-                type="button"
-                style={itemStyle}
-                onMouseOver={itemHoverIn}
-                onMouseOut={itemHoverOut}
-                onClick={() => {
-                  // 直接读 storage 当前值翻转 —— 比绑 React state 简单：theme 不
-                  // 经 React 渲染（CSS var 自动 propagate），不必同步局部 state。
-                  setPetCtxMenu(null);
-                  const next = getStoredTheme() === "dark" ? "light" : "dark";
-                  setStoredTheme(next);
-                  applyTheme(next, getStoredAccent());
-                }}
-                title="切换 light / dark 主题（CSS var 即时生效；偏好持久化到 localStorage）"
-              >
-                {getStoredTheme() === "dark" ? "☀️ 切到 light 主题" : "🌙 切到 dark 主题"}
               </button>
               {sep}
               <button

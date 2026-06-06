@@ -25,11 +25,23 @@ pub enum ReminderTarget {
 /// Parse a "user-set reminder" prefix from a memory item's description. Convention:
 ///   - `[remind: HH:MM] topic`              — today (or wraps a few minutes past midnight)
 ///   - `[remind: YYYY-MM-DD HH:MM] topic`   — specific moment (24-hour clock)
+///   - `[recur-daily: HH:MM] topic`         — every day at HH:MM (GOAL 004)
 ///
 /// Returns `(target, topic)` when the prefix parses cleanly, `None` otherwise.
+/// `recur-daily` 解析后退化为 `TodayHour` —— is_reminder_due 的 today
+/// window 自带「每天命中一次」语义，无需额外字段就支持「每天 HH:MM 自动
+/// 起」。stale_reminder 清扫看到 TodayHour 也不会判 stale（is_reminder_stale
+/// 仅清 Absolute），周期化条目天然免被扫掉。
 pub fn parse_reminder_prefix(desc: &str) -> Option<(ReminderTarget, String)> {
     let trimmed = desc.trim_start();
-    let after_open = trimmed.strip_prefix("[remind:")?;
+    // GOAL 004：recur-daily 与 remind 共享 HH:MM 解析路径。
+    let (after_open, _is_recur) = if let Some(rest) = trimmed.strip_prefix("[recur-daily:") {
+        (rest, true)
+    } else if let Some(rest) = trimmed.strip_prefix("[remind:") {
+        (rest, false)
+    } else {
+        return None;
+    };
     let close_idx = after_open.find(']')?;
     let inside = after_open[..close_idx].trim();
     let topic = after_open[close_idx + 1..].trim().to_string();
@@ -37,10 +49,13 @@ pub fn parse_reminder_prefix(desc: &str) -> Option<(ReminderTarget, String)> {
         return None;
     }
     // Try the date-qualified form first: "YYYY-MM-DD HH:MM" — has a space inside.
-    if let Some((date_str, time_str)) = inside.split_once(' ') {
-        let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d").ok()?;
-        let time = chrono::NaiveTime::parse_from_str(time_str.trim(), "%H:%M").ok()?;
-        return Some((ReminderTarget::Absolute(date.and_time(time)), topic));
+    // 仅 `[remind:` 路径支持日期形；recur-daily 只接受 HH:MM。
+    if !_is_recur {
+        if let Some((date_str, time_str)) = inside.split_once(' ') {
+            let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d").ok()?;
+            let time = chrono::NaiveTime::parse_from_str(time_str.trim(), "%H:%M").ok()?;
+            return Some((ReminderTarget::Absolute(date.and_time(time)), topic));
+        }
     }
     // Fall back to today-style HH:MM.
     let (hh, mm) = inside.split_once(':')?;
