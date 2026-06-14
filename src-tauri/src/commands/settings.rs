@@ -91,14 +91,6 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(crate::common::config_dir()?.join("config.yaml"))
 }
 
-fn soul_path() -> Result<PathBuf, String> {
-    Ok(crate::common::config_dir()?.join("SOUL.md"))
-}
-
-fn default_soul() -> String {
-    "你是一个可爱的二次元少女 AI 宠物，性格活泼开朗。请用简短可爱的方式回复，偶尔使用颜文字。回复控制在50字以内。".to_string()
-}
-
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Vec<ModelEntry>,
@@ -207,16 +199,6 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_soul() -> Result<String, String> {
-    let path = soul_path()?;
-    if !path.exists() {
-        return Ok(default_soul());
-    }
-    fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read SOUL.md: {}", e))
-}
-
-#[tauri::command]
 pub fn get_config_raw() -> Result<String, String> {
     let path = config_path()?;
     if !path.exists() {
@@ -240,15 +222,4 @@ pub fn save_config_raw(content: String) -> Result<(), String> {
     }
     fs::write(&path, &content)
         .map_err(|e| format!("Failed to write config: {}", e))
-}
-
-#[tauri::command]
-pub fn save_soul(content: String) -> Result<(), String> {
-    let path = soul_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
-    }
-    fs::write(&path, content)
-        .map_err(|e| format!("Failed to write SOUL.md: {}", e))
 }

@@ -74,7 +74,7 @@ fn write_index(index: &SessionIndex) -> Result<(), String> {
 /// of every new session. Shared so sessions seeded by the panel and Telegram
 /// are identical.
 pub fn soul_system_message() -> serde_json::Value {
-    let soul = super::settings::get_soul().unwrap_or_default();
+    let soul = super::memory::read_soul();
     serde_json::json!({ "role": "system", "content": soul })
 }
 

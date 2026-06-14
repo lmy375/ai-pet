@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelSettings } from "./components/panel/PanelSettings";
+import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelChat } from "./components/panel/PanelChat";
 import { Segmented } from "./components/ui/Segmented";
 import { ExternalLinkIcon } from "./components/Icons";
 
-const TABS = ["设置", "聊天"] as const;
+const TABS = ["设置", "记忆", "聊天"] as const;
 type Tab = (typeof TABS)[number];
 
 export function PanelApp() {
@@ -32,6 +33,7 @@ export function PanelApp() {
       {/* Tab content */}
       <div className="flex-1 overflow-hidden">
         {activeTab === "设置" && <PanelSettings />}
+        {activeTab === "记忆" && <PanelMemory />}
         {activeTab === "聊天" && <PanelChat />}
       </div>
     </div>
