@@ -29,7 +29,6 @@ export function PanelSettings() {
     mcp_servers: {},
     telegram: { bot_token: "", allowed_username: "", enabled: false },
   });
-  const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
@@ -47,12 +46,10 @@ export function PanelSettings() {
   useEffect(() => {
     Promise.all([
       invoke<AppSettings>("get_settings"),
-      invoke<string>("get_soul"),
       invoke<McpStatus[]>("get_mcp_status"),
       invoke<TelegramStatus>("get_telegram_status").catch(() => ({ running: false, error: null }) as TelegramStatus),
-    ]).then(([s, soulContent, statuses, tgStatus]) => {
+    ]).then(([s, statuses, tgStatus]) => {
       setForm(s);
-      setSoul(soulContent);
       setMcpStatuses(statuses);
       setTelegramStatus(tgStatus);
       setLoaded(true);
@@ -69,15 +66,6 @@ export function PanelSettings() {
   const saveSettings = async (next?: AppSettings) => {
     try {
       await invoke("save_settings", { settings: next ?? form });
-      setMessage("已保存");
-    } catch (e: any) {
-      setMessage(`保存失败: ${e}`);
-    }
-  };
-
-  const saveSoul = async () => {
-    try {
-      await invoke("save_soul", { content: soul });
       setMessage("已保存");
     } catch (e: any) {
       setMessage(`保存失败: ${e}`);
@@ -256,16 +244,6 @@ export function PanelSettings() {
               onBlur={saveRaw}
               spellCheck={false}
               className="min-h-[300px] whitespace-pre font-mono !text-[12px] leading-relaxed"
-            />
-          </Card>
-
-          <Card title="系统提示词 (SOUL.md)">
-            <TextArea
-              value={soul}
-              onChange={(e) => setSoul(e.target.value)}
-              onBlur={saveSoul}
-              rows={6}
-              placeholder="输入 AI 角色设定..."
             />
           </Card>
 
@@ -482,17 +460,6 @@ export function PanelSettings() {
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               className="font-mono !text-[12px]"
               placeholder="@username (留空则允许所有人)"
-            />
-          </Card>
-
-          {/* SOUL */}
-          <Card title="系统提示词 (SOUL.md)">
-            <TextArea
-              value={soul}
-              onChange={(e) => setSoul(e.target.value)}
-              onBlur={saveSoul}
-              rows={6}
-              placeholder="输入 AI 角色设定..."
             />
           </Card>
 

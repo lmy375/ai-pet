@@ -16,6 +16,10 @@ pub fn run() {
     // Ensure log directory exists
     let _ = std::fs::create_dir_all(log_dir());
 
+    // Ensure the memory dir + the three mandatory files exist (migrates legacy
+    // SOUL.md into memory/ on first run).
+    let _ = commands::memory::ensure_memory_files();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
@@ -66,8 +70,13 @@ pub fn run() {
             commands::settings::save_settings,
             commands::settings::get_config_raw,
             commands::settings::save_config_raw,
-            commands::settings::get_soul,
-            commands::settings::save_soul,
+            commands::memory::get_soul,
+            commands::memory::save_soul,
+            commands::memory::get_user,
+            commands::memory::save_user,
+            commands::memory::get_memory,
+            commands::memory::save_memory,
+            commands::memory::open_memory_dir,
             commands::settings::open_config_dir,
             commands::settings::list_models,
             commands::settings::test_model,
