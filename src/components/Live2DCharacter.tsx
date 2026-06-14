@@ -86,32 +86,13 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
   }, [modelPath]);
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "350px" }}>
-      <canvas
-        ref={canvasRef}
-        style={{
-          width: "100%",
-          height: "100%",
-          background: "transparent",
-          pointerEvents: "auto",
-        }}
-      />
+    <div className="relative h-[350px] w-full">
+      <canvas ref={canvasRef} className="pointer-events-auto h-full w-full bg-transparent" />
       {status && (
         <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            color: status.startsWith("Error") ? "#e53935" : "#888",
-            fontSize: "12px",
-            textAlign: "center",
-            padding: "12px",
-            background: "rgba(255,255,255,0.85)",
-            borderRadius: "8px",
-            maxWidth: "90%",
-            wordBreak: "break-all",
-          }}
+          className={`absolute left-1/2 top-1/2 max-w-[90%] -translate-x-1/2 -translate-y-1/2 break-all rounded-lg bg-white/85 p-3 text-center text-[12px] ${
+            status.startsWith("Error") ? "text-red-500" : "text-slate-500"
+          }`}
         >
           {status}
         </div>

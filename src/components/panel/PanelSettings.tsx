@@ -1,19 +1,14 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, McpServerConfig } from "../../hooks/useSettings";
-
-interface McpStatus {
-  name: string;
-  connected: boolean;
-  tool_count: number;
-  tool_names: string[];
-  error: string | null;
-}
-
-interface TelegramStatus {
-  running: boolean;
-  error: string | null;
-}
+import type { AppSettings, McpServerConfig, McpStatus, TelegramStatus } from "../../hooks/useSettings";
+import { Card } from "../ui/Card";
+import { Button } from "../ui/Button";
+import { Segmented } from "../ui/Segmented";
+import { Badge } from "../ui/Badge";
+import { Label, TextInput, TextArea, Select } from "../ui/fields";
+import { StatusText } from "../ui/StatusText";
+import { ChevronDown, ChevronRight, PlusIcon, TrashIcon } from "../Icons";
+import { toneText, toneDot, connTone } from "../../utils/tone";
 
 const emptyMcpServer = (transport: McpServerConfig["transport"] = "stdio"): McpServerConfig => ({
   transport,
@@ -36,15 +31,18 @@ export function PanelSettings() {
   });
   const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
   const [mcpStatuses, setMcpStatuses] = useState<McpStatus[]>([]);
   const [reconnecting, setReconnecting] = useState(false);
   const [newServerName, setNewServerName] = useState("");
   const [telegramStatus, setTelegramStatus] = useState<TelegramStatus>({ running: false, error: null });
   const [telegramReconnecting, setTelegramReconnecting] = useState(false);
-  const [viewMode, setViewMode] = useState<"form" | "raw">("form");
+  const [viewMode, setViewMode] = useState<"表单" | "源码">("表单");
   const [rawYaml, setRawYaml] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -58,23 +56,31 @@ export function PanelSettings() {
       setMcpStatuses(statuses);
       setTelegramStatus(tgStatus);
       setLoaded(true);
+      // Pre-populate the model dropdown if the endpoint is already configured.
+      if (s.api_base?.trim()) loadModels(s.api_base, s.api_key, true);
     }).catch((e) => {
       console.error("Failed to load settings:", e);
       setLoaded(true);
     });
   }, []);
 
-  const handleSave = async () => {
-    setSaving(true);
-    setMessage("");
+  // Auto-save current form settings (on blur / Enter). `next` lets callers persist
+  // an updated value immediately without waiting for a state flush.
+  const saveSettings = async (next?: AppSettings) => {
     try {
-      await invoke("save_settings", { settings: form });
-      await invoke("save_soul", { content: soul });
-      setMessage("保存成功！重启宠物窗口后生效。");
+      await invoke("save_settings", { settings: next ?? form });
+      setMessage("已保存");
     } catch (e: any) {
       setMessage(`保存失败: ${e}`);
-    } finally {
-      setSaving(false);
+    }
+  };
+
+  const saveSoul = async () => {
+    try {
+      await invoke("save_soul", { content: soul });
+      setMessage("已保存");
+    } catch (e: any) {
+      setMessage(`保存失败: ${e}`);
     }
   };
 
@@ -95,6 +101,7 @@ export function PanelSettings() {
     }
   };
 
+  // Update an MCP field in-memory only (used while typing); persisted on blur.
   const updateMcpServer = (name: string, updates: Partial<McpServerConfig>) => {
     setForm((prev) => ({
       ...prev,
@@ -105,28 +112,44 @@ export function PanelSettings() {
     }));
   };
 
+  // Update an MCP field and persist immediately (used for discrete controls
+  // like the transport select and the enable toggle).
+  const commitMcpServer = (name: string, updates: Partial<McpServerConfig>) => {
+    const next = {
+      ...form,
+      mcp_servers: {
+        ...form.mcp_servers,
+        [name]: { ...form.mcp_servers[name], ...updates },
+      },
+    };
+    setForm(next);
+    saveSettings(next);
+  };
+
   const removeMcpServer = (name: string) => {
-    setForm((prev) => {
-      const { [name]: _, ...rest } = prev.mcp_servers;
-      return { ...prev, mcp_servers: rest };
-    });
+    const { [name]: _, ...rest } = form.mcp_servers;
+    const next = { ...form, mcp_servers: rest };
+    setForm(next);
+    saveSettings(next);
   };
 
   const addMcpServer = () => {
     const name = newServerName.trim();
     if (!name || form.mcp_servers[name]) return;
-    setForm((prev) => ({
-      ...prev,
-      mcp_servers: { ...prev.mcp_servers, [name]: emptyMcpServer() },
-    }));
+    const next = {
+      ...form,
+      mcp_servers: { ...form.mcp_servers, [name]: emptyMcpServer() },
+    };
+    setForm(next);
     setNewServerName("");
+    saveSettings(next);
   };
 
   const switchToRaw = async () => {
     try {
       const raw = await invoke<string>("get_config_raw");
       setRawYaml(raw);
-      setViewMode("raw");
+      setViewMode("源码");
       setMessage("");
     } catch (e: any) {
       setMessage(`加载配置文件失败: ${e}`);
@@ -137,328 +160,344 @@ export function PanelSettings() {
     try {
       const s = await invoke<AppSettings>("get_settings");
       setForm(s);
-      setViewMode("form");
+      setViewMode("表单");
       setMessage("");
     } catch (e: any) {
       setMessage(`加载配置失败: ${e}`);
     }
   };
 
-  const handleSaveRaw = async () => {
-    setSaving(true);
-    setMessage("");
+  // Load available models for the given base/key. Triggered automatically when
+  // API Base / API Key lose focus. `silent` suppresses the success message.
+  const loadModels = async (apiBase: string, apiKey: string, silent = false) => {
+    if (!apiBase.trim()) return;
+    setLoadingModels(true);
     try {
-      await invoke("save_config_raw", { content: rawYaml });
-      await invoke("save_soul", { content: soul });
-      setMessage("保存成功！重启宠物窗口后生效。");
+      const list = await invoke<string[]>("list_models", { apiBase, apiKey });
+      setModels(list);
+      if (!silent) {
+        setMessage(list.length === 0 ? "未获取到可用模型" : `已加载 ${list.length} 个模型`);
+      }
     } catch (e: any) {
-      setMessage(`保存失败: ${e}`);
+      setModels([]);
+      if (!silent) setMessage(`加载模型失败: ${e}`);
     } finally {
-      setSaving(false);
+      setLoadingModels(false);
     }
   };
 
-  if (!loaded) return <div style={containerStyle}>加载中...</div>;
+  const handleTestModel = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      await invoke("test_model", {
+        apiBase: form.api_base,
+        apiKey: form.api_key,
+        model: form.model,
+      });
+      setTestResult({ ok: true, text: "模型可用" });
+    } catch (e: any) {
+      setTestResult({ ok: false, text: `测试失败: ${e}` });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleOpenConfigDir = async () => {
+    try {
+      await invoke("open_config_dir");
+    } catch (e: any) {
+      setMessage(`打开配置文件夹失败: ${e}`);
+    }
+  };
+
+  const saveRaw = async () => {
+    try {
+      await invoke("save_config_raw", { content: rawYaml });
+      setMessage("已保存");
+    } catch (e: any) {
+      setMessage(`保存失败: ${e}`);
+    }
+  };
+
+  const onViewChange = (v: "表单" | "源码") => {
+    if (v === viewMode) return;
+    v === "源码" ? switchToRaw() : switchToForm();
+  };
+
+  if (!loaded) {
+    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">加载中...</div>;
+  }
 
   const serverEntries = Object.entries(form.mcp_servers);
   const connectedCount = mcpStatuses.filter((s) => s.connected).length;
   const totalToolCount = mcpStatuses.reduce((sum, s) => sum + s.tool_count, 0);
 
+  const messageLine = message && (
+    <StatusText ok={!message.includes("失败")} className="mt-1 text-[13px]">{message}</StatusText>
+  );
+
   return (
-    <div style={containerStyle}>
-      {/* View mode toggle */}
-      <div style={{ display: "flex", gap: "4px", marginBottom: "16px", background: "#e2e8f0", borderRadius: "8px", padding: "3px" }}>
-        <button
-          onClick={viewMode === "raw" ? switchToForm : undefined}
-          style={{
-            flex: 1,
-            padding: "6px 0",
-            borderRadius: "6px",
-            border: "none",
-            background: viewMode === "form" ? "#fff" : "transparent",
-            color: viewMode === "form" ? "#1e293b" : "#64748b",
-            fontWeight: viewMode === "form" ? 600 : 400,
-            fontSize: "13px",
-            cursor: viewMode === "form" ? "default" : "pointer",
-            transition: "all 0.2s",
-          }}
-        >
-          表单
-        </button>
-        <button
-          onClick={viewMode === "form" ? switchToRaw : undefined}
-          style={{
-            flex: 1,
-            padding: "6px 0",
-            borderRadius: "6px",
-            border: "none",
-            background: viewMode === "raw" ? "#fff" : "transparent",
-            color: viewMode === "raw" ? "#1e293b" : "#64748b",
-            fontWeight: viewMode === "raw" ? 600 : 400,
-            fontSize: "13px",
-            cursor: viewMode === "raw" ? "default" : "pointer",
-            transition: "all 0.2s",
-          }}
-        >
-          源码
-        </button>
+    <div className="h-full overflow-y-auto px-5 py-5">
+      {/* Top bar: view mode toggle + open config folder */}
+      <div className="mb-4 flex items-center justify-between">
+        <Segmented value={viewMode} options={["表单", "源码"] as const} onChange={onViewChange} />
+        <Button variant="ghost" size="sm" onClick={handleOpenConfigDir} title="在系统文件管理器中打开配置文件夹">
+          打开配置文件夹
+        </Button>
       </div>
 
-      {viewMode === "raw" ? (
+      {viewMode === "源码" ? (
         <>
-          {/* Raw YAML editor */}
-          <div style={sectionStyle}>
-            <h4 style={sectionTitle}>config.yaml</h4>
-            <textarea
+          <Card title="config.yaml">
+            <TextArea
               value={rawYaml}
               onChange={(e) => setRawYaml(e.target.value)}
-              style={{
-                ...inputStyle,
-                fontFamily: "monospace",
-                fontSize: "12px",
-                lineHeight: "1.6",
-                resize: "vertical",
-                minHeight: "300px",
-                whiteSpace: "pre",
-                overflowWrap: "normal",
-                overflowX: "auto",
-              }}
+              onBlur={saveRaw}
               spellCheck={false}
+              className="min-h-[300px] whitespace-pre font-mono !text-[12px] leading-relaxed"
             />
-          </div>
+          </Card>
 
-          {/* SOUL */}
-          <div style={sectionStyle}>
-            <h4 style={sectionTitle}>系统提示词 (SOUL.md)</h4>
-            <textarea
+          <Card title="系统提示词 (SOUL.md)">
+            <TextArea
               value={soul}
               onChange={(e) => setSoul(e.target.value)}
+              onBlur={saveSoul}
               rows={6}
-              style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", lineHeight: "1.5" }}
               placeholder="输入 AI 角色设定..."
             />
-          </div>
+          </Card>
 
-          {/* Save */}
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "8px" }}>
-            <button onClick={handleSaveRaw} disabled={saving} style={btnStyle}>
-              {saving ? "保存中..." : "保存"}
-            </button>
-            {message && (
-              <span style={{ fontSize: "13px", color: message.includes("失败") ? "#ef4444" : "#22c55e" }}>
-                {message}
-              </span>
-            )}
-          </div>
+          {messageLine}
         </>
       ) : (
-      <>
-      {/* Live2D */}
-      <div style={sectionStyle}>
-        <h4 style={sectionTitle}>Live2D 模型</h4>
-        <label style={labelStyle}>模型路径</label>
-        <input
-          value={form.live_2d_model_path}
-          onChange={(e) => setForm({ ...form, live_2d_model_path: e.target.value })}
-          style={inputStyle}
-          placeholder="/models/miku/miku.model3.json"
-        />
-      </div>
-
-      {/* LLM Config */}
-      <div style={sectionStyle}>
-        <h4 style={sectionTitle}>LLM 配置</h4>
-        <label style={labelStyle}>API Base URL</label>
-        <input
-          value={form.api_base}
-          onChange={(e) => setForm({ ...form, api_base: e.target.value })}
-          style={inputStyle}
-          placeholder="https://api.openai.com/v1"
-        />
-        <label style={{ ...labelStyle, marginTop: "8px" }}>API Key</label>
-        <input
-          type="password"
-          value={form.api_key}
-          onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-          style={inputStyle}
-          placeholder="sk-..."
-        />
-        <label style={{ ...labelStyle, marginTop: "8px" }}>Model</label>
-        <input
-          value={form.model}
-          onChange={(e) => setForm({ ...form, model: e.target.value })}
-          style={inputStyle}
-          placeholder="gpt-4o-mini"
-        />
-      </div>
-
-      {/* MCP Servers */}
-      <div style={sectionStyle}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-          <h4 style={{ ...sectionTitle, margin: 0 }}>
-            MCP Servers
-            {serverEntries.length > 0 && (
-              <span style={{ fontWeight: 400, fontSize: "12px", color: "#64748b", marginLeft: "8px" }}>
-                {connectedCount}/{serverEntries.length} 已连接 · {totalToolCount} 工具
-              </span>
-            )}
-          </h4>
-          <button
-            onClick={handleReconnectMcp}
-            disabled={reconnecting}
-            style={{
-              ...btnSmallStyle,
-              background: reconnecting ? "#94a3b8" : "#8b5cf6",
-            }}
-          >
-            {reconnecting ? "连接中..." : "保存并连接"}
-          </button>
-        </div>
-
-        {serverEntries.length === 0 && (
-          <div style={{ padding: "16px", textAlign: "center", color: "#94a3b8", fontSize: "13px", border: "1px dashed #e2e8f0", borderRadius: "8px" }}>
-            尚未配置 MCP 服务器，在下方添加
-          </div>
-        )}
-
-        {serverEntries.map(([name, config]) => {
-          const status = mcpStatuses.find((s) => s.name === name);
-          return (
-            <McpServerEntry
-              key={name}
-              name={name}
-              config={config}
-              status={status}
-              onChange={(updates) => updateMcpServer(name, updates)}
-              onRemove={() => removeMcpServer(name)}
+        <>
+          {/* Live2D */}
+          <Card title="Live2D 模型">
+            <Label>模型路径</Label>
+            <TextInput
+              value={form.live_2d_model_path}
+              onChange={(e) => setForm({ ...form, live_2d_model_path: e.target.value })}
+              onBlur={() => saveSettings()}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="/models/miku/miku.model3.json"
             />
-          );
-        })}
+          </Card>
 
-        {/* Add server */}
-        <div style={{ display: "flex", gap: "8px", marginTop: serverEntries.length > 0 ? "8px" : "12px" }}>
-          <input
-            value={newServerName}
-            onChange={(e) => setNewServerName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addMcpServer()}
-            style={{ ...inputStyle, flex: 1 }}
-            placeholder="新服务器名称..."
-          />
-          <button
-            onClick={addMcpServer}
-            disabled={!newServerName.trim() || !!form.mcp_servers[newServerName.trim()]}
-            style={{
-              ...btnSmallStyle,
-              background: !newServerName.trim() ? "#94a3b8" : "#22c55e",
-            }}
+          {/* LLM Config */}
+          <Card title="LLM 配置">
+            <Label>API Base URL</Label>
+            <TextInput
+              value={form.api_base}
+              onChange={(e) => setForm({ ...form, api_base: e.target.value })}
+              onBlur={() => { saveSettings(); loadModels(form.api_base, form.api_key, true); }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="https://api.openai.com/v1"
+            />
+            <Label className="mt-3">API Key</Label>
+            <TextInput
+              type="password"
+              value={form.api_key}
+              onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+              onBlur={() => { saveSettings(); loadModels(form.api_base, form.api_key, true); }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="sk-..."
+            />
+            <Label className="mt-3 flex items-center gap-2">
+              <span>Model</span>
+              {loadingModels && <span className="font-normal text-slate-400">加载中...</span>}
+            </Label>
+            <div className="flex gap-2">
+              <Select
+                value={models.includes(form.model) ? form.model : ""}
+                onChange={(e) => {
+                  const next = { ...form, model: e.target.value };
+                  setForm(next);
+                  setTestResult(null);
+                  saveSettings(next);
+                }}
+                disabled={models.length === 0}
+                className="flex-1"
+              >
+                {models.length === 0 ? (
+                  <option value="">{form.api_base.trim() ? "无可用模型，请检查 URL / API Key" : "请先填写 API Base URL"}</option>
+                ) : (
+                  <>
+                    <option value="" disabled>从 {models.length} 个可用模型中选择...</option>
+                    {models.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </>
+                )}
+              </Select>
+              <Button onClick={handleTestModel} disabled={testing || !form.model.trim()}>
+                {testing ? "测试中..." : "测试"}
+              </Button>
+            </div>
+            {testResult && (
+              <StatusText ok={testResult.ok} className="mt-1.5 text-[12px]">{testResult.text}</StatusText>
+            )}
+          </Card>
+
+          {/* MCP Servers */}
+          <Card
+            title={
+              <span>
+                MCP Servers
+                {serverEntries.length > 0 && (
+                  <span className="ml-2 font-normal text-[12px] text-slate-500">
+                    {connectedCount}/{serverEntries.length} 已连接 · {totalToolCount} 工具
+                  </span>
+                )}
+              </span>
+            }
+            action={
+              <Button size="sm" onClick={handleReconnectMcp} disabled={reconnecting}>
+                {reconnecting ? "连接中..." : "保存并连接"}
+              </Button>
+            }
           >
-            + 添加
-          </button>
-        </div>
-      </div>
+            {serverEntries.length === 0 && (
+              <div className="rounded-xl border border-dashed border-slate-200 py-4 text-center text-[13px] text-slate-400">
+                尚未配置 MCP 服务器，在下方添加
+              </div>
+            )}
 
-      {/* Telegram Bot */}
-      <div style={sectionStyle}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-          <h4 style={{ ...sectionTitle, margin: 0 }}>
-            Telegram Bot
-            <span style={{
-              fontWeight: 400,
-              fontSize: "11px",
-              marginLeft: "8px",
-              color: telegramStatus.running ? "#22c55e" : telegramStatus.error ? "#ef4444" : "#94a3b8",
-            }}>
-              {telegramStatus.running ? "运行中" : telegramStatus.error ? "连接失败" : "未启动"}
-            </span>
-          </h4>
-          <button
-            onClick={async () => {
-              setTelegramReconnecting(true);
-              setMessage("");
-              try {
-                await invoke("save_settings", { settings: form });
-                const status = await invoke<TelegramStatus>("reconnect_telegram");
-                setTelegramStatus(status);
-                if (status.error) {
-                  setMessage(`Telegram 连接失败: ${status.error}`);
-                } else if (status.running) {
-                  setMessage("Telegram Bot 已连接");
-                } else {
-                  setMessage("Telegram Bot 已停止");
-                }
-              } catch (e: any) {
-                setMessage(`Telegram 操作失败: ${e}`);
-              } finally {
-                setTelegramReconnecting(false);
-              }
-            }}
-            disabled={telegramReconnecting}
-            style={{
-              ...btnSmallStyle,
-              background: telegramReconnecting ? "#94a3b8" : "#0ea5e9",
-            }}
+            <div className="flex flex-col gap-2">
+              {serverEntries.map(([name, config]) => {
+                const status = mcpStatuses.find((s) => s.name === name);
+                return (
+                  <McpServerEntry
+                    key={name}
+                    name={name}
+                    config={config}
+                    status={status}
+                    onChange={(updates) => updateMcpServer(name, updates)}
+                    onCommit={() => saveSettings()}
+                    onCommitChange={(updates) => commitMcpServer(name, updates)}
+                    onRemove={() => removeMcpServer(name)}
+                  />
+                );
+              })}
+            </div>
+
+            {/* Add server */}
+            <div className="mt-3 flex gap-2">
+              <TextInput
+                value={newServerName}
+                onChange={(e) => setNewServerName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addMcpServer()}
+                className="flex-1"
+                placeholder="新服务器名称..."
+              />
+              <Button
+                variant="secondary"
+                onClick={addMcpServer}
+                disabled={!newServerName.trim() || !!form.mcp_servers[newServerName.trim()]}
+              >
+                <PlusIcon className="h-4 w-4" />
+                添加
+              </Button>
+            </div>
+          </Card>
+
+          {/* Telegram Bot */}
+          <Card
+            title={
+              <span>
+                Telegram Bot
+                <span
+                  className={`ml-2 font-normal text-[11px] ${toneText(connTone(telegramStatus.running, telegramStatus.error))}`}
+                >
+                  {telegramStatus.running ? "运行中" : telegramStatus.error ? "连接失败" : "未启动"}
+                </span>
+              </span>
+            }
+            action={
+              <Button
+                size="sm"
+                disabled={telegramReconnecting}
+                onClick={async () => {
+                  setTelegramReconnecting(true);
+                  setMessage("");
+                  try {
+                    await invoke("save_settings", { settings: form });
+                    const status = await invoke<TelegramStatus>("reconnect_telegram");
+                    setTelegramStatus(status);
+                    if (status.error) {
+                      setMessage(`Telegram 连接失败: ${status.error}`);
+                    } else if (status.running) {
+                      setMessage("Telegram Bot 已连接");
+                    } else {
+                      setMessage("Telegram Bot 已停止");
+                    }
+                  } catch (e: any) {
+                    setMessage(`Telegram 操作失败: ${e}`);
+                  } finally {
+                    setTelegramReconnecting(false);
+                  }
+                }}
+              >
+                {telegramReconnecting ? "连接中..." : "保存并连接"}
+              </Button>
+            }
           >
-            {telegramReconnecting ? "连接中..." : "保存并连接"}
-          </button>
-        </div>
+            {telegramStatus.error && (
+              <div className="mb-2 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[12px] text-red-600">
+                {telegramStatus.error}
+              </div>
+            )}
 
-        {telegramStatus.error && (
-          <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px", fontSize: "12px", color: "#dc2626" }}>
-            {telegramStatus.error}
-          </div>
-        )}
+            <label className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={form.telegram?.enabled ?? false}
+                onChange={(e) => {
+                  const next = { ...form, telegram: { ...form.telegram, bot_token: form.telegram?.bot_token ?? "", allowed_username: form.telegram?.allowed_username ?? "", enabled: e.target.checked } };
+                  setForm(next);
+                  saveSettings(next);
+                }}
+              />
+              启用 Telegram Bot
+            </label>
 
-        <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
-          <input
-            type="checkbox"
-            checked={form.telegram?.enabled ?? false}
-            onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, bot_token: form.telegram?.bot_token ?? "", allowed_username: form.telegram?.allowed_username ?? "", enabled: e.target.checked } })}
-          />
-          启用 Telegram Bot
-        </label>
+            <Label>Bot Token</Label>
+            <TextInput
+              type="password"
+              value={form.telegram?.bot_token ?? ""}
+              onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, allowed_username: form.telegram?.allowed_username ?? "", bot_token: e.target.value } })}
+              onBlur={() => saveSettings()}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              className="mb-2 font-mono !text-[12px]"
+              placeholder="123456789:ABCdefGhI..."
+            />
 
-        <label style={labelStyle}>Bot Token</label>
-        <input
-          type="password"
-          value={form.telegram?.bot_token ?? ""}
-          onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, allowed_username: form.telegram?.allowed_username ?? "", bot_token: e.target.value } })}
-          style={{ ...inputStyle, marginBottom: "8px", fontFamily: "monospace", fontSize: "12px" }}
-          placeholder="123456789:ABCdefGhI..."
-        />
+            <Label>允许的用户名</Label>
+            <TextInput
+              value={form.telegram?.allowed_username ?? ""}
+              onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, bot_token: form.telegram?.bot_token ?? "", allowed_username: e.target.value } })}
+              onBlur={() => saveSettings()}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              className="font-mono !text-[12px]"
+              placeholder="@username (留空则允许所有人)"
+            />
+          </Card>
 
-        <label style={labelStyle}>允许的用户名</label>
-        <input
-          value={form.telegram?.allowed_username ?? ""}
-          onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, bot_token: form.telegram?.bot_token ?? "", allowed_username: e.target.value } })}
-          style={{ ...inputStyle, fontFamily: "monospace", fontSize: "12px" }}
-          placeholder="@username (留空则允许所有人)"
-        />
-      </div>
+          {/* SOUL */}
+          <Card title="系统提示词 (SOUL.md)">
+            <TextArea
+              value={soul}
+              onChange={(e) => setSoul(e.target.value)}
+              onBlur={saveSoul}
+              rows={6}
+              placeholder="输入 AI 角色设定..."
+            />
+          </Card>
 
-      {/* SOUL */}
-      <div style={sectionStyle}>
-        <h4 style={sectionTitle}>系统提示词 (SOUL.md)</h4>
-        <textarea
-          value={soul}
-          onChange={(e) => setSoul(e.target.value)}
-          rows={6}
-          style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", lineHeight: "1.5" }}
-          placeholder="输入 AI 角色设定..."
-        />
-      </div>
-
-      {/* Save */}
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "8px" }}>
-        <button onClick={handleSave} disabled={saving} style={btnStyle}>
-          {saving ? "保存中..." : "保存"}
-        </button>
-        {message && (
-          <span style={{ fontSize: "13px", color: message.includes("失败") ? "#ef4444" : "#22c55e" }}>
-            {message}
-          </span>
-        )}
-      </div>
-      </>
+          {messageLine}
+        </>
       )}
     </div>
   );
@@ -471,17 +510,22 @@ function McpServerEntry({
   config,
   status,
   onChange,
+  onCommit,
+  onCommitChange,
   onRemove,
 }: {
   name: string;
   config: McpServerConfig;
   status?: McpStatus;
   onChange: (updates: Partial<McpServerConfig>) => void;
+  onCommit: () => void;
+  onCommitChange: (updates: Partial<McpServerConfig>) => void;
   onRemove: () => void;
 }) {
   const [expanded, setExpanded] = useState(true);
 
-  const statusDot = status?.connected ? "#22c55e" : status?.error ? "#ef4444" : "#94a3b8";
+  const hasError = !!status?.error && status.error !== "Disabled";
+  const dotClass = toneDot(connTone(status?.connected, status?.error));
   const statusLabel = status?.connected
     ? "已连接"
     : status?.error === "Disabled"
@@ -489,102 +533,91 @@ function McpServerEntry({
       : status?.error
         ? "连接失败"
         : "未连接";
+  const statusColor = toneText(connTone(status?.connected, hasError));
 
   return (
-    <div style={{ ...mcpCardStyle, borderColor: status?.error && status.error !== "Disabled" ? "#fca5a5" : "#e2e8f0" }}>
+    <div className={`rounded-xl border bg-slate-50 ${hasError ? "border-red-300" : "border-slate-200"}`}>
       {/* Header row */}
       <div
-        style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}
+        className="flex cursor-pointer items-center gap-2 px-3 py-2.5"
         onClick={() => setExpanded(!expanded)}
       >
-        {/* Status dot */}
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: statusDot, flexShrink: 0 }} />
-
-        {/* Name + status */}
-        <span style={{ fontWeight: 600, fontSize: "13px", flex: 1, color: "#1e293b" }}>
+        <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+        <span className="flex-1 text-[13px] font-semibold text-slate-800">
           {name}
-          <span style={{ fontWeight: 400, fontSize: "11px", color: "#94a3b8", marginLeft: "8px" }}>
-            {config.transport.toUpperCase()}
-          </span>
-          <span
-            style={{
-              fontWeight: 400,
-              fontSize: "11px",
-              marginLeft: "6px",
-              color: status?.connected ? "#22c55e" : status?.error && status.error !== "Disabled" ? "#ef4444" : "#94a3b8",
-            }}
-          >
+          <span className="ml-2 font-normal text-[11px] text-slate-400">{config.transport.toUpperCase()}</span>
+          <span className={`ml-1.5 font-normal text-[11px] ${statusColor}`}>
             {statusLabel}
             {status?.connected && ` · ${status.tool_count} 工具`}
           </span>
         </span>
 
-        {/* Enable toggle */}
         <label
-          style={{ fontSize: "12px", color: "#64748b", display: "flex", alignItems: "center", gap: "4px" }}
+          className="flex items-center gap-1 text-[12px] text-slate-500"
           onClick={(e) => e.stopPropagation()}
         >
           <input
             type="checkbox"
+            className="accent-accent"
             checked={config.enabled}
-            onChange={(e) => onChange({ enabled: e.target.checked })}
+            onChange={(e) => onCommitChange({ enabled: e.target.checked })}
           />
           启用
         </label>
 
-        {/* Delete */}
-        <button onClick={(e) => { e.stopPropagation(); onRemove(); }} style={btnDangerStyle}>
-          删除
+        <button
+          onClick={(e) => { e.stopPropagation(); onRemove(); }}
+          title="删除"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
+        >
+          <TrashIcon className="h-4 w-4" />
         </button>
 
-        {/* Collapse */}
-        <span style={{ fontSize: "10px", color: "#94a3b8", userSelect: "none" }}>
-          {expanded ? "▲" : "▼"}
-        </span>
+        {expanded ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-400" />}
       </div>
 
       {/* Expanded: config fields + tool list */}
       {expanded && (
-        <div style={{ marginTop: "10px", borderTop: "1px solid #e2e8f0", paddingTop: "10px" }}>
-          {/* Error message */}
-          {status?.error && status.error !== "Disabled" && (
-            <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px", fontSize: "12px", color: "#dc2626" }}>
-              {status.error}
+        <div className="border-t border-slate-200 px-3 pb-3 pt-3">
+          {hasError && (
+            <div className="mb-2 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[12px] text-red-600">
+              {status!.error}
             </div>
           )}
 
-          {/* Transport */}
-          <label style={labelStyle}>传输方式</label>
-          <select
+          <Label>传输方式</Label>
+          <Select
             value={config.transport}
-            onChange={(e) => onChange({ transport: e.target.value as McpServerConfig["transport"] })}
-            style={{ ...inputStyle, marginBottom: "8px" }}
+            onChange={(e) => onCommitChange({ transport: e.target.value as McpServerConfig["transport"] })}
+            className="mb-2"
           >
             <option value="stdio">stdio (本地进程)</option>
             <option value="sse">SSE (远程)</option>
             <option value="http">HTTP (远程)</option>
-          </select>
+          </Select>
 
-          {/* stdio fields */}
           {config.transport === "stdio" ? (
             <>
-              <label style={labelStyle}>命令</label>
-              <input
+              <Label>命令</Label>
+              <TextInput
                 value={config.command}
                 onChange={(e) => onChange({ command: e.target.value })}
-                style={{ ...inputStyle, marginBottom: "6px", fontFamily: "monospace", fontSize: "12px" }}
+                onBlur={onCommit}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                className="mb-1.5 font-mono !text-[12px]"
                 placeholder="npx"
               />
-              <label style={labelStyle}>参数 (每行一个)</label>
-              <textarea
+              <Label>参数 (每行一个)</Label>
+              <TextArea
                 value={config.args.join("\n")}
                 onChange={(e) => onChange({ args: e.target.value.split("\n") })}
+                onBlur={onCommit}
                 rows={3}
-                style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px", marginBottom: "6px" }}
+                className="mb-1.5 font-mono !text-[12px]"
                 placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/tmp"}
               />
-              <label style={labelStyle}>环境变量 (KEY=VALUE，每行一个)</label>
-              <textarea
+              <Label>环境变量 (KEY=VALUE，每行一个)</Label>
+              <TextArea
                 value={Object.entries(config.env || {}).map(([k, v]) => `${k}=${v}`).join("\n")}
                 onChange={(e) => {
                   const env: Record<string, string> = {};
@@ -594,23 +627,25 @@ function McpServerEntry({
                   });
                   onChange({ env });
                 }}
+                onBlur={onCommit}
                 rows={2}
-                style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px" }}
+                className="font-mono !text-[12px]"
                 placeholder="GITHUB_TOKEN=ghp_xxx"
               />
             </>
           ) : (
-            /* sse / http fields */
             <>
-              <label style={labelStyle}>URL</label>
-              <input
+              <Label>URL</Label>
+              <TextInput
                 value={config.url}
                 onChange={(e) => onChange({ url: e.target.value })}
-                style={{ ...inputStyle, marginBottom: "6px", fontFamily: "monospace", fontSize: "12px" }}
+                onBlur={onCommit}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                className="mb-1.5 font-mono !text-[12px]"
                 placeholder="http://localhost:3000/mcp"
               />
-              <label style={labelStyle}>自定义 Headers (KEY: VALUE，每行一个)</label>
-              <textarea
+              <Label>自定义 Headers (KEY: VALUE，每行一个)</Label>
+              <TextArea
                 value={Object.entries(config.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n")}
                 onChange={(e) => {
                   const headers: Record<string, string> = {};
@@ -620,20 +655,20 @@ function McpServerEntry({
                   });
                   onChange({ headers });
                 }}
+                onBlur={onCommit}
                 rows={2}
-                style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px" }}
+                className="font-mono !text-[12px]"
                 placeholder="Authorization: Bearer xxx"
               />
             </>
           )}
 
-          {/* Connected tool list */}
           {status?.connected && status.tool_names.length > 0 && (
-            <div style={{ marginTop: "8px" }}>
-              <label style={labelStyle}>已注册工具 ({status.tool_count})</label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+            <div className="mt-2">
+              <Label>已注册工具 ({status.tool_count})</Label>
+              <div className="flex flex-wrap gap-1">
                 {status.tool_names.map((t) => (
-                  <span key={t} style={toolBadgeStyle}>{t}</span>
+                  <Badge key={t} color="sky" className="font-mono">{t}</Badge>
                 ))}
               </div>
             </div>
@@ -643,92 +678,3 @@ function McpServerEntry({
     </div>
   );
 }
-
-/* ---------- Styles ---------- */
-
-const containerStyle: React.CSSProperties = {
-  padding: "20px 24px",
-  height: "100%",
-  overflowY: "auto",
-};
-
-const sectionStyle: React.CSSProperties = {
-  marginBottom: "20px",
-};
-
-const sectionTitle: React.CSSProperties = {
-  margin: "0 0 10px",
-  fontSize: "14px",
-  fontWeight: 600,
-  color: "#1e293b",
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: "12px",
-  color: "#64748b",
-  marginBottom: "4px",
-  fontWeight: 500,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 12px",
-  borderRadius: "8px",
-  border: "1px solid #e2e8f0",
-  fontSize: "13px",
-  outline: "none",
-  color: "#1e293b",
-  boxSizing: "border-box",
-  background: "#fff",
-};
-
-const btnStyle: React.CSSProperties = {
-  padding: "8px 24px",
-  borderRadius: "8px",
-  border: "none",
-  background: "#0ea5e9",
-  color: "#fff",
-  fontSize: "14px",
-  fontWeight: 500,
-  cursor: "pointer",
-};
-
-const btnSmallStyle: React.CSSProperties = {
-  padding: "6px 14px",
-  borderRadius: "6px",
-  border: "none",
-  color: "#fff",
-  fontSize: "12px",
-  fontWeight: 500,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
-
-const btnDangerStyle: React.CSSProperties = {
-  padding: "2px 8px",
-  borderRadius: "4px",
-  border: "none",
-  background: "#ef4444",
-  color: "#fff",
-  fontSize: "11px",
-  cursor: "pointer",
-};
-
-const mcpCardStyle: React.CSSProperties = {
-  border: "1px solid #e2e8f0",
-  borderRadius: "8px",
-  padding: "10px 12px",
-  marginBottom: "8px",
-  background: "#f8fafc",
-};
-
-const toolBadgeStyle: React.CSSProperties = {
-  display: "inline-block",
-  padding: "2px 8px",
-  borderRadius: "4px",
-  background: "#e0f2fe",
-  color: "#0369a1",
-  fontSize: "11px",
-  fontFamily: "monospace",
-};

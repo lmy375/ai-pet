@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Button } from "../ui/Button";
+import { RefreshIcon, TrashIcon } from "../Icons";
 
 export function PanelDebug() {
   const [logs, setLogs] = useState<string[]>([]);
@@ -38,60 +39,44 @@ export function PanelDebug() {
 
   const handleOpenDevTools = async () => {
     try {
-      // Open devtools for the current webview
-      const win = getCurrentWindow();
-      await (win as any).emit("open-devtools");
-      // Use internal API
-      await invoke("plugin:webview|internal_toggle_devtools", {});
-    } catch {
-      // Fallback: try the webview API directly
-      try {
-        await (getCurrentWindow() as any).openDevtools();
-      } catch (e) {
-        console.error("Cannot open devtools:", e);
-        alert("无法打开 DevTools。请使用右键菜单 → Inspect Element。");
-      }
+      await invoke("open_devtools");
+    } catch (e) {
+      console.error("Cannot open devtools:", e);
+      alert("无法打开 DevTools。请使用右键菜单 → Inspect Element。");
     }
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div style={{ display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid #e2e8f0", background: "#fff" }}>
-        <button onClick={fetchLogs} style={toolBtnStyle}>刷新</button>
-        <button onClick={handleClear} style={toolBtnStyle}>清空</button>
-        <button onClick={handleOpenDevTools} style={{ ...toolBtnStyle, background: "#f59e0b", color: "#fff" }}>
+      <div className="flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white px-4 py-2.5">
+        <Button variant="ghost" size="sm" onClick={fetchLogs}>
+          <RefreshIcon className="h-4 w-4" />
+          刷新
+        </Button>
+        <Button variant="ghost" size="sm" onClick={handleClear}>
+          <TrashIcon className="h-4 w-4" />
+          清空
+        </Button>
+        <Button size="sm" className="!bg-amber-500 hover:!bg-amber-600" onClick={handleOpenDevTools}>
           DevTools
-        </button>
-        <span style={{ flex: 1 }} />
-        <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>
-          {logs.length} 条日志
-        </span>
+        </Button>
+        <span className="flex-1" />
+        <span className="text-[12px] text-slate-400">{logs.length} 条日志</span>
       </div>
 
       {/* Log output */}
       <div
         ref={scrollRef}
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "12px 16px",
-          fontFamily: "'SF Mono', 'Menlo', 'Monaco', monospace",
-          fontSize: "12px",
-          lineHeight: "1.7",
-          background: "#0f172a",
-          color: "#e2e8f0",
-        }}
+        className="flex-1 overflow-y-auto bg-slate-900 px-4 py-3 font-mono text-[12px] leading-[1.7] text-slate-200"
       >
         {logs.length === 0 ? (
-          <div style={{ color: "#64748b", textAlign: "center", marginTop: "40px" }}>
-            暂无日志。聊天和操作会产生日志。
-          </div>
+          <div className="mt-10 text-center text-slate-500">暂无日志。聊天和操作会产生日志。</div>
         ) : (
           logs.map((line, i) => (
-            <div key={i} style={{ wordBreak: "break-all" }}>
-              <span style={{ color: "#94a3b8" }}>{line.slice(0, 14)}</span>
-              <span style={{ color: line.includes("ERROR") ? "#f87171" : line.includes("WARN") ? "#fbbf24" : "#e2e8f0" }}>
+            <div key={i} className="break-all">
+              <span className="text-slate-400">{line.slice(0, 14)}</span>
+              <span className={line.includes("ERROR") ? "text-red-400" : line.includes("WARN") ? "text-amber-400" : "text-slate-200"}>
                 {line.slice(14)}
               </span>
             </div>
@@ -101,14 +86,3 @@ export function PanelDebug() {
     </div>
   );
 }
-
-const toolBtnStyle: React.CSSProperties = {
-  padding: "6px 14px",
-  borderRadius: "6px",
-  border: "1px solid #e2e8f0",
-  background: "#fff",
-  color: "#475569",
-  fontSize: "13px",
-  cursor: "pointer",
-  fontWeight: 500,
-};

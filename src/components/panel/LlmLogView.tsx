@@ -1,5 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Badge, type BadgeColor } from "../ui/Badge";
+import { Button } from "../ui/Button";
+import { formatIsoTime } from "../../utils/format";
+import {
+  ChevronRight,
+  ChevronDown,
+  RefreshIcon,
+  WrenchIcon,
+  ClockIcon,
+  ArrowUpIcon,
+  ArrowDownIcon,
+} from "../Icons";
 
 interface LlmLogEntry {
   round: number;
@@ -18,6 +30,16 @@ interface LlmLogEntry {
     tool_calls: Array<{ function: { name: string; arguments: string } }>;
   };
 }
+
+const preClass =
+  "mt-0.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-700";
+
+const roleColors: Record<string, BadgeColor> = {
+  system: "green",
+  user: "sky",
+  assistant: "purple",
+  tool: "orange",
+};
 
 export function LlmLogView() {
   const [entries, setEntries] = useState<LlmLogEntry[]>([]);
@@ -59,12 +81,6 @@ export function LlmLogView() {
     }
   }, [entries.length]);
 
-  const formatTime = (ts: string | undefined | null) => {
-    if (!ts) return "—";
-    const t = ts.split("T")[1];
-    return t ? t.slice(0, 8) : ts;
-  };
-
   const lastUserMsg = (entry: LlmLogEntry): string => {
     const msgs = entry.request.messages;
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -85,20 +101,21 @@ export function LlmLogView() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div className="flex h-full flex-col bg-slate-100">
       {/* Toolbar */}
-      <div style={{ display: "flex", gap: "8px", padding: "10px 16px", borderBottom: "1px solid #e2e8f0", background: "#fff" }}>
-        <button onClick={fetchLogs} style={toolBtnStyle}>刷新</button>
-        <span style={{ flex: 1 }} />
-        <span style={{ fontSize: "12px", color: "#94a3b8", alignSelf: "center" }}>
-          {entries.length} 条记录
-        </span>
+      <div className="flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white px-4 py-2.5">
+        <Button variant="ghost" size="sm" onClick={fetchLogs}>
+          <RefreshIcon className="h-4 w-4" />
+          刷新
+        </Button>
+        <span className="flex-1" />
+        <span className="text-[12px] text-slate-400">{entries.length} 条记录</span>
       </div>
 
       {/* Log entries */}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "8px 12px", background: "#f8fafc" }}>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2">
         {entries.length === 0 ? (
-          <div style={{ color: "#94a3b8", textAlign: "center", marginTop: "40px", fontSize: "13px" }}>
+          <div className="mt-10 text-center text-[13px] text-slate-400">
             暂无 LLM 日志。发送聊天消息后会产生记录。
           </div>
         ) : (
@@ -106,47 +123,39 @@ export function LlmLogView() {
             const isExpanded = expandedIdx === i;
             const tcNames = toolCallNames(entry);
             return (
-              <div key={i} style={{ marginBottom: "6px", borderRadius: "8px", border: "1px solid #e2e8f0", background: "#fff", overflow: "hidden" }}>
+              <div key={i} className="mb-1.5 overflow-hidden rounded-xl border border-slate-200 bg-white">
                 {/* Summary row */}
                 <div
                   onClick={() => toggle(i)}
-                  style={{
-                    display: "flex", alignItems: "center", gap: "10px",
-                    padding: "10px 14px", cursor: "pointer",
-                    userSelect: "none",
-                  }}
+                  className="flex cursor-pointer select-none items-center gap-2.5 px-3.5 py-2.5"
                 >
-                  <span style={{ color: "#94a3b8", fontSize: "11px", fontFamily: "monospace", whiteSpace: "nowrap" }}>
-                    {formatTime(entry.request_time)}
+                  <span className="whitespace-nowrap font-mono text-[11px] text-slate-400">
+                    {formatIsoTime(entry.request_time)}
                   </span>
-                  <span style={badgeStyle("#e0f2fe", "#0284c7")}>{entry.request.model}</span>
-                  <span style={badgeStyle("#f0fdf4", "#16a34a")}>
-                    R{entry.round}
-                  </span>
+                  <Badge color="sky">{entry.request.model}</Badge>
+                  <Badge color="green">R{entry.round}</Badge>
                   {entry.first_token_latency_ms != null && (
-                    <span style={badgeStyle("#fefce8", "#ca8a04")}>
-                      TTFT {entry.first_token_latency_ms}ms
-                    </span>
+                    <Badge color="amber">TTFT {entry.first_token_latency_ms}ms</Badge>
                   )}
-                  <span style={badgeStyle("#faf5ff", "#9333ea")}>
-                    {entry.total_latency_ms}ms
-                  </span>
+                  <Badge color="purple">{entry.total_latency_ms}ms</Badge>
                   {tcNames.length > 0 && (
-                    <span style={badgeStyle("#fff7ed", "#ea580c")}>
-                      🔧 {tcNames.join(", ")}
-                    </span>
+                    <Badge color="orange">
+                      <WrenchIcon className="h-3 w-3" />
+                      {tcNames.join(", ")}
+                    </Badge>
                   )}
-                  <span style={{ flex: 1, fontSize: "12px", color: "#475569", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {lastUserMsg(entry)}
-                  </span>
-                  <span style={{ color: "#94a3b8", fontSize: "12px" }}>{isExpanded ? "▼" : "▶"}</span>
+                  <span className="flex-1 truncate text-[12px] text-slate-600">{lastUserMsg(entry)}</span>
+                  {isExpanded ? (
+                    <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+                  )}
                 </div>
 
                 {/* Expanded detail */}
                 {isExpanded && (
-                  <div style={{ borderTop: "1px solid #f1f5f9", padding: "12px 14px" }}>
-                    {/* Timing */}
-                    <DetailSection title="⏱ 时间">
+                  <div className="border-t border-slate-100 px-3.5 py-3">
+                    <DetailSection icon={<ClockIcon className="h-3.5 w-3.5" />} title="时间">
                       <Row label="请求时间" value={entry.request_time} />
                       <Row label="首 Token" value={entry.first_token_time ?? "—"} />
                       <Row label="完成时间" value={entry.done_time} />
@@ -154,34 +163,28 @@ export function LlmLogView() {
                       <Row label="总耗时" value={`${entry.total_latency_ms} ms`} />
                     </DetailSection>
 
-                    {/* Request messages */}
-                    <DetailSection title="📤 请求消息">
+                    <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title="请求消息">
                       {entry.request.messages.map((msg, j) => (
-                        <div key={j} style={{ marginBottom: "6px" }}>
-                          <span style={roleBadge(msg.role)}>{msg.role}</span>
-                          <pre style={preStyle}>
-                            {typeof msg.content === "string"
-                              ? msg.content
-                              : JSON.stringify(msg.content, null, 2)}
+                        <div key={j} className="mb-1.5">
+                          <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
+                          <pre className={preClass}>
+                            {typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)}
                           </pre>
                         </div>
                       ))}
                     </DetailSection>
 
-                    {/* Response */}
-                    <DetailSection title="📥 响应">
+                    <DetailSection icon={<ArrowDownIcon className="h-3.5 w-3.5" />} title="响应">
                       {entry.response.text && (
-                        <div style={{ marginBottom: "6px" }}>
-                          <span style={roleBadge("assistant")}>assistant</span>
-                          <pre style={preStyle}>{entry.response.text}</pre>
+                        <div className="mb-1.5">
+                          <Badge color="purple">assistant</Badge>
+                          <pre className={preClass}>{entry.response.text}</pre>
                         </div>
                       )}
                       {entry.response.tool_calls.length > 0 && (
                         <div>
-                          <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "4px" }}>Tool Calls:</div>
-                          <pre style={preStyle}>
-                            {JSON.stringify(entry.response.tool_calls, null, 2)}
-                          </pre>
+                          <div className="mb-1 text-[12px] text-slate-500">Tool Calls:</div>
+                          <pre className={preClass}>{JSON.stringify(entry.response.tool_calls, null, 2)}</pre>
                         </div>
                       )}
                     </DetailSection>
@@ -196,10 +199,13 @@ export function LlmLogView() {
   );
 }
 
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+function DetailSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: "12px" }}>
-      <div style={{ fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "6px" }}>{title}</div>
+    <div className="mb-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
+        <span className="text-slate-400">{icon}</span>
+        {title}
+      </div>
       {children}
     </div>
   );
@@ -207,66 +213,9 @@ function DetailSection({ title, children }: { title: string; children: React.Rea
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: "flex", gap: "8px", fontSize: "12px", marginBottom: "2px", fontFamily: "monospace" }}>
-      <span style={{ color: "#94a3b8", minWidth: "100px" }}>{label}</span>
-      <span style={{ color: "#1e293b" }}>{value}</span>
+    <div className="mb-0.5 flex gap-2 font-mono text-[12px]">
+      <span className="min-w-[100px] text-slate-400">{label}</span>
+      <span className="text-slate-800">{value}</span>
     </div>
   );
 }
-
-function roleBadge(role: string): React.CSSProperties {
-  const colors: Record<string, [string, string]> = {
-    system: ["#f0fdf4", "#16a34a"],
-    user: ["#e0f2fe", "#0284c7"],
-    assistant: ["#faf5ff", "#9333ea"],
-    tool: ["#fff7ed", "#ea580c"],
-  };
-  const [bg, fg] = colors[role] ?? ["#f1f5f9", "#475569"];
-  return {
-    display: "inline-block",
-    padding: "1px 8px",
-    borderRadius: "4px",
-    background: bg,
-    color: fg,
-    fontSize: "11px",
-    fontWeight: 600,
-    marginBottom: "4px",
-  };
-}
-
-const badgeStyle = (bg: string, color: string): React.CSSProperties => ({
-  padding: "1px 8px",
-  borderRadius: "4px",
-  background: bg,
-  color,
-  fontSize: "11px",
-  fontWeight: 600,
-  whiteSpace: "nowrap",
-});
-
-const preStyle: React.CSSProperties = {
-  margin: "2px 0 0",
-  padding: "8px 10px",
-  borderRadius: "6px",
-  background: "#f8fafc",
-  border: "1px solid #f1f5f9",
-  fontSize: "12px",
-  lineHeight: "1.6",
-  fontFamily: "'SF Mono', 'Menlo', 'Monaco', monospace",
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-all",
-  maxHeight: "300px",
-  overflowY: "auto",
-  color: "#334155",
-};
-
-const toolBtnStyle: React.CSSProperties = {
-  padding: "6px 14px",
-  borderRadius: "6px",
-  border: "1px solid #e2e8f0",
-  background: "#fff",
-  color: "#475569",
-  fontSize: "13px",
-  cursor: "pointer",
-  fontWeight: 500,
-};

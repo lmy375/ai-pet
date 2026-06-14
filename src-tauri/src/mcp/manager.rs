@@ -25,8 +25,6 @@ pub struct McpServerStatus {
 /// Holds a running MCP client connection
 struct McpConnection {
     service: RunningService<RoleClient, ()>,
-    #[allow(dead_code)]
-    tools: Vec<McpTool>,
 }
 
 pub struct McpManager {
@@ -76,10 +74,7 @@ impl McpManager {
                         manager.tool_map.insert(tool_name, name.clone());
                         manager.tool_definitions.push(openai_def);
                     }
-                    manager.connections.insert(
-                        name.clone(),
-                        McpConnection { service, tools },
-                    );
+                    manager.connections.insert(name.clone(), McpConnection { service });
                     manager.statuses.push(McpServerStatus {
                         name: name.clone(),
                         connected: true,
@@ -179,11 +174,6 @@ impl McpManager {
     /// Get all MCP tool definitions in OpenAI function calling format
     pub fn definitions(&self) -> Vec<serde_json::Value> {
         self.tool_definitions.clone()
-    }
-
-    /// Check if a tool name belongs to an MCP server
-    pub fn has_tool(&self, name: &str) -> bool {
-        self.tool_map.contains_key(name)
     }
 
     /// Call an MCP tool by name

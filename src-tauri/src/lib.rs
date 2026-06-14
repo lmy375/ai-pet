@@ -1,4 +1,5 @@
 mod commands;
+mod common;
 mod config;
 mod mcp;
 mod telegram;
@@ -67,8 +68,12 @@ pub fn run() {
             commands::settings::save_config_raw,
             commands::settings::get_soul,
             commands::settings::save_soul,
+            commands::settings::open_config_dir,
+            commands::settings::list_models,
+            commands::settings::test_model,
             commands::window::open_panel,
             commands::window::open_debug,
+            commands::window::open_devtools,
             commands::debug::get_logs,
             commands::debug::append_log,
             commands::debug::clear_logs,

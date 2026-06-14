@@ -7,7 +7,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::commands::chat::{ChatMessage, CollectingSink, run_chat_pipeline};
 use crate::commands::debug::LogStore;
 use crate::commands::session;
-use crate::commands::settings::{get_soul, TelegramConfig};
+use crate::commands::settings::TelegramConfig;
 use crate::commands::shell::ShellStore;
 use crate::config::AiConfig;
 use crate::mcp::McpManagerStore;
@@ -85,27 +85,15 @@ impl TelegramBot {
     }
 }
 
-/// Load the dedicated Telegram session, or create one if it doesn't exist.
+/// Load the dedicated Telegram session, or create one (seeded with the shared
+/// SOUL system message, identical to panel/pet sessions) if it doesn't exist.
 fn load_or_create_session() -> (String, Vec<serde_json::Value>) {
     match session::load_session(TELEGRAM_SESSION_ID.to_string()) {
         Ok(s) => (s.id, s.messages),
-        Err(_) => {
-            let soul = get_soul().unwrap_or_default();
-            let system_msg = serde_json::json!({ "role": "system", "content": soul });
-            let messages = vec![system_msg];
-
-            let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
-            let s = session::Session {
-                id: TELEGRAM_SESSION_ID.to_string(),
-                title: "Telegram".to_string(),
-                created_at: now.clone(),
-                updated_at: now,
-                messages: messages.clone(),
-                items: vec![],
-            };
-            let _ = session::save_session(s);
-            (TELEGRAM_SESSION_ID.to_string(), messages)
-        }
+        Err(_) => match session::new_seeded_session(TELEGRAM_SESSION_ID.to_string(), "Telegram".to_string()) {
+            Ok(s) => (s.id, s.messages),
+            Err(_) => (TELEGRAM_SESSION_ID.to_string(), vec![session::soul_system_message()]),
+        },
     }
 }
 
@@ -178,7 +166,7 @@ async fn handle_message(
         session_msgs.push(assistant_msg);
 
         // Persist to disk
-        let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+        let now = crate::common::iso_now();
         let items: Vec<serde_json::Value> = session_msgs
             .iter()
             .filter_map(|m| {

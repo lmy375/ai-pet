@@ -49,7 +49,7 @@ impl Tool for ReadFileTool {
 }
 
 async fn read_file_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let args = super::parse_args(arguments);
     let file_path = args["file_path"].as_str().unwrap_or("").to_string();
     if file_path.is_empty() {
         return r#"{"error": "missing 'file_path' parameter"}"#.to_string();
@@ -166,7 +166,7 @@ impl Tool for WriteFileTool {
 }
 
 async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let args = super::parse_args(arguments);
     let file_path = args["file_path"].as_str().unwrap_or("").to_string();
     let content = args["content"].as_str().unwrap_or("").to_string();
 
@@ -252,7 +252,7 @@ impl Tool for EditFileTool {
 }
 
 async fn edit_file_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let args = super::parse_args(arguments);
     let file_path = args["file_path"].as_str().unwrap_or("").to_string();
     let old_string = args["old_string"].as_str().unwrap_or("").to_string();
     let new_string = args["new_string"].as_str().unwrap_or("").to_string();

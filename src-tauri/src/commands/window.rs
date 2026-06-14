@@ -40,3 +40,13 @@ pub async fn open_debug(app: AppHandle) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Open the web inspector (DevTools) for the window that invoked this command.
+/// Available in debug builds, or release builds compiled with the `devtools` feature.
+#[tauri::command]
+pub fn open_devtools(window: tauri::WebviewWindow) {
+    #[cfg(debug_assertions)]
+    window.open_devtools();
+    #[cfg(not(debug_assertions))]
+    let _ = window;
+}
