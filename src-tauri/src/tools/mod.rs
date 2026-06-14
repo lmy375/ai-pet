@@ -6,4 +6,4 @@ pub mod file_tools;
 
 pub use context::ToolContext;
 pub use registry::ToolRegistry;
-pub use tool::Tool;
+pub use tool::{parse_args, Tool};

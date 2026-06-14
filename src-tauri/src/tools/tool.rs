@@ -1,5 +1,10 @@
 use super::ToolContext;
 
+/// Parse a tool's JSON arguments string, falling back to `Null` on bad input.
+pub fn parse_args(arguments: &str) -> serde_json::Value {
+    serde_json::from_str(arguments).unwrap_or_default()
+}
+
 /// Trait that every tool must implement
 pub trait Tool: Send + Sync {
     /// Tool name (matches function.name in the API)

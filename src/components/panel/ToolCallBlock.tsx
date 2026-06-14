@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { ChevronRight, WrenchIcon, CheckIcon, SpinnerIcon } from "../Icons";
+import { formatJson } from "../../utils/format";
 
 interface Props {
   name: string;
@@ -10,90 +12,36 @@ interface Props {
 export function ToolCallBlock({ name, arguments: args, result, isRunning }: Props) {
   const [expanded, setExpanded] = useState(false);
 
+  const StatusIcon = isRunning ? SpinnerIcon : result ? CheckIcon : WrenchIcon;
+  const statusColor = isRunning ? "text-slate-400" : result ? "text-green-600" : "text-slate-500";
+
   return (
-    <div
-      style={{
-        margin: "4px 0",
-        borderRadius: "8px",
-        border: "1px solid #e2e8f0",
-        background: "#f8fafc",
-        fontSize: "13px",
-        overflow: "hidden",
-      }}
-    >
-      {/* Header - always visible */}
+    <div className="my-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-[13px]">
+      {/* Header — always visible */}
       <div
         onClick={() => setExpanded(!expanded)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "6px",
-          padding: "8px 12px",
-          cursor: "pointer",
-          userSelect: "none",
-          color: "#475569",
-        }}
+        className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-slate-600"
       >
-        <span style={{ fontSize: "11px", transition: "transform 0.2s", transform: expanded ? "rotate(90deg)" : "rotate(0)" }}>
-          ▶
-        </span>
-        <span style={{ fontSize: "12px" }}>
-          {isRunning ? "⏳" : result ? "✅" : "🔧"}
-        </span>
-        <span style={{ fontWeight: 600, color: "#0ea5e9" }}>{name}</span>
-        {isRunning && (
-          <span style={{ color: "#94a3b8", fontSize: "12px" }}>执行中...</span>
-        )}
+        <ChevronRight className={`h-3.5 w-3.5 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`} />
+        <StatusIcon className={`h-4 w-4 ${statusColor} ${isRunning ? "animate-spin" : ""}`} />
+        <span className="font-semibold text-accent">{name}</span>
+        {isRunning && <span className="text-[12px] text-slate-400">执行中...</span>}
       </div>
 
-      {/* Details - collapsible */}
+      {/* Details — collapsible */}
       {expanded && (
-        <div style={{ borderTop: "1px solid #e2e8f0" }}>
-          {/* Arguments */}
-          <div style={{ padding: "8px 12px" }}>
-            <div style={{ fontSize: "11px", color: "#94a3b8", marginBottom: "4px", fontWeight: 600 }}>
-              参数
-            </div>
-            <pre
-              style={{
-                margin: 0,
-                padding: "8px",
-                background: "#1e293b",
-                color: "#e2e8f0",
-                borderRadius: "6px",
-                fontSize: "12px",
-                lineHeight: "1.5",
-                maxHeight: "200px",
-                overflowY: "auto",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-              }}
-            >
+        <div className="border-t border-slate-200">
+          <div className="px-3 py-2">
+            <div className="mb-1 text-[11px] font-semibold text-slate-400">参数</div>
+            <pre className="m-0 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-slate-800 p-2 font-mono text-[12px] leading-normal text-slate-200">
               {formatJson(args)}
             </pre>
           </div>
 
-          {/* Result */}
           {result && (
-            <div style={{ padding: "0 12px 8px" }}>
-              <div style={{ fontSize: "11px", color: "#94a3b8", marginBottom: "4px", fontWeight: 600 }}>
-                返回值
-              </div>
-              <pre
-                style={{
-                  margin: 0,
-                  padding: "8px",
-                  background: "#1e293b",
-                  color: "#a7f3d0",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  lineHeight: "1.5",
-                  maxHeight: "300px",
-                  overflowY: "auto",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-all",
-                }}
-              >
+            <div className="px-3 pb-2">
+              <div className="mb-1 text-[11px] font-semibold text-slate-400">返回值</div>
+              <pre className="m-0 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-slate-800 p-2 font-mono text-[12px] leading-normal text-emerald-300">
                 {formatJson(result)}
               </pre>
             </div>
@@ -102,12 +50,4 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
       )}
     </div>
   );
-}
-
-function formatJson(str: string): string {
-  try {
-    return JSON.stringify(JSON.parse(str), null, 2);
-  } catch {
-    return str;
-  }
 }

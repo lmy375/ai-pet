@@ -61,7 +61,7 @@ impl Tool for BashTool {
 }
 
 async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let args = super::parse_args(arguments);
     let command = args["command"].as_str().unwrap_or("").to_string();
     if command.is_empty() {
         return r#"{"error": "missing 'command' parameter"}"#.to_string();
@@ -252,7 +252,7 @@ impl Tool for CheckShellStatusTool {
 }
 
 async fn check_shell_status_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let args = super::parse_args(arguments);
     let task_id = args["task_id"].as_str().unwrap_or("").to_string();
     if task_id.is_empty() {
         return r#"{"error": "missing 'task_id' parameter"}"#.to_string();

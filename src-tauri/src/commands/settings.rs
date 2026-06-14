@@ -87,22 +87,96 @@ impl Default for AppSettings {
     }
 }
 
-fn config_dir() -> Result<PathBuf, String> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| "Cannot determine config directory".to_string())?;
-    Ok(dir.join("pet"))
-}
-
 fn config_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join("config.yaml"))
+    Ok(crate::common::config_dir()?.join("config.yaml"))
 }
 
 fn soul_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join("SOUL.md"))
+    Ok(crate::common::config_dir()?.join("SOUL.md"))
 }
 
 fn default_soul() -> String {
     "你是一个可爱的二次元少女 AI 宠物，性格活泼开朗。请用简短可爱的方式回复，偶尔使用颜文字。回复控制在50字以内。".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsResponse {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelEntry {
+    id: String,
+}
+
+/// Fetch the list of available model ids from an OpenAI-compatible `/models` endpoint.
+#[tauri::command]
+pub async fn list_models(api_base: String, api_key: String) -> Result<Vec<String>, String> {
+    if api_base.trim().is_empty() {
+        return Err("请先填写 API Base URL".to_string());
+    }
+    let url = crate::common::openai_endpoint(&api_base, "models");
+    let req = crate::common::with_bearer(crate::common::http_client().get(&url), &api_key);
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("接口返回 {}: {}", status, text));
+    }
+    let parsed: ModelsResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+    let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+    ids.sort();
+    Ok(ids)
+}
+
+/// Send a minimal chat completion to verify the model is reachable and usable.
+#[tauri::command]
+pub async fn test_model(
+    api_base: String,
+    api_key: String,
+    model: String,
+) -> Result<(), String> {
+    if api_base.trim().is_empty() {
+        return Err("请先填写 API Base URL".to_string());
+    }
+    if model.trim().is_empty() {
+        return Err("请先选择模型".to_string());
+    }
+    let url = crate::common::openai_endpoint(&api_base, "chat/completions");
+    let body = serde_json::json!({
+        "model": model.trim(),
+        "messages": [{ "role": "user", "content": "ping" }],
+        "max_tokens": 1,
+        "stream": false,
+    });
+    let req = crate::common::with_bearer(
+        crate::common::http_client().post(&url).header("Content-Type", "application/json").json(&body),
+        &api_key,
+    );
+    let resp = req.send().await.map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("接口返回 {}: {}", status, text));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_config_dir(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = crate::common::config_dir()?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| format!("Failed to open config dir: {}", e))
 }
 
 #[tauri::command]

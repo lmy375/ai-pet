@@ -4,10 +4,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 fn sessions_dir() -> Result<PathBuf, String> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| "Cannot determine config directory".to_string())?
-        .join("pet")
-        .join("sessions");
+    let dir = crate::common::config_dir()?.join("sessions");
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
     Ok(dir)
 }
@@ -73,8 +70,28 @@ fn write_index(index: &SessionIndex) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| format!("Failed to write index: {e}"))
 }
 
-fn now_iso() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+/// A `{ "role": "system", "content": <SOUL.md> }` message — the first message
+/// of every new session. Shared so sessions seeded by the panel and Telegram
+/// are identical.
+pub fn soul_system_message() -> serde_json::Value {
+    let soul = super::settings::get_soul().unwrap_or_default();
+    serde_json::json!({ "role": "system", "content": soul })
+}
+
+/// Build (and persist) a fresh session with the given id and title, seeded with
+/// the SOUL system message. Used by `create_session` and the Telegram bot.
+pub fn new_seeded_session(id: String, title: String) -> Result<Session, String> {
+    let now = crate::common::iso_now();
+    let session = Session {
+        id,
+        title,
+        created_at: now.clone(),
+        updated_at: now,
+        messages: vec![soul_system_message()],
+        items: vec![],
+    };
+    save_session(session.clone())?;
+    Ok(session)
 }
 
 #[tauri::command]
@@ -127,26 +144,7 @@ pub fn save_session(mut session: Session) -> Result<(), String> {
 
 #[tauri::command]
 pub fn create_session() -> Result<Session, String> {
-    let id = Uuid::new_v4().to_string();
-    let now = now_iso();
-
-    // Load current SOUL.md as system message
-    let soul = super::settings::get_soul().unwrap_or_default();
-    let system_msg = serde_json::json!({ "role": "system", "content": soul });
-
-    let session = Session {
-        id: id.clone(),
-        title: "新会话".to_string(),
-        created_at: now.clone(),
-        updated_at: now,
-        messages: vec![system_msg],
-        items: vec![],
-    };
-
-    // Save session file
-    save_session(session.clone())?;
-
-    Ok(session)
+    new_seeded_session(Uuid::new_v4().to_string(), "新会话".to_string())
 }
 
 #[tauri::command]

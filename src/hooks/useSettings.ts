@@ -26,6 +26,21 @@ export interface AppSettings {
   telegram: TelegramConfig;
 }
 
+/** Live MCP server connection status (from the `get_mcp_status` command). */
+export interface McpStatus {
+  name: string;
+  connected: boolean;
+  tool_count: number;
+  tool_names: string[];
+  error: string | null;
+}
+
+/** Live Telegram bot status (from the `get_telegram_status` command). */
+export interface TelegramStatus {
+  running: boolean;
+  error: string | null;
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   live_2d_model_path: "/models/miku/miku.model3.json",
   api_base: "https://api.openai.com/v1",

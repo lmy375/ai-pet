@@ -1,6 +1,5 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -89,24 +88,18 @@ impl ChatEventSink for Channel<StreamEvent> {
     }
 }
 
-/// A sink that collects the final assistant text (for non-streaming callers like Telegram).
-pub struct CollectingSink {
-    text: Mutex<String>,
-}
+/// A no-op sink for non-streaming callers (e.g. Telegram). The final text is
+/// returned by `run_chat_pipeline` directly, so streaming events are discarded.
+pub struct CollectingSink;
 
 impl CollectingSink {
     pub fn new() -> Self {
-        Self { text: Mutex::new(String::new()) }
-    }
-    pub fn take_text(&self) -> String {
-        std::mem::take(&mut *self.text.lock().unwrap())
+        Self
     }
 }
 
 impl ChatEventSink for CollectingSink {
-    fn send_chunk(&self, text: &str) {
-        self.text.lock().unwrap().push_str(text);
-    }
+    fn send_chunk(&self, _text: &str) {}
     fn send_tool_start(&self, _name: &str, _arguments: &str) {}
     fn send_tool_result(&self, _name: &str, _result: &str) {}
     fn send_done(&self) {}
@@ -133,15 +126,13 @@ async fn stream_llm_request(
     sink: &dyn ChatEventSink,
     ctx: &ToolContext,
 ) -> Result<LlmResult, String> {
-    let request_time = chrono::Local::now();
-    let request_time_str = request_time.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    let request_time_str = crate::common::iso_now();
     let request_instant = std::time::Instant::now();
 
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(body)
+    let response = crate::common::with_bearer(
+        client.post(url).header("Content-Type", "application/json").json(body),
+        api_key,
+    )
         .send()
         .await
         .map_err(|e| {
@@ -184,7 +175,7 @@ async fn stream_llm_request(
                     // Record first token time on the first meaningful data chunk
                     if first_token_instant.is_none() {
                         first_token_instant = Some(std::time::Instant::now());
-                        first_token_time_str = Some(chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string());
+                        first_token_time_str = Some(crate::common::iso_now());
                     }
 
                     let delta = &parsed["choices"][0]["delta"];
@@ -219,7 +210,7 @@ async fn stream_llm_request(
     }
 
     let done_instant = std::time::Instant::now();
-    let done_time_str = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    let done_time_str = crate::common::iso_now();
 
     let first_token_latency_ms = first_token_instant
         .map(|ft| (ft - request_instant).as_millis() as i64);
@@ -275,8 +266,8 @@ pub async fn run_chat_pipeline(
         mcp_manager.definitions()
     };
     let registry = ToolRegistry::new(mcp_defs);
-    let client = reqwest::Client::new();
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let client = crate::common::http_client();
+    let url = crate::common::openai_endpoint(&config.base_url, "chat/completions");
     let tools = registry.definitions();
 
     // Build initial messages
