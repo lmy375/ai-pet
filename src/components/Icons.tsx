@@ -118,6 +118,44 @@ export function SpinnerIcon({ className }: IconProps) {
   );
 }
 
+export function TerminalIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="m4 17 6-6-6-6" />
+      <path d="M12 19h8" />
+    </Stroke>
+  );
+}
+
+export function FileTextIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <path d="M14 2v6h6" />
+      <path d="M8 13h8M8 17h8M8 9h2" />
+    </Stroke>
+  );
+}
+
+export function FilePlusIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <path d="M14 2v6h6" />
+      <path d="M12 12v6M9 15h6" />
+    </Stroke>
+  );
+}
+
+export function PencilIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </Stroke>
+  );
+}
+
 export function ClockIcon({ className }: IconProps) {
   return (
     <Stroke className={className}>
