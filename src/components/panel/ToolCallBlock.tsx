@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { ChevronRight, WrenchIcon, CheckIcon, SpinnerIcon } from "../Icons";
+import { ChevronRight, CheckIcon, SpinnerIcon } from "../Icons";
 import { formatJson } from "../../utils/format";
+import { describeToolCall } from "../../utils/toolDisplay";
 
 interface Props {
   name: string;
@@ -12,8 +13,7 @@ interface Props {
 export function ToolCallBlock({ name, arguments: args, result, isRunning }: Props) {
   const [expanded, setExpanded] = useState(false);
 
-  const StatusIcon = isRunning ? SpinnerIcon : result ? CheckIcon : WrenchIcon;
-  const statusColor = isRunning ? "text-slate-400" : result ? "text-green-600" : "text-slate-500";
+  const { Icon, label, summary, summaryMono, hint, fullSummary } = describeToolCall(name, args);
 
   return (
     <div className="my-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-[13px]">
@@ -22,10 +22,26 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
         onClick={() => setExpanded(!expanded)}
         className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-slate-600"
       >
-        <ChevronRight className={`h-3.5 w-3.5 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`} />
-        <StatusIcon className={`h-4 w-4 ${statusColor} ${isRunning ? "animate-spin" : ""}`} />
-        <span className="font-semibold text-accent">{name}</span>
-        {isRunning && <span className="text-[12px] text-slate-400">执行中...</span>}
+        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`} />
+        <Icon className="h-4 w-4 shrink-0 text-accent" />
+        <span className="shrink-0 font-semibold text-accent">{label}</span>
+        {summary && (
+          <span
+            title={fullSummary}
+            className={`min-w-0 flex-1 truncate text-slate-500 ${summaryMono ? "font-mono text-[12px]" : ""}`}
+          >
+            {summary}
+          </span>
+        )}
+        {hint && <span className="min-w-0 shrink truncate text-[12px] text-slate-400">{hint}</span>}
+        {isRunning ? (
+          <span className="flex shrink-0 items-center gap-1 text-[12px] text-slate-400">
+            <SpinnerIcon className="h-4 w-4 animate-spin" />
+            执行中...
+          </span>
+        ) : result ? (
+          <CheckIcon className="h-4 w-4 shrink-0 text-green-600" />
+        ) : null}
       </div>
 
       {/* Details — collapsible */}
