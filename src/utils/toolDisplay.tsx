@@ -7,6 +7,7 @@ import {
   FilePlusIcon,
   PencilIcon,
   ClockIcon,
+  AgentIcon,
 } from "../components/Icons";
 
 type IconComponent = (props: { className?: string }) => React.ReactElement;
@@ -62,9 +63,14 @@ export function describeToolCall(name: string, argsJson: string): ToolDisplay {
       const path = str(args.file_path);
       return { Icon: PencilIcon, label: "Edit", summary: path && basename(path), fullSummary: path };
     }
-    case "check_shell_status": {
+    case "check_task_status": {
       const taskId = str(args.task_id);
       return { Icon: ClockIcon, label: "Status", summary: taskId, summaryMono: true, fullSummary: taskId };
+    }
+    case "spawn_subagent": {
+      const prompt = str(args.prompt);
+      const summary = str(args.description) ?? prompt?.split("\n")[0];
+      return { Icon: AgentIcon, label: "Agent", summary, fullSummary: str(args.description) ?? prompt };
     }
     default:
       return { Icon: WrenchIcon, label: name };

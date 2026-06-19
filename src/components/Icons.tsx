@@ -156,6 +156,16 @@ export function PencilIcon({ className }: IconProps) {
   );
 }
 
+export function AgentIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <rect x="4" y="8" width="16" height="11" rx="2" />
+      <path d="M12 3v3M9 13h.01M15 13h.01" />
+      <path d="M8 19v1M16 19v1" />
+    </Stroke>
+  );
+}
+
 export function ClockIcon({ className }: IconProps) {
   return (
     <Stroke className={className}>

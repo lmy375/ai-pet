@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ChatItem, ToolCall } from "../hooks/useChat";
 import { MessageBubble } from "./ui/MessageBubble";
 import { ToolCallBlock } from "./panel/ToolCallBlock";
-import { formatHm } from "../utils/format";
+import { ChevronRight } from "./Icons";
+import { formatHm, formatJson } from "../utils/format";
 
 interface Props {
   items: ChatItem[];
@@ -17,6 +18,34 @@ interface Props {
 }
 
 const FIVE_MIN = 5 * 60 * 1000;
+
+/** The "后台任务完成：XXX" system line. Click to expand the task's full result. */
+function NotificationItem({ content, detail }: { content: string; detail?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = !!detail;
+  return (
+    <div className="flex w-full max-w-[90%] flex-col items-center self-center">
+      <button
+        type="button"
+        disabled={!hasDetail}
+        onClick={() => setExpanded((e) => !e)}
+        className={`flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[12px] text-slate-500 ${
+          hasDetail ? "hover:bg-slate-200" : "cursor-default"
+        }`}
+      >
+        {hasDetail && (
+          <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
+        )}
+        <span>{content}</span>
+      </button>
+      {expanded && hasDetail && (
+        <pre className="mt-1 max-h-[260px] w-full overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-600">
+          {formatJson(detail!)}
+        </pre>
+      )}
+    </div>
+  );
+}
 
 function renderItem(item: ChatItem) {
   switch (item.type) {
@@ -34,6 +63,10 @@ function renderItem(item: ChatItem) {
       );
     case "error":
       return <MessageBubble role="assistant" error>{item.content}</MessageBubble>;
+    case "notification":
+      // A subtle system line (not a chat bubble) marking an auto-resumed turn;
+      // expandable to view the task's full result.
+      return <NotificationItem content={item.content} detail={item.detail} />;
     default:
       return null;
   }

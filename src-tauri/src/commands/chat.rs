@@ -232,16 +232,6 @@ pub async fn run_chat_pipeline(
         .unwrap_or_default();
     ctx.log(&format!("Chat request: model={}, user=\"{}\"", config.model, user_msg));
 
-    // Get MCP tool definitions
-    let mcp_defs = {
-        let mcp_manager = mcp_store.lock().await;
-        mcp_manager.definitions()
-    };
-    let registry = ToolRegistry::new(mcp_defs);
-    let client = crate::common::http_client();
-    let url = crate::common::openai_endpoint(&config.base_url, "chat/completions");
-    let tools = registry.definitions();
-
     // Build initial messages
     let mut conv_messages: Vec<serde_json::Value> = messages
         .iter()
@@ -265,6 +255,34 @@ pub async fn run_chat_pipeline(
     // USER.md / MEMORY.md take effect immediately instead of being frozen at
     // session creation.
     crate::commands::prompt::prepend_system_messages(&mut conv_messages);
+
+    run_agent_loop(conv_messages, sink, config, mcp_store, ctx).await
+}
+
+/// Run the tool-calling loop over an already-assembled message list (system
+/// prompt MUST already be included). Returns the final assistant text.
+///
+/// Split out from `run_chat_pipeline` so callers that supply their own system
+/// prompt — notably the `spawn_subagent` tool, which gives a sub-agent a
+/// task-focused prompt instead of the pet persona — can reuse the exact same
+/// loop, registry, MCP routing and streaming infrastructure.
+pub async fn run_agent_loop(
+    mut conv_messages: Vec<serde_json::Value>,
+    sink: &dyn ChatEventSink,
+    config: &AiConfig,
+    mcp_store: &McpManagerStore,
+    ctx: &ToolContext,
+) -> Result<String, String> {
+    // Get MCP tool definitions
+    let mcp_defs = {
+        let mcp_manager = mcp_store.lock().await;
+        mcp_manager.definitions()
+    };
+    // Sub-agents (depth > 0) don't get the spawn tool, so they can't recurse.
+    let registry = ToolRegistry::new(mcp_defs, ctx.depth);
+    let client = crate::common::http_client();
+    let url = crate::common::openai_endpoint(&config.base_url, "chat/completions");
+    let tools = registry.definitions();
 
     // Tool calling loop (unlimited rounds)
     let mut round = 0usize;
@@ -355,17 +373,50 @@ pub async fn run_chat_pipeline(
     }
 }
 
+/// Emits background-task completions so the conversation can be resumed
+/// automatically (see `useChat`'s `background-finished` listener).
+///
+/// Targets the ACTIVE window only (pet or panel — they share one conversation),
+/// so the completion is injected into the window the user is looking at and never
+/// into both. Both windows listen; backend routing guarantees a single delivery.
+struct TauriNotifier {
+    app: tauri::AppHandle,
+}
+
+impl crate::commands::shell::TaskNotifier for TauriNotifier {
+    fn notify(&self, completion: &crate::commands::shell::TaskCompletion) {
+        use tauri::Emitter;
+        let label = crate::commands::window::active_window_label(&self.app);
+        // If the target window is gone the task still stays in the store
+        // (queryable via check_task_status); log rather than silently drop.
+        if let Err(e) = self.app.emit_to(&label, "background-finished", completion.clone()) {
+            eprintln!("failed to emit background-finished for task {}: {}", completion.task_id, e);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn chat(
     messages: Vec<ChatMessage>,
     on_event: Channel<StreamEvent>,
+    session_id: String,
+    app: tauri::AppHandle,
     log_store: State<'_, LogStore>,
     shell_store: State<'_, ShellStore>,
     mcp_store: State<'_, McpManagerStore>,
 ) -> Result<(), String> {
     let config = AiConfig::from_settings()?;
-    let ctx = ToolContext::from_states(&log_store, &shell_store);
     let mcp = mcp_store.inner().clone();
+    let notifier: std::sync::Arc<dyn crate::commands::shell::TaskNotifier> =
+        std::sync::Arc::new(TauriNotifier { app });
+    let ctx = ToolContext::from_states(
+        &log_store,
+        &shell_store,
+        config.clone(),
+        mcp.clone(),
+        session_id,
+        Some(notifier),
+    );
     run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await?;
     Ok(())
 }

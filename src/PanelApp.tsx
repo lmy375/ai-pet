@@ -3,10 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { PanelSettings } from "./components/panel/PanelSettings";
 import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelChat } from "./components/panel/PanelChat";
+import { PanelTasks } from "./components/panel/PanelTasks";
 import { Segmented } from "./components/ui/Segmented";
 import { ExternalLinkIcon } from "./components/Icons";
 
-const TABS = ["设置", "记忆", "聊天"] as const;
+const TABS = ["设置", "记忆", "聊天", "任务"] as const;
 type Tab = (typeof TABS)[number];
 
 export function PanelApp() {
@@ -35,6 +36,7 @@ export function PanelApp() {
         {activeTab === "设置" && <PanelSettings />}
         {activeTab === "记忆" && <PanelMemory />}
         {activeTab === "聊天" && <PanelChat />}
+        {activeTab === "任务" && <PanelTasks />}
       </div>
     </div>
   );

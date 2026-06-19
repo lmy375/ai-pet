@@ -137,7 +137,7 @@ impl Tool for WriteFileTool {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Create a new file or completely overwrite an existing file with the given content. Parent directories are created automatically.\n\nIMPORTANT:\n- This tool OVERWRITES the entire file. For modifying existing files, prefer edit_file — it only changes the specific part you need.\n- Only use write_file to create new files or for complete rewrites.\n- Always prefer this over running echo/cat heredoc in bash to create files.",
+                "description": "Create a new file or completely overwrite an existing file with the given content. Parent directories are created automatically.\n\nIMPORTANT:\n- This tool OVERWRITES the entire file. For modifying existing files, prefer edit_file — it only changes the specific part you need.\n- Only use write_file to create new files or for complete rewrites.\n- Always prefer this over running echo/cat heredoc in bash to create files.\n- Do NOT proactively create documentation files (README, *.md) — only create them when the user explicitly asks.",
                 "parameters": {
                     "type": "object",
                     "properties": {

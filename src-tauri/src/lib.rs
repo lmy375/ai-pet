@@ -26,7 +26,12 @@ pub fn run() {
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
+        .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))
         .setup(|app| {
+            // Restore the pet window to its last position (and show it — it starts
+            // hidden so it's positioned before appearing, avoiding a center flash).
+            commands::window::restore_main_window(app.handle());
+
             // Initialize MCP servers from config on app start
             let mcp_store = app.state::<mcp::McpManagerStore>().inner().clone();
             let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
@@ -83,11 +88,15 @@ pub fn run() {
             commands::window::open_panel,
             commands::window::open_debug,
             commands::window::open_devtools,
+            commands::window::save_window_position,
+            commands::window::set_active_window,
             commands::debug::get_logs,
             commands::debug::append_log,
             commands::debug::clear_logs,
             commands::debug::get_llm_logs,
-            commands::shell::check_shell_status,
+            commands::shell::check_task_status,
+            commands::shell::list_tasks,
+            commands::shell::kill_task,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,
             commands::session::list_sessions,
