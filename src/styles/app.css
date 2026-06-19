@@ -50,3 +50,13 @@ body {
 .animate-blink {
   animation: blink 1s step-end infinite;
 }
+
+/* Gallery slide crossfade — each new image/video fades in (keyed remount replays it) */
+@keyframes gallery-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-gallery-fade {
+  animation: gallery-fade 0.9s ease-in-out;
+}

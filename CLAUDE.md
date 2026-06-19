@@ -44,3 +44,18 @@ occluded/minimized), the Live2D model renders blank/frozen.
   so they survive teardown. Keep this — removing it brings the blank-canvas bug back.
 - Before changing anything around auto-hide, window show/hide, or the Live2D mount, verify the
   model still renders after a full collapse → expand cycle.
+- Gallery mode (`gallery_enabled`) DOES unmount Live2D and render `<GallerySlideshow>` instead
+  (`src/App.tsx`). This is intentional — a user-initiated full mode switch, not occlusion — and
+  remounting Live2D (keyed by model path) re-inits cleanly. Do NOT confuse this with the
+  `!hidden` gating bug above; gating on `galleryOn` is fine, gating on `hidden` is not.
+
+## Gallery slideshow / pin
+- Settings `gallery_dir` + `gallery_enabled` (config.yaml). `list_gallery_media` (commands/gallery.rs)
+  scans the dir for images/videos; the frontend loads them via `convertFileSrc` (asset protocol —
+  enabled in tauri.conf.json `assetProtocol.scope`; needs the `protocol-asset` tauri feature).
+- Pin slider (main window, App.tsx `togglePin`) = `pauseTimer()` (disable auto-hide) +
+  `setAlwaysOnTop(true)`. Unpin reverses both. Pin state is transient (not persisted).
+- Each window holds its OWN in-memory settings copy. `save_settings`/`save_config_raw` emit a
+  `settings-changed` event; `useSettings` listens and reloads. Without this the pet window
+  wouldn't react to a panel-side change (e.g. enabling gallery mode) until refocused. Keep the
+  emit on any new settings-writing command.

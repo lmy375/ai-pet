@@ -7,7 +7,8 @@ import { Segmented } from "../ui/Segmented";
 import { Badge } from "../ui/Badge";
 import { Label, TextInput, TextArea, Select } from "../ui/fields";
 import { StatusText } from "../ui/StatusText";
-import { ChevronDown, ChevronRight, PlusIcon, TrashIcon } from "../Icons";
+import { ChevronDown, ChevronRight, PlusIcon, TrashIcon, ImageIcon } from "../Icons";
+import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
 
 const emptyMcpServer = (transport: McpServerConfig["transport"] = "stdio"): McpServerConfig => ({
@@ -28,6 +29,9 @@ export function PanelSettings() {
     model: "",
     mcp_servers: {},
     telegram: { bot_token: "", allowed_username: "", enabled: false },
+    gallery_dir: "",
+    gallery_enabled: false,
+    gallery_interval: 10,
   });
   const [loaded, setLoaded] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -191,6 +195,26 @@ export function PanelSettings() {
     }
   };
 
+  // Pick the gallery folder via the native dialog, defaulting to the OS Pictures
+  // directory, then persist immediately.
+  const handlePickGalleryDir = async () => {
+    try {
+      const defaultPath = await invoke<string | null>("default_gallery_dir").catch(() => null);
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: form.gallery_dir || defaultPath || undefined,
+      });
+      if (typeof picked === "string") {
+        const next = { ...form, gallery_dir: picked };
+        setForm(next);
+        saveSettings(next);
+      }
+    } catch (e: any) {
+      setMessage(`选择目录失败: ${e}`);
+    }
+  };
+
   const handleOpenConfigDir = async () => {
     try {
       await invoke("open_config_dir");
@@ -261,6 +285,55 @@ export function PanelSettings() {
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               placeholder="/models/miku/miku.model3.json"
             />
+          </Card>
+
+          {/* Gallery slideshow */}
+          <Card title="图库轮播">
+            <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={form.gallery_enabled}
+                onChange={(e) => {
+                  const next = { ...form, gallery_enabled: e.target.checked };
+                  setForm(next);
+                  saveSettings(next);
+                }}
+              />
+              开启图库轮播（主窗口显示图片/视频，不再显示 Live2D，每 10 秒切换）
+            </label>
+
+            <Label>图库目录</Label>
+            <div className="flex gap-2">
+              <TextInput
+                value={form.gallery_dir}
+                readOnly
+                className="flex-1"
+                placeholder="尚未选择目录"
+              />
+              <Button variant="secondary" onClick={handlePickGalleryDir}>
+                <ImageIcon className="h-4 w-4" />
+                选择目录
+              </Button>
+            </div>
+
+            <Label className="mt-3">轮播间隔（秒）</Label>
+            <TextInput
+              type="number"
+              min={1}
+              value={form.gallery_interval}
+              onChange={(e) =>
+                setForm({ ...form, gallery_interval: Number(e.target.value) || 0 })
+              }
+              onBlur={() => {
+                const next = { ...form, gallery_interval: Math.max(1, form.gallery_interval || 10) };
+                setForm(next);
+                saveSettings(next);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="10"
+            />
+            <p className="mt-1 text-[11px] text-slate-400">仅作用于图片；视频会完整播放后再切换。</p>
           </Card>
 
           {/* LLM Config */}

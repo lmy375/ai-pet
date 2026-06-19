@@ -60,6 +60,19 @@ pub struct AppSettings {
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
     pub telegram: TelegramConfig,
+    /// Directory the gallery slideshow draws media from (empty = not chosen).
+    #[serde(default)]
+    pub gallery_dir: String,
+    /// When true, the pet window shows the gallery slideshow instead of Live2D.
+    #[serde(default)]
+    pub gallery_enabled: bool,
+    /// Seconds each image stays on screen before advancing.
+    #[serde(default = "default_gallery_interval")]
+    pub gallery_interval: u32,
+}
+
+fn default_gallery_interval() -> u32 {
+    10
 }
 
 fn default_model_path() -> String {
@@ -83,6 +96,9 @@ impl Default for AppSettings {
             model: default_model(),
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),
+            gallery_dir: String::new(),
+            gallery_enabled: false,
+            gallery_interval: default_gallery_interval(),
         }
     }
 }
@@ -185,7 +201,7 @@ pub fn get_settings() -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(settings: AppSettings) -> Result<(), String> {
+pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -195,6 +211,11 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
     fs::write(&path, yaml)
         .map_err(|e| format!("Failed to write config: {}", e))?;
+    // Notify every window so each reloads its in-memory copy (the panel and the
+    // pet hold separate copies; without this the pet wouldn't pick up changes
+    // like gallery mode until refocused).
+    use tauri::Emitter;
+    let _ = app.emit("settings-changed", ());
     Ok(())
 }
 
@@ -211,7 +232,7 @@ pub fn get_config_raw() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn save_config_raw(content: String) -> Result<(), String> {
+pub fn save_config_raw(app: tauri::AppHandle, content: String) -> Result<(), String> {
     // Validate YAML parses as AppSettings before saving
     let _: AppSettings = serde_yaml::from_str(&content)
         .map_err(|e| format!("YAML 解析失败: {}", e))?;
@@ -221,5 +242,8 @@ pub fn save_config_raw(content: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to create config dir: {}", e))?;
     }
     fs::write(&path, &content)
-        .map_err(|e| format!("Failed to write config: {}", e))
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+    use tauri::Emitter;
+    let _ = app.emit("settings-changed", ());
+    Ok(())
 }

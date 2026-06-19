@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export interface McpServerConfig {
   transport: "stdio" | "sse" | "http";
@@ -24,6 +25,9 @@ export interface AppSettings {
   model: string;
   mcp_servers: Record<string, McpServerConfig>;
   telegram: TelegramConfig;
+  gallery_dir: string;
+  gallery_enabled: boolean;
+  gallery_interval: number;
 }
 
 /** Live MCP server connection status (from the `get_mcp_status` command). */
@@ -48,6 +52,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   model: "gpt-4o-mini",
   mcp_servers: {},
   telegram: { bot_token: "", allowed_username: "", enabled: false },
+  gallery_dir: "",
+  gallery_enabled: false,
+  gallery_interval: 10,
 };
 
 export function useSettings() {
@@ -69,6 +76,21 @@ export function useSettings() {
         console.error("Failed to load settings:", e);
         setLoaded(true);
       });
+  }, []);
+
+  // Settings are saved from the panel window but consumed here in every window
+  // (each holds its own in-memory copy). Reload when any window persists a change
+  // so e.g. the pet picks up gallery mode without needing a refocus.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("settings-changed", () => {
+      invoke<AppSettings>("get_settings")
+        .then(setSettings)
+        .catch((e) => console.error("Failed to reload settings:", e));
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
   }, []);
 
   const updateSettings = useCallback(async (newSettings: AppSettings) => {

@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod debug;
+pub mod gallery;
 pub mod mcp;
 pub mod memory;
 pub mod prompt;
