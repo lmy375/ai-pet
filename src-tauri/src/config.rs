@@ -1,5 +1,6 @@
 use crate::commands::settings::get_settings;
 
+#[derive(Clone)]
 pub struct AiConfig {
     pub api_key: String,
     pub base_url: String,

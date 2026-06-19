@@ -15,6 +15,10 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
 
   const { Icon, label, summary, summaryMono, hint, fullSummary } = describeToolCall(name, args);
 
+  // A backgrounded task returns a {status:"running", task_id} result — show it
+  // as "后台运行中" rather than a completed checkmark.
+  const backgrounded = !!result && /"status"\s*:\s*"running"/.test(result);
+
   return (
     <div className="my-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-[13px]">
       {/* Header — always visible */}
@@ -39,6 +43,8 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
             <SpinnerIcon className="h-4 w-4 animate-spin" />
             执行中...
           </span>
+        ) : backgrounded ? (
+          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">后台运行中</span>
         ) : result ? (
           <CheckIcon className="h-4 w-4 shrink-0 text-green-600" />
         ) : null}

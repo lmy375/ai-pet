@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
+import { invoke } from "@tauri-apps/api/core";
 
 const BLUR_TIMEOUT = 3000; // 3s after blur → slide to edge
 const TAB_WIDTH = 12; // pixels visible when hidden (the "tab")
 const ANIM_DURATION = 300; // ms for slide animation
 const ANIM_STEPS = 20;
+const SAVE_DEBOUNCE = 500; // ms idle after a move before persisting position
 
 export function useAutoHide() {
   const [hidden, setHidden] = useState(false);
@@ -16,6 +18,7 @@ export function useAutoHide() {
     animating: false,
     savedX: null as number | null,
     timer: null as ReturnType<typeof setTimeout> | null,
+    saveTimer: null as ReturnType<typeof setTimeout> | null,
   });
 
   const slideToEdge = async () => {
@@ -123,6 +126,7 @@ export function useAutoHide() {
   useEffect(() => {
     const win = getCurrentWindow();
     let unlistenFocus: (() => void) | null = null;
+    let unlistenMoved: (() => void) | null = null;
 
     const setup = async () => {
       unlistenFocus = await win.onFocusChanged(({ payload: focused }) => {
@@ -137,13 +141,29 @@ export function useAutoHide() {
           }
         }
       });
+
+      // Persist the user's window position so it reopens where they left it.
+      // Skip auto-hide / animation moves so the edge "tab" position is never
+      // saved as the real position.
+      unlistenMoved = await win.onMoved(({ payload }) => {
+        const s = state.current;
+        if (s.hidden || s.animating || s.paused) return;
+        if (s.saveTimer) clearTimeout(s.saveTimer);
+        s.saveTimer = setTimeout(() => {
+          invoke("save_window_position", { x: payload.x, y: payload.y }).catch(
+            (e) => console.error("Failed to save window position:", e),
+          );
+        }, SAVE_DEBOUNCE);
+      });
     };
 
     setup();
 
     return () => {
       cancelTimer();
+      if (state.current.saveTimer) clearTimeout(state.current.saveTimer);
       unlistenFocus?.();
+      unlistenMoved?.();
     };
   }, []);
 

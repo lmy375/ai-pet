@@ -10,10 +10,30 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
   const [status, setStatus] = useState("initializing...");
 
   useEffect(() => {
-    if (!canvasRef.current) return;
-    let destroyed = false;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    (async () => {
+    let disposed = false; // component unmounted or modelPath changed
+    let app: any = null; // current PIXI application
+    let building = false; // guard against overlapping (re)builds
+
+    const teardown = () => {
+      if (app) {
+        // The GL context may already be gone here, so destroy can throw.
+        try {
+          app.destroy(true);
+        } catch (e) {
+          console.warn("Live2D teardown error (context likely lost):", e);
+        }
+        app = null;
+      }
+    };
+
+    // (Re)create the PIXI app and load the model onto the SAME canvas. Used for
+    // both the initial build and rebuilding after a WebGL context restore.
+    const build = async () => {
+      if (disposed || building) return;
+      building = true;
       try {
         setStatus("importing pixi.js...");
         const PIXI = await import("pixi.js");
@@ -31,11 +51,14 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
           "pixi-live2d-display-lipsyncpatch/cubism4"
         );
 
-        if (destroyed) return;
-        setStatus("creating pixi app...");
+        if (disposed) return;
 
-        const app = new PIXI.Application({
-          view: canvasRef.current!,
+        // Drop any previous (e.g. context-lost) app before creating a new one.
+        teardown();
+
+        setStatus("creating pixi app...");
+        app = new PIXI.Application({
+          view: canvas,
           backgroundAlpha: 0,
           width: 300,
           height: 350,
@@ -44,13 +67,12 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
         });
 
         setStatus(`loading model: ${modelPath}...`);
-
         const model = await Live2DModel.from(modelPath, {
           autoInteract: false,
         });
 
-        if (destroyed) {
-          app.destroy(true);
+        if (disposed) {
+          teardown();
           return;
         }
 
@@ -66,22 +88,37 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
         app.stage.addChild(model as any);
         setStatus("");
         onModelReady?.(model);
-
-        // Cleanup on destroy
-        const cleanup = () => {
-          destroyed = true;
-          app.destroy(true);
-        };
-        (canvasRef.current as any).__cleanup = cleanup;
       } catch (err: any) {
         console.error("Live2D init error:", err);
-        if (!destroyed) setStatus(`Error: ${err.message || err}`);
+        if (!disposed) setStatus(`Error: ${err.message || err}`);
+      } finally {
+        building = false;
       }
-    })();
+    };
+
+    // The WebGL context can be dropped while the pet is auto-hidden (the window
+    // slides offscreen / gets occluded). Without handling this the canvas comes
+    // back blank after the pet collapses and re-expands. Listeners live on the
+    // canvas (not the app) so they survive teardown/rebuild. See CLAUDE.md.
+    const onContextLost = (e: Event) => {
+      e.preventDefault(); // required so 'webglcontextrestored' will fire
+      console.warn("Live2D WebGL context lost — will rebuild on restore");
+      if (!disposed) setStatus("restoring...");
+    };
+    const onContextRestored = () => {
+      console.warn("Live2D WebGL context restored — rebuilding");
+      build();
+    };
+    canvas.addEventListener("webglcontextlost", onContextLost);
+    canvas.addEventListener("webglcontextrestored", onContextRestored);
+
+    build();
 
     return () => {
-      destroyed = true;
-      (canvasRef.current as any)?.__cleanup?.();
+      disposed = true;
+      canvas.removeEventListener("webglcontextlost", onContextLost);
+      canvas.removeEventListener("webglcontextrestored", onContextRestored);
+      teardown();
     };
   }, [modelPath]);
 

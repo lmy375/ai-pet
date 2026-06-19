@@ -1,3 +1,4 @@
+use super::agent_tools::SpawnSubagentTool;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
 use super::shell_tools::{BashTool, CheckShellStatusTool};
 use super::tool::Tool;
@@ -13,15 +14,21 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Create registry with built-in tools and optional MCP tool definitions
-    pub fn new(mcp_definitions: Vec<serde_json::Value>) -> Self {
-        let tools: Vec<Box<dyn Tool>> = vec![
+    /// Create registry with built-in tools and optional MCP tool definitions.
+    ///
+    /// `depth` is the sub-agent nesting level: `spawn_subagent` is only offered
+    /// at depth 0, so a sub-agent can't spawn further sub-agents.
+    pub fn new(mcp_definitions: Vec<serde_json::Value>, depth: usize) -> Self {
+        let mut tools: Vec<Box<dyn Tool>> = vec![
             Box::new(BashTool),
             Box::new(CheckShellStatusTool),
             Box::new(ReadFileTool),
             Box::new(WriteFileTool),
             Box::new(EditFileTool),
         ];
+        if depth == 0 {
+            tools.push(Box::new(SpawnSubagentTool));
+        }
         let mcp_tool_names: Vec<String> = mcp_definitions
             .iter()
             .filter_map(|d| d["function"]["name"].as_str().map(String::from))
@@ -51,5 +58,28 @@ impl ToolRegistry {
             }
         }
         format!(r#"{{"error": "unknown tool: {}"}}"#, name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool_names(registry: &ToolRegistry) -> Vec<String> {
+        registry
+            .definitions()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|d| d["function"]["name"].as_str().map(String::from))
+            .collect()
+    }
+
+    #[test]
+    fn spawn_subagent_offered_only_at_top_level() {
+        // Depth 0 (the pet itself) can delegate; deeper sub-agents cannot, which
+        // is what prevents runaway recursive spawning.
+        assert!(tool_names(&ToolRegistry::new(vec![], 0)).contains(&"spawn_subagent".to_string()));
+        assert!(!tool_names(&ToolRegistry::new(vec![], 1)).contains(&"spawn_subagent".to_string()));
     }
 }

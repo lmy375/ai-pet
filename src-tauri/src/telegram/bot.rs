@@ -149,7 +149,16 @@ async fn handle_message(
     // Run the LLM pipeline
     let reply_text = match AiConfig::from_settings() {
         Ok(config) => {
-            let ctx = ToolContext::new(state.log_store.clone(), state.shell_store.clone());
+            // Telegram has no UI window, so background-task completions can't be
+            // auto-pushed there (notifier = None); tasks still run and are checkable.
+            let ctx = ToolContext::new(
+                state.log_store.clone(),
+                state.shell_store.clone(),
+                config.clone(),
+                state.mcp_store.clone(),
+                String::new(),
+                None,
+            );
             let sink = CollectingSink::new();
             match run_chat_pipeline(chat_messages, &sink, &config, &state.mcp_store, &ctx).await {
                 Ok(text) => text,
