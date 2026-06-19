@@ -22,6 +22,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(mcp::new_mcp_store())
@@ -85,6 +86,8 @@ pub fn run() {
             commands::settings::open_config_dir,
             commands::settings::list_models,
             commands::settings::test_model,
+            commands::gallery::default_gallery_dir,
+            commands::gallery::list_gallery_media,
             commands::window::open_panel,
             commands::window::open_debug,
             commands::window::open_devtools,

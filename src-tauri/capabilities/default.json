@@ -11,11 +11,13 @@
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:window:allow-set-resizable",
+    "core:window:allow-set-always-on-top",
     "core:window:allow-available-monitors",
     "core:window:allow-current-monitor",
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:webview:default",
-    "opener:default"
+    "opener:default",
+    "dialog:default"
   ]
 }

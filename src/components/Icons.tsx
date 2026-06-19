@@ -182,3 +182,11 @@ export function ArrowUpIcon({ className }: IconProps) {
 export function ArrowDownIcon({ className }: IconProps) {
   return <Stroke className={className}><path d="M12 5v14M19 12l-7 7-7-7" /></Stroke>;
 }
+
+export function PinIcon({ className }: IconProps) {
+  return <Stroke className={className}><path d="M12 17v5M9 10.76V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v5.76l1.5 2.24H7.5L9 10.76z" /></Stroke>;
+}
+
+export function ImageIcon({ className }: IconProps) {
+  return <Stroke className={className}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="1.5" /><path d="m21 15-5-5L5 21" /></Stroke>;
+}
