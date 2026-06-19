@@ -76,7 +76,7 @@ function App() {
           mounted (when not in gallery mode) so it survives auto-hide —
           unmounting would tear down and fail to re-init the PIXI canvas. */}
       {galleryOn ? (
-        <div className="h-[240px] shrink-0 p-2">
+        <div className="min-h-0 flex-1 p-2">
           <GallerySlideshow dir={settings.gallery_dir} intervalSec={settings.gallery_interval} />
         </div>
       ) : (
