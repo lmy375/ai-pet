@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## Workflow
+- Solo project: commit directly on `main` and `git push` — do NOT create feature
+  branches or PRs. Commit/push only when asked.
+
 ## Windows
 - Pet window label = `main` (tauri.conf.json), Panel Chat window label = `panel` (commands/window.rs).
 - Both windows render `useChat` and share ONE conversation, but each holds its own in-memory copy
