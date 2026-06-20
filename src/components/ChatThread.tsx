@@ -50,7 +50,7 @@ function NotificationItem({ content, detail }: { content: string; detail?: strin
 function renderItem(item: ChatItem) {
   switch (item.type) {
     case "user":
-      return <MessageBubble role="user">{item.content}</MessageBubble>;
+      return <MessageBubble role="user" images={item.images}>{item.content}</MessageBubble>;
     case "assistant":
       return item.content.trim() ? <MessageBubble role="assistant">{item.content}</MessageBubble> : null;
     case "tool":
