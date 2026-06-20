@@ -69,10 +69,21 @@ pub struct AppSettings {
     /// Seconds each image stays on screen before advancing.
     #[serde(default = "default_gallery_interval")]
     pub gallery_interval: u32,
+    /// When true, the pet wakes up in the background on a fixed interval to run a
+    /// heartbeat session (see `HEARTBEAT.md`).
+    #[serde(default)]
+    pub heartbeat_enabled: bool,
+    /// Minutes between scheduled heartbeats.
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval: u32,
 }
 
 fn default_gallery_interval() -> u32 {
     10
+}
+
+fn default_heartbeat_interval() -> u32 {
+    60
 }
 
 fn default_model_path() -> String {
@@ -99,6 +110,8 @@ impl Default for AppSettings {
             gallery_dir: String::new(),
             gallery_enabled: false,
             gallery_interval: default_gallery_interval(),
+            heartbeat_enabled: false,
+            heartbeat_interval: default_heartbeat_interval(),
         }
     }
 }

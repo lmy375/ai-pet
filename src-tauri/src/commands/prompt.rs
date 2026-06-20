@@ -112,6 +112,49 @@ pub fn prepend_subagent_system_messages(conv_messages: &mut Vec<Value>) {
     apply_system_messages(conv_messages, SUBAGENT_PROMPT.to_string());
 }
 
+/// Prepend the heartbeat system messages: the full pet persona + memory (a
+/// heartbeat is the pet itself waking up, not a worker), followed by the
+/// heartbeat instructions and the current `HEARTBEAT.md`, then tool guidance.
+/// `interval_label` is a human-readable cadence (e.g. "1 小时").
+pub fn prepend_heartbeat_system_messages(conv_messages: &mut Vec<Value>, interval_label: &str) {
+    use crate::commands::heartbeat_file;
+    let _ = heartbeat_file::ensure_heartbeat_file();
+    let hb = heartbeat_file::read_heartbeat();
+    let hb_path = path_string(heartbeat_file::heartbeat_path());
+
+    let instructions = format!(
+        "# 定时心跳\n\n\
+你现在是被系统定时心跳唤醒的后台实例，不在主人面前的聊天里。目前每 {interval_label} 自动醒来一次，\
+在后台静默执行，主人看不到这一过程。\n\n\
+- 按下面 HEARTBEAT.md 的内容，判断现在是否有到点/到条件该执行的定时任务；该做的就用工具直接做掉。\n\
+- 需要主动告诉主人时（提醒、汇报、闲聊），用 `chat` 工具往主人的聊天会话发一条消息——它会弹出系统通知。\
+不要用普通回复，普通回复主人看不到。\n\
+- 主人交代过类似定时/周期/到点提醒的事时，用 edit_file / write_file 更新 `{hb_path}`，\
+把任务、周期、上次执行时间记清楚；一次性的做完就删掉。\n\
+- 没有需要做的事就安静结束，什么都别发，不要为了有动静而打扰主人。\n\
+- 涉及当前时间/日期时先用 bash 跑 `date` 确认。\n\n\
+## HEARTBEAT.md（当前内容，路径 {hb_path}）\n{hb}"
+    );
+
+    let system_content = format!("{}\n\n{}", build_memory_prompt(), instructions);
+    apply_system_messages(conv_messages, system_content);
+}
+
+/// Turn a minute count into a human-readable cadence, e.g. 60 -> "1 小时",
+/// 90 -> "1 小时 30 分钟", 45 -> "45 分钟".
+pub fn format_interval_label(minutes: u32) -> String {
+    if minutes == 0 {
+        return "0 分钟".to_string();
+    }
+    let h = minutes / 60;
+    let m = minutes % 60;
+    match (h, m) {
+        (0, m) => format!("{m} 分钟"),
+        (h, 0) => format!("{h} 小时"),
+        (h, m) => format!("{h} 小时 {m} 分钟"),
+    }
+}
+
 /// Shape the message list: override a leading system message with `system_content`
 /// (or insert one if absent), then insert the tool-usage system message right
 /// after it. Split out from `prepend_system_messages` so this contract can be

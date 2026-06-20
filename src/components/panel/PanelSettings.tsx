@@ -32,6 +32,8 @@ export function PanelSettings() {
     gallery_dir: "",
     gallery_enabled: false,
     gallery_interval: 10,
+    heartbeat_enabled: false,
+    heartbeat_interval: 60,
   });
   const [loaded, setLoaded] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -534,6 +536,44 @@ export function PanelSettings() {
               className="font-mono !text-[12px]"
               placeholder="@username (留空则允许所有人)"
             />
+          </Card>
+
+          {/* Scheduled heartbeat */}
+          <Card title="定时心跳">
+            <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={form.heartbeat_enabled}
+                onChange={(e) => {
+                  const next = { ...form, heartbeat_enabled: e.target.checked };
+                  setForm(next);
+                  saveSettings(next);
+                }}
+              />
+              启用定时心跳（宠物按间隔在后台自动醒来一次，按 HEARTBEAT.md 执行定时任务）
+            </label>
+
+            <Label>心跳间隔（分钟）</Label>
+            <TextInput
+              type="number"
+              min={1}
+              value={form.heartbeat_interval}
+              onChange={(e) =>
+                setForm({ ...form, heartbeat_interval: Number(e.target.value) || 0 })
+              }
+              onBlur={() => {
+                const next = { ...form, heartbeat_interval: Math.max(1, form.heartbeat_interval || 60) };
+                setForm(next);
+                saveSettings(next);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="60"
+            />
+            <p className="mt-1 text-[11px] text-slate-400">
+              每次心跳在后台运行，结果可在「后台任务」里查看；需要时宠物会主动给你发消息并弹系统通知。任务清单
+              HEARTBEAT.md 在「记忆」标签页里编辑。
+            </p>
           </Card>
 
           {messageLine}

@@ -28,6 +28,8 @@ export interface AppSettings {
   gallery_dir: string;
   gallery_enabled: boolean;
   gallery_interval: number;
+  heartbeat_enabled: boolean;
+  heartbeat_interval: number;
 }
 
 /** Live MCP server connection status (from the `get_mcp_status` command). */
@@ -55,6 +57,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   gallery_dir: "",
   gallery_enabled: false,
   gallery_interval: 10,
+  heartbeat_enabled: false,
+  heartbeat_interval: 60,
 };
 
 export function useSettings() {

@@ -279,7 +279,8 @@ pub async fn run_agent_loop(
         mcp_manager.definitions()
     };
     // Sub-agents (depth > 0) don't get the spawn tool, so they can't recurse.
-    let registry = ToolRegistry::new(mcp_defs, ctx.depth);
+    // The `chat` tool is offered only to heartbeat sessions.
+    let registry = ToolRegistry::new(mcp_defs, ctx.depth, ctx.is_heartbeat);
     let client = crate::common::http_client();
     let url = crate::common::openai_endpoint(&config.base_url, "chat/completions");
     let tools = registry.definitions();
@@ -408,7 +409,7 @@ pub async fn chat(
     let config = AiConfig::from_settings()?;
     let mcp = mcp_store.inner().clone();
     let notifier: std::sync::Arc<dyn crate::commands::shell::TaskNotifier> =
-        std::sync::Arc::new(TauriNotifier { app });
+        std::sync::Arc::new(TauriNotifier { app: app.clone() });
     let ctx = ToolContext::from_states(
         &log_store,
         &shell_store,
@@ -416,6 +417,7 @@ pub async fn chat(
         mcp.clone(),
         session_id,
         Some(notifier),
+        Some(app),
     );
     run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await?;
     Ok(())

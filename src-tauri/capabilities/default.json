@@ -18,6 +18,7 @@
     "core:window:allow-set-focus",
     "core:webview:default",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    "notification:default"
   ]
 }
