@@ -35,7 +35,10 @@ function App() {
     modelRef.current = model;
   }, []);
 
-  const handleSend = useCallback((msg: string) => sendMessage(msg), [sendMessage]);
+  const handleSend = useCallback(
+    (msg: string, images?: string[]) => sendMessage(msg, images),
+    [sendMessage],
+  );
 
   const handleDrag = (e: React.MouseEvent) => {
     const tag = (e.target as HTMLElement).tagName;

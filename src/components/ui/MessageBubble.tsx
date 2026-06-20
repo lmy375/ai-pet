@@ -3,11 +3,12 @@ import type { ReactNode } from "react";
 interface Props {
   role: "user" | "assistant";
   error?: boolean;
+  images?: string[]; // base64 data URLs, rendered above the text (user messages)
   children: ReactNode;
 }
 
 /** iOS Messages-style bubble: user = accent blue (right), assistant = gray (left). */
-export function MessageBubble({ role, error = false, children }: Props) {
+export function MessageBubble({ role, error = false, images, children }: Props) {
   const isUser = role === "user";
   const tone = error
     ? "bg-red-50 text-red-600 rounded-bl-md"
@@ -15,11 +16,20 @@ export function MessageBubble({ role, error = false, children }: Props) {
       ? "bg-accent text-white rounded-br-md"
       : "bg-slate-200 text-slate-900 rounded-bl-md";
 
+  const hasImages = images && images.length > 0;
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
         className={`max-w-[80%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[14px] leading-relaxed ${tone}`}
       >
+        {hasImages && (
+          <div className="mb-1.5 flex flex-col gap-1.5">
+            {images!.map((url, i) => (
+              <img key={i} src={url} alt="" className="max-w-full rounded-lg object-contain" />
+            ))}
+          </div>
+        )}
         {children}
       </div>
     </div>

@@ -13,6 +13,7 @@ export interface ToolCall {
 export interface ChatItem {
   type: "user" | "assistant" | "tool" | "error" | "notification";
   content: string;
+  images?: string[]; // user items: pasted images as base64 data URLs, rendered in the bubble
   toolCalls?: ToolCall[];
   ts?: number; // epoch ms; present for messages created after timestamps shipped
   detail?: string; // notification items: the task's full result, shown on expand
@@ -362,7 +363,7 @@ export function useChat() {
   );
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, images?: string[]) => {
       // Respect the turn lock: a background-completion turn may be streaming even
       // when the UI isn't visibly loading. Starting a second concurrent stream
       // would interleave mutations of messagesRef and corrupt the transcript.
@@ -371,9 +372,22 @@ export function useChat() {
       // other window most recently saved instead of overwriting it (the two
       // windows share one conversation).
       if (sessionIdRef.current) await loadSessionData(sessionIdRef.current);
-      const userMsg = { role: "user", content };
+      // With images, send OpenAI multimodal content (text + image_url parts);
+      // the litellm proxy translates this to the underlying vision model. Plain
+      // text stays a bare string so existing behavior is unchanged.
+      const apiContent =
+        images && images.length > 0
+          ? [
+              ...(content ? [{ type: "text", text: content }] : []),
+              ...images.map((url) => ({ type: "image_url", image_url: { url } })),
+            ]
+          : content;
+      const userMsg = { role: "user", content: apiContent };
       messagesRef.current = [...messagesRef.current, userMsg];
-      const newItems: ChatItem[] = [...itemsRef.current, { type: "user", content, ts: Date.now() }];
+      const newItems: ChatItem[] = [
+        ...itemsRef.current,
+        { type: "user", content, images, ts: Date.now() },
+      ];
       setItems(newItems);
       await runStream(newItems);
     },
