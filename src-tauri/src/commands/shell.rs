@@ -29,6 +29,9 @@ enum TaskStatus {
 pub enum TaskKind {
     Bash,
     Subagent,
+    /// A scheduled heartbeat run (see `lib.rs` scheduler). Like a sub-agent it
+    /// produces a single result string and is tracked so the panel can show it.
+    Heartbeat,
 }
 
 impl TaskKind {
@@ -36,6 +39,7 @@ impl TaskKind {
         match self {
             TaskKind::Bash => "bash",
             TaskKind::Subagent => "subagent",
+            TaskKind::Heartbeat => "heartbeat",
         }
     }
 }
@@ -218,7 +222,9 @@ pub(crate) fn build_shell_result(task_id: &str, task: &ShellTask) -> ShellResult
             let (err, err_trunc) = read_with_truncation(&task.stderr_path);
             (out, err, out_trunc || err_trunc)
         }
-        TaskKind::Subagent => (task.result.clone().unwrap_or_default(), String::new(), false),
+        TaskKind::Subagent | TaskKind::Heartbeat => {
+            (task.result.clone().unwrap_or_default(), String::new(), false)
+        }
     };
 
     ShellResult {
@@ -240,7 +246,7 @@ pub(crate) fn build_shell_result(task_id: &str, task: &ShellTask) -> ShellResult
 /// text directly, or the full bash result JSON (stdout/stderr/return_code).
 fn notify_result_string(task_id: &str, task: &ShellTask) -> String {
     match task.kind {
-        TaskKind::Subagent => task.result.clone().unwrap_or_default(),
+        TaskKind::Subagent | TaskKind::Heartbeat => task.result.clone().unwrap_or_default(),
         TaskKind::Bash => serde_json::to_string(&build_shell_result(task_id, task))
             .unwrap_or_else(|_| "{}".to_string()),
     }
@@ -496,7 +502,7 @@ pub fn kill_task(
                     .spawn();
             }
         }
-        TaskKind::Subagent => {
+        TaskKind::Subagent | TaskKind::Heartbeat => {
             if let Some(a) = abort {
                 a.abort();
             }

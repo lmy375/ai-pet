@@ -27,6 +27,7 @@ interface TaskDetail {
 const kindLabel: Record<string, { text: string; color: BadgeColor }> = {
   bash: { text: "Bash", color: "orange" },
   subagent: { text: "子代理", color: "purple" },
+  heartbeat: { text: "心跳", color: "sky" },
 };
 
 const preClass =

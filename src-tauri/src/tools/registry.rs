@@ -1,4 +1,5 @@
 use super::agent_tools::SpawnSubagentTool;
+use super::chat_tool::ChatTool;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
 use super::shell_tools::{BashTool, CheckShellStatusTool};
 use super::tool::Tool;
@@ -18,7 +19,11 @@ impl ToolRegistry {
     ///
     /// `depth` is the sub-agent nesting level: `spawn_subagent` is only offered
     /// at depth 0, so a sub-agent can't spawn further sub-agents.
-    pub fn new(mcp_definitions: Vec<serde_json::Value>, depth: usize) -> Self {
+    ///
+    /// `include_chat` adds the `chat` tool (proactively message the owner). It's
+    /// offered only to scheduled heartbeat sessions, which run with no UI stream
+    /// and otherwise have no way to reach the owner.
+    pub fn new(mcp_definitions: Vec<serde_json::Value>, depth: usize, include_chat: bool) -> Self {
         let mut tools: Vec<Box<dyn Tool>> = vec![
             Box::new(BashTool),
             Box::new(CheckShellStatusTool),
@@ -28,6 +33,9 @@ impl ToolRegistry {
         ];
         if depth == 0 {
             tools.push(Box::new(SpawnSubagentTool));
+        }
+        if include_chat {
+            tools.push(Box::new(ChatTool));
         }
         let mcp_tool_names: Vec<String> = mcp_definitions
             .iter()
@@ -79,7 +87,14 @@ mod tests {
     fn spawn_subagent_offered_only_at_top_level() {
         // Depth 0 (the pet itself) can delegate; deeper sub-agents cannot, which
         // is what prevents runaway recursive spawning.
-        assert!(tool_names(&ToolRegistry::new(vec![], 0)).contains(&"spawn_subagent".to_string()));
-        assert!(!tool_names(&ToolRegistry::new(vec![], 1)).contains(&"spawn_subagent".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 0, false)).contains(&"spawn_subagent".to_string()));
+        assert!(!tool_names(&ToolRegistry::new(vec![], 1, false)).contains(&"spawn_subagent".to_string()));
+    }
+
+    #[test]
+    fn chat_tool_offered_only_to_heartbeats() {
+        // Normal sessions can't proactively message the owner; heartbeats can.
+        assert!(!tool_names(&ToolRegistry::new(vec![], 0, false)).contains(&"chat".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 0, true)).contains(&"chat".to_string()));
     }
 }

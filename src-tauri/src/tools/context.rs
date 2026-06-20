@@ -23,6 +23,13 @@ pub struct ToolContext {
     pub depth: usize,
     pub session_id: String,
     pub notifier: Option<Arc<dyn TaskNotifier>>,
+    /// App handle, present for UI-backed callers. The `chat` tool needs it to
+    /// write the main session, fire a system notification and tell the active
+    /// window to refresh. `None` for non-UI callers (e.g. Telegram).
+    pub app: Option<tauri::AppHandle>,
+    /// True only for scheduled heartbeat sessions. Gates the `chat` tool (offered
+    /// only to heartbeats) — see `ToolRegistry::new`.
+    pub is_heartbeat: bool,
 }
 
 impl ToolContext {
@@ -33,8 +40,20 @@ impl ToolContext {
         mcp_store: McpManagerStore,
         session_id: String,
         notifier: Option<Arc<dyn TaskNotifier>>,
+        app: Option<tauri::AppHandle>,
+        is_heartbeat: bool,
     ) -> Self {
-        Self { shell_store, log_store, config, mcp_store, depth: 0, session_id, notifier }
+        Self {
+            shell_store,
+            log_store,
+            config,
+            mcp_store,
+            depth: 0,
+            session_id,
+            notifier,
+            app,
+            is_heartbeat,
+        }
     }
 
     pub fn from_states(
@@ -44,6 +63,7 @@ impl ToolContext {
         mcp_store: McpManagerStore,
         session_id: String,
         notifier: Option<Arc<dyn TaskNotifier>>,
+        app: Option<tauri::AppHandle>,
     ) -> Self {
         Self {
             shell_store: ShellStore(shell_store.0.clone()),
@@ -53,6 +73,8 @@ impl ToolContext {
             depth: 0,
             session_id,
             notifier,
+            app,
+            is_heartbeat: false,
         }
     }
 
@@ -70,6 +92,10 @@ impl ToolContext {
             depth: self.depth + 1,
             session_id: self.session_id.clone(),
             notifier: None,
+            // Sub-agents never speak to the owner directly; drop the app handle
+            // and the heartbeat flag so the `chat` tool is unavailable to them.
+            app: None,
+            is_heartbeat: false,
         }
     }
 

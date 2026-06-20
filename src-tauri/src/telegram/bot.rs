@@ -158,6 +158,8 @@ async fn handle_message(
                 state.mcp_store.clone(),
                 String::new(),
                 None,
+                None,
+                false,
             );
             let sink = CollectingSink::new();
             match run_chat_pipeline(chat_messages, &sink, &config, &state.mcp_store, &ctx).await {

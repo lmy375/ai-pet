@@ -454,6 +454,22 @@ export function useChat() {
     return () => unlisten?.();
   }, []);
 
+  // A heartbeat's `chat` tool inserts a pet message into the active session on
+  // disk and emits `chat-inserted` to the active window. Reload so it shows up
+  // immediately; if we're mid-turn or it's for another session, the message is
+  // already persisted and surfaces on the next focus/reload.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ sessionId: string }>("chat-inserted", (e) => {
+      if (busyRef.current) return;
+      if (e.payload.sessionId !== sessionIdRef.current) return;
+      loadSessionData(sessionIdRef.current);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
   // On focus, tell the backend this window is now active (so completion
   // notifications route here) and reload the latest active conversation, so the
   // pet and panel converge on the same up-to-date history (req: refresh on focus,

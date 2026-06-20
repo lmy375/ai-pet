@@ -19,10 +19,13 @@ pub fn run() {
     // Ensure the memory dir + the three mandatory files exist (migrates legacy
     // SOUL.md into memory/ on first run).
     let _ = commands::memory::ensure_memory_files();
+    // Ensure HEARTBEAT.md exists (the pet's scheduled-task list).
+    let _ = commands::heartbeat_file::ensure_heartbeat_file();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .manage(mcp::new_mcp_store())
@@ -68,6 +71,15 @@ pub fn run() {
                     }
                 }
             });
+
+            // Start the scheduled-heartbeat loop (it checks settings each tick, so
+            // it's a no-op until the owner enables it in Settings).
+            commands::heartbeat::start_scheduler(
+                app.handle().clone(),
+                app.state::<LogStore>().inner().clone(),
+                app.state::<ShellStore>().inner().clone(),
+                app.state::<mcp::McpManagerStore>().inner().clone(),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -83,6 +95,8 @@ pub fn run() {
             commands::memory::get_memory,
             commands::memory::save_memory,
             commands::memory::open_memory_dir,
+            commands::heartbeat_file::get_heartbeat,
+            commands::heartbeat_file::save_heartbeat,
             commands::settings::open_config_dir,
             commands::settings::list_models,
             commands::settings::test_model,

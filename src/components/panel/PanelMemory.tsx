@@ -7,16 +7,17 @@ import { StatusText } from "../ui/StatusText";
 import { ExternalLinkIcon } from "../Icons";
 
 /**
- * Memory tab: view and edit the pet's three always-present memory files
- * (SOUL.md / USER.md / MEMORY.md) and open the memory folder.
+ * Memory tab: view and edit the pet's always-present markdown files
+ * (SOUL.md / USER.md / MEMORY.md / HEARTBEAT.md) and open the memory folder.
  *
- * The pet maintains USER.md and MEMORY.md itself during chat, so the file can
- * change while this tab is open. To avoid clobbering those writes with stale
- * content, edits save on blur ONLY when the textarea actually differs from the
- * last loaded/saved content, and focusing a field re-reads the file first.
+ * The pet maintains USER.md / MEMORY.md / HEARTBEAT.md itself (during chat or on
+ * a scheduled heartbeat), so a file can change while this tab is open. To avoid
+ * clobbering those writes with stale content, edits save on blur ONLY when the
+ * textarea actually differs from the last loaded/saved content, and focusing a
+ * field re-reads the file first.
  */
 
-type FieldKey = "soul" | "user" | "memory";
+type FieldKey = "soul" | "user" | "memory" | "heartbeat";
 
 interface FieldDef {
   key: FieldKey;
@@ -31,9 +32,10 @@ const FIELDS: FieldDef[] = [
   { key: "soul", title: "SOUL.md（本质）", getCmd: "get_soul", saveCmd: "save_soul", rows: 6, placeholder: "宠物的本质 / 人格设定..." },
   { key: "user", title: "USER.md（关于主人）", getCmd: "get_user", saveCmd: "save_user", rows: 10, placeholder: "关于主人的事实与偏好（宠物会在对话中自行补充）..." },
   { key: "memory", title: "MEMORY.md（日记）", getCmd: "get_memory", saveCmd: "save_memory", rows: 10, placeholder: "宠物自己的理解与想法（宠物会在对话中自行记录）..." },
+  { key: "heartbeat", title: "HEARTBEAT.md（定时任务）", getCmd: "get_heartbeat", saveCmd: "save_heartbeat", rows: 8, placeholder: "宠物的定时任务清单（每次心跳会读它来判断该做什么；宠物也会自行维护）..." },
 ];
 
-const EMPTY: Record<FieldKey, string> = { soul: "", user: "", memory: "" };
+const EMPTY: Record<FieldKey, string> = { soul: "", user: "", memory: "", heartbeat: "" };
 
 export function PanelMemory() {
   const [values, setValues] = useState<Record<FieldKey, string>>(EMPTY);
