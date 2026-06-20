@@ -95,11 +95,6 @@ pub fn get_logs(store: State<'_, LogStore>) -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn append_log(store: State<'_, LogStore>, message: String) {
-    write_log(&store.0, &message);
-}
-
-#[tauri::command]
 pub fn clear_logs(store: State<'_, LogStore>) {
     store.0.lock().unwrap().clear();
 }

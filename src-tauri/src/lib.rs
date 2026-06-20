@@ -108,7 +108,6 @@ pub fn run() {
             commands::window::save_window_position,
             commands::window::set_active_window,
             commands::debug::get_logs,
-            commands::debug::append_log,
             commands::debug::clear_logs,
             commands::debug::get_llm_logs,
             commands::shell::check_task_status,

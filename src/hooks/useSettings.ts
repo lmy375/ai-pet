@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -63,17 +63,12 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 export function useSettings() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [soul, setSoul] = useState("");
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    Promise.all([
-      invoke<AppSettings>("get_settings"),
-      invoke<string>("get_soul"),
-    ])
-      .then(([s, soulContent]) => {
+    invoke<AppSettings>("get_settings")
+      .then((s) => {
         setSettings(s);
-        setSoul(soulContent);
         setLoaded(true);
       })
       .catch((e) => {
@@ -97,15 +92,5 @@ export function useSettings() {
     return () => unlisten?.();
   }, []);
 
-  const updateSettings = useCallback(async (newSettings: AppSettings) => {
-    await invoke("save_settings", { settings: newSettings });
-    setSettings(newSettings);
-  }, []);
-
-  const updateSoul = useCallback(async (content: string) => {
-    await invoke("save_soul", { content });
-    setSoul(content);
-  }, []);
-
-  return { settings, soul, loaded, updateSettings, updateSoul };
+  return { settings, loaded };
 }

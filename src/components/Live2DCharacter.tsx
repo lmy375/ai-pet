@@ -2,10 +2,9 @@ import { useEffect, useRef, useState } from "react";
 
 interface Props {
   modelPath: string;
-  onModelReady?: (model: any) => void;
 }
 
-export function Live2DCharacter({ modelPath, onModelReady }: Props) {
+export function Live2DCharacter({ modelPath }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState("initializing...");
 
@@ -87,7 +86,6 @@ export function Live2DCharacter({ modelPath, onModelReady }: Props) {
 
         app.stage.addChild(model as any);
         setStatus("");
-        onModelReady?.(model);
       } catch (err: any) {
         console.error("Live2D init error:", err);
         if (!disposed) setStatus(`Error: ${err.message || err}`);

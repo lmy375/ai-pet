@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState } from "react";
+import { useCallback, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { Live2DCharacter } from "./components/Live2DCharacter";
@@ -13,7 +13,6 @@ import { useSettings } from "./hooks/useSettings";
 function App() {
   const { settings, loaded } = useSettings();
   const { items, currentResponse, currentToolCalls, isLoading, sendMessage } = useChat();
-  const modelRef = useRef<any>(null);
   const { hidden, handleMouseEnter, pauseTimer, resumeTimer } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
@@ -30,10 +29,6 @@ function App() {
       return next;
     });
   }, [pauseTimer, resumeTimer]);
-
-  const handleModelReady = useCallback((model: any) => {
-    modelRef.current = model;
-  }, []);
 
   const handleSend = useCallback(
     (msg: string, images?: string[]) => sendMessage(msg, images),
@@ -87,7 +82,6 @@ function App() {
           <Live2DCharacter
             key={settings.live_2d_model_path}
             modelPath={settings.live_2d_model_path}
-            onModelReady={handleModelReady}
           />
         </div>
       )}
