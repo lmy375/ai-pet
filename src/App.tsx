@@ -5,7 +5,7 @@ import { Live2DCharacter } from "./components/Live2DCharacter";
 import { GallerySlideshow } from "./components/GallerySlideshow";
 import { ChatThread } from "./components/ChatThread";
 import { ChatInput } from "./components/ChatInput";
-import { GearIcon, ChevronRight, ChevronDown, PinIcon } from "./components/Icons";
+import { ExternalLinkIcon, ChevronRight, ChevronDown, PinIcon } from "./components/Icons";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
@@ -16,6 +16,10 @@ function App() {
   const { hidden, handleMouseEnter, pauseTimer, resumeTimer } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  // Corner marks fade out when the cursor leaves the window and become solid
+  // while it's over the pet. Driven by explicit enter/leave state (reliable on
+  // this transparent, borderless window) rather than CSS :hover.
+  const [hovered, setHovered] = useState(false);
 
   const galleryOn = settings.gallery_enabled && !!settings.gallery_dir;
 
@@ -57,7 +61,11 @@ function App() {
   return (
     <div
       onMouseDown={handleDrag}
-      onMouseEnter={handleMouseEnter}
+      onMouseEnter={() => {
+        handleMouseEnter();
+        setHovered(true);
+      }}
+      onMouseLeave={() => setHovered(false)}
       className="relative flex h-screen w-full flex-col overflow-hidden bg-transparent select-none"
     >
       {/* Tab indicator — visible strip when auto-hidden at the screen edge.
@@ -74,7 +82,9 @@ function App() {
           mounted (when not in gallery mode) so it survives auto-hide —
           unmounting would tear down and fail to re-init the PIXI canvas. */}
       {galleryOn ? (
-        <div className="min-h-0 flex-1 p-2">
+        // Top padding reserves a strip for the pin / open icons so the media
+        // never sits under them (the buttons float at top-2, h-9).
+        <div className="min-h-0 flex-1 px-2 pb-2 pt-12">
           <GallerySlideshow dir={settings.gallery_dir} intervalSec={settings.gallery_interval} />
         </div>
       ) : (
@@ -88,6 +98,29 @@ function App() {
 
       {!hidden && (
         <>
+          {/* Right-angle corner marks — a subtle frame so the otherwise
+              transparent, borderless window reads as a grabbable surface. The
+              drop-shadow gives a thin dark halo so the gray stays visible on both
+              light and dark wallpapers. Purely decorative: pointer-events-none
+              lets mousedown fall through to the root's handleDrag, so clicking
+              anywhere (corners included) drags. The bottom-right one doubles as
+              the visual for the resize grip below. */}
+          <div
+            className={`pointer-events-none absolute inset-0 z-0 transition-opacity duration-300 [filter:drop-shadow(0_0_1px_rgba(0,0,0,0.55))] ${
+              hovered ? "opacity-100" : "opacity-25"
+            }`}
+          >
+            <span className="absolute left-0 top-0 h-3 w-3 rounded-tl-md border-l-2 border-t-2 border-slate-300/90" />
+            <span className="absolute right-0 top-0 h-3 w-3 rounded-tr-md border-r-2 border-t-2 border-slate-300/90" />
+            <span className="absolute bottom-0 left-0 h-3 w-3 rounded-bl-md border-b-2 border-l-2 border-slate-300/90" />
+            {/* Bottom-right is the "busy" corner: when expanded it holds the send
+                button + resize grip, so we skip the mark there to avoid crowding.
+                Shown only when collapsed (no send button then). */}
+            {chatCollapsed && (
+              <span className="absolute bottom-0 right-0 h-3 w-3 rounded-br-md border-b-2 border-r-2 border-slate-300/90" />
+            )}
+          </div>
+
           {/* Pin toggle — top-left. Pinned = stay above all windows + no auto-hide. */}
           <button
             onClick={togglePin}
@@ -107,7 +140,7 @@ function App() {
             title="打开设置面板"
             className="absolute right-2 top-2 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300/60 bg-white/80 text-slate-600 backdrop-blur-md transition-colors hover:bg-white"
           >
-            <GearIcon className="h-5 w-5" />
+            <ExternalLinkIcon className="h-5 w-5" />
           </button>
 
           {/* Chat thread — collapsible. When collapsed only the pet/gallery (and
@@ -133,7 +166,7 @@ function App() {
               input only renders while expanded. */}
           <div
             onMouseDown={(e) => e.stopPropagation()}
-            className="z-10 flex shrink-0 items-end gap-1.5 px-2 pb-3 pt-2"
+            className="z-10 flex shrink-0 items-end gap-1.5 px-3 pb-3.5 pt-2"
           >
             <button
               onClick={() => setChatCollapsed((v) => !v)}
@@ -149,15 +182,14 @@ function App() {
             )}
           </div>
 
-          {/* Resize grip — drag to freely resize the window (and the chat area) */}
+          {/* Resize grip — drag to freely resize the window. Transparent hit area
+              only; the bottom-right corner mark above is its visual. */}
           {!chatCollapsed && (
             <div
               onMouseDown={handleResize}
               title="拖动调整大小"
               className="absolute bottom-0 right-0 z-30 h-4 w-4 cursor-nwse-resize"
-            >
-              <div className="absolute bottom-1 right-1 h-2 w-2 border-b-2 border-r-2 border-slate-400/70" />
-            </div>
+            />
           )}
         </>
       )}

@@ -1,6 +1,7 @@
 use super::agent_tools::SpawnSubagentTool;
 use super::chat_tool::ChatTool;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
+use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool};
 use super::tool::Tool;
 use super::context::ToolContext;
@@ -30,6 +31,7 @@ impl ToolRegistry {
             Box::new(ReadFileTool),
             Box::new(WriteFileTool),
             Box::new(EditFileTool),
+            Box::new(ScreenshotTool),
         ];
         if depth == 0 {
             tools.push(Box::new(SpawnSubagentTool));
@@ -89,6 +91,13 @@ mod tests {
         // is what prevents runaway recursive spawning.
         assert!(tool_names(&ToolRegistry::new(vec![], 0, false)).contains(&"spawn_subagent".to_string()));
         assert!(!tool_names(&ToolRegistry::new(vec![], 1, false)).contains(&"spawn_subagent".to_string()));
+    }
+
+    #[test]
+    fn screenshot_tool_always_offered() {
+        // The pet can look at the user's screen at any depth and in any session.
+        assert!(tool_names(&ToolRegistry::new(vec![], 0, false)).contains(&"screenshot".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 1, false)).contains(&"screenshot".to_string()));
     }
 
     #[test]

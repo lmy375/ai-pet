@@ -30,6 +30,12 @@ pub struct ToolContext {
     /// True only for scheduled heartbeat sessions. Gates the `chat` tool (offered
     /// only to heartbeats) — see `ToolRegistry::new`.
     pub is_heartbeat: bool,
+    /// Images a tool wants the model to actually SEE. A tool's String return is
+    /// appended as a `tool` role message, which can't carry an image, so tools
+    /// like `screenshot` push a data URL here instead; the agent loop drains this
+    /// after each round and appends it as a `user` message with an `image_url`
+    /// content block (the same multimodal path used for pasted images).
+    pub pending_images: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl ToolContext {
@@ -53,6 +59,7 @@ impl ToolContext {
             notifier,
             app,
             is_heartbeat,
+            pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -75,6 +82,7 @@ impl ToolContext {
             notifier,
             app,
             is_heartbeat: false,
+            pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -96,10 +104,27 @@ impl ToolContext {
             // and the heartbeat flag so the `chat` tool is unavailable to them.
             app: None,
             is_heartbeat: false,
+            // Fresh queue: a sub-agent's screenshots are consumed by its own loop.
+            pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
     pub fn log(&self, msg: &str) {
         write_log(&self.log_store.0, msg);
+    }
+
+    /// Queue an image (a data URL) for the model to see on the next round.
+    pub fn emit_image(&self, data_url: String) {
+        if let Ok(mut imgs) = self.pending_images.lock() {
+            imgs.push(data_url);
+        }
+    }
+
+    /// Drain queued images. Called by the agent loop after each tool round.
+    pub fn take_images(&self) -> Vec<String> {
+        match self.pending_images.lock() {
+            Ok(mut imgs) => std::mem::take(&mut *imgs),
+            Err(_) => Vec::new(),
+        }
     }
 }

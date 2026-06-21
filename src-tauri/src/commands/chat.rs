@@ -28,6 +28,15 @@ pub enum StreamEvent {
     Chunk { text: String },
     ToolStart { name: String, arguments: String },
     ToolResult { name: String, result: String },
+    /// A data URL a tool produced for the model to see (e.g. `screenshot`).
+    /// Surfaced so the UI can render it as an image bubble, not just feed it
+    /// to the model. NOTE: enum-level `rename_all` only renames variants, not
+    /// variant fields — so this field needs an explicit `rename` to reach the
+    /// frontend as `dataUrl`.
+    Image {
+        #[serde(rename = "dataUrl")]
+        data_url: String,
+    },
     Done {},
     Error { message: String },
 }
@@ -37,6 +46,7 @@ pub trait ChatEventSink: Send + Sync {
     fn send_chunk(&self, text: &str);
     fn send_tool_start(&self, name: &str, arguments: &str);
     fn send_tool_result(&self, name: &str, result: &str);
+    fn send_image(&self, data_url: &str);
     fn send_done(&self);
     fn send_error(&self, message: &str);
 }
@@ -51,6 +61,9 @@ impl ChatEventSink for Channel<StreamEvent> {
     }
     fn send_tool_result(&self, name: &str, result: &str) {
         let _ = self.send(StreamEvent::ToolResult { name: name.to_string(), result: result.to_string() });
+    }
+    fn send_image(&self, data_url: &str) {
+        let _ = self.send(StreamEvent::Image { data_url: data_url.to_string() });
     }
     fn send_done(&self) {
         let _ = self.send(StreamEvent::Done {});
@@ -74,6 +87,7 @@ impl ChatEventSink for CollectingSink {
     fn send_chunk(&self, _text: &str) {}
     fn send_tool_start(&self, _name: &str, _arguments: &str) {}
     fn send_tool_result(&self, _name: &str, _result: &str) {}
+    fn send_image(&self, _data_url: &str) {}
     fn send_done(&self) {}
     fn send_error(&self, _message: &str) {}
 }
@@ -368,6 +382,25 @@ pub async fn run_agent_loop(
                 "tool_call_id": tc_id,
                 "content": result,
             }));
+        }
+
+        // Some tools (e.g. `screenshot`) produce an image the model must actually
+        // SEE — a `tool` message can't carry one, so they queue a data URL on the
+        // context. Drain it here, after every `tool` message for this round is in
+        // place (keeping them contiguous for tool_call_id pairing), and append the
+        // images as a `user` message — the same multimodal path used for pastes.
+        let imgs = ctx.take_images();
+        if !imgs.is_empty() {
+            // Surface each image to the UI so it renders as an image bubble —
+            // the frontend never sees `conv_messages`, only stream events.
+            for url in &imgs {
+                sink.send_image(url);
+            }
+            let content: Vec<serde_json::Value> = imgs
+                .iter()
+                .map(|url| serde_json::json!({"type": "image_url", "image_url": {"url": url}}))
+                .collect();
+            conv_messages.push(serde_json::json!({"role": "user", "content": content}));
         }
 
         round += 1;

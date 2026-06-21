@@ -5,13 +5,13 @@ import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelChat } from "./components/panel/PanelChat";
 import { PanelTasks } from "./components/panel/PanelTasks";
 import { Segmented } from "./components/ui/Segmented";
-import { ExternalLinkIcon } from "./components/Icons";
+import { BugIcon } from "./components/Icons";
 
-const TABS = ["设置", "记忆", "聊天", "任务"] as const;
+const TABS = ["聊天", "记忆", "任务", "设置"] as const;
 type Tab = (typeof TABS)[number];
 
 export function PanelApp() {
-  const [activeTab, setActiveTab] = useState<Tab>("设置");
+  const [activeTab, setActiveTab] = useState<Tab>("聊天");
 
   const openDebugWindow = () => {
     invoke("open_debug").catch(console.error);
@@ -27,7 +27,7 @@ export function PanelApp() {
           title="在新窗口中打开调试日志"
           className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
         >
-          <ExternalLinkIcon className="h-[18px] w-[18px]" />
+          <BugIcon className="h-[18px] w-[18px]" />
         </button>
       </div>
 

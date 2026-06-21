@@ -7,7 +7,7 @@ import { Segmented } from "../ui/Segmented";
 import { Badge } from "../ui/Badge";
 import { Label, TextInput, TextArea, Select } from "../ui/fields";
 import { StatusText } from "../ui/StatusText";
-import { ChevronDown, ChevronRight, PlusIcon, TrashIcon, ImageIcon } from "../Icons";
+import { ChevronDown, ChevronRight, PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
 
@@ -217,6 +217,15 @@ export function PanelSettings() {
     }
   };
 
+  const handleOpenGalleryDir = async () => {
+    if (!form.gallery_dir) return;
+    try {
+      await invoke("open_path", { path: form.gallery_dir });
+    } catch (e: any) {
+      setMessage(`打开图库目录失败: ${e}`);
+    }
+  };
+
   const handleOpenConfigDir = async () => {
     try {
       await invoke("open_config_dir");
@@ -316,6 +325,15 @@ export function PanelSettings() {
               <Button variant="secondary" onClick={handlePickGalleryDir}>
                 <ImageIcon className="h-4 w-4" />
                 选择目录
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={handleOpenGalleryDir}
+                disabled={!form.gallery_dir}
+                title="在文件管理器中打开该目录"
+              >
+                <ExternalLinkIcon className="h-4 w-4" />
+                打开
               </Button>
             </div>
 
