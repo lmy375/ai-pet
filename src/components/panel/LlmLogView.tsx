@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { formatIsoTime } from "../../utils/format";
+import { ImageLightbox } from "../ui/ImageLightbox";
 import {
   ChevronRight,
   ChevronDown,
@@ -34,6 +35,56 @@ interface LlmLogEntry {
 const preClass =
   "mt-0.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-700";
 
+type ContentBlock = { type?: string; text?: string; image_url?: { url?: string } };
+
+// One-line text summary of a message's `content` for the collapsed list row.
+// Image blocks collapse to `[Image #N]` — dumping the base64 data URL would be
+// huge and useless here.
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return JSON.stringify(content, null, 2);
+  let imageCount = 0;
+  const parts = content.map((block) => {
+    const b = block as ContentBlock;
+    if (b?.type === "image_url" || b?.image_url) return `[Image #${++imageCount}]`;
+    if (b?.type === "text" && typeof b.text === "string") return b.text;
+    return JSON.stringify(block);
+  });
+  return parts.join("\n");
+}
+
+// Full render of a message's `content` for the expanded detail. Text renders in
+// a <pre>; an `image_url` block renders the base64 data URL as an actual <img>
+// thumbnail instead of dumping the raw string.
+function renderContent(content: unknown, onZoom: (src: string) => void) {
+  if (typeof content === "string") return <pre className={preClass}>{content}</pre>;
+  if (!Array.isArray(content)) return <pre className={preClass}>{JSON.stringify(content, null, 2)}</pre>;
+  return (
+    <div className="mt-0.5 flex flex-col gap-1.5">
+      {content.map((block, k) => {
+        const b = block as ContentBlock;
+        const url = b?.image_url?.url;
+        if ((b?.type === "image_url" || b?.image_url) && url) {
+          return (
+            <img
+              key={k}
+              src={url}
+              alt={`Image #${k + 1}`}
+              onClick={() => onZoom(url)}
+              title="点击查看大图"
+              className="max-h-[300px] max-w-full cursor-zoom-in rounded-lg border border-slate-200 object-contain"
+            />
+          );
+        }
+        if (b?.type === "text" && typeof b.text === "string") {
+          return <pre key={k} className={preClass}>{b.text}</pre>;
+        }
+        return <pre key={k} className={preClass}>{JSON.stringify(block, null, 2)}</pre>;
+      })}
+    </div>
+  );
+}
+
 const roleColors: Record<string, BadgeColor> = {
   system: "green",
   user: "sky",
@@ -44,6 +95,7 @@ const roleColors: Record<string, BadgeColor> = {
 export function LlmLogView() {
   const [entries, setEntries] = useState<LlmLogEntry[]>([]);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [zoomed, setZoomed] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const fetchLogs = async () => {
@@ -85,8 +137,7 @@ export function LlmLogView() {
     const msgs = entry.request.messages;
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === "user") {
-        const c = msgs[i].content;
-        const text = typeof c === "string" ? c : JSON.stringify(c);
+        const text = contentToText(msgs[i].content);
         return text.length > 80 ? text.slice(0, 80) + "..." : text;
       }
     }
@@ -167,9 +218,7 @@ export function LlmLogView() {
                       {entry.request.messages.map((msg, j) => (
                         <div key={j} className="mb-1.5">
                           <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
-                          <pre className={preClass}>
-                            {typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)}
-                          </pre>
+                          {renderContent(msg.content, setZoomed)}
                         </div>
                       ))}
                     </DetailSection>
@@ -195,6 +244,7 @@ export function LlmLogView() {
           })
         )}
       </div>
+      {zoomed && <ImageLightbox src={zoomed} onClose={() => setZoomed(null)} />}
     </div>
   );
 }

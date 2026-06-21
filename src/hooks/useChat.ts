@@ -53,6 +53,7 @@ type StreamEvent =
   | { event: "chunk"; data: { text: string } }
   | { event: "toolStart"; data: { name: string; arguments: string } }
   | { event: "toolResult"; data: { name: string; result: string } }
+  | { event: "image"; data: { dataUrl: string } }
   | { event: "done"; data: Record<string, never> }
   | { event: "error"; data: { message: string } };
 
@@ -336,6 +337,13 @@ export function useChat() {
             return tc;
           });
           setCurrentToolCalls([...toolCalls]);
+        } else if (event.event === "image") {
+          // A tool (e.g. screenshot) produced an image for the model to see.
+          // Flush the preceding tool card, then render the image as its own
+          // bubble so the owner sees what the pet saw. The data URL also lives
+          // in the server's message history for the model; here it's UI-only.
+          flushToolCalls();
+          commit([...finalItems, { type: "user", content: "", images: [event.data.dataUrl], ts: Date.now() }]);
         } else if (event.event === "done") {
           flushToolCalls();
           if (accumulated.trim()) {

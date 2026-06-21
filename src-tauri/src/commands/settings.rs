@@ -215,6 +215,19 @@ pub fn open_config_dir(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to open config dir: {}", e))
 }
 
+/// Open an arbitrary directory/file in the OS file manager (e.g. the gallery
+/// folder in Finder). Used by the settings "open" buttons.
+#[tauri::command]
+pub fn open_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if path.trim().is_empty() {
+        return Err("路径为空".to_string());
+    }
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| format!("Failed to open path: {}", e))
+}
+
 #[tauri::command]
 pub fn get_settings() -> Result<AppSettings, String> {
     let path = config_path()?;

@@ -190,3 +190,15 @@ export function PinIcon({ className }: IconProps) {
 export function ImageIcon({ className }: IconProps) {
   return <Stroke className={className}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="1.5" /><path d="m21 15-5-5L5 21" /></Stroke>;
 }
+
+export function BugIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="M8 2 9.88 3.88M14.12 3.88 16 2" />
+      <path d="M9 7.13v-1a3 3 0 1 1 6 0v1" />
+      <path d="M12 20a6 6 0 0 0 6-6v-3a4 4 0 0 0-4-4h-4a4 4 0 0 0-4 4v3a6 6 0 0 0 6 6Z" />
+      <path d="M12 20v-9M6.5 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4" />
+      <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4M22 13h-4M17.2 17c2.1.1 3.8 1.9 3.8 4" />
+    </Stroke>
+  );
+}

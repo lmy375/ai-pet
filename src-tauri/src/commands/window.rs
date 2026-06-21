@@ -85,7 +85,7 @@ pub async fn open_panel(app: AppHandle) -> Result<(), String> {
     let url = WebviewUrl::App("index.html?window=panel".into());
 
     WebviewWindowBuilder::new(&app, "panel", url)
-        .title("Pet - Panel")
+        .title("Pet")
         .inner_size(900.0, 700.0)
         .center()
         .resizable(true)

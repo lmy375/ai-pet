@@ -127,9 +127,19 @@ export function useAutoHide() {
     const win = getCurrentWindow();
     let unlistenFocus: (() => void) | null = null;
     let unlistenMoved: (() => void) | null = null;
+    // `onFocusChanged`/`onMoved` register asynchronously. Under StrictMode
+    // (mount → unmount → remount) and Vite HMR the cleanup can run before the
+    // `await` resolves, leaving `unlisten*` null so the listener leaks — and a
+    // leaked focus listener closes over the DISCARDED instance's `state` ref,
+    // whose `paused` is always false, so it keeps auto-hiding the window even
+    // after the live instance is pinned. The `cancelled` flag tears down any
+    // listener that resolves after cleanup. (Same async-leak hazard CLAUDE.md
+    // flags for `background-finished`, but here a single owned listener must be
+    // unregistered, so the flag is the correct fix rather than dedup.)
+    let cancelled = false;
 
     const setup = async () => {
-      unlistenFocus = await win.onFocusChanged(({ payload: focused }) => {
+      const focus = await win.onFocusChanged(({ payload: focused }) => {
         const s = state.current;
         if (s.paused) return;
         if (focused) {
@@ -141,11 +151,16 @@ export function useAutoHide() {
           }
         }
       });
+      if (cancelled) {
+        focus();
+        return;
+      }
+      unlistenFocus = focus;
 
       // Persist the user's window position so it reopens where they left it.
       // Skip auto-hide / animation moves so the edge "tab" position is never
       // saved as the real position.
-      unlistenMoved = await win.onMoved(({ payload }) => {
+      const moved = await win.onMoved(({ payload }) => {
         const s = state.current;
         if (s.hidden || s.animating || s.paused) return;
         if (s.saveTimer) clearTimeout(s.saveTimer);
@@ -155,11 +170,17 @@ export function useAutoHide() {
           );
         }, SAVE_DEBOUNCE);
       });
+      if (cancelled) {
+        moved();
+        return;
+      }
+      unlistenMoved = moved;
     };
 
     setup();
 
     return () => {
+      cancelled = true;
       cancelTimer();
       if (state.current.saveTimer) clearTimeout(state.current.saveTimer);
       unlistenFocus?.();

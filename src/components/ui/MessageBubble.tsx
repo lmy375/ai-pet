@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { ImageLightbox } from "./ImageLightbox";
 
 interface Props {
   role: "user" | "assistant";
@@ -17,6 +18,7 @@ export function MessageBubble({ role, error = false, images, children }: Props) 
       : "bg-slate-200 text-slate-900 rounded-bl-md";
 
   const hasImages = images && images.length > 0;
+  const [zoomed, setZoomed] = useState<string | null>(null);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -26,12 +28,20 @@ export function MessageBubble({ role, error = false, images, children }: Props) 
         {hasImages && (
           <div className="mb-1.5 flex flex-col gap-1.5">
             {images!.map((url, i) => (
-              <img key={i} src={url} alt="" className="max-w-full rounded-lg object-contain" />
+              <img
+                key={i}
+                src={url}
+                alt=""
+                onClick={() => setZoomed(url)}
+                title="点击查看大图"
+                className="max-w-full cursor-zoom-in rounded-lg object-contain"
+              />
             ))}
           </div>
         )}
         {children}
       </div>
+      {zoomed && <ImageLightbox src={zoomed} onClose={() => setZoomed(null)} />}
     </div>
   );
 }
