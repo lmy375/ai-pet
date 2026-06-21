@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { RefreshIcon, ClockIcon, ChevronRight } from "../Icons";
+import { useI18n } from "../../i18n";
 
 interface TaskListItem {
   taskId: string;
@@ -24,10 +25,10 @@ interface TaskDetail {
   returnCode: number | null;
 }
 
-const kindLabel: Record<string, { text: string; color: BadgeColor }> = {
-  bash: { text: "Bash", color: "orange" },
-  subagent: { text: "子代理", color: "purple" },
-  heartbeat: { text: "心跳", color: "sky" },
+const KIND_COLOR: Record<string, BadgeColor> = {
+  bash: "orange",
+  subagent: "purple",
+  heartbeat: "sky",
 };
 
 const preClass =
@@ -56,7 +57,13 @@ function TaskRow({
   onKill: (id: string) => void;
   killing: boolean;
 }) {
-  const kind = kindLabel[task.kind] ?? { text: task.kind, color: "slate" as BadgeColor };
+  const { t } = useI18n();
+  const kindColor: BadgeColor = KIND_COLOR[task.kind] ?? "slate";
+  const kindText =
+    task.kind === "subagent" ? t("tasks.kind.subagent")
+    : task.kind === "heartbeat" ? t("tasks.kind.heartbeat")
+    : task.kind === "bash" ? "Bash"
+    : task.kind;
   const running = task.status === "running";
   const killed = task.returnCode === -1;
 
@@ -70,9 +77,9 @@ function TaskRow({
         <ChevronRight
           className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`}
         />
-        <Badge color={kind.color}>{kind.text}</Badge>
+        <Badge color={kindColor}>{kindText}</Badge>
         <span title={task.label} className="min-w-0 flex-1 truncate text-[13px] text-slate-700">
-          {task.label || "(无描述)"}
+          {task.label || t("tasks.noLabel")}
         </span>
         <span className="flex shrink-0 items-center gap-1 text-[12px] text-slate-400">
           <ClockIcon className="h-3.5 w-3.5" />
@@ -88,14 +95,14 @@ function TaskRow({
               onKill(task.taskId);
             }}
           >
-            {killing ? "终止中…" : "终止"}
+            {killing ? t("tasks.killing") : t("tasks.kill")}
           </Button>
         ) : killed ? (
-          <Badge color="amber">已终止</Badge>
+          <Badge color="amber">{t("tasks.killed")}</Badge>
         ) : task.returnCode === 0 ? (
-          <Badge color="green">完成</Badge>
+          <Badge color="green">{t("tasks.done")}</Badge>
         ) : (
-          <Badge color="slate">已结束{task.returnCode != null ? ` (${task.returnCode})` : ""}</Badge>
+          <Badge color="slate">{t("tasks.ended")}{task.returnCode != null ? ` (${task.returnCode})` : ""}</Badge>
         )}
       </div>
 
@@ -106,13 +113,13 @@ function TaskRow({
             <>
               <div>
                 <div className="mb-1 text-[11px] font-semibold text-slate-400">
-                  {task.kind === "bash" ? "命令" : "Prompt"}
+                  {task.kind === "bash" ? t("tasks.cmd") : "Prompt"}
                 </div>
                 <pre className={preClass}>{detail.input || "—"}</pre>
               </div>
               <div>
-                <div className="mb-1 text-[11px] font-semibold text-slate-400">返回结果</div>
-                <pre className={preClass}>{detail.stdout || "（暂无输出）"}</pre>
+                <div className="mb-1 text-[11px] font-semibold text-slate-400">{t("tasks.result")}</div>
+                <pre className={preClass}>{detail.stdout || t("tasks.noOutput")}</pre>
                 {detail.stderr && (
                   <>
                     <div className="mb-1 mt-2 text-[11px] font-semibold text-slate-400">stderr</div>
@@ -122,7 +129,7 @@ function TaskRow({
               </div>
             </>
           ) : (
-            <div className="text-[12px] text-slate-400">加载中…</div>
+            <div className="text-[12px] text-slate-400">{t("common.loading")}</div>
           )}
         </div>
       )}
@@ -131,6 +138,7 @@ function TaskRow({
 }
 
 export function PanelTasks() {
+  const { t } = useI18n();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [killing, setKilling] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -177,7 +185,7 @@ export function PanelTasks() {
 
   const kill = useCallback(
     async (taskId: string) => {
-      if (!window.confirm("确定终止这个后台任务？")) return;
+      if (!window.confirm(t("tasks.confirmKill"))) return;
       setKilling((s) => new Set(s).add(taskId));
       try {
         await invoke("kill_task", { taskId });
@@ -193,7 +201,7 @@ export function PanelTasks() {
         });
       }
     },
-    [fetchTasks, fetchDetail, expandedId],
+    [fetchTasks, fetchDetail, expandedId, t],
   );
 
   // Running first (newest started first), then finished (most recent first).
@@ -219,10 +227,10 @@ export function PanelTasks() {
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold text-slate-800">后台任务</h2>
+        <h2 className="text-[15px] font-semibold text-slate-800">{t("tasks.title")}</h2>
         <button
           onClick={fetchTasks}
-          title="刷新"
+          title={t("common.refresh")}
           className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
         >
           <RefreshIcon className="h-[18px] w-[18px]" />
@@ -230,14 +238,14 @@ export function PanelTasks() {
       </div>
 
       {tasks.length === 0 ? (
-        <div className="mt-16 text-center text-[13px] text-slate-400">暂无后台任务</div>
+        <div className="mt-16 text-center text-[13px] text-slate-400">{t("tasks.empty")}</div>
       ) : (
         <div className="space-y-5">
           <section>
-            <div className="mb-1.5 text-[12px] font-semibold text-slate-400">运行中 ({running.length})</div>
+            <div className="mb-1.5 text-[12px] font-semibold text-slate-400">{t("tasks.running", { count: running.length })}</div>
             {running.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-200 px-3 py-3 text-[12px] text-slate-400">
-                没有正在运行的任务
+                {t("tasks.runningEmpty")}
               </div>
             ) : (
               <div className="space-y-2">{running.map(renderRow)}</div>
@@ -246,7 +254,7 @@ export function PanelTasks() {
 
           {finished.length > 0 && (
             <section>
-              <div className="mb-1.5 text-[12px] font-semibold text-slate-400">最近完成 ({finished.length})</div>
+              <div className="mb-1.5 text-[12px] font-semibold text-slate-400">{t("tasks.recent", { count: finished.length })}</div>
               <div className="space-y-2">{finished.map(renderRow)}</div>
             </section>
           )}

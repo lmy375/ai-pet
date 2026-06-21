@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { ImageLightbox } from "./ImageLightbox";
+import { useI18n } from "../../i18n";
 
 interface Props {
   role: "user" | "assistant";
@@ -10,6 +11,7 @@ interface Props {
 
 /** iOS Messages-style bubble: user = accent blue (right), assistant = gray (left). */
 export function MessageBubble({ role, error = false, images, children }: Props) {
+  const { t } = useI18n();
   const isUser = role === "user";
   const tone = error
     ? "bg-red-50 text-red-600 rounded-bl-md"
@@ -33,7 +35,7 @@ export function MessageBubble({ role, error = false, images, children }: Props) 
                 src={url}
                 alt=""
                 onClick={() => setZoomed(url)}
-                title="点击查看大图"
+                title={t("common.zoomImage")}
                 className="max-w-full cursor-zoom-in rounded-lg object-contain"
               />
             ))}

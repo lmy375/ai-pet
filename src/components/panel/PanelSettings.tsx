@@ -10,6 +10,7 @@ import { StatusText } from "../ui/StatusText";
 import { ChevronDown, ChevronRight, PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
+import { useI18n } from "../../i18n";
 
 const emptyMcpServer = (transport: McpServerConfig["transport"] = "stdio"): McpServerConfig => ({
   transport,
@@ -22,11 +23,13 @@ const emptyMcpServer = (transport: McpServerConfig["transport"] = "stdio"): McpS
 });
 
 export function PanelSettings() {
+  const { t } = useI18n();
   const [form, setForm] = useState<AppSettings>({
     live_2d_model_path: "",
     api_base: "",
     api_key: "",
     model: "",
+    language: "zh",
     mcp_servers: {},
     telegram: { bot_token: "", allowed_username: "", enabled: false },
     gallery_dir: "",
@@ -37,13 +40,17 @@ export function PanelSettings() {
   });
   const [loaded, setLoaded] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [message, setMessage] = useState("");
+  // Status line under the form. `ok` drives the color — derived from the action,
+  // not by sniffing the message text (which breaks once it's translated).
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const ok = (text: string) => setMessage({ text, ok: true });
+  const fail = (text: string) => setMessage({ text, ok: false });
   const [mcpStatuses, setMcpStatuses] = useState<McpStatus[]>([]);
   const [reconnecting, setReconnecting] = useState(false);
   const [newServerName, setNewServerName] = useState("");
   const [telegramStatus, setTelegramStatus] = useState<TelegramStatus>({ running: false, error: null });
   const [telegramReconnecting, setTelegramReconnecting] = useState(false);
-  const [viewMode, setViewMode] = useState<"表单" | "源码">("表单");
+  const [viewMode, setViewMode] = useState<"form" | "raw">("form");
   const [rawYaml, setRawYaml] = useState("");
   const [models, setModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -72,24 +79,24 @@ export function PanelSettings() {
   const saveSettings = async (next?: AppSettings) => {
     try {
       await invoke("save_settings", { settings: next ?? form });
-      setMessage("已保存");
+      ok(t("common.saved"));
     } catch (e: any) {
-      setMessage(`保存失败: ${e}`);
+      fail(t("common.saveFailed", { error: e }));
     }
   };
 
   const handleReconnectMcp = async () => {
     setReconnecting(true);
-    setMessage("");
+    setMessage(null);
     try {
       await invoke("save_settings", { settings: form });
       const statuses = await invoke<McpStatus[]>("reconnect_mcp");
       setMcpStatuses(statuses);
       const connected = statuses.filter((s) => s.connected).length;
       const total = statuses.length;
-      setMessage(`MCP 已重连: ${connected}/${total} 个服务器连接成功`);
+      ok(t("settings.mcp.reconnected", { connected, total }));
     } catch (e: any) {
-      setMessage(`MCP 重连失败: ${e}`);
+      fail(t("settings.mcp.reconnectFailed", { error: e }));
     } finally {
       setReconnecting(false);
     }
@@ -143,10 +150,10 @@ export function PanelSettings() {
     try {
       const raw = await invoke<string>("get_config_raw");
       setRawYaml(raw);
-      setViewMode("源码");
-      setMessage("");
+      setViewMode("raw");
+      setMessage(null);
     } catch (e: any) {
-      setMessage(`加载配置文件失败: ${e}`);
+      fail(t("settings.rawLoadFailed", { error: e }));
     }
   };
 
@@ -154,10 +161,10 @@ export function PanelSettings() {
     try {
       const s = await invoke<AppSettings>("get_settings");
       setForm(s);
-      setViewMode("表单");
-      setMessage("");
+      setViewMode("form");
+      setMessage(null);
     } catch (e: any) {
-      setMessage(`加载配置失败: ${e}`);
+      fail(t("settings.formLoadFailed", { error: e }));
     }
   };
 
@@ -170,11 +177,11 @@ export function PanelSettings() {
       const list = await invoke<string[]>("list_models", { apiBase, apiKey });
       setModels(list);
       if (!silent) {
-        setMessage(list.length === 0 ? "未获取到可用模型" : `已加载 ${list.length} 个模型`);
+        ok(list.length === 0 ? t("settings.llm.modelsNone") : t("settings.llm.modelsLoaded", { count: list.length }));
       }
     } catch (e: any) {
       setModels([]);
-      if (!silent) setMessage(`加载模型失败: ${e}`);
+      if (!silent) fail(t("settings.llm.modelsFailed", { error: e }));
     } finally {
       setLoadingModels(false);
     }
@@ -189,9 +196,9 @@ export function PanelSettings() {
         apiKey: form.api_key,
         model: form.model,
       });
-      setTestResult({ ok: true, text: "模型可用" });
+      setTestResult({ ok: true, text: t("settings.llm.testOk") });
     } catch (e: any) {
-      setTestResult({ ok: false, text: `测试失败: ${e}` });
+      setTestResult({ ok: false, text: t("settings.llm.testFailed", { error: e }) });
     } finally {
       setTesting(false);
     }
@@ -213,7 +220,7 @@ export function PanelSettings() {
         saveSettings(next);
       }
     } catch (e: any) {
-      setMessage(`选择目录失败: ${e}`);
+      fail(t("settings.pickDirFailed", { error: e }));
     }
   };
 
@@ -222,7 +229,7 @@ export function PanelSettings() {
     try {
       await invoke("open_path", { path: form.gallery_dir });
     } catch (e: any) {
-      setMessage(`打开图库目录失败: ${e}`);
+      fail(t("settings.openGalleryDirFailed", { error: e }));
     }
   };
 
@@ -230,26 +237,26 @@ export function PanelSettings() {
     try {
       await invoke("open_config_dir");
     } catch (e: any) {
-      setMessage(`打开配置文件夹失败: ${e}`);
+      fail(t("settings.openConfigDirFailed", { error: e }));
     }
   };
 
   const saveRaw = async () => {
     try {
       await invoke("save_config_raw", { content: rawYaml });
-      setMessage("已保存");
+      ok(t("common.saved"));
     } catch (e: any) {
-      setMessage(`保存失败: ${e}`);
+      fail(t("common.saveFailed", { error: e }));
     }
   };
 
-  const onViewChange = (v: "表单" | "源码") => {
+  const onViewChange = (v: "form" | "raw") => {
     if (v === viewMode) return;
-    v === "源码" ? switchToRaw() : switchToForm();
+    v === "raw" ? switchToRaw() : switchToForm();
   };
 
   if (!loaded) {
-    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">加载中...</div>;
+    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">{t("common.loading")}</div>;
   }
 
   const serverEntries = Object.entries(form.mcp_servers);
@@ -257,20 +264,33 @@ export function PanelSettings() {
   const totalToolCount = mcpStatuses.reduce((sum, s) => sum + s.tool_count, 0);
 
   const messageLine = message && (
-    <StatusText ok={!message.includes("失败")} className="mt-1 text-[13px]">{message}</StatusText>
+    <StatusText ok={message.ok} className="mt-1 text-[13px]">{message.text}</StatusText>
   );
+
+  const setLanguage = (language: string) => {
+    const next = { ...form, language };
+    setForm(next);
+    saveSettings(next);
+  };
 
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
       {/* Top bar: view mode toggle + open config folder */}
       <div className="mb-4 flex items-center justify-between">
-        <Segmented value={viewMode} options={["表单", "源码"] as const} onChange={onViewChange} />
-        <Button variant="ghost" size="sm" onClick={handleOpenConfigDir} title="在系统文件管理器中打开配置文件夹">
-          打开配置文件夹
+        <Segmented
+          value={viewMode}
+          options={[
+            { value: "form", label: t("settings.view.form") },
+            { value: "raw", label: t("settings.view.raw") },
+          ]}
+          onChange={onViewChange}
+        />
+        <Button variant="ghost" size="sm" onClick={handleOpenConfigDir} title={t("settings.openConfigDirTitle")}>
+          {t("settings.openConfigDir")}
         </Button>
       </div>
 
-      {viewMode === "源码" ? (
+      {viewMode === "raw" ? (
         <>
           <Card title="config.yaml">
             <TextArea
@@ -286,9 +306,17 @@ export function PanelSettings() {
         </>
       ) : (
         <>
+          {/* Language */}
+          <Card title={t("settings.language")}>
+            <Select value={form.language === "en" ? "en" : "zh"} onChange={(e) => setLanguage(e.target.value)}>
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </Select>
+          </Card>
+
           {/* Live2D */}
-          <Card title="Live2D 模型">
-            <Label>模型路径</Label>
+          <Card title={t("settings.live2d.title")}>
+            <Label>{t("settings.live2d.path")}</Label>
             <TextInput
               value={form.live_2d_model_path}
               onChange={(e) => setForm({ ...form, live_2d_model_path: e.target.value })}
@@ -299,7 +327,7 @@ export function PanelSettings() {
           </Card>
 
           {/* Gallery slideshow */}
-          <Card title="图库轮播">
+          <Card title={t("settings.gallery.title")}>
             <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
               <input
                 type="checkbox"
@@ -311,33 +339,33 @@ export function PanelSettings() {
                   saveSettings(next);
                 }}
               />
-              开启图库轮播（主窗口显示图片/视频，不再显示 Live2D，每 10 秒切换）
+              {t("settings.gallery.enable")}
             </label>
 
-            <Label>图库目录</Label>
+            <Label>{t("settings.gallery.dir")}</Label>
             <div className="flex gap-2">
               <TextInput
                 value={form.gallery_dir}
                 readOnly
                 className="flex-1"
-                placeholder="尚未选择目录"
+                placeholder={t("settings.gallery.noDir")}
               />
               <Button variant="secondary" onClick={handlePickGalleryDir}>
                 <ImageIcon className="h-4 w-4" />
-                选择目录
+                {t("settings.gallery.pick")}
               </Button>
               <Button
                 variant="secondary"
                 onClick={handleOpenGalleryDir}
                 disabled={!form.gallery_dir}
-                title="在文件管理器中打开该目录"
+                title={t("settings.gallery.openDirTitle")}
               >
                 <ExternalLinkIcon className="h-4 w-4" />
-                打开
+                {t("common.open")}
               </Button>
             </div>
 
-            <Label className="mt-3">轮播间隔（秒）</Label>
+            <Label className="mt-3">{t("settings.gallery.interval")}</Label>
             <TextInput
               type="number"
               min={1}
@@ -353,11 +381,11 @@ export function PanelSettings() {
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               placeholder="10"
             />
-            <p className="mt-1 text-[11px] text-slate-400">仅作用于图片；视频会完整播放后再切换。</p>
+            <p className="mt-1 text-[11px] text-slate-400">{t("settings.gallery.intervalNote")}</p>
           </Card>
 
           {/* LLM Config */}
-          <Card title="LLM 配置">
+          <Card title={t("settings.llm.title")}>
             <Label>API Base URL</Label>
             <TextInput
               value={form.api_base}
@@ -377,7 +405,7 @@ export function PanelSettings() {
             />
             <Label className="mt-3 flex items-center gap-2">
               <span>Model</span>
-              {loadingModels && <span className="font-normal text-slate-400">加载中...</span>}
+              {loadingModels && <span className="font-normal text-slate-400">{t("common.loading")}</span>}
             </Label>
             <div className="flex gap-2">
               <Select
@@ -392,10 +420,10 @@ export function PanelSettings() {
                 className="flex-1"
               >
                 {models.length === 0 ? (
-                  <option value="">{form.api_base.trim() ? "无可用模型，请检查 URL / API Key" : "请先填写 API Base URL"}</option>
+                  <option value="">{form.api_base.trim() ? t("settings.llm.noModelsHint") : t("settings.llm.fillBaseFirst")}</option>
                 ) : (
                   <>
-                    <option value="" disabled>从 {models.length} 个可用模型中选择...</option>
+                    <option value="" disabled>{t("settings.llm.selectFromN", { count: models.length })}</option>
                     {models.map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
@@ -403,7 +431,7 @@ export function PanelSettings() {
                 )}
               </Select>
               <Button onClick={handleTestModel} disabled={testing || !form.model.trim()}>
-                {testing ? "测试中..." : "测试"}
+                {testing ? t("settings.llm.testing") : t("settings.llm.test")}
               </Button>
             </div>
             {testResult && (
@@ -418,20 +446,20 @@ export function PanelSettings() {
                 MCP Servers
                 {serverEntries.length > 0 && (
                   <span className="ml-2 font-normal text-[12px] text-slate-500">
-                    {connectedCount}/{serverEntries.length} 已连接 · {totalToolCount} 工具
+                    {t("settings.mcp.connectedTools", { connected: connectedCount, total: serverEntries.length, tools: totalToolCount })}
                   </span>
                 )}
               </span>
             }
             action={
               <Button size="sm" onClick={handleReconnectMcp} disabled={reconnecting}>
-                {reconnecting ? "连接中..." : "保存并连接"}
+                {reconnecting ? t("settings.connecting") : t("settings.saveConnect")}
               </Button>
             }
           >
             {serverEntries.length === 0 && (
               <div className="rounded-xl border border-dashed border-slate-200 py-4 text-center text-[13px] text-slate-400">
-                尚未配置 MCP 服务器，在下方添加
+                {t("settings.mcp.empty")}
               </div>
             )}
 
@@ -460,7 +488,7 @@ export function PanelSettings() {
                 onChange={(e) => setNewServerName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addMcpServer()}
                 className="flex-1"
-                placeholder="新服务器名称..."
+                placeholder={t("settings.mcp.newName")}
               />
               <Button
                 variant="secondary"
@@ -468,7 +496,7 @@ export function PanelSettings() {
                 disabled={!newServerName.trim() || !!form.mcp_servers[newServerName.trim()]}
               >
                 <PlusIcon className="h-4 w-4" />
-                添加
+                {t("common.add")}
               </Button>
             </div>
           </Card>
@@ -481,7 +509,7 @@ export function PanelSettings() {
                 <span
                   className={`ml-2 font-normal text-[11px] ${toneText(connTone(telegramStatus.running, telegramStatus.error))}`}
                 >
-                  {telegramStatus.running ? "运行中" : telegramStatus.error ? "连接失败" : "未启动"}
+                  {telegramStatus.running ? t("settings.tg.running") : telegramStatus.error ? t("settings.tg.connFailed") : t("settings.tg.stopped")}
                 </span>
               </span>
             }
@@ -491,26 +519,26 @@ export function PanelSettings() {
                 disabled={telegramReconnecting}
                 onClick={async () => {
                   setTelegramReconnecting(true);
-                  setMessage("");
+                  setMessage(null);
                   try {
                     await invoke("save_settings", { settings: form });
                     const status = await invoke<TelegramStatus>("reconnect_telegram");
                     setTelegramStatus(status);
                     if (status.error) {
-                      setMessage(`Telegram 连接失败: ${status.error}`);
+                      fail(t("settings.tg.connectFailedMsg", { error: status.error }));
                     } else if (status.running) {
-                      setMessage("Telegram Bot 已连接");
+                      ok(t("settings.tg.connected"));
                     } else {
-                      setMessage("Telegram Bot 已停止");
+                      ok(t("settings.tg.stoppedMsg"));
                     }
                   } catch (e: any) {
-                    setMessage(`Telegram 操作失败: ${e}`);
+                    fail(t("settings.tg.opFailed", { error: e }));
                   } finally {
                     setTelegramReconnecting(false);
                   }
                 }}
               >
-                {telegramReconnecting ? "连接中..." : "保存并连接"}
+                {telegramReconnecting ? t("settings.connecting") : t("settings.saveConnect")}
               </Button>
             }
           >
@@ -531,7 +559,7 @@ export function PanelSettings() {
                   saveSettings(next);
                 }}
               />
-              启用 Telegram Bot
+              {t("settings.tg.enable")}
             </label>
 
             <Label>Bot Token</Label>
@@ -545,19 +573,19 @@ export function PanelSettings() {
               placeholder="123456789:ABCdefGhI..."
             />
 
-            <Label>允许的用户名</Label>
+            <Label>{t("settings.tg.allowedUser")}</Label>
             <TextInput
               value={form.telegram?.allowed_username ?? ""}
               onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: form.telegram?.enabled ?? false, bot_token: form.telegram?.bot_token ?? "", allowed_username: e.target.value } })}
               onBlur={() => saveSettings()}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               className="font-mono !text-[12px]"
-              placeholder="@username (留空则允许所有人)"
+              placeholder={t("settings.tg.allowedUserPlaceholder")}
             />
           </Card>
 
           {/* Scheduled heartbeat */}
-          <Card title="定时心跳">
+          <Card title={t("settings.hb.title")}>
             <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
               <input
                 type="checkbox"
@@ -569,10 +597,10 @@ export function PanelSettings() {
                   saveSettings(next);
                 }}
               />
-              启用定时心跳（宠物按间隔在后台自动醒来一次，按 HEARTBEAT.md 执行定时任务）
+              {t("settings.hb.enable")}
             </label>
 
-            <Label>心跳间隔（分钟）</Label>
+            <Label>{t("settings.hb.interval")}</Label>
             <TextInput
               type="number"
               min={1}
@@ -589,8 +617,7 @@ export function PanelSettings() {
               placeholder="60"
             />
             <p className="mt-1 text-[11px] text-slate-400">
-              每次心跳在后台运行，结果可在「后台任务」里查看；需要时宠物会主动给你发消息并弹系统通知。任务清单
-              HEARTBEAT.md 在「记忆」标签页里编辑。
+              {t("settings.hb.note")}
             </p>
           </Card>
 
@@ -620,17 +647,18 @@ function McpServerEntry({
   onCommitChange: (updates: Partial<McpServerConfig>) => void;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(true);
 
   const hasError = !!status?.error && status.error !== "Disabled";
   const dotClass = toneDot(connTone(status?.connected, status?.error));
   const statusLabel = status?.connected
-    ? "已连接"
+    ? t("settings.mcp.connected")
     : status?.error === "Disabled"
-      ? "已禁用"
+      ? t("settings.mcp.disabled")
       : status?.error
-        ? "连接失败"
-        : "未连接";
+        ? t("settings.mcp.connFailed")
+        : t("settings.mcp.disconnected");
   const statusColor = toneText(connTone(status?.connected, hasError));
 
   return (
@@ -646,7 +674,7 @@ function McpServerEntry({
           <span className="ml-2 font-normal text-[11px] text-slate-400">{config.transport.toUpperCase()}</span>
           <span className={`ml-1.5 font-normal text-[11px] ${statusColor}`}>
             {statusLabel}
-            {status?.connected && ` · ${status.tool_count} 工具`}
+            {status?.connected && ` · ${t("settings.mcp.toolsSuffix", { count: status.tool_count })}`}
           </span>
         </span>
 
@@ -660,12 +688,12 @@ function McpServerEntry({
             checked={config.enabled}
             onChange={(e) => onCommitChange({ enabled: e.target.checked })}
           />
-          启用
+          {t("common.enable")}
         </label>
 
         <button
           onClick={(e) => { e.stopPropagation(); onRemove(); }}
-          title="删除"
+          title={t("common.delete")}
           className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
         >
           <TrashIcon className="h-4 w-4" />
@@ -683,20 +711,20 @@ function McpServerEntry({
             </div>
           )}
 
-          <Label>传输方式</Label>
+          <Label>{t("settings.mcp.transport")}</Label>
           <Select
             value={config.transport}
             onChange={(e) => onCommitChange({ transport: e.target.value as McpServerConfig["transport"] })}
             className="mb-2"
           >
-            <option value="stdio">stdio (本地进程)</option>
-            <option value="sse">SSE (远程)</option>
-            <option value="http">HTTP (远程)</option>
+            <option value="stdio">{t("settings.mcp.transport.stdio")}</option>
+            <option value="sse">{t("settings.mcp.transport.sse")}</option>
+            <option value="http">{t("settings.mcp.transport.http")}</option>
           </Select>
 
           {config.transport === "stdio" ? (
             <>
-              <Label>命令</Label>
+              <Label>{t("settings.mcp.command")}</Label>
               <TextInput
                 value={config.command}
                 onChange={(e) => onChange({ command: e.target.value })}
@@ -705,7 +733,7 @@ function McpServerEntry({
                 className="mb-1.5 font-mono !text-[12px]"
                 placeholder="npx"
               />
-              <Label>参数 (每行一个)</Label>
+              <Label>{t("settings.mcp.args")}</Label>
               <TextArea
                 value={config.args.join("\n")}
                 onChange={(e) => onChange({ args: e.target.value.split("\n") })}
@@ -714,7 +742,7 @@ function McpServerEntry({
                 className="mb-1.5 font-mono !text-[12px]"
                 placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/tmp"}
               />
-              <Label>环境变量 (KEY=VALUE，每行一个)</Label>
+              <Label>{t("settings.mcp.env")}</Label>
               <TextArea
                 value={Object.entries(config.env || {}).map(([k, v]) => `${k}=${v}`).join("\n")}
                 onChange={(e) => {
@@ -742,7 +770,7 @@ function McpServerEntry({
                 className="mb-1.5 font-mono !text-[12px]"
                 placeholder="http://localhost:3000/mcp"
               />
-              <Label>自定义 Headers (KEY: VALUE，每行一个)</Label>
+              <Label>{t("settings.mcp.headers")}</Label>
               <TextArea
                 value={Object.entries(config.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n")}
                 onChange={(e) => {
@@ -763,7 +791,7 @@ function McpServerEntry({
 
           {status?.connected && status.tool_names.length > 0 && (
             <div className="mt-2">
-              <Label>已注册工具 ({status.tool_count})</Label>
+              <Label>{t("settings.mcp.registeredTools", { count: status.tool_count })}</Label>
               <div className="flex flex-wrap gap-1">
                 {status.tool_names.map((t) => (
                   <Badge key={t} color="sky" className="font-mono">{t}</Badge>
