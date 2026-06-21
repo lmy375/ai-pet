@@ -2,6 +2,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useI18n } from "../i18n";
+
+/** Sentinel title for a not-yet-named session. Stored verbatim on disk (so old
+ *  sessions keep matching); translate it at display time, never compare against
+ *  a localized string. */
+export const DEFAULT_SESSION_TITLE = "新会话";
 
 export interface ToolCall {
   name: string;
@@ -101,6 +107,7 @@ function applyCompletionToItems(items: ChatItem[], taskId: string, result: strin
  * conversation automatically with the task result (see the queue/drain below).
  */
 export function useChat() {
+  const { t } = useI18n();
   const [items, setItems] = useState<ChatItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [currentResponse, setCurrentResponse] = useState("");
@@ -108,7 +115,7 @@ export function useChat() {
   const [loaded, setLoaded] = useState(false);
 
   const [sessionId, setSessionId] = useState("");
-  const [sessionTitle, setSessionTitle] = useState("新会话");
+  const [sessionTitle, setSessionTitle] = useState(DEFAULT_SESSION_TITLE);
   const [sessionList, setSessionList] = useState<SessionMeta[]>([]);
   const messagesRef = useRef<any[]>([]);
 
@@ -116,7 +123,7 @@ export function useChat() {
   // instead of stale closures.
   const itemsRef = useRef<ChatItem[]>([]);
   const sessionIdRef = useRef("");
-  const sessionTitleRef = useRef("新会话");
+  const sessionTitleRef = useRef(DEFAULT_SESSION_TITLE);
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
@@ -213,7 +220,7 @@ export function useChat() {
       // Read the title from the ref, not a captured value: a turn that resumes
       // after a session switch must save the active session's title, not a stale one.
       let title = sessionTitleRef.current;
-      if (title === "新会话") {
+      if (title === DEFAULT_SESSION_TITLE) {
         const firstUser = newItems.find((i) => i.type === "user");
         if (firstUser) {
           title = firstUser.content.slice(0, 20) + (firstUser.content.length > 20 ? "..." : "");
@@ -413,17 +420,17 @@ export function useChat() {
       const base = applyCompletionToItems(itemsRef.current, c.taskId, c.result);
       messagesRef.current = [
         ...messagesRef.current,
-        { role: "user", content: `[后台任务完成] ${label}：\n${c.result}` },
+        { role: "user", content: t("chat.bgTaskDoneContent", { label, result: c.result }) },
       ];
       const newItems: ChatItem[] = [
         ...base,
-        { type: "notification", content: `后台任务完成：${label}`, detail: c.result, ts: Date.now() },
+        { type: "notification", content: t("chat.bgTaskDone", { label }), detail: c.result, ts: Date.now() },
       ];
       setItems(newItems);
       itemsRef.current = newItems;
       await runStream(newItems);
     },
-    [runStream],
+    [runStream, t],
   );
 
   // Drain the queue one turn at a time when idle. Only completions for the

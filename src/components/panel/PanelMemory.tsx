@@ -5,6 +5,7 @@ import { TextArea } from "../ui/fields";
 import { Button } from "../ui/Button";
 import { StatusText } from "../ui/StatusText";
 import { ExternalLinkIcon } from "../Icons";
+import { useI18n, type TKey } from "../../i18n";
 
 /**
  * Memory tab: view and edit the pet's always-present markdown files
@@ -21,26 +22,27 @@ type FieldKey = "soul" | "user" | "memory" | "heartbeat";
 
 interface FieldDef {
   key: FieldKey;
-  title: string;
+  titleKey: TKey;
   getCmd: string;
   saveCmd: string;
   rows: number;
-  placeholder: string;
+  placeholderKey: TKey;
 }
 
 const FIELDS: FieldDef[] = [
-  { key: "soul", title: "SOUL.md（本质）", getCmd: "get_soul", saveCmd: "save_soul", rows: 6, placeholder: "宠物的本质 / 人格设定..." },
-  { key: "user", title: "USER.md（关于主人）", getCmd: "get_user", saveCmd: "save_user", rows: 10, placeholder: "关于主人的事实与偏好（宠物会在对话中自行补充）..." },
-  { key: "memory", title: "MEMORY.md（日记）", getCmd: "get_memory", saveCmd: "save_memory", rows: 10, placeholder: "宠物自己的理解与想法（宠物会在对话中自行记录）..." },
-  { key: "heartbeat", title: "HEARTBEAT.md（定时任务）", getCmd: "get_heartbeat", saveCmd: "save_heartbeat", rows: 8, placeholder: "宠物的定时任务清单（每次心跳会读它来判断该做什么；宠物也会自行维护）..." },
+  { key: "soul", titleKey: "memory.soul.title", getCmd: "get_soul", saveCmd: "save_soul", rows: 6, placeholderKey: "memory.soul.placeholder" },
+  { key: "user", titleKey: "memory.user.title", getCmd: "get_user", saveCmd: "save_user", rows: 10, placeholderKey: "memory.user.placeholder" },
+  { key: "memory", titleKey: "memory.memory.title", getCmd: "get_memory", saveCmd: "save_memory", rows: 10, placeholderKey: "memory.memory.placeholder" },
+  { key: "heartbeat", titleKey: "memory.heartbeat.title", getCmd: "get_heartbeat", saveCmd: "save_heartbeat", rows: 8, placeholderKey: "memory.heartbeat.placeholder" },
 ];
 
 const EMPTY: Record<FieldKey, string> = { soul: "", user: "", memory: "", heartbeat: "" };
 
 export function PanelMemory() {
+  const { t } = useI18n();
   const [values, setValues] = useState<Record<FieldKey, string>>(EMPTY);
   const [loaded, setLoaded] = useState(false);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   // Last on-disk content we loaded or saved, per field. The dirty check and
   // focus-refresh both compare against this baseline.
   const baseline = useRef<Record<FieldKey, string>>({ ...EMPTY });
@@ -55,7 +57,7 @@ export function PanelMemory() {
         setLoaded(true);
       })
       .catch((e) => {
-        setMessage(`加载失败: ${e}`);
+        setMessage({ text: t("common.loadFailed", { error: e }), ok: false });
         setLoaded(true);
       });
   }, []);
@@ -67,9 +69,9 @@ export function PanelMemory() {
     try {
       await invoke(f.saveCmd, { content: value });
       baseline.current[f.key] = value;
-      setMessage("已保存");
+      setMessage({ text: t("common.saved"), ok: true });
     } catch (e: any) {
-      setMessage(`保存失败: ${e}`);
+      setMessage({ text: t("common.saveFailed", { error: e }), ok: false });
     }
   };
 
@@ -97,39 +99,39 @@ export function PanelMemory() {
     try {
       await invoke("open_memory_dir");
     } catch (e: any) {
-      setMessage(`打开记忆文件夹失败: ${e}`);
+      setMessage({ text: t("memory.openDirFailed", { error: e }), ok: false });
     }
   };
 
   if (!loaded) {
-    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">加载中...</div>;
+    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">{t("common.loading")}</div>;
   }
 
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
       <div className="mb-4 flex items-center justify-between">
-        <p className="text-[12px] text-slate-500">宠物的长期记忆，跨对话保存</p>
-        <Button variant="ghost" size="sm" onClick={openMemoryDir} title="在系统文件管理器中打开记忆文件夹">
+        <p className="text-[12px] text-slate-500">{t("memory.subtitle")}</p>
+        <Button variant="ghost" size="sm" onClick={openMemoryDir} title={t("memory.openDir")}>
           <ExternalLinkIcon className="h-4 w-4" />
-          打开记忆文件夹
+          {t("memory.openDirBtn")}
         </Button>
       </div>
 
       {FIELDS.map((f) => (
-        <Card key={f.key} title={f.title}>
+        <Card key={f.key} title={t(f.titleKey)}>
           <TextArea
             value={values[f.key]}
             onChange={(e) => setValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
             onFocus={() => refreshField(f)}
             onBlur={() => saveField(f, values[f.key])}
             rows={f.rows}
-            placeholder={f.placeholder}
+            placeholder={t(f.placeholderKey)}
           />
         </Card>
       ))}
 
       {message && (
-        <StatusText ok={!message.includes("失败")} className="mt-1 text-[13px]">{message}</StatusText>
+        <StatusText ok={message.ok} className="mt-1 text-[13px]">{message.text}</StatusText>
       )}
     </div>
   );

@@ -9,9 +9,11 @@ import { ExternalLinkIcon, ChevronRight, ChevronDown, PinIcon } from "./componen
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
+import { useI18n } from "./i18n";
 
 function App() {
   const { settings, loaded } = useSettings();
+  const { t } = useI18n();
   const { items, currentResponse, currentToolCalls, isLoading, sendMessage } = useChat();
   const { hidden, handleMouseEnter, pauseTimer, resumeTimer } = useAutoHide();
   const [pinned, setPinned] = useState(false);
@@ -124,7 +126,7 @@ function App() {
           {/* Pin toggle — top-left. Pinned = stay above all windows + no auto-hide. */}
           <button
             onClick={togglePin}
-            title={pinned ? "取消钉住" : "钉住（保持置顶、不自动收起）"}
+            title={pinned ? t("app.pin.on") : t("app.pin.off")}
             className={`absolute left-2 top-2 z-20 flex h-9 w-9 items-center justify-center rounded-xl border backdrop-blur-md transition-colors ${
               pinned
                 ? "border-accent bg-accent text-white"
@@ -137,7 +139,7 @@ function App() {
           {/* Settings — top-right, aligned with the chat window's right edge */}
           <button
             onClick={openPanel}
-            title="打开设置面板"
+            title={t("app.openSettings")}
             className="absolute right-2 top-2 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300/60 bg-white/80 text-slate-600 backdrop-blur-md transition-colors hover:bg-white"
           >
             <ExternalLinkIcon className="h-5 w-5" />
@@ -170,7 +172,7 @@ function App() {
           >
             <button
               onClick={() => setChatCollapsed((v) => !v)}
-              title={chatCollapsed ? "展开聊天" : "收起聊天"}
+              title={chatCollapsed ? t("app.chat.expand") : t("app.chat.collapse")}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-300/60 bg-white/80 text-slate-600 backdrop-blur-md transition-colors hover:bg-white"
             >
               <ChevronDown className={`h-5 w-5 transition-transform ${chatCollapsed ? "" : "rotate-180"}`} />
@@ -187,7 +189,7 @@ function App() {
           {!chatCollapsed && (
             <div
               onMouseDown={handleResize}
-              title="拖动调整大小"
+              title={t("app.resize")}
               className="absolute bottom-0 right-0 z-30 h-4 w-4 cursor-nwse-resize"
             />
           )}

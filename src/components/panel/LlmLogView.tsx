@@ -4,6 +4,7 @@ import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { formatIsoTime } from "../../utils/format";
 import { ImageLightbox } from "../ui/ImageLightbox";
+import { useI18n } from "../../i18n";
 import {
   ChevronRight,
   ChevronDown,
@@ -56,7 +57,7 @@ function contentToText(content: unknown): string {
 // Full render of a message's `content` for the expanded detail. Text renders in
 // a <pre>; an `image_url` block renders the base64 data URL as an actual <img>
 // thumbnail instead of dumping the raw string.
-function renderContent(content: unknown, onZoom: (src: string) => void) {
+function renderContent(content: unknown, onZoom: (src: string) => void, zoomTitle: string) {
   if (typeof content === "string") return <pre className={preClass}>{content}</pre>;
   if (!Array.isArray(content)) return <pre className={preClass}>{JSON.stringify(content, null, 2)}</pre>;
   return (
@@ -71,7 +72,7 @@ function renderContent(content: unknown, onZoom: (src: string) => void) {
               src={url}
               alt={`Image #${k + 1}`}
               onClick={() => onZoom(url)}
-              title="点击查看大图"
+              title={zoomTitle}
               className="max-h-[300px] max-w-full cursor-zoom-in rounded-lg border border-slate-200 object-contain"
             />
           );
@@ -93,6 +94,7 @@ const roleColors: Record<string, BadgeColor> = {
 };
 
 export function LlmLogView() {
+  const { t } = useI18n();
   const [entries, setEntries] = useState<LlmLogEntry[]>([]);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [zoomed, setZoomed] = useState<string | null>(null);
@@ -157,17 +159,17 @@ export function LlmLogView() {
       <div className="flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white px-4 py-2.5">
         <Button variant="ghost" size="sm" onClick={fetchLogs}>
           <RefreshIcon className="h-4 w-4" />
-          刷新
+          {t("common.refresh")}
         </Button>
         <span className="flex-1" />
-        <span className="text-[12px] text-slate-400">{entries.length} 条记录</span>
+        <span className="text-[12px] text-slate-400">{t("llm.recordCount", { count: entries.length })}</span>
       </div>
 
       {/* Log entries */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2">
         {entries.length === 0 ? (
           <div className="mt-10 text-center text-[13px] text-slate-400">
-            暂无 LLM 日志。发送聊天消息后会产生记录。
+            {t("llm.empty")}
           </div>
         ) : (
           entries.map((entry, i) => {
@@ -206,24 +208,24 @@ export function LlmLogView() {
                 {/* Expanded detail */}
                 {isExpanded && (
                   <div className="border-t border-slate-100 px-3.5 py-3">
-                    <DetailSection icon={<ClockIcon className="h-3.5 w-3.5" />} title="时间">
-                      <Row label="请求时间" value={entry.request_time} />
-                      <Row label="首 Token" value={entry.first_token_time ?? "—"} />
-                      <Row label="完成时间" value={entry.done_time} />
-                      <Row label="首 Token 延迟" value={entry.first_token_latency_ms != null ? `${entry.first_token_latency_ms} ms` : "—"} />
-                      <Row label="总耗时" value={`${entry.total_latency_ms} ms`} />
+                    <DetailSection icon={<ClockIcon className="h-3.5 w-3.5" />} title={t("llm.section.time")}>
+                      <Row label={t("llm.row.requestTime")} value={entry.request_time} />
+                      <Row label={t("llm.row.firstToken")} value={entry.first_token_time ?? "—"} />
+                      <Row label={t("llm.row.doneTime")} value={entry.done_time} />
+                      <Row label={t("llm.row.firstTokenLatency")} value={entry.first_token_latency_ms != null ? `${entry.first_token_latency_ms} ms` : "—"} />
+                      <Row label={t("llm.row.totalLatency")} value={`${entry.total_latency_ms} ms`} />
                     </DetailSection>
 
-                    <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title="请求消息">
+                    <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title={t("llm.section.request")}>
                       {entry.request.messages.map((msg, j) => (
                         <div key={j} className="mb-1.5">
                           <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
-                          {renderContent(msg.content, setZoomed)}
+                          {renderContent(msg.content, setZoomed, t("common.zoomImage"))}
                         </div>
                       ))}
                     </DetailSection>
 
-                    <DetailSection icon={<ArrowDownIcon className="h-3.5 w-3.5" />} title="响应">
+                    <DetailSection icon={<ArrowDownIcon className="h-3.5 w-3.5" />} title={t("llm.section.response")}>
                       {entry.response.text && (
                         <div className="mb-1.5">
                           <Badge color="purple">assistant</Badge>

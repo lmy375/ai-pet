@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { useI18n } from "../i18n";
 
 interface MediaItem {
   path: string;
@@ -13,6 +14,7 @@ interface MediaItem {
  * when gallery mode is on.
  */
 export function GallerySlideshow({ dir, intervalSec }: { dir: string; intervalSec: number }) {
+  const { t } = useI18n();
   const [items, setItems] = useState<MediaItem[]>([]);
   const [index, setIndex] = useState(0);
   // Bumped on every advance so the media element remounts and the timer effect
@@ -60,7 +62,7 @@ export function GallerySlideshow({ dir, intervalSec }: { dir: string; intervalSe
   if (error) {
     return (
       <div className="flex h-full w-full items-center justify-center px-4 text-center text-[13px] text-slate-500">
-        无法读取图库目录：{error}
+        {t("gallery.readError", { error: error ?? "" })}
       </div>
     );
   }
@@ -68,7 +70,7 @@ export function GallerySlideshow({ dir, intervalSec }: { dir: string; intervalSe
   if (!current) {
     return (
       <div className="flex h-full w-full items-center justify-center px-4 text-center text-[13px] text-slate-400">
-        图库目录中没有图片或视频
+        {t("gallery.empty")}
       </div>
     );
   }

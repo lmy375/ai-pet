@@ -65,6 +65,9 @@ pub struct AppSettings {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// UI language: "zh" or "en".
+    #[serde(default = "default_language")]
+    pub language: String,
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
@@ -112,6 +115,10 @@ fn default_model() -> String {
     "gpt-4o-mini".to_string()
 }
 
+fn default_language() -> String {
+    "zh".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -119,6 +126,7 @@ impl Default for AppSettings {
             api_base: default_api_base(),
             api_key: String::new(),
             model: default_model(),
+            language: default_language(),
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),
             gallery_dir: String::new(),

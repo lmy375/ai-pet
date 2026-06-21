@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { useChat } from "../../hooks/useChat";
+import { useChat, DEFAULT_SESSION_TITLE } from "../../hooks/useChat";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { ChevronDown, ChevronRight, PlusIcon, TrashIcon } from "../Icons";
+import { useI18n } from "../../i18n";
 
 export function PanelChat() {
+  const { t } = useI18n();
   const {
     items,
     isLoading,
@@ -23,8 +25,11 @@ export function PanelChat() {
 
   const [showSessionList, setShowSessionList] = useState(false);
 
+  // Untitled sessions are stored with the sentinel title; show a localized label.
+  const displayTitle = (title: string) => (title === DEFAULT_SESSION_TITLE ? t("chat.newSession") : title);
+
   if (!loaded) {
-    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">加载中...</div>;
+    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">{t("common.loading")}</div>;
   }
 
   return (
@@ -35,16 +40,16 @@ export function PanelChat() {
           className="flex min-w-0 flex-1 items-center gap-1.5"
           onClick={() => setShowSessionList(!showSessionList)}
         >
-          <span className="truncate text-[13px] font-semibold text-slate-800">{sessionTitle}</span>
+          <span className="truncate text-[13px] font-semibold text-slate-800">{displayTitle(sessionTitle)}</span>
           {showSessionList ? (
             <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
           ) : (
             <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
           )}
         </button>
-        <Button variant="ghost" size="sm" onClick={() => { newSession(); setShowSessionList(false); }} title="新建会话">
+        <Button variant="ghost" size="sm" onClick={() => { newSession(); setShowSessionList(false); }} title={t("chat.session.newTitle")}>
           <PlusIcon className="h-4 w-4" />
-          新会话
+          {t("chat.newSession")}
         </Button>
       </div>
 
@@ -52,7 +57,7 @@ export function PanelChat() {
       {showSessionList && (
         <div className="max-h-60 shrink-0 overflow-y-auto border-b border-slate-200/70 bg-white">
           {sessionList.length === 0 ? (
-            <div className="py-3 text-center text-[12px] text-slate-400">暂无历史会话</div>
+            <div className="py-3 text-center text-[12px] text-slate-400">{t("chat.session.empty")}</div>
           ) : (
             [...sessionList].reverse().map((s) => (
               <div
@@ -66,13 +71,13 @@ export function PanelChat() {
                   onClick={() => { switchSession(s.id); setShowSessionList(false); }}
                 >
                   <div className={`truncate text-[13px] text-slate-800 ${s.id === sessionId ? "font-semibold" : ""}`}>
-                    {s.title}
+                    {displayTitle(s.title)}
                   </div>
                   <div className="text-[11px] text-slate-400">{s.updated_at.split("T")[0]}</div>
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                  title="删除会话"
+                  title={t("chat.session.delete")}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
                 >
                   <TrashIcon className="h-4 w-4" />
@@ -90,7 +95,7 @@ export function PanelChat() {
         streaming={currentResponse}
         loading={isLoading}
         className="flex-1 p-4"
-        emptyHint="开始聊天吧~"
+        emptyHint={t("chat.empty")}
       />
 
       {/* Input bar */}

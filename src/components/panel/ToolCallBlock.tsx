@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronRight, CheckIcon, SpinnerIcon } from "../Icons";
 import { formatJson } from "../../utils/format";
 import { describeToolCall } from "../../utils/toolDisplay";
+import { useI18n } from "../../i18n";
 
 interface Props {
   name: string;
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export function ToolCallBlock({ name, arguments: args, result, isRunning }: Props) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
 
   const { Icon, label, summary, summaryMono, hint, fullSummary } = describeToolCall(name, args);
@@ -41,10 +43,10 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
         {isRunning ? (
           <span className="flex shrink-0 items-center gap-1 text-[12px] text-slate-400">
             <SpinnerIcon className="h-4 w-4 animate-spin" />
-            执行中...
+            {t("tool.running")}
           </span>
         ) : backgrounded ? (
-          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">后台运行中</span>
+          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">{t("tool.background")}</span>
         ) : result ? (
           <CheckIcon className="h-4 w-4 shrink-0 text-green-600" />
         ) : null}
@@ -54,7 +56,7 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
       {expanded && (
         <div className="border-t border-slate-200">
           <div className="px-3 py-2">
-            <div className="mb-1 text-[11px] font-semibold text-slate-400">参数</div>
+            <div className="mb-1 text-[11px] font-semibold text-slate-400">{t("tool.args")}</div>
             <pre className="m-0 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-slate-800 p-2 font-mono text-[12px] leading-normal text-slate-200">
               {formatJson(args)}
             </pre>
@@ -62,7 +64,7 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
 
           {result && (
             <div className="px-3 pb-2">
-              <div className="mb-1 text-[11px] font-semibold text-slate-400">返回值</div>
+              <div className="mb-1 text-[11px] font-semibold text-slate-400">{t("tool.result")}</div>
               <pre className="m-0 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-slate-800 p-2 font-mono text-[12px] leading-normal text-emerald-300">
                 {formatJson(result)}
               </pre>
