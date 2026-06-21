@@ -1,16 +1,16 @@
-//! HEARTBEAT.md — the pet's scheduled-task list, kept at `<config>/HEARTBEAT.md`.
+//! HEARTBEAT.md — the pet's scheduled-task list, kept in the memory dir at
+//! `<config>/memory/HEARTBEAT.md`, alongside SOUL.md / USER.md / MEMORY.md.
 //!
 //! On each scheduled heartbeat the pet wakes up in the background, reads this
 //! file as part of its system prompt, and decides whether any timed task is due.
 //! The pet maintains the file itself (via edit_file/write_file) when the owner
 //! asks for anything recurring or time-based — that's how "set a timer" works.
-//! It lives alongside `config.yaml`, separate from the memory journal.
 
 use std::fs;
 use std::path::PathBuf;
 
 pub fn heartbeat_path() -> Result<PathBuf, String> {
-    Ok(crate::common::config_dir()?.join("HEARTBEAT.md"))
+    Ok(crate::commands::memory::memory_dir()?.join("HEARTBEAT.md"))
 }
 
 fn default_heartbeat() -> String {
@@ -36,7 +36,7 @@ pub fn read_heartbeat() -> String {
 pub fn ensure_heartbeat_file() -> Result<(), String> {
     let path = heartbeat_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create memory dir: {e}"))?;
     }
     if !path.exists() {
         fs::write(&path, default_heartbeat())

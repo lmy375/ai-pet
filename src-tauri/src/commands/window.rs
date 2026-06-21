@@ -1,6 +1,3 @@
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -29,34 +26,19 @@ pub fn active_window_label(app: &AppHandle) -> String {
     }
 }
 
-// --- Pet window position persistence ---
+// --- Pet window position persistence (stored in config.yaml) ---
 
-#[derive(Serialize, Deserialize)]
-pub struct WindowPosition {
-    pub x: i32,
-    pub y: i32,
-}
-
-fn window_state_path() -> Result<PathBuf, String> {
-    Ok(crate::common::config_dir()?.join("window_state.json"))
-}
+use crate::commands::settings::{get_settings, set_window_position, WindowPosition};
 
 /// Persist the pet window's top-left position so it reopens where the user left
 /// it. Called (debounced) from the frontend whenever the user moves the window.
 #[tauri::command]
 pub fn save_window_position(x: i32, y: i32) -> Result<(), String> {
-    let path = window_state_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
-    }
-    let json = serde_json::to_string(&WindowPosition { x, y })
-        .map_err(|e| format!("Failed to serialize window state: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write window state: {}", e))
+    set_window_position(x, y)
 }
 
 fn load_window_position() -> Option<WindowPosition> {
-    let content = fs::read_to_string(window_state_path().ok()?).ok()?;
-    serde_json::from_str(&content).ok()
+    get_settings().ok()?.window
 }
 
 /// True if `(x, y)` falls within some connected monitor, so a saved position from

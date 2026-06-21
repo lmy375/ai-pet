@@ -46,6 +46,15 @@ pub struct TelegramConfig {
     pub enabled: bool,
 }
 
+/// Saved pet-window top-left position (physical pixels). `None` until the user
+/// first moves the window. Lives in config.yaml alongside the rest of the
+/// settings — it used to be a separate `window_state.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_model_path")]
@@ -76,6 +85,11 @@ pub struct AppSettings {
     /// Minutes between scheduled heartbeats.
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval: u32,
+    /// Saved pet-window position so it reopens where the user left it. Written
+    /// (debounced) on window move, not through the Settings UI; omitted from the
+    /// file until the window has been moved at least once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowPosition>,
 }
 
 fn default_gallery_interval() -> u32 {
@@ -112,6 +126,7 @@ impl Default for AppSettings {
             gallery_interval: default_gallery_interval(),
             heartbeat_enabled: false,
             heartbeat_interval: default_heartbeat_interval(),
+            window: None,
         }
     }
 }
@@ -230,6 +245,23 @@ pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(),
     use tauri::Emitter;
     let _ = app.emit("settings-changed", ());
     Ok(())
+}
+
+/// Persist only the pet-window position into config.yaml (read-modify-write).
+/// Unlike `save_settings` this does NOT emit `settings-changed` — a window move
+/// shouldn't make every window reload its settings.
+pub fn set_window_position(x: i32, y: i32) -> Result<(), String> {
+    let mut settings = get_settings()?;
+    settings.window = Some(WindowPosition { x, y });
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    let yaml = serde_yaml::to_string(&settings)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&path, yaml)
+        .map_err(|e| format!("Failed to write config: {}", e))
 }
 
 #[tauri::command]
