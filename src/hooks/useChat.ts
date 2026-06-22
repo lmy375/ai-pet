@@ -19,7 +19,7 @@ export interface ToolCall {
 export interface ChatItem {
   type: "user" | "assistant" | "tool" | "error" | "notification";
   content: string;
-  images?: string[]; // user items: pasted images as base64 data URLs, rendered in the bubble
+  images?: string[]; // base64 data URLs rendered in the bubble — user pastes, or tool-produced images (e.g. screenshots) on assistant items
   toolCalls?: ToolCall[];
   ts?: number; // epoch ms; present for messages created after timestamps shipped
   detail?: string; // notification items: the task's full result, shown on expand
@@ -350,7 +350,7 @@ export function useChat() {
           // bubble so the owner sees what the pet saw. The data URL also lives
           // in the server's message history for the model; here it's UI-only.
           flushToolCalls();
-          commit([...finalItems, { type: "user", content: "", images: [event.data.dataUrl], ts: Date.now() }]);
+          commit([...finalItems, { type: "assistant", content: "", images: [event.data.dataUrl], ts: Date.now() }]);
         } else if (event.event === "done") {
           flushToolCalls();
           if (accumulated.trim()) {
