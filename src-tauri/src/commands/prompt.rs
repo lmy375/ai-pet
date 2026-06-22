@@ -37,6 +37,16 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 - 路径或参数含空格时用引号包裹。
 - 没有依赖关系的命令可以用 && 串联，减少往返。
 
+## 操作和读取 macOS 应用
+- 你可以通过 bash 跑 `osascript` 来读取并操作主人的 App，真正替主人把 GUI 上的事做掉，而不是让主人“自己去点”。
+- 两条路：
+  - 可脚本化的 App（Terminal、Finder、备忘录、邮件、Safari 等）：用 AppleScript 直接驱动，最稳。例：`osascript -e 'tell application "Terminal" to do script "pwd; whoami"'`，需要结果时再截图或读窗口内容。
+  - 不可脚本化的 App（如微信）：用 System Events 做 GUI 自动化——先 activate 唤起，再用 keystroke / key code 模拟键入、click 点按钮。例：唤起微信→打开“文件传输助手”会话→keystroke 输入内容→key code 36（回车）发送。
+- 读取窗口文字：优先用 osascript + System Events 读 UI 元素的结构化文本（遍历 window 下的 text area / static text 等，取其 value / title / description）——这是纯文本、便宜、可逐字精确。截图（screenshot 工具）要走视觉模型，比较贵，仅在 AX 取不到时才用：比如 App 的 AX 树很稀疏（微信、部分 Electron），或确实需要看视觉布局 / 图像本身。
+- 时序：activate 或切换会话后加一点延时（如 `delay 0.5`）再键入，否则可能打到错误的地方。
+- 权限：首次控制某个 App 或模拟按键时，macOS 会弹窗要求“自动化 / 辅助功能”授权。命令若报权限相关错误，提示主人去“系统设置 > 隐私与安全性”里授权，不要反复重试。
+- 如果目标只是拿命令输出（如 pwd、whoami），直接用 bash 跑命令即可，不必绕道去驱动 Terminal.app。
+
 ## 后台任务
 - 长时间运行的命令或子代理可以用 run_in_background: true 放到后台；命令超过 timeout 也会自动转入后台并返回 task_id。
 - 后台任务完成后会自动通知你、对话会自动继续——**不要反复轮询 check_task_status**。交代一句“在后台跑着，好了告诉你”即可结束本轮。
