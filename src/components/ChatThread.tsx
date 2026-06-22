@@ -52,7 +52,11 @@ function renderItem(item: ChatItem) {
     case "user":
       return <MessageBubble role="user" images={item.images}>{item.content}</MessageBubble>;
     case "assistant":
-      return item.content.trim() ? <MessageBubble role="assistant">{item.content}</MessageBubble> : null;
+      // Tool-produced images (e.g. screenshots) arrive as assistant items with
+      // empty text — still render the bubble so the image shows.
+      return item.content.trim() || item.images?.length ? (
+        <MessageBubble role="assistant" images={item.images}>{item.content}</MessageBubble>
+      ) : null;
     case "tool":
       return (
         <div className="max-w-[85%]">
