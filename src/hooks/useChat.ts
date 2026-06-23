@@ -44,6 +44,7 @@ interface Session {
   updated_at: string;
   messages: any[];
   items: ChatItem[];
+  context_usage?: { used: number; total: number } | null;
 }
 
 /** Background-task completion pushed from the backend (camelCase via serde). */
@@ -60,6 +61,7 @@ type StreamEvent =
   | { event: "toolStart"; data: { name: string; arguments: string } }
   | { event: "toolResult"; data: { name: string; result: string } }
   | { event: "image"; data: { dataUrl: string } }
+  | { event: "usage"; data: { promptTokens: number; totalTokens: number; contextWindow: number } }
   | { event: "done"; data: Record<string, never> }
   | { event: "error"; data: { message: string } };
 
@@ -113,6 +115,16 @@ export function useChat() {
   const [currentResponse, setCurrentResponse] = useState("");
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCall[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // Latest context-window occupancy reported by the backend (last LLM round of
+  // the current turn). Null until a turn runs in this session; reset on switch.
+  const [contextUsage, setContextUsage] = useState<{ used: number; total: number } | null>(null);
+  // Ref mirror so saveCurrentSession (called from event-driven finish/drain)
+  // persists the latest usage instead of a stale closure value.
+  const contextUsageRef = useRef<{ used: number; total: number } | null>(null);
+  const setUsage = (u: { used: number; total: number } | null) => {
+    contextUsageRef.current = u;
+    setContextUsage(u);
+  };
 
   const [sessionId, setSessionId] = useState("");
   const [sessionTitle, setSessionTitle] = useState(DEFAULT_SESSION_TITLE);
@@ -165,6 +177,9 @@ export function useChat() {
       setItems(loadedItems);
       itemsRef.current = loadedItems;
       messagesRef.current = session.messages || [];
+      // Restore the persisted occupancy so the ring shows immediately, instead
+      // of waiting for the next turn (or showing the session we switched from).
+      setUsage(session.context_usage ?? null);
       // A completion for this session may have been deferred while it was closed.
       setTimeout(() => processQueueRef.current(), 0);
       return session;
@@ -184,6 +199,7 @@ export function useChat() {
       setSessionId(session.id);
       setSessionTitle(session.title);
       setItems([]);
+      setUsage(null);
       messagesRef.current = session.messages;
       await refreshSessionList();
       return session.id;
@@ -234,6 +250,7 @@ export function useChat() {
         updated_at: new Date().toISOString(),
         messages: messagesRef.current,
         items: newItems,
+        context_usage: contextUsageRef.current,
       };
       try {
         await invoke("save_session", { session });
@@ -351,6 +368,9 @@ export function useChat() {
           // in the server's message history for the model; here it's UI-only.
           flushToolCalls();
           commit([...finalItems, { type: "assistant", content: "", images: [event.data.dataUrl], ts: Date.now() }]);
+        } else if (event.event === "usage") {
+          // Keep the latest round's usage; the final round carries the fullest context.
+          setUsage({ used: event.data.totalTokens, total: event.data.contextWindow });
         } else if (event.event === "done") {
           flushToolCalls();
           if (accumulated.trim()) {
@@ -534,6 +554,7 @@ export function useChat() {
     currentResponse,
     currentToolCalls,
     loaded,
+    contextUsage,
     sessionId,
     sessionTitle,
     sessionList,

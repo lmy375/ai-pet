@@ -31,6 +31,15 @@ pub struct SessionIndex {
     pub sessions: Vec<SessionMeta>,
 }
 
+/// Last reported context-window occupancy for a session, persisted so the chat
+/// usage ring shows immediately on reload/switch instead of waiting for the next
+/// turn. `#[serde(default)]` keeps older session files (without it) parseable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUsage {
+    pub used: u64,
+    pub total: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -39,6 +48,8 @@ pub struct Session {
     pub updated_at: String,
     pub messages: Vec<serde_json::Value>,
     pub items: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub context_usage: Option<ContextUsage>,
 }
 
 fn read_index() -> SessionIndex {
@@ -89,6 +100,7 @@ pub fn new_seeded_session(id: String, title: String) -> Result<Session, String> 
         updated_at: now,
         messages: vec![soul_system_message()],
         items: vec![],
+        context_usage: None,
     };
     save_session(session.clone())?;
     Ok(session)
@@ -111,11 +123,18 @@ pub fn load_session(id: String) -> Result<Session, String> {
 pub fn save_session(mut session: Session) -> Result<(), String> {
     let path = session_path(&session.id)?;
 
-    // Preserve created_at from existing file if not provided
-    if session.created_at.is_empty() {
+    // Preserve created_at (and last-known usage) from the existing file when the
+    // caller didn't supply them — e.g. a turn whose provider omitted usage, or a
+    // Telegram save, shouldn't blank out a previously-recorded occupancy.
+    if session.created_at.is_empty() || session.context_usage.is_none() {
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(existing) = serde_json::from_str::<Session>(&content) {
-                session.created_at = existing.created_at;
+                if session.created_at.is_empty() {
+                    session.created_at = existing.created_at;
+                }
+                if session.context_usage.is_none() {
+                    session.context_usage = existing.context_usage;
+                }
             }
         }
     }

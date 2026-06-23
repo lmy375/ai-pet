@@ -65,6 +65,11 @@ pub struct AppSettings {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// Context-window size (tokens) for the model, used as the denominator of
+    /// the chat context-usage ring. Not exposed by the OpenAI API, so it's a
+    /// user-configurable value.
+    #[serde(default = "default_context_window")]
+    pub context_window: u32,
     /// UI language: "zh" or "en".
     #[serde(default = "default_language")]
     pub language: String,
@@ -111,6 +116,10 @@ fn default_api_base() -> String {
     "https://api.openai.com/v1".to_string()
 }
 
+fn default_context_window() -> u32 {
+    128000
+}
+
 fn default_model() -> String {
     "gpt-4o-mini".to_string()
 }
@@ -126,6 +135,7 @@ impl Default for AppSettings {
             api_base: default_api_base(),
             api_key: String::new(),
             model: default_model(),
+            context_window: default_context_window(),
             language: default_language(),
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),

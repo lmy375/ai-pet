@@ -3,6 +3,7 @@ import { useChat, DEFAULT_SESSION_TITLE } from "../../hooks/useChat";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
+import { ProgressRing } from "../ui/ProgressRing";
 import { ChevronDown, ChevronRight, PlusIcon, TrashIcon } from "../Icons";
 import { useI18n } from "../../i18n";
 
@@ -14,6 +15,7 @@ export function PanelChat() {
     currentResponse,
     currentToolCalls,
     loaded,
+    contextUsage,
     sessionId,
     sessionTitle,
     sessionList,
@@ -47,6 +49,16 @@ export function PanelChat() {
             <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
           )}
         </button>
+        {contextUsage && contextUsage.total > 0 && (
+          <ProgressRing
+            value={contextUsage.used / contextUsage.total}
+            title={t("chat.context.tooltip", {
+              used: contextUsage.used.toLocaleString(),
+              total: contextUsage.total.toLocaleString(),
+              percent: Math.round((contextUsage.used / contextUsage.total) * 100),
+            })}
+          />
+        )}
         <Button variant="ghost" size="sm" onClick={() => { newSession(); setShowSessionList(false); }} title={t("chat.session.newTitle")}>
           <PlusIcon className="h-4 w-4" />
           {t("chat.newSession")}

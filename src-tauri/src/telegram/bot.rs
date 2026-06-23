@@ -270,6 +270,8 @@ async fn handle_message(
             updated_at: crate::common::iso_now(),
             messages: session_msgs.clone(),
             items: items.clone(),
+            // Telegram sessions aren't shown by the panel's context ring.
+            context_usage: None,
         };
         let _ = session::save_session(s);
     }
@@ -353,6 +355,7 @@ impl ChatEventSink for TelegramSink {
     fn send_image(&self, data_url: &str) {
         self.images.lock().unwrap().push(data_url.to_string());
     }
+    fn send_usage(&self, _prompt_tokens: u64, _total_tokens: u64, _context_window: u32) {}
     fn send_done(&self) {}
     fn send_error(&self, _message: &str) {}
 }

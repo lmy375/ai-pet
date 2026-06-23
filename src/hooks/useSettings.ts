@@ -23,6 +23,7 @@ export interface AppSettings {
   api_base: string;
   api_key: string;
   model: string;
+  context_window: number;
   language: string;
   mcp_servers: Record<string, McpServerConfig>;
   telegram: TelegramConfig;
@@ -53,6 +54,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_base: "https://api.openai.com/v1",
   api_key: "",
   model: "gpt-4o-mini",
+  context_window: 128000,
   language: "zh",
   mcp_servers: {},
   telegram: { bot_token: "", allowed_username: "", enabled: false },
