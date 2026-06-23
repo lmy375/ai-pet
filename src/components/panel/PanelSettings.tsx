@@ -29,6 +29,7 @@ export function PanelSettings() {
     api_base: "",
     api_key: "",
     model: "",
+    context_window: 128000,
     language: "zh",
     mcp_servers: {},
     telegram: { bot_token: "", allowed_username: "", enabled: false },
@@ -437,6 +438,22 @@ export function PanelSettings() {
             {testResult && (
               <StatusText ok={testResult.ok} className="mt-1.5 text-[12px]">{testResult.text}</StatusText>
             )}
+
+            <Label className="mt-3">{t("settings.llm.contextWindow")}</Label>
+            <TextInput
+              type="number"
+              min={1}
+              value={form.context_window}
+              onChange={(e) => setForm({ ...form, context_window: Number(e.target.value) || 0 })}
+              onBlur={() => {
+                const next = { ...form, context_window: Math.max(1, form.context_window || 128000) };
+                setForm(next);
+                saveSettings(next);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="128000"
+            />
+            <p className="mt-1 text-[11px] text-slate-400">{t("settings.llm.contextWindowNote")}</p>
           </Card>
 
           {/* MCP Servers */}

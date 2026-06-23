@@ -5,6 +5,10 @@ pub struct AiConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// Context-window size (tokens) used as the denominator for the context
+    /// usage ring. The standard OpenAI API doesn't expose this, so it's a config
+    /// value (`AppSettings::context_window`).
+    pub context_window: u32,
 }
 
 impl AiConfig {
@@ -17,6 +21,7 @@ impl AiConfig {
             api_key: settings.api_key,
             base_url: settings.api_base,
             model: settings.model,
+            context_window: settings.context_window,
         })
     }
 }

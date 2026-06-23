@@ -37,6 +37,19 @@ pub enum StreamEvent {
         #[serde(rename = "dataUrl")]
         data_url: String,
     },
+    /// Token usage for the round that just completed, surfaced so the UI can
+    /// render a context-occupancy ring. Sent once per LLM round; the frontend
+    /// keeps the latest (the final round carries the fullest context). As with
+    /// `Image`, `rename_all` only renames variants, so each field needs an
+    /// explicit `rename` to reach the frontend in camelCase.
+    Usage {
+        #[serde(rename = "promptTokens")]
+        prompt_tokens: u64,
+        #[serde(rename = "totalTokens")]
+        total_tokens: u64,
+        #[serde(rename = "contextWindow")]
+        context_window: u32,
+    },
     Done {},
     Error { message: String },
 }
@@ -47,6 +60,7 @@ pub trait ChatEventSink: Send + Sync {
     fn send_tool_start(&self, name: &str, arguments: &str);
     fn send_tool_result(&self, name: &str, result: &str);
     fn send_image(&self, data_url: &str);
+    fn send_usage(&self, prompt_tokens: u64, total_tokens: u64, context_window: u32);
     fn send_done(&self);
     fn send_error(&self, message: &str);
 }
@@ -64,6 +78,9 @@ impl ChatEventSink for Channel<StreamEvent> {
     }
     fn send_image(&self, data_url: &str) {
         let _ = self.send(StreamEvent::Image { data_url: data_url.to_string() });
+    }
+    fn send_usage(&self, prompt_tokens: u64, total_tokens: u64, context_window: u32) {
+        let _ = self.send(StreamEvent::Usage { prompt_tokens, total_tokens, context_window });
     }
     fn send_done(&self) {
         let _ = self.send(StreamEvent::Done {});
@@ -88,6 +105,7 @@ impl ChatEventSink for CollectingSink {
     fn send_tool_start(&self, _name: &str, _arguments: &str) {}
     fn send_tool_result(&self, _name: &str, _result: &str) {}
     fn send_image(&self, _data_url: &str) {}
+    fn send_usage(&self, _prompt_tokens: u64, _total_tokens: u64, _context_window: u32) {}
     fn send_done(&self) {}
     fn send_error(&self, _message: &str) {}
 }
@@ -101,6 +119,10 @@ struct LlmResult {
     done_time: String,
     first_token_latency_ms: Option<i64>,
     total_latency_ms: i64,
+    /// Token usage from the API's final `usage` chunk (requires
+    /// `stream_options.include_usage`). `None` if the provider omits it.
+    prompt_tokens: Option<u64>,
+    total_tokens: Option<u64>,
 }
 
 /// Make a streaming LLM request; returns LlmResult with timing info
@@ -144,6 +166,8 @@ async fn stream_llm_request(
         std::collections::HashMap::new();
     let mut first_token_instant: Option<std::time::Instant> = None;
     let mut first_token_time_str: Option<String> = None;
+    let mut prompt_tokens: Option<u64> = None;
+    let mut total_tokens: Option<u64> = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
@@ -158,6 +182,14 @@ async fn stream_llm_request(
                     break;
                 }
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                    // The final usage chunk (from stream_options.include_usage)
+                    // carries `usage` with empty `choices`. Capture it for the
+                    // context-occupancy ring.
+                    if let Some(u) = parsed.get("usage").filter(|u| u.is_object()) {
+                        prompt_tokens = u["prompt_tokens"].as_u64();
+                        total_tokens = u["total_tokens"].as_u64();
+                    }
+
                     // Record first token time on the first meaningful data chunk
                     if first_token_instant.is_none() {
                         first_token_instant = Some(std::time::Instant::now());
@@ -226,6 +258,8 @@ async fn stream_llm_request(
         done_time: done_time_str,
         first_token_latency_ms,
         total_latency_ms,
+        prompt_tokens,
+        total_tokens,
     })
 }
 
@@ -307,6 +341,7 @@ pub async fn run_agent_loop(
         let body = serde_json::json!({
             "model": config.model,
             "stream": true,
+            "stream_options": { "include_usage": true },
             "messages": conv_messages,
             "tools": tools,
         });
@@ -314,6 +349,12 @@ pub async fn run_agent_loop(
         ctx.log(&format!("POST {}", url));
         let result =
             stream_llm_request(&client, &url, &config.api_key, &body, sink, ctx).await?;
+
+        // Surface this round's token usage to the UI's context ring. The frontend
+        // keeps the latest, so the final round (fullest context) wins.
+        if let (Some(prompt), Some(total)) = (result.prompt_tokens, result.total_tokens) {
+            sink.send_usage(prompt, total, config.context_window);
+        }
 
         // Write LLM request/response to llm.log with timing
         write_llm_log(
