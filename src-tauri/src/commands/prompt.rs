@@ -24,8 +24,9 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 
 ## 改动文件与代码
 - 改文件前先用 read_file 读一遍，确认当前内容再动手；不要凭猜测改。
-- 优先 edit_file（只改需要变更的部分），仅在新建或完全重写时用 write_file。
-- edit_file 的 old_string 必须在文件中唯一；不唯一就补足上下文，或设置 replace_all。
+- 局部改动用 edit_file，新建文件或整体重写用 write_file。两者别混用：用 edit_file 把整段/整文件当成 old_string 来替换，就失去了它的意义，那种情况直接用 write_file。
+- edit_file 的 old_string 要选“能唯一定位改动点的最短片段”：只截取需要变更的那几行、外加必要的少量上下文，让它在文件里全局唯一即可，不要把上下大段无关内容也塞进去。
+- old_string 在文件中不唯一时，补一点紧邻的上下文让它唯一；确实要改所有相同片段才用 replace_all。
 - 写代码前先了解现状：用 read_file，或 bash 里的 ls/find/grep 摸清项目结构和相关代码。
 - 跟随周围代码的风格、命名和缩进；用项目已有的库和工具，不要假设某个库可用——先确认项目确实依赖它（看 package.json / Cargo.toml / 现有 import）。
 - 不要主动加注释，除非主人要求，或逻辑复杂到非注释不可。
@@ -90,17 +91,20 @@ fn build_memory_prompt() -> String {
     let dir = path_string(memory::memory_dir());
     let user_p = path_string(memory::user_path());
     let mem_p = path_string(memory::memory_path());
+    let hb_p = path_string(crate::commands::heartbeat_file::heartbeat_path());
 
     format!(
         "{soul}\n\n\
 # 长期记忆\n\n\
 你拥有跨对话的长期记忆，保存在 `{dir}/` 目录下。以下三个常驻文件的当前内容已经提供给你；你可以用 read_file / edit_file / write_file 维护它们。\n\n\
 ## USER.md（关于主人）\n{user}\n\n\
-## MEMORY.md（你的日记）\n{mem}\n\n\
+## MEMORY.md（你自己的长期记忆）\n{mem}\n\n\
 ## 记忆守则\n\
-- 学到关于主人的持久事实、偏好或要求时，用 edit_file 更新 `{user_p}`，就地整理，不要重复堆叠。\n\
-- 有自己的理解、想法、想记住的事，写进 `{mem_p}`，像写日记，不要记流水账（不要逐条记“主人今天说了什么”）。\n\
-- 记录有时效性的信息时要带上时间（日期，必要时先获取当前时间）：事情会随时间变化，标注时间才能在以后判断它是否仍然成立、是否需要更新或替换。\n\
+- 先判断该记到哪个文件，不要都往 MEMORY.md 塞：关于主人的持久事实/偏好/要求 → `{user_p}`；定时、周期、到点提醒类的任务 → `{hb_p}`；只有这两类都不属于、又确实值得长期记住的，才写 `{mem_p}`。\n\
+- `{user_p}`：学到关于主人的持久事实、偏好或要求时用 edit_file 更新，就地整理，不要重复堆叠。\n\
+- `{mem_p}`：只记真正有价值的——重要结论、你自己的判断与洞察。这不是日记，不要逐条流水账记录“今天/这次对话做了什么、主人说了什么”；没价值的不记，已经记过的就地更新整理。\n\
+- MEMORY.md 每条记录都要带具体时间，并在该条结尾单独加一行 `---- 更新时间：YYYY-MM-DD`（必要时先用 bash 跑 `date` 获取当前时间）。标了时间，以后才能判断它是否仍然成立、是否该更新或替换。\n\
+- MEMORY.md 内容超过约 10k 字符时，做一次整理压缩：保留有价值的关键信息，删掉无价值、过期、已失效的内容，让它保持精炼。\n\
 - 某个主题内容变多时，在 `{dir}/` 下新建子文件（如 `主题.md`），并在主文件里用 `[[文件名]]` 链接索引，需要时再用 read_file 打开。\n\
 - 没有任何东西会自动消失。要“忘记”只能你自己主动整理、删改。\n\
 - SOUL.md 是你的本质，只读，不要修改它。\n\
