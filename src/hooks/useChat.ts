@@ -262,6 +262,25 @@ export function useChat() {
     [],
   );
 
+  // Rename any session by id. If it's the active one, reflect the new title in
+  // local state immediately; then persist title + index meta via the backend
+  // (without touching messages/items).
+  const renameSession = useCallback(async (id: string, title: string) => {
+    const trimmed = title.trim();
+    if (!id || !trimmed) return;
+    if (id === sessionIdRef.current) {
+      if (trimmed === sessionTitleRef.current) return;
+      setSessionTitle(trimmed);
+      sessionTitleRef.current = trimmed;
+    }
+    try {
+      await invoke("rename_session", { id, title: trimmed });
+      await refreshSessionList();
+    } catch (e) {
+      console.error("Failed to rename session:", e);
+    }
+  }, []);
+
   const switchSession = useCallback(async (id: string) => {
     await loadSession(id);
   }, []);
@@ -560,6 +579,7 @@ export function useChat() {
     sessionList,
     sendMessage,
     newSession,
+    renameSession,
     switchSession,
     deleteSession,
   };

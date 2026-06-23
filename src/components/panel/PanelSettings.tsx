@@ -12,6 +12,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
 import { useI18n } from "../../i18n";
 
+// Common model context windows, offered as one-tap presets next to the free
+// numeric input (gpt-4o ~128K, Claude ~200K, Gemini ~1M).
+const CONTEXT_PRESETS: { label: string; value: number }[] = [
+  { label: "32K", value: 32000 },
+  { label: "128K", value: 128000 },
+  { label: "200K", value: 200000 },
+  { label: "1M", value: 1000000 },
+];
+
 const emptyMcpServer = (transport: McpServerConfig["transport"] = "stdio"): McpServerConfig => ({
   transport,
   command: "",
@@ -440,6 +449,27 @@ export function PanelSettings() {
             )}
 
             <Label className="mt-3">{t("settings.llm.contextWindow")}</Label>
+            <div className="mb-2 flex gap-1.5">
+              {CONTEXT_PRESETS.map((p) => {
+                const active = form.context_window === p.value;
+                return (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => {
+                      const next = { ...form, context_window: p.value };
+                      setForm(next);
+                      saveSettings(next);
+                    }}
+                    className={`rounded-lg px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                      active ? "bg-accent text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
             <TextInput
               type="number"
               min={1}

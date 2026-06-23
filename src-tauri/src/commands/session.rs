@@ -161,6 +161,33 @@ pub fn save_session(mut session: Session) -> Result<(), String> {
     write_index(&index)
 }
 
+/// Rename a session: update both the session file's title and the index meta,
+/// without touching its messages/items (so it can't race the in-memory chat).
+#[tauri::command]
+pub fn rename_session(id: String, title: String) -> Result<(), String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("Title cannot be empty".to_string());
+    }
+
+    let path = session_path(&id)?;
+    if let Ok(content) = fs::read_to_string(&path) {
+        if let Ok(mut session) = serde_json::from_str::<Session>(&content) {
+            session.title = title.clone();
+            let json = serde_json::to_string_pretty(&session)
+                .map_err(|e| format!("Failed to serialize session: {e}"))?;
+            fs::write(&path, json).map_err(|e| format!("Failed to write session: {e}"))?;
+        }
+    }
+
+    let mut index = read_index();
+    if let Some(meta) = index.sessions.iter_mut().find(|m| m.id == id) {
+        meta.title = title;
+        write_index(&index)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn create_session() -> Result<Session, String> {
     new_seeded_session(Uuid::new_v4().to_string(), "新会话".to_string())
