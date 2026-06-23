@@ -3,7 +3,8 @@
 //! Three mandatory files form the always-injected "hot" layer:
 //! - `SOUL.md`   — the pet's nature / persona (human-authored, read-only to the pet)
 //! - `USER.md`   — facts and preferences about the owner (pet maintains)
-//! - `MEMORY.md` — the pet's own journal: understanding, thoughts (pet maintains)
+//! - `MEMORY.md` — the pet's own long-term memory: valuable understanding,
+//!   thoughts, judgments (pet maintains) — not a diary/daily log
 //!
 //! Any subfiles the pet creates under `memory/` are a "cold" layer: not injected,
 //! reached on demand via `read_file` through `[[link]]` references in the main
@@ -37,7 +38,7 @@ fn default_user() -> String {
 }
 
 fn default_memory() -> String {
-    "# 我的记忆\n\n（这里是你自己的日记：你的理解、想法、想记住的事。像写日记，不要记流水账。没有东西会自动消失。）\n".to_string()
+    "# 我的记忆\n\n（这里是你自己的长期记忆：值得长期记住的理解、想法、判断。只记真正有价值的，这不是日记，不要流水账记录每天/每次对话发生了什么。没有东西会自动消失。）\n".to_string()
 }
 
 fn read_file_or(path: Result<PathBuf, String>, default: fn() -> String) -> String {
@@ -82,7 +83,7 @@ pub fn read_user() -> String {
     read_file_or(user_path(), default_user)
 }
 
-/// The MEMORY.md content (the pet's own journal).
+/// The MEMORY.md content (the pet's own long-term memory).
 pub fn read_memory() -> String {
     read_file_or(memory_path(), default_memory)
 }

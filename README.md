@@ -32,7 +32,7 @@ back end.
 - **Scheduled heartbeat** — the pet wakes up in the background on an interval to
   run timed tasks or reach out proactively.
 - **Persistent memory** — `SOUL.md` (persona), `USER.md` (about you), and
-  `MEMORY.md` (its journal) survive across conversations.
+  `MEMORY.md` (its long-term memory) survive across conversations.
 - **MCP support** — connect Model Context Protocol servers (stdio / SSE / HTTP)
   to extend the toolset.
 - **Gallery mode** — swap the pet for a slideshow of a folder's images/videos.
@@ -98,7 +98,7 @@ field and where the data lives.
 - **Telegram 机器人** —— 在手机上和宠物聊天，支持收发图片。
   详见 [docs/telegram.md](docs/telegram.md)。
 - **定时心跳** —— 宠物按设定间隔在后台醒来，执行定时任务或主动找你。
-- **长期记忆** —— `SOUL.md`（人设）、`USER.md`（关于你）、`MEMORY.md`（它的日记）
+- **长期记忆** —— `SOUL.md`（人设）、`USER.md`（关于你）、`MEMORY.md`（它的长期记忆）
   跨对话保留。
 - **MCP 支持** —— 接入 Model Context Protocol 服务（stdio / SSE / HTTP）扩展工具集。
 - **画廊模式** —— 把宠物换成某个文件夹的图片/视频幻灯片。

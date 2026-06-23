@@ -11,7 +11,7 @@
 | `config.yaml` | 下方所有设置 |
 | `memory/SOUL.md` | 宠物人设（人工编写，宠物只读） |
 | `memory/USER.md` | 关于主人的事实与偏好（宠物维护） |
-| `memory/MEMORY.md` | 宠物日记（宠物维护） |
+| `memory/MEMORY.md` | 宠物长期记忆（宠物维护，只记有价值的，非流水账日记） |
 | `memory/HEARTBEAT.md` | 定时任务清单（心跳读取/维护） |
 | `sessions/` | 各会话历史（含 Telegram 的 `telegram-bot`） |
 | `/tmp/pet/shell/` | bash 任务的 stdout/stderr |

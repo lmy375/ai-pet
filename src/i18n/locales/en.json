@@ -52,8 +52,8 @@
   "memory.soul.placeholder": "The pet's essence / personality...",
   "memory.user.title": "USER.md (about you)",
   "memory.user.placeholder": "Facts and preferences about you (the pet adds to this during chats)...",
-  "memory.memory.title": "MEMORY.md (journal)",
-  "memory.memory.placeholder": "The pet's own notes and thoughts (recorded during chats)...",
+  "memory.memory.title": "MEMORY.md (long-term memory)",
+  "memory.memory.placeholder": "Insights and thoughts worth keeping (recorded during chats — only what's valuable, not a daily log)...",
   "memory.heartbeat.title": "HEARTBEAT.md (scheduled tasks)",
   "memory.heartbeat.placeholder": "The pet's scheduled-task list (read on each heartbeat to decide what to do; the pet maintains it too)...",
 
