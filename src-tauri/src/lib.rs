@@ -7,7 +7,6 @@ mod tools;
 
 use commands::debug::{log_dir, LogStore};
 use commands::shell::ShellStore;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -27,7 +26,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
-        .manage(ShellStore(Arc::new(std::sync::Mutex::new(HashMap::new()))))
+        .manage(ShellStore(Arc::new(std::sync::Mutex::new(
+            commands::shell::load_persisted_tasks(),
+        ))))
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
         .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))

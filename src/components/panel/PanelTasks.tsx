@@ -4,6 +4,7 @@ import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { RefreshIcon, ClockIcon, ChevronRight } from "../Icons";
 import { useI18n } from "../../i18n";
+import { formatIsoTime } from "../../utils/format";
 
 interface TaskListItem {
   taskId: string;
@@ -81,6 +82,9 @@ function TaskRow({
         <span title={task.label} className="min-w-0 flex-1 truncate text-[13px] text-slate-700">
           {task.label || t("tasks.noLabel")}
         </span>
+        <span className="hidden shrink-0 text-[12px] text-slate-400 sm:inline">
+          {t("tasks.triggeredAt", { time: formatIsoTime(task.startedAt) })}
+        </span>
         <span className="flex shrink-0 items-center gap-1 text-[12px] text-slate-400">
           <ClockIcon className="h-3.5 w-3.5" />
           {fmtDuration(task.elapsedMs)}
@@ -111,6 +115,10 @@ function TaskRow({
         <div className="space-y-2 border-t border-slate-200/70 px-3 py-2.5">
           {detail ? (
             <>
+              <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[12px]">
+                <span className="font-semibold text-slate-400">{t("tasks.triggerTime")}</span>
+                <span className="min-w-0 break-all text-slate-600">{task.startedAt}</span>
+              </div>
               <div>
                 <div className="mb-1 text-[11px] font-semibold text-slate-400">
                   {task.kind === "bash" ? t("tasks.cmd") : "Prompt"}

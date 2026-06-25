@@ -4,15 +4,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Local};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::commands::debug::log_dir;
 use crate::tools::ToolContext;
 
 pub const MAX_OUTPUT: usize = 32768;
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
 pub const SHELL_DIR: &str = "/tmp/pet/shell";
+const TASK_HISTORY_LIMIT: usize = 200;
 
 // --- Types ---
 
@@ -42,6 +44,15 @@ impl TaskKind {
             TaskKind::Heartbeat => "heartbeat",
         }
     }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "bash" => Some(TaskKind::Bash),
+            "subagent" => Some(TaskKind::Subagent),
+            "heartbeat" => Some(TaskKind::Heartbeat),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -60,6 +71,9 @@ pub(crate) struct ShellTask {
     pid: u32,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
+    persisted_stdout: Option<String>,
+    persisted_stderr: Option<String>,
+    persisted_truncated: bool,
     // Sub-agent final text (None for bash; bash output lives in its files).
     result: Option<String>,
     // Cancels a running sub-agent (its work future). Bash is killed by pid, so
@@ -89,6 +103,9 @@ impl ShellTask {
             pid,
             stdout_path,
             stderr_path,
+            persisted_stdout: None,
+            persisted_stderr: None,
+            persisted_truncated: false,
             result: None,
             abort: None,
         }
@@ -116,6 +133,9 @@ impl ShellTask {
             pid: 0,
             stdout_path: PathBuf::new(),
             stderr_path: PathBuf::new(),
+            persisted_stdout: None,
+            persisted_stderr: None,
+            persisted_truncated: false,
             result: None,
             abort: None,
         }
@@ -146,6 +166,26 @@ impl ShellTask {
 
 #[derive(Clone)]
 pub struct ShellStore(pub Arc<Mutex<HashMap<String, ShellTask>>>);
+
+#[derive(Clone, Serialize, Deserialize)]
+struct PersistedTask {
+    task_id: String,
+    kind: String,
+    label: String,
+    input: String,
+    session_id: String,
+    status: String,
+    return_code: Option<i32>,
+    started_at: String,
+    finished_at: Option<String>,
+    pid: u32,
+    stdout_path: String,
+    stderr_path: String,
+    stdout: String,
+    stderr: String,
+    result: Option<String>,
+    truncated: bool,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -212,19 +252,156 @@ pub fn read_with_truncation(path: &PathBuf) -> (String, bool) {
     }
 }
 
+fn task_history_path() -> PathBuf {
+    log_dir().join("tasks.json")
+}
+
+fn parse_local_time(s: &str) -> Option<DateTime<Local>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Local))
+}
+
+fn task_sort_key(task: &ShellTask) -> DateTime<Local> {
+    task.finished_at.unwrap_or(task.started_at)
+}
+
+fn capture_bash_output(task: &ShellTask) -> (String, String, bool) {
+    if !task.stdout_path.as_os_str().is_empty() && task.stdout_path.exists() {
+        let (stdout, out_trunc) = read_with_truncation(&task.stdout_path);
+        let (stderr, err_trunc) = read_with_truncation(&task.stderr_path);
+        (stdout, stderr, out_trunc || err_trunc)
+    } else {
+        (
+            task.persisted_stdout.clone().unwrap_or_default(),
+            task.persisted_stderr.clone().unwrap_or_default(),
+            task.persisted_truncated,
+        )
+    }
+}
+
+fn snapshot_task(task_id: &str, task: &ShellTask) -> PersistedTask {
+    let (status, return_code, _) = task.status_info();
+    let (stdout, stderr, truncated) = match task.kind {
+        TaskKind::Bash => capture_bash_output(task),
+        TaskKind::Subagent | TaskKind::Heartbeat => (
+            task.result.clone().unwrap_or_default(),
+            String::new(),
+            false,
+        ),
+    };
+
+    PersistedTask {
+        task_id: task_id.to_string(),
+        kind: task.kind.as_str().to_string(),
+        label: task.label.clone(),
+        input: task.input.clone(),
+        session_id: task.session_id.clone(),
+        status: status.to_string(),
+        return_code,
+        started_at: task.started_at.to_rfc3339(),
+        finished_at: task.finished_at.map(|t| t.to_rfc3339()),
+        pid: task.pid,
+        stdout_path: task.stdout_path.to_string_lossy().to_string(),
+        stderr_path: task.stderr_path.to_string_lossy().to_string(),
+        stdout,
+        stderr,
+        result: task.result.clone(),
+        truncated,
+    }
+}
+
+pub(crate) fn save_task_history(map: &HashMap<String, ShellTask>) {
+    let mut tasks: Vec<(&String, &ShellTask)> = map.iter().collect();
+    tasks.sort_by_key(|(_, task)| std::cmp::Reverse(task_sort_key(task)));
+    let rows: Vec<PersistedTask> = tasks
+        .into_iter()
+        .take(TASK_HISTORY_LIMIT)
+        .map(|(id, task)| snapshot_task(id, task))
+        .collect();
+
+    let path = task_history_path();
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+    if let Ok(json) = serde_json::to_string_pretty(&rows) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn shell_task_from_persisted(row: PersistedTask) -> Option<(String, ShellTask)> {
+    let kind = TaskKind::from_str(&row.kind)?;
+    let started_at = parse_local_time(&row.started_at).unwrap_or_else(Local::now);
+    let status = TaskStatus::Finished;
+    let return_code = row.return_code;
+    let mut finished_at = row.finished_at.as_deref().and_then(parse_local_time);
+    let mut result = row.result.clone();
+
+    // A task restored after app restart cannot be controlled or observed live.
+    // Keep its captured content, but do not show an unkillable "running" row.
+    if row.status == "running" {
+        finished_at = Some(Local::now());
+        if matches!(kind, TaskKind::Subagent | TaskKind::Heartbeat) && result.is_none() {
+            result = Some("（应用已重启，无法继续跟踪该任务）".to_string());
+        }
+    }
+
+    let stdout =
+        if row.stdout.is_empty() && matches!(kind, TaskKind::Subagent | TaskKind::Heartbeat) {
+            result.clone()
+        } else {
+            Some(row.stdout)
+        };
+
+    let task = ShellTask {
+        kind,
+        label: row.label,
+        input: row.input,
+        session_id: row.session_id,
+        status,
+        return_code,
+        started_at,
+        finished_at,
+        pid: 0,
+        stdout_path: PathBuf::from(row.stdout_path),
+        stderr_path: PathBuf::from(row.stderr_path),
+        persisted_stdout: stdout,
+        persisted_stderr: Some(row.stderr),
+        persisted_truncated: row.truncated,
+        result,
+        abort: None,
+    };
+    Some((row.task_id, task))
+}
+
+pub(crate) fn load_persisted_tasks() -> HashMap<String, ShellTask> {
+    let path = task_history_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => return HashMap::new(),
+    };
+    let rows = match serde_json::from_str::<Vec<PersistedTask>>(&content) {
+        Ok(rows) => rows,
+        Err(_) => return HashMap::new(),
+    };
+    let mut map: HashMap<String, ShellTask> = rows
+        .into_iter()
+        .filter_map(shell_task_from_persisted)
+        .collect();
+    cleanup_old_tasks(&mut map);
+    save_task_history(&map);
+    map
+}
+
 pub(crate) fn build_shell_result(task_id: &str, task: &ShellTask) -> ShellResult {
     let (status, return_code, execution_time_ms) = task.status_info();
 
     // Sub-agents have no output files — their final text lives in `result`.
     let (stdout, stderr, truncated) = match task.kind {
-        TaskKind::Bash => {
-            let (out, out_trunc) = read_with_truncation(&task.stdout_path);
-            let (err, err_trunc) = read_with_truncation(&task.stderr_path);
-            (out, err, out_trunc || err_trunc)
-        }
-        TaskKind::Subagent | TaskKind::Heartbeat => {
-            (task.result.clone().unwrap_or_default(), String::new(), false)
-        }
+        TaskKind::Bash => capture_bash_output(task),
+        TaskKind::Subagent | TaskKind::Heartbeat => (
+            task.result.clone().unwrap_or_default(),
+            String::new(),
+            false,
+        ),
     };
 
     ShellResult {
@@ -282,7 +459,9 @@ pub fn mark_finished_and_notify(
         if result.is_some() {
             task.result = result;
         }
-        task.clone()
+        let snapshot = task.clone();
+        save_task_history(&map);
+        snapshot
     };
     if let Some(n) = notifier {
         let completion = TaskCompletion {
@@ -297,16 +476,14 @@ pub fn mark_finished_and_notify(
 }
 
 pub fn cleanup_old_tasks(map: &mut HashMap<String, ShellTask>) {
-    let cutoff = Local::now() - chrono::Duration::hours(1);
-    let to_remove: Vec<String> = map
+    let mut finished: Vec<(String, DateTime<Local>)> = map
         .iter()
-        .filter(|(_, t)| {
-            t.status == TaskStatus::Finished && t.finished_at.map_or(false, |f| f < cutoff)
-        })
-        .map(|(id, _)| id.clone())
+        .filter(|(_, t)| t.status == TaskStatus::Finished)
+        .map(|(id, t)| (id.clone(), task_sort_key(t)))
         .collect();
+    finished.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
 
-    for id in to_remove {
+    for (id, _) in finished.into_iter().skip(TASK_HISTORY_LIMIT) {
         if let Some(task) = map.remove(&id) {
             let _ = std::fs::remove_file(&task.stdout_path);
             let _ = std::fs::remove_file(&task.stderr_path);
@@ -343,6 +520,7 @@ where
             task_id.clone(),
             ShellTask::new_background(kind, label, ctx.session_id.clone(), started_at, input),
         );
+        save_task_history(&map);
     }
 
     let mut handle = tokio::spawn(work);
@@ -358,8 +536,12 @@ where
     let notifier = ctx.notifier.clone();
 
     // A join error means the work panicked: report it as a failed task.
-    let join_err =
-        |e: tokio::task::JoinError| (Some(-1), format!(r#"{{"error": "task join error: {}"}}"#, e));
+    let join_err = |e: tokio::task::JoinError| {
+        (
+            Some(-1),
+            format!(r#"{{"error": "task join error: {}"}}"#, e),
+        )
+    };
 
     if run_in_background {
         let tid = task_id.clone();
@@ -386,6 +568,7 @@ where
                     t.mark_finished(code);
                     t.result = Some(result.clone());
                 }
+                save_task_history(&map);
             }
             result
         }
@@ -434,11 +617,16 @@ pub struct TaskListItem {
     pub session_id: String,
 }
 
-/// List all tracked tasks (running + recently finished; `cleanup_old_tasks`
-/// drops finished tasks older than an hour). The UI groups and sorts them.
+/// List all tracked tasks (running + up to 200 recently finished tasks). The UI
+/// groups and sorts them.
 #[tauri::command]
 pub fn list_tasks(store: State<'_, ShellStore>) -> Vec<TaskListItem> {
-    let map = store.0.lock().unwrap();
+    let mut map = store.0.lock().unwrap();
+    let before = map.len();
+    cleanup_old_tasks(&mut map);
+    if map.len() != before {
+        save_task_history(&map);
+    }
     map.iter()
         .map(|(id, t)| {
             let (status, return_code, elapsed_ms) = t.status_info();
@@ -488,7 +676,9 @@ pub fn kill_task(
             label: task.label.clone(),
             result,
         };
-        (task.kind, task.pid, task.abort.take(), completion)
+        let ret = (task.kind, task.pid, task.abort.take(), completion);
+        save_task_history(&map);
+        ret
     };
 
     // Stop the actual work: bash by process group (set via process_group(0) at
@@ -514,7 +704,10 @@ pub fn kill_task(
     use tauri::Emitter;
     let label = crate::commands::window::active_window_label(&app);
     if let Err(e) = app.emit_to(&label, "background-finished", completion) {
-        eprintln!("failed to emit background-finished for killed task {}: {}", task_id, e);
+        eprintln!(
+            "failed to emit background-finished for killed task {}: {}",
+            task_id, e
+        );
     }
     Ok(())
 }
