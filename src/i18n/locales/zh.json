@@ -79,6 +79,8 @@
   "tasks.ended": "已结束",
   "tasks.confirmKill": "确定终止这个后台任务？",
   "tasks.noLabel": "(无描述)",
+  "tasks.triggeredAt": "触发 {time}",
+  "tasks.triggerTime": "触发时间",
   "tasks.cmd": "命令",
   "tasks.result": "返回结果",
   "tasks.noOutput": "（暂无输出）",

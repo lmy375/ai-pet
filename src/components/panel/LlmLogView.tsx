@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { formatIsoTime } from "../../utils/format";
+import { describeToolCall } from "../../utils/toolDisplay";
 import { ImageLightbox } from "../ui/ImageLightbox";
 import { useI18n } from "../../i18n";
 import {
@@ -24,12 +25,12 @@ interface LlmLogEntry {
   total_latency_ms: number;
   request: {
     model: string;
-    messages: Array<{ role: string; content: unknown }>;
+    messages: Array<{ role: string; content: unknown; tool_calls?: ToolCall[]; tool_call_id?: string }>;
     tools?: unknown[];
   };
   response: {
     text: string;
-    tool_calls: Array<{ function: { name: string; arguments: string } }>;
+    tool_calls: ToolCall[];
   };
 }
 
@@ -37,11 +38,13 @@ const preClass =
   "mt-0.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-700";
 
 type ContentBlock = { type?: string; text?: string; image_url?: { url?: string } };
+type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
 
 // One-line text summary of a message's `content` for the collapsed list row.
 // Image blocks collapse to `[Image #N]` — dumping the base64 data URL would be
 // huge and useless here.
 function contentToText(content: unknown): string {
+  if (content == null) return "";
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return JSON.stringify(content, null, 2);
   let imageCount = 0;
@@ -58,6 +61,7 @@ function contentToText(content: unknown): string {
 // a <pre>; an `image_url` block renders the base64 data URL as an actual <img>
 // thumbnail instead of dumping the raw string.
 function renderContent(content: unknown, onZoom: (src: string) => void, zoomTitle: string) {
+  if (content == null) return null;
   if (typeof content === "string") return <pre className={preClass}>{content}</pre>;
   if (!Array.isArray(content)) return <pre className={preClass}>{JSON.stringify(content, null, 2)}</pre>;
   return (
@@ -92,6 +96,138 @@ const roleColors: Record<string, BadgeColor> = {
   assistant: "purple",
   tool: "orange",
 };
+
+function shortId(id: string | undefined): string | null {
+  if (!id) return null;
+  return id.length > 14 ? `${id.slice(0, 8)}...${id.slice(-4)}` : id;
+}
+
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function valueToText(value: unknown): string {
+  if (value == null) return "—";
+  if (typeof value === "string") return value || "—";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return String(value);
+}
+
+function renderStructuredValue(value: unknown): React.ReactNode {
+  const parsed = parseJsonValue(value);
+  if (parsed == null || typeof parsed !== "object") {
+    return <span className="break-all text-slate-700">{valueToText(parsed)}</span>;
+  }
+  if (Array.isArray(parsed)) {
+    return (
+      <div className="space-y-1">
+        {parsed.map((item, i) => (
+          <div key={i} className="rounded-md bg-white px-2 py-1">
+            {renderStructuredValue(item)}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length === 0) return <span className="text-slate-400">—</span>;
+  return (
+    <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1.5">
+      {entries.map(([key, val]) => (
+        <div key={key} className="contents">
+          <span className="font-mono text-[11px] text-slate-400">{key}</span>
+          <div className="min-w-0">{renderStructuredValue(val)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ToolCallView({ call }: { call: ToolCall }) {
+  const name = call.function?.name ?? "unknown";
+  const argsText = call.function?.arguments ?? "{}";
+  const args = parseJsonValue(argsText);
+  const { Icon, label, summary, summaryMono, hint, fullSummary } = describeToolCall(name, argsText);
+  return (
+    <div className="mt-1.5 rounded-lg border border-orange-100 bg-orange-50/50 px-2.5 py-2">
+      <div className="mb-2 flex items-center gap-1.5">
+        <Badge color="orange">tool-call</Badge>
+        <Icon className="h-4 w-4 shrink-0 text-orange-600" />
+        <span className="shrink-0 text-[12px] font-semibold text-slate-700">{label}</span>
+        {summary && (
+          <span
+            title={fullSummary}
+            className={`min-w-0 flex-1 truncate text-[12px] text-slate-600 ${summaryMono ? "font-mono" : ""}`}
+          >
+            {summary}
+          </span>
+        )}
+        {hint && <span className="min-w-0 shrink truncate text-[12px] text-slate-400">{hint}</span>}
+        {shortId(call.id) && <span className="font-mono text-[11px] text-slate-400">{shortId(call.id)}</span>}
+      </div>
+      <div className="rounded-md bg-white/75 px-2.5 py-2 text-[12px]">
+        {renderStructuredValue(args)}
+      </div>
+    </div>
+  );
+}
+
+function ToolResultView({ content, call }: { content: unknown; call?: ToolCall }) {
+  const parsed = parseJsonValue(content);
+  const obj = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+  const status = typeof obj?.status === "string" ? obj.status : null;
+  const stdout = typeof obj?.stdout === "string" ? obj.stdout : null;
+  const stderr = typeof obj?.stderr === "string" ? obj.stderr : null;
+  const metaEntries = obj
+    ? Object.entries(obj).filter(([key]) => !["stdout", "stderr", "stdout_path", "stderr_path"].includes(key))
+    : [];
+  const name = call?.function?.name;
+
+  return (
+    <div className="mt-1.5 rounded-lg border border-amber-100 bg-amber-50/50 px-2.5 py-2">
+      <div className="mb-2 flex items-center gap-1.5">
+        <Badge color="orange">tool-result</Badge>
+        {name && <span className="text-[12px] font-semibold text-slate-700">{name}</span>}
+        {status && <Badge color={status === "finished" ? "green" : "amber"}>{status}</Badge>}
+        {shortId(call?.id) && <span className="font-mono text-[11px] text-slate-400">{shortId(call?.id)}</span>}
+      </div>
+      {obj ? (
+        <div className="space-y-2 text-[12px]">
+          {metaEntries.length > 0 && (
+            <div className="rounded-md bg-white/75 px-2.5 py-2">
+              {renderStructuredValue(Object.fromEntries(metaEntries))}
+            </div>
+          )}
+          {stdout != null && (
+            <div>
+              <div className="mb-1 font-semibold text-slate-400">stdout</div>
+              <pre className={preClass}>{stdout || "—"}</pre>
+            </div>
+          )}
+          {stderr && (
+            <div>
+              <div className="mb-1 font-semibold text-slate-400">stderr</div>
+              <pre className={preClass}>{stderr}</pre>
+            </div>
+          )}
+        </div>
+      ) : (
+        <pre className={preClass}>{valueToText(parsed)}</pre>
+      )}
+    </div>
+  );
+}
 
 export function LlmLogView() {
   const { t } = useI18n();
@@ -147,7 +283,7 @@ export function LlmLogView() {
   };
 
   const toolCallNames = (entry: LlmLogEntry): string[] =>
-    entry.response.tool_calls.map((tc) => tc.function?.name).filter(Boolean);
+    entry.response.tool_calls.map((tc) => tc.function?.name).filter((name): name is string => !!name);
 
   const toggle = (idx: number) => {
     setExpandedIdx(expandedIdx === idx ? null : idx);
@@ -175,6 +311,15 @@ export function LlmLogView() {
           entries.map((entry, i) => {
             const isExpanded = expandedIdx === i;
             const tcNames = toolCallNames(entry);
+            const toolCallsById = new Map<string, ToolCall>();
+            for (const msg of entry.request.messages) {
+              msg.tool_calls?.forEach((call) => {
+                if (call.id) toolCallsById.set(call.id, call);
+              });
+            }
+            entry.response.tool_calls.forEach((call) => {
+              if (call.id) toolCallsById.set(call.id, call);
+            });
             return (
               <div key={i} className="mb-1.5 overflow-hidden rounded-xl border border-slate-200 bg-white">
                 {/* Summary row */}
@@ -217,12 +362,29 @@ export function LlmLogView() {
                     </DetailSection>
 
                     <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title={t("llm.section.request")}>
-                      {entry.request.messages.map((msg, j) => (
-                        <div key={j} className="mb-1.5">
-                          <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
-                          {renderContent(msg.content, setZoomed, t("common.zoomImage"))}
-                        </div>
-                      ))}
+                      {entry.request.messages.map((msg, j) => {
+                        if (msg.role === "tool") {
+                          return (
+                            <div key={j} className="mb-1.5">
+                              <ToolResultView content={msg.content} call={msg.tool_call_id ? toolCallsById.get(msg.tool_call_id) : undefined} />
+                            </div>
+                          );
+                        }
+                        const hasContent = msg.content != null && contentToText(msg.content).trim().length > 0;
+                        return (
+                          <div key={j} className="mb-1.5">
+                            {hasContent && (
+                              <>
+                                <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
+                                {renderContent(msg.content, setZoomed, t("common.zoomImage"))}
+                              </>
+                            )}
+                            {msg.tool_calls?.map((call, k) => (
+                              <ToolCallView key={call.id ?? k} call={call} />
+                            ))}
+                          </div>
+                        );
+                      })}
                     </DetailSection>
 
                     <DetailSection icon={<ArrowDownIcon className="h-3.5 w-3.5" />} title={t("llm.section.response")}>
@@ -233,9 +395,10 @@ export function LlmLogView() {
                         </div>
                       )}
                       {entry.response.tool_calls.length > 0 && (
-                        <div>
-                          <div className="mb-1 text-[12px] text-slate-500">Tool Calls:</div>
-                          <pre className={preClass}>{JSON.stringify(entry.response.tool_calls, null, 2)}</pre>
+                        <div className="space-y-1.5">
+                          {entry.response.tool_calls.map((call, k) => (
+                            <ToolCallView key={call.id ?? k} call={call} />
+                          ))}
                         </div>
                       )}
                     </DetailSection>

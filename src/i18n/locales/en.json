@@ -79,6 +79,8 @@
   "tasks.ended": "Ended",
   "tasks.confirmKill": "Stop this background task?",
   "tasks.noLabel": "(no description)",
+  "tasks.triggeredAt": "Started {time}",
+  "tasks.triggerTime": "Started",
   "tasks.cmd": "Command",
   "tasks.result": "Result",
   "tasks.noOutput": "(no output yet)",

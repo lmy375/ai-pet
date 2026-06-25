@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use crate::commands::shell::{
-    cleanup_old_tasks, read_with_truncation, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, SHELL_DIR,
+    cleanup_old_tasks, read_with_truncation, save_task_history, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS,
+    SHELL_DIR,
 };
 
 // ---- bash ----
@@ -113,7 +114,11 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
     let started_at = chrono::Local::now();
 
     // Label shown in completion notifications: the description, else the command.
-    let label = if description.is_empty() { command.clone() } else { description.to_string() };
+    let label = if description.is_empty() {
+        command.clone()
+    } else {
+        description.to_string()
+    };
 
     // Store task and cleanup old finished tasks
     {
@@ -131,6 +136,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
                 command.clone(),
             ),
         );
+        save_task_history(&map);
     }
 
     let log_desc = if description.is_empty() {
@@ -148,7 +154,13 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         tokio::spawn(async move {
             let exit = child.wait().await;
             let code = exit.ok().and_then(|s| s.code());
-            crate::commands::shell::mark_finished_and_notify(&store_bg, &notifier_bg, &tid_bg, code, None);
+            crate::commands::shell::mark_finished_and_notify(
+                &store_bg,
+                &notifier_bg,
+                &tid_bg,
+                code,
+                None,
+            );
         });
 
         return serde_json::json!({
@@ -171,6 +183,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
                 if let Some(t) = map.get_mut(&task_id) {
                     t.mark_finished(exit_status.code());
                 }
+                save_task_history(&map);
             }
 
             let elapsed = chrono::Local::now()
@@ -205,7 +218,13 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
             tokio::spawn(async move {
                 let exit = child.wait().await;
                 let code = exit.ok().and_then(|s| s.code());
-                crate::commands::shell::mark_finished_and_notify(&store_bg, &notifier_bg, &tid_bg, code, None);
+                crate::commands::shell::mark_finished_and_notify(
+                    &store_bg,
+                    &notifier_bg,
+                    &tid_bg,
+                    code,
+                    None,
+                );
             });
 
             let elapsed = chrono::Local::now()
@@ -275,8 +294,10 @@ async fn check_shell_status_impl(arguments: &str, ctx: &ToolContext) -> String {
     let map = ctx.shell_store.0.lock().unwrap();
     match map.get(&task_id) {
         // Works for both bash (reads its output files) and sub-agent (stored result).
-        Some(task) => serde_json::to_string(&crate::commands::shell::build_shell_result(&task_id, task))
-            .unwrap_or_else(|_| r#"{"error": "failed to serialize status"}"#.to_string()),
+        Some(task) => {
+            serde_json::to_string(&crate::commands::shell::build_shell_result(&task_id, task))
+                .unwrap_or_else(|_| r#"{"error": "failed to serialize status"}"#.to_string())
+        }
         None => format!(r#"{{"error": "task not found: {}"}}"#, task_id),
     }
 }
