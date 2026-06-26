@@ -70,6 +70,10 @@ pub struct AppSettings {
     /// user-configurable value.
     #[serde(default = "default_context_window")]
     pub context_window: u32,
+    /// Tavily API key for the `web_search` tool. Empty = web search disabled
+    /// (the tool isn't offered to the model — see `ToolRegistry::new`).
+    #[serde(default)]
+    pub search_api_key: String,
     /// UI language: "zh" or "en".
     #[serde(default = "default_language")]
     pub language: String,
@@ -146,6 +150,7 @@ impl Default for AppSettings {
             api_key: String::new(),
             model: default_model(),
             context_window: default_context_window(),
+            search_api_key: String::new(),
             language: default_language(),
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),

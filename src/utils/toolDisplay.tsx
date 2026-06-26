@@ -8,6 +8,7 @@ import {
   PencilIcon,
   ClockIcon,
   AgentIcon,
+  GlobeIcon,
 } from "../components/Icons";
 
 type IconComponent = (props: { className?: string }) => React.ReactElement;
@@ -66,6 +67,10 @@ export function describeToolCall(name: string, argsJson: string): ToolDisplay {
     case "check_task_status": {
       const taskId = str(args.task_id);
       return { Icon: ClockIcon, label: "Status", summary: taskId, summaryMono: true, fullSummary: taskId };
+    }
+    case "web_search": {
+      const query = str(args.query);
+      return { Icon: GlobeIcon, label: "Search", summary: query, fullSummary: query };
     }
     case "spawn_subagent": {
       const prompt = str(args.prompt);

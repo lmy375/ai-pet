@@ -24,6 +24,7 @@
 | `api_base` | `https://api.openai.com/v1` | OpenAI 兼容端点，可填本地服务或代理 |
 | `api_key` | 空 | API 密钥 |
 | `model` | `gpt-4o-mini` | 模型名；视觉需用支持图像的模型 |
+| `search_api_key` | 空 | [Tavily](https://tavily.com) API Key；填了才启用 `web_search` 联网搜索工具，留空则不向模型提供该工具 |
 | `language` | `zh` | 界面语言：`zh` / `en` |
 | `mcp_servers` | `{}` | MCP 服务表（transport：`stdio` / `sse` / `http`） |
 | `telegram` | 关闭 | `bot_token` / `allowed_username` / `enabled`，见 [telegram.md](telegram.md) |

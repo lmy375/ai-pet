@@ -20,9 +20,12 @@ back end.
   or a proxy (e.g. litellm). Streaming responses with a tool‑calling agent loop.
 - **Vision** — paste images into the chat, or let the pet take a screenshot
   (the whole screen, or a single app's window) and look at it.
-- **Tools** — `bash`, file read/write/edit, `screenshot`, and `spawn_subagent`
-  for parallel background work; long commands run in the background and notify
-  on completion.
+- **Tools** — `bash`, file read/write/edit, `screenshot`, `web_search`, and
+  `spawn_subagent` for parallel background work; long commands run in the
+  background and notify on completion.
+- **Web search** — `web_search` looks things up on the live internet via
+  [Tavily](https://tavily.com). Set `search_api_key` (Settings → Web Search) to
+  enable it; without a key the tool isn't offered to the model.
 - **macOS app control & reading** — via `osascript` the pet can drive scriptable
   apps (AppleScript) and GUI‑script the rest (System Events) — e.g. open
   Terminal and run a command, or read text straight from an app's UI. See
@@ -90,8 +93,10 @@ field and where the data lives.
 - **任意 OpenAI 兼容模型** —— `api_base` 可指向 OpenAI、本地服务或代理（如 litellm）。
   流式输出 + 工具调用 agent 循环。
 - **视觉** —— 可往聊天里粘贴图片，或让宠物截图（整屏，或某个 App 的单个窗口）来看。
-- **工具** —— `bash`、文件读/写/改、`screenshot`、`spawn_subagent`（并行后台任务）；
-  长命令转入后台，完成后自动通知。
+- **工具** —— `bash`、文件读/写/改、`screenshot`、`web_search`、`spawn_subagent`
+  （并行后台任务）；长命令转入后台，完成后自动通知。
+- **联网搜索** —— `web_search` 通过 [Tavily](https://tavily.com) 搜索实时互联网。
+  在「设置 → 联网搜索」填入 `search_api_key` 即启用；不填则不向模型提供该工具。
 - **macOS 应用操作与读取** —— 通过 `osascript`，宠物能驱动可脚本化应用（AppleScript），
   对其余应用做 GUI 自动化（System Events）—— 比如打开 Terminal 跑命令、或直接读取
   App 界面上的文字。详见 [docs/macos-automation.md](docs/macos-automation.md)。

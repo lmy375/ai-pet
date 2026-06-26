@@ -9,6 +9,8 @@ pub struct AiConfig {
     /// usage ring. The standard OpenAI API doesn't expose this, so it's a config
     /// value (`AppSettings::context_window`).
     pub context_window: u32,
+    /// Tavily API key for the `web_search` tool. Empty = web search disabled.
+    pub search_api_key: String,
 }
 
 impl AiConfig {
@@ -22,6 +24,7 @@ impl AiConfig {
             base_url: settings.api_base,
             model: settings.model,
             context_window: settings.context_window,
+            search_api_key: settings.search_api_key,
         })
     }
 }
