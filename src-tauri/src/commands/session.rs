@@ -193,6 +193,31 @@ pub fn create_session() -> Result<Session, String> {
     new_seeded_session(Uuid::new_v4().to_string(), "新会话".to_string())
 }
 
+/// Return the tail of `messages` covering the last `n` conversation turns,
+/// where a turn starts at a `user` message and runs up to the next one. The
+/// slice always begins at a `user` boundary, so it never starts with an orphan
+/// `tool` message (which a chat-completions API rejects — a `tool` message must
+/// follow the assistant message that requested it). Any leading system messages
+/// are dropped as a side effect, which is fine: the heartbeat re-inserts its own
+/// system messages via `prepend_heartbeat_system_messages`.
+pub fn recent_turns(messages: &[serde_json::Value], n: usize) -> Vec<serde_json::Value> {
+    if n == 0 {
+        return vec![];
+    }
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .map(|(i, _)| i)
+        .collect();
+    let start = match user_indices.len() {
+        0 => return vec![],
+        len if len <= n => user_indices[0],
+        len => user_indices[len - n],
+    };
+    messages[start..].to_vec()
+}
+
 #[tauri::command]
 pub fn delete_session(id: String) -> Result<(), String> {
     // Remove file
@@ -212,4 +237,46 @@ pub fn delete_session(id: String) -> Result<(), String> {
             .unwrap_or_default();
     }
     write_index(&index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn roles(msgs: &[serde_json::Value]) -> Vec<String> {
+        msgs.iter()
+            .map(|m| m["role"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn recent_turns_starts_at_user_boundary_never_orphan_tool() {
+        // A system seed, one tool-using turn, then a plain turn.
+        let msgs = vec![
+            json!({ "role": "system", "content": "soul" }),
+            json!({ "role": "user", "content": "q1" }),
+            json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "c1" }] }),
+            json!({ "role": "tool", "tool_call_id": "c1", "content": "result" }),
+            json!({ "role": "user", "content": "q2" }),
+            json!({ "role": "assistant", "content": "a2" }),
+        ];
+
+        // Last 1 turn = from the final user message onward; starts with `user`,
+        // never the orphan `tool` from the previous turn.
+        let one = recent_turns(&msgs, 1);
+        assert_eq!(roles(&one), vec!["user", "assistant"]);
+        assert_eq!(one[0]["content"], "q2");
+
+        // Both turns: starts at the first user message, dropping the system seed.
+        let two = recent_turns(&msgs, 2);
+        assert_eq!(roles(&two), vec!["user", "assistant", "tool", "user", "assistant"]);
+
+        // More turns than exist: same as taking all turns.
+        assert_eq!(recent_turns(&msgs, 9), two);
+
+        // n == 0 and no-user inputs both yield empty.
+        assert!(recent_turns(&msgs, 0).is_empty());
+        assert!(recent_turns(&[json!({ "role": "system", "content": "x" })], 3).is_empty());
+    }
 }

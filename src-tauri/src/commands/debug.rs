@@ -42,6 +42,7 @@ pub fn write_log(store: &Arc<Mutex<Vec<String>>>, message: &str) {
 
 /// Append a JSON-Lines entry to llm.log with timing info.
 pub fn write_llm_log(
+    session_id: &str,
     round: usize,
     request: &serde_json::Value,
     response_text: &str,
@@ -53,6 +54,7 @@ pub fn write_llm_log(
     total_latency_ms: i64,
 ) {
     let entry = serde_json::json!({
+        "session_id": session_id,
         "round": round,
         "request_time": request_time,
         "first_token_time": first_token_time,

@@ -22,6 +22,13 @@ pub struct ToolContext {
     pub mcp_store: McpManagerStore,
     pub depth: usize,
     pub session_id: String,
+    /// Grouping key for `llm.log` entries (the LLM-log view keeps only the
+    /// newest entry per group, since within one group every request carries the
+    /// full prior history). For the main chat this equals `session_id`. Sub-agents
+    /// and heartbeats run independent conversations that are NOT supersets of the
+    /// parent, so each gets its own unique id (see `child()` and the heartbeat
+    /// command) — otherwise they'd collapse into, or evict, the parent's row.
+    pub log_session: String,
     pub notifier: Option<Arc<dyn TaskNotifier>>,
     /// App handle, present for UI-backed callers. The `chat` tool needs it to
     /// write the main session, fire a system notification and tell the active
@@ -55,6 +62,7 @@ impl ToolContext {
             config,
             mcp_store,
             depth: 0,
+            log_session: session_id.clone(),
             session_id,
             notifier,
             app,
@@ -78,6 +86,7 @@ impl ToolContext {
             config,
             mcp_store,
             depth: 0,
+            log_session: session_id.clone(),
             session_id,
             notifier,
             app,
@@ -99,6 +108,9 @@ impl ToolContext {
             mcp_store: self.mcp_store.clone(),
             depth: self.depth + 1,
             session_id: self.session_id.clone(),
+            // Independent conversation: own log group so it neither evicts nor
+            // merges with the parent's LLM-log row.
+            log_session: format!("{}:sub:{}", self.session_id, uuid::Uuid::new_v4()),
             notifier: None,
             // Sub-agents never speak to the owner directly; drop the app handle
             // and the heartbeat flag so the `chat` tool is unavailable to them.

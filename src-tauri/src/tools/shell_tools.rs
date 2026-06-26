@@ -134,6 +134,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
                 label,
                 ctx.session_id.clone(),
                 command.clone(),
+                run_in_background,
             ),
         );
         save_task_history(&map);
@@ -211,7 +212,16 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
             format!(r#"{{"error": "process error: {}"}}"#, e)
         }
         Err(_) => {
-            // Timeout — spawn background waiter that notifies on completion.
+            // Timeout — converts to a notified background task, so it now belongs
+            // in the panel. Mark it backgrounded before spawning the waiter.
+            {
+                let mut map = ctx.shell_store.0.lock().unwrap();
+                if let Some(t) = map.get_mut(&task_id) {
+                    t.mark_backgrounded();
+                }
+                save_task_history(&map);
+            }
+            // Spawn background waiter that notifies on completion.
             let store_bg = ctx.shell_store.0.clone();
             let notifier_bg = ctx.notifier.clone();
             let tid_bg = task_id.clone();

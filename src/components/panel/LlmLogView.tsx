@@ -17,6 +17,7 @@ import {
 } from "../Icons";
 
 interface LlmLogEntry {
+  session_id?: string;
   round: number;
   request_time: string;
   first_token_time: string | null;
@@ -253,7 +254,18 @@ export function LlmLogView() {
         })
         .filter((e): e is LlmLogEntry => e !== null && !!e.request_time)
         .reverse();
-      setEntries(parsed);
+      // Within one session each LLM request carries the full prior history, so
+      // the newest entry of a session is a superset of every earlier one. Keep
+      // only that newest entry per session (legacy entries lacking a session_id
+      // are kept individually).
+      const seen = new Set<string>();
+      const deduped = parsed.filter((e) => {
+        if (!e.session_id) return true;
+        if (seen.has(e.session_id)) return false;
+        seen.add(e.session_id);
+        return true;
+      });
+      setEntries(deduped);
     } catch (e) {
       console.error("Failed to fetch LLM logs:", e);
     }
