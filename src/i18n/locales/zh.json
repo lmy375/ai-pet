@@ -168,5 +168,7 @@
   "settings.hb.title": "定时心跳",
   "settings.hb.enable": "启用定时心跳（宠物按间隔在后台自动醒来一次，按 HEARTBEAT.md 执行定时任务）",
   "settings.hb.interval": "心跳间隔（分钟）",
-  "settings.hb.note": "每次心跳在后台运行，结果可在「后台任务」里查看；需要时宠物会主动给你发消息并弹系统通知。任务清单 HEARTBEAT.md 在「记忆」标签页里编辑。"
+  "settings.hb.note": "每次心跳在后台运行，结果可在「后台任务」里查看；需要时宠物会主动给你发消息并弹系统通知。任务清单 HEARTBEAT.md 在「记忆」标签页里编辑。",
+  "settings.hb.contextTurns": "带入最近聊天轮数（0 = 不带）",
+  "settings.hb.contextTurnsNote": "心跳会 fork 当前会话最近若干轮对话，让它了解你最近聊了什么，而不仅依赖 HEARTBEAT.md。填 0 则不带历史。心跳不会写回你的会话，只会在需要时通过通知联系你。"
 }

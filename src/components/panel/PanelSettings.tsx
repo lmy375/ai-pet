@@ -47,6 +47,7 @@ export function PanelSettings() {
     gallery_interval: 10,
     heartbeat_enabled: false,
     heartbeat_interval: 60,
+    heartbeat_context_turns: 10,
   });
   const [loaded, setLoaded] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -665,6 +666,26 @@ export function PanelSettings() {
             />
             <p className="mt-1 text-[11px] text-slate-400">
               {t("settings.hb.note")}
+            </p>
+
+            <Label className="mt-3">{t("settings.hb.contextTurns")}</Label>
+            <TextInput
+              type="number"
+              min={0}
+              value={form.heartbeat_context_turns}
+              onChange={(e) =>
+                setForm({ ...form, heartbeat_context_turns: Number(e.target.value) || 0 })
+              }
+              onBlur={() => {
+                const next = { ...form, heartbeat_context_turns: Math.max(0, form.heartbeat_context_turns || 0) };
+                setForm(next);
+                saveSettings(next);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="10"
+            />
+            <p className="mt-1 text-[11px] text-slate-400">
+              {t("settings.hb.contextTurnsNote")}
             </p>
           </Card>
 

@@ -168,5 +168,7 @@
   "settings.hb.title": "Scheduled Heartbeat",
   "settings.hb.enable": "Enable scheduled heartbeat (the pet wakes in the background on an interval to run tasks from HEARTBEAT.md)",
   "settings.hb.interval": "Heartbeat interval (minutes)",
-  "settings.hb.note": "Each heartbeat runs in the background; check results under the Tasks tab. The pet will message you with a system notification when needed. Edit the HEARTBEAT.md task list under the Memory tab."
+  "settings.hb.note": "Each heartbeat runs in the background; check results under the Tasks tab. The pet will message you with a system notification when needed. Edit the HEARTBEAT.md task list under the Memory tab.",
+  "settings.hb.contextTurns": "Recent chat turns to carry (0 = none)",
+  "settings.hb.contextTurnsNote": "The heartbeat forks the active chat's most recent turns so it knows what you've been talking about, not just HEARTBEAT.md. 0 carries no history. It never writes back to your chat — it only reaches you via a notification."
 }

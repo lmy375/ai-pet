@@ -65,6 +65,13 @@ pub(crate) struct ShellTask {
     session_id: String,
     status: TaskStatus,
     return_code: Option<i32>,
+    // True only once the task actually ran in the background — either started
+    // there (explicit `run_in_background`) or auto-converted on a foreground
+    // timeout. Tasks that finish inline within the foreground timeout stay false
+    // and are hidden from the "background tasks" panel (and not persisted): a
+    // bash a sub-agent/heartbeat ran synchronously isn't a background task. See
+    // `list_tasks` / `save_task_history` / `cleanup_old_tasks`.
+    backgrounded: bool,
     started_at: DateTime<Local>,
     finished_at: Option<DateTime<Local>>,
     // Bash-only: live output is read from these files (dummy for sub-agents).
@@ -90,6 +97,7 @@ impl ShellTask {
         label: String,
         session_id: String,
         input: String,
+        backgrounded: bool,
     ) -> Self {
         Self {
             kind: TaskKind::Bash,
@@ -98,6 +106,7 @@ impl ShellTask {
             session_id,
             status: TaskStatus::Running,
             return_code: None,
+            backgrounded,
             started_at,
             finished_at: None,
             pid,
@@ -120,6 +129,7 @@ impl ShellTask {
         session_id: String,
         started_at: DateTime<Local>,
         input: String,
+        backgrounded: bool,
     ) -> Self {
         Self {
             kind,
@@ -128,6 +138,7 @@ impl ShellTask {
             session_id,
             status: TaskStatus::Running,
             return_code: None,
+            backgrounded,
             started_at,
             finished_at: None,
             pid: 0,
@@ -147,6 +158,13 @@ impl ShellTask {
         self.status = TaskStatus::Finished;
         self.return_code = code;
         self.finished_at = Some(Local::now());
+    }
+
+    /// Promote a foreground task to a background one — called when it exceeds the
+    /// foreground timeout and converts to a notified background task, so it now
+    /// belongs in the background-task panel.
+    pub fn mark_backgrounded(&mut self) {
+        self.backgrounded = true;
     }
 
     pub fn status_info(&self) -> (&str, Option<i32>, u64) {
@@ -312,7 +330,10 @@ fn snapshot_task(task_id: &str, task: &ShellTask) -> PersistedTask {
 }
 
 pub(crate) fn save_task_history(map: &HashMap<String, ShellTask>) {
-    let mut tasks: Vec<(&String, &ShellTask)> = map.iter().collect();
+    // Only background tasks belong in the panel/history; foreground tasks that
+    // finished inline (e.g. a bash a sub-agent ran synchronously) are excluded.
+    let mut tasks: Vec<(&String, &ShellTask)> =
+        map.iter().filter(|(_, task)| task.backgrounded).collect();
     tasks.sort_by_key(|(_, task)| std::cmp::Reverse(task_sort_key(task)));
     let rows: Vec<PersistedTask> = tasks
         .into_iter()
@@ -358,6 +379,8 @@ fn shell_task_from_persisted(row: PersistedTask) -> Option<(String, ShellTask)> 
         session_id: row.session_id,
         status,
         return_code,
+        // Only backgrounded tasks are ever persisted, so any restored row was one.
+        backgrounded: true,
         started_at,
         finished_at,
         pid: 0,
@@ -476,14 +499,27 @@ pub fn mark_finished_and_notify(
 }
 
 pub fn cleanup_old_tasks(map: &mut HashMap<String, ShellTask>) {
+    // Foreground tasks that finished inline aren't shown or persisted — they only
+    // lingered to keep their output files readable for the rest of the turn. Drop
+    // them eagerly so they neither leak files nor crowd the background history.
+    let foreground: Vec<String> = map
+        .iter()
+        .filter(|(_, t)| t.status == TaskStatus::Finished && !t.backgrounded)
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    // Among the background tasks, keep only the newest `TASK_HISTORY_LIMIT`.
     let mut finished: Vec<(String, DateTime<Local>)> = map
         .iter()
-        .filter(|(_, t)| t.status == TaskStatus::Finished)
+        .filter(|(_, t)| t.status == TaskStatus::Finished && t.backgrounded)
         .map(|(id, t)| (id.clone(), task_sort_key(t)))
         .collect();
     finished.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
 
-    for (id, _) in finished.into_iter().skip(TASK_HISTORY_LIMIT) {
+    let to_remove = foreground
+        .into_iter()
+        .chain(finished.into_iter().skip(TASK_HISTORY_LIMIT).map(|(id, _)| id));
+    for id in to_remove {
         if let Some(task) = map.remove(&id) {
             let _ = std::fs::remove_file(&task.stdout_path);
             let _ = std::fs::remove_file(&task.stderr_path);
@@ -518,7 +554,14 @@ where
         cleanup_old_tasks(&mut map);
         map.insert(
             task_id.clone(),
-            ShellTask::new_background(kind, label, ctx.session_id.clone(), started_at, input),
+            ShellTask::new_background(
+                kind,
+                label,
+                ctx.session_id.clone(),
+                started_at,
+                input,
+                run_in_background,
+            ),
         );
         save_task_history(&map);
     }
@@ -573,6 +616,15 @@ where
             result
         }
         Err(_) => {
+            // Timed out in the foreground: it converts to a notified background
+            // task, so it now belongs in the panel.
+            {
+                let mut map = store.lock().unwrap();
+                if let Some(t) = map.get_mut(&task_id) {
+                    t.mark_backgrounded();
+                }
+                save_task_history(&map);
+            }
             let tid = task_id.clone();
             tokio::spawn(async move {
                 let (code, result) = handle.await.unwrap_or_else(join_err);
@@ -628,6 +680,9 @@ pub fn list_tasks(store: State<'_, ShellStore>) -> Vec<TaskListItem> {
         save_task_history(&map);
     }
     map.iter()
+        // Only actually-backgrounded tasks belong in the panel; a foreground bash
+        // a sub-agent/heartbeat ran inline is not a background task.
+        .filter(|(_, t)| t.backgrounded)
         .map(|(id, t)| {
             let (status, return_code, elapsed_ms) = t.status_info();
             TaskListItem {
@@ -724,6 +779,7 @@ mod tests {
             "sess-1".to_string(),
             Local::now(),
             "count the files in /tmp".to_string(),
+            true,
         );
         task.mark_finished(Some(0));
         task.result = Some("found 42 files".to_string());
@@ -733,5 +789,41 @@ mod tests {
         assert_eq!(r.stdout, "found 42 files");
         assert_eq!(r.stderr, "");
         assert_eq!(r.input, "count the files in /tmp");
+    }
+
+    #[test]
+    fn cleanup_drops_foreground_finished_keeps_backgrounded() {
+        let mut map = HashMap::new();
+        // A bash a sub-agent ran synchronously: finished inline, never backgrounded.
+        let mut fg = ShellTask::new_bash(
+            0,
+            PathBuf::new(),
+            PathBuf::new(),
+            Local::now(),
+            "date".to_string(),
+            "sess".to_string(),
+            "date".to_string(),
+            false,
+        );
+        fg.mark_finished(Some(0));
+        map.insert("fg".to_string(), fg);
+
+        // A real background task that finished.
+        let mut bg = ShellTask::new_background(
+            TaskKind::Subagent,
+            "work".to_string(),
+            "sess".to_string(),
+            Local::now(),
+            "do work".to_string(),
+            true,
+        );
+        bg.mark_finished(Some(0));
+        map.insert("bg".to_string(), bg);
+
+        cleanup_old_tasks(&mut map);
+
+        // The foreground task is dropped; the background one survives.
+        assert!(!map.contains_key("fg"));
+        assert!(map.contains_key("bg"));
     }
 }

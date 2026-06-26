@@ -358,6 +358,7 @@ pub async fn run_agent_loop(
 
         // Write LLM request/response to llm.log with timing
         write_llm_log(
+            &ctx.log_session,
             round,
             &body,
             &result.text,

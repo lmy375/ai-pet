@@ -93,6 +93,12 @@ pub struct AppSettings {
     /// Minutes between scheduled heartbeats.
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval: u32,
+    /// How many recent conversation "turns" of the active session a heartbeat
+    /// forks in (one turn = a user message + the assistant/tool messages that
+    /// follow it). 0 = carry no history, falling back to the HEARTBEAT.md-only
+    /// behavior.
+    #[serde(default = "default_heartbeat_context_turns")]
+    pub heartbeat_context_turns: u32,
     /// Saved pet-window position so it reopens where the user left it. Written
     /// (debounced) on window move, not through the Settings UI; omitted from the
     /// file until the window has been moved at least once.
@@ -106,6 +112,10 @@ fn default_gallery_interval() -> u32 {
 
 fn default_heartbeat_interval() -> u32 {
     60
+}
+
+fn default_heartbeat_context_turns() -> u32 {
+    10
 }
 
 fn default_model_path() -> String {
@@ -144,6 +154,7 @@ impl Default for AppSettings {
             gallery_interval: default_gallery_interval(),
             heartbeat_enabled: false,
             heartbeat_interval: default_heartbeat_interval(),
+            heartbeat_context_turns: default_heartbeat_context_turns(),
             window: None,
         }
     }

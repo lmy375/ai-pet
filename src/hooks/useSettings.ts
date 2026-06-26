@@ -32,6 +32,7 @@ export interface AppSettings {
   gallery_interval: number;
   heartbeat_enabled: boolean;
   heartbeat_interval: number;
+  heartbeat_context_turns: number;
 }
 
 /** Live MCP server connection status (from the `get_mcp_status` command). */
@@ -63,6 +64,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   gallery_interval: 10,
   heartbeat_enabled: false,
   heartbeat_interval: 60,
+  heartbeat_context_turns: 10,
 };
 
 export function useSettings() {
