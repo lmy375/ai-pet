@@ -24,6 +24,8 @@ export interface AppSettings {
   api_key: string;
   model: string;
   context_window: number;
+  /** Tavily API key for the web_search tool. Empty = web search disabled. */
+  search_api_key: string;
   language: string;
   mcp_servers: Record<string, McpServerConfig>;
   telegram: TelegramConfig;
@@ -56,6 +58,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   api_key: "",
   model: "gpt-4o-mini",
   context_window: 128000,
+  search_api_key: "",
   language: "zh",
   mcp_servers: {},
   telegram: { bot_token: "", allowed_username: "", enabled: false },

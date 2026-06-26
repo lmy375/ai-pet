@@ -3,6 +3,7 @@ use super::chat_tool::ChatTool;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
 use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool};
+use super::web_search_tool::WebSearchTool;
 use super::tool::Tool;
 use super::context::ToolContext;
 
@@ -24,7 +25,16 @@ impl ToolRegistry {
     /// `include_chat` adds the `chat` tool (proactively message the owner). It's
     /// offered only to scheduled heartbeat sessions, which run with no UI stream
     /// and otherwise have no way to reach the owner.
-    pub fn new(mcp_definitions: Vec<serde_json::Value>, depth: usize, include_chat: bool) -> Self {
+    ///
+    /// `include_web_search` adds the `web_search` tool. It's withheld unless a
+    /// Tavily API key is configured (the tool can't work without one), so the
+    /// model isn't offered a capability that would always fail.
+    pub fn new(
+        mcp_definitions: Vec<serde_json::Value>,
+        depth: usize,
+        include_chat: bool,
+        include_web_search: bool,
+    ) -> Self {
         let mut tools: Vec<Box<dyn Tool>> = vec![
             Box::new(BashTool),
             Box::new(CheckShellStatusTool),
@@ -33,6 +43,9 @@ impl ToolRegistry {
             Box::new(EditFileTool),
             Box::new(ScreenshotTool),
         ];
+        if include_web_search {
+            tools.push(Box::new(WebSearchTool));
+        }
         if depth == 0 {
             tools.push(Box::new(SpawnSubagentTool));
         }
@@ -89,21 +102,30 @@ mod tests {
     fn spawn_subagent_offered_only_at_top_level() {
         // Depth 0 (the pet itself) can delegate; deeper sub-agents cannot, which
         // is what prevents runaway recursive spawning.
-        assert!(tool_names(&ToolRegistry::new(vec![], 0, false)).contains(&"spawn_subagent".to_string()));
-        assert!(!tool_names(&ToolRegistry::new(vec![], 1, false)).contains(&"spawn_subagent".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 0, false, false)).contains(&"spawn_subagent".to_string()));
+        assert!(!tool_names(&ToolRegistry::new(vec![], 1, false, false)).contains(&"spawn_subagent".to_string()));
     }
 
     #[test]
     fn screenshot_tool_always_offered() {
         // The pet can look at the user's screen at any depth and in any session.
-        assert!(tool_names(&ToolRegistry::new(vec![], 0, false)).contains(&"screenshot".to_string()));
-        assert!(tool_names(&ToolRegistry::new(vec![], 1, false)).contains(&"screenshot".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 0, false, false)).contains(&"screenshot".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 1, false, false)).contains(&"screenshot".to_string()));
+    }
+
+    #[test]
+    fn web_search_offered_only_when_key_configured() {
+        // The tool needs a Tavily key to work, so it's withheld without one and
+        // offered (at any depth) once a key is present.
+        assert!(!tool_names(&ToolRegistry::new(vec![], 0, false, false)).contains(&"web_search".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 0, false, true)).contains(&"web_search".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 1, false, true)).contains(&"web_search".to_string()));
     }
 
     #[test]
     fn chat_tool_offered_only_to_heartbeats() {
         // Normal sessions can't proactively message the owner; heartbeats can.
-        assert!(!tool_names(&ToolRegistry::new(vec![], 0, false)).contains(&"chat".to_string()));
-        assert!(tool_names(&ToolRegistry::new(vec![], 0, true)).contains(&"chat".to_string()));
+        assert!(!tool_names(&ToolRegistry::new(vec![], 0, false, false)).contains(&"chat".to_string()));
+        assert!(tool_names(&ToolRegistry::new(vec![], 0, true, false)).contains(&"chat".to_string()));
     }
 }

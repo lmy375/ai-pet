@@ -39,6 +39,7 @@ export function PanelSettings() {
     api_key: "",
     model: "",
     context_window: 128000,
+    search_api_key: "",
     language: "zh",
     mcp_servers: {},
     telegram: { bot_token: "", allowed_username: "", enabled: false },
@@ -485,6 +486,20 @@ export function PanelSettings() {
               placeholder="128000"
             />
             <p className="mt-1 text-[11px] text-slate-400">{t("settings.llm.contextWindowNote")}</p>
+          </Card>
+
+          {/* Web Search */}
+          <Card title={t("settings.search.title")}>
+            <Label>{t("settings.search.apiKey")}</Label>
+            <TextInput
+              type="password"
+              value={form.search_api_key}
+              onChange={(e) => setForm({ ...form, search_api_key: e.target.value })}
+              onBlur={() => saveSettings()}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="tvly-..."
+            />
+            <p className="mt-1 text-[11px] text-slate-400">{t("settings.search.apiKeyNote")}</p>
           </Card>
 
           {/* MCP Servers */}

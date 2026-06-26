@@ -327,8 +327,10 @@ pub async fn run_agent_loop(
         mcp_manager.definitions()
     };
     // Sub-agents (depth > 0) don't get the spawn tool, so they can't recurse.
-    // The `chat` tool is offered only to heartbeat sessions.
-    let registry = ToolRegistry::new(mcp_defs, ctx.depth, ctx.is_heartbeat);
+    // The `chat` tool is offered only to heartbeat sessions. `web_search` is
+    // offered only when a Tavily key is configured.
+    let web_search_enabled = !config.search_api_key.trim().is_empty();
+    let registry = ToolRegistry::new(mcp_defs, ctx.depth, ctx.is_heartbeat, web_search_enabled);
     let client = crate::common::http_client();
     let url = crate::common::openai_endpoint(&config.base_url, "chat/completions");
     let tools = registry.definitions();

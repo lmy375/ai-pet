@@ -25,7 +25,11 @@ pub async fn list_available_tools(
         let manager = mcp_store.lock().await;
         manager.definitions()
     };
-    let registry = ToolRegistry::new(mcp_defs, 0, false);
+    // Mirror the agent loop: web_search is listed only when a Tavily key is set.
+    let web_search_enabled = crate::commands::settings::get_settings()
+        .map(|s| !s.search_api_key.trim().is_empty())
+        .unwrap_or(false);
+    let registry = ToolRegistry::new(mcp_defs, 0, false, web_search_enabled);
     let defs = registry.definitions();
     let mut out = Vec::new();
     if let Some(arr) = defs.as_array() {
