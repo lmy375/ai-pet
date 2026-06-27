@@ -86,6 +86,8 @@ pub(crate) struct ShellTask {
     // Cancels a running sub-agent (its work future). Bash is killed by pid, so
     // this stays None for bash tasks. See `kill_task`.
     abort: Option<tokio::task::AbortHandle>,
+    // REPL bash only: channel to forward lines into the process's stdin.
+    pub(crate) stdin_sender: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl ShellTask {
@@ -98,6 +100,7 @@ impl ShellTask {
         session_id: String,
         input: String,
         backgrounded: bool,
+        stdin_sender: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Self {
         Self {
             kind: TaskKind::Bash,
@@ -117,6 +120,7 @@ impl ShellTask {
             persisted_truncated: false,
             result: None,
             abort: None,
+            stdin_sender,
         }
     }
 
@@ -149,6 +153,7 @@ impl ShellTask {
             persisted_truncated: false,
             result: None,
             abort: None,
+            stdin_sender: None,
         }
     }
 
@@ -391,6 +396,7 @@ fn shell_task_from_persisted(row: PersistedTask) -> Option<(String, ShellTask)> 
         persisted_truncated: row.truncated,
         result,
         abort: None,
+        stdin_sender: None,
     };
     Some((row.task_id, task))
 }
@@ -412,6 +418,12 @@ pub(crate) fn load_persisted_tasks() -> HashMap<String, ShellTask> {
     cleanup_old_tasks(&mut map);
     save_task_history(&map);
     map
+}
+
+/// Returns (status, stdout) for use by write_stdin without exposing ShellResult internals.
+pub(crate) fn task_status_and_stdout(task_id: &str, task: &ShellTask) -> (String, String) {
+    let r = build_shell_result(task_id, task);
+    (r.status, r.stdout)
 }
 
 pub(crate) fn build_shell_result(task_id: &str, task: &ShellTask) -> ShellResult {
@@ -804,6 +816,7 @@ mod tests {
             "sess".to_string(),
             "date".to_string(),
             false,
+            None,
         );
         fg.mark_finished(Some(0));
         map.insert("fg".to_string(), fg);

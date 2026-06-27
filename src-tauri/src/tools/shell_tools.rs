@@ -1,6 +1,7 @@
 use crate::tools::{Tool, ToolContext};
 use std::path::PathBuf;
 use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 
 use crate::commands::shell::{
     cleanup_old_tasks, read_with_truncation, save_task_history, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS,
@@ -21,7 +22,7 @@ impl Tool for BashTool {
             "type": "function",
             "function": {
                 "name": "bash",
-                "description": "Execute a bash command on the user's machine. stdout/stderr are captured to files.\n\nIMPORTANT: Do NOT use bash to run cat/head/tail to read files — use read_file instead. Do NOT use sed/awk to edit files — use edit_file instead. Do NOT use echo/cat heredoc to create files — use write_file instead. Reserve bash for system commands and terminal operations that require shell execution (e.g. git, npm, cargo, ls, find, curl, etc.).\n\nmacOS app control/reading: you can also run `osascript` here to read from and drive the user's apps — AppleScript for scriptable apps (e.g. Terminal `do script`), and System Events for GUI scripting (keystroke/click) on apps that aren't scriptable (e.g. WeChat). See the tool-usage guide for patterns and the OS permissions involved.\n\nBehavior:\n- Commands finishing within the timeout return results directly.\n- Commands exceeding the timeout return a task_id and keep running in the background.\n- Set run_in_background: true to return immediately with a task_id without waiting.\n- When a backgrounded command finishes you are notified automatically and the conversation continues — do NOT keep polling check_task_status.\n- The working directory does NOT persist between calls — use absolute paths or set working_directory.\n- You can specify a custom timeout up to 600000ms (10 minutes).",
+                "description": "Execute a bash command on the user's machine. stdout/stderr are captured to files.\n\nIMPORTANT: Do NOT use bash to run cat/head/tail to read files — use read_file instead. Do NOT use sed/awk to edit files — use edit_file instead. Do NOT use echo/cat heredoc to create files — use write_file instead. Reserve bash for system commands and terminal operations that require shell execution (e.g. git, npm, cargo, ls, find, curl, etc.).\n\nmacOS app control/reading: you can also run `osascript` here to read from and drive the user's apps — AppleScript for scriptable apps (e.g. Terminal `do script`), and System Events for GUI scripting (keystroke/click) on apps that aren't scriptable (e.g. WeChat). See the tool-usage guide for patterns and the OS permissions involved.\n\nBehavior:\n- Commands finishing within the timeout return results directly.\n- Commands exceeding the timeout return a task_id and keep running in the background.\n- Set run_in_background: true to return immediately with a task_id without waiting.\n- Set repl: true to start a long-running interactive process (Python, Node, sqlite3, bc, psql, etc.) with stdin kept open. The process always runs in background. Use write_stdin to send commands and read output.\n- When a backgrounded command finishes you are notified automatically and the conversation continues — do NOT keep polling check_task_status.\n- The working directory does NOT persist between calls — use absolute paths or set working_directory.\n- You can specify a custom timeout up to 600000ms (10 minutes).",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -44,6 +45,10 @@ impl Tool for BashTool {
                         "run_in_background": {
                             "type": "boolean",
                             "description": "If true, return immediately with a task_id without waiting. You will be notified automatically when it finishes — do not poll. Use check_task_status only to inspect a still-running task."
+                        },
+                        "repl": {
+                            "type": "boolean",
+                            "description": "Start as a REPL: stdin stays open, process always runs in background. Use write_stdin to send input lines and read output."
                         }
                     },
                     "required": ["command"]
@@ -74,7 +79,9 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         .as_u64()
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .min(MAX_TIMEOUT_MS);
-    let run_in_background = args["run_in_background"].as_bool().unwrap_or(false);
+    let repl = args["repl"].as_bool().unwrap_or(false);
+    // REPL always runs in background; otherwise honour the explicit flag.
+    let run_in_background = repl || args["run_in_background"].as_bool().unwrap_or(false);
 
     let _ = std::fs::create_dir_all(SHELL_DIR);
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -95,6 +102,10 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         .arg(&command)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+
+    if repl {
+        cmd.stdin(Stdio::piped());
+    }
 
     // Put the command (and its children) in its own process group, so `kill_task`
     // can terminate the whole group by pid. The pgid equals this child's pid.
@@ -120,6 +131,24 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         description.to_string()
     };
 
+    // REPL mode: take the piped stdin handle and forward lines from a channel.
+    let stdin_sender = if repl {
+        let child_stdin = child.stdin.take();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+        tokio::spawn(async move {
+            if let Some(mut stdin) = child_stdin {
+                while let Some(line) = rx.recv().await {
+                    if stdin.write_all(line.as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        Some(tx)
+    } else {
+        None
+    };
+
     // Store task and cleanup old finished tasks
     {
         let mut map = ctx.shell_store.0.lock().unwrap();
@@ -135,6 +164,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
                 ctx.session_id.clone(),
                 command.clone(),
                 run_in_background,
+                stdin_sender,
             ),
         );
         save_task_history(&map);
@@ -309,5 +339,96 @@ async fn check_shell_status_impl(arguments: &str, ctx: &ToolContext) -> String {
                 .unwrap_or_else(|_| r#"{"error": "failed to serialize status"}"#.to_string())
         }
         None => format!(r#"{{"error": "task not found: {}"}}"#, task_id),
+    }
+}
+
+// ---- write_stdin ----
+
+pub struct WriteStdinTool;
+
+impl Tool for WriteStdinTool {
+    fn name(&self) -> &str {
+        "write_stdin"
+    }
+
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "write_stdin",
+                "description": "Send a line of input to a running REPL process started with bash repl:true. A newline is automatically appended. Waits wait_ms milliseconds then returns current stdout content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "The task_id returned by the bash (repl:true) call"
+                        },
+                        "input": {
+                            "type": "string",
+                            "description": "The line to send to stdin (newline appended automatically)"
+                        },
+                        "wait_ms": {
+                            "type": "integer",
+                            "description": "Milliseconds to wait for output before returning (default: 500, max: 10000)"
+                        }
+                    },
+                    "required": ["task_id", "input"]
+                }
+            }
+        })
+    }
+
+    fn execute<'a>(
+        &'a self,
+        arguments: &'a str,
+        ctx: &'a ToolContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        Box::pin(write_stdin_impl(arguments, ctx))
+    }
+}
+
+async fn write_stdin_impl(arguments: &str, ctx: &ToolContext) -> String {
+    let args = super::parse_args(arguments);
+    let task_id = args["task_id"].as_str().unwrap_or("").to_string();
+    let input = match args["input"].as_str() {
+        Some(s) => s.to_string(),
+        None => return r#"{"error": "missing 'input' parameter"}"#.to_string(),
+    };
+    if task_id.is_empty() {
+        return r#"{"error": "missing 'task_id' parameter"}"#.to_string();
+    }
+    let wait_ms = args["wait_ms"].as_u64().unwrap_or(500).min(10_000);
+
+    let sender = {
+        let map = ctx.shell_store.0.lock().unwrap();
+        match map.get(&task_id) {
+            Some(task) => match &task.stdin_sender {
+                Some(tx) => tx.clone(),
+                None => return format!(r#"{{"error": "task {} has no stdin (not started with repl:true)"}}"#, task_id),
+            },
+            None => return format!(r#"{{"error": "task not found: {}"}}"#, task_id),
+        }
+    };
+
+    let line = format!("{}\n", input);
+    if sender.send(line).await.is_err() {
+        return format!(r#"{{"error": "stdin channel closed — process may have exited for task {}"}}"#, task_id);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+
+    let map = ctx.shell_store.0.lock().unwrap();
+    match map.get(&task_id) {
+        Some(task) => {
+            let (status, stdout) = crate::commands::shell::task_status_and_stdout(&task_id, task);
+            serde_json::json!({
+                "task_id": task_id,
+                "status": status,
+                "stdout": stdout,
+            })
+            .to_string()
+        }
+        None => format!(r#"{{"error": "task not found after wait: {}"}}"#, task_id),
     }
 }

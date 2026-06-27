@@ -2,7 +2,7 @@ use super::agent_tools::SpawnSubagentTool;
 use super::chat_tool::ChatTool;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
 use super::screenshot_tool::ScreenshotTool;
-use super::shell_tools::{BashTool, CheckShellStatusTool};
+use super::shell_tools::{BashTool, CheckShellStatusTool, WriteStdinTool};
 use super::web_search_tool::WebSearchTool;
 use super::tool::Tool;
 use super::context::ToolContext;
@@ -38,6 +38,7 @@ impl ToolRegistry {
         let mut tools: Vec<Box<dyn Tool>> = vec![
             Box::new(BashTool),
             Box::new(CheckShellStatusTool),
+            Box::new(WriteStdinTool),
             Box::new(ReadFileTool),
             Box::new(WriteFileTool),
             Box::new(EditFileTool),
