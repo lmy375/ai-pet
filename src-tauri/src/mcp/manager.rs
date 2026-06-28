@@ -1,4 +1,4 @@
-use crate::commands::settings::{AppSettings, McpServerConfig};
+use crate::commands::settings::{AgentConfig, McpServerConfig};
 use rmcp::model::{CallToolRequestParams, Tool as McpTool};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::ServiceExt;
@@ -7,10 +7,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub type McpManagerStore = Arc<Mutex<McpManager>>;
+/// One `McpManager` per agent, keyed by agent id. Each agent has its own set of
+/// MCP servers / tools, so chat / heartbeat / telegram resolve their manager by
+/// `config.agent_id`.
+pub type McpManagerStore = Arc<Mutex<HashMap<String, McpManager>>>;
 
 pub fn new_mcp_store() -> McpManagerStore {
-    Arc::new(Mutex::new(McpManager::new()))
+    Arc::new(Mutex::new(HashMap::new()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,11 +50,11 @@ impl McpManager {
         }
     }
 
-    /// Connect to all enabled MCP servers from config
-    pub async fn start_from_settings(settings: &AppSettings) -> Self {
+    /// Connect to all enabled MCP servers configured for one agent.
+    pub async fn start_from_agent(agent: &AgentConfig) -> Self {
         let mut manager = Self::new();
 
-        for (name, config) in &settings.mcp_servers {
+        for (name, config) in &agent.mcp_servers {
             if !config.enabled {
                 manager.statuses.push(McpServerStatus {
                     name: name.clone(),

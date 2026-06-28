@@ -55,32 +55,71 @@ pub struct WindowPosition {
     pub y: i32,
 }
 
+/// One configurable agent. Each agent has its own model, persona/memory
+/// (under `memory/<id>/`), MCP tool set, Telegram bot and heartbeat schedule.
+/// Global concerns (Live2D, gallery, language) live on `AppSettings` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppSettings {
-    #[serde(default = "default_model_path")]
-    pub live_2d_model_path: String,
+pub struct AgentConfig {
+    /// Stable identifier, also the memory subdir name (`memory/<id>/`) and the
+    /// Telegram session id suffix (`telegram-<id>`). Never changes once created.
+    #[serde(default = "default_agent_id")]
+    pub id: String,
+    /// Human-readable name shown in the agent switcher / settings.
+    #[serde(default = "default_agent_name")]
+    pub name: String,
     #[serde(default = "default_api_base")]
     pub api_base: String,
     #[serde(default)]
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
-    /// Context-window size (tokens) for the model, used as the denominator of
-    /// the chat context-usage ring. Not exposed by the OpenAI API, so it's a
-    /// user-configurable value.
+    /// Context-window size (tokens), the denominator of the chat context-usage
+    /// ring. Not exposed by the OpenAI API, so it's user-configured.
     #[serde(default = "default_context_window")]
     pub context_window: u32,
-    /// Tavily API key for the `web_search` tool. Empty = web search disabled
-    /// (the tool isn't offered to the model — see `ToolRegistry::new`).
-    #[serde(default)]
-    pub search_api_key: String,
-    /// UI language: "zh" or "en".
-    #[serde(default = "default_language")]
-    pub language: String,
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
     pub telegram: TelegramConfig,
+    /// When true, this agent wakes up in the background on a fixed interval to
+    /// run a heartbeat session (see `HEARTBEAT.md`).
+    #[serde(default)]
+    pub heartbeat_enabled: bool,
+    /// Minutes between scheduled heartbeats.
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval: u32,
+    /// How many recent conversation "turns" of the active session a heartbeat
+    /// forks in (one turn = a user message + the assistant/tool messages that
+    /// follow it). 0 = carry no history, falling back to HEARTBEAT.md-only.
+    #[serde(default = "default_heartbeat_context_turns")]
+    pub heartbeat_context_turns: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            id: default_agent_id(),
+            name: default_agent_name(),
+            api_base: default_api_base(),
+            api_key: String::new(),
+            model: default_model(),
+            context_window: default_context_window(),
+            mcp_servers: HashMap::new(),
+            telegram: TelegramConfig::default(),
+            heartbeat_enabled: false,
+            heartbeat_interval: default_heartbeat_interval(),
+            heartbeat_context_turns: default_heartbeat_context_turns(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    #[serde(default = "default_model_path")]
+    pub live_2d_model_path: String,
+    /// UI language: "zh" or "en".
+    #[serde(default = "default_language")]
+    pub language: String,
     /// Directory the gallery slideshow draws media from (empty = not chosen).
     #[serde(default)]
     pub gallery_dir: String,
@@ -90,24 +129,50 @@ pub struct AppSettings {
     /// Seconds each image stays on screen before advancing.
     #[serde(default = "default_gallery_interval")]
     pub gallery_interval: u32,
-    /// When true, the pet wakes up in the background on a fixed interval to run a
-    /// heartbeat session (see `HEARTBEAT.md`).
+    /// Tavily API key for the `web_search` tool, shared by all agents. Empty =
+    /// web search disabled (the tool isn't offered to the model — see
+    /// `ToolRegistry::new`).
     #[serde(default)]
-    pub heartbeat_enabled: bool,
-    /// Minutes between scheduled heartbeats.
-    #[serde(default = "default_heartbeat_interval")]
-    pub heartbeat_interval: u32,
-    /// How many recent conversation "turns" of the active session a heartbeat
-    /// forks in (one turn = a user message + the assistant/tool messages that
-    /// follow it). 0 = carry no history, falling back to the HEARTBEAT.md-only
-    /// behavior.
-    #[serde(default = "default_heartbeat_context_turns")]
-    pub heartbeat_context_turns: u32,
+    pub search_api_key: String,
+    /// Id of the agent that answers the desktop chat window. Switching agents in
+    /// the chat UI just rewrites this; chat history is global/shared.
+    #[serde(default = "default_agent_id")]
+    pub active_agent: String,
+    /// The configured agents. Always at least one after `ensure`.
+    #[serde(default = "default_agents")]
+    pub agents: Vec<AgentConfig>,
     /// Saved pet-window position so it reopens where the user left it. Written
     /// (debounced) on window move, not through the Settings UI; omitted from the
     /// file until the window has been moved at least once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowPosition>,
+}
+
+impl AppSettings {
+    /// The agent that answers the desktop chat window: the one whose id matches
+    /// `active_agent`, falling back to the first agent. `None` only when there
+    /// are no agents at all.
+    pub fn active_agent_config(&self) -> Option<&AgentConfig> {
+        self.agents
+            .iter()
+            .find(|a| a.id == self.active_agent)
+            .or_else(|| self.agents.first())
+    }
+
+    /// Look up an agent by id.
+    pub fn agent(&self, id: &str) -> Option<&AgentConfig> {
+        self.agents.iter().find(|a| a.id == id)
+    }
+}
+
+/// The active agent's id (resolved like `active_agent_config`), or "default"
+/// when settings can't be read. Used by memory/session paths that need an agent
+/// even outside a chat turn.
+pub fn active_agent_id() -> String {
+    get_settings()
+        .ok()
+        .and_then(|s| s.active_agent_config().map(|a| a.id.clone()))
+        .unwrap_or_else(default_agent_id)
 }
 
 fn default_gallery_interval() -> u32 {
@@ -142,24 +207,29 @@ fn default_language() -> String {
     "zh".to_string()
 }
 
+fn default_agent_id() -> String {
+    "default".to_string()
+}
+
+fn default_agent_name() -> String {
+    "默认".to_string()
+}
+
+fn default_agents() -> Vec<AgentConfig> {
+    vec![AgentConfig::default()]
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             live_2d_model_path: default_model_path(),
-            api_base: default_api_base(),
-            api_key: String::new(),
-            model: default_model(),
-            context_window: default_context_window(),
-            search_api_key: String::new(),
             language: default_language(),
-            mcp_servers: HashMap::new(),
-            telegram: TelegramConfig::default(),
             gallery_dir: String::new(),
             gallery_enabled: false,
             gallery_interval: default_gallery_interval(),
-            heartbeat_enabled: false,
-            heartbeat_interval: default_heartbeat_interval(),
-            heartbeat_context_turns: default_heartbeat_context_turns(),
+            search_api_key: String::new(),
+            active_agent: default_agent_id(),
+            agents: default_agents(),
             window: None,
         }
     }
@@ -275,6 +345,15 @@ pub fn get_settings() -> Result<AppSettings, String> {
     Ok(settings)
 }
 
+/// Create the memory dir + mandatory files for every configured agent. Called
+/// after any settings write so a newly-added agent gets its `memory/<id>/`.
+fn ensure_agent_dirs(settings: &AppSettings) {
+    for agent in &settings.agents {
+        let _ = crate::commands::memory::ensure_memory_files(&agent.id);
+        let _ = crate::commands::heartbeat_file::ensure_heartbeat_file(&agent.id);
+    }
+}
+
 #[tauri::command]
 pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
     let path = config_path()?;
@@ -286,9 +365,34 @@ pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(),
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
     fs::write(&path, yaml)
         .map_err(|e| format!("Failed to write config: {}", e))?;
+    ensure_agent_dirs(&settings);
     // Notify every window so each reloads its in-memory copy (the panel and the
     // pet hold separate copies; without this the pet wouldn't pick up changes
     // like gallery mode until refocused).
+    use tauri::Emitter;
+    let _ = app.emit("settings-changed", ());
+    Ok(())
+}
+
+/// Switch the active agent (the one answering the desktop chat window) without
+/// rewriting the whole settings object. Chat history is global, so this only
+/// changes who responds next. Emits `settings-changed` so both windows reload.
+#[tauri::command]
+pub fn set_active_agent(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut settings = get_settings()?;
+    if settings.agent(&id).is_none() {
+        return Err(format!("Unknown agent: {}", id));
+    }
+    settings.active_agent = id;
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    let yaml = serde_yaml::to_string(&settings)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&path, yaml)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
     use tauri::Emitter;
     let _ = app.emit("settings-changed", ());
     Ok(())
@@ -326,7 +430,7 @@ pub fn get_config_raw() -> Result<String, String> {
 #[tauri::command]
 pub fn save_config_raw(app: tauri::AppHandle, content: String) -> Result<(), String> {
     // Validate YAML parses as AppSettings before saving
-    let _: AppSettings = serde_yaml::from_str(&content)
+    let settings: AppSettings = serde_yaml::from_str(&content)
         .map_err(|e| format!("YAML 解析失败: {}", e))?;
     let path = config_path()?;
     if let Some(parent) = path.parent() {
@@ -335,6 +439,7 @@ pub fn save_config_raw(app: tauri::AppHandle, content: String) -> Result<(), Str
     }
     fs::write(&path, &content)
         .map_err(|e| format!("Failed to write config: {}", e))?;
+    ensure_agent_dirs(&settings);
     use tauri::Emitter;
     let _ = app.emit("settings-changed", ());
     Ok(())

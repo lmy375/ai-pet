@@ -82,16 +82,16 @@ fn path_string(path: Result<std::path::PathBuf, String>) -> String {
 
 /// The persona + long-term memory block: SOUL, the current USER/MEMORY contents,
 /// and the rules for maintaining them. Rebuilt fresh on every turn so edits to
-/// any memory file take effect immediately.
-fn build_memory_prompt() -> String {
-    let _ = memory::ensure_memory_files();
-    let soul = memory::read_soul();
-    let user = memory::read_user();
-    let mem = memory::read_memory();
-    let dir = path_string(memory::memory_dir());
-    let user_p = path_string(memory::user_path());
-    let mem_p = path_string(memory::memory_path());
-    let hb_p = path_string(crate::commands::heartbeat_file::heartbeat_path());
+/// any memory file take effect immediately. Scoped to a single agent.
+fn build_memory_prompt(agent_id: &str) -> String {
+    let _ = memory::ensure_memory_files(agent_id);
+    let soul = memory::read_soul(agent_id);
+    let user = memory::read_user(agent_id);
+    let mem = memory::read_memory(agent_id);
+    let dir = path_string(memory::memory_dir(agent_id));
+    let user_p = path_string(memory::user_path(agent_id));
+    let mem_p = path_string(memory::memory_path(agent_id));
+    let hb_p = path_string(crate::commands::heartbeat_file::heartbeat_path(agent_id));
 
     format!(
         "{soul}\n\n\
@@ -114,9 +114,9 @@ fn build_memory_prompt() -> String {
 
 /// Prepend the system messages (persona+memory, then tool guidance) to a
 /// conversation, overriding any leading system message. Called once per turn so
-/// the pet's memory edits take effect on the very next turn.
-pub fn prepend_system_messages(conv_messages: &mut Vec<Value>) {
-    apply_system_messages(conv_messages, build_memory_prompt());
+/// the pet's memory edits take effect on the very next turn. Scoped to `agent_id`.
+pub fn prepend_system_messages(conv_messages: &mut Vec<Value>, agent_id: &str) {
+    apply_system_messages(conv_messages, build_memory_prompt(agent_id));
 }
 
 /// Prepend the sub-agent system messages (focused task prompt, then the shared
@@ -130,11 +130,15 @@ pub fn prepend_subagent_system_messages(conv_messages: &mut Vec<Value>) {
 /// heartbeat is the pet itself waking up, not a worker), followed by the
 /// heartbeat instructions and the current `HEARTBEAT.md`, then tool guidance.
 /// `interval_label` is a human-readable cadence (e.g. "1 小时").
-pub fn prepend_heartbeat_system_messages(conv_messages: &mut Vec<Value>, interval_label: &str) {
+pub fn prepend_heartbeat_system_messages(
+    conv_messages: &mut Vec<Value>,
+    agent_id: &str,
+    interval_label: &str,
+) {
     use crate::commands::heartbeat_file;
-    let _ = heartbeat_file::ensure_heartbeat_file();
-    let hb = heartbeat_file::read_heartbeat();
-    let hb_path = path_string(heartbeat_file::heartbeat_path());
+    let _ = heartbeat_file::ensure_heartbeat_file(agent_id);
+    let hb = heartbeat_file::read_heartbeat(agent_id);
+    let hb_path = path_string(heartbeat_file::heartbeat_path(agent_id));
 
     let instructions = format!(
         "# 定时心跳\n\n\
@@ -150,7 +154,7 @@ pub fn prepend_heartbeat_system_messages(conv_messages: &mut Vec<Value>, interva
 ## HEARTBEAT.md（当前内容，路径 {hb_path}）\n{hb}"
     );
 
-    let system_content = format!("{}\n\n{}", build_memory_prompt(), instructions);
+    let system_content = format!("{}\n\n{}", build_memory_prompt(agent_id), instructions);
     apply_system_messages(conv_messages, system_content);
 }
 

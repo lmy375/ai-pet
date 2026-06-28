@@ -8,11 +8,12 @@ import { ExternalLinkIcon } from "../Icons";
 import { useI18n, type TKey } from "../../i18n";
 
 /**
- * Memory tab: view and edit the pet's always-present markdown files
- * (SOUL.md / USER.md / MEMORY.md / HEARTBEAT.md) and open the memory folder.
+ * Per-agent memory editor: view and edit one agent's always-present markdown
+ * files (SOUL.md / USER.md / MEMORY.md / HEARTBEAT.md, under `memory/<id>/`) and
+ * open that agent's memory folder. Rendered inside the agent's settings section.
  *
- * The pet maintains USER.md / MEMORY.md / HEARTBEAT.md itself (during chat or on
- * a scheduled heartbeat), so a file can change while this tab is open. To avoid
+ * The agent maintains USER.md / MEMORY.md / HEARTBEAT.md itself (during chat or on
+ * a scheduled heartbeat), so a file can change while this is open. To avoid
  * clobbering those writes with stale content, edits save on blur ONLY when the
  * textarea actually differs from the last loaded/saved content, and focusing a
  * field re-reads the file first.
@@ -38,7 +39,7 @@ const FIELDS: FieldDef[] = [
 
 const EMPTY: Record<FieldKey, string> = { soul: "", user: "", memory: "", heartbeat: "" };
 
-export function PanelMemory() {
+export function AgentMemory({ agentId }: { agentId: string }) {
   const { t } = useI18n();
   const [values, setValues] = useState<Record<FieldKey, string>>(EMPTY);
   const [loaded, setLoaded] = useState(false);
@@ -48,7 +49,7 @@ export function PanelMemory() {
   const baseline = useRef<Record<FieldKey, string>>({ ...EMPTY });
 
   useEffect(() => {
-    Promise.all(FIELDS.map((f) => invoke<string>(f.getCmd)))
+    Promise.all(FIELDS.map((f) => invoke<string>(f.getCmd, { agentId })))
       .then((contents) => {
         const next = { ...EMPTY };
         FIELDS.forEach((f, i) => (next[f.key] = contents[i]));
@@ -60,14 +61,14 @@ export function PanelMemory() {
         setMessage({ text: t("common.loadFailed", { error: e }), ok: false });
         setLoaded(true);
       });
-  }, []);
+  }, [agentId]);
 
-  // Save only when the field changed since load/last-save, so opening the tab
-  // and clicking through fields never overwrites memory the pet just wrote.
+  // Save only when the field changed since load/last-save, so opening it and
+  // clicking through fields never overwrites memory the agent just wrote.
   const saveField = async (f: FieldDef, value: string) => {
     if (value === baseline.current[f.key]) return;
     try {
-      await invoke(f.saveCmd, { content: value });
+      await invoke(f.saveCmd, { agentId, content: value });
       baseline.current[f.key] = value;
       setMessage({ text: t("common.saved"), ok: true });
     } catch (e: any) {
@@ -76,11 +77,11 @@ export function PanelMemory() {
   };
 
   // On focus, pull the latest on-disk content. If the file changed underneath
-  // (e.g. the pet wrote to it) and the user has no unsaved local edits, adopt
+  // (e.g. the agent wrote to it) and the user has no unsaved local edits, adopt
   // the fresh content so they don't edit and then overwrite a stale version.
   const refreshField = async (f: FieldDef) => {
     try {
-      const fresh = await invoke<string>(f.getCmd);
+      const fresh = await invoke<string>(f.getCmd, { agentId });
       setValues((prev) => {
         const unchangedOnDisk = fresh === baseline.current[f.key];
         const noLocalEdits = prev[f.key] === baseline.current[f.key];
@@ -97,19 +98,19 @@ export function PanelMemory() {
 
   const openMemoryDir = async () => {
     try {
-      await invoke("open_memory_dir");
+      await invoke("open_memory_dir", { agentId });
     } catch (e: any) {
       setMessage({ text: t("memory.openDirFailed", { error: e }), ok: false });
     }
   };
 
   if (!loaded) {
-    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">{t("common.loading")}</div>;
+    return <div className="py-4 text-center text-[13px] text-slate-400">{t("common.loading")}</div>;
   }
 
   return (
-    <div className="h-full overflow-y-auto px-5 py-5">
-      <div className="mb-4 flex items-center justify-between">
+    <div>
+      <div className="mb-3 flex items-center justify-between">
         <p className="text-[12px] text-slate-500">{t("memory.subtitle")}</p>
         <Button variant="ghost" size="sm" onClick={openMemoryDir} title={t("memory.openDir")}>
           <ExternalLinkIcon className="h-4 w-4" />

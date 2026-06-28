@@ -82,23 +82,24 @@ fn write_index(index: &SessionIndex) -> Result<(), String> {
 }
 
 /// A `{ "role": "system", "content": <SOUL.md> }` message — the first message
-/// of every new session. Shared so sessions seeded by the panel and Telegram
-/// are identical.
-pub fn soul_system_message() -> serde_json::Value {
-    let soul = super::memory::read_soul();
+/// of every new session, seeded with the given agent's SOUL. The seed is only
+/// the initial system message; every chat turn rebuilds it via
+/// `prepend_system_messages`, so it's effectively cosmetic.
+pub fn soul_system_message(agent_id: &str) -> serde_json::Value {
+    let soul = super::memory::read_soul(agent_id);
     serde_json::json!({ "role": "system", "content": soul })
 }
 
 /// Build (and persist) a fresh session with the given id and title, seeded with
-/// the SOUL system message. Used by `create_session` and the Telegram bot.
-pub fn new_seeded_session(id: String, title: String) -> Result<Session, String> {
+/// the agent's SOUL system message. Used by `create_session` and the Telegram bot.
+pub fn new_seeded_session(agent_id: &str, id: String, title: String) -> Result<Session, String> {
     let now = crate::common::iso_now();
     let session = Session {
         id,
         title,
         created_at: now.clone(),
         updated_at: now,
-        messages: vec![soul_system_message()],
+        messages: vec![soul_system_message(agent_id)],
         items: vec![],
         context_usage: None,
     };
@@ -190,7 +191,8 @@ pub fn rename_session(id: String, title: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn create_session() -> Result<Session, String> {
-    new_seeded_session(Uuid::new_v4().to_string(), "新会话".to_string())
+    let agent_id = crate::commands::settings::active_agent_id();
+    new_seeded_session(&agent_id, Uuid::new_v4().to_string(), "新会话".to_string())
 }
 
 /// Return the tail of `messages` covering the last `n` conversation turns,

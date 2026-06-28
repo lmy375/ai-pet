@@ -22,6 +22,9 @@ pub struct TelegramBot {
 
 /// Persistent state shared across message handlers.
 struct HandlerState {
+    /// Which agent this bot belongs to — used to load the right model config,
+    /// persona/memory and MCP set on each message.
+    agent_id: String,
     allowed_username: String,
     mcp_store: McpManagerStore,
     log_store: LogStore,
@@ -37,12 +40,12 @@ struct HandlerState {
     session_id: String,
 }
 
-const TELEGRAM_SESSION_ID: &str = "telegram-bot";
 const MAX_CONTEXT_MESSAGES: usize = 50;
 const TELEGRAM_MSG_LIMIT: usize = 4096;
 
 impl TelegramBot {
     pub async fn start(
+        agent_id: String,
         config: TelegramConfig,
         mcp_store: McpManagerStore,
         log_store: LogStore,
@@ -53,10 +56,11 @@ impl TelegramBot {
         // Verify bot token by calling getMe
         let _me: Me = bot.get_me().await.map_err(|e| format!("Telegram bot auth failed: {}", e))?;
 
-        // Load or create the dedicated Telegram session
-        let (session_id, messages, items) = load_or_create_session();
+        // Load or create this agent's dedicated Telegram session.
+        let (session_id, messages, items) = load_or_create_session(&agent_id);
 
         let state = Arc::new(HandlerState {
+            agent_id,
             allowed_username: config.allowed_username.trim_start_matches('@').to_lowercase(),
             mcp_store,
             log_store,
@@ -94,14 +98,17 @@ impl TelegramBot {
     }
 }
 
-/// Load the dedicated Telegram session, or create one (seeded with the shared
-/// SOUL system message, identical to panel/pet sessions) if it doesn't exist.
-fn load_or_create_session() -> (String, Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    match session::load_session(TELEGRAM_SESSION_ID.to_string()) {
+/// Load this agent's dedicated Telegram session (`telegram-<agent_id>`), or
+/// create one (seeded with that agent's SOUL system message) if it doesn't exist.
+fn load_or_create_session(
+    agent_id: &str,
+) -> (String, Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let session_id = format!("telegram-{}", agent_id);
+    match session::load_session(session_id.clone()) {
         Ok(s) => (s.id, s.messages, s.items),
-        Err(_) => match session::new_seeded_session(TELEGRAM_SESSION_ID.to_string(), "Telegram".to_string()) {
+        Err(_) => match session::new_seeded_session(agent_id, session_id.clone(), "Telegram".to_string()) {
             Ok(s) => (s.id, s.messages, s.items),
-            Err(_) => (TELEGRAM_SESSION_ID.to_string(), vec![session::soul_system_message()], vec![]),
+            Err(_) => (session_id, vec![session::soul_system_message(agent_id)], vec![]),
         },
     }
 }
@@ -209,7 +216,15 @@ async fn handle_message(
     // Run the LLM pipeline. The sink collects any images a tool surfaces (e.g.
     // `screenshot`) so we can send them back as photos after the text reply.
     let sink = TelegramSink::new();
-    let reply_text = match AiConfig::from_settings() {
+    // Resolve this bot's agent config fresh each message so edits take effect.
+    let agent_config = crate::commands::settings::get_settings()
+        .ok()
+        .and_then(|s| s.agent(&state.agent_id).cloned());
+    let resolved = match agent_config {
+        Some(a) => AiConfig::from_agent(&a),
+        None => Err(format!("Agent \"{}\" no longer exists", state.agent_id)),
+    };
+    let reply_text = match resolved {
         Ok(config) => {
             // Telegram has no UI window, so background-task completions can't be
             // auto-pushed there (notifier = None); tasks still run and are checkable.

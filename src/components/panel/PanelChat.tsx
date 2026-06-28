@@ -6,6 +6,8 @@ import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { ProgressRing } from "../ui/ProgressRing";
 import { ChevronDown, ChevronRight, PlusIcon, PencilIcon, TrashIcon } from "../Icons";
+import { AgentSwitcher } from "../AgentSwitcher";
+import { useSettings } from "../../hooks/useSettings";
 import { useI18n } from "../../i18n";
 
 export function PanelChat() {
@@ -59,6 +61,7 @@ export function PanelChat() {
     <div className="flex h-full flex-col bg-slate-100">
       {/* Session header bar */}
       <div className="flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white px-4 py-2">
+        <AgentSwitcher />
         <button
           className="flex min-w-0 flex-1 items-center gap-1.5"
           onClick={() => setShowSessionList(!showSessionList)}
@@ -170,6 +173,7 @@ interface ToolInfo {
 
 function ContextUsageRing({ used, total }: { used: number; total: number }) {
   const { t } = useI18n();
+  const { settings } = useSettings();
   const [open, setOpen] = useState(false);
   const [tools, setTools] = useState<ToolInfo[] | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -192,11 +196,11 @@ function ContextUsageRing({ used, total }: { used: number; total: number }) {
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    invoke<ToolInfo[]>("list_available_tools")
+    invoke<ToolInfo[]>("list_available_tools", { agentId: settings.active_agent })
       .then((list) => !cancelled && setTools(list))
       .catch(() => !cancelled && setTools([]));
     return () => { cancelled = true; };
-  }, [open]);
+  }, [open, settings.active_agent]);
 
   const ratio = total > 0 ? used / total : 0;
   const percent = Math.round(ratio * 100);

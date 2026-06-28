@@ -15,11 +15,14 @@ pub fn run() {
     // Ensure log directory exists
     let _ = std::fs::create_dir_all(log_dir());
 
-    // Ensure the memory dir + the three mandatory files exist (migrates legacy
-    // SOUL.md into memory/ on first run).
-    let _ = commands::memory::ensure_memory_files();
-    // Ensure HEARTBEAT.md exists (the pet's scheduled-task list).
-    let _ = commands::heartbeat_file::ensure_heartbeat_file();
+    // Ensure each configured agent's memory dir + mandatory files exist
+    // (`memory/<id>/{SOUL,USER,MEMORY,HEARTBEAT}.md`).
+    if let Ok(settings) = commands::settings::get_settings() {
+        for agent in &settings.agents {
+            let _ = commands::memory::ensure_memory_files(&agent.id);
+            let _ = commands::heartbeat_file::ensure_heartbeat_file(&agent.id);
+        }
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -45,32 +48,29 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let settings = commands::settings::get_settings().unwrap_or_default();
 
-                // Initialize MCP servers
-                if !settings.mcp_servers.is_empty() {
-                    let manager = mcp::McpManager::start_from_settings(&settings).await;
-                    *mcp_store.lock().await = manager;
-                    eprintln!("MCP servers initialized");
-                }
-
-                // Initialize Telegram bot
-                let tg = &settings.telegram;
-                if tg.enabled && !tg.bot_token.is_empty() {
-                    let mcp_clone = mcp_store.clone();
-                    match telegram::bot::TelegramBot::start(
-                        tg.clone(),
-                        mcp_clone,
-                        log_store,
-                        shell_store,
-                    )
-                    .await
-                    {
-                        Ok(bot) => {
-                            *telegram_store.lock().await = Some(bot);
-                            eprintln!("Telegram bot started");
+                // Initialize each agent's MCP servers into its own manager.
+                {
+                    let mut managers = mcp_store.lock().await;
+                    for agent in &settings.agents {
+                        if agent.mcp_servers.is_empty() {
+                            continue;
                         }
-                        Err(e) => eprintln!("Failed to start Telegram bot: {}", e),
+                        let manager = mcp::McpManager::start_from_agent(agent).await;
+                        managers.insert(agent.id.clone(), manager);
+                    }
+                    if !managers.is_empty() {
+                        eprintln!("MCP servers initialized");
                     }
                 }
+
+                // Start a Telegram bot for every agent with telegram enabled.
+                commands::telegram::restart_all_bots(
+                    &telegram_store,
+                    mcp_store.clone(),
+                    log_store,
+                    shell_store,
+                )
+                .await;
             });
 
             // Start the scheduled-heartbeat loop (it checks settings each tick, so
@@ -89,6 +89,7 @@ pub fn run() {
             commands::settings::save_settings,
             commands::settings::get_config_raw,
             commands::settings::save_config_raw,
+            commands::settings::set_active_agent,
             commands::memory::get_soul,
             commands::memory::save_soul,
             commands::memory::get_user,

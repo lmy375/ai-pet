@@ -4,11 +4,12 @@
 //! shows up in the panel, but it does NOT inject into the main chat — the only
 //! way a heartbeat reaches the owner is the `chat` tool.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::commands::chat::{run_agent_loop, CollectingSink};
 use crate::commands::debug::LogStore;
-use crate::commands::settings::get_settings;
+use crate::commands::settings::{get_settings, AgentConfig};
 use crate::commands::shell::{run_or_background, ShellStore, TaskKind};
 use crate::commands::prompt;
 use crate::commands::session;
@@ -30,34 +31,34 @@ pub fn start_scheduler(
     mcp_store: McpManagerStore,
 ) {
     tauri::async_runtime::spawn(async move {
-        // Minutes elapsed since the last fire (or since the feature was enabled).
-        let mut elapsed_min: u32 = 0;
+        // Minutes elapsed per agent since its last fire (or since it was enabled).
+        // Multiple agents can have independent heartbeat schedules running at once.
+        let mut elapsed: HashMap<String, u32> = HashMap::new();
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
 
             let settings = get_settings().unwrap_or_default();
-            if !settings.heartbeat_enabled || settings.heartbeat_interval == 0 {
-                // Reset so enabling it later starts a fresh interval rather than
-                // firing immediately.
-                elapsed_min = 0;
-                continue;
-            }
+            // Drop counters for agents that no longer exist.
+            let live_ids: Vec<String> = settings.agents.iter().map(|a| a.id.clone()).collect();
+            elapsed.retain(|id, _| live_ids.contains(id));
 
-            elapsed_min += 1;
-            if elapsed_min < settings.heartbeat_interval {
-                continue;
-            }
-            elapsed_min = 0;
+            for agent in &settings.agents {
+                if !agent.heartbeat_enabled || agent.heartbeat_interval == 0 {
+                    // Reset so enabling it later starts a fresh interval rather
+                    // than firing immediately.
+                    elapsed.insert(agent.id.clone(), 0);
+                    continue;
+                }
 
-            run_one_heartbeat(
-                &app,
-                &log_store,
-                &shell_store,
-                &mcp_store,
-                settings.heartbeat_interval,
-                settings.heartbeat_context_turns,
-            )
-            .await;
+                let counter = elapsed.entry(agent.id.clone()).or_insert(0);
+                *counter += 1;
+                if *counter < agent.heartbeat_interval {
+                    continue;
+                }
+                *counter = 0;
+
+                run_one_heartbeat(&app, &log_store, &shell_store, &mcp_store, agent).await;
+            }
         }
     });
 }
@@ -89,25 +90,24 @@ async fn run_one_heartbeat(
     log_store: &LogStore,
     shell_store: &ShellStore,
     mcp_store: &McpManagerStore,
-    interval_min: u32,
-    context_turns: u32,
+    agent: &AgentConfig,
 ) {
-    let config = match AiConfig::from_settings() {
+    let config = match AiConfig::from_agent(agent) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("heartbeat skipped: {}", e);
+            eprintln!("heartbeat skipped ({}): {}", agent.name, e);
             return;
         }
     };
 
-    let label_cadence = prompt::format_interval_label(interval_min);
+    let label_cadence = prompt::format_interval_label(agent.heartbeat_interval);
     let user_msg = "（系统定时心跳触发）现在自动醒来，结合最近的聊天上下文，按 HEARTBEAT.md 检查并执行需要的定时任务。";
-    // Fork the active session's recent history so the heartbeat is aware of what
-    // the owner has been talking about, then append the wake-up trigger as the
-    // current turn. The heartbeat never writes this conversation back — only the
-    // `chat` tool reaches the main session — so the fork can't disturb it.
-    let mut conv = build_heartbeat_conv(context_turns, user_msg);
-    prompt::prepend_heartbeat_system_messages(&mut conv, &label_cadence);
+    // Fork the (global, shared) active session's recent history so the heartbeat
+    // is aware of what the owner has been talking about, then append the wake-up
+    // trigger as the current turn. The heartbeat never writes this conversation
+    // back — only the `chat` tool reaches the main session — so it can't disturb it.
+    let mut conv = build_heartbeat_conv(agent.heartbeat_context_turns, user_msg);
+    prompt::prepend_heartbeat_system_messages(&mut conv, &agent.id, &label_cadence);
 
     // Registration context: provides the shared store + a `heartbeat` session id
     // that matches no real conversation, and notifier = None so the heartbeat's

@@ -1,14 +1,13 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelSettings } from "./components/panel/PanelSettings";
-import { PanelMemory } from "./components/panel/PanelMemory";
 import { PanelChat } from "./components/panel/PanelChat";
 import { PanelTasks } from "./components/panel/PanelTasks";
 import { Segmented } from "./components/ui/Segmented";
 import { BugIcon } from "./components/Icons";
 import { useI18n } from "./i18n";
 
-type Tab = "chat" | "memory" | "tasks" | "settings";
+type Tab = "chat" | "tasks" | "settings";
 
 export function PanelApp() {
   const { t } = useI18n();
@@ -16,7 +15,6 @@ export function PanelApp() {
 
   const tabs = [
     { value: "chat" as const, label: t("panel.tab.chat") },
-    { value: "memory" as const, label: t("panel.tab.memory") },
     { value: "tasks" as const, label: t("panel.tab.tasks") },
     { value: "settings" as const, label: t("panel.tab.settings") },
   ];
@@ -42,7 +40,6 @@ export function PanelApp() {
       {/* Tab content */}
       <div className="flex-1 overflow-hidden">
         {activeTab === "settings" && <PanelSettings />}
-        {activeTab === "memory" && <PanelMemory />}
         {activeTab === "chat" && <PanelChat />}
         {activeTab === "tasks" && <PanelTasks />}
       </div>

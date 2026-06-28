@@ -302,7 +302,7 @@ pub async fn run_chat_pipeline(
     // from the current memory files on every turn, so edits the pet makes to
     // USER.md / MEMORY.md take effect immediately instead of being frozen at
     // session creation.
-    crate::commands::prompt::prepend_system_messages(&mut conv_messages);
+    crate::commands::prompt::prepend_system_messages(&mut conv_messages, &config.agent_id);
 
     run_agent_loop(conv_messages, sink, config, mcp_store, ctx).await
 }
@@ -321,10 +321,10 @@ pub async fn run_agent_loop(
     mcp_store: &McpManagerStore,
     ctx: &ToolContext,
 ) -> Result<String, String> {
-    // Get MCP tool definitions
+    // Get MCP tool definitions for this agent (each agent has its own server set).
     let mcp_defs = {
-        let mcp_manager = mcp_store.lock().await;
-        mcp_manager.definitions()
+        let managers = mcp_store.lock().await;
+        managers.get(&config.agent_id).map(|m| m.definitions()).unwrap_or_default()
     };
     // Sub-agents (depth > 0) don't get the spawn tool, so they can't recurse.
     // The `chat` tool is offered only to heartbeat sessions. `web_search` is
@@ -407,8 +407,12 @@ pub async fn run_agent_loop(
                 ctx.log(&format!("MCP tool call: {}({})", tc_name, tc_args));
                 let args_value: serde_json::Value =
                     serde_json::from_str(tc_args).unwrap_or(serde_json::Value::Null);
-                let mcp_manager = mcp_store.lock().await;
-                match mcp_manager.call_tool(tc_name, args_value).await {
+                let managers = mcp_store.lock().await;
+                let call_res = match managers.get(&config.agent_id) {
+                    Some(m) => m.call_tool(tc_name, args_value).await,
+                    None => Err(format!("No MCP manager for agent {}", config.agent_id)),
+                };
+                match call_res {
                     Ok(r) => r,
                     Err(e) => format!(r#"{{"error": "{}"}}"#, e),
                 }
