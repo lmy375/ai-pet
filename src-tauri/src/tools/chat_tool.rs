@@ -6,7 +6,7 @@
 //! fires a native system notification, and tells the active window to refresh.
 
 use crate::commands::session;
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{tool_error, Tool, ToolContext};
 
 pub struct ChatTool;
 
@@ -35,25 +35,19 @@ impl Tool for ChatTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(chat_impl(arguments, ctx))
-    }
+    crate::impl_execute!(chat_impl);
 }
 
 async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
     let message = args["message"].as_str().unwrap_or("").trim().to_string();
     if message.is_empty() {
-        return r#"{"error": "missing 'message' parameter"}"#.to_string();
+        return tool_error("missing 'message' parameter");
     }
 
     let app = match &ctx.app {
         Some(a) => a.clone(),
-        None => return r#"{"error": "chat tool unavailable in this context"}"#.to_string(),
+        None => return tool_error("chat tool unavailable in this context"),
     };
 
     // Target the currently-active conversation. If there isn't one yet, there's
@@ -61,23 +55,25 @@ async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
     let index = session::list_sessions();
     let id = index.active_id;
     if id.is_empty() {
-        return r#"{"error": "no active session to send to"}"#.to_string();
+        return tool_error("no active session to send to");
     }
     let mut sess = match session::load_session(id.clone()) {
         Ok(s) => s,
-        Err(e) => return format!(r#"{{"error": "failed to load session: {}"}}"#, e.replace('"', "'")),
+        Err(e) => return tool_error(format!("failed to load session: {}", e)),
     };
 
     // Append a pet message to BOTH the raw LLM messages (so the owner's next turn
     // sees what the pet said) and the rendered items (so the UI shows it).
     let ts = chrono::Local::now().timestamp_millis();
     sess.messages.push(serde_json::json!({ "role": "assistant", "content": message }));
-    sess.items.push(serde_json::json!({ "type": "assistant", "content": message, "ts": ts }));
+    let mut item = session::assistant_item(&message, &[]);
+    item["ts"] = serde_json::json!(ts);
+    sess.items.push(item);
     sess.updated_at = crate::common::iso_now();
     sess.created_at = String::new(); // preserved by save_session
 
     if let Err(e) = session::save_session(sess) {
-        return format!(r#"{{"error": "failed to save session: {}"}}"#, e.replace('"', "'"));
+        return tool_error(format!("failed to save session: {}", e));
     }
 
     // Native system notification so the owner sees it even when the app is in

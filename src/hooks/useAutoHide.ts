@@ -21,6 +21,23 @@ export function useAutoHide() {
     saveTimer: null as ReturnType<typeof setTimeout> | null,
   });
 
+  // Eased (ease-out cubic) horizontal slide from startX to targetX over
+  // ANIM_DURATION. Shared by slideToEdge/slideBack — only the target differs.
+  const animateTo = async (
+    win: ReturnType<typeof getCurrentWindow>,
+    startX: number,
+    targetX: number,
+    y: number,
+  ) => {
+    for (let i = 1; i <= ANIM_STEPS; i++) {
+      const progress = i / ANIM_STEPS;
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const x = Math.round(startX + (targetX - startX) * eased);
+      await win.setPosition(new PhysicalPosition(x, y));
+      await new Promise((r) => setTimeout(r, ANIM_DURATION / ANIM_STEPS));
+    }
+  };
+
   const slideToEdge = async () => {
     const s = state.current;
     if (s.hidden || s.paused || s.animating) return;
@@ -39,17 +56,8 @@ export function useAutoHide() {
     const scale = window.devicePixelRatio || 1;
     const tabPhysical = Math.round(TAB_WIDTH * scale);
     const targetX = monitor.position.x + monitor.size.width - tabPhysical;
-    const startX = pos.x;
-    const y = pos.y;
 
-    for (let i = 1; i <= ANIM_STEPS; i++) {
-      const progress = i / ANIM_STEPS;
-      // ease-out cubic
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const x = Math.round(startX + (targetX - startX) * eased);
-      await win.setPosition(new PhysicalPosition(x, y));
-      await new Promise((r) => setTimeout(r, ANIM_DURATION / ANIM_STEPS));
-    }
+    await animateTo(win, pos.x, targetX, pos.y);
 
     s.hidden = true;
     s.animating = false;
@@ -63,19 +71,10 @@ export function useAutoHide() {
     const win = getCurrentWindow();
     const pos = await win.outerPosition();
     const targetX = s.savedX;
-    const startX = pos.x;
-    const y = pos.y;
 
     s.animating = true;
 
-    for (let i = 1; i <= ANIM_STEPS; i++) {
-      const progress = i / ANIM_STEPS;
-      // ease-out cubic
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const x = Math.round(startX + (targetX - startX) * eased);
-      await win.setPosition(new PhysicalPosition(x, y));
-      await new Promise((r) => setTimeout(r, ANIM_DURATION / ANIM_STEPS));
-    }
+    await animateTo(win, pos.x, targetX, pos.y);
 
     s.hidden = false;
     s.animating = false;

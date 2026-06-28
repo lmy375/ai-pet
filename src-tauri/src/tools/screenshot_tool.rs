@@ -56,13 +56,7 @@ impl Tool for ScreenshotTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(screenshot_impl(arguments, ctx))
-    }
+    crate::impl_execute!(screenshot_impl);
 }
 
 async fn screenshot_impl(arguments: &str, ctx: &ToolContext) -> String {

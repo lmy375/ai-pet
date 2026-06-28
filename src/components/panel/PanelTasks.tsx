@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { RefreshIcon, ClockIcon, ChevronRight } from "../Icons";
 import { useI18n } from "../../i18n";
 import { formatIsoTime } from "../../utils/format";
+import { usePolling } from "../../hooks/usePolling";
 
 interface TaskListItem {
   taskId: string;
@@ -168,14 +169,10 @@ export function PanelTasks() {
     }
   }, []);
 
-  useEffect(() => {
+  usePolling(() => {
     fetchTasks();
-    const timer = setInterval(() => {
-      fetchTasks();
-      if (expandedId) fetchDetail(expandedId); // keep a running task's output fresh
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [fetchTasks, fetchDetail, expandedId]);
+    if (expandedId) fetchDetail(expandedId); // keep a running task's output fresh
+  }, 2000);
 
   const toggle = useCallback(
     (taskId: string) => {

@@ -10,4 +10,4 @@ pub mod web_search_tool;
 
 pub use context::ToolContext;
 pub use registry::ToolRegistry;
-pub use tool::{parse_args, Tool};
+pub use tool::{parse_args, required_str, tool_error, Tool};

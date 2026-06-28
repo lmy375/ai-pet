@@ -112,6 +112,27 @@ impl McpManager {
         }
     }
 
+    /// Serve the client over `transport`, then list its tools. Shared tail of
+    /// every `connect_*` — the transports differ but the handshake is identical.
+    async fn serve_and_list<T, E, A>(
+        transport: T,
+    ) -> Result<(RunningService<RoleClient, ()>, Vec<McpTool>), String>
+    where
+        T: rmcp::transport::IntoTransport<RoleClient, E, A>,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        let service: RunningService<RoleClient, ()> = ().serve(transport)
+            .await
+            .map_err(|e| format!("Failed to initialize MCP client: {}", e))?;
+
+        let tools = service
+            .list_all_tools()
+            .await
+            .map_err(|e| format!("Failed to list tools: {}", e))?;
+
+        Ok((service, tools))
+    }
+
     async fn connect_stdio(
         config: &McpServerConfig,
     ) -> Result<(RunningService<RoleClient, ()>, Vec<McpTool>), String> {
@@ -127,16 +148,7 @@ impl McpManager {
         let transport = TokioChildProcess::new(cmd)
             .map_err(|e| format!("Failed to spawn process: {}", e))?;
 
-        let service: RunningService<RoleClient, ()> = ().serve(transport)
-            .await
-            .map_err(|e| format!("Failed to initialize MCP client: {}", e))?;
-
-        let tools = service
-            .list_all_tools()
-            .await
-            .map_err(|e| format!("Failed to list tools: {}", e))?;
-
-        Ok((service, tools))
+        Self::serve_and_list(transport).await
     }
 
     async fn connect_http(
@@ -162,16 +174,7 @@ impl McpManager {
             StreamableHttpClientTransport::from_config(http_config)
         };
 
-        let service: RunningService<RoleClient, ()> = ().serve(transport)
-            .await
-            .map_err(|e| format!("Failed to initialize MCP client: {}", e))?;
-
-        let tools = service
-            .list_all_tools()
-            .await
-            .map_err(|e| format!("Failed to list tools: {}", e))?;
-
-        Ok((service, tools))
+        Self::serve_and_list(transport).await
     }
 
     /// Get all MCP tool definitions in OpenAI function calling format

@@ -71,6 +71,8 @@ impl ToolContext {
         }
     }
 
+    /// Like `new`, but clones the shared stores out of Tauri-managed `State`
+    /// guards (the UI chat command's path). Not a heartbeat.
     pub fn from_states(
         log_store: &tauri::State<'_, LogStore>,
         shell_store: &tauri::State<'_, ShellStore>,
@@ -80,19 +82,16 @@ impl ToolContext {
         notifier: Option<Arc<dyn TaskNotifier>>,
         app: Option<tauri::AppHandle>,
     ) -> Self {
-        Self {
-            shell_store: ShellStore(shell_store.0.clone()),
-            log_store: LogStore(log_store.0.clone()),
+        Self::new(
+            LogStore(log_store.0.clone()),
+            ShellStore(shell_store.0.clone()),
             config,
             mcp_store,
-            depth: 0,
-            log_session: session_id.clone(),
             session_id,
             notifier,
             app,
-            is_heartbeat: false,
-            pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
-        }
+            false,
+        )
     }
 
     /// A context for a nested sub-agent: same stores/config/session, one level

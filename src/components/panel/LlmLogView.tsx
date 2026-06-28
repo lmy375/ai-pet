@@ -15,6 +15,7 @@ import {
   ArrowUpIcon,
   ArrowDownIcon,
 } from "../Icons";
+import { usePolling } from "../../hooks/usePolling";
 
 interface LlmLogEntry {
   session_id?: string;
@@ -271,11 +272,7 @@ export function LlmLogView() {
     }
   };
 
-  useEffect(() => {
-    fetchLogs();
-    const timer = setInterval(fetchLogs, 2000);
-    return () => clearInterval(timer);
-  }, []);
+  usePolling(fetchLogs, 2000);
 
   useEffect(() => {
     if (scrollRef.current) {

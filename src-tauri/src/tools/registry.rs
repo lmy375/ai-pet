@@ -70,7 +70,7 @@ impl ToolRegistry {
 
     /// Check if a tool name belongs to an MCP server
     pub fn is_mcp_tool(&self, name: &str) -> bool {
-        self.mcp_tool_names.contains(&name.to_string())
+        self.mcp_tool_names.iter().any(|n| n == name)
     }
 
     /// Find and execute a built-in tool by name
@@ -81,7 +81,7 @@ impl ToolRegistry {
                 return tool.execute(arguments, ctx).await;
             }
         }
-        format!(r#"{{"error": "unknown tool: {}"}}"#, name)
+        super::tool_error(format!("unknown tool: {}", name))
     }
 }
 

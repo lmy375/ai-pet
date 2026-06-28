@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::commands::chat::{run_agent_loop, CollectingSink};
+use crate::commands::chat::{run_agent_loop, ImageCollectingSink};
 use crate::commands::debug::LogStore;
 use crate::commands::settings::{get_settings, AgentConfig};
 use crate::commands::shell::{run_or_background, ShellStore, TaskKind};
@@ -144,10 +144,10 @@ async fn run_one_heartbeat(
     let work_config = config.clone();
     let work_mcp = mcp_store.clone();
     let work = async move {
-        let sink = CollectingSink::new();
+        let sink = ImageCollectingSink::new();
         match run_agent_loop(conv, &sink, &work_config, &work_mcp, &work_ctx).await {
             Ok(text) => (Some(0), text),
-            Err(e) => (Some(1), format!(r#"{{"error": "heartbeat failed: {}"}}"#, e.replace('"', "'"))),
+            Err(e) => (Some(1), crate::tools::tool_error(format!("heartbeat failed: {}", e))),
         }
     };
 

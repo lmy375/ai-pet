@@ -26,3 +26,55 @@ export function TextArea({ className = "", ...rest }: TextareaHTMLAttributes<HTM
 export function Select({ className = "", ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select className={`${inputClass} ${className}`} {...rest} />;
 }
+
+/**
+ * A `TextInput` that commits on blur and on Enter (Enter blurs the field, which
+ * triggers the blur commit). The settings panel saves on commit, so this bakes
+ * in the `onBlur` + "Enter blurs" pair every saved field repeats. Supply
+ * `onChange` to update local state per keystroke and `onCommit` to persist.
+ */
+type SavedTextInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "onBlur" | "onKeyDown"> & {
+  onCommit: () => void;
+};
+export function SavedTextInput({ onCommit, ...rest }: SavedTextInputProps) {
+  return (
+    <TextInput
+      {...rest}
+      onBlur={() => onCommit()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
+    />
+  );
+}
+
+/**
+ * A numeric `SavedTextInput`. `onChange` receives the raw entered number on each
+ * keystroke; `onCommit` receives the value clamped to `[min, ∞)` (falling back
+ * to `fallback` when the field is empty/0) on blur or Enter.
+ */
+type NumberFieldProps = Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  "onChange" | "onBlur" | "onKeyDown" | "value" | "type"
+> & {
+  value: number;
+  min?: number;
+  fallback: number;
+  onChange: (v: number) => void;
+  onCommit: (clamped: number) => void;
+};
+export function NumberField({ value, min = 1, fallback, onChange, onCommit, ...rest }: NumberFieldProps) {
+  return (
+    <TextInput
+      type="number"
+      min={min}
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value) || 0)}
+      onBlur={() => onCommit(Math.max(min, value || fallback))}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
+      {...rest}
+    />
+  );
+}

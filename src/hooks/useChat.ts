@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useI18n } from "../i18n";
+import { useTauriEvent } from "./useTauriEvent";
 
 /** Sentinel title for a not-yet-named session. Stored verbatim on disk (so old
  *  sessions keep matching); translate it at display time, never compare against
@@ -167,41 +167,49 @@ export function planMessageDeletion(
  */
 export function useChat() {
   const { t } = useI18n();
-  const [items, setItems] = useState<ChatItem[]>([]);
+
+  // Each piece of session state carries a ref mirror so event-driven code (the
+  // background-completion drain, focus reload, the `chat-inserted` listener)
+  // reads current values instead of stale closures. Each `setX` writes the ref
+  // AND the state together — always call these, never a bare React setter, so
+  // the ref can never lag the state.
+  const [items, setItemsState] = useState<ChatItem[]>([]);
+  const itemsRef = useRef<ChatItem[]>([]);
+  const setItems = useCallback((v: ChatItem[]) => {
+    itemsRef.current = v;
+    setItemsState(v);
+  }, []);
+
   const [isLoading, setIsLoading] = useState(false);
   const [currentResponse, setCurrentResponse] = useState("");
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCall[]>([]);
   const [loaded, setLoaded] = useState(false);
+
   // Latest context-window occupancy reported by the backend (last LLM round of
   // the current turn). Null until a turn runs in this session; reset on switch.
   const [contextUsage, setContextUsage] = useState<{ used: number; total: number } | null>(null);
-  // Ref mirror so saveCurrentSession (called from event-driven finish/drain)
-  // persists the latest usage instead of a stale closure value.
   const contextUsageRef = useRef<{ used: number; total: number } | null>(null);
-  const setUsage = (u: { used: number; total: number } | null) => {
+  const setUsage = useCallback((u: { used: number; total: number } | null) => {
     contextUsageRef.current = u;
     setContextUsage(u);
-  };
+  }, []);
 
-  const [sessionId, setSessionId] = useState("");
-  const [sessionTitle, setSessionTitle] = useState(DEFAULT_SESSION_TITLE);
+  const [sessionId, setSessionIdState] = useState("");
+  const sessionIdRef = useRef("");
+  const setSessionId = useCallback((v: string) => {
+    sessionIdRef.current = v;
+    setSessionIdState(v);
+  }, []);
+
+  const [sessionTitle, setSessionTitleState] = useState(DEFAULT_SESSION_TITLE);
+  const sessionTitleRef = useRef(DEFAULT_SESSION_TITLE);
+  const setSessionTitle = useCallback((v: string) => {
+    sessionTitleRef.current = v;
+    setSessionTitleState(v);
+  }, []);
+
   const [sessionList, setSessionList] = useState<SessionMeta[]>([]);
   const messagesRef = useRef<any[]>([]);
-
-  // Refs mirroring state, so the event-driven drain reads current values
-  // instead of stale closures.
-  const itemsRef = useRef<ChatItem[]>([]);
-  const sessionIdRef = useRef("");
-  const sessionTitleRef = useRef(DEFAULT_SESSION_TITLE);
-  useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
-  useEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
-  useEffect(() => {
-    sessionTitleRef.current = sessionTitle;
-  }, [sessionTitle]);
 
   // Synchronous turn lock + pending background completions queue.
   const busyRef = useRef(false);
@@ -228,11 +236,8 @@ export function useChat() {
     try {
       const session = await invoke<Session>("load_session", { id });
       setSessionId(session.id);
-      sessionIdRef.current = session.id;
       setSessionTitle(session.title);
-      const loadedItems = session.items || [];
-      setItems(loadedItems);
-      itemsRef.current = loadedItems;
+      setItems(session.items || []);
       messagesRef.current = session.messages || [];
       // Restore the persisted occupancy so the ring shows immediately, instead
       // of waiting for the next turn (or showing the session we switched from).
@@ -328,7 +333,6 @@ export function useChat() {
     if (id === sessionIdRef.current) {
       if (trimmed === sessionTitleRef.current) return;
       setSessionTitle(trimmed);
-      sessionTitleRef.current = trimmed;
     }
     try {
       await invoke("rename_session", { id, title: trimmed });
@@ -378,7 +382,6 @@ export function useChat() {
       );
       messagesRef.current = newMessages;
       setItems(newItems);
-      itemsRef.current = newItems;
       await saveCurrentSession(newItems);
     },
     [saveCurrentSession],
@@ -398,15 +401,14 @@ export function useChat() {
       let toolCalls: ToolCall[] = [];
       let finalItems = baseItems;
 
-      // Commit the rendered list AND sync itemsRef synchronously. itemsRef is
-      // otherwise only updated by a passive effect that runs AFTER the
-      // setTimeout(0) drain below — so without this, a background-completion turn
-      // would rebuild items from a stale ref and clobber the just-committed
-      // assistant message with its own notification.
+      // Commit the rendered list. `setItems` syncs itemsRef synchronously, so a
+      // background-completion turn draining on the next tick rebuilds items from
+      // the fresh ref — never a stale one that would clobber the just-committed
+      // assistant message with its notification. `finalItems` tracks it locally
+      // for the synchronous reads within this turn.
       const commit = (next: ChatItem[]) => {
         finalItems = next;
         setItems(next);
-        itemsRef.current = next;
       };
 
       const flushToolCalls = () => {
@@ -546,7 +548,6 @@ export function useChat() {
         { type: "notification", content: t("chat.bgTaskDone", { label }), detail: c.result, ts: Date.now() },
       ];
       setItems(newItems);
-      itemsRef.current = newItems;
       await runStream(newItems);
     },
     [runStream, t],
@@ -588,35 +589,23 @@ export function useChat() {
   // by trying to guarantee a single listener — a cancel-after-await dance is
   // fragile under StrictMode / Vite HMR and can leave zero listeners. Worst case
   // a remount leaks one extra listener; dedup makes that harmless.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<TaskCompletion>("background-finished", (e) => {
-      const c = e.payload;
-      if (seenTaskIdsRef.current.has(c.taskId)) return; // already handled once
-      seenTaskIdsRef.current.add(c.taskId);
-      queueRef.current = [...queueRef.current, c];
-      processQueueRef.current();
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, []);
+  useTauriEvent<TaskCompletion>("background-finished", (e) => {
+    const c = e.payload;
+    if (seenTaskIdsRef.current.has(c.taskId)) return; // already handled once
+    seenTaskIdsRef.current.add(c.taskId);
+    queueRef.current = [...queueRef.current, c];
+    processQueueRef.current();
+  });
 
   // A heartbeat's `chat` tool inserts a pet message into the active session on
   // disk and emits `chat-inserted` to the active window. Reload so it shows up
   // immediately; if we're mid-turn or it's for another session, the message is
   // already persisted and surfaces on the next focus/reload.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ sessionId: string }>("chat-inserted", (e) => {
-      if (busyRef.current) return;
-      if (e.payload.sessionId !== sessionIdRef.current) return;
-      loadSessionData(sessionIdRef.current);
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, []);
+  useTauriEvent<{ sessionId: string }>("chat-inserted", (e) => {
+    if (busyRef.current) return;
+    if (e.payload.sessionId !== sessionIdRef.current) return;
+    loadSessionData(sessionIdRef.current);
+  });
 
   // On focus, tell the backend this window is now active (so completion
   // notifications route here) and reload the latest active conversation, so the

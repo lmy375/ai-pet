@@ -354,24 +354,34 @@ fn ensure_agent_dirs(settings: &AppSettings) {
     }
 }
 
-#[tauri::command]
-pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
+/// Write raw YAML text to config.yaml, creating the parent dir if needed.
+fn write_config_file(yaml: &str) -> Result<(), String> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create config dir: {}", e))?;
     }
-    let yaml = serde_yaml::to_string(&settings)
+    fs::write(&path, yaml).map_err(|e| format!("Failed to write config: {}", e))
+}
+
+/// Serialize `settings`, write it to config.yaml, then run the standard
+/// post-write side effects: ensure every agent's memory dirs exist and emit
+/// `settings-changed` so each window reloads its in-memory copy (the panel and
+/// pet hold separate copies; without this the pet wouldn't pick up changes like
+/// gallery mode until refocused). Use for any settings-mutating command.
+fn write_settings(app: &tauri::AppHandle, settings: &AppSettings) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(settings)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&path, yaml)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-    ensure_agent_dirs(&settings);
-    // Notify every window so each reloads its in-memory copy (the panel and the
-    // pet hold separate copies; without this the pet wouldn't pick up changes
-    // like gallery mode until refocused).
+    write_config_file(&yaml)?;
+    ensure_agent_dirs(settings);
     use tauri::Emitter;
     let _ = app.emit("settings-changed", ());
     Ok(())
+}
+
+#[tauri::command]
+pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
+    write_settings(&app, &settings)
 }
 
 /// Switch the active agent (the one answering the desktop chat window) without
@@ -384,18 +394,7 @@ pub fn set_active_agent(app: tauri::AppHandle, id: String) -> Result<(), String>
         return Err(format!("Unknown agent: {}", id));
     }
     settings.active_agent = id;
-    let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
-    }
-    let yaml = serde_yaml::to_string(&settings)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&path, yaml)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-    use tauri::Emitter;
-    let _ = app.emit("settings-changed", ());
-    Ok(())
+    write_settings(&app, &settings)
 }
 
 /// Persist only the pet-window position into config.yaml (read-modify-write).
@@ -404,15 +403,9 @@ pub fn set_active_agent(app: tauri::AppHandle, id: String) -> Result<(), String>
 pub fn set_window_position(x: i32, y: i32) -> Result<(), String> {
     let mut settings = get_settings()?;
     settings.window = Some(WindowPosition { x, y });
-    let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
-    }
     let yaml = serde_yaml::to_string(&settings)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&path, yaml)
-        .map_err(|e| format!("Failed to write config: {}", e))
+    write_config_file(&yaml)
 }
 
 #[tauri::command]
@@ -429,16 +422,11 @@ pub fn get_config_raw() -> Result<String, String> {
 
 #[tauri::command]
 pub fn save_config_raw(app: tauri::AppHandle, content: String) -> Result<(), String> {
-    // Validate YAML parses as AppSettings before saving
+    // Validate YAML parses as AppSettings before saving. Write the user's exact
+    // text (preserving comments/formatting) rather than re-serializing.
     let settings: AppSettings = serde_yaml::from_str(&content)
         .map_err(|e| format!("YAML 解析失败: {}", e))?;
-    let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
-    }
-    fs::write(&path, &content)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    write_config_file(&content)?;
     ensure_agent_dirs(&settings);
     use tauri::Emitter;
     let _ = app.emit("settings-changed", ());

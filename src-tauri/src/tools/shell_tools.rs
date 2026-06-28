@@ -1,4 +1,4 @@
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{required_str, tool_error, Tool, ToolContext};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
@@ -57,21 +57,15 @@ impl Tool for BashTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(bash_impl(arguments, ctx))
-    }
+    crate::impl_execute!(bash_impl);
 }
 
 async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
-    let command = args["command"].as_str().unwrap_or("").to_string();
-    if command.is_empty() {
-        return r#"{"error": "missing 'command' parameter"}"#.to_string();
-    }
+    let command = match required_str(&args, "command") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
 
     let description = args["description"].as_str().unwrap_or("");
     let working_directory = args["working_directory"].as_str();
@@ -90,11 +84,11 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     let stdout_file = match std::fs::File::create(&stdout_path) {
         Ok(f) => f,
-        Err(e) => return format!(r#"{{"error": "failed to create stdout file: {}"}}"#, e),
+        Err(e) => return tool_error(format!("failed to create stdout file: {}", e)),
     };
     let stderr_file = match std::fs::File::create(&stderr_path) {
         Ok(f) => f,
-        Err(e) => return format!(r#"{{"error": "failed to create stderr file: {}"}}"#, e),
+        Err(e) => return tool_error(format!("failed to create stderr file: {}", e)),
     };
 
     let mut cmd = tokio::process::Command::new("bash");
@@ -118,7 +112,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return format!(r#"{{"error": "failed to spawn: {}"}}"#, e),
+        Err(e) => return tool_error(format!("failed to spawn: {}", e)),
     };
 
     let pid = child.id().unwrap_or(0);
@@ -238,9 +232,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
             })
             .to_string()
         }
-        Ok(Err(e)) => {
-            format!(r#"{{"error": "process error: {}"}}"#, e)
-        }
+        Ok(Err(e)) => tool_error(format!("process error: {}", e)),
         Err(_) => {
             // Timeout — converts to a notified background task, so it now belongs
             // in the panel. Mark it backgrounded before spawning the waiter.
@@ -315,30 +307,24 @@ impl Tool for CheckShellStatusTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(check_shell_status_impl(arguments, ctx))
-    }
+    crate::impl_execute!(check_shell_status_impl);
 }
 
 async fn check_shell_status_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
-    let task_id = args["task_id"].as_str().unwrap_or("").to_string();
-    if task_id.is_empty() {
-        return r#"{"error": "missing 'task_id' parameter"}"#.to_string();
-    }
+    let task_id = match required_str(&args, "task_id") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
 
     let map = ctx.shell_store.0.lock().unwrap();
     match map.get(&task_id) {
         // Works for both bash (reads its output files) and sub-agent (stored result).
         Some(task) => {
             serde_json::to_string(&crate::commands::shell::build_shell_result(&task_id, task))
-                .unwrap_or_else(|_| r#"{"error": "failed to serialize status"}"#.to_string())
+                .unwrap_or_else(|_| tool_error("failed to serialize status"))
         }
-        None => format!(r#"{{"error": "task not found: {}"}}"#, task_id),
+        None => tool_error(format!("task not found: {}", task_id)),
     }
 }
 
@@ -379,25 +365,20 @@ impl Tool for WriteStdinTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(write_stdin_impl(arguments, ctx))
-    }
+    crate::impl_execute!(write_stdin_impl);
 }
 
 async fn write_stdin_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
-    let task_id = args["task_id"].as_str().unwrap_or("").to_string();
+    let task_id = match required_str(&args, "task_id") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    // `input` may be an empty line, so require a string rather than non-empty.
     let input = match args["input"].as_str() {
         Some(s) => s.to_string(),
-        None => return r#"{"error": "missing 'input' parameter"}"#.to_string(),
+        None => return tool_error("missing 'input' parameter"),
     };
-    if task_id.is_empty() {
-        return r#"{"error": "missing 'task_id' parameter"}"#.to_string();
-    }
     let wait_ms = args["wait_ms"].as_u64().unwrap_or(500).min(10_000);
 
     let sender = {
@@ -405,15 +386,15 @@ async fn write_stdin_impl(arguments: &str, ctx: &ToolContext) -> String {
         match map.get(&task_id) {
             Some(task) => match &task.stdin_sender {
                 Some(tx) => tx.clone(),
-                None => return format!(r#"{{"error": "task {} has no stdin (not started with repl:true)"}}"#, task_id),
+                None => return tool_error(format!("task {} has no stdin (not started with repl:true)", task_id)),
             },
-            None => return format!(r#"{{"error": "task not found: {}"}}"#, task_id),
+            None => return tool_error(format!("task not found: {}", task_id)),
         }
     };
 
     let line = format!("{}\n", input);
     if sender.send(line).await.is_err() {
-        return format!(r#"{{"error": "stdin channel closed — process may have exited for task {}"}}"#, task_id);
+        return tool_error(format!("stdin channel closed — process may have exited for task {}", task_id));
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
@@ -429,6 +410,6 @@ async fn write_stdin_impl(arguments: &str, ctx: &ToolContext) -> String {
             })
             .to_string()
         }
-        None => format!(r#"{{"error": "task not found after wait: {}"}}"#, task_id),
+        None => tool_error(format!("task not found after wait: {}", task_id)),
     }
 }

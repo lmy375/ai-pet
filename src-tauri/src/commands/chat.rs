@@ -90,21 +90,33 @@ impl ChatEventSink for Channel<StreamEvent> {
     }
 }
 
-/// A no-op sink for non-streaming callers (e.g. Telegram). The final text is
-/// returned by `run_chat_pipeline` directly, so streaming events are discarded.
-pub struct CollectingSink;
+/// The sink for non-streaming callers (Telegram, heartbeats, sub-agents). The
+/// final assistant text is returned by `run_chat_pipeline` directly, so all
+/// streaming events are discarded — except images a tool surfaces (e.g.
+/// `screenshot`), which are buffered so a caller that can render them (Telegram)
+/// may forward them afterwards via `take_images()`. Callers that don't care
+/// about images (heartbeats, sub-agents) simply never call `take_images`.
+#[derive(Default)]
+pub struct ImageCollectingSink {
+    images: std::sync::Mutex<Vec<String>>,
+}
 
-impl CollectingSink {
+impl ImageCollectingSink {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+    pub fn take_images(&self) -> Vec<String> {
+        std::mem::take(&mut *self.images.lock().unwrap())
     }
 }
 
-impl ChatEventSink for CollectingSink {
+impl ChatEventSink for ImageCollectingSink {
     fn send_chunk(&self, _text: &str) {}
     fn send_tool_start(&self, _name: &str, _arguments: &str) {}
     fn send_tool_result(&self, _name: &str, _result: &str) {}
-    fn send_image(&self, _data_url: &str) {}
+    fn send_image(&self, data_url: &str) {
+        self.images.lock().unwrap().push(data_url.to_string());
+    }
     fn send_usage(&self, _prompt_tokens: u64, _total_tokens: u64, _context_window: u32) {}
     fn send_done(&self) {}
     fn send_error(&self, _message: &str) {}
@@ -414,7 +426,7 @@ pub async fn run_agent_loop(
                 };
                 match call_res {
                     Ok(r) => r,
-                    Err(e) => format!(r#"{{"error": "{}"}}"#, e),
+                    Err(e) => crate::tools::tool_error(e),
                 }
             } else {
                 // Built-in tool

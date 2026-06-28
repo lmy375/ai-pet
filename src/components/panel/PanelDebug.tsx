@@ -3,12 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { Button } from "../ui/Button";
 import { RefreshIcon, TrashIcon } from "../Icons";
 import { useI18n } from "../../i18n";
+import { usePolling } from "../../hooks/usePolling";
 
 export function PanelDebug() {
   const { t } = useI18n();
   const [logs, setLogs] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = async () => {
     try {
@@ -19,13 +19,7 @@ export function PanelDebug() {
     }
   };
 
-  useEffect(() => {
-    fetchLogs();
-    intervalRef.current = setInterval(fetchLogs, 1000);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, []);
+  usePolling(fetchLogs, 1000);
 
   // Auto-scroll
   useEffect(() => {

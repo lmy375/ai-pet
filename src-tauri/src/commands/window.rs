@@ -74,45 +74,31 @@ pub fn restore_main_window(app: &AppHandle) {
     let _ = win.show();
 }
 
-#[tauri::command]
-pub async fn open_panel(app: AppHandle) -> Result<(), String> {
-    // If panel already exists, just focus it
-    if let Some(win) = app.get_webview_window("panel") {
-        win.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
+/// Focus an existing window with `label`, or build a new centered, resizable one
+/// loading `index.html?window=<label>`. Shared by the panel and debug windows.
+fn open_or_focus(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(label) {
+        return win.set_focus().map_err(|e| e.to_string());
     }
-
-    let url = WebviewUrl::App("index.html?window=panel".into());
-
-    WebviewWindowBuilder::new(&app, "panel", url)
-        .title("Pet")
-        .inner_size(900.0, 700.0)
+    let url = WebviewUrl::App(format!("index.html?window={}", label).into());
+    WebviewWindowBuilder::new(app, label, url)
+        .title(title)
+        .inner_size(w, h)
         .center()
         .resizable(true)
         .build()
         .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 #[tauri::command]
+pub async fn open_panel(app: AppHandle) -> Result<(), String> {
+    open_or_focus(&app, "panel", "Pet", 900.0, 700.0)
+}
+
+#[tauri::command]
 pub async fn open_debug(app: AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("debug") {
-        win.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    let url = WebviewUrl::App("index.html?window=debug".into());
-
-    WebviewWindowBuilder::new(&app, "debug", url)
-        .title("Pet - Debug")
-        .inner_size(700.0, 500.0)
-        .center()
-        .resizable(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    open_or_focus(&app, "debug", "Pet - Debug", 700.0, 500.0)
 }
 
 /// Open the web inspector (DevTools) for the window that invoked this command.

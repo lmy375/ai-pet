@@ -303,16 +303,21 @@ fn capture_bash_output(task: &ShellTask) -> (String, String, bool) {
     }
 }
 
+/// A task's `(stdout, stderr, truncated)`. Bash reads its output files;
+/// sub-agents and heartbeats have no files, so their final text lives in
+/// `result`. Shared by `snapshot_task` and `build_shell_result`.
+fn task_outputs(task: &ShellTask) -> (String, String, bool) {
+    match task.kind {
+        TaskKind::Bash => capture_bash_output(task),
+        TaskKind::Subagent | TaskKind::Heartbeat => {
+            (task.result.clone().unwrap_or_default(), String::new(), false)
+        }
+    }
+}
+
 fn snapshot_task(task_id: &str, task: &ShellTask) -> PersistedTask {
     let (status, return_code, _) = task.status_info();
-    let (stdout, stderr, truncated) = match task.kind {
-        TaskKind::Bash => capture_bash_output(task),
-        TaskKind::Subagent | TaskKind::Heartbeat => (
-            task.result.clone().unwrap_or_default(),
-            String::new(),
-            false,
-        ),
-    };
+    let (stdout, stderr, truncated) = task_outputs(task);
 
     PersistedTask {
         task_id: task_id.to_string(),
@@ -428,16 +433,7 @@ pub(crate) fn task_status_and_stdout(task_id: &str, task: &ShellTask) -> (String
 
 pub(crate) fn build_shell_result(task_id: &str, task: &ShellTask) -> ShellResult {
     let (status, return_code, execution_time_ms) = task.status_info();
-
-    // Sub-agents have no output files — their final text lives in `result`.
-    let (stdout, stderr, truncated) = match task.kind {
-        TaskKind::Bash => capture_bash_output(task),
-        TaskKind::Subagent | TaskKind::Heartbeat => (
-            task.result.clone().unwrap_or_default(),
-            String::new(),
-            false,
-        ),
-    };
+    let (stdout, stderr, truncated) = task_outputs(task);
 
     ShellResult {
         task_id: task_id.to_string(),

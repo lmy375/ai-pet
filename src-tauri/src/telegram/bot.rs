@@ -6,7 +6,7 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, InputFile, Me};
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::commands::chat::{ChatEventSink, ChatMessage, run_chat_pipeline};
+use crate::commands::chat::{ChatMessage, ImageCollectingSink, run_chat_pipeline};
 use crate::commands::debug::LogStore;
 use crate::commands::session;
 use crate::commands::settings::TelegramConfig;
@@ -186,9 +186,11 @@ async fn handle_message(
     let user_msg = serde_json::json!({ "role": "user", "content": user_content });
 
     // Mirror the user turn into the display transcript (ChatItem shape).
-    state.session_items.lock().await.push(
-        serde_json::json!({ "type": "user", "content": text, "images": image_urls }),
-    );
+    state
+        .session_items
+        .lock()
+        .await
+        .push(session::user_item(&text, &image_urls));
 
     let chat_messages = {
         let mut session_msgs = state.session_messages.lock().await;
@@ -215,7 +217,7 @@ async fn handle_message(
 
     // Run the LLM pipeline. The sink collects any images a tool surfaces (e.g.
     // `screenshot`) so we can send them back as photos after the text reply.
-    let sink = TelegramSink::new();
+    let sink = ImageCollectingSink::new();
     // Resolve this bot's agent config fresh each message so edits take effect.
     let agent_config = crate::commands::settings::get_settings()
         .ok()
@@ -258,25 +260,16 @@ async fn handle_message(
         // come from the pet, not the user — and never enter `session_msgs` (the
         // model already saw them in-loop).
         for url in &reply_images {
-            items.push(serde_json::json!({ "type": "assistant", "content": "", "images": [url] }));
+            items.push(session::assistant_item("", std::slice::from_ref(url)));
         }
         // An empty final text means the response was carried entirely by images;
         // skip the empty assistant bubble (matches the panel's behavior).
         if !reply_text.is_empty() {
-            items.push(serde_json::json!({ "type": "assistant", "content": reply_text }));
+            items.push(session::assistant_item(&reply_text, &[]));
         }
 
         // Title from the first user item's text (fall back to "Telegram").
-        let title = items
-            .iter()
-            .find(|i| i["type"] == "user")
-            .and_then(|i| i["content"].as_str())
-            .filter(|c| !c.is_empty())
-            .map(|c| {
-                let t = c.chars().take(20).collect::<String>();
-                if c.chars().count() > 20 { format!("{}...", t) } else { t }
-            })
-            .unwrap_or_else(|| "Telegram".to_string());
+        let title = session::derive_title(&items).unwrap_or_else(|| "Telegram".to_string());
 
         let s = session::Session {
             id: state.session_id.clone(),
@@ -344,35 +337,6 @@ fn data_url_to_bytes(data_url: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(&data_url[comma + 1..])
         .ok()
-}
-
-/// A no-op chat sink that captures images a tool surfaces during the pipeline
-/// (via `send_image`) so the Telegram handler can forward them as photos. All
-/// other events are discarded — the final assistant text is returned by
-/// `run_chat_pipeline` directly.
-struct TelegramSink {
-    images: std::sync::Mutex<Vec<String>>,
-}
-
-impl TelegramSink {
-    fn new() -> Self {
-        Self { images: std::sync::Mutex::new(Vec::new()) }
-    }
-    fn take_images(&self) -> Vec<String> {
-        std::mem::take(&mut *self.images.lock().unwrap())
-    }
-}
-
-impl ChatEventSink for TelegramSink {
-    fn send_chunk(&self, _text: &str) {}
-    fn send_tool_start(&self, _name: &str, _arguments: &str) {}
-    fn send_tool_result(&self, _name: &str, _result: &str) {}
-    fn send_image(&self, data_url: &str) {
-        self.images.lock().unwrap().push(data_url.to_string());
-    }
-    fn send_usage(&self, _prompt_tokens: u64, _total_tokens: u64, _context_window: u32) {}
-    fn send_done(&self) {}
-    fn send_error(&self, _message: &str) {}
 }
 
 fn split_message(text: &str, max_len: usize) -> Vec<&str> {

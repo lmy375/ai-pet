@@ -1,4 +1,4 @@
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{required_str, tool_error, Tool, ToolContext};
 
 const MAX_LINE_DISPLAY: usize = 2000;
 
@@ -39,31 +39,24 @@ impl Tool for ReadFileTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(read_file_impl(arguments, ctx))
-    }
+    crate::impl_execute!(read_file_impl);
 }
 
 async fn read_file_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
-    let file_path = args["file_path"].as_str().unwrap_or("").to_string();
-    if file_path.is_empty() {
-        return r#"{"error": "missing 'file_path' parameter"}"#.to_string();
-    }
+    let file_path = match required_str(&args, "file_path") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
 
     // Read file once as bytes, then detect binary and convert to string
     let bytes = match std::fs::read(&file_path) {
         Ok(b) => b,
         Err(e) => {
-            let kind = e.kind();
-            if kind == std::io::ErrorKind::NotFound {
-                return format!(r#"{{"error": "file not found: {}"}}"#, file_path);
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return tool_error(format!("file not found: {}", file_path));
             }
-            return format!(r#"{{"error": "failed to read file: {}"}}"#, e);
+            return tool_error(format!("failed to read file: {}", e));
         }
     };
 
@@ -79,7 +72,7 @@ async fn read_file_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     let content = match String::from_utf8(bytes) {
         Ok(s) => s,
-        Err(e) => return format!(r#"{{"error": "file is not valid UTF-8: {}"}}"#, e),
+        Err(e) => return tool_error(format!("file is not valid UTF-8: {}", e)),
     };
 
     let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
@@ -156,39 +149,33 @@ impl Tool for WriteFileTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(write_file_impl(arguments, ctx))
-    }
+    crate::impl_execute!(write_file_impl);
 }
 
 async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
-    let file_path = args["file_path"].as_str().unwrap_or("").to_string();
-    let content = args["content"].as_str().unwrap_or("").to_string();
-
-    if file_path.is_empty() {
-        return r#"{"error": "missing 'file_path' parameter"}"#.to_string();
-    }
+    let file_path = match required_str(&args, "file_path") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    // `content` may legitimately be "", so require a string rather than non-empty.
     if !args.get("content").map_or(false, |v| v.is_string()) {
-        return r#"{"error": "missing 'content' parameter"}"#.to_string();
+        return tool_error("missing 'content' parameter");
     }
+    let content = args["content"].as_str().unwrap_or("").to_string();
 
     // Create parent directories
     if let Some(parent) = std::path::Path::new(&file_path).parent() {
         if !parent.exists() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                return format!(r#"{{"error": "failed to create directories: {}"}}"#, e);
+                return tool_error(format!("failed to create directories: {}", e));
             }
         }
     }
 
     let bytes_written = content.len();
     if let Err(e) = std::fs::write(&file_path, &content) {
-        return format!(r#"{{"error": "failed to write file: {}"}}"#, e);
+        return tool_error(format!("failed to write file: {}", e));
     }
 
     ctx.log(&format!("write_file: {} ({} bytes)", file_path, bytes_written));
@@ -242,38 +229,32 @@ impl Tool for EditFileTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(edit_file_impl(arguments, ctx))
-    }
+    crate::impl_execute!(edit_file_impl);
 }
 
 async fn edit_file_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
-    let file_path = args["file_path"].as_str().unwrap_or("").to_string();
+    let file_path = match required_str(&args, "file_path") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
     let old_string = args["old_string"].as_str().unwrap_or("").to_string();
     let new_string = args["new_string"].as_str().unwrap_or("").to_string();
     let replace_all = args["replace_all"].as_bool().unwrap_or(false);
 
-    if file_path.is_empty() {
-        return r#"{"error": "missing 'file_path' parameter"}"#.to_string();
-    }
     if old_string.is_empty() {
-        return r#"{"error": "old_string must not be empty"}"#.to_string();
+        return tool_error("old_string must not be empty");
     }
 
     let content = match std::fs::read_to_string(&file_path) {
         Ok(c) => c,
-        Err(e) => return format!(r#"{{"error": "failed to read file: {}"}}"#, e),
+        Err(e) => return tool_error(format!("failed to read file: {}", e)),
     };
 
     let count = content.matches(&old_string).count();
 
     if count == 0 {
-        return r#"{"error": "old_string not found in file"}"#.to_string();
+        return tool_error("old_string not found in file");
     }
 
     if count > 1 && !replace_all {
@@ -291,7 +272,7 @@ async fn edit_file_impl(arguments: &str, ctx: &ToolContext) -> String {
     };
 
     if let Err(e) = std::fs::write(&file_path, &new_content) {
-        return format!(r#"{{"error": "failed to write file: {}"}}"#, e);
+        return tool_error(format!("failed to write file: {}", e));
     }
 
     ctx.log(&format!(

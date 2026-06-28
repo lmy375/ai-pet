@@ -6,6 +6,7 @@ import { GallerySlideshow } from "./components/GallerySlideshow";
 import { ChatThread } from "./components/ChatThread";
 import { ChatInput } from "./components/ChatInput";
 import { ExternalLinkIcon, ChevronRight, ChevronDown, PinIcon } from "./components/Icons";
+import { FloatingIconButton } from "./components/ui/IconButton";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
@@ -124,26 +125,23 @@ function App() {
           </div>
 
           {/* Pin toggle — top-left. Pinned = stay above all windows + no auto-hide. */}
-          <button
+          <FloatingIconButton
+            active={pinned}
             onClick={togglePin}
             title={pinned ? t("app.pin.on") : t("app.pin.off")}
-            className={`absolute left-2 top-2 z-20 flex h-9 w-9 items-center justify-center rounded-xl border backdrop-blur-md transition-colors ${
-              pinned
-                ? "border-accent bg-accent text-white"
-                : "border-slate-300/60 bg-white/80 text-slate-600 hover:bg-white"
-            }`}
+            className="absolute left-2 top-2 z-20"
           >
             <PinIcon className="h-5 w-5" />
-          </button>
+          </FloatingIconButton>
 
           {/* Settings — top-right, aligned with the chat window's right edge */}
-          <button
+          <FloatingIconButton
             onClick={openPanel}
             title={t("app.openSettings")}
-            className="absolute right-2 top-2 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300/60 bg-white/80 text-slate-600 backdrop-blur-md transition-colors hover:bg-white"
+            className="absolute right-2 top-2 z-20"
           >
             <ExternalLinkIcon className="h-5 w-5" />
-          </button>
+          </FloatingIconButton>
 
           {/* Chat thread — collapsible. When collapsed only the pet/gallery (and
               the bottom toggle) remain. Same component & logic as the panel; in
@@ -170,13 +168,13 @@ function App() {
             onMouseDown={(e) => e.stopPropagation()}
             className="z-10 flex shrink-0 items-end gap-1.5 px-3 pb-3.5 pt-2"
           >
-            <button
+            <FloatingIconButton
               onClick={() => setChatCollapsed((v) => !v)}
               title={chatCollapsed ? t("app.chat.expand") : t("app.chat.collapse")}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-300/60 bg-white/80 text-slate-600 backdrop-blur-md transition-colors hover:bg-white"
+              className="shrink-0"
             >
               <ChevronDown className={`h-5 w-5 transition-transform ${chatCollapsed ? "" : "rotate-180"}`} />
-            </button>
+            </FloatingIconButton>
             {!chatCollapsed && (
               <div className="flex-1">
                 <ChatInput onSend={handleSend} isLoading={isLoading} />

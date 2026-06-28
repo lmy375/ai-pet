@@ -74,11 +74,58 @@ fn read_index() -> SessionIndex {
     }
 }
 
+/// Serialize `value` as pretty JSON and write it to `path`. `what` names the
+/// thing in error messages (e.g. "index", "session").
+fn write_json_pretty<T: Serialize>(path: &PathBuf, value: &T, what: &str) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("Failed to serialize {what}: {e}"))?;
+    fs::write(path, json).map_err(|e| format!("Failed to write {what}: {e}"))
+}
+
 fn write_index(index: &SessionIndex) -> Result<(), String> {
-    let path = index_path()?;
-    let json = serde_json::to_string_pretty(index)
-        .map_err(|e| format!("Failed to serialize index: {e}"))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write index: {e}"))
+    write_json_pretty(&index_path()?, index, "index")
+}
+
+// --- Display-transcript ("ChatItem") constructors ---
+//
+// The `items` array is shaped by the frontend (see `ChatItem` in useChat.ts) and
+// round-tripped here as opaque JSON. These build the two shapes the backend
+// itself authors (the Telegram path and the `chat` tool), so the field names
+// ("type"/"content"/"images") live in one place instead of being hand-written at
+// each call site and silently drifting from the TS union.
+
+/// A `user` display item. `images` are data URLs shown alongside the text.
+pub fn user_item(content: &str, images: &[String]) -> serde_json::Value {
+    serde_json::json!({ "type": "user", "content": content, "images": images })
+}
+
+/// An `assistant` display item carrying `images` (e.g. a screenshot the pet
+/// produced). Pass `&[]` for a plain text bubble.
+pub fn assistant_item(content: &str, images: &[String]) -> serde_json::Value {
+    let mut item = serde_json::json!({ "type": "assistant", "content": content });
+    if !images.is_empty() {
+        item["images"] = serde_json::json!(images);
+    }
+    item
+}
+
+/// Derive a session title from its display items: the first non-empty `user`
+/// item's text, truncated to 20 Unicode scalar values with an ellipsis. Returns
+/// `None` when there's no usable user text, so callers pick their own fallback.
+pub fn derive_title(items: &[serde_json::Value]) -> Option<String> {
+    items
+        .iter()
+        .find(|i| i["type"] == "user")
+        .and_then(|i| i["content"].as_str())
+        .filter(|c| !c.is_empty())
+        .map(|c| {
+            let t: String = c.chars().take(20).collect();
+            if c.chars().count() > 20 {
+                format!("{}...", t)
+            } else {
+                t
+            }
+        })
 }
 
 /// A `{ "role": "system", "content": <SOUL.md> }` message — the first message
@@ -141,9 +188,7 @@ pub fn save_session(mut session: Session) -> Result<(), String> {
     }
 
     // Write session file
-    let json = serde_json::to_string_pretty(&session)
-        .map_err(|e| format!("Failed to serialize session: {e}"))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write session: {e}"))?;
+    write_json_pretty(&path, &session, "session")?;
 
     // Update index
     let mut index = read_index();
@@ -175,9 +220,7 @@ pub fn rename_session(id: String, title: String) -> Result<(), String> {
     if let Ok(content) = fs::read_to_string(&path) {
         if let Ok(mut session) = serde_json::from_str::<Session>(&content) {
             session.title = title.clone();
-            let json = serde_json::to_string_pretty(&session)
-                .map_err(|e| format!("Failed to serialize session: {e}"))?;
-            fs::write(&path, json).map_err(|e| format!("Failed to write session: {e}"))?;
+            write_json_pretty(&path, &session, "session")?;
         }
     }
 

@@ -1,7 +1,7 @@
-use crate::commands::chat::{run_agent_loop, CollectingSink};
+use crate::commands::chat::{run_agent_loop, ImageCollectingSink};
 use crate::commands::prompt;
 use crate::commands::shell::{run_or_background, TaskKind};
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{required_str, tool_error, Tool, ToolContext};
 
 /// Maximum sub-agent nesting. 1 means the pet can spawn a sub-agent, but a
 /// sub-agent cannot spawn further ones. Enforced both here and by withholding
@@ -49,26 +49,20 @@ impl Tool for SpawnSubagentTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(spawn_subagent_impl(arguments, ctx))
-    }
+    crate::impl_execute!(spawn_subagent_impl);
 }
 
 async fn spawn_subagent_impl(arguments: &str, ctx: &ToolContext) -> String {
     let args = super::parse_args(arguments);
-    let prompt_text = args["prompt"].as_str().unwrap_or("").to_string();
-    if prompt_text.is_empty() {
-        return r#"{"error": "missing 'prompt' parameter"}"#.to_string();
-    }
+    let prompt_text = match required_str(&args, "prompt") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
 
     // Defense-in-depth: the tool is already withheld from sub-agent registries,
     // but reject explicitly in case it is ever surfaced at depth.
     if ctx.depth >= MAX_SUBAGENT_DEPTH {
-        return r#"{"error": "sub-agents cannot spawn further sub-agents"}"#.to_string();
+        return tool_error("sub-agents cannot spawn further sub-agents");
     }
 
     let description = args["description"].as_str().unwrap_or("");
@@ -92,13 +86,10 @@ async fn spawn_subagent_impl(arguments: &str, ctx: &ToolContext) -> String {
     let mcp = ctx.mcp_store.clone();
     let child = ctx.child();
     let work = async move {
-        let sink = CollectingSink::new();
+        let sink = ImageCollectingSink::new();
         match run_agent_loop(conv, &sink, &config, &mcp, &child).await {
             Ok(text) => (Some(0), text),
-            Err(e) => (
-                Some(1),
-                format!(r#"{{"error": "sub-agent failed: {}"}}"#, e.replace('"', "'")),
-            ),
+            Err(e) => (Some(1), tool_error(format!("sub-agent failed: {}", e))),
         }
     };
 

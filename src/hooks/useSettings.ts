@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { useTauriEvent } from "./useTauriEvent";
 
 export interface McpServerConfig {
   transport: "stdio" | "sse" | "http";
@@ -107,17 +107,11 @@ export function useSettings() {
   // Settings are saved from the panel window but consumed here in every window
   // (each holds its own in-memory copy). Reload when any window persists a change
   // so e.g. the pet picks up gallery mode without needing a refocus.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen("settings-changed", () => {
-      invoke<AppSettings>("get_settings")
-        .then(setSettings)
-        .catch((e) => console.error("Failed to reload settings:", e));
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, []);
+  useTauriEvent("settings-changed", () => {
+    invoke<AppSettings>("get_settings")
+      .then(setSettings)
+      .catch((e) => console.error("Failed to reload settings:", e));
+  });
 
   return { settings, loaded };
 }

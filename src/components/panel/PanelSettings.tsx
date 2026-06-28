@@ -5,7 +5,7 @@ import { defaultAgent } from "../../hooks/useSettings";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
-import { Label, TextInput, TextArea, Select } from "../ui/fields";
+import { Label, TextInput, TextArea, Select, SavedTextInput, NumberField } from "../ui/fields";
 import { StatusText } from "../ui/StatusText";
 import { ChevronDown, ChevronRight, PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
 import { AgentMemory } from "./PanelMemory";
@@ -376,11 +376,10 @@ export function PanelSettings() {
           {/* Live2D */}
           <Card title={t("settings.live2d.title")}>
             <Label>{t("settings.live2d.path")}</Label>
-            <TextInput
+            <SavedTextInput
               value={form.live_2d_model_path}
               onChange={(e) => setForm({ ...form, live_2d_model_path: e.target.value })}
-              onBlur={() => saveSettings()}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              onCommit={() => saveSettings()}
               placeholder="/models/miku/miku.model3.json"
             />
           </Card>
@@ -415,17 +414,15 @@ export function PanelSettings() {
             </div>
 
             <Label className="mt-3">{t("settings.gallery.interval")}</Label>
-            <TextInput
-              type="number"
-              min={1}
+            <NumberField
               value={form.gallery_interval}
-              onChange={(e) => setForm({ ...form, gallery_interval: Number(e.target.value) || 0 })}
-              onBlur={() => {
-                const next = { ...form, gallery_interval: Math.max(1, form.gallery_interval || 10) };
+              fallback={10}
+              onChange={(v) => setForm({ ...form, gallery_interval: v })}
+              onCommit={(v) => {
+                const next = { ...form, gallery_interval: v };
                 setForm(next);
                 saveSettings(next);
               }}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               placeholder="10"
             />
             <p className="mt-1 text-[11px] text-slate-400">{t("settings.gallery.intervalNote")}</p>
@@ -434,12 +431,11 @@ export function PanelSettings() {
           {/* Web Search (shared by all agents) */}
           <Card title={t("settings.search.title")}>
             <Label>{t("settings.search.apiKey")}</Label>
-            <TextInput
+            <SavedTextInput
               type="password"
               value={form.search_api_key}
               onChange={(e) => setForm({ ...form, search_api_key: e.target.value })}
-              onBlur={() => saveSettings()}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              onCommit={() => saveSettings()}
               placeholder="tvly-..."
             />
             <p className="mt-1 text-[11px] text-slate-400">{t("settings.search.apiKeyNote")}</p>
@@ -453,11 +449,10 @@ export function PanelSettings() {
           <Card title={agent.name || t("settings.agent.newName")}>
             <Label>{t("settings.agent.name")}</Label>
             <div className="flex gap-2">
-              <TextInput
+              <SavedTextInput
                 value={agent.name}
                 onChange={(e) => updateAgent({ name: e.target.value })}
-                onBlur={() => saveSettings()}
-                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                onCommit={() => saveSettings()}
                 className="flex-1"
                 placeholder={t("settings.agent.newName")}
               />
@@ -486,20 +481,18 @@ export function PanelSettings() {
           {/* LLM Config */}
           <Card title={t("settings.llm.title")}>
             <Label>API Base URL</Label>
-            <TextInput
+            <SavedTextInput
               value={agent.api_base}
               onChange={(e) => updateAgent({ api_base: e.target.value })}
-              onBlur={() => { saveSettings(); loadModels(agent.api_base, agent.api_key, true); }}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-              placeholder="https://api.openai.com/v1"
+              onCommit={() => { saveSettings(); loadModels(agent.api_base, agent.api_key, true); }}
+              placeholder={defaultAgent().api_base}
             />
             <Label className="mt-3">API Key</Label>
-            <TextInput
+            <SavedTextInput
               type="password"
               value={agent.api_key}
               onChange={(e) => updateAgent({ api_key: e.target.value })}
-              onBlur={() => { saveSettings(); loadModels(agent.api_base, agent.api_key, true); }}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              onCommit={() => { saveSettings(); loadModels(agent.api_base, agent.api_key, true); }}
               placeholder="sk-..."
             />
             <Label className="mt-3 flex items-center gap-2">
@@ -550,14 +543,12 @@ export function PanelSettings() {
                 );
               })}
             </div>
-            <TextInput
-              type="number"
-              min={1}
+            <NumberField
               value={agent.context_window}
-              onChange={(e) => updateAgent({ context_window: Number(e.target.value) || 0 })}
-              onBlur={() => commitAgent({ context_window: Math.max(1, agent.context_window || 128000) })}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-              placeholder="128000"
+              fallback={defaultAgent().context_window}
+              onChange={(v) => updateAgent({ context_window: v })}
+              onCommit={(v) => commitAgent({ context_window: v })}
+              placeholder={String(defaultAgent().context_window)}
             />
             <p className="mt-1 text-[11px] text-slate-400">{t("settings.llm.contextWindowNote")}</p>
           </Card>
@@ -672,22 +663,20 @@ export function PanelSettings() {
             </label>
 
             <Label>Bot Token</Label>
-            <TextInput
+            <SavedTextInput
               type="password"
               value={agent.telegram?.bot_token ?? ""}
               onChange={(e) => updateAgent({ telegram: { ...agent.telegram, bot_token: e.target.value } })}
-              onBlur={() => saveSettings()}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              onCommit={() => saveSettings()}
               className="mb-2 font-mono !text-[12px]"
               placeholder="123456789:ABCdefGhI..."
             />
 
             <Label>{t("settings.tg.allowedUser")}</Label>
-            <TextInput
+            <SavedTextInput
               value={agent.telegram?.allowed_username ?? ""}
               onChange={(e) => updateAgent({ telegram: { ...agent.telegram, allowed_username: e.target.value } })}
-              onBlur={() => saveSettings()}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              onCommit={() => saveSettings()}
               className="font-mono !text-[12px]"
               placeholder={t("settings.tg.allowedUserPlaceholder")}
             />
@@ -706,25 +695,22 @@ export function PanelSettings() {
             </label>
 
             <Label>{t("settings.hb.interval")}</Label>
-            <TextInput
-              type="number"
-              min={1}
+            <NumberField
               value={agent.heartbeat_interval}
-              onChange={(e) => updateAgent({ heartbeat_interval: Number(e.target.value) || 0 })}
-              onBlur={() => commitAgent({ heartbeat_interval: Math.max(1, agent.heartbeat_interval || 60) })}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              fallback={60}
+              onChange={(v) => updateAgent({ heartbeat_interval: v })}
+              onCommit={(v) => commitAgent({ heartbeat_interval: v })}
               placeholder="60"
             />
             <p className="mt-1 text-[11px] text-slate-400">{t("settings.hb.note")}</p>
 
             <Label className="mt-3">{t("settings.hb.contextTurns")}</Label>
-            <TextInput
-              type="number"
-              min={0}
+            <NumberField
               value={agent.heartbeat_context_turns}
-              onChange={(e) => updateAgent({ heartbeat_context_turns: Number(e.target.value) || 0 })}
-              onBlur={() => commitAgent({ heartbeat_context_turns: Math.max(0, agent.heartbeat_context_turns || 0) })}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              min={0}
+              fallback={0}
+              onChange={(v) => updateAgent({ heartbeat_context_turns: v })}
+              onCommit={(v) => commitAgent({ heartbeat_context_turns: v })}
               placeholder="10"
             />
             <p className="mt-1 text-[11px] text-slate-400">{t("settings.hb.contextTurnsNote")}</p>
@@ -859,11 +845,10 @@ function McpServerEntry({
           {config.transport === "stdio" ? (
             <>
               <Label>{t("settings.mcp.command")}</Label>
-              <TextInput
+              <SavedTextInput
                 value={config.command}
                 onChange={(e) => onChange({ command: e.target.value })}
-                onBlur={onCommit}
-                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                onCommit={onCommit}
                 className="mb-1.5 font-mono !text-[12px]"
                 placeholder="npx"
               />
@@ -896,11 +881,10 @@ function McpServerEntry({
           ) : (
             <>
               <Label>URL</Label>
-              <TextInput
+              <SavedTextInput
                 value={config.url}
                 onChange={(e) => onChange({ url: e.target.value })}
-                onBlur={onCommit}
-                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                onCommit={onCommit}
                 className="mb-1.5 font-mono !text-[12px]"
                 placeholder="http://localhost:3000/mcp"
               />

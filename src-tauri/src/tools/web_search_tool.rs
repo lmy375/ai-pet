@@ -7,7 +7,7 @@
 //! offered to the model (see `ToolRegistry::new`), so `execute` only has to
 //! defend against an empty key, not present the model a tool that always fails.
 
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{required_str, tool_error, Tool, ToolContext};
 
 /// Tavily's search endpoint.
 const TAVILY_URL: &str = "https://api.tavily.com/search";
@@ -50,26 +50,23 @@ impl Tool for WebSearchTool {
         })
     }
 
-    fn execute<'a>(
-        &'a self,
-        arguments: &'a str,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(web_search_impl(arguments, ctx))
-    }
+    crate::impl_execute!(web_search_impl);
 }
 
 async fn web_search_impl(arguments: &str, ctx: &ToolContext) -> String {
     let api_key = ctx.config.search_api_key.trim().to_string();
     if api_key.is_empty() {
         // The tool is gated on a configured key, so this is a safety net only.
-        return r#"{"error": "web search is not configured (no Tavily API key)"}"#.to_string();
+        return tool_error("web search is not configured (no Tavily API key)");
     }
 
     let args = super::parse_args(arguments);
-    let query = args["query"].as_str().unwrap_or("").trim().to_string();
+    let query = match required_str(&args, "query") {
+        Ok(v) => v.trim().to_string(),
+        Err(e) => return e,
+    };
     if query.is_empty() {
-        return r#"{"error": "missing 'query' parameter"}"#.to_string();
+        return tool_error("missing 'query' parameter");
     }
     let max = args["max_results"]
         .as_u64()
@@ -93,7 +90,7 @@ async fn web_search_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return serde_json::json!({ "error": format!("search request failed: {}", e) }).to_string(),
+        Err(e) => return tool_error(format!("search request failed: {}", e)),
     };
     let status = resp.status();
     if !status.is_success() {
@@ -104,15 +101,17 @@ async fn web_search_impl(arguments: &str, ctx: &ToolContext) -> String {
         } else {
             ""
         };
-        return serde_json::json!({
-            "error": format!("search returned HTTP {}{}: {}", status.as_u16(), hint, detail.trim())
-        })
-        .to_string();
+        return tool_error(format!(
+            "search returned HTTP {}{}: {}",
+            status.as_u16(),
+            hint,
+            detail.trim()
+        ));
     }
 
     let json: serde_json::Value = match resp.json().await {
         Ok(v) => v,
-        Err(e) => return serde_json::json!({ "error": format!("failed to parse search response: {}", e) }).to_string(),
+        Err(e) => return tool_error(format!("failed to parse search response: {}", e)),
     };
 
     format_results(&query, &json)
