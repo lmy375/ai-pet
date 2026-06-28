@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { ChatItem, ToolCall } from "../hooks/useChat";
 import { MessageBubble } from "./ui/MessageBubble";
 import { ToolCallBlock } from "./panel/ToolCallBlock";
-import { ChevronRight } from "./Icons";
+import { ChevronRight, CheckIcon } from "./Icons";
 import { formatHm, formatJson } from "../utils/format";
 
 interface Props {
@@ -15,6 +15,12 @@ interface Props {
   className?: string;
   /** Shown when there are no messages. If omitted, the whole thread renders nothing when empty. */
   emptyHint?: ReactNode;
+  /** When true, each row shows a checkbox and clicking it toggles selection. */
+  selectionMode?: boolean;
+  /** Indices (into `items`) currently selected. */
+  selectedKeys?: Set<number>;
+  /** Toggle selection for the item at index `i`. */
+  onToggleSelect?: (i: number) => void;
 }
 
 const FIVE_MIN = 5 * 60 * 1000;
@@ -79,7 +85,17 @@ function renderItem(item: ChatItem) {
 /** Shared chat message list: renders items (incl. tool calls), live tool calls,
  *  streaming response and timestamps. Identical logic for the pet and panel
  *  windows — only `className` differs. */
-export function ChatThread({ items, currentToolCalls, streaming, loading, className = "", emptyHint }: Props) {
+export function ChatThread({
+  items,
+  currentToolCalls,
+  streaming,
+  loading,
+  className = "",
+  emptyHint,
+  selectionMode = false,
+  selectedKeys,
+  onToggleSelect,
+}: Props) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -98,12 +114,33 @@ export function ChatThread({ items, currentToolCalls, streaming, loading, classN
         const prev = items[i - 1];
         const showTime =
           item.ts !== undefined && (i === 0 || prev?.ts === undefined || item.ts - prev.ts > FIVE_MIN);
+        const selected = selectedKeys?.has(i) ?? false;
         return (
           <div key={i} className="flex flex-col gap-2">
             {showTime && (
               <div className="self-center px-2 py-0.5 text-[11px] text-slate-400">{formatHm(item.ts!)}</div>
             )}
-            {renderItem(item)}
+            {selectionMode ? (
+              <button
+                type="button"
+                onClick={() => onToggleSelect?.(i)}
+                className={`flex w-full items-start gap-2 rounded-lg p-1.5 text-left transition-colors ${
+                  selected ? "bg-sky-50 ring-1 ring-accent" : "hover:bg-slate-50"
+                }`}
+              >
+                <span
+                  className={`mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                    selected ? "border-accent bg-accent text-white" : "border-slate-300 bg-white"
+                  }`}
+                >
+                  {selected && <CheckIcon className="h-3 w-3" />}
+                </span>
+                {/* Disable inner pointer events so the row click owns the toggle. */}
+                <div className="min-w-0 flex-1 pointer-events-none">{renderItem(item)}</div>
+              </button>
+            ) : (
+              renderItem(item)
+            )}
           </div>
         );
       })}

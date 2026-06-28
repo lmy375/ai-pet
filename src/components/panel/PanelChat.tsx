@@ -5,7 +5,7 @@ import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { ProgressRing } from "../ui/ProgressRing";
-import { ChevronDown, ChevronRight, PlusIcon, PencilIcon, TrashIcon } from "../Icons";
+import { ChevronDown, ChevronRight, PlusIcon, PencilIcon, TrashIcon, CheckIcon } from "../Icons";
 import { AgentSwitcher } from "../AgentSwitcher";
 import { useSettings } from "../../hooks/useSettings";
 import { useI18n } from "../../i18n";
@@ -27,6 +27,7 @@ export function PanelChat() {
     renameSession,
     switchSession,
     deleteSession,
+    deleteItems,
   } = useChat();
 
   const [showSessionList, setShowSessionList] = useState(false);
@@ -35,6 +36,40 @@ export function PanelChat() {
   const [titleDraft, setTitleDraft] = useState("");
   // Set on Escape so the input's blur cancels instead of saving.
   const cancelRenameRef = useRef(false);
+
+  // Multi-select mode for deleting messages. `selected` holds indices into `items`;
+  // `confirming` is the two-step-delete guard (first click arms, second executes).
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirming, setConfirming] = useState(false);
+
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+    setConfirming(false);
+  };
+  const toggleSelect = (i: number) => {
+    setConfirming(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  };
+  const handleDelete = async () => {
+    if (selected.size === 0) return;
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    await deleteItems([...selected]);
+    exitSelection();
+  };
+
+  // Leave selection mode whenever the session changes out from under us.
+  useEffect(() => {
+    exitSelection();
+  }, [sessionId]);
 
   // Untitled sessions are stored with the sentinel title; show a localized label.
   const displayTitle = (title: string) => (title === DEFAULT_SESSION_TITLE ? t("chat.newSession") : title);
@@ -75,6 +110,12 @@ export function PanelChat() {
         </button>
         {contextUsage && contextUsage.total > 0 && (
           <ContextUsageRing used={contextUsage.used} total={contextUsage.total} />
+        )}
+        {items.length > 0 && !selectionMode && (
+          <Button variant="ghost" size="sm" onClick={() => setSelectionMode(true)} title={t("chat.select.enter")}>
+            <CheckIcon className="h-4 w-4" />
+            {t("chat.select.enter")}
+          </Button>
         )}
         <Button variant="ghost" size="sm" onClick={() => { newSession(); setShowSessionList(false); }} title={t("chat.session.newTitle")}>
           <PlusIcon className="h-4 w-4" />
@@ -148,12 +189,30 @@ export function PanelChat() {
         loading={isLoading}
         className="flex-1 p-4"
         emptyHint={t("chat.empty")}
+        selectionMode={selectionMode}
+        selectedKeys={selected}
+        onToggleSelect={toggleSelect}
       />
 
-      {/* Input bar */}
-      <div className="shrink-0 border-t border-slate-200/70 bg-white px-4 py-3">
-        <ChatInput onSend={sendMessage} isLoading={isLoading} />
-      </div>
+      {/* Selection action bar (replaces the input while choosing messages) */}
+      {selectionMode ? (
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200/70 bg-white px-4 py-3">
+          <Button variant="ghost" size="sm" onClick={exitSelection}>
+            {t("chat.select.cancel")}
+          </Button>
+          <Button variant="danger" size="sm" disabled={selected.size === 0} onClick={handleDelete}>
+            <TrashIcon className="h-4 w-4" />
+            {confirming
+              ? t("chat.select.confirm", { count: selected.size })
+              : t("chat.select.delete", { count: selected.size })}
+          </Button>
+        </div>
+      ) : (
+        /* Input bar */
+        <div className="shrink-0 border-t border-slate-200/70 bg-white px-4 py-3">
+          <ChatInput onSend={sendMessage} isLoading={isLoading} />
+        </div>
+      )}
     </div>
   );
 }

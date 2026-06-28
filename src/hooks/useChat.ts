@@ -101,6 +101,63 @@ function applyCompletionToItems(items: ChatItem[], taskId: string, result: strin
 }
 
 /**
+ * Compute the result of deleting the items at `selected` indices, removing both
+ * the visible items AND their corresponding LLM-context messages (so the pet
+ * truly forgets them — see plan/CLAUDE notes: `session.messages` is the only
+ * source of truth, and it only ever holds system/user/assistant(text) roles).
+ *
+ * `items` and `messages` share no id and aren't index-aligned, but they're built
+ * in the same chronological order. So the k-th "message-bearing" item maps to the
+ * k-th non-system message. We walk both in lockstep to find which messages to drop.
+ *
+ * Safety: if the message-bearing count doesn't line up with the non-system message
+ * count (legacy/corrupt session), we delete items only and leave `messages` intact
+ * — better a stale context than a corrupted one.
+ */
+function itemBearsMessage(item: ChatItem): boolean {
+  // user → user msg; notification → injected user msg; assistant text → assistant msg.
+  // assistant with empty text (tool-produced image), tool, error → no persisted message.
+  return (
+    item.type === "user" ||
+    item.type === "notification" ||
+    (item.type === "assistant" && item.content.trim() !== "")
+  );
+}
+
+export function planMessageDeletion(
+  items: ChatItem[],
+  messages: any[],
+  selected: Set<number>,
+): { newItems: ChatItem[]; newMessages: any[] } {
+  const ctxIdx: number[] = [];
+  messages.forEach((m, j) => {
+    const role = m?.role;
+    if (role === "user" || role === "assistant") ctxIdx.push(j);
+  });
+
+  const msgToDelete = new Set<number>();
+  let k = 0;
+  for (let i = 0; i < items.length; i++) {
+    if (!itemBearsMessage(items[i])) continue;
+    if (k < ctxIdx.length && selected.has(i)) msgToDelete.add(ctxIdx[k]);
+    k++;
+  }
+
+  const newItems = items.filter((_, i) => !selected.has(i));
+
+  // Counts diverged → mapping unreliable; keep messages untouched.
+  if (k !== ctxIdx.length) {
+    console.warn(
+      `planMessageDeletion: message-bearing items (${k}) != context messages (${ctxIdx.length}); deleting items only`,
+    );
+    return { newItems, newMessages: messages };
+  }
+
+  const newMessages = messages.filter((_, j) => !msgToDelete.has(j));
+  return { newItems, newMessages };
+}
+
+/**
  * Shared chat session logic for both the pet window and the panel.
  * Manages the active session (messages + rendered items with tool calls and
  * timestamps), streaming, and session list/new/switch/delete.
@@ -302,6 +359,29 @@ export function useChat() {
       }
     },
     [newSession],
+  );
+
+  // Delete the selected items (by index into the current `items`) from the
+  // visible transcript AND from the LLM context, then persist. `messagesRef` is
+  // the only source of truth for what the pet remembers, so pruning it there
+  // makes the pet forget the deleted content on the next turn. No-op mid-stream
+  // (a running turn mutates messagesRef/items and would race the deletion).
+  const deleteItems = useCallback(
+    async (selectedIndices: number[]) => {
+      if (busyRef.current) return;
+      if (selectedIndices.length === 0) return;
+      const sel = new Set(selectedIndices);
+      const { newItems, newMessages } = planMessageDeletion(
+        itemsRef.current,
+        messagesRef.current,
+        sel,
+      );
+      messagesRef.current = newMessages;
+      setItems(newItems);
+      itemsRef.current = newItems;
+      await saveCurrentSession(newItems);
+    },
+    [saveCurrentSession],
   );
 
   // The shared streaming core: messagesRef must already include the new turn's
@@ -582,5 +662,6 @@ export function useChat() {
     renameSession,
     switchSession,
     deleteSession,
+    deleteItems,
   };
 }
