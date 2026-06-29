@@ -120,6 +120,7 @@ pub fn run() {
             commands::mcp::reconnect_mcp,
             commands::mcp::list_available_tools,
             commands::session::list_sessions,
+            commands::session::set_active_session,
             commands::session::load_session,
             commands::session::save_session,
             commands::session::create_session,

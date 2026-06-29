@@ -342,7 +342,15 @@ export function useChat() {
     }
   }, []);
 
+  // Persist the choice to the shared index BEFORE loading, so the other window's
+  // focus-reload (which reads index.active_id) converges on the session we picked
+  // instead of reverting to whatever was last saved (e.g. the newest session).
   const switchSession = useCallback(async (id: string) => {
+    try {
+      await invoke("set_active_session", { id });
+    } catch (e) {
+      console.error("Failed to set active session:", e);
+    }
     await loadSession(id);
   }, []);
 

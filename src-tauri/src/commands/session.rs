@@ -159,6 +159,22 @@ pub fn list_sessions() -> SessionIndex {
     read_index()
 }
 
+/// Mark `id` as the active session in the shared index, without rewriting the
+/// session file. `active_id` is the only cross-window pointer to "which session
+/// is current" (disk is the sole shared state), and otherwise it's only updated
+/// as a side effect of `save_session`. Switching sessions in one window must
+/// persist the choice here so the other window's focus-reload converges on it
+/// instead of reverting to whatever was last saved (the newest session).
+#[tauri::command]
+pub fn set_active_session(id: String) -> Result<(), String> {
+    let mut index = read_index();
+    if !index.sessions.iter().any(|m| m.id == id) {
+        return Err(format!("Unknown session {id}"));
+    }
+    index.active_id = id;
+    write_index(&index)
+}
+
 #[tauri::command]
 pub fn load_session(id: String) -> Result<Session, String> {
     let path = session_path(&id)?;
