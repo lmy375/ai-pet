@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
+import { CodeBlock } from "../ui/CodeBlock";
 import { RefreshIcon, ClockIcon, ChevronRight } from "../Icons";
 import { useI18n } from "../../i18n";
 import { formatIsoTime } from "../../utils/format";
@@ -32,9 +33,6 @@ const KIND_COLOR: Record<string, BadgeColor> = {
   subagent: "purple",
   heartbeat: "sky",
 };
-
-const preClass =
-  "m-0 max-h-[260px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-700";
 
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -124,15 +122,15 @@ function TaskRow({
                 <div className="mb-1 text-[11px] font-semibold text-slate-400">
                   {task.kind === "bash" ? t("tasks.cmd") : "Prompt"}
                 </div>
-                <pre className={preClass}>{detail.input || "—"}</pre>
+                <CodeBlock>{detail.input || "—"}</CodeBlock>
               </div>
               <div>
                 <div className="mb-1 text-[11px] font-semibold text-slate-400">{t("tasks.result")}</div>
-                <pre className={preClass}>{detail.stdout || t("tasks.noOutput")}</pre>
+                <CodeBlock>{detail.stdout || t("tasks.noOutput")}</CodeBlock>
                 {detail.stderr && (
                   <>
                     <div className="mb-1 mt-2 text-[11px] font-semibold text-slate-400">stderr</div>
-                    <pre className={preClass}>{detail.stderr}</pre>
+                    <CodeBlock>{detail.stderr}</CodeBlock>
                   </>
                 )}
               </div>

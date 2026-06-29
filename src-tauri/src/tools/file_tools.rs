@@ -159,7 +159,7 @@ async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
         Err(e) => return e,
     };
     // `content` may legitimately be "", so require a string rather than non-empty.
-    if !args.get("content").map_or(false, |v| v.is_string()) {
+    if !args.get("content").is_some_and(|v| v.is_string()) {
         return tool_error("missing 'content' parameter");
     }
     let content = args["content"].as_str().unwrap_or("").to_string();

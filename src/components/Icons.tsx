@@ -64,6 +64,15 @@ export function ChevronDown({ className }: IconProps) {
   return <Stroke className={className}><path d="m6 9 6 6 6-6" /></Stroke>;
 }
 
+/** Disclosure chevron that points right when collapsed, down when expanded.
+ *  The single source for the expand/collapse arrow used by collapsible rows. */
+export function ExpandChevron({
+  expanded,
+  className = "h-4 w-4 shrink-0 text-slate-400",
+}: { expanded: boolean; className?: string }) {
+  return expanded ? <ChevronDown className={className} /> : <ChevronRight className={className} />;
+}
+
 export function PlusIcon({ className }: IconProps) {
   return <Stroke className={className}><path d="M12 5v14M5 12h14" /></Stroke>;
 }

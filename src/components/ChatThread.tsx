@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ChatItem, ToolCall } from "../hooks/useChat";
 import { MessageBubble } from "./ui/MessageBubble";
+import { CodeBlock } from "./ui/CodeBlock";
 import { ToolCallBlock } from "./panel/ToolCallBlock";
 import { ChevronRight, CheckIcon } from "./Icons";
 import { formatHm, formatJson } from "../utils/format";
@@ -45,9 +46,7 @@ function NotificationItem({ content, detail }: { content: string; detail?: strin
         <span>{content}</span>
       </button>
       {expanded && hasDetail && (
-        <pre className="mt-1 max-h-[260px] w-full overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-600">
-          {formatJson(detail!)}
-        </pre>
+        <CodeBlock className="mt-1 w-full">{formatJson(detail!)}</CodeBlock>
       )}
     </div>
   );

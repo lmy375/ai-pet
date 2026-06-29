@@ -356,12 +356,7 @@ fn ensure_agent_dirs(settings: &AppSettings) {
 
 /// Write raw YAML text to config.yaml, creating the parent dir if needed.
 fn write_config_file(yaml: &str) -> Result<(), String> {
-    let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config dir: {}", e))?;
-    }
-    fs::write(&path, yaml).map_err(|e| format!("Failed to write config: {}", e))
+    crate::common::write_text(&config_path()?, yaml)
 }
 
 /// Serialize `settings`, write it to config.yaml, then run the standard

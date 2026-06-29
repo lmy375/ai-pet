@@ -5,9 +5,11 @@ import { defaultAgent } from "../../hooks/useSettings";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
+import { IconActionButton } from "../ui/IconButton";
+import { ErrorBox, LoadingScreen, HintText } from "../ui/feedback";
 import { Label, TextInput, TextArea, Select, SavedTextInput, NumberField } from "../ui/fields";
 import { StatusText } from "../ui/StatusText";
-import { ChevronDown, ChevronRight, PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
+import { ExpandChevron, PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
 import { AgentMemory } from "./PanelMemory";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
@@ -299,7 +301,7 @@ export function PanelSettings() {
   };
 
   if (!loaded) {
-    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">{t("common.loading")}</div>;
+    return <LoadingScreen />;
   }
 
   const serverEntries = Object.entries(agent.mcp_servers);
@@ -370,7 +372,7 @@ export function PanelSettings() {
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </Select>
-            <p className="mt-1 text-[11px] text-slate-400">{t("settings.agent.defaultNote")}</p>
+            <HintText>{t("settings.agent.defaultNote")}</HintText>
           </Card>
 
           {/* Live2D */}
@@ -425,7 +427,7 @@ export function PanelSettings() {
               }}
               placeholder="10"
             />
-            <p className="mt-1 text-[11px] text-slate-400">{t("settings.gallery.intervalNote")}</p>
+            <HintText>{t("settings.gallery.intervalNote")}</HintText>
           </Card>
 
           {/* Web Search (shared by all agents) */}
@@ -438,7 +440,7 @@ export function PanelSettings() {
               onCommit={() => saveSettings()}
               placeholder="tvly-..."
             />
-            <p className="mt-1 text-[11px] text-slate-400">{t("settings.search.apiKeyNote")}</p>
+            <HintText>{t("settings.search.apiKeyNote")}</HintText>
           </Card>
 
         </>
@@ -550,7 +552,7 @@ export function PanelSettings() {
               onCommit={(v) => commitAgent({ context_window: v })}
               placeholder={String(defaultAgent().context_window)}
             />
-            <p className="mt-1 text-[11px] text-slate-400">{t("settings.llm.contextWindowNote")}</p>
+            <HintText>{t("settings.llm.contextWindowNote")}</HintText>
           </Card>
 
           {/* MCP Servers */}
@@ -646,11 +648,7 @@ export function PanelSettings() {
               </Button>
             }
           >
-            {telegramStatus.error && (
-              <div className="mb-2 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[12px] text-red-600">
-                {telegramStatus.error}
-              </div>
-            )}
+            {telegramStatus.error && <ErrorBox className="mb-2">{telegramStatus.error}</ErrorBox>}
 
             <label className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
               <input
@@ -702,7 +700,7 @@ export function PanelSettings() {
               onCommit={(v) => commitAgent({ heartbeat_interval: v })}
               placeholder="60"
             />
-            <p className="mt-1 text-[11px] text-slate-400">{t("settings.hb.note")}</p>
+            <HintText>{t("settings.hb.note")}</HintText>
 
             <Label className="mt-3">{t("settings.hb.contextTurns")}</Label>
             <NumberField
@@ -713,7 +711,7 @@ export function PanelSettings() {
               onCommit={(v) => commitAgent({ heartbeat_context_turns: v })}
               placeholder="10"
             />
-            <p className="mt-1 text-[11px] text-slate-400">{t("settings.hb.contextTurnsNote")}</p>
+            <HintText>{t("settings.hb.contextTurnsNote")}</HintText>
           </Card>
 
           {/* Per-agent memory */}
@@ -811,25 +809,22 @@ function McpServerEntry({
           {t("common.enable")}
         </label>
 
-        <button
+        <IconActionButton
+          variant="danger"
+          size="sm"
           onClick={(e) => { e.stopPropagation(); onRemove(); }}
           title={t("common.delete")}
-          className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
         >
           <TrashIcon className="h-4 w-4" />
-        </button>
+        </IconActionButton>
 
-        {expanded ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-400" />}
+        <ExpandChevron expanded={expanded} className="h-4 w-4 text-slate-400" />
       </div>
 
       {/* Expanded: config fields + tool list */}
       {expanded && (
         <div className="border-t border-slate-200 px-3 pb-3 pt-3">
-          {hasError && (
-            <div className="mb-2 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[12px] text-red-600">
-              {status!.error}
-            </div>
-          )}
+          {hasError && <ErrorBox className="mb-2">{status!.error}</ErrorBox>}
 
           <Label>{t("settings.mcp.transport")}</Label>
           <Select

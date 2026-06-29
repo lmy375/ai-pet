@@ -53,25 +53,14 @@ pub struct Session {
 }
 
 fn read_index() -> SessionIndex {
-    let path = match index_path() {
-        Ok(p) => p,
-        Err(_) => {
-            return SessionIndex {
-                active_id: String::new(),
-                sessions: vec![],
-            }
-        }
-    };
-    match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or(SessionIndex {
+    index_path()
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or(SessionIndex {
             active_id: String::new(),
             sessions: vec![],
-        }),
-        Err(_) => SessionIndex {
-            active_id: String::new(),
-            sessions: vec![],
-        },
-    }
+        })
 }
 
 /// Serialize `value` as pretty JSON and write it to `path`. `what` names the

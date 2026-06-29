@@ -22,3 +22,35 @@ export function FloatingIconButton({
     </button>
   );
 }
+
+const actionSize = { sm: "h-6 w-6", md: "h-7 w-7" } as const;
+const actionHover = {
+  default: "hover:bg-slate-100 hover:text-slate-600",
+  danger: "hover:bg-red-50 hover:text-red-500",
+} as const;
+
+/**
+ * Small borderless square icon button for inline row actions (rename, delete).
+ * `variant="danger"` turns the hover red. The single source for the per-row
+ * icon-action styling repeated across the chat session list and settings.
+ */
+export function IconActionButton({
+  variant = "default",
+  size = "md",
+  className = "",
+  children,
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "default" | "danger";
+  size?: "sm" | "md";
+  children: ReactNode;
+}) {
+  return (
+    <button
+      className={`flex ${actionSize[size]} shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors ${actionHover[variant]} ${className}`}
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}

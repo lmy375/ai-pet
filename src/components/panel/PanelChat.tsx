@@ -5,7 +5,9 @@ import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { ProgressRing } from "../ui/ProgressRing";
-import { ChevronDown, ChevronRight, PlusIcon, PencilIcon, TrashIcon, CheckIcon } from "../Icons";
+import { IconActionButton } from "../ui/IconButton";
+import { LoadingScreen } from "../ui/feedback";
+import { ExpandChevron, PlusIcon, PencilIcon, TrashIcon, CheckIcon } from "../Icons";
 import { AgentSwitcher } from "../AgentSwitcher";
 import { useSettings } from "../../hooks/useSettings";
 import { useI18n } from "../../i18n";
@@ -89,7 +91,7 @@ export function PanelChat() {
   };
 
   if (!loaded) {
-    return <div className="flex h-full items-center justify-center text-[14px] text-slate-400">{t("common.loading")}</div>;
+    return <LoadingScreen />;
   }
 
   return (
@@ -102,11 +104,7 @@ export function PanelChat() {
           onClick={() => setShowSessionList(!showSessionList)}
         >
           <span className="truncate text-[13px] font-semibold text-slate-800">{displayTitle(sessionTitle)}</span>
-          {showSessionList ? (
-            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
-          ) : (
-            <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
-          )}
+          <ExpandChevron expanded={showSessionList} />
         </button>
         {contextUsage && contextUsage.total > 0 && (
           <ContextUsageRing used={contextUsage.used} total={contextUsage.total} />
@@ -161,20 +159,19 @@ export function PanelChat() {
                     <div className="text-[11px] text-slate-400">{s.updated_at.split("T")[0]}</div>
                   </button>
                 )}
-                <button
+                <IconActionButton
                   onClick={(e) => { e.stopPropagation(); startRename(s.id, s.title); }}
                   title={t("chat.session.rename")}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
                 >
                   <PencilIcon className="h-4 w-4" />
-                </button>
-                <button
+                </IconActionButton>
+                <IconActionButton
+                  variant="danger"
                   onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                   title={t("chat.session.delete")}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
                 >
                   <TrashIcon className="h-4 w-4" />
-                </button>
+                </IconActionButton>
               </div>
             ))
           )}

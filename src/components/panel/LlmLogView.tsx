@@ -2,13 +2,13 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
+import { codeBlockClass as preClass } from "../ui/CodeBlock";
 import { formatIsoTime } from "../../utils/format";
 import { describeToolCall } from "../../utils/toolDisplay";
 import { ImageLightbox } from "../ui/ImageLightbox";
 import { useI18n } from "../../i18n";
 import {
-  ChevronRight,
-  ChevronDown,
+  ExpandChevron,
   RefreshIcon,
   WrenchIcon,
   ClockIcon,
@@ -35,9 +35,6 @@ interface LlmLogEntry {
     tool_calls: ToolCall[];
   };
 }
-
-const preClass =
-  "mt-0.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-700";
 
 type ContentBlock = { type?: string; text?: string; image_url?: { url?: string } };
 type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
@@ -352,11 +349,7 @@ export function LlmLogView() {
                     </Badge>
                   )}
                   <span className="flex-1 truncate text-[12px] text-slate-600">{lastUserMsg(entry)}</span>
-                  {isExpanded ? (
-                    <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
-                  )}
+                  <ExpandChevron expanded={isExpanded} />
                 </div>
 
                 {/* Expanded detail */}

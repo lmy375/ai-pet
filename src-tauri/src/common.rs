@@ -1,7 +1,7 @@
 //! Shared helpers used across command modules: config paths, timestamps,
 //! and OpenAI-compatible HTTP request building.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// A shared `reqwest::Client` (cheap to clone — it's `Arc`-backed internally),
@@ -15,6 +15,30 @@ pub fn http_client() -> reqwest::Client {
 pub fn config_dir() -> Result<PathBuf, String> {
     let dir = dirs::config_dir().ok_or_else(|| "Cannot determine config directory".to_string())?;
     Ok(dir.join("pet"))
+}
+
+/// Ensure the parent directory of `path` exists, creating it (and any missing
+/// ancestors) if needed. No-op when `path` has no parent.
+pub fn ensure_parent_dir(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
+    }
+    Ok(())
+}
+
+/// Write `content` to `path`, creating parent dirs first. Error messages name
+/// the file (its last path segment) so failures are easy to pinpoint.
+pub fn write_text(path: &Path, content: &str) -> Result<(), String> {
+    ensure_parent_dir(path)?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    std::fs::write(path, content).map_err(|e| format!("Failed to write {name}: {e}"))
+}
+
+/// Read `path` as a UTF-8 string, falling back to `default` if it can't be read
+/// (missing file, permission error, invalid UTF-8).
+pub fn read_or(path: &Path, default: &str) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|_| default.to_string())
 }
 
 /// ISO-8601 timestamp with millisecond precision (e.g. `2026-06-14T09:30:00.123`).
