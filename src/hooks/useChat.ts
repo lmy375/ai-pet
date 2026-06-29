@@ -16,7 +16,26 @@ export interface ToolCall {
   isRunning: boolean;
 }
 
+// Bound the dedup set on long-lived windows (a desktop pet runs for days).
+const MAX_SEEN_TASK_IDS = 500;
+
+// Stable, collision-free id for a chat item. Items are keyed by this for React
+// lists AND multi-select, so the id must survive re-renders, background-completion
+// injections, and focus reloads. Never key/select by array index — it shifts when
+// items are inserted or removed and ends up deleting the wrong rows.
+let chatItemSeq = 0;
+function newItemId(): string {
+  chatItemSeq += 1;
+  return `it-${Date.now().toString(36)}-${chatItemSeq.toString(36)}`;
+}
+
+/** Ensure an item has a stable id, preserving ids already persisted on disk. */
+function withId(item: ChatItem): ChatItem {
+  return item.id ? item : { ...item, id: newItemId() };
+}
+
 export interface ChatItem {
+  id?: string; // stable per-item id for React keys + multi-select; backfilled on load for legacy items
   type: "user" | "assistant" | "tool" | "error" | "notification";
   content: string;
   images?: string[]; // base64 data URLs rendered in the bubble — user pastes, or tool-produced images (e.g. screenshots) on assistant items
@@ -237,7 +256,7 @@ export function useChat() {
       const session = await invoke<Session>("load_session", { id });
       setSessionId(session.id);
       setSessionTitle(session.title);
-      setItems(session.items || []);
+      setItems((session.items || []).map(withId));
       messagesRef.current = session.messages || [];
       // Restore the persisted occupancy so the ring shows immediately, instead
       // of waiting for the next turn (or showing the session we switched from).
@@ -346,6 +365,10 @@ export function useChat() {
   // focus-reload (which reads index.active_id) converges on the session we picked
   // instead of reverting to whatever was last saved (e.g. the newest session).
   const switchSession = useCallback(async (id: string) => {
+    // No-op mid-turn: loadSession would overwrite items/messagesRef under the
+    // running stream, and finish() would then save the streamed output under the
+    // switched-to session id. Matches the focus/chat-inserted/deleteItems guards.
+    if (busyRef.current) return;
     try {
       await invoke("set_active_session", { id });
     } catch (e) {
@@ -356,6 +379,9 @@ export function useChat() {
 
   const deleteSession = useCallback(
     async (id: string) => {
+      // Same rationale as switchSession: deleting can reload another session and
+      // clobber an in-flight stream's state. Skip while a turn is running.
+      if (busyRef.current) return;
       try {
         await invoke("delete_session", { id });
         const index = await refreshSessionList();
@@ -379,10 +405,18 @@ export function useChat() {
   // makes the pet forget the deleted content on the next turn. No-op mid-stream
   // (a running turn mutates messagesRef/items and would race the deletion).
   const deleteItems = useCallback(
-    async (selectedIndices: number[]) => {
+    async (selectedIds: string[]) => {
       if (busyRef.current) return;
-      if (selectedIndices.length === 0) return;
-      const sel = new Set(selectedIndices);
+      if (selectedIds.length === 0) return;
+      // Resolve ids → current positions in the LIVE items array. Indices are
+      // computed here, never captured at selection time, so a background-completion
+      // item injected between select and delete can't shift them onto wrong rows.
+      const idSet = new Set(selectedIds);
+      const sel = new Set<number>();
+      itemsRef.current.forEach((it, i) => {
+        if (it.id && idSet.has(it.id)) sel.add(i);
+      });
+      if (sel.size === 0) return;
       const { newItems, newMessages } = planMessageDeletion(
         itemsRef.current,
         messagesRef.current,
@@ -422,7 +456,7 @@ export function useChat() {
       const flushToolCalls = () => {
         if (toolCalls.length > 0) {
           const snapshot = [...toolCalls];
-          commit([...finalItems, { type: "tool", content: "", toolCalls: snapshot, ts: Date.now() }]);
+          commit([...finalItems, { id: newItemId(), type: "tool", content: "", toolCalls: snapshot, ts: Date.now() }]);
           toolCalls = [];
           setCurrentToolCalls([]);
         }
@@ -449,7 +483,7 @@ export function useChat() {
         } else if (event.event === "toolStart") {
           // Preserve any assistant text streamed before the tool call.
           if (accumulated.trim()) {
-            commit([...finalItems, { type: "assistant", content: accumulated, ts: Date.now() }]);
+            commit([...finalItems, { id: newItemId(), type: "assistant", content: accumulated, ts: Date.now() }]);
             messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
           }
           accumulated = "";
@@ -476,7 +510,7 @@ export function useChat() {
           // bubble so the owner sees what the pet saw. The data URL also lives
           // in the server's message history for the model; here it's UI-only.
           flushToolCalls();
-          commit([...finalItems, { type: "assistant", content: "", images: [event.data.dataUrl], ts: Date.now() }]);
+          commit([...finalItems, { id: newItemId(), type: "assistant", content: "", images: [event.data.dataUrl], ts: Date.now() }]);
         } else if (event.event === "usage") {
           // Keep the latest round's usage; the final round carries the fullest context.
           setUsage({ used: event.data.totalTokens, total: event.data.contextWindow });
@@ -484,12 +518,12 @@ export function useChat() {
           flushToolCalls();
           if (accumulated.trim()) {
             messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
-            finish({ type: "assistant", content: accumulated, ts: Date.now() });
+            finish({ id: newItemId(), type: "assistant", content: accumulated, ts: Date.now() });
           } else {
             finish();
           }
         } else if (event.event === "error") {
-          finish({ type: "error", content: event.data.message, ts: Date.now() });
+          finish({ id: newItemId(), type: "error", content: event.data.message, ts: Date.now() });
         }
       };
 
@@ -500,7 +534,7 @@ export function useChat() {
           sessionId: sessionIdRef.current,
         });
       } catch (err) {
-        finish({ type: "error", content: `${err}`, ts: Date.now() });
+        finish({ id: newItemId(), type: "error", content: `${err}`, ts: Date.now() });
       }
     },
     [saveCurrentSession],
@@ -530,7 +564,7 @@ export function useChat() {
       messagesRef.current = [...messagesRef.current, userMsg];
       const newItems: ChatItem[] = [
         ...itemsRef.current,
-        { type: "user", content, images, ts: Date.now() },
+        { id: newItemId(), type: "user", content, images, ts: Date.now() },
       ];
       setItems(newItems);
       await runStream(newItems);
@@ -553,7 +587,7 @@ export function useChat() {
       ];
       const newItems: ChatItem[] = [
         ...base,
-        { type: "notification", content: t("chat.bgTaskDone", { label }), detail: c.result, ts: Date.now() },
+        { id: newItemId(), type: "notification", content: t("chat.bgTaskDone", { label }), detail: c.result, ts: Date.now() },
       ];
       setItems(newItems);
       await runStream(newItems);
@@ -601,6 +635,13 @@ export function useChat() {
     const c = e.payload;
     if (seenTaskIdsRef.current.has(c.taskId)) return; // already handled once
     seenTaskIdsRef.current.add(c.taskId);
+    // Bound the set so it can't grow forever on a long-running window. Sets are
+    // insertion-ordered, so keep the most recent ids and drop the oldest.
+    if (seenTaskIdsRef.current.size > MAX_SEEN_TASK_IDS) {
+      seenTaskIdsRef.current = new Set(
+        [...seenTaskIdsRef.current].slice(-MAX_SEEN_TASK_IDS),
+      );
+    }
     queueRef.current = [...queueRef.current, c];
     processQueueRef.current();
   });

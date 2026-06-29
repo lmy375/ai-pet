@@ -339,15 +339,28 @@ fn snapshot_task(task_id: &str, task: &ShellTask) -> PersistedTask {
     }
 }
 
-pub(crate) fn save_task_history(map: &HashMap<String, ShellTask>) {
+/// Clone the background tasks that belong in history (newest first, capped) so
+/// the expensive snapshot+write can run WITHOUT holding the store lock. Call this
+/// inside the lock; pass the result to `write_task_history` after releasing it.
+pub(crate) fn collect_history_tasks(map: &HashMap<String, ShellTask>) -> Vec<(String, ShellTask)> {
     // Only background tasks belong in the panel/history; foreground tasks that
     // finished inline (e.g. a bash a sub-agent ran synchronously) are excluded.
     let mut tasks: Vec<(&String, &ShellTask)> =
         map.iter().filter(|(_, task)| task.backgrounded).collect();
     tasks.sort_by_key(|(_, task)| std::cmp::Reverse(task_sort_key(task)));
-    let rows: Vec<PersistedTask> = tasks
+    tasks
         .into_iter()
         .take(TASK_HISTORY_LIMIT)
+        .map(|(id, task)| (id.clone(), task.clone()))
+        .collect()
+}
+
+/// Serialize and write the task history. MUST be called OUTSIDE the store lock —
+/// for bash tasks `snapshot_task` reads each task's stdout/stderr files, so doing
+/// this under the lock would block every other task-store access on disk I/O.
+pub(crate) fn write_task_history(tasks: &[(String, ShellTask)]) {
+    let rows: Vec<PersistedTask> = tasks
+        .iter()
         .map(|(id, task)| snapshot_task(id, task))
         .collect();
 
@@ -356,6 +369,11 @@ pub(crate) fn save_task_history(map: &HashMap<String, ShellTask>) {
     if let Ok(json) = serde_json::to_string_pretty(&rows) {
         let _ = std::fs::write(path, json);
     }
+}
+
+/// Convenience for callers NOT holding the lock under contention (startup).
+pub(crate) fn save_task_history(map: &HashMap<String, ShellTask>) {
+    write_task_history(&collect_history_tasks(map));
 }
 
 fn shell_task_from_persisted(row: PersistedTask) -> Option<(String, ShellTask)> {
@@ -472,7 +490,7 @@ pub fn mark_finished_and_notify(
     // Update under the lock, then snapshot the task so the notification string
     // (which for bash reads stdout/stderr files) is built AFTER the lock is
     // released — never hold the store mutex across file I/O.
-    let snapshot = {
+    let (snapshot, history) = {
         let mut map = store.lock().unwrap();
         let task = match map.get_mut(task_id) {
             Some(t) => t,
@@ -491,9 +509,9 @@ pub fn mark_finished_and_notify(
             task.result = result;
         }
         let snapshot = task.clone();
-        save_task_history(&map);
-        snapshot
+        (snapshot, collect_history_tasks(&map))
     };
+    write_task_history(&history);
     if let Some(n) = notifier {
         let completion = TaskCompletion {
             session_id: snapshot.session_id.clone(),
@@ -558,20 +576,23 @@ where
     let task_id = uuid::Uuid::new_v4().to_string();
     let started_at = Local::now();
     {
-        let mut map = ctx.shell_store.0.lock().unwrap();
-        cleanup_old_tasks(&mut map);
-        map.insert(
-            task_id.clone(),
-            ShellTask::new_background(
-                kind,
-                label,
-                ctx.session_id.clone(),
-                started_at,
-                input,
-                run_in_background,
-            ),
-        );
-        save_task_history(&map);
+        let history = {
+            let mut map = ctx.shell_store.0.lock().unwrap();
+            cleanup_old_tasks(&mut map);
+            map.insert(
+                task_id.clone(),
+                ShellTask::new_background(
+                    kind,
+                    label,
+                    ctx.session_id.clone(),
+                    started_at,
+                    input,
+                    run_in_background,
+                ),
+            );
+            collect_history_tasks(&map)
+        };
+        write_task_history(&history);
     }
 
     let mut handle = tokio::spawn(work);
@@ -614,12 +635,15 @@ where
             let (code, result) = joined.unwrap_or_else(join_err);
             // Foreground completion: return inline, no notification.
             {
-                let mut map = store.lock().unwrap();
-                if let Some(t) = map.get_mut(&task_id) {
-                    t.mark_finished(code);
-                    t.result = Some(result.clone());
-                }
-                save_task_history(&map);
+                let history = {
+                    let mut map = store.lock().unwrap();
+                    if let Some(t) = map.get_mut(&task_id) {
+                        t.mark_finished(code);
+                        t.result = Some(result.clone());
+                    }
+                    collect_history_tasks(&map)
+                };
+                write_task_history(&history);
             }
             result
         }
@@ -627,11 +651,14 @@ where
             // Timed out in the foreground: it converts to a notified background
             // task, so it now belongs in the panel.
             {
-                let mut map = store.lock().unwrap();
-                if let Some(t) = map.get_mut(&task_id) {
-                    t.mark_backgrounded();
-                }
-                save_task_history(&map);
+                let history = {
+                    let mut map = store.lock().unwrap();
+                    if let Some(t) = map.get_mut(&task_id) {
+                        t.mark_backgrounded();
+                    }
+                    collect_history_tasks(&map)
+                };
+                write_task_history(&history);
             }
             let tid = task_id.clone();
             tokio::spawn(async move {
@@ -681,30 +708,36 @@ pub struct TaskListItem {
 /// groups and sorts them.
 #[tauri::command]
 pub fn list_tasks(store: State<'_, ShellStore>) -> Vec<TaskListItem> {
-    let mut map = store.0.lock().unwrap();
-    let before = map.len();
-    cleanup_old_tasks(&mut map);
-    if map.len() != before {
-        save_task_history(&map);
+    let (items, history) = {
+        let mut map = store.0.lock().unwrap();
+        let before = map.len();
+        cleanup_old_tasks(&mut map);
+        let history = (map.len() != before).then(|| collect_history_tasks(&map));
+        let items: Vec<TaskListItem> = map
+            .iter()
+            // Only actually-backgrounded tasks belong in the panel; a foreground
+            // bash a sub-agent/heartbeat ran inline is not a background task.
+            .filter(|(_, t)| t.backgrounded)
+            .map(|(id, t)| {
+                let (status, return_code, elapsed_ms) = t.status_info();
+                TaskListItem {
+                    task_id: id.clone(),
+                    kind: t.kind.as_str().to_string(),
+                    label: t.label.clone(),
+                    status: status.to_string(),
+                    return_code,
+                    elapsed_ms,
+                    started_at: t.started_at.to_rfc3339(),
+                    session_id: t.session_id.clone(),
+                }
+            })
+            .collect();
+        (items, history)
+    };
+    if let Some(history) = history {
+        write_task_history(&history);
     }
-    map.iter()
-        // Only actually-backgrounded tasks belong in the panel; a foreground bash
-        // a sub-agent/heartbeat ran inline is not a background task.
-        .filter(|(_, t)| t.backgrounded)
-        .map(|(id, t)| {
-            let (status, return_code, elapsed_ms) = t.status_info();
-            TaskListItem {
-                task_id: id.clone(),
-                kind: t.kind.as_str().to_string(),
-                label: t.label.clone(),
-                status: status.to_string(),
-                return_code,
-                elapsed_ms,
-                started_at: t.started_at.to_rfc3339(),
-                session_id: t.session_id.clone(),
-            }
-        })
-        .collect()
+    items
 }
 
 /// Kill a running task and tell the pet it was cancelled.
@@ -719,7 +752,7 @@ pub fn kill_task(
     app: tauri::AppHandle,
     store: State<'_, ShellStore>,
 ) -> Result<(), String> {
-    let (kind, pid, abort, completion) = {
+    let (kind, pid, abort, completion, history) = {
         let mut map = store.0.lock().unwrap();
         let task = map
             .get_mut(&task_id)
@@ -740,9 +773,11 @@ pub fn kill_task(
             result,
         };
         let ret = (task.kind, task.pid, task.abort.take(), completion);
-        save_task_history(&map);
-        ret
+        // `ret` ended the `task` mutable borrow above, so the map is free to read.
+        let history = collect_history_tasks(&map);
+        (ret.0, ret.1, ret.2, ret.3, history)
     };
+    write_task_history(&history);
 
     // Stop the actual work: bash by process group (set via process_group(0) at
     // spawn), sub-agent by aborting its work future.

@@ -93,7 +93,11 @@ impl TelegramBot {
         // the shutdown — spawning it is sufficient.
         let token = self.shutdown_token.clone();
         tokio::spawn(async move {
-            token.shutdown().expect("Failed to shutdown Telegram bot").await;
+            // shutdown() errors if the dispatcher already stopped (e.g. a double
+            // stop, or it exited on its own). That's benign — don't panic the task.
+            if let Ok(fut) = token.shutdown() {
+                fut.await;
+            }
         });
     }
 }
@@ -343,7 +347,12 @@ fn split_message(text: &str, max_len: usize) -> Vec<&str> {
     let mut result = Vec::new();
     let mut start = 0;
     while start < text.len() {
-        let end = std::cmp::min(start + max_len, text.len());
+        let mut end = std::cmp::min(start + max_len, text.len());
+        // `start + max_len` can land mid-codepoint (CJK/emoji are multi-byte);
+        // walk back to a char boundary so the slices below never panic.
+        while end < text.len() && !text.is_char_boundary(end) {
+            end -= 1;
+        }
         // Try to split at a newline or space boundary
         let split_at = if end == text.len() {
             end

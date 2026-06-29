@@ -39,10 +39,10 @@ export function PanelChat() {
   // Set on Escape so the input's blur cancels instead of saving.
   const cancelRenameRef = useRef(false);
 
-  // Multi-select mode for deleting messages. `selected` holds indices into `items`;
-  // `confirming` is the two-step-delete guard (first click arms, second executes).
+  // Multi-select mode for deleting messages. `selected` holds stable item ids
+  // (not indices — items can shift); `confirming` is the two-step-delete guard.
   const [selectionMode, setSelectionMode] = useState(false);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
 
   const exitSelection = () => {
@@ -50,11 +50,11 @@ export function PanelChat() {
     setSelected(new Set());
     setConfirming(false);
   };
-  const toggleSelect = (i: number) => {
+  const toggleSelect = (id: string) => {
     setConfirming(false);
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(i) ? next.delete(i) : next.add(i);
+      next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   };

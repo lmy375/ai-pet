@@ -18,10 +18,10 @@ interface Props {
   emptyHint?: ReactNode;
   /** When true, each row shows a checkbox and clicking it toggles selection. */
   selectionMode?: boolean;
-  /** Indices (into `items`) currently selected. */
-  selectedKeys?: Set<number>;
-  /** Toggle selection for the item at index `i`. */
-  onToggleSelect?: (i: number) => void;
+  /** Stable item ids currently selected (never array indices — they shift). */
+  selectedKeys?: Set<string>;
+  /** Toggle selection for the item with id `id`. */
+  onToggleSelect?: (id: string) => void;
 }
 
 const FIVE_MIN = 5 * 60 * 1000;
@@ -113,16 +113,16 @@ export function ChatThread({
         const prev = items[i - 1];
         const showTime =
           item.ts !== undefined && (i === 0 || prev?.ts === undefined || item.ts - prev.ts > FIVE_MIN);
-        const selected = selectedKeys?.has(i) ?? false;
+        const selected = item.id ? (selectedKeys?.has(item.id) ?? false) : false;
         return (
-          <div key={i} className="flex flex-col gap-2">
+          <div key={item.id ?? i} className="flex flex-col gap-2">
             {showTime && (
               <div className="self-center px-2 py-0.5 text-[11px] text-slate-400">{formatHm(item.ts!)}</div>
             )}
             {selectionMode ? (
               <button
                 type="button"
-                onClick={() => onToggleSelect?.(i)}
+                onClick={() => item.id && onToggleSelect?.(item.id)}
                 className={`flex w-full items-start gap-2 rounded-lg p-1.5 text-left transition-colors ${
                   selected ? "bg-sky-50 ring-1 ring-accent" : "hover:bg-slate-50"
                 }`}
