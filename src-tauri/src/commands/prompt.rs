@@ -126,6 +126,29 @@ pub fn prepend_subagent_system_messages(conv_messages: &mut Vec<Value>) {
     apply_system_messages(conv_messages, SUBAGENT_PROMPT.to_string());
 }
 
+/// Group-chat etiquette, appended after the agent's persona+memory for a group
+/// run. Explains that messages arrive prefixed `[time] 发言人:`, that the agent
+/// may use any tool, and — critically — that it speaks ONLY by calling the
+/// `GroupChat` tool and should stay silent when it has nothing to add.
+const GROUP_PROMPT: &str = r#"# 群聊模式
+
+你现在和主人以及其他几个 AI 一起待在同一个群聊里。群里每个人（包括其他 AI）的发言都会发给你，格式是 `[时间] 发言人: 内容`。
+
+- 你能看到所有人的发言，但看不到其他 AI 的内部思考和工具调用——只能看到他们最终在群里说出来的话。
+- 你可以像平时一样使用任意工具（bash、读写文件、搜索、MCP 等）来帮主人把事情做完。
+- **只有当你想在群里发言时，才调用 `GroupChat` 工具**把你的话发出去；这是你在群里说话的唯一方式，普通回复别人看不到。
+- 不是每条消息都需要你回应。对你不关心、不需要你参与、或别人已经答得很好的话题，就保持安静、不要调用 `GroupChat`，直接结束本轮即可。
+- 想发言时，发言要简洁、像群聊里自然说话，带上你自己的视角；不要重复别人已经说过的内容，也不要为了刷存在感而发言。
+- 不要 @ 不存在的人，也不要假扮其他成员发言。"#;
+
+/// Prepend the group-chat system messages: the agent's full persona + memory
+/// (it's the agent itself in the room, not a worker), followed by the group
+/// etiquette, then the shared tool guidance. Scoped to `agent_id`.
+pub fn prepend_group_system_messages(conv_messages: &mut Vec<Value>, agent_id: &str) {
+    let system_content = format!("{}\n\n{}", build_memory_prompt(agent_id), GROUP_PROMPT);
+    apply_system_messages(conv_messages, system_content);
+}
+
 /// Prepend the heartbeat system messages: the full pet persona + memory (a
 /// heartbeat is the pet itself waking up, not a worker), followed by the
 /// heartbeat instructions and the current `HEARTBEAT.md`, then tool guidance.

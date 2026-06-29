@@ -196,6 +196,14 @@ export function PinIcon({ className }: IconProps) {
   return <Stroke className={className}><path d="M12 17v5M9 10.76V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v5.76l1.5 2.24H7.5L9 10.76z" /></Stroke>;
 }
 
+export function PauseIcon({ className }: IconProps) {
+  return <Stroke className={className}><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></Stroke>;
+}
+
+export function PlayIcon({ className }: IconProps) {
+  return <Stroke className={className}><path d="M6 4v16l14-8z" /></Stroke>;
+}
+
 export function ImageIcon({ className }: IconProps) {
   return <Stroke className={className}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="1.5" /><path d="m21 15-5-5L5 21" /></Stroke>;
 }

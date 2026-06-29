@@ -37,6 +37,10 @@ pub struct ToolContext {
     /// True only for scheduled heartbeat sessions. Gates the `chat` tool (offered
     /// only to heartbeats) — see `ToolRegistry::new`.
     pub is_heartbeat: bool,
+    /// True only for group-chat agent runs. Gates the `GroupChat` tool (offered
+    /// only in the group page) — see `ToolRegistry::new`. The group orchestrator
+    /// sets it on the context after construction.
+    pub is_group: bool,
     /// Images a tool wants the model to actually SEE. A tool's String return is
     /// appended as a `tool` role message, which can't carry an image, so tools
     /// like `screenshot` push a data URL here instead; the agent loop drains this
@@ -67,6 +71,7 @@ impl ToolContext {
             notifier,
             app,
             is_heartbeat,
+            is_group: false,
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
@@ -115,6 +120,7 @@ impl ToolContext {
             // and the heartbeat flag so the `chat` tool is unavailable to them.
             app: None,
             is_heartbeat: false,
+            is_group: false,
             // Fresh queue: a sub-agent's screenshots are consumed by its own loop.
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }

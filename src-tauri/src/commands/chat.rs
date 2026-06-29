@@ -316,11 +316,16 @@ pub async fn run_chat_pipeline(
     // session creation.
     crate::commands::prompt::prepend_system_messages(&mut conv_messages, &config.agent_id);
 
-    run_agent_loop(conv_messages, sink, config, mcp_store, ctx).await
+    let (text, _conv) = run_agent_loop(conv_messages, sink, config, mcp_store, ctx).await?;
+    Ok(text)
 }
 
 /// Run the tool-calling loop over an already-assembled message list (system
-/// prompt MUST already be included). Returns the final assistant text.
+/// prompt MUST already be included). Returns the final assistant text AND the
+/// full conversation (including every tool round and the final assistant
+/// message), so callers that need to persist the accumulated context — notably
+/// the group-chat orchestrator, which keeps each agent's private session across
+/// turns — can do so. Callers that only want the text ignore the second element.
 ///
 /// Split out from `run_chat_pipeline` so callers that supply their own system
 /// prompt — notably the `spawn_subagent` tool, which gives a sub-agent a
@@ -332,7 +337,7 @@ pub async fn run_agent_loop(
     config: &AiConfig,
     mcp_store: &McpManagerStore,
     ctx: &ToolContext,
-) -> Result<String, String> {
+) -> Result<(String, Vec<serde_json::Value>), String> {
     // Get MCP tool definitions for this agent (each agent has its own server set).
     let mcp_defs = {
         let managers = mcp_store.lock().await;
@@ -342,7 +347,8 @@ pub async fn run_agent_loop(
     // The `chat` tool is offered only to heartbeat sessions. `web_search` is
     // offered only when a Tavily key is configured.
     let web_search_enabled = !config.search_api_key.trim().is_empty();
-    let registry = ToolRegistry::new(mcp_defs, ctx.depth, ctx.is_heartbeat, web_search_enabled);
+    let registry =
+        ToolRegistry::new(mcp_defs, ctx.depth, ctx.is_heartbeat, web_search_enabled, ctx.is_group);
     let client = crate::common::http_client();
     let url = crate::common::openai_endpoint(&config.base_url, "chat/completions");
     let tools = registry.definitions();
@@ -391,7 +397,17 @@ pub async fn run_agent_loop(
                 result.total_latency_ms,
             ));
             sink.send_done();
-            return Ok(result.text);
+            // Append the final assistant message so the returned conversation is a
+            // complete, valid continuation (used by the group orchestrator to keep
+            // an agent's private context). Skip when empty — an empty assistant
+            // message is not a useful context entry and some providers reject one.
+            if !result.text.is_empty() {
+                conv_messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": result.text.clone(),
+                }));
+            }
+            return Ok((result.text, conv_messages));
         }
 
         ctx.log(&format!("Tool calls: {}", result.tool_calls.len()));

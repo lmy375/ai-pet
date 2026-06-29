@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod debug;
 pub mod gallery;
+pub mod group;
 pub mod heartbeat;
 pub mod heartbeat_file;
 pub mod mcp;

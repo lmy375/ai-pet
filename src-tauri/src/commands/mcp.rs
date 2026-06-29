@@ -32,7 +32,7 @@ pub async fn list_available_tools(
     let web_search_enabled = get_settings()
         .map(|s| !s.search_api_key.trim().is_empty())
         .unwrap_or(false);
-    let registry = ToolRegistry::new(mcp_defs, 0, false, web_search_enabled);
+    let registry = ToolRegistry::new(mcp_defs, 0, false, web_search_enabled, false);
     let defs = registry.definitions();
     let mut out = Vec::new();
     if let Some(arr) = defs.as_array() {

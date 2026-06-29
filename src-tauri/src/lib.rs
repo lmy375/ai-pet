@@ -34,6 +34,7 @@ pub fn run() {
         ))))
         .manage(mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
+        .manage(commands::group::new_group_store())
         .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))
         .setup(|app| {
             // Restore the pet window to its last position (and show it — it starts
@@ -128,6 +129,11 @@ pub fn run() {
             commands::session::delete_session,
             commands::telegram::get_telegram_status,
             commands::telegram::reconnect_telegram,
+            commands::group::group_load,
+            commands::group::group_send,
+            commands::group::group_set_members,
+            commands::group::group_set_paused,
+            commands::group::group_reset,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -88,7 +88,7 @@ async fn spawn_subagent_impl(arguments: &str, ctx: &ToolContext) -> String {
     let work = async move {
         let sink = ImageCollectingSink::new();
         match run_agent_loop(conv, &sink, &config, &mcp, &child).await {
-            Ok(text) => (Some(0), text),
+            Ok((text, _conv)) => (Some(0), text),
             Err(e) => (Some(1), tool_error(format!("sub-agent failed: {}", e))),
         }
     };

@@ -146,7 +146,7 @@ async fn run_one_heartbeat(
     let work = async move {
         let sink = ImageCollectingSink::new();
         match run_agent_loop(conv, &sink, &work_config, &work_mcp, &work_ctx).await {
-            Ok(text) => (Some(0), text),
+            Ok((text, _conv)) => (Some(0), text),
             Err(e) => (Some(1), crate::tools::tool_error(format!("heartbeat failed: {}", e))),
         }
     };

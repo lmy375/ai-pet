@@ -9,6 +9,7 @@ import {
   ClockIcon,
   AgentIcon,
   GlobeIcon,
+  SendIcon,
 } from "../components/Icons";
 
 type IconComponent = (props: { className?: string }) => React.ReactElement;
@@ -76,6 +77,10 @@ export function describeToolCall(name: string, argsJson: string): ToolDisplay {
       const prompt = str(args.prompt);
       const summary = str(args.description) ?? prompt?.split("\n")[0];
       return { Icon: AgentIcon, label: "Agent", summary, fullSummary: str(args.description) ?? prompt };
+    }
+    case "GroupChat": {
+      const message = str(args.message);
+      return { Icon: SendIcon, label: "Group", summary: message, fullSummary: message };
     }
     default:
       return { Icon: WrenchIcon, label: name };

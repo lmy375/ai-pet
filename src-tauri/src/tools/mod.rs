@@ -3,6 +3,7 @@ mod registry;
 mod tool;
 pub mod agent_tools;
 pub mod chat_tool;
+pub mod group_tool;
 pub mod shell_tools;
 pub mod file_tools;
 pub mod screenshot_tool;
