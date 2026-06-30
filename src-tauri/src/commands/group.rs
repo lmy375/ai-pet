@@ -527,6 +527,12 @@ impl ChatEventSink for GroupSink {
         self.emit(StreamEvent::Chunk { text: text.to_string() });
     }
 
+    fn send_reasoning(&self, text: &str) {
+        // Forward chain-of-thought to the panel (the group reducer ignores it for
+        // now); never fold it into the persisted message — it's not the answer.
+        self.emit(StreamEvent::Reasoning { text: text.to_string() });
+    }
+
     fn send_tool_start(&self, name: &str, arguments: &str) {
         {
             let mut inner = self.inner.lock().unwrap();

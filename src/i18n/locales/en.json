@@ -64,6 +64,7 @@
   "chat.context.tools": "Available tools",
   "chat.context.toolsEmpty": "No tools available",
   "chat.empty": "Say hi to start~",
+  "chat.reasoning": "Thinking",
   "chat.agent.switch": "Switch agent",
   "chat.bgTaskDone": "Background task done: {label}",
   "chat.bgTaskDoneContent": "[Background task done] {label}:\n{result}",

@@ -26,6 +26,11 @@ pub struct ChatMessage {
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
 pub enum StreamEvent {
     Chunk { text: String },
+    /// Chain-of-thought from a reasoning model — the `reasoning_content` /
+    /// `reasoning` delta field, or text peeled out of inline `<think>…</think>`
+    /// tags. Kept on its own channel so the UI can show it in a collapsed
+    /// "thinking" block instead of mixing it into the answer.
+    Reasoning { text: String },
     ToolStart { name: String, arguments: String },
     ToolResult { name: String, result: String },
     /// A data URL a tool produced for the model to see (e.g. `screenshot`).
@@ -57,6 +62,7 @@ pub enum StreamEvent {
 /// Abstraction for chat event delivery — allows both Tauri streaming and non-streaming callers.
 pub trait ChatEventSink: Send + Sync {
     fn send_chunk(&self, text: &str);
+    fn send_reasoning(&self, text: &str);
     fn send_tool_start(&self, name: &str, arguments: &str);
     fn send_tool_result(&self, name: &str, result: &str);
     fn send_image(&self, data_url: &str);
@@ -69,6 +75,9 @@ pub trait ChatEventSink: Send + Sync {
 impl ChatEventSink for Channel<StreamEvent> {
     fn send_chunk(&self, text: &str) {
         let _ = self.send(StreamEvent::Chunk { text: text.to_string() });
+    }
+    fn send_reasoning(&self, text: &str) {
+        let _ = self.send(StreamEvent::Reasoning { text: text.to_string() });
     }
     fn send_tool_start(&self, name: &str, arguments: &str) {
         let _ = self.send(StreamEvent::ToolStart { name: name.to_string(), arguments: arguments.to_string() });
@@ -112,6 +121,7 @@ impl ImageCollectingSink {
 
 impl ChatEventSink for ImageCollectingSink {
     fn send_chunk(&self, _text: &str) {}
+    fn send_reasoning(&self, _text: &str) {}
     fn send_tool_start(&self, _name: &str, _arguments: &str) {}
     fn send_tool_result(&self, _name: &str, _result: &str) {}
     fn send_image(&self, data_url: &str) {
@@ -122,9 +132,71 @@ impl ChatEventSink for ImageCollectingSink {
     fn send_error(&self, _message: &str) {}
 }
 
+/// Length of the longest suffix of `s` that is a (proper) prefix of `tag`.
+/// Used to hold back a few trailing chars that might be the start of a `<think>`
+/// tag split across stream chunks. `tag` is ASCII, so byte-prefix == char-prefix.
+fn partial_tag_suffix(s: &str, tag: &str) -> usize {
+    let max = (tag.len() - 1).min(s.len());
+    (1..=max)
+        .rev()
+        .find(|&k| s.is_char_boundary(s.len() - k) && s.as_bytes()[s.len() - k..] == tag.as_bytes()[..k])
+        .unwrap_or(0)
+}
+
+/// Streaming splitter for models that inline chain-of-thought as
+/// `<think>…</think>` in the `content` field (e.g. some QwQ/local builds).
+/// Feed it content deltas; it routes text to either the visible answer or the
+/// reasoning channel, tolerating tags that straddle chunk boundaries.
+#[derive(Default)]
+struct ThinkSplitter {
+    in_think: bool,
+    pending: String,
+}
+
+impl ThinkSplitter {
+    const OPEN: &'static str = "<think>";
+    const CLOSE: &'static str = "</think>";
+
+    /// Push a content delta; returns `(visible_answer, reasoning)`.
+    fn push(&mut self, text: &str) -> (String, String) {
+        self.pending.push_str(text);
+        self.drain(false)
+    }
+
+    /// Flush at stream end — no further text can complete a partial tag, so
+    /// whatever is buffered is emitted verbatim to the current channel.
+    fn finish(&mut self) -> (String, String) {
+        self.drain(true)
+    }
+
+    fn drain(&mut self, eof: bool) -> (String, String) {
+        let (mut answer, mut reasoning) = (String::new(), String::new());
+        loop {
+            let tag = if self.in_think { Self::CLOSE } else { Self::OPEN };
+            if let Some(pos) = self.pending.find(tag) {
+                let before: String = self.pending.drain(..pos).collect();
+                self.pending.drain(..tag.len()); // discard the tag itself
+                if self.in_think { reasoning.push_str(&before) } else { answer.push_str(&before) }
+                self.in_think = !self.in_think;
+            } else {
+                // No complete tag yet: emit everything except a trailing run that
+                // could be the prefix of a not-yet-finished tag (unless at EOF).
+                let keep = if eof { 0 } else { partial_tag_suffix(&self.pending, tag) };
+                let emit: String = self.pending.drain(..self.pending.len() - keep).collect();
+                if self.in_think { reasoning.push_str(&emit) } else { answer.push_str(&emit) }
+                break;
+            }
+        }
+        (answer, reasoning)
+    }
+}
+
 /// Result from a streaming LLM request
 struct LlmResult {
     text: String,
+    /// Accumulated chain-of-thought (reasoning_content + peeled `<think>`),
+    /// empty for non-reasoning models.
+    reasoning: String,
     tool_calls: Vec<serde_json::Value>,
     request_time: String,
     first_token_time: Option<String>,
@@ -174,6 +246,8 @@ async fn stream_llm_request(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut collected_text = String::new();
+    let mut collected_reasoning = String::new();
+    let mut splitter = ThinkSplitter::default();
     let mut tool_calls_map: std::collections::HashMap<i64, (String, String, String)> =
         std::collections::HashMap::new();
     let mut first_token_instant: Option<std::time::Instant> = None;
@@ -210,10 +284,33 @@ async fn stream_llm_request(
 
                     let delta = &parsed["choices"][0]["delta"];
 
+                    // Reasoning models stream thought in a separate delta field,
+                    // and providers disagree on its name: DeepSeek-R1 / MiniMax use
+                    // `reasoning_content`; some NVIDIA-hosted builds (e.g. Kimi) use
+                    // `reasoning`. Accept either (a null `reasoning` → as_str None).
+                    let rtext = delta["reasoning_content"]
+                        .as_str()
+                        .or_else(|| delta["reasoning"].as_str());
+                    if let Some(rtext) = rtext {
+                        if !rtext.is_empty() {
+                            collected_reasoning.push_str(rtext);
+                            sink.send_reasoning(rtext);
+                        }
+                    }
+
                     if let Some(text) = delta["content"].as_str() {
                         if !text.is_empty() {
-                            collected_text.push_str(text);
-                            sink.send_chunk(text);
+                            // Peel any inline <think>…</think> into the reasoning
+                            // channel; the rest is the visible answer.
+                            let (answer, reasoning) = splitter.push(text);
+                            if !reasoning.is_empty() {
+                                collected_reasoning.push_str(&reasoning);
+                                sink.send_reasoning(&reasoning);
+                            }
+                            if !answer.is_empty() {
+                                collected_text.push_str(&answer);
+                                sink.send_chunk(&answer);
+                            }
                         }
                     }
 
@@ -237,6 +334,17 @@ async fn stream_llm_request(
                 }
             }
         }
+    }
+
+    // Flush any text the splitter was holding back as a possible partial tag.
+    let (answer, reasoning) = splitter.finish();
+    if !reasoning.is_empty() {
+        collected_reasoning.push_str(&reasoning);
+        sink.send_reasoning(&reasoning);
+    }
+    if !answer.is_empty() {
+        collected_text.push_str(&answer);
+        sink.send_chunk(&answer);
     }
 
     let done_instant = std::time::Instant::now();
@@ -264,6 +372,7 @@ async fn stream_llm_request(
 
     Ok(LlmResult {
         text: collected_text,
+        reasoning: collected_reasoning,
         tool_calls,
         request_time: request_time_str,
         first_token_time: first_token_time_str,
@@ -374,6 +483,10 @@ pub async fn run_agent_loop(
         // keeps the latest, so the final round (fullest context) wins.
         if let (Some(prompt), Some(total)) = (result.prompt_tokens, result.total_tokens) {
             sink.send_usage(prompt, total, config.context_window);
+        }
+
+        if !result.reasoning.is_empty() {
+            ctx.log(&format!("Reasoning ({} chars)", result.reasoning.len()));
         }
 
         // Write LLM request/response to llm.log with timing
@@ -530,4 +643,60 @@ pub async fn chat(
     );
     run_chat_pipeline(messages, &on_event, &config, &mcp, &ctx).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThinkSplitter;
+
+    /// Drive a splitter chunk-by-chunk and concatenate each channel.
+    fn split(chunks: &[&str]) -> (String, String) {
+        let mut s = ThinkSplitter::default();
+        let (mut answer, mut reasoning) = (String::new(), String::new());
+        for c in chunks {
+            let (a, r) = s.push(c);
+            answer.push_str(&a);
+            reasoning.push_str(&r);
+        }
+        let (a, r) = s.finish();
+        answer.push_str(&a);
+        reasoning.push_str(&r);
+        (answer, reasoning)
+    }
+
+    #[test]
+    fn no_think_tags_is_all_answer() {
+        assert_eq!(split(&["hello world"]), ("hello world".into(), String::new()));
+    }
+
+    #[test]
+    fn whole_think_block_then_answer() {
+        assert_eq!(
+            split(&["<think>reasoning here</think>the answer"]),
+            ("the answer".into(), "reasoning here".into())
+        );
+    }
+
+    #[test]
+    fn open_tag_split_across_chunks() {
+        // The "<thi" + "nk>" boundary must not leak into the visible answer.
+        assert_eq!(
+            split(&["<thi", "nk>secret</think>", "visible"]),
+            ("visible".into(), "secret".into())
+        );
+    }
+
+    #[test]
+    fn close_tag_split_across_chunks() {
+        assert_eq!(
+            split(&["<think>mid", "dle</thi", "nk>done"]),
+            ("done".into(), "middle".into())
+        );
+    }
+
+    #[test]
+    fn lone_lt_in_answer_is_not_held_forever() {
+        // A partial-tag suffix with no following tag must flush at EOF.
+        assert_eq!(split(&["1 < 2 and 3 < 4"]), ("1 < 2 and 3 < 4".into(), String::new()));
+    }
 }

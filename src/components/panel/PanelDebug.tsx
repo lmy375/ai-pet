@@ -9,6 +9,9 @@ export function PanelDebug() {
   const { t } = useI18n();
   const [logs, setLogs] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Whether the view is pinned to the bottom. Starts true (follow new logs), but
+  // flips off the moment the user scrolls up so polling no longer yanks them down.
+  const stickToBottomRef = useRef(true);
 
   const fetchLogs = async () => {
     try {
@@ -21,9 +24,16 @@ export function PanelDebug() {
 
   usePolling(fetchLogs, 1000);
 
-  // Auto-scroll
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // ≤4px from the bottom counts as "at bottom" (sub-pixel rounding tolerance).
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
+  };
+
+  // Auto-scroll only while pinned to the bottom, so manual scroll-up sticks.
   useEffect(() => {
-    if (scrollRef.current) {
+    if (stickToBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [logs]);
@@ -64,6 +74,7 @@ export function PanelDebug() {
       {/* Log output */}
       <div
         ref={scrollRef}
+        onScroll={handleScroll}
         className="flex-1 overflow-y-auto bg-slate-900 px-4 py-3 font-mono text-[12px] leading-[1.7] text-slate-200"
       >
         {logs.length === 0 ? (

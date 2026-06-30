@@ -18,6 +18,7 @@ export function PanelChat() {
     items,
     isLoading,
     currentResponse,
+    currentReasoning,
     currentToolCalls,
     loaded,
     contextUsage,
@@ -183,6 +184,7 @@ export function PanelChat() {
         items={items}
         currentToolCalls={currentToolCalls}
         streaming={currentResponse}
+        streamingReasoning={currentReasoning}
         loading={isLoading}
         className="flex-1 p-4"
         emptyHint={t("chat.empty")}

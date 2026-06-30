@@ -38,6 +38,7 @@ export interface ChatItem {
   id?: string; // stable per-item id for React keys + multi-select; backfilled on load for legacy items
   type: "user" | "assistant" | "tool" | "error" | "notification";
   content: string;
+  reasoning?: string; // assistant items: chain-of-thought from a reasoning model, shown in a collapsed block. Display-only — never sent back to the model.
   images?: string[]; // base64 data URLs rendered in the bubble — user pastes, or tool-produced images (e.g. screenshots) on assistant items
   toolCalls?: ToolCall[];
   ts?: number; // epoch ms; present for messages created after timestamps shipped
@@ -77,6 +78,7 @@ interface TaskCompletion {
 
 type StreamEvent =
   | { event: "chunk"; data: { text: string } }
+  | { event: "reasoning"; data: { text: string } }
   | { event: "toolStart"; data: { name: string; arguments: string } }
   | { event: "toolResult"; data: { name: string; result: string } }
   | { event: "image"; data: { dataUrl: string } }
@@ -201,6 +203,7 @@ export function useChat() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [currentResponse, setCurrentResponse] = useState("");
+  const [currentReasoning, setCurrentReasoning] = useState("");
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCall[]>([]);
   const [loaded, setLoaded] = useState(false);
 
@@ -436,10 +439,14 @@ export function useChat() {
       busyRef.current = true;
       setIsLoading(true);
       setCurrentResponse("");
+      setCurrentReasoning("");
       setCurrentToolCalls([]);
 
       const onEvent = new Channel<StreamEvent>();
       let accumulated = "";
+      // Chain-of-thought for the current round. Attached to the assistant item it
+      // precedes, then reset — so each round's thinking stays with its output.
+      let accumulatedReasoning = "";
       let toolCalls: ToolCall[] = [];
       let finalItems = baseItems;
 
@@ -467,6 +474,7 @@ export function useChat() {
         // no trailing assistant/error item (e.g. a turn that only ran tools).
         commit(extra ? [...finalItems, extra] : finalItems);
         setCurrentResponse("");
+        setCurrentReasoning("");
         setCurrentToolCalls([]);
         setIsLoading(false);
         busyRef.current = false;
@@ -480,14 +488,22 @@ export function useChat() {
           flushToolCalls();
           accumulated += event.data.text;
           setCurrentResponse(accumulated);
+        } else if (event.event === "reasoning") {
+          accumulatedReasoning += event.data.text;
+          setCurrentReasoning(accumulatedReasoning);
         } else if (event.event === "toolStart") {
-          // Preserve any assistant text streamed before the tool call.
-          if (accumulated.trim()) {
-            commit([...finalItems, { id: newItemId(), type: "assistant", content: accumulated, ts: Date.now() }]);
-            messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
+          // Preserve any assistant text/thinking streamed before the tool call.
+          if (accumulated.trim() || accumulatedReasoning.trim()) {
+            commit([...finalItems, { id: newItemId(), type: "assistant", content: accumulated, reasoning: accumulatedReasoning || undefined, ts: Date.now() }]);
+            // Only the visible answer goes back to the model — reasoning is display-only.
+            if (accumulated.trim()) {
+              messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
+            }
           }
           accumulated = "";
+          accumulatedReasoning = "";
           setCurrentResponse("");
+          setCurrentReasoning("");
           const tc: ToolCall = { name: event.data.name, arguments: event.data.arguments, isRunning: true };
           toolCalls = [...toolCalls, tc];
           setCurrentToolCalls([...toolCalls]);
@@ -516,9 +532,11 @@ export function useChat() {
           setUsage({ used: event.data.totalTokens, total: event.data.contextWindow });
         } else if (event.event === "done") {
           flushToolCalls();
-          if (accumulated.trim()) {
-            messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
-            finish({ id: newItemId(), type: "assistant", content: accumulated, ts: Date.now() });
+          if (accumulated.trim() || accumulatedReasoning.trim()) {
+            if (accumulated.trim()) {
+              messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
+            }
+            finish({ id: newItemId(), type: "assistant", content: accumulated, reasoning: accumulatedReasoning || undefined, ts: Date.now() });
           } else {
             finish();
           }
@@ -689,6 +707,7 @@ export function useChat() {
     items,
     isLoading,
     currentResponse,
+    currentReasoning,
     currentToolCalls,
     loaded,
     contextUsage,

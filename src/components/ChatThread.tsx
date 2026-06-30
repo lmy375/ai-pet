@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ChatItem, ToolCall } from "../hooks/useChat";
 import { MessageBubble } from "./ui/MessageBubble";
+import { ReasoningBlock } from "./ui/ReasoningBlock";
 import { CodeBlock } from "./ui/CodeBlock";
 import { ToolCallBlock } from "./panel/ToolCallBlock";
 import { ChevronRight, CheckIcon } from "./Icons";
@@ -11,6 +12,7 @@ interface Props {
   items: ChatItem[];
   currentToolCalls: ToolCall[];
   streaming: string; // in-progress assistant text (empty when idle)
+  streamingReasoning?: string; // in-progress chain-of-thought (empty when idle)
   loading: boolean;
   /** Extra classes for the scroll container (controls bg/padding/position). */
   className?: string;
@@ -56,12 +58,20 @@ function renderItem(item: ChatItem) {
   switch (item.type) {
     case "user":
       return <MessageBubble role="user" images={item.images}>{item.content}</MessageBubble>;
-    case "assistant":
+    case "assistant": {
       // Tool-produced images (e.g. screenshots) arrive as assistant items with
-      // empty text — still render the bubble so the image shows.
-      return item.content.trim() || item.images?.length ? (
-        <MessageBubble role="assistant" images={item.images}>{item.content}</MessageBubble>
-      ) : null;
+      // empty text — still render the bubble so the image shows. A reasoning-only
+      // item (model thought, then called a tool with no preamble) still renders
+      // so its thinking is viewable.
+      const hasReasoning = !!item.reasoning?.trim();
+      if (!item.content.trim() && !item.images?.length && !hasReasoning) return null;
+      return (
+        <MessageBubble role="assistant" images={item.images}>
+          {hasReasoning && <ReasoningBlock text={item.reasoning!} />}
+          {item.content}
+        </MessageBubble>
+      );
+    }
     case "tool":
       return (
         <div className="max-w-[85%]">
@@ -88,6 +98,7 @@ export function ChatThread({
   items,
   currentToolCalls,
   streaming,
+  streamingReasoning = "",
   loading,
   className = "",
   emptyHint,
@@ -99,9 +110,9 @@ export function ChatThread({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [items, streaming, currentToolCalls, loading]);
+  }, [items, streaming, streamingReasoning, currentToolCalls, loading]);
 
-  const showStreaming = streaming.trim().length > 0;
+  const showStreaming = streaming.trim().length > 0 || streamingReasoning.trim().length > 0;
   const isEmpty = items.length === 0 && !showStreaming && !loading;
   if (isEmpty && !emptyHint) return null;
 
@@ -154,8 +165,9 @@ export function ChatThread({
 
       {showStreaming && (
         <MessageBubble role="assistant">
+          {streamingReasoning.trim() && <ReasoningBlock text={streamingReasoning} streaming />}
           {streaming}
-          <span className="animate-blink">▌</span>
+          {streaming.trim() && <span className="animate-blink">▌</span>}
         </MessageBubble>
       )}
 

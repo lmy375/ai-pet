@@ -15,7 +15,7 @@ import { useI18n } from "./i18n";
 function App() {
   const { settings, loaded } = useSettings();
   const { t } = useI18n();
-  const { items, currentResponse, currentToolCalls, isLoading, sendMessage } = useChat();
+  const { items, currentResponse, currentReasoning, currentToolCalls, isLoading, sendMessage } = useChat();
   const { hidden, handleMouseEnter, pauseTimer, resumeTimer } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
@@ -155,6 +155,7 @@ function App() {
                 items={items}
                 currentToolCalls={currentToolCalls}
                 streaming={currentResponse}
+                streamingReasoning={currentReasoning}
                 loading={isLoading}
                 className="h-full rounded-2xl border border-sky-200/60 bg-white/45 px-3 py-3 backdrop-blur-md"
               />

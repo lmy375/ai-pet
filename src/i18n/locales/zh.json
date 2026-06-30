@@ -64,6 +64,7 @@
   "chat.context.tools": "可用工具",
   "chat.context.toolsEmpty": "暂无可用工具",
   "chat.empty": "开始聊天吧~",
+  "chat.reasoning": "思考过程",
   "chat.agent.switch": "切换 Agent",
   "chat.bgTaskDone": "后台任务完成：{label}",
   "chat.bgTaskDoneContent": "[后台任务完成] {label}：\n{result}",

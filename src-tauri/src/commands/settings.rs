@@ -175,6 +175,16 @@ pub fn active_agent_id() -> String {
         .unwrap_or_else(default_agent_id)
 }
 
+/// An agent's human-readable name by id, falling back to the default name when
+/// settings can't be read or the id is unknown. Used to tell the agent its own
+/// name in the system prompt.
+pub fn agent_name(id: &str) -> String {
+    get_settings()
+        .ok()
+        .and_then(|s| s.agent(id).map(|a| a.name.clone()))
+        .unwrap_or_else(default_agent_name)
+}
+
 fn default_gallery_interval() -> u32 {
     10
 }

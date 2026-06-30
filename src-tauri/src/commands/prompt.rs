@@ -85,6 +85,7 @@ fn path_string(path: Result<std::path::PathBuf, String>) -> String {
 /// any memory file take effect immediately. Scoped to a single agent.
 fn build_memory_prompt(agent_id: &str) -> String {
     let _ = memory::ensure_memory_files(agent_id);
+    let name = crate::commands::settings::agent_name(agent_id);
     let soul = memory::read_soul(agent_id);
     let user = memory::read_user(agent_id);
     let mem = memory::read_memory(agent_id);
@@ -94,7 +95,8 @@ fn build_memory_prompt(agent_id: &str) -> String {
     let hb_p = path_string(crate::commands::heartbeat_file::heartbeat_path(agent_id));
 
     format!(
-        "{soul}\n\n\
+        "你的名字叫「{name}」，这是主人为你取的名字。\n\n\
+{soul}\n\n\
 # 长期记忆\n\n\
 你拥有跨对话的长期记忆，保存在 `{dir}/` 目录下。以下三个常驻文件的当前内容已经提供给你；你可以用 read_file / edit_file / write_file 维护它们。\n\n\
 ## USER.md（关于主人）\n{user}\n\n\
