@@ -91,6 +91,7 @@ pub fn run() {
             commands::settings::get_config_raw,
             commands::settings::save_config_raw,
             commands::settings::set_active_agent,
+            commands::settings::set_agent_model,
             commands::memory::get_soul,
             commands::memory::save_soul,
             commands::memory::get_user,

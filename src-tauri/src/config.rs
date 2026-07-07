@@ -15,6 +15,13 @@ pub struct AiConfig {
     pub context_window: u32,
     /// Tavily API key for the `web_search` tool. Empty = web search disabled.
     pub search_api_key: String,
+    /// OpenAI-style `reasoning_effort` ("minimal"/"low"/"medium"/"high"). Empty
+    /// = omit the field so the model uses its own default.
+    pub reasoning_effort: String,
+    /// Whether to request Anthropic extended thinking (Claude models).
+    pub thinking_enabled: bool,
+    /// Token budget for extended thinking when `thinking_enabled`.
+    pub thinking_budget_tokens: u32,
 }
 
 impl AiConfig {
@@ -50,6 +57,9 @@ impl AiConfig {
             model: agent.model.clone(),
             context_window: agent.context_window,
             search_api_key: search_api_key.to_string(),
+            reasoning_effort: agent.reasoning_effort.clone(),
+            thinking_enabled: agent.thinking_enabled,
+            thinking_budget_tokens: agent.thinking_budget_tokens,
         })
     }
 }

@@ -77,6 +77,23 @@ pub struct AgentConfig {
     /// ring. Not exposed by the OpenAI API, so it's user-configured.
     #[serde(default = "default_context_window")]
     pub context_window: u32,
+    /// OpenAI-style reasoning control (`reasoning_effort`) sent with each chat
+    /// request. One of "minimal" / "low" / "medium" / "high"; empty = omit the
+    /// field entirely (let the model use its own default). Applies to GPT-5.x
+    /// and other OpenAI-compatible reasoning models.
+    #[serde(default)]
+    pub reasoning_effort: String,
+    /// Anthropic-style extended thinking. When true, each chat request carries
+    /// `thinking: {type: "enabled", budget_tokens: <thinking_budget_tokens>}`.
+    /// Claude models keep thinking OFF unless this is set; GPT models ignore it
+    /// (they use `reasoning_effort` instead).
+    #[serde(default)]
+    pub thinking_enabled: bool,
+    /// Token budget for Anthropic extended thinking (only used when
+    /// `thinking_enabled`). Anthropic requires this be >= 1024 and strictly less
+    /// than the request's max_tokens.
+    #[serde(default = "default_thinking_budget_tokens")]
+    pub thinking_budget_tokens: u32,
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
@@ -104,6 +121,9 @@ impl Default for AgentConfig {
             api_key: String::new(),
             model: default_model(),
             context_window: default_context_window(),
+            reasoning_effort: String::new(),
+            thinking_enabled: false,
+            thinking_budget_tokens: default_thinking_budget_tokens(),
             mcp_servers: HashMap::new(),
             telegram: TelegramConfig::default(),
             heartbeat_enabled: false,
@@ -207,6 +227,10 @@ fn default_api_base() -> String {
 
 fn default_context_window() -> u32 {
     128000
+}
+
+fn default_thinking_budget_tokens() -> u32 {
+    1024
 }
 
 fn default_model() -> String {
@@ -399,6 +423,20 @@ pub fn set_active_agent(app: tauri::AppHandle, id: String) -> Result<(), String>
         return Err(format!("Unknown agent: {}", id));
     }
     settings.active_agent = id;
+    write_settings(&app, &settings)
+}
+
+/// Change one agent's `model` without rewriting the whole settings object — used
+/// by the in-chat model switcher. Emits `settings-changed` so both windows reload.
+#[tauri::command]
+pub fn set_agent_model(app: tauri::AppHandle, id: String, model: String) -> Result<(), String> {
+    let mut settings = get_settings()?;
+    let agent = settings
+        .agents
+        .iter_mut()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("Unknown agent: {}", id))?;
+    agent.model = model;
     write_settings(&app, &settings)
 }
 

@@ -32,6 +32,7 @@ interface LlmLogEntry {
   };
   response: {
     text: string;
+    reasoning?: string | null;
     tool_calls: ToolCall[];
   };
 }
@@ -390,6 +391,12 @@ export function LlmLogView() {
                     </DetailSection>
 
                     <DetailSection icon={<ArrowDownIcon className="h-3.5 w-3.5" />} title={t("llm.section.response")}>
+                      {entry.response.reasoning?.trim() && (
+                        <div className="mb-1.5">
+                          <Badge color="slate">{t("chat.reasoning")}</Badge>
+                          <pre className={preClass}>{entry.response.reasoning}</pre>
+                        </div>
+                      )}
                       {entry.response.text && (
                         <div className="mb-1.5">
                           <Badge color="purple">assistant</Badge>

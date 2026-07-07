@@ -46,6 +46,7 @@ pub fn write_llm_log(
     round: usize,
     request: &serde_json::Value,
     response_text: &str,
+    reasoning: &str,
     tool_calls: &[serde_json::Value],
     request_time: &str,
     first_token_time: Option<&str>,
@@ -64,6 +65,9 @@ pub fn write_llm_log(
         "request": request,
         "response": {
             "text": response_text,
+            // Chain-of-thought from a reasoning model; omitted from JSON when empty
+            // so non-reasoning models don't clutter the log with `"reasoning": ""`.
+            "reasoning": if reasoning.is_empty() { serde_json::Value::Null } else { serde_json::json!(reasoning) },
             "tool_calls": tool_calls,
         }
     });

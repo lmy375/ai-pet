@@ -9,6 +9,7 @@ import { IconActionButton } from "../ui/IconButton";
 import { LoadingScreen } from "../ui/feedback";
 import { ExpandChevron, PlusIcon, PencilIcon, TrashIcon, CheckIcon } from "../Icons";
 import { AgentSwitcher } from "../AgentSwitcher";
+import { ModelSwitcher } from "../ModelSwitcher";
 import { useSettings } from "../../hooks/useSettings";
 import { useI18n } from "../../i18n";
 
@@ -99,7 +100,6 @@ export function PanelChat() {
     <div className="flex h-full flex-col bg-slate-100">
       {/* Session header bar */}
       <div className="flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white px-4 py-2">
-        <AgentSwitcher />
         <button
           className="flex min-w-0 flex-1 items-center gap-1.5"
           onClick={() => setShowSessionList(!showSessionList)}
@@ -110,6 +110,8 @@ export function PanelChat() {
         {contextUsage && contextUsage.total > 0 && (
           <ContextUsageRing used={contextUsage.used} total={contextUsage.total} />
         )}
+        <AgentSwitcher />
+        <ModelSwitcher className="max-w-[30%]" />
         {items.length > 0 && !selectionMode && (
           <Button variant="ghost" size="sm" onClick={() => setSelectionMode(true)} title={t("chat.select.enter")}>
             <CheckIcon className="h-4 w-4" />

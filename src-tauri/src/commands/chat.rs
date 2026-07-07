@@ -467,13 +467,29 @@ pub async fn run_agent_loop(
     loop {
         ctx.log(&format!("LLM round {} ({} messages)", round, conv_messages.len()));
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": config.model,
             "stream": true,
             "stream_options": { "include_usage": true },
             "messages": conv_messages,
             "tools": tools,
         });
+
+        // Reasoning controls. The two provider families use different knobs and
+        // the litellm proxy passes each through to the matching backend:
+        //   - OpenAI (GPT-5.x, o-series): `reasoning_effort`
+        //   - Anthropic (Claude): `thinking: {type:"enabled", budget_tokens}`
+        // Both are opt-in via agent config; when unset we send neither so each
+        // model falls back to its own default behavior.
+        if !config.reasoning_effort.trim().is_empty() {
+            body["reasoning_effort"] = serde_json::json!(config.reasoning_effort.trim());
+        }
+        if config.thinking_enabled {
+            body["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": config.thinking_budget_tokens,
+            });
+        }
 
         ctx.log(&format!("POST {}", url));
         let result =
@@ -495,6 +511,7 @@ pub async fn run_agent_loop(
             round,
             &body,
             &result.text,
+            &result.reasoning,
             &result.tool_calls,
             &result.request_time,
             result.first_token_time.as_deref(),

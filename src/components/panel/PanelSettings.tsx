@@ -553,6 +553,43 @@ export function PanelSettings() {
               placeholder={String(defaultAgent().context_window)}
             />
             <HintText>{t("settings.llm.contextWindowNote")}</HintText>
+
+            <Label className="mt-3">{t("settings.llm.reasoningEffort")}</Label>
+            <Select
+              value={agent.reasoning_effort}
+              onChange={(e) => commitAgent({ reasoning_effort: e.target.value })}
+            >
+              <option value="">{t("settings.llm.reasoningEffortOff")}</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </Select>
+            <HintText>{t("settings.llm.reasoningEffortNote")}</HintText>
+
+            <label className="mb-2 mt-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={agent.thinking_enabled}
+                onChange={(e) => commitAgent({ thinking_enabled: e.target.checked })}
+              />
+              {t("settings.llm.thinkingEnable")}
+            </label>
+            {agent.thinking_enabled && (
+              <>
+                <Label>{t("settings.llm.thinkingBudget")}</Label>
+                <NumberField
+                  value={agent.thinking_budget_tokens}
+                  min={1024}
+                  fallback={1024}
+                  onChange={(v) => updateAgent({ thinking_budget_tokens: v })}
+                  onCommit={(v) => commitAgent({ thinking_budget_tokens: v })}
+                  placeholder="1024"
+                />
+              </>
+            )}
+            <HintText>{t("settings.llm.thinkingNote")}</HintText>
           </Card>
 
           {/* MCP Servers */}
