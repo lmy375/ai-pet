@@ -28,7 +28,7 @@ pub fn active_window_label(app: &AppHandle) -> String {
 
 // --- Pet window position persistence (stored in config.yaml) ---
 
-use crate::commands::settings::{get_settings, set_window_position, WindowPosition};
+use pet_core::settings::{get_settings, set_window_position, WindowPosition};
 
 /// Persist the pet window's top-left position so it reopens where the user left
 /// it. Called (debounced) from the frontend whenever the user moves the window.

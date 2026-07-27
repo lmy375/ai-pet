@@ -5,7 +5,7 @@
 //! Calling it appends a pet message to the currently-active session on disk,
 //! fires a native system notification, and tells the active window to refresh.
 
-use crate::commands::session;
+use crate::session;
 use crate::tools::{tool_error, Tool, ToolContext};
 
 pub struct ChatTool;
@@ -45,8 +45,8 @@ async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
         return tool_error("missing 'message' parameter");
     }
 
-    let app = match &ctx.app {
-        Some(a) => a.clone(),
+    let hook = match &ctx.chat_hook {
+        Some(h) => h.clone(),
         None => return tool_error("chat tool unavailable in this context"),
     };
 
@@ -76,25 +76,9 @@ async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
         return tool_error(format!("failed to save session: {}", e));
     }
 
-    // Native system notification so the owner sees it even when the app is in
-    // the background.
-    {
-        use tauri_plugin_notification::NotificationExt;
-        if let Err(e) = app.notification().builder().title("宠物").body(&message).show() {
-            ctx.log(&format!("chat: failed to show notification: {}", e));
-        }
-    }
-
-    // Tell the active window to reload the conversation so the message appears
-    // immediately (routed like background-finished — to whichever window the
-    // owner is looking at; the other picks it up on next focus).
-    {
-        use tauri::Emitter;
-        let label = crate::commands::window::active_window_label(&app);
-        if let Err(e) = app.emit_to(&label, "chat-inserted", serde_json::json!({ "sessionId": id })) {
-            ctx.log(&format!("chat: failed to emit chat-inserted: {}", e));
-        }
-    }
+    // UI side effects (system notification + tell the active view to reload)
+    // are the interface layer's job — see `ChatHook`.
+    hook.on_chat_inserted(&id, &message);
 
     r#"{"status": "sent"}"#.to_string()
 }

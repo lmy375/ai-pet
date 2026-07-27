@@ -6,7 +6,6 @@ pub mod heartbeat;
 pub mod heartbeat_file;
 pub mod mcp;
 pub mod memory;
-pub mod prompt;
 pub mod session;
 pub mod settings;
 pub mod shell;

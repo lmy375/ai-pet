@@ -1,9 +1,17 @@
 use std::sync::Arc;
 
-use crate::commands::debug::{write_log, LogStore};
-use crate::commands::shell::{ShellStore, TaskNotifier};
 use crate::config::AiConfig;
+use crate::logging::{write_log, LogStore};
 use crate::mcp::McpManagerStore;
+use crate::shell::{ShellStore, TaskNotifier};
+
+/// UI side effects of the heartbeat-only `chat` tool, performed AFTER the core
+/// has written the pet's message into the active session on disk: fire a system
+/// notification and tell the active view to reload the conversation. Implemented
+/// by the Tauri layer; `None` for interfaces without a resident UI.
+pub trait ChatHook: Send + Sync {
+    fn on_chat_inserted(&self, session_id: &str, message: &str);
+}
 
 /// Shared context passed to all tools during execution.
 ///
@@ -30,17 +38,16 @@ pub struct ToolContext {
     /// command) — otherwise they'd collapse into, or evict, the parent's row.
     pub log_session: String,
     pub notifier: Option<Arc<dyn TaskNotifier>>,
-    /// App handle, present for UI-backed callers. The `chat` tool needs it to
-    /// write the main session, fire a system notification and tell the active
-    /// window to refresh. `None` for non-UI callers (e.g. Telegram).
-    pub app: Option<tauri::AppHandle>,
+    /// UI hook for the `chat` tool (notification + conversation refresh),
+    /// present only for UI-backed heartbeat runs. `None` for non-UI callers.
+    pub chat_hook: Option<Arc<dyn ChatHook>>,
     /// True only for scheduled heartbeat sessions. Gates the `chat` tool (offered
     /// only to heartbeats) — see `ToolRegistry::new`.
     pub is_heartbeat: bool,
-    /// True only for group-chat agent runs. Gates the `GroupChat` tool (offered
-    /// only in the group page) — see `ToolRegistry::new`. The group orchestrator
-    /// sets it on the context after construction.
-    pub is_group: bool,
+    /// The group room this run belongs to, set only for group-chat agent runs.
+    /// Gates the `GroupChat` tool (see `ToolRegistry::new`) and gives it the
+    /// room to post into. The group orchestrator sets it after construction.
+    pub group: Option<Arc<crate::group::GroupRuntime>>,
     /// Images a tool wants the model to actually SEE. A tool's String return is
     /// appended as a `tool` role message, which can't carry an image, so tools
     /// like `screenshot` push a data URL here instead; the agent loop drains this
@@ -50,6 +57,7 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         log_store: LogStore,
         shell_store: ShellStore,
@@ -57,7 +65,7 @@ impl ToolContext {
         mcp_store: McpManagerStore,
         session_id: String,
         notifier: Option<Arc<dyn TaskNotifier>>,
-        app: Option<tauri::AppHandle>,
+        chat_hook: Option<Arc<dyn ChatHook>>,
         is_heartbeat: bool,
     ) -> Self {
         Self {
@@ -69,34 +77,11 @@ impl ToolContext {
             log_session: session_id.clone(),
             session_id,
             notifier,
-            app,
+            chat_hook,
             is_heartbeat,
-            is_group: false,
+            group: None,
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
-    }
-
-    /// Like `new`, but clones the shared stores out of Tauri-managed `State`
-    /// guards (the UI chat command's path). Not a heartbeat.
-    pub fn from_states(
-        log_store: &tauri::State<'_, LogStore>,
-        shell_store: &tauri::State<'_, ShellStore>,
-        config: AiConfig,
-        mcp_store: McpManagerStore,
-        session_id: String,
-        notifier: Option<Arc<dyn TaskNotifier>>,
-        app: Option<tauri::AppHandle>,
-    ) -> Self {
-        Self::new(
-            LogStore(log_store.0.clone()),
-            ShellStore(shell_store.0.clone()),
-            config,
-            mcp_store,
-            session_id,
-            notifier,
-            app,
-            false,
-        )
     }
 
     /// A context for a nested sub-agent: same stores/config/session, one level
@@ -116,11 +101,11 @@ impl ToolContext {
             // merges with the parent's LLM-log row.
             log_session: format!("{}:sub:{}", self.session_id, uuid::Uuid::new_v4()),
             notifier: None,
-            // Sub-agents never speak to the owner directly; drop the app handle
+            // Sub-agents never speak to the owner directly; drop the chat hook
             // and the heartbeat flag so the `chat` tool is unavailable to them.
-            app: None,
+            chat_hook: None,
             is_heartbeat: false,
-            is_group: false,
+            group: None,
             // Fresh queue: a sub-agent's screenshots are consumed by its own loop.
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }

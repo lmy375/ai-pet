@@ -1,4 +1,4 @@
-use crate::commands::settings::{AgentConfig, McpServerConfig};
+use crate::settings::{AgentConfig, McpServerConfig};
 use rmcp::model::{CallToolRequestParams, Tool as McpTool};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::ServiceExt;

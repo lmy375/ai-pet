@@ -9,6 +9,6 @@ pub mod file_tools;
 pub mod screenshot_tool;
 pub mod web_search_tool;
 
-pub use context::ToolContext;
+pub use context::{ChatHook, ToolContext};
 pub use registry::ToolRegistry;
 pub use tool::{parse_args, required_str, tool_error, Tool};

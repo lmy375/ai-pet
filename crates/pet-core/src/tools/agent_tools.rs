@@ -1,6 +1,6 @@
-use crate::commands::chat::{run_agent_loop, ImageCollectingSink};
-use crate::commands::prompt;
-use crate::commands::shell::{run_or_background, TaskKind};
+use crate::chat::{run_agent_loop, ImageCollectingSink};
+use crate::prompt;
+use crate::shell::{run_or_background, TaskKind};
 use crate::tools::{required_str, tool_error, Tool, ToolContext};
 
 /// Maximum sub-agent nesting. 1 means the pet can spawn a sub-agent, but a

@@ -9,7 +9,7 @@
 
 use serde_json::{json, Value};
 
-use crate::commands::memory;
+use crate::memory;
 
 /// Tool usage best practices, injected as a second system message.
 const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
@@ -85,14 +85,14 @@ fn path_string(path: Result<std::path::PathBuf, String>) -> String {
 /// any memory file take effect immediately. Scoped to a single agent.
 fn build_memory_prompt(agent_id: &str) -> String {
     let _ = memory::ensure_memory_files(agent_id);
-    let name = crate::commands::settings::agent_name(agent_id);
+    let name = crate::settings::agent_name(agent_id);
     let soul = memory::read_soul(agent_id);
     let user = memory::read_user(agent_id);
     let mem = memory::read_memory(agent_id);
     let dir = path_string(memory::memory_dir(agent_id));
     let user_p = path_string(memory::user_path(agent_id));
     let mem_p = path_string(memory::memory_path(agent_id));
-    let hb_p = path_string(crate::commands::heartbeat_file::heartbeat_path(agent_id));
+    let hb_p = path_string(crate::heartbeat_file::heartbeat_path(agent_id));
 
     format!(
         "你的名字叫「{name}」，这是主人为你取的名字。\n\n\
@@ -160,7 +160,7 @@ pub fn prepend_heartbeat_system_messages(
     agent_id: &str,
     interval_label: &str,
 ) {
-    use crate::commands::heartbeat_file;
+    use crate::heartbeat_file;
     let _ = heartbeat_file::ensure_heartbeat_file(agent_id);
     let hb = heartbeat_file::read_heartbeat(agent_id);
     let hb_path = path_string(heartbeat_file::heartbeat_path(agent_id));

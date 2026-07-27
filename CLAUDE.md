@@ -4,6 +4,18 @@
 - Solo project: commit directly on `main` and `git push` — do NOT create feature
   branches or PRs. Commit/push only when asked.
 
+## Crate layout (one core, two interfaces)
+- Cargo workspace: `crates/pet-core` (ALL engine logic: chat pipeline, tools, MCP,
+  sessions/settings/memory, group orchestrator) + two interfaces that must stay thin:
+  `src-tauri` (GUI) and `crates/pet-cli` (binary `pet-cli`; single-agent chat,
+  `/agent` switching, `/group` — config/heartbeat/Telegram stay GUI-only).
+- Interfaces plug in via core traits: `ChatEventSink` (stream), `TaskNotifier`
+  (background-task completions), `GroupEvents` (group activity), `ChatHook`
+  (heartbeat `chat` tool UI side effects). New engine features go in pet-core behind
+  these traits — never `use tauri` in pet-core.
+- CLI shares the GUI's config.yaml + session files and follows the same
+  reload-before-send rule, so both can run at once (see Windows below).
+
 ## Windows
 - Pet window label = `main` (tauri.conf.json), Panel Chat window label = `panel` (commands/window.rs).
 - Both windows render `useChat` and share ONE conversation, but each holds its own in-memory copy

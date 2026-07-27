@@ -1,0 +1,23 @@
+[package]
+name = "pet-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared core (chat pipeline, tools, MCP, sessions, group chat) behind the pet GUI and CLI"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+serde_yaml = "0.9"
+dirs = "6"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+rmcp = { version = "1.2", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+base64 = "0.22"

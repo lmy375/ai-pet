@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 
-use crate::commands::shell::{
+use crate::shell::{
     cleanup_old_tasks, read_with_truncation, save_task_history, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS,
     SHELL_DIR,
 };
@@ -149,7 +149,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         cleanup_old_tasks(&mut map);
         map.insert(
             task_id.clone(),
-            crate::commands::shell::ShellTask::new_bash(
+            crate::shell::ShellTask::new_bash(
                 pid,
                 stdout_path.clone(),
                 stderr_path.clone(),
@@ -179,7 +179,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         tokio::spawn(async move {
             let exit = child.wait().await;
             let code = exit.ok().and_then(|s| s.code());
-            crate::commands::shell::mark_finished_and_notify(
+            crate::shell::mark_finished_and_notify(
                 &store_bg,
                 &notifier_bg,
                 &tid_bg,
@@ -250,7 +250,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
             tokio::spawn(async move {
                 let exit = child.wait().await;
                 let code = exit.ok().and_then(|s| s.code());
-                crate::commands::shell::mark_finished_and_notify(
+                crate::shell::mark_finished_and_notify(
                     &store_bg,
                     &notifier_bg,
                     &tid_bg,
@@ -321,7 +321,7 @@ async fn check_shell_status_impl(arguments: &str, ctx: &ToolContext) -> String {
     match map.get(&task_id) {
         // Works for both bash (reads its output files) and sub-agent (stored result).
         Some(task) => {
-            serde_json::to_string(&crate::commands::shell::build_shell_result(&task_id, task))
+            serde_json::to_string(&crate::shell::build_shell_result(&task_id, task))
                 .unwrap_or_else(|_| tool_error("failed to serialize status"))
         }
         None => tool_error(format!("task not found: {}", task_id)),
@@ -402,7 +402,7 @@ async fn write_stdin_impl(arguments: &str, ctx: &ToolContext) -> String {
     let map = ctx.shell_store.0.lock().unwrap();
     match map.get(&task_id) {
         Some(task) => {
-            let (status, stdout) = crate::commands::shell::task_status_and_stdout(&task_id, task);
+            let (status, stdout) = crate::shell::task_status_and_stdout(&task_id, task);
             serde_json::json!({
                 "task_id": task_id,
                 "status": status,

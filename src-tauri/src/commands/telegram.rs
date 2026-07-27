@@ -1,10 +1,10 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::commands::debug::LogStore;
-use crate::commands::settings::get_settings;
-use crate::commands::shell::ShellStore;
-use crate::mcp::McpManagerStore;
+use pet_core::logging::LogStore;
+use pet_core::settings::get_settings;
+use pet_core::shell::ShellStore;
+use pet_core::mcp::McpManagerStore;
 use crate::telegram::bot::TelegramBot;
 use crate::telegram::TelegramStore;
 

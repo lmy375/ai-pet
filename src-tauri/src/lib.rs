@@ -1,12 +1,8 @@
 mod commands;
-mod common;
-mod config;
-mod mcp;
 mod telegram;
-mod tools;
 
-use commands::debug::{log_dir, LogStore};
-use commands::shell::ShellStore;
+use pet_core::logging::{log_dir, LogStore};
+use pet_core::shell::ShellStore;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -17,10 +13,10 @@ pub fn run() {
 
     // Ensure each configured agent's memory dir + mandatory files exist
     // (`memory/<id>/{SOUL,USER,MEMORY,HEARTBEAT}.md`).
-    if let Ok(settings) = commands::settings::get_settings() {
+    if let Ok(settings) = pet_core::settings::get_settings() {
         for agent in &settings.agents {
-            let _ = commands::memory::ensure_memory_files(&agent.id);
-            let _ = commands::heartbeat_file::ensure_heartbeat_file(&agent.id);
+            let _ = pet_core::memory::ensure_memory_files(&agent.id);
+            let _ = pet_core::heartbeat_file::ensure_heartbeat_file(&agent.id);
         }
     }
 
@@ -30,24 +26,32 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
         .manage(ShellStore(Arc::new(std::sync::Mutex::new(
-            commands::shell::load_persisted_tasks(),
+            pet_core::shell::load_persisted_tasks(),
         ))))
-        .manage(mcp::new_mcp_store())
+        .manage(pet_core::mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
-        .manage(commands::group::new_group_store())
         .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))
         .setup(|app| {
             // Restore the pet window to its last position (and show it — it starts
             // hidden so it's positioned before appearing, avoiding a center flash).
             commands::window::restore_main_window(app.handle());
 
+            // The group runtime needs an event sink bound to the app handle, so
+            // it's built (and managed) here rather than before the builder.
+            app.manage(commands::group::new_group_store(
+                app.handle().clone(),
+                app.state::<pet_core::mcp::McpManagerStore>().inner().clone(),
+                app.state::<LogStore>().inner().clone(),
+                app.state::<ShellStore>().inner().clone(),
+            ));
+
             // Initialize MCP servers from config on app start
-            let mcp_store = app.state::<mcp::McpManagerStore>().inner().clone();
+            let mcp_store = app.state::<pet_core::mcp::McpManagerStore>().inner().clone();
             let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
             let log_store = app.state::<LogStore>().inner().clone();
             let shell_store = app.state::<ShellStore>().inner().clone();
             tauri::async_runtime::spawn(async move {
-                let settings = commands::settings::get_settings().unwrap_or_default();
+                let settings = pet_core::settings::get_settings().unwrap_or_default();
 
                 // Initialize each agent's MCP servers into its own manager.
                 {
@@ -56,7 +60,7 @@ pub fn run() {
                         if agent.mcp_servers.is_empty() {
                             continue;
                         }
-                        let manager = mcp::McpManager::start_from_agent(agent).await;
+                        let manager = pet_core::mcp::McpManager::start_from_agent(agent).await;
                         managers.insert(agent.id.clone(), manager);
                     }
                     if !managers.is_empty() {
@@ -80,7 +84,7 @@ pub fn run() {
                 app.handle().clone(),
                 app.state::<LogStore>().inner().clone(),
                 app.state::<ShellStore>().inner().clone(),
-                app.state::<mcp::McpManagerStore>().inner().clone(),
+                app.state::<pet_core::mcp::McpManagerStore>().inner().clone(),
             );
             Ok(())
         })

@@ -6,14 +6,14 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, InputFile, Me};
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::commands::chat::{ChatMessage, ImageCollectingSink, run_chat_pipeline};
-use crate::commands::debug::LogStore;
-use crate::commands::session;
-use crate::commands::settings::TelegramConfig;
-use crate::commands::shell::ShellStore;
-use crate::config::AiConfig;
-use crate::mcp::McpManagerStore;
-use crate::tools::ToolContext;
+use pet_core::chat::{run_chat_pipeline, ChatMessage, ImageCollectingSink};
+use pet_core::logging::LogStore;
+use pet_core::session;
+use pet_core::settings::TelegramConfig;
+use pet_core::shell::ShellStore;
+use pet_core::config::AiConfig;
+use pet_core::mcp::McpManagerStore;
+use pet_core::tools::ToolContext;
 
 /// A running Telegram bot instance.
 pub struct TelegramBot {
@@ -153,7 +153,7 @@ async fn handle_message(
             match download_photo_as_data_url(&bot, &largest.file.id).await {
                 Ok(url) => image_urls.push(url),
                 Err(e) => {
-                    crate::commands::debug::write_log(
+                    pet_core::logging::write_log(
                         &state.log_store.0,
                         &format!("Telegram: photo download failed: {}", e),
                     );
@@ -223,7 +223,7 @@ async fn handle_message(
     // `screenshot`) so we can send them back as photos after the text reply.
     let sink = ImageCollectingSink::new();
     // Resolve this bot's agent config fresh each message so edits take effect.
-    let agent_config = crate::commands::settings::get_settings()
+    let agent_config = pet_core::settings::get_settings()
         .ok()
         .and_then(|s| s.agent(&state.agent_id).cloned());
     let resolved = match agent_config {
@@ -279,7 +279,7 @@ async fn handle_message(
             id: state.session_id.clone(),
             title,
             created_at: String::new(), // preserved by backend
-            updated_at: crate::common::iso_now(),
+            updated_at: pet_core::common::iso_now(),
             messages: session_msgs.clone(),
             items: items.clone(),
             // Telegram sessions aren't shown by the panel's context ring.
@@ -309,7 +309,7 @@ async fn handle_message(
                 bot.send_photo(msg.chat.id, InputFile::memory(bytes)).await?;
             }
             None => {
-                crate::commands::debug::write_log(
+                pet_core::logging::write_log(
                     &state.log_store.0,
                     "Telegram: failed to decode outgoing image data URL",
                 );

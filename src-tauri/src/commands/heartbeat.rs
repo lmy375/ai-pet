@@ -7,15 +7,15 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::commands::chat::{run_agent_loop, ImageCollectingSink};
-use crate::commands::debug::LogStore;
-use crate::commands::settings::{get_settings, AgentConfig};
-use crate::commands::shell::{run_or_background, ShellStore, TaskKind};
-use crate::commands::prompt;
-use crate::commands::session;
-use crate::config::AiConfig;
-use crate::mcp::McpManagerStore;
-use crate::tools::ToolContext;
+use pet_core::chat::{run_agent_loop, ImageCollectingSink};
+use pet_core::logging::LogStore;
+use pet_core::settings::{get_settings, AgentConfig};
+use pet_core::shell::{run_or_background, ShellStore, TaskKind};
+use pet_core::prompt;
+use pet_core::session;
+use pet_core::config::AiConfig;
+use pet_core::mcp::McpManagerStore;
+use pet_core::tools::ToolContext;
 
 /// How long a heartbeat session may run before it auto-converts to a background
 /// task (it's launched in the background anyway, so this is mostly a formality).
@@ -123,8 +123,10 @@ async fn run_one_heartbeat(
         false,
     );
 
-    // Work context (owned, moved into the future): carries the app handle and the
-    // heartbeat flag so the `chat` tool is available and can reach the owner.
+    // Work context (owned, moved into the future): carries the UI chat hook and
+    // the heartbeat flag so the `chat` tool is available and can reach the owner.
+    let chat_hook: std::sync::Arc<dyn pet_core::tools::ChatHook> =
+        std::sync::Arc::new(crate::commands::chat::TauriChatHook { app: app.clone() });
     let mut work_ctx = ToolContext::new(
         LogStore(log_store.0.clone()),
         ShellStore(shell_store.0.clone()),
@@ -132,7 +134,7 @@ async fn run_one_heartbeat(
         mcp_store.clone(),
         "heartbeat".to_string(),
         None,
-        Some(app.clone()),
+        Some(chat_hook),
         true,
     );
     // Each heartbeat is an independent conversation, not an extension of the last.
@@ -147,7 +149,7 @@ async fn run_one_heartbeat(
         let sink = ImageCollectingSink::new();
         match run_agent_loop(conv, &sink, &work_config, &work_mcp, &work_ctx).await {
             Ok((text, _conv)) => (Some(0), text),
-            Err(e) => (Some(1), crate::tools::tool_error(format!("heartbeat failed: {}", e))),
+            Err(e) => (Some(1), pet_core::tools::tool_error(format!("heartbeat failed: {}", e))),
         }
     };
 

@@ -1,4 +1,4 @@
-use crate::commands::settings::{get_settings, AgentConfig};
+use crate::settings::{get_settings, AgentConfig};
 
 #[derive(Clone)]
 pub struct AiConfig {

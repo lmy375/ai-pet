@@ -1,7 +1,7 @@
-use crate::commands::settings::get_settings;
-use crate::mcp::McpManager;
-use crate::mcp::{McpManagerStore, McpServerStatus};
-use crate::tools::ToolRegistry;
+use pet_core::settings::get_settings;
+use pet_core::mcp::McpManager;
+use pet_core::mcp::{McpManagerStore, McpServerStatus};
+use pet_core::tools::ToolRegistry;
 use serde::Serialize;
 use tauri::State;
 
