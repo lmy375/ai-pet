@@ -7,8 +7,9 @@ It can chat, see your screen, run shell commands, read and drive your macOS
 apps, talk to you over Telegram, and act on its own via a scheduled heartbeat —
 all while keeping a persistent long‑term memory of you.
 
-Built with Tauri 2 + React 19 + TypeScript on the front end, and Rust on the
-back end.
+One Rust engine crate, two interfaces: a Tauri 2 + React desktop GUI, and a
+ratatui terminal UI (`pet-cli`) that shares the same config, sessions and
+memory — see [docs/architecture.md](docs/architecture.md).
 
 ## Features
 
@@ -16,6 +17,12 @@ back end.
   to the screen edge, and can be pinned on top.
 - **Chat in two windows** — the pet itself and a panel window share one
   conversation; talk to whichever is in front.
+- **Multiple agents & group chat** — configure several agents (each with its
+  own model, persona/memory, MCP set), switch who answers, or put them in one
+  room where they react to you and to each other concurrently.
+- **Terminal UI** — `pet-cli` runs the same engine in your terminal: markdown
+  rendering, collapsible tool calls, a `/` command palette with interactive
+  pickers, and the group room. See [docs/cli.md](docs/cli.md).
 - **Any OpenAI‑compatible model** — point `api_base` at OpenAI, a local server,
   or a proxy (e.g. litellm). Streaming responses with a tool‑calling agent loop.
 - **Vision** — paste images into the chat, or let the pet take a screenshot
@@ -43,8 +50,10 @@ back end.
 
 ## Tech stack
 
-Tauri 2 · React 19 · TypeScript · Vite · TailwindCSS 4 · PIXI.js 7 +
-pixi-live2d-display · Rust (teloxide, reqwest, rmcp).
+Cargo workspace: `crates/pet-core` (engine) · `src-tauri` (GUI) ·
+`crates/pet-cli` (TUI). Tauri 2 · React 19 · TypeScript · Vite · TailwindCSS 4 ·
+PIXI.js 7 + pixi-live2d-display · Rust (ratatui, teloxide, reqwest, rmcp,
+pulldown-cmark).
 
 ## Prerequisites
 
@@ -59,8 +68,10 @@ pixi-live2d-display · Rust (teloxide, reqwest, rmcp).
 
 ```bash
 pnpm install
-pnpm tauri dev          # run in development
+pnpm tauri dev          # run the desktop GUI in development
 pnpm tauri build        # build a release bundle
+
+cargo run -p pet-cli    # terminal UI (shares the GUI's config & sessions)
 ```
 
 On first launch the pet window appears. Open the panel, go to **Settings**, and
@@ -70,6 +81,8 @@ field and where the data lives.
 
 ## Documentation
 
+- [Architecture](docs/architecture.md) — one engine crate, two interfaces
+- [CLI](docs/cli.md) — `pet-cli` commands, keys, and group mode
 - [Configuration reference](docs/configuration.md) — `config.yaml` fields and file locations
 - [macOS automation](docs/macos-automation.md) — reading/controlling apps + permissions
 - [Telegram bot](docs/telegram.md) — setup and image support
@@ -84,12 +97,17 @@ field and where the data lives.
 执行 shell 命令、读取并操作你的 macOS 应用、通过 Telegram 和你对话，还能靠定时心跳
 自己主动行动 —— 同时对你保有一份跨对话的长期记忆。
 
-前端 Tauri 2 + React 19 + TypeScript，后端 Rust。
+一套 Rust 引擎，两套界面：Tauri 2 + React 桌面 GUI，以及共享同一份配置/会话/记忆的
+ratatui 终端界面（`pet-cli`）—— 见 [docs/architecture.md](docs/architecture.md)。
 
 ## 功能
 
 - **Live2D 宠物** —— 浮在桌面上的动画角色，会自动隐藏到屏幕边缘，可一键置顶。
 - **双窗口聊天** —— 宠物本体和面板窗口共享同一段对话，哪个在前就跟哪个说。
+- **多 Agent 与群聊** —— 可配置多个 Agent（各自的模型、人设/记忆、MCP 工具集），
+  随时切换应答者，或拉进同一个群里，让它们并发地回应你和彼此。
+- **终端界面** —— `pet-cli` 在终端里跑同一套引擎：Markdown 渲染、可折叠的工具调用、
+  `/` 命令面板 + 交互式选择浮层、群聊模式。见 [docs/cli.md](docs/cli.md)。
 - **任意 OpenAI 兼容模型** —— `api_base` 可指向 OpenAI、本地服务或代理（如 litellm）。
   流式输出 + 工具调用 agent 循环。
 - **视觉** —— 可往聊天里粘贴图片，或让宠物截图（整屏，或某个 App 的单个窗口）来看。
@@ -111,8 +129,10 @@ field and where the data lives.
 
 ## 技术栈
 
-Tauri 2 · React 19 · TypeScript · Vite · TailwindCSS 4 · PIXI.js 7 +
-pixi-live2d-display · Rust（teloxide、reqwest、rmcp）。
+Cargo workspace：`crates/pet-core`（引擎）· `src-tauri`（GUI）·
+`crates/pet-cli`（TUI）。Tauri 2 · React 19 · TypeScript · Vite · TailwindCSS 4 ·
+PIXI.js 7 + pixi-live2d-display · Rust（ratatui、teloxide、reqwest、rmcp、
+pulldown-cmark）。
 
 ## 前置条件
 
@@ -127,8 +147,10 @@ pixi-live2d-display · Rust（teloxide、reqwest、rmcp）。
 
 ```bash
 pnpm install
-pnpm tauri dev          # 开发运行
+pnpm tauri dev          # 开发运行桌面 GUI
 pnpm tauri build        # 打包发布版
+
+cargo run -p pet-cli    # 终端界面（与 GUI 共享配置和会话）
 ```
 
 首次启动会出现宠物窗口。打开面板进入 **设置**，填入你的 API base、key 和模型。
@@ -137,6 +159,8 @@ pnpm tauri build        # 打包发布版
 
 ## 文档
 
+- [架构](docs/architecture.md) —— 一套核心引擎，两套界面
+- [命令行界面](docs/cli.md) —— `pet-cli` 命令、按键与群聊
 - [配置参考](docs/configuration.md) —— `config.yaml` 字段与文件位置
 - [macOS 自动化](docs/macos-automation.md) —— 读取/操作应用与所需权限
 - [Telegram 机器人](docs/telegram.md) —— 配置与图片支持

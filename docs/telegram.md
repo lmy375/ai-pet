@@ -1,15 +1,16 @@
 # Telegram 机器人
 
-让你在手机上通过 Telegram 和宠物聊天。它使用一个独立的会话（`telegram-bot`），
-与桌面共享同一套人设和长期记忆。
+让你在手机上通过 Telegram 和宠物聊天。每个 Agent 可以有自己的机器人；
+每个机器人使用一个独立会话（`telegram-<agent id>`），与桌面共享该 Agent 的
+人设和长期记忆。
 
 ## 配置
 
 1. 在 [@BotFather](https://t.me/BotFather) 用 `/newbot` 建一个机器人，拿到 token。
-2. 面板「设置」里填 `bot_token`、`allowed_username`（只有这个用户名能和它对话；留空则
-   不限制），勾选 `enabled`。
-3. 保存后机器人自动启动；也可用 `reconnect_telegram` 重连。对应 `config.yaml` 的
-   `telegram` 段。
+2. 面板「设置」中对应 Agent 下填 `bot_token`、`allowed_username`（只有这个用户名能
+   和它对话；留空则不限制），勾选 `enabled`。
+3. 保存后机器人自动启动；也可用 `reconnect_telegram` 重连。对应 `config.yaml` 中
+   该 Agent 的 `telegram` 段。所有启用的 Agent 机器人会同时运行。
 
 ## 图片
 
