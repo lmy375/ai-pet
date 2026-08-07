@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, AgentConfig, McpServerConfig, McpStatus, TelegramStatus } from "../../hooks/useSettings";
+import type { AppSettings, AgentConfig, McpServerConfig, McpStatus, TelegramStatus, SkillsInfo } from "../../hooks/useSettings";
 import { defaultAgent } from "../../hooks/useSettings";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
@@ -41,6 +41,7 @@ const blankSettings: AppSettings = {
   gallery_enabled: false,
   gallery_interval: 10,
   search_api_key: "",
+  skills_dir: "",
   active_agent: "default",
   agents: [defaultAgent()],
 };
@@ -66,12 +67,19 @@ export function PanelSettings() {
   const [models, setModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [skillsInfo, setSkillsInfo] = useState<SkillsInfo | null>(null);
 
   // The agent shown in the active agent tab (falls back to the first agent).
   const isAgentTab = tab !== "raw" && tab !== "global";
   const editingAgentId = isAgentTab ? tab : (form.agents[0]?.id ?? "default");
   const agentIdx = Math.max(0, form.agents.findIndex((a) => a.id === editingAgentId));
   const agent = form.agents[agentIdx] ?? form.agents[0];
+
+  // Re-scan the skills dir. Cheap (one read_dir), so it runs on load, after the
+  // directory changes, and on the card's refresh button.
+  const loadSkills = () => {
+    invoke<SkillsInfo>("list_skills").then(setSkillsInfo).catch(() => setSkillsInfo(null));
+  };
 
   useEffect(() => {
     invoke<AppSettings>("get_settings")
@@ -83,6 +91,7 @@ export function PanelSettings() {
         console.error("Failed to load settings:", e);
         setLoaded(true);
       });
+    loadSkills();
   }, []);
 
   // Switch the top-level tab. Loads the raw YAML when entering "config file", and
@@ -283,6 +292,36 @@ export function PanelSettings() {
     }
   };
 
+  // Persist a new skills dir and immediately re-scan it, so the list below the
+  // input always reflects the directory shown in it.
+  const commitSkillsDir = async (skills_dir: string) => {
+    const next = { ...form, skills_dir };
+    setForm(next);
+    await saveSettings(next);
+    loadSkills();
+  };
+
+  const handlePickSkillsDir = async () => {
+    try {
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: skillsInfo?.dir || undefined,
+      });
+      if (typeof picked === "string") commitSkillsDir(picked);
+    } catch (e: any) {
+      fail(t("settings.pickDirFailed", { error: e }));
+    }
+  };
+
+  const handleOpenSkillsDir = async () => {
+    try {
+      await invoke("open_skills_dir");
+    } catch (e: any) {
+      fail(t("settings.skills.openDirFailed", { error: e }));
+    }
+  };
+
   const handleOpenConfigDir = async () => {
     try {
       await invoke("open_config_dir");
@@ -441,6 +480,68 @@ export function PanelSettings() {
               placeholder="tvly-..."
             />
             <HintText>{t("settings.search.apiKeyNote")}</HintText>
+          </Card>
+
+          {/* Agent Skills (shared by all agents). Read-only: skills are authored
+              on disk, this card only shows what was discovered there. */}
+          <Card
+            title={t("settings.skills.title")}
+            action={
+              <button onClick={loadSkills} className="text-[12px] font-medium text-accent hover:underline">
+                {t("common.refresh")}
+              </button>
+            }
+          >
+            <Label>{t("settings.skills.dir")}</Label>
+            <div className="flex gap-2">
+              <SavedTextInput
+                value={form.skills_dir}
+                onChange={(e) => setForm({ ...form, skills_dir: e.target.value })}
+                onCommit={() => commitSkillsDir(form.skills_dir)}
+                className="flex-1"
+                placeholder={skillsInfo?.dir ?? "~/.agents/skills"}
+              />
+              <Button variant="secondary" onClick={handlePickSkillsDir}>
+                {t("settings.skills.pick")}
+              </Button>
+              <Button variant="secondary" onClick={handleOpenSkillsDir} title={t("settings.skills.openDirTitle")}>
+                <ExternalLinkIcon className="h-4 w-4" />
+                {t("common.open")}
+              </Button>
+            </div>
+
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(skillsInfo?.presets ?? []).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => commitSkillsDir(p)}
+                  className="rounded-lg bg-slate-100 px-2 py-1 font-mono text-[11px] text-slate-600 transition-colors hover:bg-slate-200"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+            <HintText>{t("settings.skills.dirNote", { dir: skillsInfo?.dir ?? "" })}</HintText>
+
+            <div className="mt-3 space-y-2">
+              {skillsInfo && skillsInfo.skills.length === 0 && (
+                <HintText>{t("settings.skills.empty")}</HintText>
+              )}
+              {skillsInfo?.skills.map((s) => (
+                <div key={s.path} className="rounded-xl border border-slate-200/70 px-3 py-2">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-[13px] font-medium text-slate-800">{s.name}</span>
+                    <span className="font-mono text-[11px] text-accent">/skill:{s.slug}</span>
+                  </div>
+                  {s.error ? (
+                    <ErrorBox className="mt-1">{s.error}</ErrorBox>
+                  ) : (
+                    <p className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-slate-500">{s.description}</p>
+                  )}
+                  <p className="mt-1 truncate font-mono text-[10px] text-slate-400">{s.path}</p>
+                </div>
+              ))}
+            </div>
           </Card>
 
         </>

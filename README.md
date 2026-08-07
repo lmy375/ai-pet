@@ -43,6 +43,11 @@ memory — see [docs/architecture.md](docs/architecture.md).
   run timed tasks or reach out proactively.
 - **Persistent memory** — `SOUL.md` (persona), `USER.md` (about you), and
   `MEMORY.md` (its long-term memory) survive across conversations.
+- **Agent Skills** — drop a folder containing a `SKILL.md` into your skills
+  directory to teach the pet a procedure. Only each skill's name and description
+  sit in the prompt; the body is read on demand, so skills you don't use cost
+  almost nothing. Invoke one by name with `/skill:<name>` in either interface.
+  See [docs/skills.md](docs/skills.md).
 - **MCP support** — connect Model Context Protocol servers (stdio / SSE / HTTP)
   to extend the toolset.
 - **Gallery mode** — swap the pet for a slideshow of a folder's images/videos.
@@ -84,6 +89,7 @@ field and where the data lives.
 - [Architecture](docs/architecture.md) — one engine crate, two interfaces
 - [CLI](docs/cli.md) — `pet-cli` commands, keys, and group mode
 - [Configuration reference](docs/configuration.md) — `config.yaml` fields and file locations
+- [Agent Skills](docs/skills.md) — teach the pet a procedure with a `SKILL.md` folder
 - [macOS automation](docs/macos-automation.md) — reading/controlling apps + permissions
 - [Telegram bot](docs/telegram.md) — setup and image support
 
@@ -123,6 +129,9 @@ ratatui 终端界面（`pet-cli`）—— 见 [docs/architecture.md](docs/archit
 - **定时心跳** —— 宠物按设定间隔在后台醒来，执行定时任务或主动找你。
 - **长期记忆** —— `SOUL.md`（人设）、`USER.md`（关于你）、`MEMORY.md`（它的长期记忆）
   跨对话保留。
+- **技能（Skills）** —— 往技能目录里放一个带 `SKILL.md` 的文件夹，就教会宠物一套
+  做事流程。系统提示里只放名称和用途，正文按需读取，用不上的技能几乎不占上下文。
+  两套界面里都能用 `/skill:<名称>` 直接点名调用。详见 [docs/skills.md](docs/skills.md)。
 - **MCP 支持** —— 接入 Model Context Protocol 服务（stdio / SSE / HTTP）扩展工具集。
 - **画廊模式** —— 把宠物换成某个文件夹的图片/视频幻灯片。
 - **中英双语界面**。
@@ -162,5 +171,6 @@ cargo run -p pet-cli    # 终端界面（与 GUI 共享配置和会话）
 - [架构](docs/architecture.md) —— 一套核心引擎，两套界面
 - [命令行界面](docs/cli.md) —— `pet-cli` 命令、按键与群聊
 - [配置参考](docs/configuration.md) —— `config.yaml` 字段与文件位置
+- [技能](docs/skills.md) —— 用 `SKILL.md` 目录教宠物一套做事流程
 - [macOS 自动化](docs/macos-automation.md) —— 读取/操作应用与所需权限
 - [Telegram 机器人](docs/telegram.md) —— 配置与图片支持

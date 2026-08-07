@@ -14,6 +14,7 @@
 | `memory/<agent id>/USER.md` | 关于主人的事实与偏好（宠物维护） |
 | `memory/<agent id>/MEMORY.md` | 长期记忆（宠物维护，只记有价值的，非流水账日记） |
 | `memory/<agent id>/HEARTBEAT.md` | 定时任务清单（心跳读取/维护） |
+| `~/.agents/skills/<技能名>/SKILL.md` | 技能手册（默认目录，所有 Agent 共享，见 [skills.md](skills.md)） |
 | `sessions/` | 各会话历史（含每个 Agent 的 Telegram 会话 `telegram-<agent id>`） |
 | `group/state.json` | 群聊转录与各成员私有上下文 |
 | `~/.config/pet/logs/` | `app.log` / `llm.log` / 后台任务历史 |
@@ -48,6 +49,7 @@
 | --- | --- | --- |
 | `active_agent` | `default` | 应答桌面聊天的 Agent id |
 | `search_api_key` | 空 | [Tavily](https://tavily.com) API Key；填了才启用 `web_search`，所有 Agent 共享 |
+| `skills_dir` | 空（= `~/.agents/skills`） | [技能](skills.md)目录，所有 Agent 共享；支持开头的 `~` |
 | `live_2d_model_path` | `/models/miku/...` | 模型 `.model3.json` 路径（指向 `public/` 下你自己的模型） |
 | `language` | `zh` | 界面语言：`zh` / `en` |
 | `gallery_dir` / `gallery_enabled` / `gallery_interval` | — | 画廊幻灯片目录 / 开关 / 每张秒数 |

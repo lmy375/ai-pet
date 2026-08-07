@@ -23,4 +23,5 @@ pub mod prompt;
 pub mod session;
 pub mod settings;
 pub mod shell;
+pub mod skills;
 pub mod tools;

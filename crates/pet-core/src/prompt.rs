@@ -80,6 +80,16 @@ fn path_string(path: Result<std::path::PathBuf, String>) -> String {
     path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
 }
 
+/// The available-skills list, as a section ready to append to a system message.
+/// Empty when no usable skill exists, so an owner without skills sees a prompt
+/// unchanged from before the feature. Rebuilt every turn like the memory files —
+/// editing a `SKILL.md` takes effect on the very next turn.
+fn skills_section() -> String {
+    crate::skills::prompt_block(&crate::skills::list_skills())
+        .map(|block| format!("\n\n{block}"))
+        .unwrap_or_default()
+}
+
 /// The persona + long-term memory block: SOUL, the current USER/MEMORY contents,
 /// and the rules for maintaining them. Rebuilt fresh on every turn so edits to
 /// any memory file take effect immediately. Scoped to a single agent.
@@ -93,6 +103,7 @@ fn build_memory_prompt(agent_id: &str) -> String {
     let user_p = path_string(memory::user_path(agent_id));
     let mem_p = path_string(memory::memory_path(agent_id));
     let hb_p = path_string(crate::heartbeat_file::heartbeat_path(agent_id));
+    let skills = skills_section();
 
     format!(
         "你的名字叫「{name}」，这是主人为你取的名字。\n\n\
@@ -110,7 +121,7 @@ fn build_memory_prompt(agent_id: &str) -> String {
 - 某个主题内容变多时，在 `{dir}/` 下新建子文件（如 `主题.md`），并在主文件里用 `[[文件名]]` 链接索引，需要时再用 read_file 打开。\n\
 - 没有任何东西会自动消失。要“忘记”只能你自己主动整理、删改。\n\
 - SOUL.md 是你的本质，只读，不要修改它。\n\
-- 维护记忆是自然的事，按需进行，不必每次都做，也无需征求许可。"
+- 维护记忆是自然的事，按需进行，不必每次都做，也无需征求许可。{skills}"
     )
 }
 
@@ -124,8 +135,11 @@ pub fn prepend_system_messages(conv_messages: &mut Vec<Value>, agent_id: &str) {
 /// Prepend the sub-agent system messages (focused task prompt, then the shared
 /// tool guidance) to a sub-agent's conversation. Mirrors `prepend_system_messages`
 /// but swaps the pet persona for the worker-focused `SUBAGENT_PROMPT`.
+///
+/// Skills are included: a sub-agent only ever sees the one task it was handed,
+/// so without the list it can't discover that a skill for that task exists.
 pub fn prepend_subagent_system_messages(conv_messages: &mut Vec<Value>) {
-    apply_system_messages(conv_messages, SUBAGENT_PROMPT.to_string());
+    apply_system_messages(conv_messages, format!("{SUBAGENT_PROMPT}{}", skills_section()));
 }
 
 /// Group-chat etiquette, appended after the agent's persona+memory for a group

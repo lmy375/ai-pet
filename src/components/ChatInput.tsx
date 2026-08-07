@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { SendIcon } from "./Icons";
+import { useTauriEvent } from "../hooks/useTauriEvent";
+import type { SkillItem, SkillsInfo } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
 
 interface Props {
@@ -7,6 +10,8 @@ interface Props {
   isLoading: boolean;
   placeholder?: string;
 }
+
+const SKILL_PREFIX = "/skill:";
 
 /** Read a clipboard image File into a base64 `data:` URL. */
 function readImage(file: File): Promise<string> {
@@ -20,12 +25,30 @@ function readImage(file: File): Promise<string> {
 
 /** Shared chat input row (auto-resizing textarea + send button). Used by both
  *  the pet window and the panel — the caller provides the surrounding bar.
- *  Supports Cmd+V pasting images, sent to the model as multimodal content. */
+ *  Supports Cmd+V pasting images, sent to the model as multimodal content.
+ *
+ *  Typing `/` opens a completion list of the installed skills; accepting one
+ *  fills in `/skill:<slug> ` so a task can be typed after it. On submit the
+ *  command is expanded by the engine (`expand_skill_command`) into the plain
+ *  user message that's actually sent — the wording lives in pet-core, not here. */
 export function ChatInput({ onSend, isLoading, placeholder }: Props) {
   const { t } = useI18n();
   const [input, setInput] = useState("");
   const [images, setImages] = useState<string[]>([]); // base64 data URLs
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [menuSel, setMenuSel] = useState(0);
+  const [menuDismissed, setMenuDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Broken skills can't be invoked, so they're never offered.
+  const loadSkills = () => {
+    invoke<SkillsInfo>("list_skills")
+      .then((info) => setSkills(info.skills.filter((s) => s.error === null)))
+      .catch(() => setSkills([]));
+  };
+  useEffect(loadSkills, []);
+  // The skills dir is a setting, so a change there must refresh the list.
+  useTauriEvent("settings-changed", loadSkills);
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -36,15 +59,56 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
     }
   }, [input]);
 
-  const submit = () => {
+  // Candidates for the current input: only while typing a single `/…` token.
+  const matches =
+    menuDismissed || !input.startsWith("/") || /\s/.test(input)
+      ? []
+      : skills.filter((s) => `${SKILL_PREFIX}${s.slug}`.startsWith(input));
+  const menuOpen = matches.length > 0;
+  const sel = Math.min(menuSel, matches.length - 1);
+
+  const accept = (skill: SkillItem) => {
+    // Trailing space, no auto-send: the owner still has to type the task.
+    setInput(`${SKILL_PREFIX}${skill.slug} `);
+    setMenuDismissed(true);
+    textareaRef.current?.focus();
+  };
+
+  const submit = async () => {
     const text = input.trim();
     if ((!text && images.length === 0) || isLoading) return;
-    onSend(text, images.length > 0 ? images : undefined);
     setInput("");
     setImages([]);
+    setMenuDismissed(false);
+    // An unknown slug expands to nothing — send it as typed rather than
+    // swallowing the message behind an error.
+    const expanded = text.startsWith(SKILL_PREFIX)
+      ? await invoke<string | null>("expand_skill_command", { line: text }).catch(() => null)
+      : null;
+    onSend(expanded ?? text, images.length > 0 ? images : undefined);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (menuOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        return setMenuSel(Math.min(sel + 1, matches.length - 1));
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        return setMenuSel(Math.max(sel - 1, 0));
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        return setMenuDismissed(true);
+      }
+      // While the menu is open Enter completes instead of sending — same rule
+      // as the CLI palette, so Enter never fires a skill with no task.
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        return accept(matches[sel]);
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -85,11 +149,41 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2">
+      <div className="relative flex items-end gap-2">
+        {menuOpen && (
+          <div className="absolute bottom-full left-0 right-12 z-20 mb-2 max-h-52 overflow-y-auto rounded-2xl border border-slate-300/50 bg-white/95 py-1 shadow-lg backdrop-blur-md">
+            <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
+              {t("chat.skillMenu.title")}
+            </div>
+            {matches.map((s, i) => (
+              <button
+                key={s.slug}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  accept(s);
+                }}
+                onMouseEnter={() => setMenuSel(i)}
+                className={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left ${
+                  i === sel ? "bg-accent/10" : ""
+                }`}
+              >
+                <span className="shrink-0 font-mono text-[12px] text-accent">
+                  {SKILL_PREFIX}
+                  {s.slug}
+                </span>
+                <span className="truncate text-[12px] text-slate-500">{s.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value);
+            setMenuDismissed(false);
+            setMenuSel(0);
+          }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={placeholder ?? t("chat.input.placeholder")}

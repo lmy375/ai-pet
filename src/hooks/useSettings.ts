@@ -47,9 +47,31 @@ export interface AppSettings {
   gallery_interval: number;
   /** Tavily API key for the web_search tool (shared by all agents). Empty = disabled. */
   search_api_key: string;
+  /** Directory scanned for Agent Skills (shared by all agents). Empty = ~/.agents/skills. */
+  skills_dir: string;
   /** Id of the agent that answers the desktop chat window. */
   active_agent: string;
   agents: AgentConfig[];
+}
+
+/** One skill discovered under the skills dir (from the `list_skills` command). */
+export interface SkillItem {
+  name: string;
+  /** Directory name — the identifier behind `/skill:<slug>`. */
+  slug: string;
+  description: string;
+  /** Absolute path to SKILL.md. */
+  path: string;
+  /** Read/parse failure; such a skill is excluded from the prompt. */
+  error: string | null;
+}
+
+export interface SkillsInfo {
+  /** The directory actually scanned (`~` already expanded). */
+  dir: string;
+  /** Quick-set candidates for `skills_dir`, in the form stored in config. */
+  presets: string[];
+  skills: SkillItem[];
 }
 
 /** Live MCP server connection status (from the `get_mcp_status` command). */
@@ -93,6 +115,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   gallery_enabled: false,
   gallery_interval: 10,
   search_api_key: "",
+  skills_dir: "",
   active_agent: "default",
   agents: [defaultAgent()],
 };

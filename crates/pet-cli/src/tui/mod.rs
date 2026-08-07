@@ -16,6 +16,7 @@ use pet_core::chat::StreamEvent;
 use pet_core::session;
 use pet_core::settings::get_settings;
 use pet_core::shell::TaskCompletion;
+use pet_core::skills::Skill;
 use ratatui::crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Color;
 use ratatui::text::Line;
@@ -144,6 +145,11 @@ pub struct TuiApp {
     pub palette: Vec<PaletteItem>,
     pub palette_sel: usize,
     palette_dismissed: bool,
+    /// Skills backing the `/skill:<slug>` palette entries — which double as the
+    /// only skills listing the CLI has. Re-scanned each time the palette opens
+    /// (see `refresh_palette`), so a newly added skill is completable without
+    /// restarting — one `read_dir`, not one per keystroke.
+    skills: Vec<Skill>,
 
     /// Modal list overlay (/agents, /sessions, /tasks, /members). While open
     /// it captures ↑↓/Space/Enter/Esc.
@@ -185,6 +191,7 @@ impl TuiApp {
             palette: Vec::new(),
             palette_sel: 0,
             palette_dismissed: false,
+            skills: pet_core::skills::list_skills(),
             picker: None,
             sel_entry: None,
             scroll: 0,
@@ -320,7 +327,12 @@ impl TuiApp {
     // --- palette ---
 
     pub fn refresh_palette(&mut self) {
-        self.palette = palette_items(self.mode, &self.input.text);
+        // Opening the palette (the first `/`) is the one moment worth paying a
+        // directory scan for, so skill completions are always current.
+        if self.input.text == "/" {
+            self.skills = pet_core::skills::list_skills();
+        }
+        self.palette = palette_items(self.mode, &self.input.text, &self.skills);
         self.palette_sel = self.palette_sel.min(self.palette.len().saturating_sub(1));
     }
 
@@ -955,7 +967,10 @@ impl TuiApp {
 
         // Local echo: chat messages appear as the owner's bubble; group
         // messages come back via the transcript event, commands echo nothing.
-        if self.mode == Mode::Chat && !line.trim_start().starts_with('/') {
+        // `/skill:` is a command in name only — it expands into a chat turn, so
+        // it needs the bubble and the streaming placeholder like any message.
+        let is_chat_line = !line.trim_start().starts_with('/') || pet_core::skills::is_command(&line);
+        if self.mode == Mode::Chat && is_chat_line {
             let name = self.agent_name();
             self.push(Entry::User { text: line.clone() });
             self.push(Entry::Assistant {
@@ -991,7 +1006,16 @@ mod tests {
         let mut a = app();
         a.apply(AppEvent::Term(TermEvent::Key(key(KeyCode::Char('/')))));
         assert!(a.palette_visible());
-        assert_eq!(a.palette.len(), palette::CHAT_COMMANDS.len());
+        // Every chat command is offered. The count isn't fixed: typing `/`
+        // rescans the owner's skills dir, and each usable skill adds a
+        // `/skill:` entry after the static commands.
+        let labels: Vec<&str> = a.palette.iter().map(|i| i.label.as_str()).collect();
+        for c in palette::CHAT_COMMANDS {
+            assert!(labels.contains(&c.name), "palette missing {}", c.name);
+        }
+        assert!(a.palette[palette::CHAT_COMMANDS.len()..]
+            .iter()
+            .all(|i| i.label.starts_with(pet_core::skills::COMMAND_PREFIX)));
         let before = a.palette_sel;
         a.apply(AppEvent::Term(TermEvent::Key(key(KeyCode::Down))));
         assert_eq!(a.palette_sel, before + 1);
@@ -1026,6 +1050,25 @@ mod tests {
         assert!(!a.busy);
         assert!(a.picker.is_some());
         assert!(a.entries.is_empty());
+    }
+
+    #[test]
+    fn skill_command_dispatches_as_a_chat_turn() {
+        // `/skill:<slug>` is a chat turn wearing a command's clothes: unlike
+        // every other `/` line it must dispatch AND echo the owner's bubble +
+        // streaming placeholder, or the UI looks frozen while the model works.
+        let mut a = app();
+        for c in "/skill:x hi".chars() {
+            a.apply(AppEvent::Term(TermEvent::Key(key(KeyCode::Char(c)))));
+        }
+        let actions = a.on_key(key(KeyCode::Enter));
+        match actions.as_slice() {
+            [Action::Submit(line)] => assert_eq!(line, "/skill:x hi"),
+            other => panic!("expected submit, got {} actions", other.len()),
+        }
+        assert!(a.busy);
+        assert!(matches!(a.entries.first(), Some(Entry::User { .. })));
+        assert!(matches!(a.entries.get(1), Some(Entry::Assistant { streaming: true, .. })));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use pet_core::group::{self, GroupRuntime};
 use pet_core::session;
 use pet_core::settings::{self, get_settings};
+use pet_core::skills;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::{CliApp, TurnInput};
@@ -161,6 +162,17 @@ async fn handle_chat(ctx: &SubmitCtx, line: &str) {
             enter_group(ctx).await;
             ctx.send(AppEvent::CommandDone);
         }
+        // `/skill:<slug> [任务]` expands into an ordinary user message, so it
+        // runs as a normal chat turn rather than a command with its own path.
+        cmd if skills::is_command(cmd) => {
+            match skills::expand_command(line, &skills::list_skills()) {
+                Some(text) => run_turn(ctx, TurnInput::User(text)).await,
+                None => {
+                    ctx.error(format!("没有这个技能：{cmd}。输入 / 查看可用技能"));
+                    ctx.send(AppEvent::CommandDone);
+                }
+            }
+        }
         cmd if cmd.starts_with('/') => {
             ctx.error(format!("未知命令 {cmd}。/help 查看用法"));
             ctx.send(AppEvent::CommandDone);
@@ -263,6 +275,7 @@ const CHAT_HELP: &str = "命令：
   /models              选择并切换当前 Agent 的模型
   /sessions            选择并切换会话（/new 新建）
   /tasks               查看后台任务
+  /skill:<名称> [任务] 调用某个技能；输入 / 可看到全部技能并补全
   /group               进入多 Agent 群聊
   /quit                退出
 按键：输入 / 弹出命令面板（↑↓ 选择，Enter/Tab 确认）；

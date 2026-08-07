@@ -11,9 +11,9 @@ crates/pet-cli      终端 TUI（ratatui）
 ## pet-core
 
 全部引擎逻辑都在这里：chat pipeline（流式 + 工具调用循环）、内置工具与
-ToolRegistry、MCP 客户端管理、会话/配置/记忆的磁盘读写、系统提示词组装、
-后台任务（bash / 子代理 / 心跳）、多 Agent 群聊编排器。**pet-core 里不允许
-出现 `use tauri`。**
+ToolRegistry、MCP 客户端管理、会话/配置/记忆/[技能](skills.md)的磁盘读写、
+系统提示词组装、后台任务（bash / 子代理 / 心跳）、多 Agent 群聊编排器。
+**pet-core 里不允许出现 `use tauri`。**
 
 界面通过四个 trait 接入：
 
@@ -34,8 +34,8 @@ ToolRegistry、MCP 客户端管理、会话/配置/记忆的磁盘读写、系�
 - **pet-cli**：事件驱动 TUI。终端按键、流事件、群聊事件、任务完成统一进一个
   `AppEvent` channel，单循环消费；引擎调用全部在后台 task。详见 [cli.md](cli.md)。
 
-两者共享磁盘状态（`config.yaml`、`sessions/`、`memory/`、`group/state.json`），
-遵守同样的「发送前重载」规则，可同时运行。
+两者共享磁盘状态（`config.yaml`、`sessions/`、`memory/`、`group/state.json`、
+技能目录），遵守同样的「发送前重载」规则，可同时运行。
 
 ## 加新功能的规则
 

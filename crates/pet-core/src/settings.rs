@@ -154,6 +154,11 @@ pub struct AppSettings {
     /// `ToolRegistry::new`).
     #[serde(default)]
     pub search_api_key: String,
+    /// Directory scanned for Agent Skills — every subdirectory holding a
+    /// `SKILL.md` is one skill, offered to every agent. Empty = `~/.agents/skills`;
+    /// a leading `~` is expanded (see `skills::resolve_skills_dir`).
+    #[serde(default)]
+    pub skills_dir: String,
     /// Id of the agent that answers the desktop chat window. Switching agents in
     /// the chat UI just rewrites this; chat history is global/shared.
     #[serde(default = "default_agent_id")]
@@ -262,6 +267,7 @@ impl Default for AppSettings {
             gallery_enabled: false,
             gallery_interval: default_gallery_interval(),
             search_api_key: String::new(),
+            skills_dir: String::new(),
             active_agent: default_agent_id(),
             agents: default_agents(),
             window: None,
