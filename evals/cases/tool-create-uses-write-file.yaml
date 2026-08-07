@@ -1,0 +1,13 @@
+id: tool-create-uses-write-file
+axis: tool-selection
+prompt: "在 {WORK} 下新建一个 hello.py，内容是打印 hello pet 的一行 Python。"
+expect:
+  files:
+    hello.py:
+      contains: ["print", "hello pet"]
+  tools:
+    # 新建文件用 write_file，不要用 echo 重定向 / heredoc / touch
+    must_use: [write_file]
+    must_not_use: [edit_file]
+    bash_must_not_match: ["echo ", "cat <<", "touch ", "tee "]
+  max_rounds: 3

@@ -92,6 +92,7 @@ field and where the data lives.
 - [Agent Skills](docs/skills.md) — teach the pet a procedure with a `SKILL.md` folder
 - [macOS automation](docs/macos-automation.md) — reading/controlling apps + permissions
 - [Telegram bot](docs/telegram.md) — setup and image support
+- [Evals](docs/evals.md) — behavioral cases run against the real engine in a sandbox
 
 ---
 
@@ -174,3 +175,4 @@ cargo run -p pet-cli    # 终端界面（与 GUI 共享配置和会话）
 - [技能](docs/skills.md) —— 用 `SKILL.md` 目录教宠物一套做事流程
 - [macOS 自动化](docs/macos-automation.md) —— 读取/操作应用与所需权限
 - [Telegram 机器人](docs/telegram.md) —— 配置与图片支持
+- [评测](docs/evals.md) —— 在沙箱里拿真引擎跑行为用例

@@ -1,0 +1,20 @@
+id: tool-edit-uses-edit-file
+axis: tool-selection
+prompt: "把 {WORK}/server.toml 里的 port 改成 8080，别的不要动。"
+seed:
+  server.toml: |
+    [server]
+    host = "0.0.0.0"
+    port = 3000
+    workers = 4
+expect:
+  files:
+    server.toml:
+      contains: ['port = 8080', 'host = "0.0.0.0"', 'workers = 4']
+      not_contains: ["3000"]
+  tools:
+    # 局部改动用 edit_file；整文件重写（write_file）和 sed/awk 都不行
+    must_use: [edit_file]
+    must_not_use: [write_file]
+    bash_must_not_match: ["sed", "awk", "perl"]
+  max_rounds: 4

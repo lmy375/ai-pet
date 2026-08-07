@@ -1,0 +1,23 @@
+id: task-rename-batch
+axis: task-completion
+prompt: "把 {WORK}/notes 目录下所有 .txt 文件改名成 .md，内容不要动，别的文件别碰。"
+seed:
+  notes/one.txt: "第一篇\n"
+  notes/two.txt: "第二篇\n"
+  notes/three.txt: "第三篇\n"
+  notes/keep.json: "{}\n"
+expect:
+  files:
+    notes/one.md:
+      contains: ["第一篇"]
+    notes/two.md:
+      contains: ["第二篇"]
+    notes/three.md:
+      contains: ["第三篇"]
+    notes/one.txt:
+      exists: false
+    notes/three.txt:
+      exists: false
+    notes/keep.json:
+      contains: ["{}"]
+  max_rounds: 5

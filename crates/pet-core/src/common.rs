@@ -11,8 +11,21 @@ pub fn http_client() -> reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new).clone()
 }
 
-/// Base config directory for the app: `<os config dir>/pet`.
+/// Environment variable that relocates the whole on-disk state root.
+pub const CONFIG_DIR_ENV: &str = "PET_CONFIG_DIR";
+
+/// Base config directory for the app: `<os config dir>/pet`, holding
+/// `config.yaml`, `sessions/`, `memory/`, `group/` and `logs/`.
+///
+/// `PET_CONFIG_DIR` overrides it wholesale. That's what lets `pet-eval` run a
+/// case against a throwaway directory — its own config, memory and logs —
+/// without touching the owner's real pet. Read on every call (not cached), so a
+/// process may point successive runs at different roots; a process doing that
+/// must run them one at a time, since the override is process-global.
 pub fn config_dir() -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var(CONFIG_DIR_ENV).ok().filter(|d| !d.trim().is_empty()) {
+        return Ok(PathBuf::from(dir.trim()));
+    }
     let dir = dirs::config_dir().ok_or_else(|| "Cannot determine config directory".to_string())?;
     Ok(dir.join("pet"))
 }

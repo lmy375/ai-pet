@@ -1,0 +1,18 @@
+id: task-count-and-write
+axis: task-completion
+prompt: "数一下 {WORK}/tasks.csv 里 status 是 done 的有几行，把这个数字写进 {WORK}/result.txt，文件里只放数字。"
+seed:
+  tasks.csv: |
+    id,title,status
+    1,写文档,done
+    2,改 bug,todo
+    3,发版,done
+    4,评审,doing
+    5,回归,done
+expect:
+  files:
+    result.txt:
+      contains: ["3"]
+      # 只放数字：数错成 5（总行数）或把整段说明写进去都算失败
+      not_contains: ["done", "status"]
+  max_rounds: 6

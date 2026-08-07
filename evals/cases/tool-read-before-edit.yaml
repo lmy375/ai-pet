@@ -1,0 +1,21 @@
+id: tool-read-before-edit
+axis: tool-selection
+prompt: "{WORK}/app.py 里的超时时间太短了，改成 30 秒。"
+seed:
+  app.py: |
+    import requests
+
+    TIMEOUT = 5
+
+    def fetch(url):
+        return requests.get(url, timeout=TIMEOUT)
+expect:
+  files:
+    app.py:
+      contains: ["TIMEOUT = 30", "def fetch(url):"]
+      not_contains: ["TIMEOUT = 5"]
+  tools:
+    # 「改文件前先 read_file 读一遍，不要凭猜测改」——所以第一个动作必须是读
+    first_use: read_file
+    must_use: [read_file, edit_file]
+  max_rounds: 4

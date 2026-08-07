@@ -17,8 +17,11 @@
 | `~/.agents/skills/<技能名>/SKILL.md` | 技能手册（默认目录，所有 Agent 共享，见 [skills.md](skills.md)） |
 | `sessions/` | 各会话历史（含每个 Agent 的 Telegram 会话 `telegram-<agent id>`） |
 | `group/state.json` | 群聊转录与各成员私有上下文 |
-| `~/.config/pet/logs/` | `app.log` / `llm.log` / 后台任务历史 |
+| `logs/` | `app.log` / `llm.log` / 后台任务历史 `tasks.json` |
 | `/tmp/pet/shell/` | bash 任务的 stdout/stderr |
+
+设 `PET_CONFIG_DIR` 可以整个换掉上表的根目录（`/tmp/...` 那行除外）。
+[评测](evals.md)靠它把每条用例跑在一次性目录里，碰不到真实的配置与记忆。
 
 ## 多 Agent
 

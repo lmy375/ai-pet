@@ -1,0 +1,16 @@
+[project]
+name = "pet-eval"
+version = "0.1.0"
+description = "行为评测：拿真引擎（pet-cli）跑用例，断言文件结果与工具轨迹"
+requires-python = ">=3.11"
+dependencies = ["pyyaml>=6", "pydantic>=2", "pydantic-settings>=2"]
+
+[project.scripts]
+pet-eval = "pet_eval.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pet_eval"]

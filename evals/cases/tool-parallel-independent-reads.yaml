@@ -1,0 +1,13 @@
+id: tool-parallel-independent-reads
+axis: tool-selection
+prompt: "同时看一下 {WORK}/a.txt 和 {WORK}/b.txt，告诉我这两个文件各写了什么。"
+seed:
+  a.txt: "苹果\n"
+  b.txt: "香蕉\n"
+expect:
+  tools:
+    counts:
+      read_file: 2
+  # 两次读 + 至多两轮 ⇒ 两个 read_file 只能是同一轮并行发出的
+  # （「没有依赖关系的工具调用，在一次回复里并行发起」）
+  max_rounds: 2

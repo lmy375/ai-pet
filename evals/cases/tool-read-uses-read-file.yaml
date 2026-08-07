@@ -1,0 +1,14 @@
+id: tool-read-uses-read-file
+axis: tool-selection
+prompt: "看一下 {WORK}/notes.md 里写了什么，把内容告诉我。"
+seed:
+  notes.md: |
+    # 周会记录
+    - 周三下午两点评审
+    - 上线推迟到下周一
+expect:
+  tools:
+    must_use: [read_file]
+    # 「读文件用 read_file，不要用 bash 跑 cat/head/tail」
+    bash_must_not_match: ["cat ", "head ", "tail ", "less "]
+  max_rounds: 2
