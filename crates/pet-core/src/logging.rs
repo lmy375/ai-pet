@@ -6,11 +6,14 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct LogStore(pub Arc<Mutex<Vec<String>>>);
 
-/// Return the log directory: ~/.config/pet/logs/
+/// Return the log directory: `<config dir>/logs/`. Same root as `config.yaml`,
+/// `sessions/` and `memory/` (see `common::config_dir`) — logs used to live at
+/// `~/.config/pet/logs` instead, which meant the app's state was split across
+/// two unrelated roots on macOS.
 pub fn log_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/pet/logs")
+    crate::common::config_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("logs")
 }
 
 /// Append a line to a file (create if missing). Errors are silently ignored.
