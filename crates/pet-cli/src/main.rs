@@ -21,6 +21,11 @@ use pet_core::group::GroupRuntime;
 use pet_core::logging::{log_dir, LogStore};
 use pet_core::settings::get_settings;
 use pet_core::shell::{load_persisted_tasks, ShellStore};
+use ratatui::crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::supports_keyboard_enhancement;
 
 use app::{CliApp, TurnInput};
 use commands::SubmitCtx;
@@ -120,10 +125,16 @@ async fn async_main(oneshot: Option<String>) -> i32 {
     ));
 
     let mut terminal = ratatui::init();
+    // Plain terminals send Shift+Enter as a bare CR, indistinguishable from
+    // Enter. The kitty keyboard protocol reports the modifier — ask for it where
+    // it exists (Ctrl+J stays as the universal fallback). Must happen before the
+    // reader thread starts, or it would swallow the capability reply.
+    let shift_enter = enable_key_disambiguation();
     event::spawn_term_reader(tx.clone());
 
     let ctx = SubmitCtx { cli: cli.clone(), group: group_rt, tx: tx.clone() };
     let mut app = TuiApp::new();
+    app.shift_enter = shift_enter;
     let mut tick = tokio::time::interval(Duration::from_millis(120));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -180,7 +191,24 @@ async fn async_main(oneshot: Option<String>) -> i32 {
         }
     }
 
+    if shift_enter {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
     ratatui::restore();
     cli.shutdown_mcp().await;
     0
+}
+
+/// Ask the terminal to disambiguate escape codes (kitty keyboard protocol), so
+/// Enter arrives with its Shift/Alt modifier. `false` = unsupported terminal,
+/// nothing pushed, nothing to pop.
+fn enable_key_disambiguation() -> bool {
+    if !supports_keyboard_enhancement().unwrap_or(false) {
+        return false;
+    }
+    execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
 }

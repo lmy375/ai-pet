@@ -122,6 +122,69 @@ impl InputState {
             self.hist_idx = None;
         }
     }
+
+    /// Char index where each logical line (split on `\n`) starts.
+    fn line_starts(&self) -> Vec<usize> {
+        let mut starts = vec![0usize];
+        for (i, c) in self.text.chars().enumerate() {
+            if c == '\n' {
+                starts.push(i + 1);
+            }
+        }
+        starts
+    }
+
+    /// Cursor as `(row, column)` in chars over the logical lines.
+    pub fn cursor_rc(&self) -> (usize, usize) {
+        let starts = self.line_starts();
+        let row = starts.iter().rposition(|&s| s <= self.cursor).unwrap_or(0);
+        (row, self.cursor - starts[row])
+    }
+
+    /// Move the cursor one logical line up/down, keeping the column where it
+    /// fits. `false` = already on the first/last line, so the caller can fall
+    /// through to history navigation.
+    fn move_row(&mut self, up: bool) -> bool {
+        let starts = self.line_starts();
+        let (row, col) = self.cursor_rc();
+        let target = if up {
+            if row == 0 {
+                return false;
+            }
+            row - 1
+        } else {
+            if row + 1 >= starts.len() {
+                return false;
+            }
+            row + 1
+        };
+        let total = self.text.chars().count();
+        let end = starts.get(target + 1).map(|s| s - 1).unwrap_or(total);
+        self.cursor = (starts[target] + col).min(end);
+        true
+    }
+
+    pub fn move_up(&mut self) -> bool {
+        self.move_row(true)
+    }
+
+    pub fn move_down(&mut self) -> bool {
+        self.move_row(false)
+    }
+
+    /// Home/Ctrl+A — start of the current logical line.
+    pub fn line_home(&mut self) {
+        let (_, col) = self.cursor_rc();
+        self.cursor -= col;
+    }
+
+    /// End/Ctrl+E — end of the current logical line.
+    pub fn line_end(&mut self) {
+        let starts = self.line_starts();
+        let (row, _) = self.cursor_rc();
+        let total = self.text.chars().count();
+        self.cursor = starts.get(row + 1).map(|s| s - 1).unwrap_or(total);
+    }
 }
 
 pub struct TuiApp {
@@ -168,6 +231,11 @@ pub struct TuiApp {
     line_cache: Vec<Vec<Line<'static>>>,
     cache_width: usize,
 
+    /// Terminal reports Shift+Enter distinctly (kitty keyboard protocol pushed
+    /// in main.rs). Only affects which newline chord the status bar advertises —
+    /// Ctrl+J always works.
+    pub shift_enter: bool,
+
     // Group: agent_id → index of its currently-open Tool entry.
     group_tools: HashMap<String, usize>,
     // Pending background-task completions waiting for idle.
@@ -199,6 +267,7 @@ impl TuiApp {
             last_height: 20,
             line_cache: Vec::new(),
             cache_width: 0,
+            shift_enter: false,
             group_tools: HashMap::new(),
             pending_tasks: Vec::new(),
         };
@@ -751,6 +820,18 @@ impl TuiApp {
             return vec![];
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Shift/Alt+Enter insert a newline instead of submitting. Terminals only
+        // report the modifier on Enter when they speak the kitty keyboard
+        // protocol (pushed in main.rs when supported); Ctrl+J is the fallback
+        // that works everywhere, and is what the status bar advertises when
+        // Shift+Enter isn't available.
+        let newline_chord = match key.code {
+            KeyCode::Enter => key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER),
+            KeyCode::Char('j') => ctrl,
+            _ => false,
+        };
 
         // A modal picker captures navigation until closed.
         if let Some(p) = &mut self.picker {
@@ -765,6 +846,15 @@ impl TuiApp {
             return vec![];
         }
 
+        if newline_chord {
+            self.sel_entry = None;
+            self.input.insert('\n');
+            self.palette_dismissed = true;
+            self.refresh_palette();
+            self.stick_bottom = true;
+            return vec![];
+        }
+
         match (key.code, ctrl) {
             (KeyCode::Char('c'), true) => {
                 if self.input.text.is_empty() {
@@ -774,8 +864,8 @@ impl TuiApp {
                 self.refresh_palette();
             }
             (KeyCode::Char('d'), true) => return vec![Action::Quit],
-            (KeyCode::Char('a'), true) => self.input.cursor = 0,
-            (KeyCode::Char('e'), true) => self.input.cursor = self.input.text.chars().count(),
+            (KeyCode::Char('a'), true) => self.input.line_home(),
+            (KeyCode::Char('e'), true) => self.input.line_end(),
             (KeyCode::Char('u'), true) => {
                 self.input.take();
                 self.refresh_palette();
@@ -803,16 +893,18 @@ impl TuiApp {
             (KeyCode::Right, _) => {
                 self.input.cursor = (self.input.cursor + 1).min(self.input.text.chars().count())
             }
-            (KeyCode::Home, _) => self.input.cursor = 0,
-            (KeyCode::End, _) => self.input.cursor = self.input.text.chars().count(),
+            (KeyCode::Home, _) => self.input.line_home(),
+            (KeyCode::End, _) => self.input.line_end(),
             (KeyCode::PageUp, _) => self.scroll_by(-(self.last_height as isize - 1)),
             (KeyCode::PageDown, _) => self.scroll_by(self.last_height as isize - 1),
+            // In a multi-line draft ↑↓ walk its lines first; history navigation
+            // takes over once the cursor leaves the top/bottom line.
             (KeyCode::Up, _) => {
                 if self.palette_visible() {
                     self.palette_sel = self.palette_sel.saturating_sub(1);
                 } else if self.input.text.is_empty() {
                     self.move_selection(true);
-                } else {
+                } else if !self.input.move_up() {
                     self.input.history_prev();
                 }
             }
@@ -821,7 +913,7 @@ impl TuiApp {
                     self.palette_sel = (self.palette_sel + 1).min(self.palette.len() - 1);
                 } else if self.input.text.is_empty() {
                     self.move_selection(false);
-                } else {
+                } else if !self.input.move_down() {
                     self.input.history_next();
                 }
             }
@@ -994,6 +1086,12 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn typed(a: &mut TuiApp, s: &str) {
+        for c in s.chars() {
+            a.apply(AppEvent::Term(TermEvent::Key(key(KeyCode::Char(c)))));
+        }
+    }
+
     fn app() -> TuiApp {
         let mut a = TuiApp::new();
         a.entries.clear();
@@ -1035,6 +1133,56 @@ mod tests {
             _ => panic!("expected submit"),
         }
         assert!(a.busy);
+    }
+
+    #[test]
+    fn shift_enter_and_ctrl_j_insert_newlines_that_enter_submits_as_one_message() {
+        let mut a = app();
+        typed(&mut a, "第一行");
+        assert!(a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)).is_empty());
+        assert!(!a.busy, "Shift+Enter must not send the message");
+        typed(&mut a, "第二行");
+        // Fallback chord for terminals that report Shift+Enter as a bare Enter.
+        a.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        typed(&mut a, "第三行");
+        assert_eq!(a.input.text, "第一行\n第二行\n第三行");
+
+        match a.on_key(key(KeyCode::Enter)).as_slice() {
+            [Action::Submit(line)] => assert_eq!(line, "第一行\n第二行\n第三行"),
+            _ => panic!("expected submit"),
+        }
+    }
+
+    #[test]
+    fn arrows_walk_a_multiline_draft_before_reaching_history() {
+        let mut a = app();
+        a.input.remember("旧消息");
+        typed(&mut a, "ab");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        typed(&mut a, "cdef");
+        assert_eq!(a.input.cursor_rc(), (1, 4));
+
+        // Up stays inside the draft (column preserved), then falls through to
+        // history once there's no line above.
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.input.cursor_rc(), (0, 2), "column clamps to the shorter line");
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(a.input.cursor_rc(), (1, 2));
+        a.on_key(key(KeyCode::Up));
+        a.on_key(key(KeyCode::Up));
+        assert_eq!(a.input.text, "旧消息");
+    }
+
+    #[test]
+    fn home_and_end_stay_on_the_cursors_line() {
+        let mut a = app();
+        typed(&mut a, "ab");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        typed(&mut a, "cdef");
+        a.on_key(key(KeyCode::Home));
+        assert_eq!(a.input.cursor_rc(), (1, 0));
+        a.on_key(key(KeyCode::End));
+        assert_eq!(a.input.cursor_rc(), (1, 4));
     }
 
     #[test]
