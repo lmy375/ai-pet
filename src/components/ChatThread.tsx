@@ -4,6 +4,7 @@ import type { ChatItem, ToolCall } from "../hooks/useChat";
 import { MessageBubble } from "./ui/MessageBubble";
 import { ReasoningBlock } from "./ui/ReasoningBlock";
 import { CodeBlock } from "./ui/CodeBlock";
+import { Markdown } from "./ui/Markdown";
 import { ToolCallBlock } from "./panel/ToolCallBlock";
 import { ChevronRight, CheckIcon } from "./Icons";
 import { formatHm, formatJson } from "../utils/format";
@@ -68,7 +69,7 @@ function renderItem(item: ChatItem) {
       return (
         <MessageBubble role="assistant" images={item.images}>
           {hasReasoning && <ReasoningBlock text={item.reasoning!} />}
-          {item.content}
+          {item.content.trim() && <Markdown text={item.content} />}
         </MessageBubble>
       );
     }
@@ -166,8 +167,7 @@ export function ChatThread({
       {showStreaming && (
         <MessageBubble role="assistant">
           {streamingReasoning.trim() && <ReasoningBlock text={streamingReasoning} streaming />}
-          {streaming}
-          {streaming.trim() && <span className="animate-blink">▌</span>}
+          {streaming.trim() && <Markdown text={streaming} caret />}
         </MessageBubble>
       )}
 

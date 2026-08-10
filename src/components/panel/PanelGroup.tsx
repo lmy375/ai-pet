@@ -6,6 +6,7 @@ import { useI18n } from "../../i18n";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { MessageBubble } from "../ui/MessageBubble";
+import { Markdown } from "../ui/Markdown";
 import { Segmented } from "../ui/Segmented";
 import { IconActionButton } from "../ui/IconButton";
 import { AgentIcon, TrashIcon, CheckIcon, SpinnerIcon, PauseIcon, PlayIcon } from "../Icons";
@@ -53,7 +54,9 @@ function GroupTranscript({
               <span className={`h-2 w-2 rounded-full ${colorFor(m.agent_id)}`} />
               {m.name}
             </div>
-            <MessageBubble role="assistant">{m.content}</MessageBubble>
+            <MessageBubble role="assistant">
+              <Markdown text={m.content} />
+            </MessageBubble>
           </div>
         ),
       )}

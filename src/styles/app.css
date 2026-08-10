@@ -47,8 +47,14 @@ body {
   50% { opacity: 0; }
 }
 
-.animate-blink {
-  animation: blink 1s step-end infinite;
+/* Streaming cursor that rides the last line of a markdown block instead of
+   dropping onto a line of its own (see Markdown.tsx). */
+@utility stream-caret {
+  &::after {
+    content: "▌";
+    margin-left: 1px;
+    animation: blink 1s step-end infinite;
+  }
 }
 
 /* Gallery slide crossfade — each new image/video fades in (keyed remount replays it) */
