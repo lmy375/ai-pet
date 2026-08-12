@@ -102,16 +102,26 @@ async fn async_main(oneshot: Option<String>) -> i32 {
         notifier: Arc::new(CliNotifier(tx.clone())),
     });
 
-    // One-shot mode: plain streaming to stdout, then exit.
+    // One-shot mode: plain streaming to stdout, then exit — but not before the
+    // turn's background tasks (spawn_subagent / background bash) are drained.
     if let Some(msg) = oneshot {
         let sink = sink::OneshotSink::new();
-        let code = match cli.run_chat_turn(TurnInput::User(msg), &sink).await {
+        let mut code = match cli.run_chat_turn(TurnInput::User(msg), &sink).await {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("{}✗ {}{}", ui::RED, e, ui::RESET);
                 1
             }
         };
+        // The TUI/GUI event loops feed each TaskCompletion back into a follow-up
+        // turn. One-shot has no loop, so exiting here would silently drop any
+        // still-running background work (the model was even told "you will be
+        // notified"). Drain until quiescent — even after a failed turn, salvaging
+        // whatever was already spawned.
+        if let Err(e) = drain_background_tasks(&cli, &mut rx, &sink).await {
+            eprintln!("{}✗ {}{}", ui::RED, e, ui::RESET);
+            code = 1;
+        }
         cli.shutdown_mcp().await;
         return code;
     }
@@ -197,6 +207,80 @@ async fn async_main(oneshot: Option<String>) -> i32 {
     ratatui::restore();
     cli.shutdown_mcp().await;
     0
+}
+
+/// Overall cap on waiting for background tasks in one-shot mode, so a stuck
+/// task can't hang `-p` forever. Override with PET_ONESHOT_WAIT_MS (0 = 无上限).
+const ONESHOT_WAIT_MS_DEFAULT: u64 = 600_000;
+
+fn oneshot_wait_ms() -> u64 {
+    std::env::var("PET_ONESHOT_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ONESHOT_WAIT_MS_DEFAULT)
+}
+
+/// Mirror of the TUI's `drain_pending`, serialized: feed every background-task
+/// completion back into a follow-up chat turn (which may itself spawn new
+/// background tasks) until nothing notifiable is left running.
+async fn drain_background_tasks(
+    cli: &Arc<CliApp>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    sink: &sink::OneshotSink,
+) -> Result<(), String> {
+    let wait_ms = oneshot_wait_ms();
+    let deadline = (wait_ms > 0).then(|| tokio::time::Instant::now() + Duration::from_millis(wait_ms));
+    let mut waiting_notice = false;
+
+    loop {
+        // First eat everything already queued: a task may have finished (and
+        // notified) while the previous turn was still streaming.
+        let event = match rx.try_recv() {
+            Ok(ev) => Some(ev),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return Ok(()),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                let pending = pet_core::shell::pending_notify_count(&cli.shell_store);
+                if pending == 0 {
+                    return Ok(());
+                }
+                if !waiting_notice {
+                    waiting_notice = true;
+                    println!("{}… 等待 {} 个后台任务完成{}", ui::DIM, pending, ui::RESET);
+                }
+                let recv = rx.recv();
+                match deadline {
+                    Some(d) => match tokio::time::timeout_at(d, recv).await {
+                        Ok(ev) => ev,
+                        Err(_) => {
+                            return Err(format!(
+                                "等待后台任务超过 {}ms，放弃（还有 {} 个在跑；PET_ONESHOT_WAIT_MS 可调，0 为无上限）",
+                                wait_ms, pending
+                            ));
+                        }
+                    },
+                    None => recv.await,
+                }
+            }
+        };
+
+        match event {
+            Some(AppEvent::TaskDone(c)) => {
+                // Same session guard as the TUI: a completion for another session
+                // (e.g. a task left over from a previous process) must not be
+                // injected into this conversation.
+                let active_id = pet_core::session::list_sessions().active_id;
+                if !c.session_id.is_empty() && c.session_id != active_id {
+                    println!("{}后台任务完成（其他会话）：{}{}", ui::DIM, c.label, ui::RESET);
+                    continue;
+                }
+                waiting_notice = false;
+                println!("{}后台任务完成：{} — 自动继续对话{}", ui::DIM, c.label, ui::RESET);
+                cli.run_chat_turn(TurnInput::Completion(c), sink).await?;
+            }
+            Some(_) => {} // 其他事件在 one-shot 下不会产生，忽略
+            None => return Ok(()),
+        }
+    }
 }
 
 /// Ask the terminal to disambiguate escape codes (kitty keyboard protocol), so

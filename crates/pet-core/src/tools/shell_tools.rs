@@ -159,6 +159,7 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
                 command.clone(),
                 run_in_background,
                 stdin_sender,
+                ctx.notifier.is_some(),
             ),
         );
         save_task_history(&map);

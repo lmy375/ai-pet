@@ -87,6 +87,11 @@ pub struct ShellTask {
     abort: Option<tokio::task::AbortHandle>,
     // REPL bash only: channel to forward lines into the process's stdin.
     pub(crate) stdin_sender: Option<tokio::sync::mpsc::Sender<String>>,
+    // Whether a TaskNotifier was present at registration, i.e. finishing this
+    // task will fire a completion notification. Sub-agents' nested tasks have
+    // none (`ToolContext::child` drops the notifier), and neither do heartbeat
+    // runs. `pending_notify_count` uses this to know what is worth waiting for.
+    notifies: bool,
 }
 
 impl ShellTask {
@@ -100,6 +105,7 @@ impl ShellTask {
         input: String,
         backgrounded: bool,
         stdin_sender: Option<tokio::sync::mpsc::Sender<String>>,
+        notifies: bool,
     ) -> Self {
         Self {
             kind: TaskKind::Bash,
@@ -120,6 +126,7 @@ impl ShellTask {
             result: None,
             abort: None,
             stdin_sender,
+            notifies,
         }
     }
 
@@ -133,6 +140,7 @@ impl ShellTask {
         started_at: DateTime<Local>,
         input: String,
         backgrounded: bool,
+        notifies: bool,
     ) -> Self {
         Self {
             kind,
@@ -153,6 +161,7 @@ impl ShellTask {
             result: None,
             abort: None,
             stdin_sender: None,
+            notifies,
         }
     }
 
@@ -419,6 +428,8 @@ fn shell_task_from_persisted(row: PersistedTask) -> Option<(String, ShellTask)> 
         result,
         abort: None,
         stdin_sender: None,
+        // Restored rows are always Finished (see above) — nothing left to notify.
+        notifies: false,
     };
     Some((row.task_id, task))
 }
@@ -587,6 +598,7 @@ where
                     started_at,
                     input,
                     run_in_background,
+                    ctx.notifier.is_some(),
                 ),
             );
             collect_history_tasks(&map)
@@ -675,6 +687,25 @@ where
 }
 
 // --- Commands ---
+
+/// How many tasks are still due to fire a completion notification: running,
+/// backgrounded, registered with a notifier, and not an interactive REPL (a
+/// REPL process never exits on its own, so waiting on it would never end).
+///
+/// Long-lived hosts (GUI/TUI) don't need this — their event loop just receives
+/// whatever arrives. The one-shot CLI uses it to know when it may exit without
+/// dropping background work.
+pub fn pending_notify_count(store: &ShellStore) -> usize {
+    let map = store.0.lock().unwrap();
+    map.values()
+        .filter(|t| {
+            t.status == TaskStatus::Running
+                && t.backgrounded
+                && t.notifies
+                && t.stdin_sender.is_none()
+        })
+        .count()
+}
 
 pub fn check_task_status(store: &ShellStore, task_id: &str) -> Result<ShellResult, String> {
     let map = store.0.lock().unwrap();
@@ -803,6 +834,7 @@ mod tests {
             Local::now(),
             "count the files in /tmp".to_string(),
             true,
+            true,
         );
         task.mark_finished(Some(0));
         task.result = Some("found 42 files".to_string());
@@ -828,6 +860,7 @@ mod tests {
             "date".to_string(),
             false,
             None,
+            true,
         );
         fg.mark_finished(Some(0));
         map.insert("fg".to_string(), fg);
@@ -840,6 +873,7 @@ mod tests {
             Local::now(),
             "do work".to_string(),
             true,
+            true,
         );
         bg.mark_finished(Some(0));
         map.insert("bg".to_string(), bg);
@@ -849,5 +883,55 @@ mod tests {
         // The foreground task is dropped; the background one survives.
         assert!(!map.contains_key("fg"));
         assert!(map.contains_key("bg"));
+    }
+
+    /// one-shot 退出条件：只有「会通知、能自己结束」的任务算未完成——没 notifier
+    /// 的（子代理嵌套任务）、REPL（永不退出）、已完成的都不算，否则 -p 要么早退
+    /// 丢工作、要么永远等不到静默。
+    #[test]
+    fn pending_notify_count_only_counts_awaitable_notifying_tasks() {
+        let store = ShellStore(Arc::new(Mutex::new(HashMap::new())));
+        let mk = |backgrounded, notifies| {
+            ShellTask::new_background(
+                TaskKind::Subagent,
+                "work".to_string(),
+                "sess".to_string(),
+                Local::now(),
+                "do work".to_string(),
+                backgrounded,
+                notifies,
+            )
+        };
+        {
+            let mut map = store.0.lock().unwrap();
+            // 计入：真后台 + 有 notifier + 在跑
+            map.insert("counted".to_string(), mk(true, true));
+            // 不计：子代理嵌套任务（ctx.child 丢掉了 notifier）
+            map.insert("no-notifier".to_string(), mk(true, false));
+            // 不计：已完成
+            let mut done = mk(true, true);
+            done.mark_finished(Some(0));
+            map.insert("done".to_string(), done);
+            // 不计：REPL（stdin 通道在手，进程不会自己退出）
+            let mut repl = ShellTask::new_bash(
+                1,
+                PathBuf::new(),
+                PathBuf::new(),
+                Local::now(),
+                "python3".to_string(),
+                "sess".to_string(),
+                "python3".to_string(),
+                true,
+                Some(tokio::sync::mpsc::channel(1).0),
+                true,
+            );
+            repl.status = TaskStatus::Running;
+            map.insert("repl".to_string(), repl);
+        }
+        assert_eq!(pending_notify_count(&store), 1);
+
+        // 唯一计入的那个完成后归零——one-shot 可以退出了。
+        store.0.lock().unwrap().get_mut("counted").unwrap().mark_finished(Some(0));
+        assert_eq!(pending_notify_count(&store), 0);
     }
 }
