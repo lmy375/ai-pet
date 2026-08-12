@@ -17,3 +17,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pet_deep_swe"]
+
+# PyPI 的 0.3.0 不认 task.toml 的 [[verifier.collect]]（只跑 pre_artifacts.sh），
+# deep-swe v1.1 全靠它收 model.patch——没有它一律按空提交判 0 分。
+[tool.uv.sources]
+datacurve-pier = { git = "https://github.com/datacurve-ai/pier", rev = "df89f994623a0a6a57229103b6fe910766693c30" }
