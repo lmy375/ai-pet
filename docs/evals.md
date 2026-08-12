@@ -1,18 +1,18 @@
 # 评测：宠物有没有真把事做完
 
-`evals/` 下是一套行为评测。一条用例 = 一句 prompt + workspace 的初始状态 + 做完
+`evals/eval-private/` 下是一套行为评测。一条用例 = 一句 prompt + workspace 的初始状态 + 做完
 之后必须成立的事。跑法是拿真的 `pet-cli -p` 打一次单轮对话——同一个引擎、同一套
 系统提示词、同一批工具——只是 `PET_CONFIG_DIR` 指向一个一次性目录。
 
 ```bash
-uv run --project evals pet-eval                    # 全部用例
-uv run --project evals pet-eval --only edit        # 只跑 id 含 edit 的
-uv run --project evals pet-eval --repeat 3         # 看方差，按 k/n 汇报
-uv run --project evals pet-eval --model GPT-5.5    # 同一批用例换个模型
+uv run --project evals/eval-private pet-eval                    # 全部用例
+uv run --project evals/eval-private pet-eval --only edit        # 只跑 id 含 edit 的
+uv run --project evals/eval-private pet-eval --repeat 3         # 看方差，按 k/n 汇报
+uv run --project evals/eval-private pet-eval --model GPT-5.5    # 同一批用例换个模型
 ```
 
 模型默认取 `config.yaml` 里当前 Agent 的（评测你实际在用的那只宠物）。环境变量都在
-[settings.py](../evals/pet_eval/settings.py) 一处声明（pydantic-settings）：
+[settings.py](../evals/eval-private/pet_eval/settings.py) 一处声明（pydantic-settings）：
 `PET_EVAL_API_BASE` / `PET_EVAL_API_KEY` / `PET_EVAL_MODEL` 覆盖模型，
 `PET_CLI_BIN` 指定二进制（不指定就找 `target/{release,debug}/pet-cli`，没有则自动
 `cargo build -p pet-cli`），`PET_CONFIG_DIR` 换掉读取真实配置的位置。
@@ -24,7 +24,7 @@ uv run --project evals pet-eval --model GPT-5.5    # 同一批用例换个模型
 `logs/llm.log`，跑完留在 `/tmp/pet-eval/<时间戳>/` 里供事后翻查。
 用例可以随便改写 MEMORY.md、删文件，碰不到你真正的宠物。
 
-记忆基线来自 `evals/fixtures/memory/`（人设刻意中性、USER/MEMORY 刻意留空），
+记忆基线来自 `evals/eval-private/fixtures/memory/`（人设刻意中性、USER/MEMORY 刻意留空），
 所以「有没有往 MEMORY.md 里乱塞东西」是可判定的，也不会把你真实的 SOUL.md 拖进来。
 沙箱里的 `skills_dir` 指向空目录，`search_api_key` 留空——工具集在每台机器上一致。
 
@@ -32,7 +32,7 @@ uv run --project evals pet-eval --model GPT-5.5    # 同一批用例换个模型
 
 ## 写一条用例
 
-`evals/cases/<id>.yaml`，路径一律用 `{WORK}` 占位（会替换成沙箱 workspace 绝对路径）：
+`evals/eval-private/cases/<id>.yaml`，路径一律用 `{WORK}` 占位（会替换成沙箱 workspace 绝对路径）：
 
 ```yaml
 id: tool-edit-uses-edit-file
@@ -69,3 +69,18 @@ Stage 1 只有确定性断言（磁盘状态 + 工具轨迹），没有模型裁
 
 用例会在这台机器上真的执行工具，bash 也在内。prompt 指向沙箱 workspace，但模型
 有可能乱走——把一次运行当成在本地跑任何一个 agent 来对待。
+
+## DeepSWE：coding agent 能力
+
+`evals/eval-deep-swe/` 用 [DeepSWE](https://github.com/datacurve-ai/deep-swe)
+（113 道真实工程任务，Docker 隔离 + verifier 自动判分，pier 驱动）测 pet-cli。
+需要本机 Docker；模型规则同上（PET_API_BASE / PET_API_KEY / PET_MODEL 可覆盖）。
+首次运行会 clone 任务库并用 clux/muslrust 静态编译 Linux 版 pet-cli。
+
+```bash
+uv run --project evals/eval-deep-swe eval-deep-swe --n-tasks 1   # 冒烟
+uv run --project evals/eval-deep-swe eval-deep-swe --only <task-id>
+```
+
+结果在 `evals/eval-deep-swe/runs/<job>/`；宠物人设默认不主动 commit，而 verifier
+只收已提交的 patch，所以该 agent 的 SOUL/prompt 显式授权 commit 并带兜底提交。

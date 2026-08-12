@@ -8,10 +8,10 @@
 这里不评风格和语气：Stage 1 的每条期望都是关于磁盘或轨迹的事实，所以用例变红就
 一定意味着行为变了。
 
-    uv run --project evals pet-eval                    # 全部用例，当前 Agent 的模型
-    uv run --project evals pet-eval --only edit        # 只跑一条
-    uv run --project evals pet-eval --repeat 3         # 看方差，按 k/n 汇报
-    uv run --project evals pet-eval --model GPT-5.5    # 同一批用例换个模型
+    uv run --project evals/eval-private pet-eval                    # 全部用例，当前 Agent 的模型
+    uv run --project evals/eval-private pet-eval --only edit        # 只跑一条
+    uv run --project evals/eval-private pet-eval --repeat 3         # 看方差，按 k/n 汇报
+    uv run --project evals/eval-private pet-eval --model GPT-5.5    # 同一批用例换个模型
 
 注意：用例会在这台机器上真的执行工具，bash 也在内。prompt 指向沙箱 workspace，
 但模型有可能乱走——把一次运行当成在本地跑任何一个 agent 来对待。
@@ -36,8 +36,8 @@ from .case import WORK, Case, load_dir
 from .sandbox import ModelSpec, Sandbox
 from .settings import EvalSettings
 
-REPO = Path(__file__).resolve().parents[2]
-EVALS = REPO / "evals"
+EVALS = Path(__file__).resolve().parents[1]
+REPO = EVALS.parents[1]
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 if not sys.stdout.isatty():
@@ -197,7 +197,9 @@ def main() -> None:
     parser.add_argument("--only", help="只跑 id 含该子串的用例")
     parser.add_argument("--repeat", type=int, default=1, help="每条用例跑几次（默认 1）")
     parser.add_argument("--model", help="覆盖模型（默认用 config.yaml 当前 Agent 的）")
-    parser.add_argument("--out", type=Path, help="结果 JSON（默认 evals/runs/<时间戳>.json）")
+    parser.add_argument(
+        "--out", type=Path, help="结果 JSON（默认 evals/eval-private/runs/<时间戳>.json）"
+    )
     parser.add_argument("--timeout", type=int, default=300, help="单次运行超时秒数")
     args = parser.parse_args()
 

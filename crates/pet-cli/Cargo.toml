@@ -12,3 +12,8 @@ chrono = "0.4"
 ratatui = "0.29"
 pulldown-cmark = { version = "0.12", default-features = false }
 unicode-width = "0.2"
+
+# musl 静态交叉编译（evals/eval-deep-swe 把 pet-cli 装进 Linux 任务容器）：
+# builder 镜像不带 OpenSSL，让 openssl-sys 用自带源码静态编译。只影响 musl target。
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }

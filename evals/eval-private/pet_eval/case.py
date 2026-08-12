@@ -1,4 +1,4 @@
-"""用例文件格式：evals/cases/ 下一个 YAML 一条用例。
+"""用例文件格式：evals/eval-private/cases/ 下一个 YAML 一条用例。
 
 所有模型都 `extra="forbid"`——期望里写错一个 key 会直接报错，而不是静默不检查、
 用例照样绿。那是评测集烂掉的经典方式。

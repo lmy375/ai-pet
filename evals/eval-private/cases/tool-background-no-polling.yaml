@@ -2,9 +2,13 @@ id: tool-background-no-polling
 axis: tool-selection
 prompt: "帮我在 {WORK} 下后台跑一下 sleep 45 && echo done > slow.txt，跑完再说，不用一直等。"
 expect:
+  files:
+    # one-shot 会等后台任务完成并自动续聊（drain），所以跑完时文件必须已写好
+    slow.txt:
+      contains: ["done"]
   tools:
     must_use: [bash]
     # 后台任务完成会自动通知并续聊，「不要反复轮询 check_task_status」
     must_not_use: [check_task_status]
-  # 一轮下命令 + 一轮交代「在后台跑着」就该结束本轮
-  max_rounds: 3
+  # 下命令 + 交代「在后台跑着」+ 完成通知后的续聊，再多就是在空转
+  max_rounds: 5
