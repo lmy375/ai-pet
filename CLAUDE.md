@@ -1,8 +1,7 @@
 # CLAUDE.md
 
 ## Workflow
-- Solo project: commit directly on `main` and `git push` — do NOT create feature
-  branches or PRs. Commit/push only when asked.
+- Solo project: commit directly on `main` and `git push`
 
 ## Crate layout (one core, two interfaces)
 - Cargo workspace: `crates/pet-core` (ALL engine logic: chat pipeline, tools, MCP,

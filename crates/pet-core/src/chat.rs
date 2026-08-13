@@ -224,6 +224,10 @@ async fn stream_llm_request(
     let mut prompt_tokens: Option<u64> = None;
     let mut total_tokens: Option<u64> = None;
 
+    // 最近几行裸 SSE 数据。流「正常结束但什么都没收到」时（网关偶发 200+空流）
+    // 把它们写进 llm.log——否则这类故障只留下一个空 response，没法归因。
+    let mut raw_tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -236,7 +240,19 @@ async fn stream_llm_request(
                 if data == "[DONE]" {
                     break;
                 }
+                if raw_tail.len() >= 3 {
+                    raw_tail.pop_front();
+                }
+                raw_tail.push_back(data.chars().take(300).collect());
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                    // 有些代理把错误作为流内 data 行返回（HTTP 仍是 200）。
+                    // 不上报就会以"空响应"收场，把真实原因吞掉。
+                    if let Some(err) = parsed.get("error") {
+                        let msg = format!("API stream error: {}", err);
+                        ctx.log(&format!("ERROR: {}", msg));
+                        sink.send_error(&msg);
+                        return Err(msg);
+                    }
                     // The final usage chunk (from stream_options.include_usage)
                     // carries `usage` with empty `choices`. Capture it for the
                     // context-occupancy ring.
@@ -303,6 +319,13 @@ async fn stream_llm_request(
                 }
             }
         }
+    }
+
+    if collected_text.is_empty() && collected_reasoning.is_empty() && tool_calls_map.is_empty() {
+        ctx.log(&format!(
+            "WARN: stream ended with no content; last raw data lines: {:?}",
+            raw_tail
+        ));
     }
 
     // Flush any text the splitter was holding back as a possible partial tag.
@@ -495,6 +518,14 @@ pub async fn run_agent_loop(
         );
 
         if result.tool_calls.is_empty() {
+            // 网关偶发返回 200 + 空流（无文本、无工具调用）。把它当"答完了"会让
+            // 整轮安静地空手收场（DeepSWE 批跑实测 6/10 题这样归零）——按错误上报。
+            if result.text.trim().is_empty() {
+                let msg = "LLM returned an empty response (no text, no tool calls)";
+                ctx.log(&format!("ERROR: {}", msg));
+                sink.send_error(msg);
+                return Err(msg.to_string());
+            }
             ctx.log(&format!("Final response ({} chars, TTFT={}ms, total={}ms)",
                 result.text.len(),
                 result.first_token_latency_ms.unwrap_or(-1),
