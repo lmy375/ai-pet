@@ -194,16 +194,37 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build bundle
+      # Signing is optional, but a missing secret in a step's `env:` still
+      # DEFINES the variable as "" — and tauri signs whenever APPLE_CERTIFICATE
+      # exists, so it tried to import an empty cert and the bundle step died.
+      # Export the vars only when they actually carry a value.
+      - name: Configure Apple signing
         env:
-          # All optional: unset -> tauri skips signing/notarization and the
-          # release ships unsigned (see the release notes for the xattr step).
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "::warning::no Apple signing secrets — the .dmg ships unsigned"
+            exit 0
+          fi
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+                      APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            eval "value=\${$name:-}"
+            if [ -n "$value" ]; then
+              {
+                echo "$name<<__PET_EOF__"
+                printf '%s\n' "$value"
+                echo "__PET_EOF__"
+              } >> "$GITHUB_ENV"
+            fi
+          done
+
+      - name: Build bundle
         run: pnpm tauri build --target ${{ matrix.target }}
 
       - name: Package
