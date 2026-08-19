@@ -65,19 +65,3 @@ pub fn iso_now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
 }
 
-/// Build an OpenAI-compatible endpoint URL from a base and path, normalizing
-/// surrounding whitespace and slashes (e.g. base `https://x/v1/`, path `models`).
-pub fn openai_endpoint(base: &str, path: &str) -> String {
-    format!("{}/{}", base.trim().trim_end_matches('/'), path.trim_start_matches('/'))
-}
-
-/// Attach a `Bearer` auth header when an API key is present (trimmed). Local
-/// endpoints (e.g. Ollama) often run keyless, so an empty key sends no header.
-pub fn with_bearer(req: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
-    let key = api_key.trim();
-    if key.is_empty() {
-        req
-    } else {
-        req.header("Authorization", format!("Bearer {}", key))
-    }
-}

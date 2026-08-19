@@ -6,7 +6,7 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, InputFile, Me};
 use tokio::sync::Mutex as TokioMutex;
 
-use pet_core::chat::{run_chat_pipeline, ChatMessage, ImageCollectingSink};
+use pet_core::chat::{run_chat_pipeline, ImageCollectingSink};
 use pet_core::logging::LogStore;
 use pet_core::session;
 use pet_core::settings::TelegramConfig;
@@ -212,12 +212,6 @@ async fn handle_message(
         };
         context_msgs
     };
-
-    // Convert to ChatMessage structs
-    let chat_messages: Vec<ChatMessage> = chat_messages
-        .into_iter()
-        .filter_map(|v| serde_json::from_value(v).ok())
-        .collect();
 
     // Run the LLM pipeline. The sink collects any images a tool surfaces (e.g.
     // `screenshot`) so we can send them back as photos after the text reply.

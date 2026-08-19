@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use pet_core::chat::{run_chat_pipeline, ChatEventSink, ChatMessage, StreamEvent};
+use pet_core::chat::{run_chat_pipeline, ChatEventSink, StreamEvent};
 use pet_core::config::AiConfig;
 use pet_core::logging::LogStore;
 use pet_core::mcp::McpManagerStore;
@@ -108,7 +108,7 @@ impl ChatHook for TauriChatHook {
 
 #[tauri::command]
 pub async fn chat(
-    messages: Vec<ChatMessage>,
+    messages: Vec<serde_json::Value>,
     on_event: Channel<StreamEvent>,
     session_id: String,
     app: tauri::AppHandle,

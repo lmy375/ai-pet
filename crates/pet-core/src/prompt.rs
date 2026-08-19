@@ -7,7 +7,8 @@
 //! `memory` owns the files (read/write/paths); this module owns how their
 //! contents are turned into prompt text and assembled into chat messages.
 
-use serde_json::{json, Value};
+use genai::chat::ChatMessage;
+use serde_json::Value;
 
 use crate::memory;
 
@@ -217,40 +218,53 @@ pub fn format_interval_label(minutes: u32) -> String {
 /// after it. Split out from `prepend_system_messages` so this contract can be
 /// unit-tested without reading the memory files.
 fn apply_system_messages(conv_messages: &mut Vec<Value>, system_content: String) {
-    if conv_messages
-        .first()
-        .and_then(|m| m.get("role"))
-        .and_then(|r| r.as_str())
-        == Some("system")
-    {
-        conv_messages[0]["content"] = json!(system_content);
+    let system_msg = |text: &str| crate::llm::store_message(&ChatMessage::system(text));
+    if crate::llm::is_system_message(conv_messages.first().unwrap_or(&Value::Null)) {
+        conv_messages[0] = system_msg(&system_content);
     } else {
-        conv_messages.insert(0, json!({ "role": "system", "content": system_content }));
+        conv_messages.insert(0, system_msg(&system_content));
     }
-    conv_messages.insert(1, json!({ "role": "system", "content": TOOL_USAGE_PROMPT }));
+    conv_messages.insert(1, system_msg(TOOL_USAGE_PROMPT));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::load_messages;
+    use genai::chat::ChatRole;
+    use serde_json::json;
+
+    /// (role, first text) of each message, after rehydrating the stored JSON —
+    /// which is what the LLM transport actually sends.
+    fn shape(msgs: &[Value]) -> Vec<(ChatRole, String)> {
+        load_messages(msgs)
+            .into_iter()
+            .map(|m| {
+                let text = m.content.first_text().unwrap_or_default().to_string();
+                (m.role, text)
+            })
+            .collect()
+    }
 
     #[test]
     fn overrides_leading_system_and_inserts_tool_prompt() {
+        // A session seeded before this turn: leading system message plus history.
         let mut msgs = vec![
-            json!({ "role": "system", "content": "OLD SOUL" }),
+            crate::llm::store_message(&ChatMessage::system("OLD SOUL")),
             json!({ "role": "user", "content": "hi" }),
         ];
         apply_system_messages(&mut msgs, "MEMORY".to_string());
 
         // Leading system message is replaced (not duplicated), tool prompt sits
         // right after it, and the conversation is preserved.
-        assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0]["role"], "system");
-        assert_eq!(msgs[0]["content"], "MEMORY");
-        assert_eq!(msgs[1]["role"], "system");
-        assert_eq!(msgs[1]["content"], TOOL_USAGE_PROMPT);
-        assert_eq!(msgs[2]["role"], "user");
-        assert_eq!(msgs[2]["content"], "hi");
+        assert_eq!(
+            shape(&msgs),
+            vec![
+                (ChatRole::System, "MEMORY".to_string()),
+                (ChatRole::System, TOOL_USAGE_PROMPT.to_string()),
+                (ChatRole::User, "hi".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -258,9 +272,27 @@ mod tests {
         let mut msgs = vec![json!({ "role": "user", "content": "hi" })];
         apply_system_messages(&mut msgs, "MEMORY".to_string());
 
+        assert_eq!(
+            shape(&msgs),
+            vec![
+                (ChatRole::System, "MEMORY".to_string()),
+                (ChatRole::System, TOOL_USAGE_PROMPT.to_string()),
+                (ChatRole::User, "hi".to_string()),
+            ]
+        );
+    }
+
+    /// The seeded SOUL message from a pre-genai session is still recognized as
+    /// the leading system message, so it gets overwritten rather than leaving a
+    /// stale persona ahead of the real one.
+    #[test]
+    fn legacy_system_seed_is_overridden_not_duplicated() {
+        let mut msgs = vec![
+            json!({ "role": "system", "content": "OLD SOUL" }),
+            json!({ "role": "user", "content": "hi" }),
+        ];
+        apply_system_messages(&mut msgs, "MEMORY".to_string());
         assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0]["content"], "MEMORY");
-        assert_eq!(msgs[1]["content"], TOOL_USAGE_PROMPT);
-        assert_eq!(msgs[2]["content"], "hi");
+        assert_eq!(shape(&msgs)[0], (ChatRole::System, "MEMORY".to_string()));
     }
 }

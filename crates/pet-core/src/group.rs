@@ -430,7 +430,7 @@ async fn run_one_agent(rt: &Arc<GroupRuntime>, run: AgentRun) {
                     // Drop the (fresh-each-run) leading system messages before storing.
                     st.messages = full_conv
                         .into_iter()
-                        .skip_while(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+                        .skip_while(crate::llm::is_system_message)
                         .collect();
                 }
                 Err(e) => {

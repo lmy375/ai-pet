@@ -108,6 +108,7 @@ pub fn run() {
             commands::settings::open_config_dir,
             commands::settings::open_path,
             commands::settings::list_models,
+            commands::settings::list_providers,
             commands::settings::test_model,
             commands::gallery::default_gallery_dir,
             commands::gallery::list_gallery_media,

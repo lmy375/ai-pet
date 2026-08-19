@@ -1,3 +1,6 @@
+use genai::chat::ChatRequest;
+use genai::resolver::{AuthData, Endpoint};
+use genai::{ModelIden, ServiceTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -67,6 +70,22 @@ pub struct AgentConfig {
     /// Human-readable name shown in the agent switcher / settings.
     #[serde(default = "default_agent_name")]
     pub name: String,
+    /// Which LLM wire protocol to speak: "" (auto) / "openai" / "openai_resp" /
+    /// "anthropic" / "gemini" / "deepseek" / "xai" / "groq" / "ollama" /
+    /// "openrouter" / "together" / "cohere" / "zai" / "moonshot" / "minimax".
+    /// Auto asks genai to infer from the model name, which is a static prefix
+    /// map (`gpt*`→OpenAI, `claude*`→Anthropic, `gemini*`→Gemini, …) that falls
+    /// back to Ollama when nothing matches — so it guesses wrong for
+    /// gateway-hosted or renamed models. Set it explicitly there.
+    /// See `crate::provider`.
+    ///
+    /// Defaults to `openai` rather than auto: every agent that worked before
+    /// the genai migration spoke OpenAI chat-completions by definition, and
+    /// auto-detection would silently re-route them (a gateway-hosted
+    /// `claude-sonnet-4-6` infers Anthropic, `GPT-5.5` matches nothing and
+    /// falls back to Ollama). Auto stays available as an explicit choice.
+    #[serde(default = "default_provider")]
+    pub provider: String,
     #[serde(default = "default_api_base")]
     pub api_base: String,
     #[serde(default)]
@@ -117,6 +136,7 @@ impl Default for AgentConfig {
         Self {
             id: default_agent_id(),
             name: default_agent_name(),
+            provider: default_provider(),
             api_base: default_api_base(),
             api_key: String::new(),
             model: default_model(),
@@ -226,6 +246,10 @@ fn default_model_path() -> String {
     "/models/miku/miku.model3.json".to_string()
 }
 
+fn default_provider() -> String {
+    "openai".to_string()
+}
+
 fn default_api_base() -> String {
     "https://api.openai.com/v1".to_string()
 }
@@ -279,46 +303,42 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(crate::common::config_dir()?.join("config.yaml"))
 }
 
-#[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    data: Vec<ModelEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelEntry {
-    id: String,
-}
-
-/// Fetch the list of available model ids from an OpenAI-compatible `/models` endpoint.
-pub async fn list_models(api_base: String, api_key: String) -> Result<Vec<String>, String> {
+/// Fetch the available model ids for an agent's provider. Routed through genai
+/// so the list comes from whichever protocol the agent actually speaks — an
+/// Anthropic or Gemini endpoint has no OpenAI-style `/models` route, and asking
+/// for one returned an error that looked like a bad API key.
+pub async fn list_models(
+    api_base: String,
+    api_key: String,
+    provider: String,
+    model: String,
+) -> Result<Vec<String>, String> {
     if api_base.trim().is_empty() {
         return Err("请先填写 API Base URL".to_string());
     }
-    let url = crate::common::openai_endpoint(&api_base, "models");
-    let req = crate::common::with_bearer(crate::common::http_client().get(&url), &api_key);
-    let resp = req
-        .send()
+    let kind = crate::provider::kind(&provider, &model);
+    let config = (
+        Endpoint::from_owned(api_base.trim().to_string()),
+        AuthData::from_single(api_key),
+    );
+    let mut ids = crate::llm::client()
+        .all_model_names(kind, config)
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("接口返回 {}: {}", status, text));
-    }
-    let parsed: ModelsResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
-    let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+        .map_err(|e| format!("请求失败: {e}"))?;
     ids.sort();
     Ok(ids)
 }
 
-/// Send a minimal chat completion to verify the model is reachable and usable.
+/// Send a minimal chat request to verify the model is reachable and usable.
+/// Goes through the same genai path a real chat turn takes, so a green check
+/// here means the configured provider/endpoint/model combination actually
+/// works — testing over raw OpenAI chat-completions would pass against a
+/// gateway while the agent's real Anthropic or Gemini requests still failed.
 pub async fn test_model(
     api_base: String,
     api_key: String,
     model: String,
+    provider: String,
 ) -> Result<(), String> {
     if api_base.trim().is_empty() {
         return Err("请先填写 API Base URL".to_string());
@@ -326,23 +346,18 @@ pub async fn test_model(
     if model.trim().is_empty() {
         return Err("请先选择模型".to_string());
     }
-    let url = crate::common::openai_endpoint(&api_base, "chat/completions");
-    let body = serde_json::json!({
-        "model": model.trim(),
-        "messages": [{ "role": "user", "content": "ping" }],
-        "max_tokens": 1,
-        "stream": false,
-    });
-    let req = crate::common::with_bearer(
-        crate::common::http_client().post(&url).header("Content-Type", "application/json").json(&body),
-        &api_key,
-    );
-    let resp = req.send().await.map_err(|e| format!("请求失败: {}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("接口返回 {}: {}", status, text));
-    }
+    let target = ServiceTarget {
+        endpoint: Endpoint::from_owned(api_base.trim().to_string()),
+        auth: AuthData::from_single(api_key),
+        model: ModelIden::new(
+            crate::provider::kind(&provider, &model),
+            model.trim().to_string(),
+        ),
+    };
+    crate::llm::client()
+        .exec_chat(target, ChatRequest::from_user("ping"), None)
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
     Ok(())
 }
 

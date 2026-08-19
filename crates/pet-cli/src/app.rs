@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use pet_core::chat::{run_chat_pipeline, ChatEventSink, ChatMessage};
+use pet_core::chat::{run_chat_pipeline, ChatEventSink};
 use pet_core::config::AiConfig;
 use pet_core::logging::LogStore;
 use pet_core::mcp::{McpManager, McpManagerStore};
@@ -114,12 +114,7 @@ impl CliApp {
             }
         }
 
-        let chat_messages: Vec<ChatMessage> = sess
-            .messages
-            .iter()
-            .cloned()
-            .filter_map(|v| serde_json::from_value(v).ok())
-            .collect();
+        let chat_messages = sess.messages.clone();
 
         let ctx = ToolContext::new(
             LogStore(self.log_store.0.clone()),

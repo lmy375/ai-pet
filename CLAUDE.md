@@ -19,6 +19,29 @@
   never touches the installed app's config/sessions/memory. `PET_CONFIG_DIR`
   still overrides both.
 
+## LLM transport (genai)
+- ALL provider traffic goes through `crates/pet-core/src/llm.rs`. genai owns the wire
+  protocol (OpenAI chat-completions / OpenAI Responses / Anthropic / Gemini / …); never
+  hand-roll an HTTP call to a model endpoint again.
+- **Protocol is configured, not inferred.** `AgentConfig::provider` → `AdapterKind` via
+  `provider.rs`; requests go out as a fully-resolved `ServiceTarget` (endpoint + auth +
+  adapter). genai's `from_model` name-prefix inference is wrong for every gateway-hosted
+  model (`claude-sonnet-4-6` on a litellm proxy infers Anthropic; `GPT-5.5` matches nothing
+  and falls back to **Ollama**, i.e. localhost). Hence `provider` defaults to `openai`, and
+  `kind()` rewrites an inferred `Ollama` to OpenAI. Do NOT "simplify" that back to auto.
+- `Session::messages` stores serialized genai `ChatMessage`s, but `load_messages` ALSO
+  accepts OpenAI wire format — that is a live input path (the frontend's `useChat.ts`
+  appends, Telegram, sub-agent prompts), not just old sessions. Don't delete it as legacy.
+  `Session::items` (the visible transcript) is separate and provider-neutral.
+- Two guards in `stream_chat` exist because of real incidents; keep them:
+  a stream that ends with no text/reasoning/tool-calls is reported as an **error**, not an
+  empty answer (a gateway 200-with-empty-stream silently zeroed 6/10 DeepSWE tasks); and
+  the captured `assistant_turn` is replayed verbatim into the next round, which is what
+  carries Anthropic thinking signatures / Responses reasoning items through a tool loop.
+- Multimodal: images/PDF/audio ride as `ContentPart::Binary`. `llm::binary_from_url`
+  converts the `data:` URLs the app already speaks (clipboard paste, Telegram photos,
+  `screenshot` tool).
+
 ## Windows
 - Pet window label = `main` (tauri.conf.json), Panel Chat window label = `panel` (commands/window.rs).
 - Both windows render `useChat` and share ONE conversation, but each holds its own in-memory copy

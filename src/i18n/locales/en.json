@@ -9,21 +9,18 @@
   "common.open": "Open",
   "common.enable": "Enabled",
   "common.zoomImage": "Click to enlarge",
-
   "app.pin.on": "Unpin",
   "app.pin.off": "Pin (stay on top, no auto-hide)",
   "app.openSettings": "Open settings panel",
   "app.chat.expand": "Expand chat",
   "app.chat.collapse": "Collapse chat",
   "app.resize": "Drag to resize",
-
   "panel.tab.chat": "Chat",
   "panel.tab.group": "Group",
   "panel.tab.memory": "Memory",
   "panel.tab.tasks": "Tasks",
   "panel.tab.settings": "Settings",
   "panel.openDebug": "Open debug logs in a new window",
-
   "group.tab.room": "Group",
   "group.members": "Members",
   "group.noAgents": "No agents configured yet",
@@ -36,14 +33,12 @@
   "group.empty.room": "Start the group chat~",
   "group.empty.noMembers": "Add agents to the group from \"Members\" in the top right",
   "group.agent.empty": "This agent hasn't done anything yet",
-
   "debug.tab.app": "App Logs",
   "debug.tab.llm": "LLM Logs",
   "debug.clear": "Clear",
   "debug.devtoolsFailed": "Can't open DevTools. Right-click → Inspect Element instead.",
   "debug.logCount": "{count} log lines",
   "debug.empty": "No logs yet. Chatting and actions generate logs.",
-
   "chat.input.placeholder": "Type a message...",
   "chat.input.removeImage": "Remove image",
   "chat.input.send": "Send",
@@ -71,10 +66,8 @@
   "chat.model.loading": "Loading models…",
   "chat.bgTaskDone": "Background task done: {label}",
   "chat.bgTaskDoneContent": "[Background task done] {label}:\n{result}",
-
   "gallery.readError": "Can't read the gallery folder: {error}",
   "gallery.empty": "No images or videos in the gallery folder",
-
   "memory.subtitle": "The pet's long-term memory, kept across conversations",
   "memory.openDir": "Open the memory folder in the file manager",
   "memory.openDirBtn": "Open memory folder",
@@ -87,7 +80,6 @@
   "memory.memory.placeholder": "Insights and thoughts worth keeping (recorded during chats — only what's valuable, not a daily log)...",
   "memory.heartbeat.title": "HEARTBEAT.md (scheduled tasks)",
   "memory.heartbeat.placeholder": "The pet's scheduled-task list (read on each heartbeat to decide what to do; the pet maintains it too)...",
-
   "tasks.title": "Background Tasks",
   "tasks.empty": "No background tasks",
   "tasks.running": "Running ({count})",
@@ -107,12 +99,10 @@
   "tasks.cmd": "Command",
   "tasks.result": "Result",
   "tasks.noOutput": "(no output yet)",
-
   "tool.running": "Running...",
   "tool.background": "Running in background",
   "tool.args": "Arguments",
   "tool.result": "Result",
-
   "llm.recordCount": "{count} records",
   "llm.empty": "No LLM logs yet. Sending a chat message creates records.",
   "llm.section.time": "Time",
@@ -123,7 +113,6 @@
   "llm.row.doneTime": "Done time",
   "llm.row.firstTokenLatency": "First-token latency",
   "llm.row.totalLatency": "Total time",
-
   "settings.language": "Language",
   "settings.openConfigDir": "Open config folder",
   "settings.openConfigDirTitle": "Open the config folder in the file manager",
@@ -162,6 +151,9 @@
   "settings.openGalleryDirFailed": "Failed to open the gallery folder: {error}",
   "settings.llm.title": "LLM Settings",
   "settings.llm.modelsNone": "No models available",
+  "settings.llm.provider": "API Protocol",
+  "settings.llm.providerHint": "Which wire protocol to speak. Auto infers it from the model name, which often guesses wrong behind a gateway or for renamed models — pick it explicitly there.",
+  "settings.llm.providerResolved": "auto-detected as {provider}",
   "settings.llm.modelsLoaded": "Loaded {count} models",
   "settings.llm.modelsFailed": "Failed to load models: {error}",
   "settings.llm.testOk": "Model works",

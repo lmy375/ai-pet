@@ -123,7 +123,7 @@ pub fn derive_title(items: &[serde_json::Value]) -> Option<String> {
 /// `prepend_system_messages`, so it's effectively cosmetic.
 pub fn soul_system_message(agent_id: &str) -> serde_json::Value {
     let soul = super::memory::read_soul(agent_id);
-    serde_json::json!({ "role": "system", "content": soul })
+    crate::llm::store_message(&genai::chat::ChatMessage::system(soul))
 }
 
 /// Build (and persist) a fresh session with the given id and title, seeded with
@@ -251,7 +251,7 @@ pub fn recent_turns(messages: &[serde_json::Value], n: usize) -> Vec<serde_json:
     let user_indices: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .filter(|(_, m)| crate::llm::is_user_message(m))
         .map(|(i, _)| i)
         .collect();
     let start = match user_indices.len() {

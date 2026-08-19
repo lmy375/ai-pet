@@ -64,7 +64,13 @@ pub fn spawn_open_models(ctx: SubmitCtx) {
             return ctx.error("没有可用的 Agent");
         };
         ctx.notice("正在获取模型列表…");
-        match settings::list_models(agent.api_base.clone(), agent.api_key.clone()).await {
+        match settings::list_models(
+            agent.api_base.clone(),
+            agent.api_key.clone(),
+            agent.provider.clone(),
+            agent.model.clone(),
+        )
+        .await {
             Ok(models) if !models.is_empty() => {
                 ctx.send(AppEvent::OpenPicker(models_picker(&agent.model, &models)));
             }

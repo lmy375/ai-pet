@@ -9,6 +9,9 @@ pub struct AiConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// Wire protocol to speak, as configured on the agent. Empty = infer from
+    /// the model name. See `crate::provider::kind`.
+    pub provider: String,
     /// Context-window size (tokens) used as the denominator for the context
     /// usage ring. The standard OpenAI API doesn't expose this, so it's a config
     /// value (`AgentConfig::context_window`).
@@ -55,6 +58,7 @@ impl AiConfig {
             api_key: agent.api_key.clone(),
             base_url: agent.api_base.clone(),
             model: agent.model.clone(),
+            provider: agent.provider.clone(),
             context_window: agent.context_window,
             search_api_key: search_api_key.to_string(),
             reasoning_effort: agent.reasoning_effort.clone(),

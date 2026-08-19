@@ -9,21 +9,18 @@
   "common.open": "打开",
   "common.enable": "启用",
   "common.zoomImage": "点击查看大图",
-
   "app.pin.on": "取消钉住",
   "app.pin.off": "钉住（保持置顶、不自动收起）",
   "app.openSettings": "打开设置面板",
   "app.chat.expand": "展开聊天",
   "app.chat.collapse": "收起聊天",
   "app.resize": "拖动调整大小",
-
   "panel.tab.chat": "聊天",
   "panel.tab.group": "群聊",
   "panel.tab.memory": "记忆",
   "panel.tab.tasks": "任务",
   "panel.tab.settings": "设置",
   "panel.openDebug": "在新窗口中打开调试日志",
-
   "group.tab.room": "群聊",
   "group.members": "成员",
   "group.noAgents": "还没有配置 Agent",
@@ -36,14 +33,12 @@
   "group.empty.room": "开始群聊吧~",
   "group.empty.noMembers": "先在右上角「成员」里把 Agent 加进群聊",
   "group.agent.empty": "该 Agent 还没有动静",
-
   "debug.tab.app": "应用日志",
   "debug.tab.llm": "LLM 日志",
   "debug.clear": "清空",
   "debug.devtoolsFailed": "无法打开 DevTools。请使用右键菜单 → Inspect Element。",
   "debug.logCount": "{count} 条日志",
   "debug.empty": "暂无日志。聊天和操作会产生日志。",
-
   "chat.input.placeholder": "输入消息...",
   "chat.input.removeImage": "移除图片",
   "chat.input.send": "发送",
@@ -71,10 +66,8 @@
   "chat.model.loading": "加载模型中…",
   "chat.bgTaskDone": "后台任务完成：{label}",
   "chat.bgTaskDoneContent": "[后台任务完成] {label}：\n{result}",
-
   "gallery.readError": "无法读取图库目录：{error}",
   "gallery.empty": "图库目录中没有图片或视频",
-
   "memory.subtitle": "宠物的长期记忆，跨对话保存",
   "memory.openDir": "在系统文件管理器中打开记忆文件夹",
   "memory.openDirBtn": "打开记忆文件夹",
@@ -87,7 +80,6 @@
   "memory.memory.placeholder": "宠物值得长期记住的理解与想法（对话中自行记录，只记有价值的，不是流水账日记）...",
   "memory.heartbeat.title": "HEARTBEAT.md（定时任务）",
   "memory.heartbeat.placeholder": "宠物的定时任务清单（每次心跳会读它来判断该做什么；宠物也会自行维护）...",
-
   "tasks.title": "后台任务",
   "tasks.empty": "暂无后台任务",
   "tasks.running": "运行中 ({count})",
@@ -107,12 +99,10 @@
   "tasks.cmd": "命令",
   "tasks.result": "返回结果",
   "tasks.noOutput": "（暂无输出）",
-
   "tool.running": "执行中...",
   "tool.background": "后台运行中",
   "tool.args": "参数",
   "tool.result": "返回值",
-
   "llm.recordCount": "{count} 条记录",
   "llm.empty": "暂无 LLM 日志。发送聊天消息后会产生记录。",
   "llm.section.time": "时间",
@@ -123,7 +113,6 @@
   "llm.row.doneTime": "完成时间",
   "llm.row.firstTokenLatency": "首 Token 延迟",
   "llm.row.totalLatency": "总耗时",
-
   "settings.language": "语言",
   "settings.openConfigDir": "打开配置文件夹",
   "settings.openConfigDirTitle": "在系统文件管理器中打开配置文件夹",
@@ -162,6 +151,9 @@
   "settings.openGalleryDirFailed": "打开图库目录失败: {error}",
   "settings.llm.title": "LLM 配置",
   "settings.llm.modelsNone": "未获取到可用模型",
+  "settings.llm.provider": "接口协议",
+  "settings.llm.providerHint": "决定用哪种协议发请求。留空则按模型名自动推断——走网关或模型改过名时经常猜错，这里手动选对。",
+  "settings.llm.providerResolved": "自动识别为 {provider}",
   "settings.llm.modelsLoaded": "已加载 {count} 个模型",
   "settings.llm.modelsFailed": "加载模型失败: {error}",
   "settings.llm.testOk": "模型可用",

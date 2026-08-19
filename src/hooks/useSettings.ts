@@ -22,6 +22,8 @@ export interface TelegramConfig {
 export interface AgentConfig {
   id: string;
   name: string;
+  /** Wire protocol to speak; "" = auto-detect from the model name. Defaults to "openai". */
+  provider: string;
   api_base: string;
   api_key: string;
   model: string;
@@ -93,6 +95,7 @@ export function defaultAgent(id = "default", name = "默认"): AgentConfig {
   return {
     id,
     name,
+    provider: "openai",
     api_base: "https://api.openai.com/v1",
     api_key: "",
     model: "gpt-4o-mini",

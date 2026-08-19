@@ -37,7 +37,40 @@ interface LlmLogEntry {
   };
 }
 
-type ContentBlock = { type?: string; text?: string; image_url?: { url?: string } };
+// Messages are logged as serialized genai `ChatMessage`s: content is an array of
+// externally-tagged `ContentPart`s (`{Text: "..."}`, `{Binary: {...}}`, …).
+// Logs written before the genai migration hold OpenAI blocks
+// (`{type: "image_url", image_url: {url}}`), so both shapes are handled.
+type ContentBlock = {
+  type?: string;
+  text?: string;
+  image_url?: { url?: string };
+  Text?: string;
+  Binary?: { content_type?: string; source?: { Base64?: string; Url?: string } };
+  ThoughtSignature?: string;
+  ReasoningContent?: string;
+};
+
+/** The displayable image URL of a content block, or null if it isn't an image. */
+function blockImageUrl(b: ContentBlock): string | null {
+  if (b?.Binary) {
+    const { content_type, source } = b.Binary;
+    if (!content_type?.startsWith("image/")) return null;
+    if (source?.Url) return source.Url;
+    if (source?.Base64) return `data:${content_type};base64,${source.Base64}`;
+    return null;
+  }
+  if (b?.type === "image_url" || b?.image_url) return b.image_url?.url ?? null;
+  return null;
+}
+
+/** The plain text of a content block, or null if it carries none. */
+function blockText(b: ContentBlock): string | null {
+  if (typeof b?.Text === "string") return b.Text;
+  if (typeof b?.ReasoningContent === "string") return b.ReasoningContent;
+  if (b?.type === "text" && typeof b.text === "string") return b.text;
+  return null;
+}
 type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
 
 // One-line text summary of a message's `content` for the collapsed list row.
@@ -50,8 +83,12 @@ function contentToText(content: unknown): string {
   let imageCount = 0;
   const parts = content.map((block) => {
     const b = block as ContentBlock;
-    if (b?.type === "image_url" || b?.image_url) return `[Image #${++imageCount}]`;
-    if (b?.type === "text" && typeof b.text === "string") return b.text;
+    if (blockImageUrl(b)) return `[Image #${++imageCount}]`;
+    const text = blockText(b);
+    if (text !== null) return text;
+    // Opaque provider token replayed on the next turn — it's long, base64-ish
+    // and unreadable, so don't let it drown the row.
+    if (typeof b?.ThoughtSignature === "string") return "[ThoughtSignature]";
     return JSON.stringify(block);
   });
   return parts.join("\n");
@@ -68,8 +105,8 @@ function renderContent(content: unknown, onZoom: (src: string) => void, zoomTitl
     <div className="mt-0.5 flex flex-col gap-1.5">
       {content.map((block, k) => {
         const b = block as ContentBlock;
-        const url = b?.image_url?.url;
-        if ((b?.type === "image_url" || b?.image_url) && url) {
+        const url = blockImageUrl(b);
+        if (url) {
           return (
             <img
               key={k}
@@ -81,8 +118,12 @@ function renderContent(content: unknown, onZoom: (src: string) => void, zoomTitl
             />
           );
         }
-        if (b?.type === "text" && typeof b.text === "string") {
-          return <pre key={k} className={preClass}>{b.text}</pre>;
+        const text = blockText(b);
+        if (text !== null) {
+          return <pre key={k} className={preClass}>{text}</pre>;
+        }
+        if (typeof b?.ThoughtSignature === "string") {
+          return <pre key={k} className={preClass}>[ThoughtSignature]</pre>;
         }
         return <pre key={k} className={preClass}>{JSON.stringify(block, null, 2)}</pre>;
       })}
@@ -281,7 +322,7 @@ export function LlmLogView() {
   const lastUserMsg = (entry: LlmLogEntry): string => {
     const msgs = entry.request.messages;
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === "user") {
+      if (String(msgs[i].role).toLowerCase() === "user") {
         const text = contentToText(msgs[i].content);
         return text.length > 80 ? text.slice(0, 80) + "..." : text;
       }
@@ -366,7 +407,7 @@ export function LlmLogView() {
 
                     <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title={t("llm.section.request")}>
                       {entry.request.messages.map((msg, j) => {
-                        if (msg.role === "tool") {
+                        if (String(msg.role).toLowerCase() === "tool") {
                           return (
                             <div key={j} className="mb-1.5">
                               <ToolResultView content={msg.content} call={msg.tool_call_id ? toolCallsById.get(msg.tool_call_id) : undefined} />
@@ -378,7 +419,7 @@ export function LlmLogView() {
                           <div key={j} className="mb-1.5">
                             {hasContent && (
                               <>
-                                <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
+                                <Badge color={roleColors[String(msg.role).toLowerCase()] ?? "slate"}>{msg.role}</Badge>
                                 {renderContent(msg.content, setZoomed, t("common.zoomImage"))}
                               </>
                             )}

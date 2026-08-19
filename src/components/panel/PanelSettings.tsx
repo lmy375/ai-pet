@@ -46,6 +46,12 @@ const blankSettings: AppSettings = {
   agents: [defaultAgent()],
 };
 
+type ProviderOptions = {
+  options: { id: string; label: string }[];
+  /** What a request would actually use — equals `provider`, or genai's inference when it's empty. */
+  resolved: string;
+};
+
 export function PanelSettings() {
   const { t } = useI18n();
   const [form, setForm] = useState<AppSettings>(blankSettings);
@@ -65,6 +71,7 @@ export function PanelSettings() {
   const [telegramReconnecting, setTelegramReconnecting] = useState(false);
   const [rawYaml, setRawYaml] = useState("");
   const [models, setModels] = useState<string[]>([]);
+  const [providerOptions, setProviderOptions] = useState<ProviderOptions | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [skillsInfo, setSkillsInfo] = useState<SkillsInfo | null>(null);
@@ -128,6 +135,18 @@ export function PanelSettings() {
     if (a?.api_base?.trim()) loadModels(a.api_base, a.api_key, true);
     else setModels([]);
   };
+
+  // Keep the provider list — and what "Auto" resolves to for the current model —
+  // in sync with the edited agent. The resolution depends on the model name, so
+  // this has to re-run when the model changes, not just on mount.
+  useEffect(() => {
+    invoke<ProviderOptions>("list_providers", {
+      model: agent?.model ?? "",
+      provider: agent?.provider ?? "",
+    })
+      .then(setProviderOptions)
+      .catch(() => setProviderOptions(null));
+  }, [agent?.model, agent?.provider]);
 
   // Auto-save current form settings (on blur / Enter). `next` lets callers persist
   // an updated value immediately without waiting for a state flush.
@@ -237,7 +256,14 @@ export function PanelSettings() {
     if (!apiBase.trim()) return;
     setLoadingModels(true);
     try {
-      const list = await invoke<string[]>("list_models", { apiBase, apiKey });
+      // The provider decides which protocol the listing speaks — an Anthropic or
+      // Gemini endpoint has no OpenAI-style /models route.
+      const list = await invoke<string[]>("list_models", {
+        apiBase,
+        apiKey,
+        provider: agent.provider ?? "",
+        model: agent.model,
+      });
       setModels(list);
       if (!silent) {
         ok(list.length === 0 ? t("settings.llm.modelsNone") : t("settings.llm.modelsLoaded", { count: list.length }));
@@ -254,7 +280,12 @@ export function PanelSettings() {
     setTesting(true);
     setTestResult(null);
     try {
-      await invoke("test_model", { apiBase: agent.api_base, apiKey: agent.api_key, model: agent.model });
+      await invoke("test_model", {
+        apiBase: agent.api_base,
+        apiKey: agent.api_key,
+        model: agent.model,
+        provider: agent.provider ?? "",
+      });
       setTestResult({ ok: true, text: t("settings.llm.testOk") });
     } catch (e: any) {
       setTestResult({ ok: false, text: t("settings.llm.testFailed", { error: e }) });
@@ -583,7 +614,31 @@ export function PanelSettings() {
 
           {/* LLM Config */}
           <Card title={t("settings.llm.title")}>
-            <Label>API Base URL</Label>
+            <Label className="flex items-center gap-2">
+              <span>{t("settings.llm.provider")}</span>
+              {/* Auto-detection is a static model-name prefix map, so it guesses
+                  wrong behind a gateway. Showing what it resolved to makes a bad
+                  guess visible here instead of as a malformed request later. */}
+              {!agent.provider && providerOptions?.resolved && (
+                <span className="font-normal text-slate-400">
+                  {t("settings.llm.providerResolved", { provider: providerOptions.resolved })}
+                </span>
+              )}
+            </Label>
+            <Select
+              value={agent.provider ?? ""}
+              onChange={(e) => {
+                commitAgent({ provider: e.target.value });
+                setTestResult(null);
+              }}
+            >
+              {(providerOptions?.options ?? [{ id: "", label: "Auto" }]).map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </Select>
+            <p className="mt-1 text-[11px] text-slate-400">{t("settings.llm.providerHint")}</p>
+
+            <Label className="mt-3">API Base URL</Label>
             <SavedTextInput
               value={agent.api_base}
               onChange={(e) => updateAgent({ api_base: e.target.value })}

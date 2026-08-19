@@ -51,14 +51,56 @@ pub fn save_config_raw(app: tauri::AppHandle, content: String) -> Result<(), Str
     Ok(())
 }
 
+/// The selectable provider (wire-protocol) options, and what "Auto" would
+/// resolve to for the given model. Served from Rust so `provider::PROVIDERS`
+/// stays the single source of truth — a hardcoded copy in the UI would drift
+/// the moment a provider is added.
 #[tauri::command]
-pub async fn list_models(api_base: String, api_key: String) -> Result<Vec<String>, String> {
-    settings::list_models(api_base, api_key).await
+pub fn list_providers(model: String, provider: String) -> ProviderOptions {
+    ProviderOptions {
+        options: pet_core::provider::PROVIDERS
+            .iter()
+            .map(|(id, label)| ProviderOption {
+                id: id.to_string(),
+                label: label.to_string(),
+            })
+            .collect(),
+        resolved: pet_core::provider::resolved_id(&provider, &model).to_string(),
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct ProviderOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ProviderOptions {
+    pub options: Vec<ProviderOption>,
+    /// The provider id actually used for a request with this config — equal to
+    /// `provider` unless it's empty, in which case it's genai's inference.
+    pub resolved: String,
 }
 
 #[tauri::command]
-pub async fn test_model(api_base: String, api_key: String, model: String) -> Result<(), String> {
-    settings::test_model(api_base, api_key, model).await
+pub async fn list_models(
+    api_base: String,
+    api_key: String,
+    provider: String,
+    model: String,
+) -> Result<Vec<String>, String> {
+    settings::list_models(api_base, api_key, provider, model).await
+}
+
+#[tauri::command]
+pub async fn test_model(
+    api_base: String,
+    api_key: String,
+    model: String,
+    provider: String,
+) -> Result<(), String> {
+    settings::test_model(api_base, api_key, model, provider).await
 }
 
 #[tauri::command]
