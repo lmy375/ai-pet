@@ -1,0 +1,292 @@
+name: Release
+
+# Runs on a version tag push (v1.0.3 / v1.0.3-beta.1) or manually.
+# Manual run without a tag = build the artifacts only, publish nothing.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, e.g. v1.0.3. Empty = build artifacts only."
+        required: false
+        default: ""
+      draft:
+        description: "Publish as a draft release"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      publish: ${{ steps.meta.outputs.publish }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then TAG="$REF_NAME"; else TAG="${INPUT_TAG:-}"; fi
+          TAG="$(printf '%s' "$TAG" | tr -d '[:space:]')"
+          if [ -n "$TAG" ]; then
+            if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag '$TAG' must look like v1.0.3 or v1.0.3-beta.1"
+              exit 1
+            fi
+            VERSION="${TAG#v}"
+            PUBLISH=true
+            case "$VERSION" in *-*) PRERELEASE=true ;; *) PRERELEASE=false ;; esac
+          else
+            VERSION="dev-${GITHUB_SHA:0:7}"
+            PUBLISH=false
+            PRERELEASE=false
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "publish=$PUBLISH"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION tag=${TAG:-<none>} publish=$PUBLISH" >> "$GITHUB_STEP_SUMMARY"
+
+  cli:
+    name: pet-cli (${{ matrix.label }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, label: macos-arm64 }
+          - { os: macos-latest, target: x86_64-apple-darwin, label: macos-x64 }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, label: linux-x64 }
+          # Static build (evals ship pet-cli into task containers) — same
+          # clux/muslrust image evals/eval-deep-swe uses, so it stays in sync.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, label: linux-x64-musl, musl: true }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.musl }}
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !matrix.musl }}
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install OpenSSL headers
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Build
+        if: ${{ !matrix.musl }}
+        run: cargo build --release -p pet-cli --target ${{ matrix.target }}
+
+      - name: Build (static, musl container)
+        if: ${{ matrix.musl }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/volume -w /volume \
+            -e CARGO_TERM_COLOR=always \
+            clux/muslrust:stable \
+            cargo build --release -p pet-cli --target ${{ matrix.target }}
+          sudo chown -R "$(id -u):$(id -g)" target
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/pet-cli"
+          test -x "$BIN"
+          case "$RUNNER_OS" in
+            # Stripping drops the linker's ad-hoc signature, and unsigned
+            # binaries are killed on arm64 macOS — re-sign after stripping.
+            macOS) strip "$BIN"; codesign -f -s - "$BIN" ;;
+            *) strip "$BIN" ;;
+          esac
+          mkdir -p artifacts
+          tar -czf "artifacts/pet-cli-${VERSION}-${{ matrix.label }}.tar.gz" -C "$(dirname "$BIN")" pet-cli
+          ls -lh artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pet-cli-${{ matrix.label }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  app:
+    name: pet.app (${{ matrix.label }})
+    needs: prepare
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, label: macos-arm64 }
+          - { target: x86_64-apple-darwin, label: macos-x64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-${{ matrix.target }}
+
+      # The Cubism SDK + models are copyrighted and gitignored, so CI has to
+      # fetch them. Without them the app builds but the pet renders nothing.
+      # Set the LIVE2D_ASSETS_URL secret to a zip whose contents unzip into
+      # public/ (i.e. it holds lib/live2dcubismcore.min.js and models/...).
+      - name: Fetch Live2D assets
+        env:
+          LIVE2D_ASSETS_URL: ${{ secrets.LIVE2D_ASSETS_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LIVE2D_ASSETS_URL:-}" ]; then
+            echo "::warning::LIVE2D_ASSETS_URL is not set — the bundled app will ship without the Cubism core and models, and the pet will fail to render."
+            exit 0
+          fi
+          curl -fsSL "$LIVE2D_ASSETS_URL" -o /tmp/live2d.zip
+          unzip -oq /tmp/live2d.zip -d public
+          test -f public/lib/live2dcubismcore.min.js || {
+            echo "::error::the zip did not contain lib/live2dcubismcore.min.js"; exit 1; }
+
+      - name: Stamp version
+        if: ${{ needs.prepare.outputs.publish == 'true' }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > /tmp/conf.json
+          mv /tmp/conf.json src-tauri/tauri.conf.json
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build bundle
+        env:
+          # All optional: unset -> tauri skips signing/notarization and the
+          # release ships unsigned (see the release notes for the xattr step).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          DMG="$(find . -path "*/${{ matrix.target }}/release/bundle/dmg/*.dmg" -print -quit)"
+          if [ -z "$DMG" ]; then echo "::error::no .dmg produced"; exit 1; fi
+          mkdir -p artifacts
+          cp "$DMG" "artifacts/pet-${VERSION}-${{ matrix.label }}.dmg"
+          ls -lh artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pet-app-${{ matrix.label }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, cli, app]
+    if: ${{ needs.prepare.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum -- * > /tmp/SHA256SUMS.txt
+          mv /tmp/SHA256SUMS.txt .
+          cat SHA256SUMS.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/notes.tpl <<'NOTES'
+          ### Downloads
+
+          | | |
+          | --- | --- |
+          | Desktop app (Apple Silicon) | `pet-<version>-macos-arm64.dmg` |
+          | Desktop app (Intel) | `pet-<version>-macos-x64.dmg` |
+          | Terminal UI | `pet-cli-<version>-<platform>.tar.gz` |
+
+          The app is unsigned, so macOS quarantines it. After dragging it to
+          Applications, run once:
+
+          ```bash
+          xattr -dr com.apple.quarantine /Applications/pet.app
+          ```
+
+          `pet-cli`: untar and drop the binary on your `PATH`. It shares the
+          GUI's config, sessions and memory.
+
+          ---
+          NOTES
+          sed "s/<version>/${VERSION}/g" /tmp/notes.tpl > /tmp/notes.md
+
+          FLAGS=()
+          if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
+          if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
+
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber -R "$REPO"
+            gh release edit "$TAG" --notes-file /tmp/notes.md "${FLAGS[@]}" -R "$REPO"
+          else
+            gh release create "$TAG" assets/* \
+              --title "$TAG" \
+              --notes-file /tmp/notes.md \
+              --generate-notes \
+              --target "$GITHUB_SHA" \
+              "${FLAGS[@]}" \
+              -R "$REPO"
+          fi
