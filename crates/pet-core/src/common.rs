@@ -14,8 +14,13 @@ pub fn http_client() -> reqwest::Client {
 /// Environment variable that relocates the whole on-disk state root.
 pub const CONFIG_DIR_ENV: &str = "PET_CONFIG_DIR";
 
-/// Base config directory for the app: `<os config dir>/pet`, holding
-/// `config.yaml`, `sessions/`, `memory/`, `group/` and `logs/`.
+/// Directory name under the OS config dir. Debug builds — `tauri dev`,
+/// `cargo run -p pet-cli` — get their own root so poking at a dev build never
+/// touches the state of the installed app (or vice versa).
+pub const ROOT_DIR_NAME: &str = if cfg!(debug_assertions) { "pet-dev" } else { "pet" };
+
+/// Base config directory for the app: `<os config dir>/pet` (`pet-dev` in debug
+/// builds), holding `config.yaml`, `sessions/`, `memory/`, `group/` and `logs/`.
 ///
 /// `PET_CONFIG_DIR` overrides it wholesale. That's what lets `pet-eval` run a
 /// case against a throwaway directory — its own config, memory and logs —
@@ -27,7 +32,7 @@ pub fn config_dir() -> Result<PathBuf, String> {
         return Ok(PathBuf::from(dir.trim()));
     }
     let dir = dirs::config_dir().ok_or_else(|| "Cannot determine config directory".to_string())?;
-    Ok(dir.join("pet"))
+    Ok(dir.join(ROOT_DIR_NAME))
 }
 
 /// Ensure the parent directory of `path` exists, creating it (and any missing

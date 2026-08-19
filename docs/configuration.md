@@ -20,8 +20,14 @@
 | `logs/` | `app.log` / `llm.log` / 后台任务历史 `tasks.json` |
 | `/tmp/pet/shell/` | bash 任务的 stdout/stderr |
 
-设 `PET_CONFIG_DIR` 可以整个换掉上表的根目录（`/tmp/...` 那行除外）。
-[评测](evals.md)靠它把每条用例跑在一次性目录里，碰不到真实的配置与记忆。
+打包出来的 app 和 `cargo build --release` 的 pet-cli 用 `pet/`；debug 构建
+（`pnpm tauri dev`、`cargo run -p pet-cli`）自动改用 `pet-dev/`，所以开发时怎么折腾
+都碰不到装好那份的配置、会话与记忆。想让 dev 沿用现有配置就拷一次：
+`cp -R ~/Library/Application\ Support/pet{,-dev}`。
+
+设 `PET_CONFIG_DIR` 可以整个换掉上表的根目录（`/tmp/...` 那行除外），且优先级高于
+上面的 debug/release 之分。[评测](evals.md)靠它把每条用例跑在一次性目录里，碰不到
+真实的配置与记忆。
 
 ## 多 Agent
 

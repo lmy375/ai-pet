@@ -13,7 +13,11 @@
   (heartbeat `chat` tool UI side effects). New engine features go in pet-core behind
   these traits — never `use tauri` in pet-core.
 - CLI shares the GUI's config.yaml + session files and follows the same
-  reload-before-send rule, so both can run at once (see Windows below).
+  reload-before-send rule, so both can run at once (see Windows below). Same
+  build profile only: debug builds root their state at `<os config>/pet-dev`,
+  release at `<os config>/pet` (`ROOT_DIR_NAME` in common.rs), so `tauri dev`
+  never touches the installed app's config/sessions/memory. `PET_CONFIG_DIR`
+  still overrides both.
 
 ## Windows
 - Pet window label = `main` (tauri.conf.json), Panel Chat window label = `panel` (commands/window.rs).
