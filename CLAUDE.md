@@ -2,6 +2,17 @@
 
 ## Workflow
 - Solo project: commit directly on `main` and `git push`
+- Every build/run/verify entry point is a pnpm script — use these, don't retype the
+  underlying cargo/tauri invocations:
+  | | |
+  |---|---|
+  | `pnpm app` / `pnpm app:restart` | run the desktop app (dev); restart kills a stale instance first |
+  | `pnpm cli -p "hi"` | run pet-cli (args forward; `--` optional) |
+  | `pnpm app:build` / `pnpm cli:build` | release builds; `pnpm build:all` for both |
+  | `pnpm check` / `pnpm test` / `pnpm lint` | tsc+cargo check / cargo test / clippy |
+  | `pnpm verify` | all three, in order — run before committing |
+  `dev` and `build` stay frontend-only under their conventional Vite names because
+  `tauri.conf.json`'s `beforeDevCommand`/`beforeBuildCommand` invoke them by name.
 - **No installed base — refactor all the way through.** There are no users on old
   versions, so never write a migration layer, compatibility shim, or format
   converter for existing config/session/memory data. Change the format and let

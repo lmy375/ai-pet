@@ -49,7 +49,13 @@ fn print_usage() {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // A leading `--` is what package-manager wrappers insert when forwarding
+    // args (`pnpm cli -- -p "hi"`), and it lands here as a literal argument.
+    // Skipping it means both that form and the bare one work.
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .skip_while(|a| a == "--")
+        .collect();
     let mut oneshot: Option<String> = None;
     let mut i = 0;
     while i < args.len() {

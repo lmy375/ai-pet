@@ -8,7 +8,16 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "relaunch": "pkill -f 'target/debug/pet' 2>/dev/null; pkill -f 'pnpm tauri' 2>/dev/null; sleep 1 && pnpm tauri dev"
+    "app": "tauri dev",
+    "app:restart": "pkill -f 'target/debug/pet$' 2>/dev/null; pkill -f 'tauri dev' 2>/dev/null; sleep 1 && pnpm app",
+    "cli": "cargo run -q -p pet-cli --",
+    "app:build": "tauri build",
+    "cli:build": "cargo build --release -p pet-cli",
+    "build:all": "pnpm app:build && pnpm cli:build",
+    "check": "tsc --noEmit && cargo check --workspace",
+    "test": "cargo test --workspace",
+    "lint": "cargo clippy --workspace --all-targets",
+    "verify": "pnpm check && pnpm test && pnpm lint"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
