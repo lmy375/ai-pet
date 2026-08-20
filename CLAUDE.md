@@ -56,11 +56,12 @@
   carries Anthropic thinking signatures / Responses reasoning items through a tool loop.
 - **Reasoning is one config field**, `AgentConfig::reasoning`, mapped onto genai's single
   `ReasoningEffort`: `""` / a keyword (`minimal`…`max`) / a plain number = token budget.
-  The trap: **every OpenAI-protocol adapter silently drops `Budget(n)`** (chat-completions
-  *and* Responses — `Budget(_) => return Ok(())` in genai), while Anthropic/Gemini render it
-  natively. So `llm::chat_options` sends a budget to OpenAI-protocol endpoints as an
-  `extra_body` `thinking` object instead, which is what a gateway forwards. Don't "simplify"
-  that away — without it a configured budget means no reasoning control at all.
+  A numeric budget only reaches the wire on Anthropic/Gemini; the OpenAI protocol has no
+  such field, so its adapters drop it (`Budget(_) => return Ok(())`). That is genai being
+  correct — **don't smuggle a `thinking` object through `extra_body` to compensate**. The
+  fix for a budget is to select the native provider (genai's Anthropic adapter posts to
+  `{base_url}messages`, so a gateway's Anthropic-compatible route works). Settings flags
+  the unsupported combination via `provider::renders_reasoning_budget`.
 - Multimodal: images/PDF/audio ride as `ContentPart::Binary`. `llm::binary_from_url`
   converts the `data:` URLs the app already speaks (clipboard paste, Telegram photos,
   `screenshot` tool).

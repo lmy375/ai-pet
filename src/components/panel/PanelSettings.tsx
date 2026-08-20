@@ -53,6 +53,8 @@ type ProviderOptions = {
   options: { id: string; label: string }[];
   /** What a request would actually use — equals `provider`, or genai's inference when it's empty. */
   resolved: string;
+  /** Whether this protocol can express a numeric thinking budget. */
+  renders_budget: boolean;
 };
 
 export function PanelSettings() {
@@ -739,6 +741,16 @@ export function PanelSettings() {
                   onCommit={(v) => commitAgent({ reasoning: String(v) })}
                   placeholder="4096"
                 />
+                {/* The OpenAI protocol has no token-budget field, so this value
+                    would go out as nothing at all. Say so here rather than
+                    letting reasoning silently switch off. */}
+                {providerOptions && !providerOptions.renders_budget && (
+                  <p className="mt-1 text-[11px] text-amber-600">
+                    {t("settings.llm.reasoningBudgetUnsupported", {
+                      provider: providerOptions.resolved,
+                    })}
+                  </p>
+                )}
               </div>
             )}
             <HintText>{t("settings.llm.reasoningNote")}</HintText>

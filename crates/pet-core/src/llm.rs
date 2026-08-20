@@ -49,8 +49,14 @@ pub fn service_target(config: &AiConfig) -> ServiceTarget {
 /// assistant turn, which the tool loop feeds straight back into the next
 /// request — that round-trip is how Anthropic thinking signatures and Responses
 /// reasoning items survive multi-turn tool use.
+///
+/// Reasoning goes out as genai's `ReasoningEffort` and nothing else. A numeric
+/// budget is an Anthropic/Gemini concept with no field in the OpenAI protocol,
+/// so those adapters drop it — the fix is to select the native provider, not to
+/// smuggle a `thinking` object into an OpenAI payload. Settings warns about the
+/// combination (see `provider::renders_reasoning_budget`).
 pub fn chat_options(config: &AiConfig) -> ChatOptions {
-    let opts = ChatOptions::default()
+    let mut opts = ChatOptions::default()
         .with_capture_usage(true)
         .with_capture_content(true)
         .with_capture_tool_calls(true)
@@ -59,25 +65,10 @@ pub fn chat_options(config: &AiConfig) -> ChatOptions {
         // used to do by hand for models that inline it (DeepSeek-R1, Kimi).
         .with_normalize_reasoning_content(true);
 
-    let Some(effort) = reasoning_effort(&config.reasoning) else {
-        return opts;
-    };
-
-    // A token budget only reaches the wire on adapters with a native field for
-    // it. OpenAI-protocol adapters drop it, so send it the way those endpoints
-    // actually accept one: an Anthropic-style `thinking` object, which is what
-    // a gateway (litellm) forwards to the underlying model. Without this a
-    // configured budget is silently no reasoning control at all.
-    if let ReasoningEffort::Budget(tokens) = effort {
-        let kind = crate::provider::kind(&config.provider, &config.model);
-        if !crate::provider::renders_reasoning_budget(kind) {
-            return opts.with_extra_body(serde_json::json!({
-                "thinking": { "type": "enabled", "budget_tokens": tokens }
-            }));
-        }
+    if let Some(effort) = reasoning_effort(&config.reasoning) {
+        opts = opts.with_reasoning_effort(effort);
     }
-
-    opts.with_reasoning_effort(effort)
+    opts
 }
 
 /// Parse the configured reasoning control. A bare number is a thinking budget;
@@ -360,46 +351,17 @@ pub fn user_message(text: &str, images: &[String]) -> ChatMessage {
 mod tests {
     use super::*;
 
-    /// A numeric budget is native only to Anthropic/Gemini. On every
-    /// OpenAI-protocol adapter genai drops it outright, so it must go out as a
-    /// `thinking` object instead — otherwise a configured budget silently means
-    /// no reasoning control at all, which is what happened to every agent
-    /// running a Claude model behind an OpenAI-compatible gateway.
+    /// A budget only reaches the wire on adapters with a native field for it;
+    /// on the OpenAI protocols genai drops it. Nothing here tries to smuggle it
+    /// through anyway — Settings flags the combination instead, so the config
+    /// stays a faithful description of what gets sent.
     #[test]
-    fn a_token_budget_reaches_openai_protocol_endpoints() {
-        let cfg = |provider: &str, model: &str, reasoning: &str| AiConfig {
-            agent_id: String::new(),
-            api_key: String::new(),
-            base_url: String::new(),
-            model: model.to_string(),
-            provider: provider.to_string(),
-            context_window: 0,
-            search_api_key: String::new(),
-            reasoning: reasoning.to_string(),
-        };
-
-        // Gateway-hosted Claude: budget rides in extra_body, not reasoning_effort.
-        let opts = chat_options(&cfg("openai", "claude-sonnet-4-6", "4096"));
-        assert_eq!(
-            opts.extra_body,
-            Some(serde_json::json!({
-                "thinking": { "type": "enabled", "budget_tokens": 4096 }
-            }))
-        );
-
-        // Native Anthropic renders the budget itself — no passthrough needed.
-        let opts = chat_options(&cfg("anthropic", "claude-sonnet-4-6", "4096"));
-        assert!(opts.extra_body.is_none());
-        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::Budget(4096))));
-
-        // Keyword efforts are understood everywhere and never use extra_body.
-        let opts = chat_options(&cfg("openai", "gpt-5.6", "high"));
-        assert!(opts.extra_body.is_none());
-        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::High)));
-
-        // Unset means send nothing at all.
-        let opts = chat_options(&cfg("openai", "gpt-5.6", ""));
-        assert!(opts.reasoning_effort.is_none() && opts.extra_body.is_none());
+    fn only_native_protocols_can_express_a_token_budget() {
+        use crate::provider::{kind, renders_reasoning_budget};
+        assert!(renders_reasoning_budget(kind("anthropic", "claude-sonnet-4-6")));
+        assert!(renders_reasoning_budget(kind("gemini", "gemini-3-pro")));
+        assert!(!renders_reasoning_budget(kind("openai", "claude-sonnet-4-6")));
+        assert!(!renders_reasoning_budget(kind("openai_resp", "gpt-5.6")));
     }
 
     #[test]

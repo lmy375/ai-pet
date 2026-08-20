@@ -66,6 +66,9 @@ pub fn list_providers(model: String, provider: String) -> ProviderOptions {
             })
             .collect(),
         resolved: pet_core::provider::resolved_id(&provider, &model).to_string(),
+        renders_budget: pet_core::provider::renders_reasoning_budget(
+            pet_core::provider::kind(&provider, &model),
+        ),
     }
 }
 
@@ -81,6 +84,9 @@ pub struct ProviderOptions {
     /// The provider id actually used for a request with this config — equal to
     /// `provider` unless it's empty, in which case it's genai's inference.
     pub resolved: String,
+    /// Whether this protocol can express a numeric thinking budget. False for
+    /// the OpenAI protocols, where a budget would be silently discarded.
+    pub renders_budget: bool,
 }
 
 #[tauri::command]

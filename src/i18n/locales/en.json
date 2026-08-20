@@ -168,6 +168,7 @@
   "settings.llm.reasoning": "Reasoning effort",
   "settings.llm.reasoningOff": "Off (model default)",
   "settings.llm.reasoningBudget": "Explicit thinking token budget",
+  "settings.llm.reasoningBudgetUnsupported": "The {provider} protocol has no token-budget field, so this value won't be sent. Switch the protocol to Anthropic or Gemini — behind a gateway, point API Base at its Anthropic-compatible route.",
   "settings.llm.reasoningNote": "genai renders this per protocol: reasoning_effort for OpenAI, effort/thinking for Anthropic, thinkingBudget for Gemini. A budget sent to an OpenAI-compatible gateway rides along as a thinking object.",
   "settings.search.title": "Web Search",
   "settings.search.apiKey": "Tavily API Key",

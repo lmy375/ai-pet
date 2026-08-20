@@ -66,11 +66,16 @@ pub fn kind(provider: &str, model: &str) -> AdapterKind {
 
 /// Whether an adapter renders `ReasoningEffort::Budget(n)` onto the wire.
 ///
-/// Anthropic and Gemini have a native token-budget field. Every OpenAI-derived
-/// adapter — chat-completions and Responses alike — converts the effort to a
-/// keyword and **silently drops a budget** (`ReasoningEffort::Budget(_) =>
-/// return Ok(())` in genai's OpenAI adapter). Callers must know the difference:
-/// on those, a configured budget has to be sent another way or it vanishes.
+/// Anthropic and Gemini have a native token-budget field. The OpenAI protocol
+/// has none — its reasoning control is a keyword — so every OpenAI-derived
+/// adapter drops a budget (`ReasoningEffort::Budget(_) => return Ok(())` in
+/// genai's OpenAI adapter; the Responses adapter loses it via `as_keyword()`).
+///
+/// That is genai being correct, not a gap to work around: the fix for a user
+/// who wants a token budget is to select the native provider (genai's Anthropic
+/// adapter posts to `{base_url}messages`, so a gateway's Anthropic-compatible
+/// route works). Settings uses this to flag the combination rather than letting
+/// it silently mean "no reasoning control at all".
 pub fn renders_reasoning_budget(kind: AdapterKind) -> bool {
     matches!(
         kind,
