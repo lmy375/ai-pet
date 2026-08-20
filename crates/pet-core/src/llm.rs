@@ -365,11 +365,10 @@ mod tests {
 
     #[test]
     fn unreadable_history_is_dropped_not_carried() {
-        // Pre-migration entries (and anything hand-edited into nonsense) must
-        // not survive a load: they can't be sent, so keeping them in storage
-        // would be invisible dead weight that grows forever.
+        // An entry that can't be sent must not survive a load: keeping it in
+        // storage would be invisible dead weight that grows forever.
         let stored = vec![
-            serde_json::json!({"role": "user", "content": "old openai shape"}),
+            serde_json::json!({"role": "user", "content": "not a genai message"}),
             store_message(&ChatMessage::user("current")),
             serde_json::json!({"nonsense": true}),
         ];

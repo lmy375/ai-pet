@@ -83,15 +83,38 @@ fn write_index(index: &SessionIndex) -> Result<(), String> {
 // ("type"/"content"/"images") live in one place instead of being hand-written at
 // each call site and silently drifting from the TS union.
 
+/// A stable per-item id. Every producer stamps one at creation: display items
+/// are addressed by id (React keys, multi-select, `prune_session`), so an item
+/// that reaches disk without one can't be referred to at all.
+pub fn item_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Epoch milliseconds, the display timestamp carried by every item.
+pub fn item_ts() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
 /// A `user` display item. `images` are data URLs shown alongside the text.
 pub fn user_item(content: &str, images: &[String]) -> serde_json::Value {
-    serde_json::json!({ "type": "user", "content": content, "images": images })
+    serde_json::json!({
+        "id": item_id(),
+        "ts": item_ts(),
+        "type": "user",
+        "content": content,
+        "images": images,
+    })
 }
 
 /// An `assistant` display item carrying `images` (e.g. a screenshot the pet
 /// produced). Pass `&[]` for a plain text bubble.
 pub fn assistant_item(content: &str, images: &[String]) -> serde_json::Value {
-    let mut item = serde_json::json!({ "type": "assistant", "content": content });
+    let mut item = serde_json::json!({
+        "id": item_id(),
+        "ts": item_ts(),
+        "type": "assistant",
+        "content": content,
+    });
     if !images.is_empty() {
         item["images"] = serde_json::json!(images);
     }

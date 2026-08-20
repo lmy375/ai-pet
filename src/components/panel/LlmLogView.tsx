@@ -18,7 +18,7 @@ import {
 import { usePolling } from "../../hooks/usePolling";
 
 interface LlmLogEntry {
-  session_id?: string;
+  session_id: string;
   round: number;
   request_time: string;
   first_token_time: string | null;
@@ -291,11 +291,9 @@ export function LlmLogView() {
         .reverse();
       // Within one session each LLM request carries the full prior history, so
       // the newest entry of a session is a superset of every earlier one. Keep
-      // only that newest entry per session (legacy entries lacking a session_id
-      // are kept individually).
+      // only that newest entry per session.
       const seen = new Set<string>();
       const deduped = parsed.filter((e) => {
-        if (!e.session_id) return true;
         if (seen.has(e.session_id)) return false;
         seen.add(e.session_id);
         return true;

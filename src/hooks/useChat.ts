@@ -24,24 +24,19 @@ const MAX_SEEN_TASK_IDS = 500;
 // injections, and focus reloads. Never key/select by array index — it shifts when
 // items are inserted or removed and ends up deleting the wrong rows.
 let chatItemSeq = 0;
-function newItemId(): string {
+export function newItemId(): string {
   chatItemSeq += 1;
   return `it-${Date.now().toString(36)}-${chatItemSeq.toString(36)}`;
 }
 
-/** Ensure an item has a stable id, preserving ids already persisted on disk. */
-function withId(item: ChatItem): ChatItem {
-  return item.id ? item : { ...item, id: newItemId() };
-}
-
 export interface ChatItem {
-  id?: string; // stable per-item id for React keys + multi-select; backfilled on load for legacy items
+  id: string; // stable per-item id for React keys + multi-select; stamped by whichever side creates the item
   type: "user" | "assistant" | "tool" | "error" | "notification";
   content: string;
   reasoning?: string; // assistant items: chain-of-thought from a reasoning model, shown in a collapsed block. Display-only — never sent back to the model.
   images?: string[]; // base64 data URLs rendered in the bubble — user pastes, or tool-produced images (e.g. screenshots) on assistant items
   toolCalls?: ToolCall[];
-  ts?: number; // epoch ms; present for messages created after timestamps shipped
+  ts: number; // epoch ms, stamped at creation
   detail?: string; // notification items: the task's full result, shown on expand
 }
 
@@ -202,7 +197,7 @@ export function useChat() {
       const session = await invoke<Session>("load_session", { id });
       setSessionId(session.id);
       setSessionTitle(session.title);
-      setItems((session.items || []).map(withId));
+      setItems(session.items || []);
       messagesRef.current = session.messages || [];
       // Restore the persisted occupancy so the ring shows immediately, instead
       // of waiting for the next turn (or showing the session we switched from).

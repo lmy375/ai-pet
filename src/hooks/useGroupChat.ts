@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ChatItem, ToolCall } from "./useChat";
+import { newItemId, type ChatItem, type ToolCall } from "./useChat";
 
 /** One line in the shared group transcript (mirrors backend `GroupMessage`). */
 export interface GroupMessage {
@@ -52,12 +52,12 @@ function applyStream(view: AgentView, ev: StreamEvent): AgentView {
       ? v
       : {
           ...v,
-          items: [...v.items, { type: "tool", content: "", toolCalls: v.toolCalls, ts }],
+          items: [...v.items, { id: newItemId(), type: "tool", content: "", toolCalls: v.toolCalls, ts }],
           toolCalls: [],
         };
   const commitText = (v: AgentView): AgentView =>
     v.streaming.trim()
-      ? { ...v, items: [...v.items, { type: "assistant", content: v.streaming, ts }], streaming: "" }
+      ? { ...v, items: [...v.items, { id: newItemId(), type: "assistant", content: v.streaming, ts }], streaming: "" }
       : { ...v, streaming: "" };
 
   switch (ev.event) {
@@ -88,7 +88,7 @@ function applyStream(view: AgentView, ev: StreamEvent): AgentView {
       const v = flushTools(view);
       return {
         ...v,
-        items: [...v.items, { type: "assistant", content: "", images: [ev.data.dataUrl], ts }],
+        items: [...v.items, { id: newItemId(), type: "assistant", content: "", images: [ev.data.dataUrl], ts }],
       };
     }
     case "done": {
@@ -99,7 +99,7 @@ function applyStream(view: AgentView, ev: StreamEvent): AgentView {
       const v = flushTools(view);
       return {
         ...v,
-        items: [...v.items, { type: "error", content: ev.data.message, ts }],
+        items: [...v.items, { id: newItemId(), type: "error", content: ev.data.message, ts }],
         streaming: "",
         running: false,
       };

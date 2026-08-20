@@ -358,6 +358,7 @@ impl ItemBuilder {
         }
         let calls = std::mem::take(&mut self.tool_calls);
         self.items.push(serde_json::json!({
+            "id": crate::session::item_id(),
             "type": "tool",
             "content": "",
             "toolCalls": calls,
@@ -372,6 +373,7 @@ impl ItemBuilder {
             return;
         }
         let mut item = serde_json::json!({
+            "id": crate::session::item_id(),
             "type": "assistant",
             "content": text,
             "ts": Self::now_ms(),
@@ -415,6 +417,7 @@ impl ItemBuilder {
     pub fn image(&mut self, data_url: &str) {
         self.flush_tool_calls();
         self.items.push(serde_json::json!({
+            "id": crate::session::item_id(),
             "type": "assistant",
             "content": "",
             "images": [data_url],
@@ -430,6 +433,7 @@ impl ItemBuilder {
     pub fn error(&mut self, message: &str) {
         self.flush_tool_calls();
         self.items.push(serde_json::json!({
+            "id": crate::session::item_id(),
             "type": "error",
             "content": message,
             "ts": Self::now_ms(),

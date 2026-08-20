@@ -95,18 +95,17 @@ impl CliApp {
         // rebuilding it here is what used to drop tool rounds from context.
         let turn = match &input {
             TurnInput::User(text) => {
-                let mut item = session::user_item(text, &[]);
-                item["ts"] = serde_json::json!(now_ms());
-                sess.items.push(item);
+                sess.items.push(session::user_item(text, &[]));
                 UserTurn::text(text)
             }
             TurnInput::Completion(c) => {
                 let label = if c.label.is_empty() { c.kind.clone() } else { c.label.clone() };
                 sess.items.push(serde_json::json!({
+                    "id": session::item_id(),
                     "type": "notification",
                     "content": format!("后台任务完成：{}", label),
                     "detail": c.result,
-                    "ts": now_ms(),
+                    "ts": session::item_ts(),
                 }));
                 // Same message shape the GUI injects (chat.bgTaskDoneContent).
                 UserTurn::text(format!("[后台任务完成] {}：\n{}", label, c.result))
@@ -162,6 +161,3 @@ impl CliApp {
     }
 }
 
-pub fn now_ms() -> i64 {
-    chrono::Local::now().timestamp_millis()
-}

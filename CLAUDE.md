@@ -2,6 +2,12 @@
 
 ## Workflow
 - Solo project: commit directly on `main` and `git push`
+- **No installed base — refactor all the way through.** There are no users on old
+  versions, so never write a migration layer, compatibility shim, or format
+  converter for existing config/session/memory data. Change the format and let
+  stale data be dropped or deleted; don't teach the code to read both. A dual-format
+  reader is the thing to delete, not to add. This also means a change is not "done"
+  while an old path is kept alive beside the new one — remove the old one.
 
 ## Crate layout (one core, two interfaces)
 - Cargo workspace: `crates/pet-core` (ALL engine logic: chat pipeline, tools, MCP,
