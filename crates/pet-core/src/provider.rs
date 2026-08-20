@@ -64,6 +64,20 @@ pub fn kind(provider: &str, model: &str) -> AdapterKind {
     }
 }
 
+/// Whether an adapter renders `ReasoningEffort::Budget(n)` onto the wire.
+///
+/// Anthropic and Gemini have a native token-budget field. Every OpenAI-derived
+/// adapter — chat-completions and Responses alike — converts the effort to a
+/// keyword and **silently drops a budget** (`ReasoningEffort::Budget(_) =>
+/// return Ok(())` in genai's OpenAI adapter). Callers must know the difference:
+/// on those, a configured budget has to be sent another way or it vanishes.
+pub fn renders_reasoning_budget(kind: AdapterKind) -> bool {
+    matches!(
+        kind,
+        AdapterKind::Anthropic | AdapterKind::Gemini | AdapterKind::Vertex | AdapterKind::BedrockApi
+    )
+}
+
 /// The provider id `kind` resolved to — used by the Settings UI to show what
 /// "Auto" actually picked, so a bad guess is visible before it breaks a chat.
 pub fn resolved_id(provider: &str, model: &str) -> &'static str {

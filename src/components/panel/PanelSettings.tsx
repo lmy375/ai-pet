@@ -46,6 +46,9 @@ const blankSettings: AppSettings = {
   agents: [defaultAgent()],
 };
 
+/** Effort keywords genai understands; anything else in `reasoning` is a token budget. */
+const REASONING_KEYWORDS = ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 type ProviderOptions = {
   options: { id: string; label: string }[];
   /** What a request would actually use — equals `provider`, or genai's inference when it's empty. */
@@ -710,42 +713,35 @@ export function PanelSettings() {
             />
             <HintText>{t("settings.llm.contextWindowNote")}</HintText>
 
-            <Label className="mt-3">{t("settings.llm.reasoningEffort")}</Label>
+            <Label className="mt-3">{t("settings.llm.reasoning")}</Label>
             <Select
-              value={agent.reasoning_effort}
-              onChange={(e) => commitAgent({ reasoning_effort: e.target.value })}
+              value={REASONING_KEYWORDS.includes(agent.reasoning) ? agent.reasoning : "budget"}
+              onChange={(e) =>
+                commitAgent({ reasoning: e.target.value === "budget" ? "4096" : e.target.value })
+              }
             >
-              <option value="">{t("settings.llm.reasoningEffortOff")}</option>
+              <option value="">{t("settings.llm.reasoningOff")}</option>
               <option value="minimal">minimal</option>
               <option value="low">low</option>
               <option value="medium">medium</option>
               <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+              <option value="budget">{t("settings.llm.reasoningBudget")}</option>
             </Select>
-            <HintText>{t("settings.llm.reasoningEffortNote")}</HintText>
-
-            <label className="mb-2 mt-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
-              <input
-                type="checkbox"
-                className="accent-accent"
-                checked={agent.thinking_enabled}
-                onChange={(e) => commitAgent({ thinking_enabled: e.target.checked })}
-              />
-              {t("settings.llm.thinkingEnable")}
-            </label>
-            {agent.thinking_enabled && (
-              <>
-                <Label>{t("settings.llm.thinkingBudget")}</Label>
+            {!REASONING_KEYWORDS.includes(agent.reasoning) && (
+              <div className="mt-2">
                 <NumberField
-                  value={agent.thinking_budget_tokens}
-                  min={1024}
-                  fallback={1024}
-                  onChange={(v) => updateAgent({ thinking_budget_tokens: v })}
-                  onCommit={(v) => commitAgent({ thinking_budget_tokens: v })}
-                  placeholder="1024"
+                  value={Number(agent.reasoning) || 4096}
+                  min={1}
+                  fallback={4096}
+                  onChange={(v) => updateAgent({ reasoning: String(v) })}
+                  onCommit={(v) => commitAgent({ reasoning: String(v) })}
+                  placeholder="4096"
                 />
-              </>
+              </div>
             )}
-            <HintText>{t("settings.llm.thinkingNote")}</HintText>
+            <HintText>{t("settings.llm.reasoningNote")}</HintText>
           </Card>
 
           {/* MCP Servers */}

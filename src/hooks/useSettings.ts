@@ -29,11 +29,9 @@ export interface AgentConfig {
   model: string;
   context_window: number;
   /** OpenAI-style reasoning effort ("minimal"/"low"/"medium"/"high"); "" = omit. */
-  reasoning_effort: string;
-  /** Request Anthropic extended thinking (Claude models). */
-  thinking_enabled: boolean;
-  /** Token budget for extended thinking when thinking_enabled (>= 1024). */
-  thinking_budget_tokens: number;
+  /** Reasoning control: "" (off) or an effort keyword (minimal/low/medium/high/xhigh/max),
+   *  or a plain token count for an explicit thinking budget. */
+  reasoning: string;
   mcp_servers: Record<string, McpServerConfig>;
   telegram: TelegramConfig;
   heartbeat_enabled: boolean;
@@ -100,9 +98,7 @@ export function defaultAgent(id = "default", name = "默认"): AgentConfig {
     api_key: "",
     model: "gpt-4o-mini",
     context_window: 128000,
-    reasoning_effort: "",
-    thinking_enabled: false,
-    thinking_budget_tokens: 1024,
+    reasoning: "",
     mcp_servers: {},
     telegram: { bot_token: "", allowed_username: "", enabled: false },
     heartbeat_enabled: false,

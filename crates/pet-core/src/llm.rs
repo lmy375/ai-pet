@@ -50,7 +50,7 @@ pub fn service_target(config: &AiConfig) -> ServiceTarget {
 /// request — that round-trip is how Anthropic thinking signatures and Responses
 /// reasoning items survive multi-turn tool use.
 pub fn chat_options(config: &AiConfig) -> ChatOptions {
-    let mut opts = ChatOptions::default()
+    let opts = ChatOptions::default()
         .with_capture_usage(true)
         .with_capture_content(true)
         .with_capture_tool_calls(true)
@@ -59,36 +59,44 @@ pub fn chat_options(config: &AiConfig) -> ChatOptions {
         // used to do by hand for models that inline it (DeepSeek-R1, Kimi).
         .with_normalize_reasoning_content(true);
 
-    if let Some(effort) = reasoning_effort(config) {
-        opts = opts.with_reasoning_effort(effort);
-    }
-    opts
-}
+    let Some(effort) = reasoning_effort(&config.reasoning) else {
+        return opts;
+    };
 
-/// Collapse the two legacy reasoning knobs onto genai's single one. An explicit
-/// thinking budget wins over the effort label: it's the more specific request,
-/// and Anthropic models only think when given one.
-fn reasoning_effort(config: &AiConfig) -> Option<ReasoningEffort> {
-    if config.thinking_enabled {
-        return Some(ReasoningEffort::Budget(config.thinking_budget_tokens));
-    }
-    match config.reasoning_effort.trim().to_ascii_lowercase().as_str() {
-        "" => None,
-        "minimal" => Some(ReasoningEffort::Minimal),
-        "low" => Some(ReasoningEffort::Low),
-        "medium" => Some(ReasoningEffort::Medium),
-        "high" => Some(ReasoningEffort::High),
-        "xhigh" => Some(ReasoningEffort::XHigh),
-        "max" => Some(ReasoningEffort::Max),
-        "none" => Some(ReasoningEffort::None),
-        other => {
-            // Unknown label: send nothing rather than guess. Silently dropping
-            // it would hide a typo'd config until someone wondered why the
-            // model stopped thinking.
-            eprintln!("WARN: unknown reasoning_effort {other:?}, ignoring");
-            None
+    // A token budget only reaches the wire on adapters with a native field for
+    // it. OpenAI-protocol adapters drop it, so send it the way those endpoints
+    // actually accept one: an Anthropic-style `thinking` object, which is what
+    // a gateway (litellm) forwards to the underlying model. Without this a
+    // configured budget is silently no reasoning control at all.
+    if let ReasoningEffort::Budget(tokens) = effort {
+        let kind = crate::provider::kind(&config.provider, &config.model);
+        if !crate::provider::renders_reasoning_budget(kind) {
+            return opts.with_extra_body(serde_json::json!({
+                "thinking": { "type": "enabled", "budget_tokens": tokens }
+            }));
         }
     }
+
+    opts.with_reasoning_effort(effort)
+}
+
+/// Parse the configured reasoning control. A bare number is a thinking budget;
+/// anything else is one of genai's effort keywords.
+fn reasoning_effort(reasoning: &str) -> Option<ReasoningEffort> {
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() {
+        return None;
+    }
+    if let Ok(budget) = reasoning.parse::<u32>() {
+        return Some(ReasoningEffort::Budget(budget));
+    }
+    let effort = ReasoningEffort::from_keyword(&reasoning.to_ascii_lowercase());
+    if effort.is_none() {
+        // Send nothing rather than guess. Silently dropping a typo'd value
+        // would hide it until someone wondered why the model stopped thinking.
+        eprintln!("WARN: unknown reasoning value {reasoning:?}, ignoring");
+    }
+    effort
 }
 
 /// Result of one streaming round.
@@ -351,6 +359,58 @@ pub fn user_message(text: &str, images: &[String]) -> ChatMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A numeric budget is native only to Anthropic/Gemini. On every
+    /// OpenAI-protocol adapter genai drops it outright, so it must go out as a
+    /// `thinking` object instead — otherwise a configured budget silently means
+    /// no reasoning control at all, which is what happened to every agent
+    /// running a Claude model behind an OpenAI-compatible gateway.
+    #[test]
+    fn a_token_budget_reaches_openai_protocol_endpoints() {
+        let cfg = |provider: &str, model: &str, reasoning: &str| AiConfig {
+            agent_id: String::new(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: model.to_string(),
+            provider: provider.to_string(),
+            context_window: 0,
+            search_api_key: String::new(),
+            reasoning: reasoning.to_string(),
+        };
+
+        // Gateway-hosted Claude: budget rides in extra_body, not reasoning_effort.
+        let opts = chat_options(&cfg("openai", "claude-sonnet-4-6", "4096"));
+        assert_eq!(
+            opts.extra_body,
+            Some(serde_json::json!({
+                "thinking": { "type": "enabled", "budget_tokens": 4096 }
+            }))
+        );
+
+        // Native Anthropic renders the budget itself — no passthrough needed.
+        let opts = chat_options(&cfg("anthropic", "claude-sonnet-4-6", "4096"));
+        assert!(opts.extra_body.is_none());
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::Budget(4096))));
+
+        // Keyword efforts are understood everywhere and never use extra_body.
+        let opts = chat_options(&cfg("openai", "gpt-5.6", "high"));
+        assert!(opts.extra_body.is_none());
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::High)));
+
+        // Unset means send nothing at all.
+        let opts = chat_options(&cfg("openai", "gpt-5.6", ""));
+        assert!(opts.reasoning_effort.is_none() && opts.extra_body.is_none());
+    }
+
+    #[test]
+    fn reasoning_keywords_and_budgets_parse() {
+        assert!(matches!(reasoning_effort("1024"), Some(ReasoningEffort::Budget(1024))));
+        assert!(matches!(reasoning_effort(" Medium "), Some(ReasoningEffort::Medium)));
+        assert!(matches!(reasoning_effort("max"), Some(ReasoningEffort::Max)));
+        assert!(reasoning_effort("").is_none());
+        // A typo must not silently become some other effort level.
+        assert!(reasoning_effort("hihg").is_none());
+    }
 
     #[test]
     fn data_url_splits_into_mime_and_payload() {

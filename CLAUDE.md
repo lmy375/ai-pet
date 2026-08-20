@@ -54,6 +54,13 @@
   empty answer (a gateway 200-with-empty-stream silently zeroed 6/10 DeepSWE tasks); and
   the captured `assistant_turn` is replayed verbatim into the next round, which is what
   carries Anthropic thinking signatures / Responses reasoning items through a tool loop.
+- **Reasoning is one config field**, `AgentConfig::reasoning`, mapped onto genai's single
+  `ReasoningEffort`: `""` / a keyword (`minimal`…`max`) / a plain number = token budget.
+  The trap: **every OpenAI-protocol adapter silently drops `Budget(n)`** (chat-completions
+  *and* Responses — `Budget(_) => return Ok(())` in genai), while Anthropic/Gemini render it
+  natively. So `llm::chat_options` sends a budget to OpenAI-protocol endpoints as an
+  `extra_body` `thinking` object instead, which is what a gateway forwards. Don't "simplify"
+  that away — without it a configured budget means no reasoning control at all.
 - Multimodal: images/PDF/audio ride as `ContentPart::Binary`. `llm::binary_from_url`
   converts the `data:` URLs the app already speaks (clipboard paste, Telegram photos,
   `screenshot` tool).
