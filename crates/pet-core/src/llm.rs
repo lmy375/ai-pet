@@ -239,134 +239,35 @@ pub async fn stream_chat(
 
 // region: --- Message storage & conversion
 
-use genai::chat::{Binary, ChatRole, ContentPart, MessageContent, Tool, ToolResponse};
+use genai::chat::{Binary, ChatRole, ContentPart, MessageContent, Tool};
 use serde_json::Value;
 
 /// Sessions store their LLM history as JSON (`Session::messages`) so the rest
-/// of the app — group orchestrator, Telegram, CLI — can keep passing it around
-/// as opaque `Vec<Value>`. The JSON is a serialized genai `ChatMessage`, which
-/// is what preserves thought signatures and provider-opaque parts across turns.
+/// of the app can pass it around as opaque `Vec<Value>` without depending on
+/// genai's types. The JSON is a serialized genai `ChatMessage`, which is what
+/// carries thought signatures and provider-opaque parts across turns.
+///
+/// Nothing outside this module constructs these: callers describe a turn with
+/// `user_message` / `ChatMessage::assistant` and hand it here. That is the
+/// point — genai's wire shape stays an implementation detail of `llm`.
 pub fn store_message(msg: &ChatMessage) -> Value {
     serde_json::to_value(msg).unwrap_or(Value::Null)
 }
 
-/// Rehydrate stored history, accepting two shapes:
-///
-/// - serialized genai `ChatMessage`s — what this module writes, and what
-///   carries thought signatures and provider-opaque parts forward; and
-/// - OpenAI wire format (`{role, content, tool_calls}`) — which is both what
-///   pre-migration sessions hold AND what the frontend still appends
-///   (`useChat.ts`) and Telegram builds. That is deliberate: those callers
-///   describe a turn in the simplest shape, and normalizing happens here,
-///   once. Do NOT delete this path as "legacy" — it is a live input format.
-///
-/// Visible history (`Session::items`) is a separate, provider-neutral array
-/// and is untouched by any of this.
+/// Rehydrate stored history. Entries that don't deserialize are dropped rather
+/// than failing the turn: a single unreadable message should cost its own
+/// context, not the whole conversation.
 pub fn load_messages(stored: &[Value]) -> Vec<ChatMessage> {
     stored
         .iter()
-        .filter_map(|v| {
-            serde_json::from_value::<ChatMessage>(v.clone())
-                .ok()
-                .or_else(|| from_openai_message(v))
-        })
+        .filter_map(|v| serde_json::from_value::<ChatMessage>(v.clone()).ok())
         .collect()
 }
 
-/// Convert one OpenAI chat-completions message into a genai `ChatMessage`.
-fn from_openai_message(v: &Value) -> Option<ChatMessage> {
-    let role = match v.get("role")?.as_str()? {
-        "system" | "developer" => ChatRole::System,
-        "user" => ChatRole::User,
-        "assistant" => ChatRole::Assistant,
-        "tool" => ChatRole::Tool,
-        _ => return None,
-    };
-
-    // A tool result: `{role:"tool", tool_call_id, content}`.
-    if role == ChatRole::Tool {
-        let call_id = v.get("tool_call_id")?.as_str()?.to_string();
-        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or_default();
-        return Some(ChatMessage::tool(MessageContent::from_tool_responses(vec![
-            ToolResponse::new(call_id, content),
-        ])));
-    }
-
-    let mut parts: Vec<ContentPart> = Vec::new();
-    match v.get("content") {
-        Some(Value::String(text)) if !text.is_empty() => {
-            parts.push(ContentPart::from_text(text.clone()))
-        }
-        Some(Value::Array(blocks)) => {
-            for block in blocks {
-                match block.get("type").and_then(|t| t.as_str()) {
-                    Some("text") => {
-                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                            parts.push(ContentPart::from_text(text));
-                        }
-                    }
-                    Some("image_url") => {
-                        if let Some(url) = block
-                            .get("image_url")
-                            .and_then(|i| i.get("url"))
-                            .and_then(|u| u.as_str())
-                        {
-                            if let Some(binary) = binary_from_url(url) {
-                                parts.push(ContentPart::Binary(binary));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-
-    // Assistant turns can carry tool calls with no text at all.
-    if let Some(calls) = v.get("tool_calls").and_then(|t| t.as_array()) {
-        for call in calls {
-            let fn_name = call
-                .get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or_default()
-                .to_string();
-            // OpenAI streams arguments as a JSON *string*; genai wants the
-            // parsed value.
-            let fn_arguments = call
-                .get("function")
-                .and_then(|f| f.get("arguments"))
-                .and_then(|a| a.as_str())
-                .and_then(|a| serde_json::from_str::<Value>(a).ok())
-                .unwrap_or(Value::Null);
-            parts.push(ContentPart::ToolCall(ToolCall {
-                call_id: call
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                fn_name,
-                fn_arguments,
-                thought_signatures: None,
-            }));
-        }
-    }
-
-    if parts.is_empty() {
-        return None;
-    }
-    Some(ChatMessage::new(role, MessageContent::from_parts(parts)))
-}
-
-/// Whether a stored message has the given role. Stored history is genai
-/// `ChatMessage` JSON, but sessions written before the migration hold OpenAI
-/// wire format — whose role is the lowercase `"user"` rather than `"User"` —
-/// so both spellings have to count.
+/// Whether a stored message has the given role, without deserializing the
+/// whole message.
 fn stored_role_is(v: &Value, role: ChatRole) -> bool {
-    v.get("role")
-        .and_then(|r| r.as_str())
-        .is_some_and(|r| r.eq_ignore_ascii_case(&role.to_string()))
+    v.get("role").and_then(|r| r.as_str()) == Some(&role.to_string())
 }
 
 /// Whether a stored message is a user turn. Used to slice conversations into
@@ -463,42 +364,24 @@ mod tests {
     }
 
     #[test]
-    fn legacy_openai_history_survives_the_migration() {
-        // Exactly the shapes sitting in sessions written before genai.
+    fn unreadable_history_is_dropped_not_carried() {
+        // Pre-migration entries (and anything hand-edited into nonsense) must
+        // not survive a load: they can't be sent, so keeping them in storage
+        // would be invisible dead weight that grows forever.
         let stored = vec![
-            serde_json::json!({"role": "system", "content": "be nice"}),
-            serde_json::json!({"role": "user", "content": [
-                {"type": "text", "text": "what is this"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
-            ]}),
-            serde_json::json!({"role": "assistant", "content": "", "tool_calls": [
-                {"id": "call_1", "type": "function",
-                 "function": {"name": "shell", "arguments": "{\"cmd\":\"ls\"}"}}
-            ]}),
-            serde_json::json!({"role": "tool", "tool_call_id": "call_1", "content": "a.txt"}),
+            serde_json::json!({"role": "user", "content": "old openai shape"}),
+            store_message(&ChatMessage::user("current")),
+            serde_json::json!({"nonsense": true}),
         ];
         let msgs = load_messages(&stored);
-        assert_eq!(msgs.len(), 4);
-
-        assert_eq!(msgs[1].role, ChatRole::User);
-        assert_eq!(msgs[1].content.texts(), vec!["what is this"]);
-        assert_eq!(msgs[1].content.binaries().len(), 1);
-
-        // The arguments string must arrive parsed, not as a JSON string.
-        let calls = msgs[2].content.tool_calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].fn_name, "shell");
-        assert_eq!(calls[0].fn_arguments["cmd"], "ls");
-
-        let responses = msgs[3].content.tool_responses();
-        assert_eq!(responses[0].call_id, "call_1");
-        assert_eq!(responses[0].content, "a.txt");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content.texts(), vec!["current"]);
     }
 
     #[test]
     fn stored_genai_messages_round_trip() {
-        // New-format history must load back as itself, not fall through to the
-        // legacy path (which would drop it entirely).
+        // Storage is the only history format; a message must survive the
+        // save/load round-trip with its parts intact.
         let original = user_message("hi", &["data:image/png;base64,QUJD".to_string()]);
         let loaded = load_messages(&[store_message(&original)]);
         assert_eq!(loaded.len(), 1);

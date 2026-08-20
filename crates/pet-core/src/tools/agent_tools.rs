@@ -76,7 +76,10 @@ async fn spawn_subagent_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     // Build the sub-agent's own conversation: its task as the user message,
     // fronted by the worker-focused system prompt (not the pet persona).
-    let mut conv = vec![serde_json::json!({ "role": "user", "content": prompt_text.clone() })];
+    let mut conv = vec![crate::llm::store_message(&crate::llm::user_message(
+        &prompt_text,
+        &[],
+    ))];
     prompt::prepend_subagent_system_messages(&mut conv);
 
     // Owned copies so the work can outlive this call when backgrounded. Runs

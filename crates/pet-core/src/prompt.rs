@@ -232,7 +232,6 @@ mod tests {
     use super::*;
     use crate::llm::load_messages;
     use genai::chat::ChatRole;
-    use serde_json::json;
 
     /// (role, first text) of each message, after rehydrating the stored JSON —
     /// which is what the LLM transport actually sends.
@@ -251,7 +250,7 @@ mod tests {
         // A session seeded before this turn: leading system message plus history.
         let mut msgs = vec![
             crate::llm::store_message(&ChatMessage::system("OLD SOUL")),
-            json!({ "role": "user", "content": "hi" }),
+            crate::llm::store_message(&ChatMessage::user("hi")),
         ];
         apply_system_messages(&mut msgs, "MEMORY".to_string());
 
@@ -269,7 +268,7 @@ mod tests {
 
     #[test]
     fn inserts_system_messages_when_none_present() {
-        let mut msgs = vec![json!({ "role": "user", "content": "hi" })];
+        let mut msgs = vec![crate::llm::store_message(&ChatMessage::user("hi"))];
         apply_system_messages(&mut msgs, "MEMORY".to_string());
 
         assert_eq!(
@@ -282,17 +281,29 @@ mod tests {
         );
     }
 
-    /// The seeded SOUL message from a pre-genai session is still recognized as
-    /// the leading system message, so it gets overwritten rather than leaving a
-    /// stale persona ahead of the real one.
+    /// The system block is rebuilt every turn, and `run_chat_pipeline` strips it
+    /// off the conversation it hands back. Those two must compose: replaying a
+    /// stored conversation through another turn has to yield the same shape,
+    /// not stack up another copy of the tool-usage prompt each time.
     #[test]
-    fn legacy_system_seed_is_overridden_not_duplicated() {
-        let mut msgs = vec![
-            json!({ "role": "system", "content": "OLD SOUL" }),
-            json!({ "role": "user", "content": "hi" }),
-        ];
+    fn system_block_does_not_accumulate_across_turns() {
+        let mut msgs = vec![crate::llm::store_message(&ChatMessage::user("hi"))];
+        for _ in 0..3 {
+            apply_system_messages(&mut msgs, "MEMORY".to_string());
+            // What the pipeline returns to callers for storage.
+            msgs = msgs
+                .into_iter()
+                .skip_while(crate::llm::is_system_message)
+                .collect();
+        }
         apply_system_messages(&mut msgs, "MEMORY".to_string());
-        assert_eq!(msgs.len(), 3);
-        assert_eq!(shape(&msgs)[0], (ChatRole::System, "MEMORY".to_string()));
+        assert_eq!(
+            shape(&msgs),
+            vec![
+                (ChatRole::System, "MEMORY".to_string()),
+                (ChatRole::System, TOOL_USAGE_PROMPT.to_string()),
+                (ChatRole::User, "hi".to_string()),
+            ]
+        );
     }
 }

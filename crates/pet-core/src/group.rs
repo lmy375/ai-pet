@@ -352,7 +352,8 @@ fn prepare_run(s: &mut GroupState, agent_id: &str, tlen: usize) -> Option<AgentR
     let mut injected_items = Vec::new();
     for m in &foreign {
         let line = format!("[{}] {}: {}", fmt_hm(m.ts), m.name, m.content);
-        st.messages.push(json!({ "role": "user", "content": line }));
+        st.messages
+            .push(crate::llm::store_message(&crate::llm::user_message(&line, &[])));
         let mut item = session::user_item(&line, &[]);
         item["ts"] = json!(m.ts);
         st.items.push(item.clone());

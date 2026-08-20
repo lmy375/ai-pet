@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use pet_core::chat::{run_chat_pipeline, ChatEventSink, StreamEvent};
+use pet_core::chat::{run_chat_pipeline, ChatEventSink, StreamEvent, UserTurn};
 use pet_core::config::AiConfig;
 use pet_core::logging::LogStore;
 use pet_core::mcp::McpManagerStore;
@@ -109,13 +109,14 @@ impl ChatHook for TauriChatHook {
 #[tauri::command]
 pub async fn chat(
     messages: Vec<serde_json::Value>,
+    turn: UserTurn,
     on_event: Channel<StreamEvent>,
     session_id: String,
     app: tauri::AppHandle,
     log_store: State<'_, LogStore>,
     shell_store: State<'_, ShellStore>,
     mcp_store: State<'_, McpManagerStore>,
-) -> Result<(), String> {
+) -> Result<Vec<serde_json::Value>, String> {
     let config = AiConfig::from_settings()?;
     let mcp = mcp_store.inner().clone();
     let notifier: Arc<dyn TaskNotifier> = Arc::new(TauriNotifier { app: app.clone() });
@@ -130,6 +131,8 @@ pub async fn chat(
         false,
     );
     let sink = ChannelSink(on_event);
-    run_chat_pipeline(messages, &sink, &config, &mcp, &ctx).await?;
-    Ok(())
+    // The updated conversation goes back to the caller, which stores it
+    // verbatim — the frontend never builds or inspects LLM messages.
+    let outcome = run_chat_pipeline(messages, turn, &sink, &config, &mcp, &ctx).await?;
+    Ok(outcome.messages)
 }

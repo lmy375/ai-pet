@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use pet_core::chat::{run_chat_pipeline, ChatEventSink};
+use pet_core::chat::{run_chat_pipeline, ChatEventSink, UserTurn};
 use pet_core::config::AiConfig;
 use pet_core::logging::LogStore;
 use pet_core::mcp::{McpManager, McpManagerStore};
@@ -90,31 +90,30 @@ impl CliApp {
 
         let mut sess = self.load_active_session()?;
 
-        // Append the turn's input to both transcripts (model-facing + display).
-        match &input {
+        // Append the turn's input to the display transcript. The model-facing
+        // transcript is produced by the pipeline and stored verbatim below —
+        // rebuilding it here is what used to drop tool rounds from context.
+        let turn = match &input {
             TurnInput::User(text) => {
-                sess.messages
-                    .push(serde_json::json!({ "role": "user", "content": text }));
                 let mut item = session::user_item(text, &[]);
                 item["ts"] = serde_json::json!(now_ms());
                 sess.items.push(item);
+                UserTurn::text(text)
             }
             TurnInput::Completion(c) => {
                 let label = if c.label.is_empty() { c.kind.clone() } else { c.label.clone() };
-                // Same message shape the GUI injects (chat.bgTaskDoneContent).
-                let content = format!("[后台任务完成] {}：\n{}", label, c.result);
-                sess.messages
-                    .push(serde_json::json!({ "role": "user", "content": content }));
                 sess.items.push(serde_json::json!({
                     "type": "notification",
                     "content": format!("后台任务完成：{}", label),
                     "detail": c.result,
                     "ts": now_ms(),
                 }));
+                // Same message shape the GUI injects (chat.bgTaskDoneContent).
+                UserTurn::text(format!("[后台任务完成] {}：\n{}", label, c.result))
             }
-        }
+        };
 
-        let chat_messages = sess.messages.clone();
+        let prior_messages = sess.messages.clone();
 
         let ctx = ToolContext::new(
             LogStore(self.log_store.0.clone()),
@@ -127,23 +126,15 @@ impl CliApp {
             false,
         );
 
-        let result = run_chat_pipeline(chat_messages, sink, &config, &self.mcp_store, &ctx).await;
+        let result =
+            run_chat_pipeline(prior_messages, turn, sink, &config, &self.mcp_store, &ctx).await;
 
-        // Persist what the sink rendered. Assistant text items go back into the
-        // model-facing transcript too (one message per committed item — matching
-        // the GUI, which commits streamed text on each tool boundary and at done).
-        let new_items = sink.take_items();
-        for item in &new_items {
-            if item["type"] == "assistant" {
-                if let Some(text) = item["content"].as_str() {
-                    if !text.trim().is_empty() {
-                        sess.messages
-                            .push(serde_json::json!({ "role": "assistant", "content": text }));
-                    }
-                }
-            }
+        // Store the model-facing transcript exactly as the pipeline returned it,
+        // tool rounds included. Only the display items are ours to assemble.
+        if let Ok(outcome) = &result {
+            sess.messages = outcome.messages.clone();
         }
-        sess.items.extend(new_items);
+        sess.items.extend(sink.take_items());
 
         if let Some((used, total)) = sink.usage() {
             sess.context_usage = Some(ContextUsage { used, total: total as u64 });

@@ -285,7 +285,24 @@ pub fn delete_session(id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use genai::chat::ChatMessage;
+
+    fn user(text: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::user(text))
+    }
+    fn assistant(text: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::assistant(text))
+    }
+    fn system(text: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::system(text))
+    }
+    fn tool_result(call_id: &str, out: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::tool(
+            genai::chat::MessageContent::from_tool_responses(vec![
+                genai::chat::ToolResponse::new(call_id, out),
+            ]),
+        ))
+    }
 
     fn roles(msgs: &[serde_json::Value]) -> Vec<String> {
         msgs.iter()
@@ -297,29 +314,247 @@ mod tests {
     fn recent_turns_starts_at_user_boundary_never_orphan_tool() {
         // A system seed, one tool-using turn, then a plain turn.
         let msgs = vec![
-            json!({ "role": "system", "content": "soul" }),
-            json!({ "role": "user", "content": "q1" }),
-            json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "c1" }] }),
-            json!({ "role": "tool", "tool_call_id": "c1", "content": "result" }),
-            json!({ "role": "user", "content": "q2" }),
-            json!({ "role": "assistant", "content": "a2" }),
+            system("soul"),
+            user("q1"),
+            assistant(""),
+            tool_result("c1", "result"),
+            user("q2"),
+            assistant("a2"),
         ];
 
-        // Last 1 turn = from the final user message onward; starts with `user`,
-        // never the orphan `tool` from the previous turn.
-        let one = recent_turns(&msgs, 1);
-        assert_eq!(roles(&one), vec!["user", "assistant"]);
-        assert_eq!(one[0]["content"], "q2");
+        // One turn back starts at the LAST user message, not mid-tool-round.
+        assert_eq!(roles(&recent_turns(&msgs, 1)), vec!["User", "Assistant"]);
 
-        // Both turns: starts at the first user message, dropping the system seed.
-        let two = recent_turns(&msgs, 2);
-        assert_eq!(roles(&two), vec!["user", "assistant", "tool", "user", "assistant"]);
+        // Two turns back reaches the earlier user message and keeps its tool
+        // round intact — a `Tool` message without its originating call is
+        // rejected by every provider.
+        assert_eq!(
+            roles(&recent_turns(&msgs, 2)),
+            vec!["User", "Assistant", "Tool", "User", "Assistant"]
+        );
 
-        // More turns than exist: same as taking all turns.
-        assert_eq!(recent_turns(&msgs, 9), two);
+        // More turns than exist yields everything from the first user message,
+        // dropping the system seed (which is rebuilt per turn anyway).
+        assert_eq!(recent_turns(&msgs, 99).len(), 5);
+    }
 
-        // n == 0 and no-user inputs both yield empty.
-        assert!(recent_turns(&msgs, 0).is_empty());
-        assert!(recent_turns(&[json!({ "role": "system", "content": "x" })], 3).is_empty());
+    #[test]
+    fn recent_turns_edge_cases() {
+        assert!(recent_turns(&[], 3).is_empty());
+        // Zero turns means no history, regardless of what's there.
+        assert!(recent_turns(&[user("q")], 0).is_empty());
+        // No user message → nothing to anchor a turn on.
+        assert!(recent_turns(&[system("x")], 3).is_empty());
+    }
+}
+
+/// Remove selected display items and the LLM messages behind them.
+///
+/// `items` and `messages` share no ids and aren't index-aligned, but they're
+/// built in the same chronological order, so they're matched structurally:
+///
+/// - Messages split into *turn blocks*: a `User` message plus everything up to
+///   the next one (its assistant replies, tool calls and tool results).
+/// - The k-th block pairs with the k-th turn-opening item (`user` /
+///   `notification`).
+/// - Inside a block, assistant messages carrying text pair in order with that
+///   block's non-empty `assistant` items.
+///
+/// Deleting a turn-opening item drops its whole block, so a tool result can
+/// never be left without the call that produced it. Deleting an assistant item
+/// drops only that message. Items with no message of their own — tool rows,
+/// errors, image-only assistant bubbles — disappear from the transcript and
+/// leave the context alone.
+///
+/// If the structures don't line up (a hand-edited session), items are removed
+/// and messages left untouched: a stale context beats a corrupted one.
+pub fn prune_session(
+    items: &[serde_json::Value],
+    messages: &[serde_json::Value],
+    selected: &std::collections::HashSet<String>,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let item_type = |it: &serde_json::Value| it["type"].as_str().unwrap_or("").to_string();
+    let opens_turn = |it: &serde_json::Value| matches!(item_type(it).as_str(), "user" | "notification");
+    let bears_assistant_message = |it: &serde_json::Value| {
+        item_type(it) == "assistant" && !it["content"].as_str().unwrap_or("").trim().is_empty()
+    };
+    let is_selected =
+        |it: &serde_json::Value| it["id"].as_str().is_some_and(|id| selected.contains(id));
+
+    let kept_items: Vec<serde_json::Value> =
+        items.iter().filter(|it| !is_selected(it)).cloned().collect();
+
+    // Message turn blocks: [start, end) index ranges, each opened by a `User`.
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        if crate::llm::is_user_message(m) {
+            if let Some(last) = blocks.last_mut() {
+                last.1 = i;
+            }
+            blocks.push((i, messages.len()));
+        }
+    }
+
+    // Item turn blocks, in the same order.
+    let mut item_blocks: Vec<Vec<usize>> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        if opens_turn(it) {
+            item_blocks.push(vec![i]);
+        } else if let Some(block) = item_blocks.last_mut() {
+            block.push(i);
+        }
+    }
+
+    // Anything before the first user message (a system seed) is never paired.
+    let leading = blocks.first().map(|(s, _)| *s).unwrap_or(messages.len());
+    if item_blocks.len() != blocks.len() {
+        return (kept_items, messages.to_vec());
+    }
+
+    let mut drop: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for (block_idx, item_idxs) in item_blocks.iter().enumerate() {
+        let (start, end) = blocks[block_idx];
+        if is_selected(&items[item_idxs[0]]) {
+            drop.extend(start..end);
+            continue;
+        }
+        // Assistant messages with text, in order, within this block.
+        let text_msgs: Vec<usize> = (start..end)
+            .filter(|&j| {
+                crate::llm::load_messages(&messages[j..=j])
+                    .first()
+                    .is_some_and(|m| {
+                        m.role == genai::chat::ChatRole::Assistant
+                            && m.content.texts().iter().any(|t| !t.trim().is_empty())
+                    })
+            })
+            .collect();
+        let text_items: Vec<usize> = item_idxs
+            .iter()
+            .copied()
+            .filter(|&i| bears_assistant_message(&items[i]))
+            .collect();
+        if text_items.len() != text_msgs.len() {
+            return (kept_items, messages.to_vec());
+        }
+        for (k, &item_idx) in text_items.iter().enumerate() {
+            if is_selected(&items[item_idx]) {
+                drop.insert(text_msgs[k]);
+            }
+        }
+    }
+
+    let kept_messages = messages
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| *j < leading || !drop.contains(j))
+        .map(|(_, m)| m.clone())
+        .collect();
+    (kept_items, kept_messages)
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+    use genai::chat::{ChatMessage, MessageContent, ToolCall, ToolResponse};
+    use std::collections::HashSet;
+
+    fn msg_user(t: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::user(t))
+    }
+    fn msg_assistant(t: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::assistant(t))
+    }
+    fn msg_tool_call(id: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::from(vec![ToolCall {
+            call_id: id.to_string(),
+            fn_name: "bash".to_string(),
+            fn_arguments: serde_json::json!({}),
+            thought_signatures: None,
+        }]))
+    }
+    fn msg_tool_result(id: &str) -> serde_json::Value {
+        crate::llm::store_message(&ChatMessage::tool(MessageContent::from_tool_responses(
+            vec![ToolResponse::new(id, "out")],
+        )))
+    }
+    fn item(id: &str, ty: &str, content: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "type": ty, "content": content })
+    }
+    fn sel(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+    fn roles(msgs: &[serde_json::Value]) -> Vec<String> {
+        msgs.iter().map(|m| m["role"].as_str().unwrap_or("").to_string()).collect()
+    }
+
+    /// A tool-using turn followed by a plain one — the shape the old
+    /// frontend-side pairing could not represent at all, since it assumed
+    /// messages held nothing but user/assistant text.
+    fn fixture() -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        let items = vec![
+            item("i1", "user", "q1"),
+            item("i2", "tool", ""),
+            item("i3", "assistant", "a1"),
+            item("i4", "user", "q2"),
+            item("i5", "assistant", "a2"),
+        ];
+        let messages = vec![
+            msg_user("q1"),
+            msg_tool_call("c1"),
+            msg_tool_result("c1"),
+            msg_assistant("a1"),
+            msg_user("q2"),
+            msg_assistant("a2"),
+        ];
+        (items, messages)
+    }
+
+    #[test]
+    fn deleting_a_user_item_drops_its_whole_turn_including_the_tool_round() {
+        let (items, messages) = fixture();
+        let (new_items, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
+        assert_eq!(new_items.len(), 4);
+        // The tool call and its result go with the turn — leaving a Tool message
+        // whose originating call was deleted is rejected by every provider.
+        assert_eq!(roles(&new_msgs), vec!["User", "Assistant"]);
+    }
+
+    #[test]
+    fn deleting_an_assistant_item_drops_only_that_message() {
+        let (items, messages) = fixture();
+        let (_, new_msgs) = prune_session(&items, &messages, &sel(&["i3"]));
+        // The tool round it followed is still a valid, self-contained exchange.
+        assert_eq!(roles(&new_msgs), vec!["User", "Assistant", "Tool", "User", "Assistant"]);
+    }
+
+    #[test]
+    fn deleting_a_tool_item_touches_no_message() {
+        let (items, messages) = fixture();
+        let (new_items, new_msgs) = prune_session(&items, &messages, &sel(&["i2"]));
+        assert_eq!(new_items.len(), 4);
+        assert_eq!(new_msgs.len(), messages.len());
+    }
+
+    #[test]
+    fn a_system_seed_is_never_pruned() {
+        let items = vec![item("i1", "user", "q1"), item("i2", "assistant", "a1")];
+        let messages = vec![
+            crate::llm::store_message(&ChatMessage::system("soul")),
+            msg_user("q1"),
+            msg_assistant("a1"),
+        ];
+        let (_, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
+        assert_eq!(roles(&new_msgs), vec!["System"]);
+    }
+
+    #[test]
+    fn structural_mismatch_leaves_the_context_untouched() {
+        // Items claim two turns, messages hold one — a hand-edited session.
+        let items = vec![item("i1", "user", "q1"), item("i2", "user", "q2")];
+        let messages = vec![msg_user("q1"), msg_assistant("a1")];
+        let (new_items, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
+        assert_eq!(new_items.len(), 1);
+        assert_eq!(new_msgs, messages, "messages must survive an unreliable mapping");
     }
 }

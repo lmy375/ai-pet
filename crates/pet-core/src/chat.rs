@@ -1,5 +1,5 @@
 use genai::chat::{ChatMessage as GenAiMessage, ChatRequest, MessageContent, ToolResponse};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::AiConfig;
 use crate::logging::write_llm_log;
@@ -45,6 +45,34 @@ pub enum StreamEvent {
 }
 
 /// Abstraction for chat event delivery — allows both Tauri streaming and non-streaming callers.
+/// One turn of user input, as the interfaces describe it: plain text plus any
+/// attached images as `data:` URLs. Deliberately provider-neutral — callers
+/// never build LLM messages themselves, so genai's wire shape stays inside
+/// `llm` (see `llm::user_message`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UserTurn {
+    pub text: String,
+    #[serde(default)]
+    pub images: Vec<String>,
+}
+
+impl UserTurn {
+    /// A text-only turn — heartbeats, group runs and background-task
+    /// resumptions never carry images.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { text: text.into(), images: Vec::new() }
+    }
+}
+
+/// What a completed chat turn produced: the assistant's final text, and the
+/// full conversation to persist. Callers store `messages` verbatim and never
+/// inspect it — that's what keeps thought signatures and tool rounds intact.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatOutcome {
+    pub text: String,
+    pub messages: Vec<serde_json::Value>,
+}
+
 pub trait ChatEventSink: Send + Sync {
     fn send_chunk(&self, text: &str);
     fn send_reasoning(&self, text: &str);
@@ -92,19 +120,31 @@ impl ChatEventSink for ImageCollectingSink {
 /// Run the full LLM chat pipeline with tool calling. Returns final assistant text.
 /// This is the core logic shared by the Tauri command and Telegram bot.
 pub async fn run_chat_pipeline(
-    mut conv_messages: Vec<serde_json::Value>,
+    conv_messages: Vec<serde_json::Value>,
+    turn: UserTurn,
     sink: &dyn ChatEventSink,
     config: &AiConfig,
     mcp_store: &McpManagerStore,
     ctx: &ToolContext,
-) -> Result<String, String> {
-    let user_msg = crate::llm::load_messages(&conv_messages)
+) -> Result<ChatOutcome, String> {
+    ctx.log(&format!(
+        "Chat request: model={}, user=\"{}\"",
+        config.model, turn.text
+    ));
+
+    // Normalize the incoming history once: anything that no longer parses is
+    // dropped here rather than being silently skipped on every request while
+    // living on in the session file forever. What gets stored is exactly what
+    // gets sent.
+    let mut conv_messages: Vec<serde_json::Value> = crate::llm::load_messages(&conv_messages)
         .iter()
-        .rev()
-        .find(|m| m.role == genai::chat::ChatRole::User)
-        .and_then(|m| m.content.first_text().map(|t| t.to_string()))
-        .unwrap_or_default();
-    ctx.log(&format!("Chat request: model={}, user=\"{}\"", config.model, user_msg));
+        .map(crate::llm::store_message)
+        .collect();
+
+    conv_messages.push(crate::llm::store_message(&crate::llm::user_message(
+        &turn.text,
+        &turn.images,
+    )));
 
     // Rebuild the system prompt (persona + long-term memory + tool guidance)
     // from the current memory files on every turn, so edits the pet makes to
@@ -112,8 +152,15 @@ pub async fn run_chat_pipeline(
     // session creation.
     crate::prompt::prepend_system_messages(&mut conv_messages, &config.agent_id);
 
-    let (text, _conv) = run_agent_loop(conv_messages, sink, config, mcp_store, ctx).await?;
-    Ok(text)
+    let (text, messages) = run_agent_loop(conv_messages, sink, config, mcp_store, ctx).await?;
+    // Drop the leading system block before handing the conversation back. It is
+    // rebuilt from the memory files on every turn, so storing it would stack up
+    // another copy of the tool-usage prompt per turn.
+    let messages = messages
+        .into_iter()
+        .skip_while(crate::llm::is_system_message)
+        .collect();
+    Ok(ChatOutcome { text, messages })
 }
 
 /// Run the tool-calling loop over an already-assembled message list (system

@@ -68,7 +68,7 @@ pub fn start_scheduler(
 /// trigger as the current user turn. Falls back to just the trigger when
 /// `turns == 0`, there's no active session, or it can't be loaded.
 fn build_heartbeat_conv(turns: u32, user_msg: &str) -> Vec<serde_json::Value> {
-    let trigger = serde_json::json!({ "role": "user", "content": user_msg });
+    let trigger = pet_core::llm::store_message(&pet_core::llm::user_message(user_msg, &[]));
     if turns == 0 {
         return vec![trigger];
     }

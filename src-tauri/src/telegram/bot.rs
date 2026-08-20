@@ -6,7 +6,7 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, InputFile, Me};
 use tokio::sync::Mutex as TokioMutex;
 
-use pet_core::chat::{run_chat_pipeline, ImageCollectingSink};
+use pet_core::chat::{run_chat_pipeline, ImageCollectingSink, UserTurn};
 use pet_core::logging::LogStore;
 use pet_core::session;
 use pet_core::settings::TelegramConfig;
@@ -173,22 +173,6 @@ async fn handle_message(
     // Send typing indicator
     let _ = bot.send_chat_action(msg.chat.id, ChatAction::Typing).await;
 
-    // Build the user message. Plain text stays a bare string (unchanged
-    // behavior); with images it becomes an OpenAI multimodal content array.
-    let user_content = if image_urls.is_empty() {
-        serde_json::Value::String(text.clone())
-    } else {
-        let mut parts: Vec<serde_json::Value> = Vec::new();
-        if !text.is_empty() {
-            parts.push(serde_json::json!({ "type": "text", "text": text }));
-        }
-        for url in &image_urls {
-            parts.push(serde_json::json!({ "type": "image_url", "image_url": { "url": url } }));
-        }
-        serde_json::Value::Array(parts)
-    };
-    let user_msg = serde_json::json!({ "role": "user", "content": user_content });
-
     // Mirror the user turn into the display transcript (ChatItem shape).
     state
         .session_items
@@ -196,21 +180,18 @@ async fn handle_message(
         .await
         .push(session::user_item(&text, &image_urls));
 
-    let chat_messages = {
-        let mut session_msgs = state.session_messages.lock().await;
-        session_msgs.push(user_msg);
+    let turn = UserTurn { text: text.clone(), images: image_urls.clone() };
 
-        // Build messages for LLM: system prompt + last N messages
+    // Trim to the most recent window of context. The system message isn't in
+    // here — the pipeline rebuilds it each turn — so this is a plain tail.
+    let prior_messages = {
+        let session_msgs = state.session_messages.lock().await;
         let msgs = &*session_msgs;
-        let context_msgs: Vec<serde_json::Value> = if msgs.len() > MAX_CONTEXT_MESSAGES + 1 {
-            // Always include system message (first) + last N
-            let mut ctx = vec![msgs[0].clone()];
-            ctx.extend_from_slice(&msgs[msgs.len() - MAX_CONTEXT_MESSAGES..]);
-            ctx
+        if msgs.len() > MAX_CONTEXT_MESSAGES {
+            msgs[msgs.len() - MAX_CONTEXT_MESSAGES..].to_vec()
         } else {
             msgs.clone()
-        };
-        context_msgs
+        }
     };
 
     // Run the LLM pipeline. The sink collects any images a tool surfaces (e.g.
@@ -238,8 +219,15 @@ async fn handle_message(
                 None,
                 false,
             );
-            match run_chat_pipeline(chat_messages, &sink, &config, &state.mcp_store, &ctx).await {
-                Ok(text) => text,
+            match run_chat_pipeline(prior_messages, turn, &sink, &config, &state.mcp_store, &ctx)
+                .await
+            {
+                Ok(outcome) => {
+                    // Keep the model-facing transcript exactly as returned, so
+                    // tool rounds stay in context for the next message.
+                    *state.session_messages.lock().await = outcome.messages;
+                    outcome.text
+                }
                 Err(e) => format!("Error: {}", e),
             }
         }
@@ -249,9 +237,7 @@ async fn handle_message(
 
     // Append the assistant turn to both transcripts, then persist.
     {
-        let mut session_msgs = state.session_messages.lock().await;
-        session_msgs
-            .push(serde_json::json!({ "role": "assistant", "content": reply_text.clone() }));
+        let session_msgs = state.session_messages.lock().await;
 
         let mut items = state.session_items.lock().await;
         // Tool-produced images (screenshots) render as assistant bubbles — they

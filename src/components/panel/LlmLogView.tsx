@@ -38,15 +38,12 @@ interface LlmLogEntry {
 }
 
 // Messages are logged as serialized genai `ChatMessage`s: content is an array of
-// externally-tagged `ContentPart`s (`{Text: "..."}`, `{Binary: {...}}`, …).
-// Logs written before the genai migration hold OpenAI blocks
-// (`{type: "image_url", image_url: {url}}`), so both shapes are handled.
+// externally-tagged `ContentPart`s.
 type ContentBlock = {
-  type?: string;
-  text?: string;
-  image_url?: { url?: string };
   Text?: string;
   Binary?: { content_type?: string; source?: { Base64?: string; Url?: string } };
+  ToolCall?: unknown;
+  ToolResponse?: unknown;
   ThoughtSignature?: string;
   ReasoningContent?: string;
 };
@@ -60,7 +57,6 @@ function blockImageUrl(b: ContentBlock): string | null {
     if (source?.Base64) return `data:${content_type};base64,${source.Base64}`;
     return null;
   }
-  if (b?.type === "image_url" || b?.image_url) return b.image_url?.url ?? null;
   return null;
 }
 
@@ -68,7 +64,6 @@ function blockImageUrl(b: ContentBlock): string | null {
 function blockText(b: ContentBlock): string | null {
   if (typeof b?.Text === "string") return b.Text;
   if (typeof b?.ReasoningContent === "string") return b.ReasoningContent;
-  if (b?.type === "text" && typeof b.text === "string") return b.text;
   return null;
 }
 type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
@@ -95,8 +90,8 @@ function contentToText(content: unknown): string {
 }
 
 // Full render of a message's `content` for the expanded detail. Text renders in
-// a <pre>; an `image_url` block renders the base64 data URL as an actual <img>
-// thumbnail instead of dumping the raw string.
+// a <pre>; a Binary image part renders as an actual <img> thumbnail instead of
+// dumping its base64 payload.
 function renderContent(content: unknown, onZoom: (src: string) => void, zoomTitle: string) {
   if (content == null) return null;
   if (typeof content === "string") return <pre className={preClass}>{content}</pre>;
@@ -132,10 +127,10 @@ function renderContent(content: unknown, onZoom: (src: string) => void, zoomTitl
 }
 
 const roleColors: Record<string, BadgeColor> = {
-  system: "green",
-  user: "sky",
-  assistant: "purple",
-  tool: "orange",
+  System: "green",
+  User: "sky",
+  Assistant: "purple",
+  Tool: "orange",
 };
 
 function shortId(id: string | undefined): string | null {
@@ -322,7 +317,7 @@ export function LlmLogView() {
   const lastUserMsg = (entry: LlmLogEntry): string => {
     const msgs = entry.request.messages;
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (String(msgs[i].role).toLowerCase() === "user") {
+      if (msgs[i].role === "User") {
         const text = contentToText(msgs[i].content);
         return text.length > 80 ? text.slice(0, 80) + "..." : text;
       }
@@ -407,7 +402,7 @@ export function LlmLogView() {
 
                     <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title={t("llm.section.request")}>
                       {entry.request.messages.map((msg, j) => {
-                        if (String(msg.role).toLowerCase() === "tool") {
+                        if (msg.role === "Tool") {
                           return (
                             <div key={j} className="mb-1.5">
                               <ToolResultView content={msg.content} call={msg.tool_call_id ? toolCallsById.get(msg.tool_call_id) : undefined} />
@@ -419,7 +414,7 @@ export function LlmLogView() {
                           <div key={j} className="mb-1.5">
                             {hasContent && (
                               <>
-                                <Badge color={roleColors[String(msg.role).toLowerCase()] ?? "slate"}>{msg.role}</Badge>
+                                <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
                                 {renderContent(msg.content, setZoomed, t("common.zoomImage"))}
                               </>
                             )}

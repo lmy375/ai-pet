@@ -122,63 +122,6 @@ function applyCompletionToItems(items: ChatItem[], taskId: string, result: strin
 }
 
 /**
- * Compute the result of deleting the items at `selected` indices, removing both
- * the visible items AND their corresponding LLM-context messages (so the pet
- * truly forgets them — see plan/CLAUDE notes: `session.messages` is the only
- * source of truth, and it only ever holds system/user/assistant(text) roles).
- *
- * `items` and `messages` share no id and aren't index-aligned, but they're built
- * in the same chronological order. So the k-th "message-bearing" item maps to the
- * k-th non-system message. We walk both in lockstep to find which messages to drop.
- *
- * Safety: if the message-bearing count doesn't line up with the non-system message
- * count (legacy/corrupt session), we delete items only and leave `messages` intact
- * — better a stale context than a corrupted one.
- */
-function itemBearsMessage(item: ChatItem): boolean {
-  // user → user msg; notification → injected user msg; assistant text → assistant msg.
-  // assistant with empty text (tool-produced image), tool, error → no persisted message.
-  return (
-    item.type === "user" ||
-    item.type === "notification" ||
-    (item.type === "assistant" && item.content.trim() !== "")
-  );
-}
-
-export function planMessageDeletion(
-  items: ChatItem[],
-  messages: any[],
-  selected: Set<number>,
-): { newItems: ChatItem[]; newMessages: any[] } {
-  const ctxIdx: number[] = [];
-  messages.forEach((m, j) => {
-    const role = m?.role;
-    if (role === "user" || role === "assistant") ctxIdx.push(j);
-  });
-
-  const msgToDelete = new Set<number>();
-  let k = 0;
-  for (let i = 0; i < items.length; i++) {
-    if (!itemBearsMessage(items[i])) continue;
-    if (k < ctxIdx.length && selected.has(i)) msgToDelete.add(ctxIdx[k]);
-    k++;
-  }
-
-  const newItems = items.filter((_, i) => !selected.has(i));
-
-  // Counts diverged → mapping unreliable; keep messages untouched.
-  if (k !== ctxIdx.length) {
-    console.warn(
-      `planMessageDeletion: message-bearing items (${k}) != context messages (${ctxIdx.length}); deleting items only`,
-    );
-    return { newItems, newMessages: messages };
-  }
-
-  const newMessages = messages.filter((_, j) => !msgToDelete.has(j));
-  return { newItems, newMessages };
-}
-
-/**
  * Shared chat session logic for both the pet window and the panel.
  * Manages the active session (messages + rendered items with tool calls and
  * timestamps), streaming, and session list/new/switch/delete.
@@ -402,40 +345,37 @@ export function useChat() {
     [newSession],
   );
 
-  // Delete the selected items (by index into the current `items`) from the
-  // visible transcript AND from the LLM context, then persist. `messagesRef` is
-  // the only source of truth for what the pet remembers, so pruning it there
-  // makes the pet forget the deleted content on the next turn. No-op mid-stream
-  // (a running turn mutates messagesRef/items and would race the deletion).
+  // Delete the selected items from the visible transcript AND from the LLM
+  // context, then persist. The backend owns that mapping (`prune_session_items`)
+  // because it requires understanding the stored message format. No-op mid-turn:
+  // a running turn is mutating both arrays and would race the deletion.
   const deleteItems = useCallback(
     async (selectedIds: string[]) => {
       if (busyRef.current) return;
       if (selectedIds.length === 0) return;
-      // Resolve ids → current positions in the LIVE items array. Indices are
-      // computed here, never captured at selection time, so a background-completion
-      // item injected between select and delete can't shift them onto wrong rows.
-      const idSet = new Set(selectedIds);
-      const sel = new Set<number>();
-      itemsRef.current.forEach((it, i) => {
-        if (it.id && idSet.has(it.id)) sel.add(i);
-      });
-      if (sel.size === 0) return;
-      const { newItems, newMessages } = planMessageDeletion(
-        itemsRef.current,
-        messagesRef.current,
-        sel,
-      );
-      messagesRef.current = newMessages;
-      setItems(newItems);
-      await saveCurrentSession(newItems);
+      const id = sessionIdRef.current;
+      if (!id) return;
+      try {
+        const session = await invoke<Session>("prune_session_items", {
+          id,
+          itemIds: selectedIds,
+        });
+        messagesRef.current = session.messages || [];
+        setItems(session.items as ChatItem[]);
+        await refreshSessionList();
+      } catch (e) {
+        console.error("Failed to delete items:", e);
+      }
     },
-    [saveCurrentSession],
+    [refreshSessionList],
   );
 
-  // The shared streaming core: messagesRef must already include the new turn's
-  // input; `baseItems` is the rendered list to append streamed output onto.
+  // The shared streaming core. `turn` is the new user input; `baseItems` is the
+  // rendered list to append streamed output onto. The LLM-facing conversation is
+  // owned by the backend: we hand it the stored array plus this turn and store
+  // back whatever it returns, never constructing or inspecting messages here.
   const runStream = useCallback(
-    async (baseItems: ChatItem[]) => {
+    async (baseItems: ChatItem[], turn: { text: string; images: string[] }) => {
       busyRef.current = true;
       setIsLoading(true);
       setCurrentResponse("");
@@ -469,6 +409,10 @@ export function useChat() {
         }
       };
 
+      // Render the turn's final state. Deliberately does NOT persist: the
+      // `done` event arrives while the `chat` invoke is still resolving, so
+      // saving here would write the pre-turn conversation. Persistence happens
+      // once, after the invoke returns the updated one.
       const finish = (extra?: ChatItem) => {
         // Always re-commit so itemsRef is fresh for the drain, even when there's
         // no trailing assistant/error item (e.g. a turn that only ran tools).
@@ -478,6 +422,10 @@ export function useChat() {
         setCurrentToolCalls([]);
         setIsLoading(false);
         busyRef.current = false;
+      };
+
+      // Persist + release the turn. Runs exactly once, after `chat` resolves.
+      const settle = () => {
         saveCurrentSession(finalItems);
         // Drain any background completions that arrived during this turn.
         setTimeout(() => processQueueRef.current(), 0);
@@ -495,10 +443,6 @@ export function useChat() {
           // Preserve any assistant text/thinking streamed before the tool call.
           if (accumulated.trim() || accumulatedReasoning.trim()) {
             commit([...finalItems, { id: newItemId(), type: "assistant", content: accumulated, reasoning: accumulatedReasoning || undefined, ts: Date.now() }]);
-            // Only the visible answer goes back to the model — reasoning is display-only.
-            if (accumulated.trim()) {
-              messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
-            }
           }
           accumulated = "";
           accumulatedReasoning = "";
@@ -533,9 +477,6 @@ export function useChat() {
         } else if (event.event === "done") {
           flushToolCalls();
           if (accumulated.trim() || accumulatedReasoning.trim()) {
-            if (accumulated.trim()) {
-              messagesRef.current = [...messagesRef.current, { role: "assistant", content: accumulated }];
-            }
             finish({ id: newItemId(), type: "assistant", content: accumulated, reasoning: accumulatedReasoning || undefined, ts: Date.now() });
           } else {
             finish();
@@ -546,13 +487,20 @@ export function useChat() {
       };
 
       try {
-        await invoke("chat", {
+        // The backend returns the updated LLM conversation — tool rounds and
+        // provider-opaque parts included. Stored verbatim, never inspected.
+        messagesRef.current = await invoke<any[]>("chat", {
           messages: messagesRef.current,
+          turn,
           onEvent,
           sessionId: sessionIdRef.current,
         });
       } catch (err) {
+        // On failure the conversation is unchanged, so messagesRef still holds
+        // the pre-turn history — the failed turn simply isn't recorded.
         finish({ id: newItemId(), type: "error", content: `${err}`, ts: Date.now() });
+      } finally {
+        settle();
       }
     },
     [saveCurrentSession],
@@ -568,24 +516,12 @@ export function useChat() {
       // other window most recently saved instead of overwriting it (the two
       // windows share one conversation).
       if (sessionIdRef.current) await loadSessionData(sessionIdRef.current);
-      // With images, send OpenAI multimodal content (text + image_url parts);
-      // the litellm proxy translates this to the underlying vision model. Plain
-      // text stays a bare string so existing behavior is unchanged.
-      const apiContent =
-        images && images.length > 0
-          ? [
-              ...(content ? [{ type: "text", text: content }] : []),
-              ...images.map((url) => ({ type: "image_url", image_url: { url } })),
-            ]
-          : content;
-      const userMsg = { role: "user", content: apiContent };
-      messagesRef.current = [...messagesRef.current, userMsg];
       const newItems: ChatItem[] = [
         ...itemsRef.current,
         { id: newItemId(), type: "user", content, images, ts: Date.now() },
       ];
       setItems(newItems);
-      await runStream(newItems);
+      await runStream(newItems, { text: content, images: images ?? [] });
     },
     [runStream],
   );
@@ -599,16 +535,15 @@ export function useChat() {
       const label = c.label || c.kind;
       // Flip the originating tool call from "后台运行中" to its final result.
       const base = applyCompletionToItems(itemsRef.current, c.taskId, c.result);
-      messagesRef.current = [
-        ...messagesRef.current,
-        { role: "user", content: t("chat.bgTaskDoneContent", { label, result: c.result }) },
-      ];
       const newItems: ChatItem[] = [
         ...base,
         { id: newItemId(), type: "notification", content: t("chat.bgTaskDone", { label }), detail: c.result, ts: Date.now() },
       ];
       setItems(newItems);
-      await runStream(newItems);
+      await runStream(newItems, {
+        text: t("chat.bgTaskDoneContent", { label, result: c.result }),
+        images: [],
+      });
     },
     [runStream, t],
   );

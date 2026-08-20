@@ -136,6 +136,7 @@ pub fn run() {
             commands::session::create_session,
             commands::session::rename_session,
             commands::session::delete_session,
+            commands::session::prune_session_items,
             commands::telegram::get_telegram_status,
             commands::telegram::reconnect_telegram,
             commands::group::group_load,

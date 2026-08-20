@@ -29,10 +29,20 @@
   model (`claude-sonnet-4-6` on a litellm proxy infers Anthropic; `GPT-5.5` matches nothing
   and falls back to **Ollama**, i.e. localhost). Hence `provider` defaults to `openai`, and
   `kind()` rewrites an inferred `Ollama` to OpenAI. Do NOT "simplify" that back to auto.
-- `Session::messages` stores serialized genai `ChatMessage`s, but `load_messages` ALSO
-  accepts OpenAI wire format — that is a live input path (the frontend's `useChat.ts`
-  appends, Telegram, sub-agent prompts), not just old sessions. Don't delete it as legacy.
-  `Session::items` (the visible transcript) is separate and provider-neutral.
+- **The backend owns the LLM conversation; no interface builds messages.** Callers pass a
+  `UserTurn { text, images }` and get back `ChatOutcome { text, messages }`, which they
+  store verbatim and never inspect (`Session::messages` = serialized genai `ChatMessage`s).
+  That is what keeps tool rounds and thought signatures in context — the old
+  frontend-side reconstruction persisted only assistant text and silently dropped every
+  tool round. Only `llm::{store_message, user_message, load_messages}` know the wire shape;
+  keep it that way, especially in TypeScript.
+  - `run_chat_pipeline` strips the leading system block from what it returns (it's rebuilt
+    each turn from the memory files, so storing it would stack a tool-usage prompt per
+    turn) and drops history that no longer parses, so stored == sent.
+  - Deleting messages is `session::prune_session` (behind `prune_session_items`), not the
+    frontend: mapping a display item to its messages requires reading the message format.
+- `Session::items` (the visible transcript) is separate, provider-neutral, and owned by
+  the interfaces.
 - Two guards in `stream_chat` exist because of real incidents; keep them:
   a stream that ends with no text/reasoning/tool-calls is reported as an **error**, not an
   empty answer (a gateway 200-with-empty-stream silently zeroed 6/10 DeepSWE tasks); and
