@@ -1,5 +1,5 @@
 use genai::chat::ChatRequest;
-use genai::resolver::{AuthData, Endpoint};
+use genai::resolver::AuthData;
 use genai::{ModelIden, ServiceTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -244,7 +244,7 @@ fn default_provider() -> String {
 }
 
 fn default_api_base() -> String {
-    "https://api.openai.com/v1".to_string()
+    "https://api.openai.com/v1/".to_string()
 }
 
 fn default_context_window() -> u32 {
@@ -307,10 +307,7 @@ pub async fn list_models(
         return Err("请先填写 API Base URL".to_string());
     }
     let kind = crate::provider::kind(&provider, &model);
-    let config = (
-        Endpoint::from_owned(api_base.trim().to_string()),
-        AuthData::from_single(api_key),
-    );
+    let config = (crate::llm::endpoint(&api_base), AuthData::from_single(api_key));
     let mut ids = crate::llm::client()
         .all_model_names(kind, config)
         .await
@@ -337,7 +334,7 @@ pub async fn test_model(
         return Err("请先选择模型".to_string());
     }
     let target = ServiceTarget {
-        endpoint: Endpoint::from_owned(api_base.trim().to_string()),
+        endpoint: crate::llm::endpoint(&api_base),
         auth: AuthData::from_single(api_key),
         model: ModelIden::new(
             crate::provider::kind(&provider, &model),

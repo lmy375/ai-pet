@@ -31,12 +31,28 @@ pub fn client() -> Client {
     Client::default()
 }
 
+/// Normalize a configured API base into a genai `Endpoint`.
+///
+/// genai's adapters append their route to `base_url` in two incompatible ways:
+/// the OpenAI model listing concatenates it raw (`{base_url}models`), while
+/// chat resolves it as a relative URL (`Url::join("chat/completions")`). Both
+/// only agree with the configured base when it ends in `/`. Without one,
+/// `https://gw.example.com` lists models from `https://gw.example.commodels`
+/// (unresolvable host) and `https://gw.example.com/v1` chats against
+/// `https://gw.example.com/chat/completions` — the join eats the last segment.
+///
+/// Only the trailing slash is added. Guessing a missing `/v1` would break the
+/// Anthropic route (`{base_url}messages`) and any gateway that isn't versioned.
+pub fn endpoint(base: &str) -> Endpoint {
+    Endpoint::from_owned(format!("{}/", base.trim().trim_end_matches('/')))
+}
+
 /// Resolve an agent's config to a concrete genai target: which protocol to
 /// speak, where to send it, and with what key. Passing a full `ServiceTarget`
 /// (rather than a model name) bypasses genai's model-name inference entirely.
 pub fn service_target(config: &AiConfig) -> ServiceTarget {
     ServiceTarget {
-        endpoint: Endpoint::from_owned(config.base_url.clone()),
+        endpoint: endpoint(&config.base_url),
         auth: AuthData::from_single(config.api_key.clone()),
         model: ModelIden::new(
             crate::provider::kind(&config.provider, &config.model),
@@ -362,6 +378,23 @@ mod tests {
         assert!(renders_reasoning_budget(kind("gemini", "gemini-3-pro")));
         assert!(!renders_reasoning_budget(kind("openai", "claude-sonnet-4-6")));
         assert!(!renders_reasoning_budget(kind("openai_resp", "gpt-5.6")));
+    }
+
+    /// genai appends its routes to `base_url` with no separator of its own, so
+    /// the trailing slash is what keeps a configured base pointing at the real
+    /// endpoint. Both shapes below came from a working config and both broke on
+    /// the raw base: the first listed models from `…commodels` (unresolvable),
+    /// the second lost `/v1` on every chat request (`Url::join` drops the last
+    /// segment of a slashless path).
+    #[test]
+    fn base_url_gets_the_trailing_slash_genai_routes_depend_on() {
+        assert_eq!(endpoint("https://gw.example.com").base_url(), "https://gw.example.com/");
+        assert_eq!(endpoint(" https://gw.example.com/v1 ").base_url(), "https://gw.example.com/v1/");
+        // An already-correct base must come out unchanged.
+        assert_eq!(endpoint("https://api.openai.com/v1/").base_url(), "https://api.openai.com/v1/");
+        // A missing version segment is never guessed: `/v1` is an OpenAI-ism the
+        // Anthropic route and unversioned gateways don't share.
+        assert!(!endpoint("https://gw.example.com").base_url().contains("v1"));
     }
 
     #[test]

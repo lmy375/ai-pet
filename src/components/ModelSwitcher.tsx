@@ -19,11 +19,16 @@ export function ModelSwitcher({ className = "" }: { className?: string }) {
   const agent = settings.agents.find((a) => a.id === settings.active_agent);
   const apiBase = agent?.api_base ?? "";
   const apiKey = agent?.api_key ?? "";
+  const provider = agent?.provider ?? "";
   const current = agent?.model ?? "";
 
   // Refetch the model list whenever the active agent (or its credentials) change.
   // Failures leave the list empty — the current model still shows via the fallback
   // option below, so the switcher never renders blank.
+  //
+  // `model` is passed because it's what `provider::kind` infers from when the
+  // provider is "Auto"; it's deliberately not a dependency, or picking a model
+  // from this very dropdown would refetch the list that produced it.
   useEffect(() => {
     if (!apiBase.trim()) {
       setModels([]);
@@ -31,12 +36,16 @@ export function ModelSwitcher({ className = "" }: { className?: string }) {
     }
     let cancelled = false;
     setLoading(true);
-    invoke<string[]>("list_models", { apiBase, apiKey })
+    invoke<string[]>("list_models", { apiBase, apiKey, provider, model: current })
       .then((list) => !cancelled && setModels(list))
-      .catch(() => !cancelled && setModels([]))
+      .catch((e) => {
+        if (cancelled) return;
+        console.error("Failed to load models:", e);
+        setModels([]);
+      })
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [apiBase, apiKey]);
+  }, [apiBase, apiKey, provider]);
 
   if (!loaded || !agent) return null;
 

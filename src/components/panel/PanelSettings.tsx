@@ -78,6 +78,10 @@ export function PanelSettings() {
   const [models, setModels] = useState<string[]>([]);
   const [providerOptions, setProviderOptions] = useState<ProviderOptions | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
+  // Kept separately from the toast: the auto-triggered loads are silent, and
+  // without this the only feedback was the "check URL / API Key" placeholder,
+  // which blames the credentials for every possible failure.
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [skillsInfo, setSkillsInfo] = useState<SkillsInfo | null>(null);
 
@@ -138,7 +142,7 @@ export function PanelSettings() {
       .then(setTelegramStatus)
       .catch(() => setTelegramStatus({ running: false, error: null }));
     if (a?.api_base?.trim()) loadModels(a.api_base, a.api_key, true);
-    else setModels([]);
+    else { setModels([]); setModelsError(null); }
   };
 
   // Keep the provider list — and what "Auto" resolves to for the current model —
@@ -195,6 +199,7 @@ export function PanelSettings() {
     setMcpStatuses([]);
     setTelegramStatus({ running: false, error: null });
     setModels([]);
+    setModelsError(null);
     setMessage(null);
     setTestResult(null);
     saveSettings(next);
@@ -260,6 +265,7 @@ export function PanelSettings() {
   const loadModels = async (apiBase: string, apiKey: string, silent = false) => {
     if (!apiBase.trim()) return;
     setLoadingModels(true);
+    setModelsError(null);
     try {
       // The provider decides which protocol the listing speaks — an Anthropic or
       // Gemini endpoint has no OpenAI-style /models route.
@@ -275,6 +281,7 @@ export function PanelSettings() {
       }
     } catch (e: any) {
       setModels([]);
+      setModelsError(String(e));
       if (!silent) fail(t("settings.llm.modelsFailed", { error: e }));
     } finally {
       setLoadingModels(false);
@@ -684,6 +691,11 @@ export function PanelSettings() {
                 {testing ? t("settings.llm.testing") : t("settings.llm.test")}
               </Button>
             </div>
+            {modelsError && (
+              <StatusText ok={false} className="mt-1.5 text-[12px]">
+                {t("settings.llm.modelsFailed", { error: modelsError })}
+              </StatusText>
+            )}
             {testResult && (
               <StatusText ok={testResult.ok} className="mt-1.5 text-[12px]">{testResult.text}</StatusText>
             )}

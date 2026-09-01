@@ -94,7 +94,7 @@ export function defaultAgent(id = "default", name = "默认"): AgentConfig {
     id,
     name,
     provider: "openai",
-    api_base: "https://api.openai.com/v1",
+    api_base: "https://api.openai.com/v1/",
     api_key: "",
     model: "gpt-4o-mini",
     context_window: 128000,
