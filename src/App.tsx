@@ -113,14 +113,14 @@ function App() {
               hovered ? "opacity-100" : "opacity-25"
             }`}
           >
-            <span className="absolute left-0 top-0 h-3 w-3 rounded-tl-md border-l-2 border-t-2 border-slate-300/90" />
-            <span className="absolute right-0 top-0 h-3 w-3 rounded-tr-md border-r-2 border-t-2 border-slate-300/90" />
-            <span className="absolute bottom-0 left-0 h-3 w-3 rounded-bl-md border-b-2 border-l-2 border-slate-300/90" />
+            <span className="absolute left-0 top-0 h-3 w-3 rounded-tl-md border-l-2 border-t-2 border-line/90" />
+            <span className="absolute right-0 top-0 h-3 w-3 rounded-tr-md border-r-2 border-t-2 border-line/90" />
+            <span className="absolute bottom-0 left-0 h-3 w-3 rounded-bl-md border-b-2 border-l-2 border-line/90" />
             {/* Bottom-right is the "busy" corner: when expanded it holds the send
                 button + resize grip, so we skip the mark there to avoid crowding.
                 Shown only when collapsed (no send button then). */}
             {chatCollapsed && (
-              <span className="absolute bottom-0 right-0 h-3 w-3 rounded-br-md border-b-2 border-r-2 border-slate-300/90" />
+              <span className="absolute bottom-0 right-0 h-3 w-3 rounded-br-md border-b-2 border-r-2 border-line/90" />
             )}
           </div>
 
@@ -157,7 +157,7 @@ function App() {
                 streaming={currentResponse}
                 streamingReasoning={currentReasoning}
                 loading={isLoading}
-                className="h-full rounded-2xl border border-sky-200/60 bg-white/45 px-3 py-3 backdrop-blur-md"
+                className="h-full rounded-card border border-line bg-surface/55 px-3 py-3 backdrop-blur-md"
               />
             </div>
           )}

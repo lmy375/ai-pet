@@ -61,7 +61,7 @@ export function GallerySlideshow({ dir, intervalSec }: { dir: string; intervalSe
 
   if (error) {
     return (
-      <div className="flex h-full w-full items-center justify-center px-4 text-center text-[13px] text-slate-500">
+      <div className="flex h-full w-full items-center justify-center px-4 text-center text-[13px] text-ink-soft">
         {t("gallery.readError", { error: error ?? "" })}
       </div>
     );
@@ -69,7 +69,7 @@ export function GallerySlideshow({ dir, intervalSec }: { dir: string; intervalSe
 
   if (!current) {
     return (
-      <div className="flex h-full w-full items-center justify-center px-4 text-center text-[13px] text-slate-400">
+      <div className="flex h-full w-full items-center justify-center px-4 text-center text-[13px] text-ink-faint">
         {t("gallery.empty")}
       </div>
     );

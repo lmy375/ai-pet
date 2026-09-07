@@ -64,7 +64,7 @@ export function ModelSwitcher({ className = "" }: { className?: string }) {
       value={current}
       onChange={(e) => switchModel(e.target.value)}
       title={loading ? t("chat.model.loading") : t("chat.model.switch")}
-      className={`min-w-0 shrink rounded-lg border border-slate-200 bg-white px-2 py-1 text-[12px] font-medium text-slate-700 outline-none transition-colors hover:border-slate-300 focus:border-accent ${className}`}
+      className={`min-w-0 shrink rounded-field border border-line bg-surface px-2 py-1.5 text-note font-medium text-ink outline-none transition-colors hover:border-accent-line focus:border-accent ${className}`}
     >
       {options.length === 0 && <option value="">—</option>}
       {options.map((m) => (

@@ -136,12 +136,12 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
               <img
                 src={url}
                 alt=""
-                className="h-14 w-14 rounded-lg border border-slate-300/50 object-cover"
+                className="h-14 w-14 rounded-field border border-line object-cover"
               />
               <button
                 onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
                 title={t("chat.input.removeImage")}
-                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-slate-700 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-white opacity-0 transition-opacity group-hover:opacity-100"
               >
                 <span className="text-[12px] leading-none">×</span>
               </button>
@@ -151,8 +151,8 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
       )}
       <div className="relative flex items-end gap-2">
         {menuOpen && (
-          <div className="absolute bottom-full left-0 right-12 z-20 mb-2 max-h-52 overflow-y-auto rounded-2xl border border-slate-300/50 bg-white/95 py-1 shadow-lg backdrop-blur-md">
-            <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
+          <div className="absolute bottom-full left-0 right-12 z-20 mb-2 max-h-52 overflow-y-auto rounded-card border border-line bg-surface/95 py-1 shadow-pop backdrop-blur-md">
+            <div className="px-3 py-1 text-meta font-medium uppercase tracking-wide text-ink-faint">
               {t("chat.skillMenu.title")}
             </div>
             {matches.map((s, i) => (
@@ -167,11 +167,11 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
                   i === sel ? "bg-accent/10" : ""
                 }`}
               >
-                <span className="shrink-0 font-mono text-[12px] text-accent">
+                <span className="shrink-0 font-mono text-note text-accent">
                   {SKILL_PREFIX}
                   {s.slug}
                 </span>
-                <span className="truncate text-[12px] text-slate-500">{s.description}</span>
+                <span className="truncate text-note text-ink-soft">{s.description}</span>
               </button>
             ))}
           </div>
@@ -188,13 +188,13 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
           onPaste={handlePaste}
           placeholder={placeholder ?? t("chat.input.placeholder")}
           rows={1}
-          className="flex-1 resize-none overflow-hidden rounded-2xl border border-slate-300/50 bg-white/90 px-4 py-2.5 text-[14px] leading-snug text-slate-800 outline-none backdrop-blur-md transition-colors focus:border-accent placeholder:text-slate-400"
+          className="flex-1 resize-none overflow-hidden rounded-[20px] border border-line bg-surface-soft px-4 py-2.5 text-chat leading-snug text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent focus:bg-surface"
         />
         <button
           onClick={submit}
           disabled={isLoading || (!input.trim() && images.length === 0)}
           title={t("chat.input.send")}
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-card transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-ink-faint disabled:shadow-none"
         >
           <SendIcon className="h-5 w-5 -translate-x-px" />
         </button>

@@ -4,13 +4,13 @@ export type Tone = "success" | "error" | "muted";
 const text: Record<Tone, string> = {
   success: "text-green-600",
   error: "text-red-500",
-  muted: "text-slate-400",
+  muted: "text-ink-faint",
 };
 
 const dot: Record<Tone, string> = {
   success: "bg-green-500",
   error: "bg-red-500",
-  muted: "bg-slate-400",
+  muted: "bg-ink-faint",
 };
 
 export const toneText = (tone: Tone) => text[tone];

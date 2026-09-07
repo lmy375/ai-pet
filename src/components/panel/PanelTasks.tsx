@@ -68,23 +68,23 @@ function TaskRow({
   const killed = task.returnCode === -1;
 
   return (
-    <div className="rounded-xl border border-slate-200/70 bg-white">
+    <div className="rounded-xl border border-line/70 bg-surface">
       {/* Header — click to expand */}
       <div
         onClick={() => onToggle(task.taskId)}
         className="flex cursor-pointer select-none items-center gap-2 px-3 py-2.5"
       >
         <ChevronRight
-          className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`}
+          className={`h-3.5 w-3.5 shrink-0 text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`}
         />
         <Badge color={kindColor}>{kindText}</Badge>
-        <span title={task.label} className="min-w-0 flex-1 truncate text-[13px] text-slate-700">
+        <span title={task.label} className="min-w-0 flex-1 truncate text-[13px] text-ink">
           {task.label || t("tasks.noLabel")}
         </span>
-        <span className="hidden shrink-0 text-[12px] text-slate-400 sm:inline">
+        <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">
           {t("tasks.triggeredAt", { time: formatIsoTime(task.startedAt) })}
         </span>
-        <span className="flex shrink-0 items-center gap-1 text-[12px] text-slate-400">
+        <span className="flex shrink-0 items-center gap-1 text-[12px] text-ink-faint">
           <ClockIcon className="h-3.5 w-3.5" />
           {fmtDuration(task.elapsedMs)}
         </span>
@@ -111,32 +111,32 @@ function TaskRow({
 
       {/* Detail — lazy-loaded on expand */}
       {expanded && (
-        <div className="space-y-2 border-t border-slate-200/70 px-3 py-2.5">
+        <div className="space-y-2 border-t border-line/70 px-3 py-2.5">
           {detail ? (
             <>
               <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[12px]">
-                <span className="font-semibold text-slate-400">{t("tasks.triggerTime")}</span>
-                <span className="min-w-0 break-all text-slate-600">{task.startedAt}</span>
+                <span className="font-semibold text-ink-faint">{t("tasks.triggerTime")}</span>
+                <span className="min-w-0 break-all text-ink-soft">{task.startedAt}</span>
               </div>
               <div>
-                <div className="mb-1 text-[11px] font-semibold text-slate-400">
+                <div className="mb-1 text-[11px] font-semibold text-ink-faint">
                   {task.kind === "bash" ? t("tasks.cmd") : "Prompt"}
                 </div>
                 <CodeBlock>{detail.input || "—"}</CodeBlock>
               </div>
               <div>
-                <div className="mb-1 text-[11px] font-semibold text-slate-400">{t("tasks.result")}</div>
+                <div className="mb-1 text-[11px] font-semibold text-ink-faint">{t("tasks.result")}</div>
                 <CodeBlock>{detail.stdout || t("tasks.noOutput")}</CodeBlock>
                 {detail.stderr && (
                   <>
-                    <div className="mb-1 mt-2 text-[11px] font-semibold text-slate-400">stderr</div>
+                    <div className="mb-1 mt-2 text-[11px] font-semibold text-ink-faint">stderr</div>
                     <CodeBlock>{detail.stderr}</CodeBlock>
                   </>
                 )}
               </div>
             </>
           ) : (
-            <div className="text-[12px] text-slate-400">{t("common.loading")}</div>
+            <div className="text-[12px] text-ink-faint">{t("common.loading")}</div>
           )}
         </div>
       )}
@@ -230,24 +230,24 @@ export function PanelTasks() {
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold text-slate-800">{t("tasks.title")}</h2>
+        <h2 className="text-[15px] font-semibold text-ink">{t("tasks.title")}</h2>
         <button
           onClick={fetchTasks}
           title={t("common.refresh")}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-hover hover:text-ink"
         >
           <RefreshIcon className="h-[18px] w-[18px]" />
         </button>
       </div>
 
       {tasks.length === 0 ? (
-        <div className="mt-16 text-center text-[13px] text-slate-400">{t("tasks.empty")}</div>
+        <div className="mt-16 text-center text-[13px] text-ink-faint">{t("tasks.empty")}</div>
       ) : (
         <div className="space-y-5">
           <section>
-            <div className="mb-1.5 text-[12px] font-semibold text-slate-400">{t("tasks.running", { count: running.length })}</div>
+            <div className="mb-1.5 text-[12px] font-semibold text-ink-faint">{t("tasks.running", { count: running.length })}</div>
             {running.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-200 px-3 py-3 text-[12px] text-slate-400">
+              <div className="rounded-xl border border-dashed border-line px-3 py-3 text-[12px] text-ink-faint">
                 {t("tasks.runningEmpty")}
               </div>
             ) : (
@@ -257,7 +257,7 @@ export function PanelTasks() {
 
           {finished.length > 0 && (
             <section>
-              <div className="mb-1.5 text-[12px] font-semibold text-slate-400">{t("tasks.recent", { count: finished.length })}</div>
+              <div className="mb-1.5 text-[12px] font-semibold text-ink-faint">{t("tasks.recent", { count: finished.length })}</div>
               <div className="space-y-2">{finished.map(renderRow)}</div>
             </section>
           )}

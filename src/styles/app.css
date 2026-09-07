@@ -1,9 +1,53 @@
 @import "tailwindcss";
 
-/* ---------- Shared design tokens (iOS-style) ---------- */
+/* ---------- Design tokens ----------
+   The single source of truth for the app's palette, type scale, radii and
+   elevation. Components must reference these utilities (bg-surface, text-ink,
+   border-line, rounded-card, text-body …) instead of hardcoding raw palette
+   values, so a restyle happens here and nowhere else. */
 @theme {
-  --color-accent: #007aff;
-  --color-accent-hover: #0a84ff;
+  /* Accent — actions, selection, links */
+  --color-accent: #3b7df6;
+  --color-accent-hover: #2f6ce6;
+  --color-accent-soft: #eaf1ff;
+  --color-accent-line: #cddffd;
+
+  /* Surfaces */
+  --color-canvas: #f3f6fb;        /* window background behind cards */
+  --color-surface: #ffffff;       /* bars, cards, bubbles */
+  --color-surface-soft: #f7f9fd;  /* inset blocks, chips */
+  --color-hover: #edf1f8;         /* hover wash on a light surface */
+  --color-line: #e5eaf3;          /* hairline borders */
+
+  /* Text */
+  --color-ink: #1e2735;           /* primary */
+  --color-ink-soft: #5a6579;      /* secondary */
+  --color-ink-faint: #93a0b5;     /* meta, placeholders */
+
+  /* Dark monospace surface — raw tool payloads, log streams */
+  --color-code: #232b3a;
+  --color-code-ink: #d8dde9;
+
+  /* Reasoning ("thinking") — a distinct hue so internal thought never reads
+     as part of the answer */
+  --color-think: #5a4fbd;
+  --color-think-soft: #f4f2fe;
+  --color-think-line: #e2ddfb;
+
+  /* Type scale */
+  --text-meta: 11px;
+  --text-note: 12px;
+  --text-body: 13px;
+  --text-chat: 14px;
+  --text-title: 15px;
+
+  /* Radii + elevation */
+  --radius-field: 10px;
+  --radius-card: 14px;
+  --radius-bubble: 16px;
+  --shadow-card: 0 1px 2px rgba(20, 30, 55, 0.04), 0 8px 20px -14px rgba(20, 30, 55, 0.18);
+  --shadow-pop: 0 10px 30px -10px rgba(20, 30, 55, 0.25);
+
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
 }
 
@@ -18,11 +62,30 @@ html, body, #root {
 
 body {
   font-family: var(--font-sans);
+  color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Slim scrollbars — a full-width native bar is too loud inside chat panes. */
+@supports selector(::-webkit-scrollbar) {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.28);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.45);
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
 /* Pet breathing: subtle vertical bob + scale, mimics calm breathing */

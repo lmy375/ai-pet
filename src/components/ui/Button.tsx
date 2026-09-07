@@ -12,14 +12,14 @@ const base =
   "inline-flex items-center justify-center gap-1.5 font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none";
 
 const sizes: Record<Size, string> = {
-  sm: "px-3 py-1.5 text-[12px] rounded-lg",
-  md: "px-4 py-2 text-[13px] rounded-xl",
+  sm: "px-3 py-1.5 text-note rounded-field",
+  md: "px-4 py-2 text-body rounded-field",
 };
 
 const variants: Record<Variant, string> = {
-  primary: "bg-accent text-white hover:bg-accent-hover",
-  secondary: "bg-slate-100 text-slate-700 hover:bg-slate-200",
-  ghost: "border border-slate-300/70 bg-white text-slate-600 hover:bg-slate-50",
+  primary: "bg-accent text-white shadow-card hover:bg-accent-hover",
+  secondary: "bg-surface-soft text-ink hover:bg-hover",
+  ghost: "border border-line bg-surface text-ink-soft hover:bg-hover hover:text-ink",
   danger: "bg-red-500 text-white hover:bg-red-600",
 };
 

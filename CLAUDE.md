@@ -101,6 +101,20 @@
   dedup completions by `taskId` (`seenTaskIdsRef`). Do NOT reintroduce a `cancelled`/self-cancel
   flag to enforce a single listener — that's what caused the zero-notification regression.
 
+## UI style
+- Every color / type size / radius / shadow comes from the `@theme` tokens in
+  `src/styles/app.css` (`bg-surface`, `text-ink-soft`, `border-line`, `bg-code`,
+  `rounded-card`, `text-body`, `shadow-card`, …). Don't reintroduce raw palette
+  classes (`slate-*` / `sky-*`) or `text-[13px]`-style literals in components.
+- Panel window = session rail (`SessionSidebar`) + underlined top tabs; the chat
+  column is toolbar → thread → input, with no banner/hero above the messages.
+- `ReasoningBlock` renders ABOVE the answer it produced, collapsed by default.
+- `ChatThread` has two modes: with `assistantName` it grows per-message avatar +
+  sender/time rows (panel); without it, bubbles only + periodic time separators
+  (pet window, too small for meta rows).
+- Emoji are content (pet utterances, user input), never UI chrome — icons come
+  from `components/Icons.tsx`.
+
 ## Known issues / gotchas
 
 ### Live2D blank after the pet collapses (RECURRING — has regressed multiple times)

@@ -55,7 +55,7 @@ export function PanelDebug() {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white px-4 py-2.5">
+      <div className="flex shrink-0 items-center gap-2 border-b border-line/70 bg-surface px-4 py-2.5">
         <Button variant="ghost" size="sm" onClick={fetchLogs}>
           <RefreshIcon className="h-4 w-4" />
           {t("common.refresh")}
@@ -68,22 +68,22 @@ export function PanelDebug() {
           DevTools
         </Button>
         <span className="flex-1" />
-        <span className="text-[12px] text-slate-400">{t("debug.logCount", { count: logs.length })}</span>
+        <span className="text-[12px] text-ink-faint">{t("debug.logCount", { count: logs.length })}</span>
       </div>
 
       {/* Log output */}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto bg-slate-900 px-4 py-3 font-mono text-[12px] leading-[1.7] text-slate-200"
+        className="flex-1 overflow-y-auto bg-code px-4 py-3 font-mono text-note leading-[1.7] text-code-ink"
       >
         {logs.length === 0 ? (
-          <div className="mt-10 text-center text-slate-500">{t("debug.empty")}</div>
+          <div className="mt-10 text-center text-ink-soft">{t("debug.empty")}</div>
         ) : (
           logs.map((line, i) => (
             <div key={i} className="break-all">
-              <span className="text-slate-400">{line.slice(0, 14)}</span>
-              <span className={line.includes("ERROR") ? "text-red-400" : line.includes("WARN") ? "text-amber-400" : "text-slate-200"}>
+              <span className="text-ink-faint">{line.slice(0, 14)}</span>
+              <span className={line.includes("ERROR") ? "text-red-400" : line.includes("WARN") ? "text-amber-400" : "text-code-ink"}>
                 {line.slice(14)}
               </span>
             </div>

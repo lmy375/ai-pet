@@ -68,7 +68,7 @@ export function ChevronDown({ className }: IconProps) {
  *  The single source for the expand/collapse arrow used by collapsible rows. */
 export function ExpandChevron({
   expanded,
-  className = "h-4 w-4 shrink-0 text-slate-400",
+  className = "h-4 w-4 shrink-0 text-ink-faint",
 }: { expanded: boolean; className?: string }) {
   return expanded ? <ChevronDown className={className} /> : <ChevronRight className={className} />;
 }
@@ -227,5 +227,27 @@ export function BugIcon({ className }: IconProps) {
       <path d="M12 20v-9M6.5 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4" />
       <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4M22 13h-4M17.2 17c2.1.1 3.8 1.9 3.8 4" />
     </Stroke>
+  );
+}
+
+export function SearchIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </Stroke>
+  );
+}
+
+/** Brand mark: a cat paw. Filled (not stroked) so it stays readable at 16px. */
+export function PawIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <ellipse cx="7" cy="8.4" rx="2.15" ry="2.6" />
+      <ellipse cx="17" cy="8.4" rx="2.15" ry="2.6" />
+      <ellipse cx="10.6" cy="5.6" rx="1.95" ry="2.45" />
+      <ellipse cx="14.6" cy="5.6" rx="1.95" ry="2.45" />
+      <path d="M12 11.6c2.7 0 5 1.9 5 4.3 0 2.2-1.7 3.6-3.6 3.6-.6 0-1-.1-1.4-.2-.4.1-.8.2-1.4.2-1.9 0-3.6-1.4-3.6-3.6 0-2.4 2.3-4.3 5-4.3Z" />
+    </svg>
   );
 }

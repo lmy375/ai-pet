@@ -22,26 +22,26 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
   const backgrounded = !!result && /"status"\s*:\s*"running"/.test(result);
 
   return (
-    <div className="my-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-[13px]">
+    <div className="my-1 overflow-hidden rounded-field border border-line bg-surface-soft text-body">
       {/* Header — always visible */}
       <div
         onClick={() => setExpanded(!expanded)}
-        className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-slate-600"
+        className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-ink-soft"
       >
-        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`} />
+        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`} />
         <Icon className="h-4 w-4 shrink-0 text-accent" />
         <span className="shrink-0 font-semibold text-accent">{label}</span>
         {summary && (
           <span
             title={fullSummary}
-            className={`min-w-0 flex-1 truncate text-slate-500 ${summaryMono ? "font-mono text-[12px]" : ""}`}
+            className={`min-w-0 flex-1 truncate text-ink-soft ${summaryMono ? "font-mono text-[12px]" : ""}`}
           >
             {summary}
           </span>
         )}
-        {hint && <span className="min-w-0 shrink truncate text-[12px] text-slate-400">{hint}</span>}
+        {hint && <span className="min-w-0 shrink truncate text-[12px] text-ink-faint">{hint}</span>}
         {isRunning ? (
-          <span className="flex shrink-0 items-center gap-1 text-[12px] text-slate-400">
+          <span className="flex shrink-0 items-center gap-1 text-[12px] text-ink-faint">
             <SpinnerIcon className="h-4 w-4 animate-spin" />
             {t("tool.running")}
           </span>
@@ -54,18 +54,18 @@ export function ToolCallBlock({ name, arguments: args, result, isRunning }: Prop
 
       {/* Details — collapsible */}
       {expanded && (
-        <div className="border-t border-slate-200">
+        <div className="border-t border-line">
           <div className="px-3 py-2">
-            <div className="mb-1 text-[11px] font-semibold text-slate-400">{t("tool.args")}</div>
-            <pre className="m-0 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-slate-800 p-2 font-mono text-[12px] leading-normal text-slate-200">
+            <div className="mb-1 text-[11px] font-semibold text-ink-faint">{t("tool.args")}</div>
+            <pre className="m-0 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-code p-2 font-mono text-note leading-normal text-code-ink">
               {formatJson(args)}
             </pre>
           </div>
 
           {result && (
             <div className="px-3 pb-2">
-              <div className="mb-1 text-[11px] font-semibold text-slate-400">{t("tool.result")}</div>
-              <pre className="m-0 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-slate-800 p-2 font-mono text-[12px] leading-normal text-emerald-300">
+              <div className="mb-1 text-[11px] font-semibold text-ink-faint">{t("tool.result")}</div>
+              <pre className="m-0 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-code p-2 font-mono text-note leading-normal text-emerald-300">
                 {formatJson(result)}
               </pre>
             </div>

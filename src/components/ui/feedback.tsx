@@ -4,7 +4,7 @@ import { useI18n } from "../../i18n";
 /** Inline red alert box for inline error text (MCP/Telegram connection errors). */
 export function ErrorBox({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div className={`rounded-lg border border-red-300 bg-red-50 px-2.5 py-1.5 text-[12px] text-red-600 ${className}`}>
+    <div className={`rounded-field border border-red-300 bg-red-50 px-2.5 py-1.5 text-note text-red-600 ${className}`}>
       {children}
     </div>
   );
@@ -15,7 +15,7 @@ export function ErrorBox({ children, className = "" }: { children: ReactNode; cl
 export function LoadingScreen({ message }: { message?: string }) {
   const { t } = useI18n();
   return (
-    <div className="flex h-full items-center justify-center text-[14px] text-slate-400">
+    <div className="flex h-full items-center justify-center text-chat text-ink-faint">
       {message ?? t("common.loading")}
     </div>
   );
@@ -23,5 +23,5 @@ export function LoadingScreen({ message }: { message?: string }) {
 
 /** Small muted helper text shown under a form field. */
 export function HintText({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <p className={`mt-1 text-[11px] text-slate-400 ${className}`}>{children}</p>;
+  return <p className={`mt-1 text-meta text-ink-faint ${className}`}>{children}</p>;
 }

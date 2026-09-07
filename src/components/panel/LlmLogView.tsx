@@ -109,7 +109,7 @@ function renderContent(content: unknown, onZoom: (src: string) => void, zoomTitl
               alt={`Image #${k + 1}`}
               onClick={() => onZoom(url)}
               title={zoomTitle}
-              className="max-h-[300px] max-w-full cursor-zoom-in rounded-lg border border-slate-200 object-contain"
+              className="max-h-[300px] max-w-full cursor-zoom-in rounded-lg border border-line object-contain"
             />
           );
         }
@@ -160,13 +160,13 @@ function valueToText(value: unknown): string {
 function renderStructuredValue(value: unknown): React.ReactNode {
   const parsed = parseJsonValue(value);
   if (parsed == null || typeof parsed !== "object") {
-    return <span className="break-all text-slate-700">{valueToText(parsed)}</span>;
+    return <span className="break-all text-ink">{valueToText(parsed)}</span>;
   }
   if (Array.isArray(parsed)) {
     return (
       <div className="space-y-1">
         {parsed.map((item, i) => (
-          <div key={i} className="rounded-md bg-white px-2 py-1">
+          <div key={i} className="rounded-md bg-surface px-2 py-1">
             {renderStructuredValue(item)}
           </div>
         ))}
@@ -175,12 +175,12 @@ function renderStructuredValue(value: unknown): React.ReactNode {
   }
 
   const entries = Object.entries(parsed as Record<string, unknown>);
-  if (entries.length === 0) return <span className="text-slate-400">—</span>;
+  if (entries.length === 0) return <span className="text-ink-faint">—</span>;
   return (
     <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1.5">
       {entries.map(([key, val]) => (
         <div key={key} className="contents">
-          <span className="font-mono text-[11px] text-slate-400">{key}</span>
+          <span className="font-mono text-[11px] text-ink-faint">{key}</span>
           <div className="min-w-0">{renderStructuredValue(val)}</div>
         </div>
       ))}
@@ -198,19 +198,19 @@ function ToolCallView({ call }: { call: ToolCall }) {
       <div className="mb-2 flex items-center gap-1.5">
         <Badge color="orange">tool-call</Badge>
         <Icon className="h-4 w-4 shrink-0 text-orange-600" />
-        <span className="shrink-0 text-[12px] font-semibold text-slate-700">{label}</span>
+        <span className="shrink-0 text-[12px] font-semibold text-ink">{label}</span>
         {summary && (
           <span
             title={fullSummary}
-            className={`min-w-0 flex-1 truncate text-[12px] text-slate-600 ${summaryMono ? "font-mono" : ""}`}
+            className={`min-w-0 flex-1 truncate text-[12px] text-ink-soft ${summaryMono ? "font-mono" : ""}`}
           >
             {summary}
           </span>
         )}
-        {hint && <span className="min-w-0 shrink truncate text-[12px] text-slate-400">{hint}</span>}
-        {shortId(call.id) && <span className="font-mono text-[11px] text-slate-400">{shortId(call.id)}</span>}
+        {hint && <span className="min-w-0 shrink truncate text-[12px] text-ink-faint">{hint}</span>}
+        {shortId(call.id) && <span className="font-mono text-[11px] text-ink-faint">{shortId(call.id)}</span>}
       </div>
-      <div className="rounded-md bg-white/75 px-2.5 py-2 text-[12px]">
+      <div className="rounded-md bg-surface/75 px-2.5 py-2 text-[12px]">
         {renderStructuredValue(args)}
       </div>
     </div>
@@ -234,26 +234,26 @@ function ToolResultView({ content, call }: { content: unknown; call?: ToolCall }
     <div className="mt-1.5 rounded-lg border border-amber-100 bg-amber-50/50 px-2.5 py-2">
       <div className="mb-2 flex items-center gap-1.5">
         <Badge color="orange">tool-result</Badge>
-        {name && <span className="text-[12px] font-semibold text-slate-700">{name}</span>}
+        {name && <span className="text-[12px] font-semibold text-ink">{name}</span>}
         {status && <Badge color={status === "finished" ? "green" : "amber"}>{status}</Badge>}
-        {shortId(call?.id) && <span className="font-mono text-[11px] text-slate-400">{shortId(call?.id)}</span>}
+        {shortId(call?.id) && <span className="font-mono text-[11px] text-ink-faint">{shortId(call?.id)}</span>}
       </div>
       {obj ? (
         <div className="space-y-2 text-[12px]">
           {metaEntries.length > 0 && (
-            <div className="rounded-md bg-white/75 px-2.5 py-2">
+            <div className="rounded-md bg-surface/75 px-2.5 py-2">
               {renderStructuredValue(Object.fromEntries(metaEntries))}
             </div>
           )}
           {stdout != null && (
             <div>
-              <div className="mb-1 font-semibold text-slate-400">stdout</div>
+              <div className="mb-1 font-semibold text-ink-faint">stdout</div>
               <pre className={preClass}>{stdout || "—"}</pre>
             </div>
           )}
           {stderr && (
             <div>
-              <div className="mb-1 font-semibold text-slate-400">stderr</div>
+              <div className="mb-1 font-semibold text-ink-faint">stderr</div>
               <pre className={preClass}>{stderr}</pre>
             </div>
           )}
@@ -331,21 +331,21 @@ export function LlmLogView() {
   };
 
   return (
-    <div className="flex h-full flex-col bg-slate-100">
+    <div className="flex h-full flex-col bg-surface-soft">
       {/* Toolbar */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white px-4 py-2.5">
+      <div className="flex shrink-0 items-center gap-2 border-b border-line/70 bg-surface px-4 py-2.5">
         <Button variant="ghost" size="sm" onClick={fetchLogs}>
           <RefreshIcon className="h-4 w-4" />
           {t("common.refresh")}
         </Button>
         <span className="flex-1" />
-        <span className="text-[12px] text-slate-400">{t("llm.recordCount", { count: entries.length })}</span>
+        <span className="text-[12px] text-ink-faint">{t("llm.recordCount", { count: entries.length })}</span>
       </div>
 
       {/* Log entries */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2">
         {entries.length === 0 ? (
-          <div className="mt-10 text-center text-[13px] text-slate-400">
+          <div className="mt-10 text-center text-[13px] text-ink-faint">
             {t("llm.empty")}
           </div>
         ) : (
@@ -362,13 +362,13 @@ export function LlmLogView() {
               if (call.id) toolCallsById.set(call.id, call);
             });
             return (
-              <div key={i} className="mb-1.5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <div key={i} className="mb-1.5 overflow-hidden rounded-xl border border-line bg-surface">
                 {/* Summary row */}
                 <div
                   onClick={() => toggle(i)}
                   className="flex cursor-pointer select-none items-center gap-2.5 px-3.5 py-2.5"
                 >
-                  <span className="whitespace-nowrap font-mono text-[11px] text-slate-400">
+                  <span className="whitespace-nowrap font-mono text-[11px] text-ink-faint">
                     {formatIsoTime(entry.request_time)}
                   </span>
                   <Badge color="sky">{entry.request.model}</Badge>
@@ -383,13 +383,13 @@ export function LlmLogView() {
                       {tcNames.join(", ")}
                     </Badge>
                   )}
-                  <span className="flex-1 truncate text-[12px] text-slate-600">{lastUserMsg(entry)}</span>
+                  <span className="flex-1 truncate text-[12px] text-ink-soft">{lastUserMsg(entry)}</span>
                   <ExpandChevron expanded={isExpanded} />
                 </div>
 
                 {/* Expanded detail */}
                 {isExpanded && (
-                  <div className="border-t border-slate-100 px-3.5 py-3">
+                  <div className="border-t border-line px-3.5 py-3">
                     <DetailSection icon={<ClockIcon className="h-3.5 w-3.5" />} title={t("llm.section.time")}>
                       <Row label={t("llm.row.requestTime")} value={entry.request_time} />
                       <Row label={t("llm.row.firstToken")} value={entry.first_token_time ?? "—"} />
@@ -460,8 +460,8 @@ export function LlmLogView() {
 function DetailSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <div className="mb-3">
-      <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
-        <span className="text-slate-400">{icon}</span>
+      <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-ink">
+        <span className="text-ink-faint">{icon}</span>
         {title}
       </div>
       {children}
@@ -472,8 +472,8 @@ function DetailSection({ icon, title, children }: { icon: React.ReactNode; title
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="mb-0.5 flex gap-2 font-mono text-[12px]">
-      <span className="min-w-[100px] text-slate-400">{label}</span>
-      <span className="text-slate-800">{value}</span>
+      <span className="min-w-[100px] text-ink-faint">{label}</span>
+      <span className="text-ink">{value}</span>
     </div>
   );
 }

@@ -2,7 +2,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 const base =
   "flex h-9 w-9 items-center justify-center rounded-xl border backdrop-blur-md transition-colors";
-const idle = "border-slate-300/60 bg-white/80 text-slate-600 hover:bg-white";
+const idle = "border-line/60 bg-surface/80 text-ink-soft hover:bg-surface";
 const active = "border-accent bg-accent text-white";
 
 /**
@@ -25,7 +25,7 @@ export function FloatingIconButton({
 
 const actionSize = { sm: "h-6 w-6", md: "h-7 w-7" } as const;
 const actionHover = {
-  default: "hover:bg-slate-100 hover:text-slate-600",
+  default: "hover:bg-hover hover:text-ink",
   danger: "hover:bg-red-50 hover:text-red-500",
 } as const;
 
@@ -47,7 +47,7 @@ export function IconActionButton({
 }) {
   return (
     <button
-      className={`flex ${actionSize[size]} shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors ${actionHover[variant]} ${className}`}
+      className={`flex ${actionSize[size]} shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors ${actionHover[variant]} ${className}`}
       {...rest}
     >
       {children}

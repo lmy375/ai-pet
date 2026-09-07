@@ -7,9 +7,9 @@ import type {
 
 /** Shared field classes — the single source of truth for input styling. */
 export const inputClass =
-  "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-800 outline-none transition-colors focus:border-accent placeholder:text-slate-400 disabled:bg-slate-50 disabled:text-slate-400";
+  "w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none transition-colors focus:border-accent placeholder:text-ink-faint disabled:bg-surface-soft disabled:text-ink-faint";
 
-export const labelClass = "mb-1 block text-[12px] font-medium text-slate-500";
+export const labelClass = "mb-1 block text-note font-medium text-ink-soft";
 
 export function Label({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <label className={`${labelClass} ${className}`}>{children}</label>;

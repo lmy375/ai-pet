@@ -31,15 +31,15 @@ const components: Components = {
   input: ({ type, checked }) =>
     type === "checkbox" ? <input type="checkbox" checked={checked} readOnly className="mr-1.5 align-[-1px]" /> : null,
   blockquote: ({ children }) => (
-    <blockquote className="mb-2 border-l-2 border-slate-400 pl-2.5 text-slate-600 last:mb-0">{children}</blockquote>
+    <blockquote className="mb-2 border-l-2 border-accent-line pl-2.5 text-ink-soft last:mb-0">{children}</blockquote>
   ),
   // Inline code. Inside a fence the same element is neutralized by the `pre`
   // rules below, so no `inline` prop sniffing is needed.
   code: ({ children }) => (
-    <code className="rounded bg-slate-900/8 px-1 py-px font-mono text-[12.5px]">{children}</code>
+    <code className="rounded bg-code/8 px-1 py-px font-mono text-[12.5px]">{children}</code>
   ),
   pre: ({ children }) => (
-    <pre className="mb-2 max-h-[260px] overflow-auto rounded-lg border border-slate-300/60 bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-700 last:mb-0 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[12px]">
+    <pre className="mb-2 max-h-[260px] overflow-auto rounded-lg border border-line/60 bg-surface-soft px-2.5 py-2 font-mono text-[12px] leading-relaxed text-ink last:mb-0 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[12px]">
       {children}
     </pre>
   ),
@@ -49,16 +49,16 @@ const components: Components = {
     </div>
   ),
   th: ({ children, style }) => (
-    <th style={style} className="border border-slate-300 bg-slate-100/70 px-2 py-1 text-left font-semibold">
+    <th style={style} className="border border-line bg-surface-soft px-2 py-1 text-left font-semibold">
       {children}
     </th>
   ),
   td: ({ children, style }) => (
-    <td style={style} className="border border-slate-300 px-2 py-1 align-top">
+    <td style={style} className="border border-line px-2 py-1 align-top">
       {children}
     </td>
   ),
-  hr: () => <hr className="my-2 border-slate-300" />,
+  hr: () => <hr className="my-2 border-line" />,
   img: ({ src, alt }) => <img src={src as string} alt={alt} className="max-w-full rounded-lg" />,
   // Links must never navigate the webview (that would replace the app UI) —
   // hand them to the OS default browser instead.
@@ -69,7 +69,7 @@ const components: Components = {
         e.preventDefault();
         if (href) void openUrl(href).catch(() => {});
       }}
-      className="underline decoration-slate-400 underline-offset-2 hover:decoration-current"
+      className="underline decoration-ink-faint underline-offset-2 hover:decoration-current"
     >
       {children}
     </a>

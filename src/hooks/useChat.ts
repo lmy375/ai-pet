@@ -40,7 +40,7 @@ export interface ChatItem {
   detail?: string; // notification items: the task's full result, shown on expand
 }
 
-interface SessionMeta {
+export interface SessionMeta {
   id: string;
   title: string;
   created_at: string;
@@ -161,11 +161,11 @@ export function useChat() {
     setSessionIdState(v);
   }, []);
 
-  const [sessionTitle, setSessionTitleState] = useState(DEFAULT_SESSION_TITLE);
+  // Ref only: no view renders the title (the session rail reads `sessionList`,
+  // which every title write refreshes), so this never needs to re-render.
   const sessionTitleRef = useRef(DEFAULT_SESSION_TITLE);
   const setSessionTitle = useCallback((v: string) => {
     sessionTitleRef.current = v;
-    setSessionTitleState(v);
   }, []);
 
   const [sessionList, setSessionList] = useState<SessionMeta[]>([]);
@@ -642,7 +642,6 @@ export function useChat() {
     loaded,
     contextUsage,
     sessionId,
-    sessionTitle,
     sessionList,
     sendMessage,
     newSession,

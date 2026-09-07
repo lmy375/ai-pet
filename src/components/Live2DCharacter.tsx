@@ -125,8 +125,8 @@ export function Live2DCharacter({ modelPath }: Props) {
       <canvas ref={canvasRef} className="pointer-events-auto h-full w-full bg-transparent" />
       {status && (
         <div
-          className={`absolute left-1/2 top-1/2 max-w-[90%] -translate-x-1/2 -translate-y-1/2 break-all rounded-lg bg-white/85 p-3 text-center text-[12px] ${
-            status.startsWith("Error") ? "text-red-500" : "text-slate-500"
+          className={`absolute left-1/2 top-1/2 max-w-[90%] -translate-x-1/2 -translate-y-1/2 break-all rounded-lg bg-surface/85 p-3 text-center text-[12px] ${
+            status.startsWith("Error") ? "text-red-500" : "text-ink-soft"
           }`}
         >
           {status}

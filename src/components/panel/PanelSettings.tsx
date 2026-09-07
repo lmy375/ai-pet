@@ -403,7 +403,7 @@ export function PanelSettings() {
   return (
     <div className="flex h-full flex-col">
       {/* Tab bar: config file | global | per-agent... | + add | open folder */}
-      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur">
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line/70 bg-surface/80 px-3 py-2 backdrop-blur">
         <TabBtn active={tab === "raw"} onClick={() => selectTab("raw")}>{t("settings.tab.file")}</TabBtn>
         <TabBtn active={tab === "global"} onClick={() => selectTab("global")}>{t("settings.tab.global")}</TabBtn>
         {form.agents.map((a) => (
@@ -470,7 +470,7 @@ export function PanelSettings() {
 
           {/* Gallery slideshow */}
           <Card title={t("settings.gallery.title")}>
-            <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
+            <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
               <input
                 type="checkbox"
                 className="accent-accent"
@@ -558,7 +558,7 @@ export function PanelSettings() {
                 <button
                   key={p}
                   onClick={() => commitSkillsDir(p)}
-                  className="rounded-lg bg-slate-100 px-2 py-1 font-mono text-[11px] text-slate-600 transition-colors hover:bg-slate-200"
+                  className="rounded-lg bg-surface-soft px-2 py-1 font-mono text-[11px] text-ink-soft transition-colors hover:bg-hover"
                 >
                   {p}
                 </button>
@@ -571,17 +571,17 @@ export function PanelSettings() {
                 <HintText>{t("settings.skills.empty")}</HintText>
               )}
               {skillsInfo?.skills.map((s) => (
-                <div key={s.path} className="rounded-xl border border-slate-200/70 px-3 py-2">
+                <div key={s.path} className="rounded-xl border border-line/70 px-3 py-2">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-[13px] font-medium text-slate-800">{s.name}</span>
+                    <span className="text-[13px] font-medium text-ink">{s.name}</span>
                     <span className="font-mono text-[11px] text-accent">/skill:{s.slug}</span>
                   </div>
                   {s.error ? (
                     <ErrorBox className="mt-1">{s.error}</ErrorBox>
                   ) : (
-                    <p className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-slate-500">{s.description}</p>
+                    <p className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-ink-soft">{s.description}</p>
                   )}
-                  <p className="mt-1 truncate font-mono text-[10px] text-slate-400">{s.path}</p>
+                  <p className="mt-1 truncate font-mono text-[10px] text-ink-faint">{s.path}</p>
                 </div>
               ))}
             </div>
@@ -613,7 +613,7 @@ export function PanelSettings() {
               </Button>
             </div>
             <div className="mt-1 flex items-center justify-between gap-2">
-              <p className="text-[11px] text-slate-400">{t("settings.agent.idNote", { id: agent.id })}</p>
+              <p className="text-[11px] text-ink-faint">{t("settings.agent.idNote", { id: agent.id })}</p>
               {agent.id === form.active_agent ? (
                 <span className="shrink-0 text-[11px] font-medium text-accent">{t("settings.agent.isDefault")}</span>
               ) : (
@@ -632,7 +632,7 @@ export function PanelSettings() {
                   wrong behind a gateway. Showing what it resolved to makes a bad
                   guess visible here instead of as a malformed request later. */}
               {!agent.provider && providerOptions?.resolved && (
-                <span className="font-normal text-slate-400">
+                <span className="font-normal text-ink-faint">
                   {t("settings.llm.providerResolved", { provider: providerOptions.resolved })}
                 </span>
               )}
@@ -648,7 +648,7 @@ export function PanelSettings() {
                 <option key={p.id} value={p.id}>{p.label}</option>
               ))}
             </Select>
-            <p className="mt-1 text-[11px] text-slate-400">{t("settings.llm.providerHint")}</p>
+            <p className="mt-1 text-[11px] text-ink-faint">{t("settings.llm.providerHint")}</p>
 
             <Label className="mt-3">API Base URL</Label>
             <SavedTextInput
@@ -667,7 +667,7 @@ export function PanelSettings() {
             />
             <Label className="mt-3 flex items-center gap-2">
               <span>Model</span>
-              {loadingModels && <span className="font-normal text-slate-400">{t("common.loading")}</span>}
+              {loadingModels && <span className="font-normal text-ink-faint">{t("common.loading")}</span>}
             </Label>
             <div className="flex gap-2">
               <Select
@@ -710,7 +710,7 @@ export function PanelSettings() {
                     type="button"
                     onClick={() => commitAgent({ context_window: p.value })}
                     className={`rounded-lg px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                      active ? "bg-accent text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      active ? "bg-accent text-white" : "bg-surface-soft text-ink-soft hover:bg-hover"
                     }`}
                   >
                     {p.label}
@@ -774,7 +774,7 @@ export function PanelSettings() {
               <span>
                 MCP Servers
                 {serverEntries.length > 0 && (
-                  <span className="ml-2 font-normal text-[12px] text-slate-500">
+                  <span className="ml-2 font-normal text-[12px] text-ink-soft">
                     {t("settings.mcp.connectedTools", { connected: connectedCount, total: serverEntries.length, tools: totalToolCount })}
                   </span>
                 )}
@@ -787,7 +787,7 @@ export function PanelSettings() {
             }
           >
             {serverEntries.length === 0 && (
-              <div className="rounded-xl border border-dashed border-slate-200 py-4 text-center text-[13px] text-slate-400">
+              <div className="rounded-xl border border-dashed border-line py-4 text-center text-[13px] text-ink-faint">
                 {t("settings.mcp.empty")}
               </div>
             )}
@@ -863,7 +863,7 @@ export function PanelSettings() {
           >
             {telegramStatus.error && <ErrorBox className="mb-2">{telegramStatus.error}</ErrorBox>}
 
-            <label className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
+            <label className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
               <input
                 type="checkbox"
                 className="accent-accent"
@@ -895,7 +895,7 @@ export function PanelSettings() {
 
           {/* Scheduled heartbeat */}
           <Card title={t("settings.hb.title")}>
-            <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-slate-600">
+            <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
               <input
                 type="checkbox"
                 className="accent-accent"
@@ -956,10 +956,10 @@ function TabBtn({
     <button
       onClick={onClick}
       className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors ${
-        active ? "bg-accent text-white" : "text-slate-600 hover:bg-slate-100"
+        active ? "bg-accent text-white" : "text-ink-soft hover:bg-hover"
       }`}
     >
-      {dot && <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-white" : "bg-accent"}`} />}
+      {dot && <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-surface" : "bg-accent"}`} />}
       {children}
     </button>
   );
@@ -999,20 +999,20 @@ function McpServerEntry({
   const statusColor = toneText(connTone(status?.connected, hasError));
 
   return (
-    <div className={`rounded-xl border bg-slate-50 ${hasError ? "border-red-300" : "border-slate-200"}`}>
+    <div className={`rounded-xl border bg-surface-soft ${hasError ? "border-red-300" : "border-line"}`}>
       {/* Header row */}
       <div className="flex cursor-pointer items-center gap-2 px-3 py-2.5" onClick={() => setExpanded(!expanded)}>
         <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
-        <span className="flex-1 text-[13px] font-semibold text-slate-800">
+        <span className="flex-1 text-[13px] font-semibold text-ink">
           {name}
-          <span className="ml-2 font-normal text-[11px] text-slate-400">{config.transport.toUpperCase()}</span>
+          <span className="ml-2 font-normal text-[11px] text-ink-faint">{config.transport.toUpperCase()}</span>
           <span className={`ml-1.5 font-normal text-[11px] ${statusColor}`}>
             {statusLabel}
             {status?.connected && ` · ${t("settings.mcp.toolsSuffix", { count: status.tool_count })}`}
           </span>
         </span>
 
-        <label className="flex items-center gap-1 text-[12px] text-slate-500" onClick={(e) => e.stopPropagation()}>
+        <label className="flex items-center gap-1 text-[12px] text-ink-soft" onClick={(e) => e.stopPropagation()}>
           <input
             type="checkbox"
             className="accent-accent"
@@ -1031,12 +1031,12 @@ function McpServerEntry({
           <TrashIcon className="h-4 w-4" />
         </IconActionButton>
 
-        <ExpandChevron expanded={expanded} className="h-4 w-4 text-slate-400" />
+        <ExpandChevron expanded={expanded} className="h-4 w-4 text-ink-faint" />
       </div>
 
       {/* Expanded: config fields + tool list */}
       {expanded && (
-        <div className="border-t border-slate-200 px-3 pb-3 pt-3">
+        <div className="border-t border-line px-3 pb-3 pt-3">
           {hasError && <ErrorBox className="mb-2">{status!.error}</ErrorBox>}
 
           <Label>{t("settings.mcp.transport")}</Label>

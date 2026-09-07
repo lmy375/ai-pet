@@ -24,7 +24,7 @@ export function AgentSwitcher({ className = "" }: { className?: string }) {
       value={settings.active_agent}
       onChange={(e) => switchAgent(e.target.value)}
       title={t("chat.agent.switch")}
-      className={`shrink-0 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[12px] font-medium text-slate-700 outline-none transition-colors hover:border-slate-300 focus:border-accent ${className}`}
+      className={`shrink-0 rounded-field border border-line bg-surface px-2 py-1.5 text-note font-medium text-ink outline-none transition-colors hover:border-accent-line focus:border-accent ${className}`}
     >
       {settings.agents.map((a) => (
         <option key={a.id} value={a.id}>{a.name}</option>

@@ -38,7 +38,7 @@ function GroupTranscript({
   }, [transcript]);
 
   if (transcript.length === 0) {
-    return <div className="mt-10 text-center text-[14px] text-slate-400">{emptyHint}</div>;
+    return <div className="mt-10 text-center text-[14px] text-ink-faint">{emptyHint}</div>;
   }
 
   return (
@@ -50,7 +50,7 @@ function GroupTranscript({
           </MessageBubble>
         ) : (
           <div key={m.id} className="flex flex-col items-start gap-0.5">
-            <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-slate-500">
+            <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-ink-soft">
               <span className={`h-2 w-2 rounded-full ${colorFor(m.agent_id)}`} />
               {m.name}
             </div>
@@ -93,15 +93,15 @@ function MemberPicker({
       <button
         onClick={() => setOpen((o) => !o)}
         title={t("group.members")}
-        className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-medium text-slate-700 transition-colors hover:border-slate-300"
+        className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12px] font-medium text-ink transition-colors hover:border-accent-line"
       >
         <AgentIcon className="h-4 w-4" />
         {t("group.members")} ({members.length})
       </button>
       {open && (
-        <div className="absolute right-0 z-10 mt-1 w-52 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+        <div className="absolute right-0 z-10 mt-1 w-52 rounded-lg border border-line bg-surface p-1 shadow-lg">
           {allAgents.length === 0 && (
-            <div className="px-2 py-1.5 text-[12px] text-slate-400">{t("group.noAgents")}</div>
+            <div className="px-2 py-1.5 text-[12px] text-ink-faint">{t("group.noAgents")}</div>
           )}
           {allAgents.map((a) => {
             const checked = members.includes(a.id);
@@ -109,11 +109,11 @@ function MemberPicker({
               <button
                 key={a.id}
                 onClick={() => onToggle(a.id)}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-slate-700 transition-colors hover:bg-slate-50"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body text-ink transition-colors hover:bg-hover"
               >
                 <span
                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                    checked ? "border-accent bg-accent text-white" : "border-slate-300 bg-white"
+                    checked ? "border-accent bg-accent text-white" : "border-line bg-surface"
                   }`}
                 >
                   {checked && <CheckIcon className="h-3 w-3" />}
@@ -139,8 +139,8 @@ function ThinkingBar({
   const { t } = useI18n();
   if (thinking.length === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-1 text-[12px] text-slate-500">
-      <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-slate-400" />
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-1 text-[12px] text-ink-soft">
+      <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-ink-faint" />
       {thinking.map((a) => (
         <span key={a.id} className="flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${colorFor(a.id)}`} />
@@ -167,7 +167,7 @@ export function PanelGroup() {
   const nameOf = (id: string) => settings.agents.find((a) => a.id === id)?.name ?? id;
   const colorFor = (agentId?: string) => {
     const i = agentId ? members.indexOf(agentId) : -1;
-    return i >= 0 ? AGENT_DOTS[i % AGENT_DOTS.length] : "bg-slate-400";
+    return i >= 0 ? AGENT_DOTS[i % AGENT_DOTS.length] : "bg-ink-faint";
   };
 
   const toggleMember = (id: string) => {
@@ -185,9 +185,9 @@ export function PanelGroup() {
   if (!loaded) return null;
 
   return (
-    <div className="flex h-full w-full flex-col bg-slate-100">
+    <div className="flex h-full w-full flex-col bg-canvas">
       {/* Header: sub-tabs + pause + member picker + reset */}
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/70 bg-white/70 px-3 py-2">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line/70 bg-surface/70 px-3 py-2">
         <div className="min-w-0 overflow-x-auto">
           <Segmented value={subTab} options={tabs} onChange={setSubTab} />
         </div>
@@ -198,7 +198,7 @@ export function PanelGroup() {
             className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium transition-colors ${
               paused
                 ? "border-accent/60 bg-accent/10 text-accent hover:bg-accent/15"
-                : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+                : "border-line bg-surface text-ink hover:border-accent-line"
             }`}
           >
             {paused ? <PlayIcon className="h-4 w-4" /> : <PauseIcon className="h-4 w-4" />}
@@ -225,9 +225,9 @@ export function PanelGroup() {
               emptyHint={members.length === 0 ? t("group.empty.noMembers") : t("group.empty.room")}
             />
           </div>
-          <div className="shrink-0 border-t border-slate-200/70 bg-white/70 px-3 py-2">
+          <div className="shrink-0 border-t border-line/70 bg-surface/70 px-3 py-2">
             {paused && anyRunning === false && transcript.length > 0 && (
-              <div className="px-1 pb-1 text-[12px] text-slate-400">{t("group.pausedNote")}</div>
+              <div className="px-1 pb-1 text-[12px] text-ink-faint">{t("group.pausedNote")}</div>
             )}
             <ThinkingBar thinking={thinking} colorFor={colorFor} />
             <ChatInput onSend={send} isLoading={false} placeholder={t("group.placeholder")} />
@@ -244,7 +244,7 @@ export function PanelGroup() {
 
 /** One agent's private session (full thinking + tool calls), reusing ChatThread. */
 function AgentTab({ view, emptyHint }: { view: AgentView | undefined; emptyHint: string }) {
-  if (!view) return <div className="mt-10 text-center text-[14px] text-slate-400">{emptyHint}</div>;
+  if (!view) return <div className="mt-10 text-center text-[14px] text-ink-faint">{emptyHint}</div>;
   return (
     <ChatThread
       items={view.items}

@@ -14,11 +14,11 @@ export function Card({ title, action, children, className = "" }: Props) {
     <section className="mb-5">
       {(title || action) && (
         <div className="mb-2 flex items-center justify-between px-1">
-          {title && <h4 className="text-[13px] font-semibold text-slate-800">{title}</h4>}
+          {title && <h4 className="text-body font-semibold text-ink">{title}</h4>}
           {action}
         </div>
       )}
-      <div className={`rounded-2xl border border-slate-200/70 bg-white p-4 ${className}`}>
+      <div className={`rounded-card border border-line bg-surface p-4 ${className}`}>
         {children}
       </div>
     </section>

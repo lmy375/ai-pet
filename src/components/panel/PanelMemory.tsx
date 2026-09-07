@@ -105,13 +105,13 @@ export function AgentMemory({ agentId }: { agentId: string }) {
   };
 
   if (!loaded) {
-    return <div className="py-4 text-center text-[13px] text-slate-400">{t("common.loading")}</div>;
+    return <div className="py-4 text-center text-[13px] text-ink-faint">{t("common.loading")}</div>;
   }
 
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
-        <p className="text-[12px] text-slate-500">{t("memory.subtitle")}</p>
+        <p className="text-[12px] text-ink-soft">{t("memory.subtitle")}</p>
         <Button variant="ghost" size="sm" onClick={openMemoryDir} title={t("memory.openDir")}>
           <ExternalLinkIcon className="h-4 w-4" />
           {t("memory.openDirBtn")}
