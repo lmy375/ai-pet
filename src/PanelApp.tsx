@@ -5,7 +5,7 @@ import { PanelChat } from "./components/panel/PanelChat";
 import { PanelGroup } from "./components/panel/PanelGroup";
 import { PanelTasks } from "./components/panel/PanelTasks";
 import { IconActionButton } from "./components/ui/IconButton";
-import { BugIcon, PawIcon } from "./components/Icons";
+import { BugIcon } from "./components/Icons";
 import { useI18n } from "./i18n";
 
 type Tab = "chat" | "group" | "tasks" | "settings";
@@ -29,8 +29,7 @@ export function PanelApp() {
     <div className="flex h-screen w-full flex-col bg-canvas text-ink">
       {/* Top bar: brand, section tabs, window-level actions */}
       <header className="flex shrink-0 items-center gap-3 border-b border-line bg-surface px-4">
-        <div className="flex w-24 shrink-0 items-center gap-1.5 text-accent">
-          <PawIcon className="h-[18px] w-[18px]" />
+        <div className="flex w-24 shrink-0 items-center">
           <span className="text-title font-semibold tracking-tight text-ink">Pet</span>
         </div>
 

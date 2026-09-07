@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react";
 import { ImageLightbox } from "./ImageLightbox";
-import { PawIcon } from "../Icons";
 import { formatHm } from "../../utils/format";
 import { useI18n } from "../../i18n";
 
@@ -17,8 +16,8 @@ interface Props {
 }
 
 /** Chat bubble: user = accent blue (right), assistant = white card (left). With
- *  `name` it grows a meta row (sender + time) and, for the assistant, an avatar
- *  — the panel layout; without it, the bubble alone (pet window). */
+ *  `name` it grows a meta row (sender + time) — the panel layout; without it,
+ *  the bubble alone (pet window). */
 export function MessageBubble({ role, error = false, images, name, ts, children }: Props) {
   const { t } = useI18n();
   const isUser = role === "user";
@@ -32,12 +31,7 @@ export function MessageBubble({ role, error = false, images, name, ts, children 
   const [zoomed, setZoomed] = useState<string | null>(null);
 
   return (
-    <div className={`flex gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
-      {name && !isUser && (
-        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent ring-1 ring-accent-line">
-          <PawIcon className="h-[18px] w-[18px]" />
-        </span>
-      )}
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className={`flex min-w-0 max-w-[80%] flex-col ${isUser ? "items-end" : "items-start"}`}>
         {name && (
           <div className="mb-1 flex items-baseline gap-1.5 px-0.5 text-meta">

@@ -109,9 +109,10 @@
 - Panel window = session rail (`SessionSidebar`) + underlined top tabs; the chat
   column is toolbar → thread → input, with no banner/hero above the messages.
 - `ReasoningBlock` renders ABOVE the answer it produced, collapsed by default.
-- `ChatThread` has two modes: with `assistantName` it grows per-message avatar +
+- `ChatThread` has two modes: with `assistantName` it grows per-message
   sender/time rows (panel); without it, bubbles only + periodic time separators
-  (pet window, too small for meta rows).
+  (pet window, too small for meta rows). No avatars anywhere — the sender name
+  carries it.
 - Emoji are content (pet utterances, user input), never UI chrome — icons come
   from `components/Icons.tsx`.
 

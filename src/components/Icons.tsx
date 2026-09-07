@@ -239,15 +239,3 @@ export function SearchIcon({ className }: IconProps) {
   );
 }
 
-/** Brand mark: a cat paw. Filled (not stroked) so it stays readable at 16px. */
-export function PawIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-      <ellipse cx="7" cy="8.4" rx="2.15" ry="2.6" />
-      <ellipse cx="17" cy="8.4" rx="2.15" ry="2.6" />
-      <ellipse cx="10.6" cy="5.6" rx="1.95" ry="2.45" />
-      <ellipse cx="14.6" cy="5.6" rx="1.95" ry="2.45" />
-      <path d="M12 11.6c2.7 0 5 1.9 5 4.3 0 2.2-1.7 3.6-3.6 3.6-.6 0-1-.1-1.4-.2-.4.1-.8.2-1.4.2-1.9 0-3.6-1.4-3.6-3.6 0-2.4 2.3-4.3 5-4.3Z" />
-    </svg>
-  );
-}

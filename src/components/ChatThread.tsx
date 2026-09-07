@@ -67,8 +67,6 @@ function NotificationItem({ content, detail }: { content: string; detail?: strin
 }
 
 function renderItem(item: ChatItem, names?: Names) {
-  // Tool rows align with the assistant bubbles, which sit right of the avatar.
-  const indent = names ? "ml-10" : "";
   switch (item.type) {
     case "user":
       return (
@@ -92,7 +90,7 @@ function renderItem(item: ChatItem, names?: Names) {
     }
     case "tool":
       return (
-        <div className={`max-w-[85%] ${indent}`}>
+        <div className="max-w-[85%]">
           {item.toolCalls?.map((tc, j) => (
             <ToolCallBlock key={j} name={tc.name} arguments={tc.arguments} result={tc.result} />
           ))}
@@ -139,7 +137,6 @@ export function ChatThread({
   const names: Names | undefined = assistantName
     ? { user: t("chat.you"), assistant: assistantName }
     : undefined;
-  const indent = names ? "ml-10" : "";
 
   const showStreaming = streaming.trim().length > 0 || streamingReasoning.trim().length > 0;
   const isEmpty = items.length === 0 && !showStreaming && !loading;
@@ -187,7 +184,7 @@ export function ChatThread({
       })}
 
       {currentToolCalls.length > 0 && (
-        <div className={`max-w-[85%] ${indent}`}>
+        <div className="max-w-[85%]">
           {currentToolCalls.map((tc, j) => (
             <ToolCallBlock key={j} name={tc.name} arguments={tc.arguments} result={tc.result} isRunning={tc.isRunning} />
           ))}
@@ -202,9 +199,7 @@ export function ChatThread({
       )}
 
       {loading && !showStreaming && currentToolCalls.length === 0 && (
-        <div
-          className={`flex gap-1 self-start rounded-bubble border border-line bg-surface px-3.5 py-3 shadow-card ${indent}`}
-        >
+        <div className="flex gap-1 self-start rounded-bubble border border-line bg-surface px-3.5 py-3 shadow-card">
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.2s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.1s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint" />
