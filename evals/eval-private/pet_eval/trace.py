@@ -62,11 +62,12 @@ def parse(llm_log: Path) -> Trace:
         if ":sub:" not in str(entry.get("session_id", "")):
             trace.rounds += 1
         response = entry.get("response") or {}
+        # genai 的 ToolCall：fn_name + fn_arguments（已解析的 JSON 对象）
         for call in response.get("tool_calls") or []:
-            function = call.get("function") or {}
-            trace.calls.append(
-                Call(name=function.get("name", ""), arguments=function.get("arguments", "") or "")
-            )
+            arguments = call.get("fn_arguments")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments or {}, ensure_ascii=False)
+            trace.calls.append(Call(name=call.get("fn_name") or "", arguments=arguments))
         if response.get("text"):
             trace.text = response["text"]
     return trace

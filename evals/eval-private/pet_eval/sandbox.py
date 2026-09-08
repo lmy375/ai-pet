@@ -36,13 +36,12 @@ MEMORY_FILES = ("SOUL.md", "USER.md", "MEMORY.md", "HEARTBEAT.md")
 class ModelSpec(BaseModel):
     """评测跑在哪个模型上、怎么寻址。"""
 
+    provider: str = "openai"
     api_base: str
     api_key: str
     model: str
     context_window: int = 200_000
-    reasoning_effort: str = ""
-    thinking_enabled: bool = False
-    thinking_budget_tokens: int = 4096
+    reasoning: str = ""
 
 
 class Sandbox(BaseModel):
@@ -80,7 +79,7 @@ def _read_memory(memory_dir: Path) -> dict[str, str]:
 
 
 def _config_yaml(root: Path, model: ModelSpec) -> dict:
-    # AppSettings 的字段全都有 serde default，所以只写评测关心的这几项即可。
+    # 字段名对齐 pet-core settings.rs 的 AgentConfig；其余字段有 serde default，只写评测关心的。
     return {
         "skills_dir": str(root / "skills"),
         "search_api_key": "",  # 没有 Tavily key ⇒ 不提供 web_search，工具集在每台机器上一致
@@ -89,13 +88,12 @@ def _config_yaml(root: Path, model: ModelSpec) -> dict:
             {
                 "id": AGENT_ID,
                 "name": AGENT_NAME,
+                "provider": model.provider,
                 "api_base": model.api_base,
                 "api_key": model.api_key,
                 "model": model.model,
                 "context_window": model.context_window,
-                "reasoning_effort": model.reasoning_effort,
-                "thinking_enabled": model.thinking_enabled,
-                "thinking_budget_tokens": model.thinking_budget_tokens,
+                "reasoning": model.reasoning,
             }
         ],
     }

@@ -5,6 +5,7 @@ description = "用 DeepSWE benchmark（datacurve-ai/deep-swe，pier 驱动）测
 requires-python = ">=3.12"
 dependencies = [
     "datacurve-pier>=0.3.0",
+    "pet-eval-common",
     "pyyaml>=6",
 ]
 
@@ -22,3 +23,4 @@ packages = ["pet_deep_swe"]
 # deep-swe v1.1 全靠它收 model.patch——没有它一律按空提交判 0 分。
 [tool.uv.sources]
 datacurve-pier = { git = "https://github.com/datacurve-ai/pier", rev = "df89f994623a0a6a57229103b6fe910766693c30" }
+pet-eval-common = { path = "../pet-eval-common", editable = true }

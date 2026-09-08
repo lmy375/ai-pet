@@ -44,15 +44,23 @@ if not sys.stdout.isatty():
     GREEN = RED = YELLOW = DIM = RESET = ""
 
 
+def _active_agent(root: Path) -> dict:
+    config = root / "config.yaml"
+    if not config.exists():
+        return {}
+    settings = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+    agents = settings.get("agents") or []
+    active = settings.get("active_agent")
+    return next((a for a in agents if a.get("id") == active), agents[0] if agents else {})
+
+
 def resolve_model(env: EvalSettings, override: str | None) -> ModelSpec:
-    """默认跑主人实际在用的那个 Agent 的模型，env 和 --model 可以覆盖。"""
-    agent: dict = {}
-    config = env.real_config_dir() / "config.yaml"
-    if config.exists():
-        settings = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
-        agents = settings.get("agents") or []
-        active = settings.get("active_agent")
-        agent = next((a for a in agents if a.get("id") == active), agents[0] if agents else {})
+    """默认跑主人实际在用的那个 Agent 的模型，env 和 --model 可以覆盖。
+
+    多个状态根里取第一个配了 api_key 的当前 Agent（安装版的默认 Agent 往往是空壳）。
+    """
+    agents = [_active_agent(root) for root in env.real_config_dirs()]
+    agent = next((a for a in agents if a.get("api_key")), next((a for a in agents if a), {}))
 
     api_base = env.api_base or agent.get("api_base", "")
     model = override or env.model or agent.get("model", "")
@@ -62,13 +70,12 @@ def resolve_model(env: EvalSettings, override: str | None) -> ModelSpec:
             "或设 PET_EVAL_API_BASE / PET_EVAL_MODEL"
         )
     return ModelSpec(
+        provider=env.provider or agent.get("provider") or "openai",
         api_base=api_base,
         api_key=env.api_key or agent.get("api_key", ""),
         model=model,
         context_window=agent.get("context_window", 200_000),
-        reasoning_effort=agent.get("reasoning_effort", ""),
-        thinking_enabled=bool(agent.get("thinking_enabled", False)),
-        thinking_budget_tokens=agent.get("thinking_budget_tokens", 4096),
+        reasoning=env.reasoning or agent.get("reasoning", ""),
     )
 
 

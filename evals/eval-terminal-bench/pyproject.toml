@@ -1,0 +1,23 @@
+[project]
+name = "eval-terminal-bench"
+version = "0.1.0"
+description = "用 Terminal-Bench（Harbor 驱动）测 pet-cli 的终端任务能力"
+requires-python = ">=3.12"
+dependencies = [
+    "harbor>=0.22",
+    "pet-eval-common",
+    "pyyaml>=6",
+]
+
+[project.scripts]
+eval-terminal-bench = "pet_tbench.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pet_tbench"]
+
+[tool.uv.sources]
+pet-eval-common = { path = "../pet-eval-common", editable = true }

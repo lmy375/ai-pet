@@ -11,11 +11,13 @@ uv run --project evals/eval-private pet-eval --repeat 3         # 看方差，�
 uv run --project evals/eval-private pet-eval --model GPT-5.5    # 同一批用例换个模型
 ```
 
-模型默认取 `config.yaml` 里当前 Agent 的（评测你实际在用的那只宠物）。环境变量都在
+模型默认取 `config.yaml` 里当前 Agent 的（评测你实际在用的那只宠物；状态根按 `pet-dev`、
+`pet` 的顺序取第一个配了 key 的）。环境变量都在
 [settings.py](../evals/eval-private/pet_eval/settings.py) 一处声明（pydantic-settings）：
-`PET_EVAL_API_BASE` / `PET_EVAL_API_KEY` / `PET_EVAL_MODEL` 覆盖模型，
-`PET_CLI_BIN` 指定二进制（不指定就找 `target/{release,debug}/pet-cli`，没有则自动
-`cargo build -p pet-cli`），`PET_CONFIG_DIR` 换掉读取真实配置的位置。
+`PET_EVAL_PROVIDER` / `PET_EVAL_API_BASE` / `PET_EVAL_API_KEY` / `PET_EVAL_MODEL` /
+`PET_EVAL_REASONING` 覆盖模型，`PET_CLI_BIN` 指定二进制（不指定就找
+`target/{release,debug}/pet-cli`，没有则自动 `cargo build -p pet-cli`），`PET_CONFIG_DIR`
+指定唯一的真实配置位置。
 
 ## 沙箱
 
@@ -74,8 +76,13 @@ Stage 1 只有确定性断言（磁盘状态 + 工具轨迹），没有模型裁
 
 `evals/eval-deep-swe/` 用 [DeepSWE](https://github.com/datacurve-ai/deep-swe)
 （113 道真实工程任务，Docker 隔离 + verifier 自动判分，pier 驱动）测 pet-cli。
-需要本机 Docker；模型规则同上（PET_API_BASE / PET_API_KEY / PET_MODEL 可覆盖）。
-首次运行会 clone 任务库并用 clux/muslrust 静态编译 Linux 版 pet-cli。
+需要本机 Docker。模型取当前 Agent 的（状态根按 `PET_CONFIG_DIR` > `pet-dev` > `pet` 取第一个
+配了 key 的；`PET_PROVIDER` / `PET_API_BASE` / `PET_API_KEY` / `PET_MODEL` 可覆盖）。
+首次运行会 clone 任务库并用 clux/muslrust 静态编译 Linux 版 pet-cli（这一步和
+容器内 PET_CONFIG_DIR 的搭建在 `evals/pet-eval-common/` 里，Terminal-Bench 共用）。
+公司 MITM 代理（Cloudflare Gateway）会拆容器出去的 TLS：设 `PET_EXTRA_CA_CERT`（缺省用
+`NODE_EXTRA_CA_CERTS`）指向它的 CA，agent 会把它带进容器——否则打公网 API 一律
+"self-signed certificate in certificate chain"（内网网关不受影响）。
 
 ```bash
 uv run --project evals/eval-deep-swe eval-deep-swe --n-tasks 1   # 冒烟
@@ -84,3 +91,23 @@ uv run --project evals/eval-deep-swe eval-deep-swe --only <task-id>
 
 结果在 `evals/eval-deep-swe/runs/<job>/`；宠物人设默认不主动 commit，而 verifier
 只收已提交的 patch，所以该 agent 的 SOUL/prompt 显式授权 commit 并带兜底提交。
+
+## Terminal-Bench：终端任务能力
+
+`evals/eval-terminal-bench/` 用 [Terminal-Bench 2.0](https://www.tbench.ai)（89 道真实
+终端任务，Docker 隔离，跑完在同一容器里执行 `tests/test.sh` 判分，Harbor 驱动）测
+pet-cli。需要本机 Docker；模型规则同上。任务库 clone 到 `vendor/` 并钉在 Harbor 注册表
+里 `terminal-bench@2.0` 对应的 commit——不经 Harbor Hub（公司 MITM 代理下 Hub 的 TLS
+会被拒），`--dataset` 可改走 Hub，`--tasks-path` 可指本地任务目录。
+
+```bash
+uv run --project evals/eval-terminal-bench eval-terminal-bench --n-tasks 1        # 冒烟
+uv run --project evals/eval-terminal-bench eval-terminal-bench --only build-cython-ext
+uv run --project evals/eval-terminal-bench eval-terminal-bench --attempts 3       # pass@3
+```
+
+结果在 `evals/eval-terminal-bench/runs/<job>/`（`result.json`；每题 `verifier/reward.txt`、
+`agent/pet-cli.txt`、`agent/llm.log`）。Harbor 只要 agent 阶段抛异常（含它自己的超时）
+就跳过 verifier 判 0 分，所以 agent 的 wrapper 永远 exit 0，并从任务 `task.toml` 读
+`[agent] timeout_sec` 给 pet-cli 一个略小的预算（`timeout` + `PET_ONESHOT_WAIT_MS`）。
+这里的 SOUL 不授权 commit——verifier 看的是磁盘最终状态，不是 git。

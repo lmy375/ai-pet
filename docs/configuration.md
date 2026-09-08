@@ -41,12 +41,12 @@
 | --- | --- | --- |
 | `id` | `default` | 稳定标识，也是记忆子目录名；创建后不要改 |
 | `name` | `默认` | 显示名（切换器 / 群聊发言人） |
-| `api_base` | `https://api.openai.com/v1` | OpenAI 兼容端点，可填本地服务或代理（如 litellm） |
+| `provider` | `openai` | 线上协议：`openai`（chat-completions）/ `anthropic` / `gemini` / …，见 [provider.rs](../crates/pet-core/src/provider.rs)；网关托管的模型也要显式写，不按模型名猜 |
+| `api_base` | `https://api.openai.com/v1` | 端点，可填本地服务或代理（如 litellm） |
 | `api_key` | 空 | API 密钥 |
 | `model` | `gpt-4o-mini` | 模型名；视觉需用支持图像的模型 |
 | `context_window` | `128000` | 上下文窗口大小（token），用于占用率显示 |
-| `reasoning_effort` | 空 | OpenAI 系推理控制（`minimal`/`low`/`medium`/`high`；空 = 不传） |
-| `thinking_enabled` / `thinking_budget_tokens` | 关 / `1024` | Anthropic 扩展思考开关与预算 |
+| `reasoning` | 空 | 推理强度：空 = 不传；关键字 `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`；或纯数字 = thinking token 预算（仅 Anthropic/Gemini 协议生效） |
 | `mcp_servers` | `{}` | MCP 服务表（transport：`stdio` / `sse` / `http`） |
 | `telegram` | 关闭 | `bot_token` / `allowed_username` / `enabled`，见 [telegram.md](telegram.md) |
 | `heartbeat_enabled` / `heartbeat_interval` | 关 / `60` | 定时心跳开关 / 间隔（分钟） |
