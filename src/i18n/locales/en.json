@@ -63,6 +63,7 @@
   "chat.context.title": "Context usage",
   "chat.context.usedTotal": "{used} / {total} tokens",
   "chat.context.remaining": "{remaining} tokens left",
+  "chat.context.none": "No token usage reported for this chat yet",
   "chat.context.tools": "Available tools",
   "chat.context.toolsEmpty": "No tools available",
   "chat.empty": "Say hi to start~",
