@@ -43,6 +43,10 @@ export function useAutoHide() {
     if (s.hidden || s.paused || s.animating) return;
 
     const win = getCurrentWindow();
+    // While the panel is open the pet window is hidden (not just blurred), and
+    // the blur timer still fires. Don't slide an invisible window to the edge:
+    // it would reappear as a tab instead of in place when the panel closes.
+    if (!(await win.isVisible())) return;
     const monitor = await currentMonitor();
     if (!monitor) return;
 

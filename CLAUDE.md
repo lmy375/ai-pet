@@ -90,6 +90,9 @@
     (`active_window_label` in window.rs; used by `TauriNotifier` and `kill_task`). Both windows
     listen, but exactly one receives each completion, so a shared session never gets two
     injections. Do NOT revert to hard-coding `emit_to("main")` or a `label === "main"` listener guard.
+- Opening the panel hides the pet window (`open_panel` in window.rs) and closing it shows
+  the pet again via the panel's `Destroyed` event. `useAutoHide.slideToEdge` skips invisible
+  windows so the pet comes back in place rather than as an edge tab.
 - The `main` window is configured `visible: false` and is shown by `restore_main_window()` in
   lib.rs `setup()` (after restoring its saved position) to avoid a center-flash. If you remove
   that call the pet window will never appear. Position is saved (debounced) from `useAutoHide`

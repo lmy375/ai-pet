@@ -91,9 +91,32 @@ fn open_or_focus(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) -> R
     Ok(())
 }
 
+/// Open the panel and swap it in for the pet: the pet window hides while the
+/// panel is open and reappears (focused) when the panel closes. Hide rather
+/// than destroy so the pet keeps its position, Live2D canvas and in-memory
+/// chat state; the app also keeps running because a hidden window still counts
+/// as a live one.
 #[tauri::command]
 pub async fn open_panel(app: AppHandle) -> Result<(), String> {
-    open_or_focus(&app, "panel", "Pet", 900.0, 700.0)
+    let created = app.get_webview_window("panel").is_none();
+    open_or_focus(&app, "panel", "Pet", 900.0, 700.0)?;
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if created {
+        if let Some(panel) = app.get_webview_window("panel") {
+            let app = app.clone();
+            panel.on_window_event(move |event| {
+                if let tauri::WindowEvent::Destroyed = event {
+                    if let Some(main) = app.get_webview_window("main") {
+                        let _ = main.show();
+                        let _ = main.set_focus();
+                    }
+                }
+            });
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
