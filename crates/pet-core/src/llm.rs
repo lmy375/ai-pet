@@ -276,17 +276,24 @@ pub async fn stream_chat(
 /// fails, and a duplicate call_id lands in the stored history.
 ///
 /// A call_id is unique within one assistant turn, so the collapse is safe:
-/// for each id keep the entry whose arguments are not the empty string
-/// (the one the fragments accumulated into), in first-seen order. A genuinely
-/// argument-less call — a single entry for its id — is left alone.
+/// for each id keep the most complete entry — parsed JSON beats an
+/// unparseable string (a partial first chunk such as `{"co` that genai could
+/// not parse), and a longer string beats a shorter one — in first-seen order.
+/// A genuinely argument-less call is a single entry for its id and is left
+/// alone. Nothing here depends on how the gateway numbered the slots.
 pub fn dedup_tool_calls(calls: Vec<ToolCall>) -> Vec<ToolCall> {
-    let is_placeholder = |tc: &ToolCall| tc.fn_arguments.as_str().is_some_and(str::is_empty);
+    // Higher is more complete: parsed JSON, then raw string by length (a
+    // placeholder is the empty string, a partial first chunk is a short one).
+    let completeness = |tc: &ToolCall| match tc.fn_arguments.as_str() {
+        Some(raw) => (0, raw.len()),
+        None => (1, 0),
+    };
     let mut out: Vec<ToolCall> = Vec::with_capacity(calls.len());
     for call in calls {
         match out.iter_mut().find(|kept| kept.call_id == call.call_id) {
             None => out.push(call),
             Some(kept) => {
-                if is_placeholder(kept) && !is_placeholder(&call) {
+                if completeness(&call) > completeness(kept) {
                     // The clone may carry the turn's thought signatures (genai
                     // attaches them to whatever sits first); keep them with the
                     // surviving call.
@@ -515,6 +522,26 @@ mod tests {
         many.push(call("call_c", full.clone()));
         let calls = dedup_tool_calls(many);
         assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].fn_arguments, full);
+    }
+
+    /// A provider whose first chunk already carries part of the arguments
+    /// leaves a clone holding that fragment, not an empty string. The parsed
+    /// call must still win over the fragment regardless of which came first.
+    #[test]
+    fn a_partial_first_chunk_clone_loses_to_the_parsed_call() {
+        let full = serde_json::json!({"command": "ls"});
+        let calls = dedup_tool_calls(vec![
+            call("call_a", serde_json::json!("{\"co")),
+            call("call_a", full.clone()),
+        ]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].fn_arguments, full);
+        // And the other way round: a full call first, fragment after.
+        let calls = dedup_tool_calls(vec![
+            call("call_a", full.clone()),
+            call("call_a", serde_json::json!("{\"co")),
+        ]);
         assert_eq!(calls[0].fn_arguments, full);
     }
 
