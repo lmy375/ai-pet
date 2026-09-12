@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::config::AiConfig;
 use crate::logging::{write_log, LogStore};
 use crate::mcp::McpManagerStore;
@@ -54,6 +56,11 @@ pub struct ToolContext {
     /// after each round and appends it as a `user` message with an `image_url`
     /// content block (the same multimodal path used for pasted images).
     pub pending_images: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Cooperative stop for the whole turn. The agent loop checks it between
+    /// LLM stream events and around each tool call; the interface that owns the
+    /// turn cancels it when the user aborts (the GUI's `cancel_chat` command).
+    /// Sub-agents get a child token, so aborting the parent stops them too.
+    pub cancel: CancellationToken,
 }
 
 impl ToolContext {
@@ -81,6 +88,7 @@ impl ToolContext {
             is_heartbeat,
             group: None,
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
+            cancel: CancellationToken::new(),
         }
     }
 
@@ -108,6 +116,7 @@ impl ToolContext {
             group: None,
             // Fresh queue: a sub-agent's screenshots are consumed by its own loop.
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
+            cancel: self.cancel.child_token(),
         }
     }
 

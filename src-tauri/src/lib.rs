@@ -31,6 +31,7 @@ pub fn run() {
         .manage(pet_core::mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
         .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))
+        .manage(commands::chat::ChatCancelStore::default())
         .setup(|app| {
             // Restore the pet window to its last position (and show it — it starts
             // hidden so it's positioned before appearing, avoiding a center flash).
@@ -90,6 +91,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::chat::cancel_chat,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::get_config_raw,

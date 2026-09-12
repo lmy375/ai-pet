@@ -27,6 +27,7 @@ export function PanelChat() {
     sessionId,
     sessionList,
     sendMessage,
+    stopStreaming,
     newSession,
     renameSession,
     switchSession,
@@ -135,7 +136,7 @@ export function PanelChat() {
         ) : (
           /* Input bar */
           <div className="shrink-0 border-t border-line bg-surface px-4 py-3">
-            <ChatInput onSend={sendMessage} isLoading={isLoading} />
+            <ChatInput onSend={sendMessage} isLoading={isLoading} onStop={stopStreaming} />
           </div>
         )}
       </div>

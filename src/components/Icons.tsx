@@ -230,6 +230,25 @@ export function BugIcon({ className }: IconProps) {
   );
 }
 
+/** Return key glyph — the chat input's send affordance (Enter sends). */
+export function EnterIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="M20 5v6a3 3 0 0 1-3 3H5" />
+      <path d="m9 10-4 4 4 4" />
+    </Stroke>
+  );
+}
+
+/** Stop glyph — the same button while a reply is streaming. */
+export function StopIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
 export function SearchIcon({ className }: IconProps) {
   return (
     <Stroke className={className}>

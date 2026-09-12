@@ -42,6 +42,7 @@
   "chat.input.placeholder": "Type a message...",
   "chat.input.removeImage": "Remove image",
   "chat.input.send": "Send",
+  "chat.input.stop": "Stop generating",
   "chat.skillMenu.title": "Skills",
   "chat.newSession": "New chat",
   "chat.session.newTitle": "New session",

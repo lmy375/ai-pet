@@ -240,6 +240,14 @@ pub async fn run_agent_loop(
             result.total_latency_ms,
         );
 
+        // An aborted round comes back with its tool calls cleared, so it takes
+        // the final-response path below: whatever text streamed before the
+        // stop is kept in context as an ordinary assistant message, and the
+        // next turn continues from it.
+        if result.cancelled {
+            ctx.log(&format!("Cancelled by user ({} chars kept)", result.text.len()));
+        }
+
         if result.tool_calls.is_empty() {
             ctx.log(&format!("Final response ({} chars, TTFT={}ms, total={}ms)",
                 result.text.len(),
@@ -281,21 +289,35 @@ pub async fn run_agent_loop(
 
             sink.send_tool_start(tc_name, &tc_args);
 
-            let output = if registry.is_mcp_tool(tc_name) {
-                // Route to MCP manager
-                ctx.log(&format!("MCP tool call: {}({})", tc_name, tc_args));
-                let managers = mcp_store.lock().await;
-                let call_res = match managers.get(&config.agent_id) {
-                    Some(m) => m.call_tool(tc_name, tc.fn_arguments.clone()).await,
-                    None => Err(format!("No MCP manager for agent {}", config.agent_id)),
-                };
-                match call_res {
-                    Ok(r) => r,
-                    Err(e) => crate::tools::tool_error(e),
+            let execute = async {
+                if registry.is_mcp_tool(tc_name) {
+                    // Route to MCP manager
+                    ctx.log(&format!("MCP tool call: {}({})", tc_name, tc_args));
+                    let managers = mcp_store.lock().await;
+                    let call_res = match managers.get(&config.agent_id) {
+                        Some(m) => m.call_tool(tc_name, tc.fn_arguments.clone()).await,
+                        None => Err(format!("No MCP manager for agent {}", config.agent_id)),
+                    };
+                    match call_res {
+                        Ok(r) => r,
+                        Err(e) => crate::tools::tool_error(e),
+                    }
+                } else {
+                    // Built-in tool
+                    registry.execute(tc_name, &tc_args, ctx).await
                 }
-            } else {
-                // Built-in tool
-                registry.execute(tc_name, &tc_args, ctx).await
+            };
+            // A stop mid-tool drops the running call. Every call the assistant
+            // turn issued still gets a `tool` response — a turn with dangling
+            // tool calls is rejected by the providers — so the calls after it
+            // are answered as cancelled without being started.
+            let output = tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => {
+                    ctx.log(&format!("Tool call [{}] cancelled by user", tc_name));
+                    crate::tools::tool_error("cancelled by user")
+                }
+                out = execute => out,
             };
 
             ctx.log(&format!("Tool result [{}]: {} chars", tc_name, output.len()));
@@ -324,6 +346,11 @@ pub async fn run_agent_loop(
                 sink.send_image(url);
             }
             conv_messages.push(crate::llm::store_message(&crate::llm::user_message("", &imgs)));
+        }
+
+        if ctx.cancel.is_cancelled() {
+            sink.send_done();
+            return Ok((String::new(), conv_messages));
         }
 
         round += 1;

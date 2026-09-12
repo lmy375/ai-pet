@@ -126,9 +126,16 @@ pub struct LlmResult {
     pub total_latency_ms: i64,
     pub prompt_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    /// The user aborted mid-stream. `text`/`reasoning` hold what arrived before
+    /// the stop; `tool_calls` and `assistant_turn` are cleared, since a call
+    /// that was never executed must not enter the history.
+    pub cancelled: bool,
 }
 
 /// Stream one chat round, forwarding events to `sink` as they arrive.
+/// Returns early with `cancelled: true` (partial text kept, nothing sent to the
+/// sink) as soon as `ctx.cancel` fires — dropping the stream closes the
+/// connection, so the provider stops generating.
 pub async fn stream_chat(
     client: &Client,
     config: &AiConfig,
@@ -148,17 +155,23 @@ pub async fn stream_chat(
         config.model
     ));
 
-    let response = client
-        .exec_chat_stream(target, chat_req, Some(options))
-        .await
-        .map_err(|e| {
+    let response = tokio::select! {
+        biased;
+        _ = ctx.cancel.cancelled() => None,
+        r = client.exec_chat_stream(target, chat_req, Some(options)) => Some(r),
+    };
+    let response = match response {
+        None => return Ok(LlmResult::cancelled(request_time, request_instant)),
+        Some(r) => r.map_err(|e| {
             let msg = format!("LLM request failed: {e}");
             ctx.log(&format!("ERROR: {msg}"));
             sink.send_error(&msg);
             msg
-        })?;
+        })?,
+    };
 
     let mut stream = response.stream;
+    let mut cancelled = false;
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -176,7 +189,18 @@ pub async fn stream_chat(
         }
     };
 
-    while let Some(event) = stream.next().await {
+    loop {
+        let event = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => {
+                cancelled = true;
+                break;
+            }
+            next = stream.next() => match next {
+                Some(event) => event,
+                None => break,
+            },
+        };
         let event = event.map_err(|e| {
             let msg = format!("LLM stream error: {e}");
             ctx.log(&format!("ERROR: {msg}"));
@@ -228,14 +252,21 @@ pub async fn stream_chat(
         }
     }
 
-    tool_calls = dedup_tool_calls(tool_calls);
-    assistant_turn = assistant_turn.map(dedup_assistant_turn);
+    if cancelled {
+        ctx.log("LLM stream cancelled by user");
+        tool_calls.clear();
+        assistant_turn = None;
+    } else {
+        tool_calls = dedup_tool_calls(tool_calls);
+        assistant_turn = assistant_turn.map(dedup_assistant_turn);
+    }
 
     let done_instant = std::time::Instant::now();
 
     // A gateway can end a stream cleanly having sent nothing at all (HTTP 200,
     // no chunks). That is a failure, not an answer — see the module header.
-    if text.trim().is_empty() && reasoning.is_empty() && tool_calls.is_empty() {
+    // A user abort is not that failure, even when nothing had arrived yet.
+    if !cancelled && text.trim().is_empty() && reasoning.is_empty() && tool_calls.is_empty() {
         let msg = "LLM returned an empty response (no text, no tool calls)";
         ctx.log(&format!("ERROR: {msg}"));
         sink.send_error(msg);
@@ -255,7 +286,28 @@ pub async fn stream_chat(
         total_latency_ms: (done_instant - request_instant).as_millis() as i64,
         prompt_tokens,
         total_tokens,
+        cancelled,
     })
+}
+
+impl LlmResult {
+    /// The result of a round aborted before the provider answered at all.
+    fn cancelled(request_time: String, request_instant: std::time::Instant) -> Self {
+        Self {
+            text: String::new(),
+            reasoning: String::new(),
+            tool_calls: Vec::new(),
+            assistant_turn: None,
+            request_time,
+            first_token_time: None,
+            done_time: crate::common::iso_now(),
+            first_token_latency_ms: None,
+            total_latency_ms: request_instant.elapsed().as_millis() as i64,
+            prompt_tokens: None,
+            total_tokens: None,
+            cancelled: true,
+        }
+    }
 }
 
 // region: --- Tool-call de-duplication

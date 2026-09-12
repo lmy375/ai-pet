@@ -501,6 +501,15 @@ export function useChat() {
     [saveCurrentSession],
   );
 
+  // Abort the turn streaming in this session. The backend ends the stream with
+  // `done` (partial answer kept), so the usual completion path in `runStream`
+  // finishes and persists the turn — nothing to unwind here.
+  const stopStreaming = useCallback(() => {
+    const id = sessionIdRef.current;
+    if (!id || !busyRef.current) return;
+    invoke("cancel_chat", { sessionId: id }).catch((e) => console.error("cancel_chat failed:", e));
+  }, []);
+
   const sendMessage = useCallback(
     async (content: string, images?: string[]) => {
       // Respect the turn lock: a background-completion turn may be streaming even
@@ -644,6 +653,7 @@ export function useChat() {
     sessionId,
     sessionList,
     sendMessage,
+    stopStreaming,
     newSession,
     renameSession,
     switchSession,

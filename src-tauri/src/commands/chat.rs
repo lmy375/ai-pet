@@ -2,10 +2,12 @@
 //! implementations of pet-core's delivery traits (stream sink, background-task
 //! notifier, heartbeat chat hook).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use tauri::ipc::Channel;
 use tauri::State;
+use tokio_util::sync::CancellationToken;
 
 use pet_core::chat::{run_chat_pipeline, ChatEventSink, StreamEvent, UserTurn};
 use pet_core::config::AiConfig;
@@ -106,7 +108,29 @@ impl ChatHook for TauriChatHook {
     }
 }
 
+/// The cancellation token of every `chat` turn in flight, keyed by session id.
+/// A session runs at most one turn at a time (both windows share the same
+/// `busyRef` lock per window and the same session on disk), so the id is enough
+/// for `cancel_chat` to find the turn the user is looking at.
+#[derive(Default)]
+pub struct ChatCancelStore(pub Mutex<HashMap<String, CancellationToken>>);
+
+/// Registers a turn's token for its lifetime and removes it on drop, so an
+/// early `?` never leaves a stale token that a later `cancel_chat` would fire
+/// into nothing.
+struct Registered<'a> {
+    store: &'a ChatCancelStore,
+    session_id: String,
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        self.store.0.lock().unwrap().remove(&self.session_id);
+    }
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn chat(
     messages: Vec<serde_json::Value>,
     turn: UserTurn,
@@ -116,6 +140,7 @@ pub async fn chat(
     log_store: State<'_, LogStore>,
     shell_store: State<'_, ShellStore>,
     mcp_store: State<'_, McpManagerStore>,
+    cancel_store: State<'_, ChatCancelStore>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let config = AiConfig::from_settings()?;
     let mcp = mcp_store.inner().clone();
@@ -125,14 +150,26 @@ pub async fn chat(
         ShellStore(shell_store.0.clone()),
         config.clone(),
         mcp.clone(),
-        session_id,
+        session_id.clone(),
         Some(notifier),
         None, // chat turns aren't heartbeats; no chat hook
         false,
     );
+    cancel_store.0.lock().unwrap().insert(session_id.clone(), ctx.cancel.clone());
+    let _registered = Registered { store: cancel_store.inner(), session_id };
     let sink = ChannelSink(on_event);
     // The updated conversation goes back to the caller, which stores it
     // verbatim — the frontend never builds or inspects LLM messages.
     let outcome = run_chat_pipeline(messages, turn, &sink, &config, &mcp, &ctx).await?;
     Ok(outcome.messages)
+}
+
+/// Stop the turn streaming in `session_id`. The pipeline ends the stream with
+/// `done`, keeping the partial answer, so the frontend's normal completion path
+/// runs. A no-op when nothing is in flight.
+#[tauri::command]
+pub fn cancel_chat(session_id: String, cancel_store: State<'_, ChatCancelStore>) {
+    if let Some(token) = cancel_store.0.lock().unwrap().get(&session_id) {
+        token.cancel();
+    }
 }

@@ -15,7 +15,7 @@ import { useI18n } from "./i18n";
 function App() {
   const { settings, loaded } = useSettings();
   const { t } = useI18n();
-  const { items, currentResponse, currentReasoning, currentToolCalls, isLoading, sendMessage } = useChat();
+  const { items, currentResponse, currentReasoning, currentToolCalls, isLoading, sendMessage, stopStreaming } = useChat();
   const { hidden, handleMouseEnter, pauseTimer, resumeTimer } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
@@ -178,7 +178,7 @@ function App() {
             </FloatingIconButton>
             {!chatCollapsed && (
               <div className="flex-1">
-                <ChatInput onSend={handleSend} isLoading={isLoading} />
+                <ChatInput onSend={handleSend} isLoading={isLoading} onStop={stopStreaming} />
               </div>
             )}
           </div>

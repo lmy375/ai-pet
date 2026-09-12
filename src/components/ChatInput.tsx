@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { SendIcon } from "./Icons";
+import { EnterIcon, StopIcon } from "./Icons";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { SkillItem, SkillsInfo } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
@@ -8,6 +8,9 @@ import { useI18n } from "../i18n";
 interface Props {
   onSend: (message: string, images?: string[]) => void;
   isLoading: boolean;
+  /** Abort the streaming reply. While `isLoading` the send button becomes a
+   *  stop button (and Escape stops) when this is provided. */
+  onStop?: () => void;
   placeholder?: string;
 }
 
@@ -31,7 +34,7 @@ function readImage(file: File): Promise<string> {
  *  fills in `/skill:<slug> ` so a task can be typed after it. On submit the
  *  command is expanded by the engine (`expand_skill_command`) into the plain
  *  user message that's actually sent — the wording lives in pet-core, not here. */
-export function ChatInput({ onSend, isLoading, placeholder }: Props) {
+export function ChatInput({ onSend, isLoading, onStop, placeholder }: Props) {
   const { t } = useI18n();
   const [input, setInput] = useState("");
   const [images, setImages] = useState<string[]>([]); // base64 data URLs
@@ -88,7 +91,13 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
     onSend(expanded ?? text, images.length > 0 ? images : undefined);
   };
 
+  const canStop = isLoading && onStop !== undefined;
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape" && canStop) {
+      e.preventDefault();
+      return onStop();
+    }
     if (menuOpen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -190,14 +199,24 @@ export function ChatInput({ onSend, isLoading, placeholder }: Props) {
           rows={1}
           className="flex-1 resize-none overflow-hidden rounded-[20px] border border-line bg-surface-soft px-4 py-2.5 text-chat leading-snug text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent focus:bg-surface"
         />
-        <button
-          onClick={submit}
-          disabled={isLoading || (!input.trim() && images.length === 0)}
-          title={t("chat.input.send")}
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-card transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-ink-faint disabled:shadow-none"
-        >
-          <SendIcon className="h-5 w-5 -translate-x-px" />
-        </button>
+        {canStop ? (
+          <button
+            onClick={onStop}
+            title={t("chat.input.stop")}
+            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-ink text-white shadow-card transition-colors hover:bg-ink-soft"
+          >
+            <StopIcon className="h-4 w-4" />
+          </button>
+        ) : (
+          <button
+            onClick={submit}
+            disabled={isLoading || (!input.trim() && images.length === 0)}
+            title={t("chat.input.send")}
+            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-card transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-ink-faint disabled:shadow-none"
+          >
+            <EnterIcon className="h-5 w-5" />
+          </button>
+        )}
       </div>
     </div>
   );
