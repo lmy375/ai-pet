@@ -31,14 +31,20 @@ pub fn run() {
         .manage(pet_core::mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
         .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))
-        .manage(commands::chat::ChatCancelStore::default())
         .setup(|app| {
             // Restore the pet window to its last position (and show it — it starts
             // hidden so it's positioned before appearing, avoiding a center flash).
             commands::window::restore_main_window(app.handle());
 
-            // The group runtime needs an event sink bound to the app handle, so
-            // it's built (and managed) here rather than before the builder.
+            // The turn runner and group runtime need event sinks bound to the
+            // app handle, so they're built (and managed) here rather than
+            // before the builder.
+            app.manage(commands::chat::new_turn_store(
+                app.handle().clone(),
+                app.state::<pet_core::mcp::McpManagerStore>().inner().clone(),
+                app.state::<LogStore>().inner().clone(),
+                app.state::<ShellStore>().inner().clone(),
+            ));
             app.manage(commands::group::new_group_store(
                 app.handle().clone(),
                 app.state::<pet_core::mcp::McpManagerStore>().inner().clone(),
@@ -90,8 +96,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::chat::chat,
+            commands::chat::send_chat,
+            commands::chat::attach_turn,
             commands::chat::cancel_chat,
+            commands::chat::running_turns,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::get_config_raw,
@@ -134,7 +142,6 @@ pub fn run() {
             commands::session::list_sessions,
             commands::session::set_active_session,
             commands::session::load_session,
-            commands::session::save_session,
             commands::session::create_session,
             commands::session::rename_session,
             commands::session::delete_session,

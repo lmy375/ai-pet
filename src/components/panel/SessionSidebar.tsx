@@ -9,6 +9,9 @@ import { useI18n, type Lang } from "../../i18n";
 interface Props {
   sessions: SessionMeta[];
   activeId: string;
+  /** Ids of sessions with a reply in progress (turns run in the backend, so
+   *  a session keeps streaming while another is open). */
+  running?: string[];
   onSelect: (id: string) => void;
   onNew: () => void;
   onRename: (id: string, title: string) => void;
@@ -50,7 +53,7 @@ function whenLabel(ts: number, today: number, lang: Lang, yesterday: string): st
  * new-conversation action. It owns the inline rename (the only place a title is
  * edited) so the chat column stays about the current conversation.
  */
-export function SessionSidebar({ sessions, activeId, onSelect, onNew, onRename, onDelete }: Props) {
+export function SessionSidebar({ sessions, activeId, running = [], onSelect, onNew, onRename, onDelete }: Props) {
   const { t, lang } = useI18n();
   const [query, setQuery] = useState("");
   // Inline rename: id of the row being edited + its draft.
@@ -120,6 +123,7 @@ export function SessionSidebar({ sessions, activeId, onSelect, onNew, onRename, 
               <div className="px-2 pb-1 pt-2 text-meta font-medium text-ink-faint">{g.label}</div>
               {g.rows.map((s) => {
                 const active = s.id === activeId;
+                const busy = running.includes(s.id);
                 return editingId === s.id ? (
                   <input
                     key={s.id}
@@ -145,7 +149,12 @@ export function SessionSidebar({ sessions, activeId, onSelect, onNew, onRename, 
                       active ? "bg-accent-soft" : "hover:bg-hover"
                     }`}
                   >
-                    <button className="min-w-0 flex-1 text-left" onClick={() => onSelect(s.id)}>
+                    <button
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                      onClick={() => onSelect(s.id)}
+                      title={busy ? t("chat.session.replying") : undefined}
+                    >
+                      {busy && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
                       <div
                         className={`truncate text-body ${active ? "font-semibold text-accent" : "text-ink"}`}
                       >

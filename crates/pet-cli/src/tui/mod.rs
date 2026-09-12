@@ -15,13 +15,12 @@ use std::collections::HashMap;
 use pet_core::chat::StreamEvent;
 use pet_core::session;
 use pet_core::settings::get_settings;
-use pet_core::shell::TaskCompletion;
 use pet_core::skills::Skill;
+use pet_core::turn::{TurnNotice, TurnOrigin, TurnSnapshot};
 use ratatui::crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Color;
 use ratatui::text::Line;
 
-use crate::app::TurnInput;
 use crate::event::AppEvent;
 use crate::Mode;
 use entries::{agent_color, Entry, ToolCall};
@@ -33,8 +32,8 @@ use wrap::wrap_lines;
 pub enum Action {
     /// Dispatch this line to the command/chat handler (sets busy).
     Submit(String),
-    /// Run a chat turn directly (background-task resume; sets busy).
-    Turn(TurnInput),
+    /// The viewed session changed: attach to its running turn, if any.
+    SyncTurn,
     /// Build and open the tasks picker (the run loop owns the shell store).
     OpenTasks,
     /// Fetch the model list from the API and open the model picker.
@@ -238,8 +237,9 @@ pub struct TuiApp {
 
     // Group: agent_id → index of its currently-open Tool entry.
     group_tools: HashMap<String, usize>,
-    // Pending background-task completions waiting for idle.
-    pending_tasks: Vec<TaskCompletion>,
+    /// The session this view shows (the index's active id, cached by
+    /// `refresh_header` so per-token turn notices don't hit the disk).
+    pub session_id: String,
 }
 
 impl TuiApp {
@@ -269,7 +269,7 @@ impl TuiApp {
             cache_width: 0,
             shift_enter: false,
             group_tools: HashMap::new(),
-            pending_tasks: Vec::new(),
+            session_id: String::new(),
         };
         app.refresh_header();
         app.replay_session(8);
@@ -316,6 +316,7 @@ impl TuiApp {
             .map(|a| (a.name.clone(), a.model.clone()))
             .unwrap_or_default();
         let index = session::list_sessions();
+        self.session_id = index.active_id.clone();
         let title = index
             .sessions
             .iter()
@@ -740,21 +741,15 @@ impl TuiApp {
             AppEvent::Term(TermEvent::Key(key)) => return self.on_key(key),
             AppEvent::Term(TermEvent::Resize(..)) => {}
             AppEvent::Term(_) => {}
-            AppEvent::Stream(ev) => self.apply_stream(ev),
-            AppEvent::TurnDone(result) => {
-                self.busy = false;
-                self.finish_streaming_assistant();
-                self.prune_empty_assistant();
-                if let Err(e) = result {
-                    self.push(Entry::Error { text: e });
-                }
-                self.refresh_header();
-                return self.drain_pending();
-            }
+            AppEvent::Turn(notice) => self.apply_turn(notice),
+            AppEvent::TurnSnapshot(snap) => self.apply_snapshot(snap),
             AppEvent::CommandDone => {
                 self.busy = false;
+                // A chat line whose turn failed to start leaves its local
+                // placeholder behind; a command never has one.
+                self.finish_streaming_assistant();
+                self.prune_empty_assistant();
                 self.refresh_header();
-                return self.drain_pending();
             }
             AppEvent::Notice(text) => self.push(Entry::Notice { text }),
             AppEvent::ErrorNotice(text) => self.push(Entry::Error { text }),
@@ -784,16 +779,6 @@ impl TuiApp {
             AppEvent::GroupAgentDone(agent_id) => {
                 self.group_tools.remove(&agent_id);
             }
-            AppEvent::TaskDone(c) => {
-                let active = session::list_sessions().active_id;
-                if !c.session_id.is_empty() && c.session_id != active {
-                    let label = if c.label.is_empty() { c.kind.clone() } else { c.label.clone() };
-                    self.push(Entry::Notice { text: format!("后台任务完成（其他会话）：{label}") });
-                } else {
-                    self.pending_tasks.push(c);
-                    return self.drain_pending();
-                }
-            }
             AppEvent::OpenPicker(p) => self.picker = Some(p),
             AppEvent::ToolsCount(n) => self.tools_count = Some(n),
             AppEvent::Quit => return vec![Action::Quit],
@@ -801,16 +786,73 @@ impl TuiApp {
         vec![]
     }
 
-    /// Start the next queued background-completion turn when idle.
-    fn drain_pending(&mut self) -> Vec<Action> {
-        if self.busy || self.pending_tasks.is_empty() {
-            return vec![];
+    // --- backend-owned turn notices ---
+
+    /// Turn activity for every session. Only the viewed session's turn is
+    /// rendered; a completion that resumes another session gets one notice
+    /// line (it runs on in the background, visible when that session is opened).
+    fn apply_turn(&mut self, notice: TurnNotice) {
+        match notice {
+            TurnNotice::Started { session_id, origin, .. } => {
+                if session_id == self.session_id {
+                    self.open_turn(origin);
+                } else if let TurnOrigin::Completion { label } = origin {
+                    self.push(Entry::Notice {
+                        text: format!("后台任务完成（其他会话）：{label}，已在后台续聊"),
+                    });
+                }
+            }
+            TurnNotice::Stream { session_id, event, .. } => {
+                if session_id == self.session_id {
+                    self.apply_stream(event);
+                }
+            }
+            TurnNotice::Finished { session_id, .. } => {
+                if session_id == self.session_id {
+                    self.busy = false;
+                    self.close_open_tool();
+                    self.finish_streaming_assistant();
+                    self.prune_empty_assistant();
+                    self.refresh_header();
+                }
+            }
         }
-        let c = self.pending_tasks.remove(0);
-        let label = if c.label.is_empty() { c.kind.clone() } else { c.label.clone() };
-        self.push(Entry::Notice { text: format!("后台任务完成：{label} — 自动继续对话") });
+    }
+
+    /// Catch up with a turn already running in the viewed session (startup or
+    /// session switch): echo its opening line, then replay what has streamed.
+    fn apply_snapshot(&mut self, snap: TurnSnapshot) {
+        self.open_turn(snap.origin);
+        for ev in snap.events {
+            self.apply_stream(ev);
+        }
+    }
+
+    /// Mark the viewed session busy and make sure the turn's opening line and
+    /// the streaming placeholder are on screen. A turn this view submitted
+    /// itself already echoed both (see `submit`); one started elsewhere — a GUI
+    /// window, or a background-task resumption — hasn't.
+    fn open_turn(&mut self, origin: TurnOrigin) {
+        let echoed = self.busy
+            && matches!(self.entries.last(), Some(Entry::Assistant { streaming: true, .. }));
         self.busy = true;
-        vec![Action::Turn(TurnInput::Completion(c))]
+        if echoed {
+            return;
+        }
+        match origin {
+            TurnOrigin::User { text } => self.push(Entry::User { text }),
+            TurnOrigin::Completion { label } => self.push(Entry::Notice {
+                text: format!("后台任务完成：{label} — 自动继续对话"),
+            }),
+        }
+        let name = self.agent_name();
+        self.push(Entry::Assistant {
+            name,
+            text: String::new(),
+            reasoning: String::new(),
+            streaming: true,
+            reasoning_expanded: false,
+        });
     }
 
     // --- key handling ---
@@ -976,10 +1018,18 @@ impl TuiApp {
                 if let Some(item) = p.items.get(p.sel) {
                     match session::set_active_session(item.id.clone()) {
                         Ok(()) => {
+                            // The turn we were watching (if any) runs on in its
+                            // own session; this view now follows the new one and
+                            // attaches to its turn, if it has one.
+                            self.finish_streaming_assistant();
+                            self.prune_empty_assistant();
+                            self.busy = false;
                             self.push(Entry::Notice {
                                 text: format!("已切换到会话：{}", item.label),
                             });
                             self.replay_session(8);
+                            self.refresh_header();
+                            return vec![Action::SyncTurn];
                         }
                         Err(e) => self.push(Entry::Error { text: e }),
                     }
@@ -1097,6 +1147,25 @@ mod tests {
         a.entries.clear();
         a.line_cache.clear();
         a
+    }
+
+    /// A stream event of the viewed session's turn, as the runner would send it.
+    fn stream(a: &mut TuiApp, event: StreamEvent) {
+        let session_id = a.session_id.clone();
+        a.apply(AppEvent::Turn(TurnNotice::Stream {
+            session_id,
+            turn_id: "t".into(),
+            seq: 0,
+            event,
+        }));
+    }
+
+    fn started(a: &mut TuiApp, session_id: &str, origin: TurnOrigin) -> Vec<Action> {
+        a.apply(AppEvent::Turn(TurnNotice::Started {
+            session_id: session_id.into(),
+            turn_id: "t".into(),
+            origin,
+        }))
     }
 
     #[test]
@@ -1291,16 +1360,16 @@ mod tests {
     #[test]
     fn stream_builds_assistant_then_tool_then_selection_toggles_it() {
         let mut a = app();
-        a.apply(AppEvent::Stream(StreamEvent::Chunk { text: "让我看看".into() }));
-        a.apply(AppEvent::Stream(StreamEvent::ToolStart {
+        stream(&mut a, StreamEvent::Chunk { text: "让我看看".into() });
+        stream(&mut a, StreamEvent::ToolStart {
             name: "bash".into(),
             arguments: "{}".into(),
-        }));
-        a.apply(AppEvent::Stream(StreamEvent::ToolResult {
+        });
+        stream(&mut a, StreamEvent::ToolResult {
             name: "bash".into(),
             result: "ok".into(),
-        }));
-        a.apply(AppEvent::Stream(StreamEvent::Done {}));
+        });
+        stream(&mut a, StreamEvent::Done {});
         assert_eq!(a.entries.len(), 2);
         assert!(matches!(a.entries[1], Entry::Tool { expanded: false, .. }));
 
@@ -1312,35 +1381,43 @@ mod tests {
     }
 
     #[test]
-    fn completion_for_other_session_only_notices() {
+    fn completion_turn_in_another_session_only_notices() {
         let mut a = app();
-        let c = TaskCompletion {
-            session_id: "some-other-session".into(),
-            task_id: "t".into(),
-            kind: "bash".into(),
-            label: "sleep".into(),
-            result: "done".into(),
-        };
-        let actions = a.apply(AppEvent::TaskDone(c));
+        let actions = started(
+            &mut a,
+            "some-other-session",
+            TurnOrigin::Completion { label: "sleep".into() },
+        );
         assert!(actions.is_empty());
+        assert!(!a.busy, "the other session's turn must not lock this view");
         assert!(matches!(a.entries.last(), Some(Entry::Notice { .. })));
     }
 
     #[test]
-    fn completion_queues_while_busy_and_resumes_after() {
+    fn turn_started_elsewhere_is_echoed_and_own_turn_is_not_echoed_twice() {
         let mut a = app();
-        a.busy = true;
-        let c = TaskCompletion {
-            session_id: String::new(),
-            task_id: "t".into(),
-            kind: "bash".into(),
-            label: "build".into(),
-            result: "ok".into(),
-        };
-        assert!(a.apply(AppEvent::TaskDone(c)).is_empty());
-        // Turn ends → queued completion starts a resume turn.
-        let actions = a.apply(AppEvent::TurnDone(Ok(())));
-        assert!(matches!(actions.as_slice(), [Action::Turn(TurnInput::Completion(_))]));
+        let sid = a.session_id.clone();
+
+        // Started by a GUI window: the view echoes the opening line itself.
+        started(&mut a, &sid, TurnOrigin::User { text: "hi".into() });
+        assert!(a.busy);
+        assert!(matches!(
+            &a.entries[..],
+            [Entry::User { text }, Entry::Assistant { streaming: true, .. }] if text == "hi"
+        ));
+        a.apply(AppEvent::Turn(TurnNotice::Finished { session_id: sid.clone(), turn_id: "t".into() }));
+        assert!(!a.busy);
+        assert_eq!(a.entries.len(), 1, "an empty placeholder is pruned on finish");
+
+        // Submitted here: the bubble and placeholder are already up, so the
+        // runner's Started notice must not add a second pair.
+        for c in "yo".chars() {
+            a.apply(AppEvent::Term(TermEvent::Key(key(KeyCode::Char(c)))));
+        }
+        a.apply(AppEvent::Term(TermEvent::Key(key(KeyCode::Enter))));
+        let n = a.entries.len();
+        started(&mut a, &sid, TurnOrigin::User { text: "yo".into() });
+        assert_eq!(a.entries.len(), n);
         assert!(a.busy);
     }
 }

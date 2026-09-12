@@ -19,17 +19,17 @@ pub fn list_tasks(store: State<'_, ShellStore>) -> Vec<TaskListItem> {
 }
 
 /// Kill a running task and tell the pet it was cancelled. The core marks the
-/// task finished and hands back one clean completion; deliver it via the same
-/// `background-finished` event the frontend already handles, so the
-/// conversation reacts to the cancellation.
+/// task finished and hands back one clean completion; deliver it to the turn
+/// runner like any other completion, so the conversation reacts to the
+/// cancellation with a follow-up turn.
 #[tauri::command]
 pub fn kill_task(
     task_id: String,
-    app: tauri::AppHandle,
     store: State<'_, ShellStore>,
+    turns: State<'_, crate::commands::chat::TurnStore>,
 ) -> Result<(), String> {
     if let Some(completion) = shell::kill_task(store.inner(), &task_id)? {
-        crate::commands::chat::emit_background_finished(&app, completion);
+        turns.0.deliver(completion);
     }
     Ok(())
 }

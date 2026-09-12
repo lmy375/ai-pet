@@ -121,6 +121,58 @@ pub fn assistant_item(content: &str, images: &[String]) -> serde_json::Value {
     item
 }
 
+/// Sentinel title of a not-yet-named session, stored verbatim; interfaces
+/// translate it at display time.
+pub const DEFAULT_SESSION_TITLE: &str = "新会话";
+
+/// The `notification` display item that opens a background-task resumption
+/// turn: a system line naming the task, expandable to its full result. `label`
+/// is kept structured so the GUI can localize the line; `content` is the plain
+/// rendering for interfaces that show items as text (the CLI's history replay).
+pub fn notification_item(label: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": item_id(),
+        "ts": item_ts(),
+        "type": "notification",
+        "content": format!("后台任务完成：{label}"),
+        "label": label,
+        "detail": detail,
+    })
+}
+
+/// True if `result` is the inline `{task_id, status: "running"}` JSON a tool
+/// returns when its work went to the background as `task_id`.
+fn result_is_for_task(result: &serde_json::Value, task_id: &str) -> bool {
+    result
+        .as_str()
+        .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
+        .is_some_and(|v| v["task_id"] == task_id)
+}
+
+/// Replace the "running in background" placeholder result of the tool call that
+/// launched `task_id` with the task's final result, so the rendered tool block
+/// flips from running to finished when the completion turn is injected.
+pub fn apply_completion_to_items(
+    mut items: Vec<serde_json::Value>,
+    task_id: &str,
+    result: &str,
+) -> Vec<serde_json::Value> {
+    for item in items.iter_mut() {
+        if item["type"] != "tool" {
+            continue;
+        }
+        if let Some(calls) = item["toolCalls"].as_array_mut() {
+            for tc in calls.iter_mut() {
+                if result_is_for_task(&tc["result"], task_id) {
+                    tc["result"] = serde_json::json!(result);
+                    tc["isRunning"] = serde_json::json!(false);
+                }
+            }
+        }
+    }
+    items
+}
+
 /// Derive a session title from its display items: the first non-empty `user`
 /// item's text, truncated to 20 Unicode scalar values with an ellipsis. Returns
 /// `None` when there's no usable user text, so callers pick their own fallback.
@@ -192,6 +244,42 @@ pub fn load_session(id: String) -> Result<Session, String> {
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse session {id}: {e}"))
 }
 
+/// A session as an interface renders it: the display transcript and its
+/// metadata, WITHOUT the model-facing `messages`. Interfaces never build or
+/// inspect those (the backend owns the LLM conversation), so they aren't sent
+/// across — they can carry megabytes of inline images.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionView {
+    pub id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub items: Vec<serde_json::Value>,
+    pub context_usage: Option<ContextUsage>,
+}
+
+impl From<Session> for SessionView {
+    fn from(s: Session) -> Self {
+        Self {
+            id: s.id,
+            title: s.title,
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+            items: s.items,
+            context_usage: s.context_usage,
+        }
+    }
+}
+
+pub fn load_session_view(id: String) -> Result<SessionView, String> {
+    load_session(id).map(SessionView::from)
+}
+
+/// Write a session file and refresh its index row. Does NOT touch
+/// `active_id`: turns run in the background for any session (a background-task
+/// completion resumes the session that spawned it), and persisting one must
+/// never yank the windows over to it. Only `set_active_session` /
+/// `create_session` — user actions — move the pointer.
 pub fn save_session(mut session: Session) -> Result<(), String> {
     let path = session_path(&session.id)?;
 
@@ -216,7 +304,6 @@ pub fn save_session(mut session: Session) -> Result<(), String> {
 
     // Update index
     let mut index = read_index();
-    index.active_id = session.id.clone();
     if let Some(meta) = index.sessions.iter_mut().find(|m| m.id == session.id) {
         meta.title = session.title.clone();
         meta.updated_at = session.updated_at.clone();
@@ -255,9 +342,13 @@ pub fn rename_session(id: String, title: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Create a fresh session for the active agent and make it the active one.
 pub fn create_session() -> Result<Session, String> {
     let agent_id = crate::settings::active_agent_id();
-    new_seeded_session(&agent_id, Uuid::new_v4().to_string(), "新会话".to_string())
+    let session =
+        new_seeded_session(&agent_id, Uuid::new_v4().to_string(), DEFAULT_SESSION_TITLE.to_string())?;
+    set_active_session(session.id.clone())?;
+    Ok(session)
 }
 
 /// Return the tail of `messages` covering the last `n` conversation turns,
@@ -569,6 +660,29 @@ mod prune_tests {
         ];
         let (_, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
         assert_eq!(roles(&new_msgs), vec!["System"]);
+    }
+
+    #[test]
+    fn completion_flips_only_the_tool_call_that_launched_the_task() {
+        let running = |task: &str| {
+            serde_json::json!({ "task_id": task, "status": "running" }).to_string()
+        };
+        let items = vec![
+            serde_json::json!({ "id": "i1", "type": "tool", "content": "", "toolCalls": [
+                { "name": "bash", "arguments": "{}", "result": running("t-1"), "isRunning": true },
+                { "name": "bash", "arguments": "{}", "result": running("t-2"), "isRunning": true },
+            ]}),
+            // A plain (non-JSON) result must not be touched, nor parsed as one.
+            serde_json::json!({ "id": "i2", "type": "tool", "content": "", "toolCalls": [
+                { "name": "bash", "arguments": "{}", "result": "ok" },
+            ]}),
+        ];
+        let out = apply_completion_to_items(items, "t-2", "exit 0");
+        let calls = out[0]["toolCalls"].as_array().unwrap();
+        assert_eq!(calls[0]["result"], running("t-1"), "other task keeps its placeholder");
+        assert_eq!(calls[1]["result"], "exit 0");
+        assert_eq!(calls[1]["isRunning"], false);
+        assert_eq!(out[1]["toolCalls"][0]["result"], "ok");
     }
 
     #[test]

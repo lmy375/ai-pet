@@ -137,7 +137,7 @@ export function useAutoHide() {
     // whose `paused` is always false, so it keeps auto-hiding the window even
     // after the live instance is pinned. The `cancelled` flag tears down any
     // listener that resolves after cleanup. (Same async-leak hazard CLAUDE.md
-    // flags for `background-finished`, but here a single owned listener must be
+    // flags for the `turn` event, but here a single owned listener must be
     // unregistered, so the flag is the correct fix rather than dedup.)
     let cancelled = false;
 

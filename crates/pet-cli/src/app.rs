@@ -1,37 +1,26 @@
-//! CLI application state + the single-agent chat turn.
+//! CLI application state.
 //!
-//! Sessions are the SAME files the GUI uses (`<config>/pet/sessions/`), and each
-//! turn reloads the active session from disk before appending — the same
-//! reload-before-send rule the two GUI windows follow — so a CLI chat and an
-//! open GUI window can share one conversation without clobbering each other.
+//! Sessions are the SAME files the GUI uses (`<config>/pet/sessions/`), and
+//! turns are run by the shared `TurnRunner` — which reloads the session from
+//! disk before appending — so a CLI chat and an open GUI window can share one
+//! conversation without clobbering each other.
 
 use std::sync::Arc;
 
-use pet_core::chat::{run_chat_pipeline, ChatEventSink, UserTurn};
-use pet_core::config::AiConfig;
 use pet_core::logging::LogStore;
 use pet_core::mcp::{McpManager, McpManagerStore};
-use pet_core::session::{self, ContextUsage, Session};
+use pet_core::session;
 use pet_core::settings::{get_settings, AgentConfig};
-use pet_core::shell::{ShellStore, TaskCompletion, TaskNotifier};
-use pet_core::tools::ToolContext;
-
-use crate::sink::SessionSink;
-
-const DEFAULT_SESSION_TITLE: &str = "新会话";
-
-/// What starts a turn: the owner typed a message, or a background task finished
-/// and its result resumes the conversation.
-pub enum TurnInput {
-    User(String),
-    Completion(TaskCompletion),
-}
+use pet_core::shell::ShellStore;
+use pet_core::turn::TurnRunner;
 
 pub struct CliApp {
     pub log_store: LogStore,
     pub shell_store: ShellStore,
     pub mcp_store: McpManagerStore,
-    pub notifier: Arc<dyn TaskNotifier>,
+    /// Runs and persists every chat turn (and injects background-task
+    /// completions); the TUI / one-shot printer only observe its events.
+    pub turns: Arc<TurnRunner>,
 }
 
 impl CliApp {
@@ -67,92 +56,14 @@ impl CliApp {
         }
     }
 
-    /// Load the active session, creating one if none exists. Reloading from disk
-    /// per turn keeps the CLI convergent with a concurrently-open GUI window.
-    fn load_active_session(&self) -> Result<Session, String> {
+    /// The active session's id, creating a session if there is none (or the
+    /// index points at a file that no longer exists).
+    pub fn active_session_id(&self) -> Result<String, String> {
         let active_id = session::list_sessions().active_id;
-        if !active_id.is_empty() {
-            if let Ok(s) = session::load_session(active_id) {
-                return Ok(s);
-            }
+        if !active_id.is_empty() && session::load_session(active_id.clone()).is_ok() {
+            return Ok(active_id);
         }
-        session::create_session()
-    }
-
-    /// Run one chat turn against the active agent and persist it into the shared
-    /// session, mirroring the GUI frontend's transcript bookkeeping. Streaming
-    /// goes to `sink`; the sink's accumulated items are what get persisted.
-    pub async fn run_chat_turn<S>(&self, input: TurnInput, sink: &S) -> Result<(), String>
-    where
-        S: ChatEventSink + SessionSink,
-    {
-        let config = AiConfig::from_settings()?;
-
-        let mut sess = self.load_active_session()?;
-
-        // Append the turn's input to the display transcript. The model-facing
-        // transcript is produced by the pipeline and stored verbatim below —
-        // rebuilding it here is what used to drop tool rounds from context.
-        let turn = match &input {
-            TurnInput::User(text) => {
-                sess.items.push(session::user_item(text, &[]));
-                UserTurn::text(text)
-            }
-            TurnInput::Completion(c) => {
-                let label = if c.label.is_empty() { c.kind.clone() } else { c.label.clone() };
-                sess.items.push(serde_json::json!({
-                    "id": session::item_id(),
-                    "type": "notification",
-                    "content": format!("后台任务完成：{}", label),
-                    "detail": c.result,
-                    "ts": session::item_ts(),
-                }));
-                // Same message shape the GUI injects (chat.bgTaskDoneContent).
-                UserTurn::text(format!("[后台任务完成] {}：\n{}", label, c.result))
-            }
-        };
-
-        let prior_messages = sess.messages.clone();
-
-        let ctx = ToolContext::new(
-            LogStore(self.log_store.0.clone()),
-            ShellStore(self.shell_store.0.clone()),
-            config.clone(),
-            self.mcp_store.clone(),
-            sess.id.clone(),
-            Some(self.notifier.clone()),
-            None, // no chat hook — the CLI runs no heartbeats
-            false,
-        );
-
-        let result =
-            run_chat_pipeline(prior_messages, turn, sink, &config, &self.mcp_store, &ctx).await;
-
-        // Store the model-facing transcript exactly as the pipeline returned it,
-        // tool rounds included. Only the display items are ours to assemble.
-        if let Ok(outcome) = &result {
-            sess.messages = outcome.messages.clone();
-        }
-        sess.items.extend(sink.take_items());
-
-        if let Some((used, total)) = sink.usage() {
-            sess.context_usage = Some(ContextUsage { used, total: total as u64 });
-        }
-
-        // Derive a title from the first user message while the session is unnamed.
-        if sess.title == DEFAULT_SESSION_TITLE || sess.title.is_empty() {
-            if let Some(t) = session::derive_title(&sess.items) {
-                sess.title = t;
-            }
-        }
-
-        sess.updated_at = pet_core::common::iso_now();
-        sess.created_at = String::new(); // preserved by save_session
-        session::save_session(sess)?;
-
-        // A transport-level error never reached the sink as an Error event when
-        // run_chat_pipeline returns Err before streaming; surface it.
-        result.map(|_| ())
+        Ok(session::create_session()?.id)
     }
 
     /// The active agent's config, if resolvable.
@@ -160,4 +71,3 @@ impl CliApp {
         get_settings().ok().and_then(|s| s.active_agent_config().cloned())
     }
 }
-

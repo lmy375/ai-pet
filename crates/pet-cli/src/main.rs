@@ -10,26 +10,30 @@
 mod app;
 mod commands;
 mod event;
-mod sink;
+mod printer;
 mod tui;
 mod ui;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use pet_core::chat::{StreamEvent, UserTurn};
 use pet_core::group::GroupRuntime;
 use pet_core::logging::{log_dir, LogStore};
 use pet_core::settings::get_settings;
-use pet_core::shell::{load_persisted_tasks, ShellStore};
+use pet_core::shell::{load_persisted_tasks, pending_notify_count, ShellStore};
+use pet_core::turn::{TurnNotice, TurnOrigin, TurnRunner};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use ratatui::crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::supports_keyboard_enhancement;
 
-use app::{CliApp, TurnInput};
+use app::CliApp;
 use commands::SubmitCtx;
-use event::{AppEvent, CliNotifier, TuiGroupEvents};
+use event::{AppEvent, CliTurnEvents, TuiGroupEvents};
+use printer::OneshotPrinter;
 use tui::{Action, TuiApp};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -97,37 +101,30 @@ async fn async_main(oneshot: Option<String>) -> i32 {
         }
     }
 
-    // Everything (terminal input, stream events, group activity, task
-    // completions) flows through this one channel into the UI loop.
+    // Everything (terminal input, turn activity, group activity) flows through
+    // this one channel into the UI loop.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
 
+    let log_store = LogStore(Arc::new(Mutex::new(Vec::new())));
+    let shell_store = ShellStore(Arc::new(Mutex::new(load_persisted_tasks())));
+    let mcp_store = pet_core::mcp::new_mcp_store();
     let cli = Arc::new(CliApp {
-        log_store: LogStore(Arc::new(Mutex::new(Vec::new()))),
-        shell_store: ShellStore(Arc::new(Mutex::new(load_persisted_tasks()))),
-        mcp_store: pet_core::mcp::new_mcp_store(),
-        notifier: Arc::new(CliNotifier(tx.clone())),
+        turns: TurnRunner::new(
+            Arc::new(CliTurnEvents(tx.clone())),
+            LogStore(log_store.0.clone()),
+            ShellStore(shell_store.0.clone()),
+            mcp_store.clone(),
+            tokio::runtime::Handle::current(),
+        ),
+        log_store,
+        shell_store,
+        mcp_store,
     });
 
     // One-shot mode: plain streaming to stdout, then exit — but not before the
     // turn's background tasks (spawn_subagent / background bash) are drained.
     if let Some(msg) = oneshot {
-        let sink = sink::OneshotSink::new();
-        let mut code = match cli.run_chat_turn(TurnInput::User(msg), &sink).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("{}✗ {}{}", ui::RED, e, ui::RESET);
-                1
-            }
-        };
-        // The TUI/GUI event loops feed each TaskCompletion back into a follow-up
-        // turn. One-shot has no loop, so exiting here would silently drop any
-        // still-running background work (the model was even told "you will be
-        // notified"). Drain until quiescent — even after a failed turn, salvaging
-        // whatever was already spawned.
-        if let Err(e) = drain_background_tasks(&cli, &mut rx, &sink).await {
-            eprintln!("{}✗ {}{}", ui::RED, e, ui::RESET);
-            code = 1;
-        }
+        let code = run_oneshot(&cli, &mut rx, msg).await;
         cli.shutdown_mcp().await;
         return code;
     }
@@ -151,6 +148,9 @@ async fn async_main(oneshot: Option<String>) -> i32 {
     let ctx = SubmitCtx { cli: cli.clone(), group: group_rt, tx: tx.clone() };
     let mut app = TuiApp::new();
     app.shift_enter = shift_enter;
+    // A turn may already be running in the active session (started by the GUI,
+    // or a background-task resumption): show it from where it is.
+    sync_turn(&cli, &tx);
     let mut tick = tokio::time::interval(Duration::from_millis(120));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -190,7 +190,7 @@ async fn async_main(oneshot: Option<String>) -> i32 {
         for action in actions {
             match action {
                 Action::Submit(line) => commands::spawn_submit(ctx.clone(), app.mode, line),
-                Action::Turn(input) => commands::spawn_turn(ctx.clone(), input),
+                Action::SyncTurn => sync_turn(&cli, &tx),
                 Action::OpenTasks => {
                     let tasks = pet_core::shell::list_tasks(&cli.shell_store);
                     let _ = if tasks.is_empty() {
@@ -226,65 +226,106 @@ fn oneshot_wait_ms() -> u64 {
         .unwrap_or(ONESHOT_WAIT_MS_DEFAULT)
 }
 
-/// Mirror of the TUI's `drain_pending`, serialized: feed every background-task
-/// completion back into a follow-up chat turn (which may itself spawn new
-/// background tasks) until nothing notifiable is left running.
-async fn drain_background_tasks(
-    cli: &Arc<CliApp>,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-    sink: &sink::OneshotSink,
-) -> Result<(), String> {
-    let wait_ms = oneshot_wait_ms();
-    let deadline = (wait_ms > 0).then(|| tokio::time::Instant::now() + Duration::from_millis(wait_ms));
+/// Attach the TUI to the active session's running turn, if any, by replaying
+/// it into the event stream. Called at startup and after a session switch.
+fn sync_turn(cli: &CliApp, tx: &UnboundedSender<AppEvent>) {
+    let active_id = pet_core::session::list_sessions().active_id;
+    if let Some(snap) = cli.turns.attach(&active_id) {
+        let _ = tx.send(AppEvent::TurnSnapshot(snap));
+    }
+}
+
+/// Nothing running, nothing queued, and no task left that will notify.
+fn quiescent(cli: &CliApp) -> bool {
+    cli.turns.is_idle() && pending_notify_count(&cli.shell_store) == 0
+}
+
+/// `-p` mode: send one message, print its reply, then stay until every
+/// background task it spawned has finished and been fed back — each completion
+/// resumes the session with a follow-up turn (run by the runner, printed here,
+/// possibly spawning more). Exiting earlier would silently drop work the model
+/// was told "you will be notified" about. Returns the process exit code.
+async fn run_oneshot(cli: &Arc<CliApp>, rx: &mut UnboundedReceiver<AppEvent>, msg: String) -> i32 {
+    // Connect the active agent's MCP servers first (lazy; GUI does it at boot).
+    if let Some(agent) = cli.active_agent() {
+        if let Some(m) = cli.ensure_mcp(&agent).await {
+            println!("{}{}{}", ui::DIM, m, ui::RESET);
+        }
+    }
+    let session_id = match cli
+        .active_session_id()
+        .and_then(|sid| cli.turns.send(&sid, UserTurn::text(msg)).map(|_| sid))
+    {
+        Ok(sid) => sid,
+        Err(e) => {
+            eprintln!("{}✗ {}{}", ui::RED, e, ui::RESET);
+            return 1;
+        }
+    };
+
+    let mut printer = OneshotPrinter::new();
+    let mut code = 0;
     let mut waiting_notice = false;
+    let wait_ms = oneshot_wait_ms();
+    let deadline =
+        (wait_ms > 0).then(|| tokio::time::Instant::now() + Duration::from_millis(wait_ms));
 
     loop {
-        // First eat everything already queued: a task may have finished (and
-        // notified) while the previous turn was still streaming.
-        let event = match rx.try_recv() {
-            Ok(ev) => Some(ev),
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return Ok(()),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                let pending = pet_core::shell::pending_notify_count(&cli.shell_store);
-                if pending == 0 {
-                    return Ok(());
+        // The overall cap applies only while purely waiting on background tasks
+        // (no turn running), so a long but live reply is never cut off.
+        let event = match deadline.filter(|_| cli.turns.is_idle()) {
+            Some(d) => match tokio::time::timeout_at(d, rx.recv()).await {
+                Ok(ev) => ev,
+                Err(_) => {
+                    eprintln!(
+                        "{}✗ 等待后台任务超过 {}ms，放弃（还有 {} 个在跑；PET_ONESHOT_WAIT_MS 可调，0 为无上限）{}",
+                        ui::RED,
+                        wait_ms,
+                        pending_notify_count(&cli.shell_store),
+                        ui::RESET
+                    );
+                    return 1;
                 }
-                if !waiting_notice {
+            },
+            None => rx.recv().await,
+        };
+        let Some(event) = event else { return code };
+
+        match event {
+            AppEvent::Turn(TurnNotice::Started {
+                session_id: sid,
+                origin: TurnOrigin::Completion { label },
+                ..
+            }) => {
+                waiting_notice = false;
+                if sid == session_id {
+                    println!("{}后台任务完成：{} — 自动继续对话{}", ui::DIM, label, ui::RESET);
+                } else {
+                    println!("{}后台任务完成（其他会话）：{}，已在后台续聊{}", ui::DIM, label, ui::RESET);
+                }
+            }
+            AppEvent::Turn(TurnNotice::Stream { session_id: sid, event, .. }) if sid == session_id => {
+                if matches!(event, StreamEvent::Error { .. }) {
+                    code = 1;
+                }
+                printer.apply(&event);
+            }
+            AppEvent::Turn(TurnNotice::Finished { .. }) => {
+                // A finishing task marks itself done a moment before its
+                // completion turn registers, so confirm after a short grace.
+                if quiescent(cli) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    if quiescent(cli) {
+                        return code;
+                    }
+                }
+                let pending = pending_notify_count(&cli.shell_store);
+                if !waiting_notice && pending > 0 {
                     waiting_notice = true;
                     println!("{}… 等待 {} 个后台任务完成{}", ui::DIM, pending, ui::RESET);
                 }
-                let recv = rx.recv();
-                match deadline {
-                    Some(d) => match tokio::time::timeout_at(d, recv).await {
-                        Ok(ev) => ev,
-                        Err(_) => {
-                            return Err(format!(
-                                "等待后台任务超过 {}ms，放弃（还有 {} 个在跑；PET_ONESHOT_WAIT_MS 可调，0 为无上限）",
-                                wait_ms, pending
-                            ));
-                        }
-                    },
-                    None => recv.await,
-                }
             }
-        };
-
-        match event {
-            Some(AppEvent::TaskDone(c)) => {
-                // Same session guard as the TUI: a completion for another session
-                // (e.g. a task left over from a previous process) must not be
-                // injected into this conversation.
-                let active_id = pet_core::session::list_sessions().active_id;
-                if !c.session_id.is_empty() && c.session_id != active_id {
-                    println!("{}后台任务完成（其他会话）：{}{}", ui::DIM, c.label, ui::RESET);
-                    continue;
-                }
-                waiting_notice = false;
-                println!("{}后台任务完成：{} — 自动继续对话{}", ui::DIM, c.label, ui::RESET);
-                cli.run_chat_turn(TurnInput::Completion(c), sink).await?;
-            }
-            Some(_) => {} // 其他事件在 one-shot 下不会产生，忽略
-            None => return Ok(()),
+            _ => {} // 其他事件在 one-shot 下与本会话无关，忽略
         }
     }
 }

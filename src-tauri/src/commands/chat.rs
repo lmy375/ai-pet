@@ -1,90 +1,89 @@
-//! Tauri side of the chat pipeline: the `chat` command plus the Tauri
-//! implementations of pet-core's delivery traits (stream sink, background-task
-//! notifier, heartbeat chat hook).
+//! Tauri side of chat turns: thin commands over `pet_core::turn::TurnRunner`
+//! plus the Tauri implementations of pet-core's delivery traits (turn events,
+//! heartbeat chat hook).
+//!
+//! The backend owns every turn. A window only starts one (`send_chat`), watches
+//! the global `turn` event, and re-attaches (`attach_turn`) whenever it mounts
+//! or regains focus — so switching tabs, reloading the webview or closing the
+//! panel never interrupts a reply, and each window shows whatever its session
+//! is doing right now.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use tauri::ipc::Channel;
-use tauri::State;
-use tokio_util::sync::CancellationToken;
+use tauri::{AppHandle, Emitter, State};
 
-use pet_core::chat::{run_chat_pipeline, ChatEventSink, StreamEvent, UserTurn};
-use pet_core::config::AiConfig;
+use pet_core::chat::UserTurn;
 use pet_core::logging::LogStore;
 use pet_core::mcp::McpManagerStore;
-use pet_core::shell::{ShellStore, TaskCompletion, TaskNotifier};
-use pet_core::tools::{ChatHook, ToolContext};
+use pet_core::shell::ShellStore;
+use pet_core::tools::ChatHook;
+use pet_core::turn::{TurnEvents, TurnNotice, TurnRunner, TurnSnapshot};
 
-/// Streams pipeline events to the frontend over a Tauri channel (newtype —
-/// both the trait and `Channel` are foreign to this crate).
-struct ChannelSink(Channel<StreamEvent>);
+/// Tauri-managed handle to the turn runner.
+pub struct TurnStore(pub Arc<TurnRunner>);
 
-impl ChatEventSink for ChannelSink {
-    fn send_chunk(&self, text: &str) {
-        let _ = self.0.send(StreamEvent::Chunk { text: text.to_string() });
-    }
-    fn send_reasoning(&self, text: &str) {
-        let _ = self.0.send(StreamEvent::Reasoning { text: text.to_string() });
-    }
-    fn send_tool_start(&self, name: &str, arguments: &str) {
-        let _ = self.0.send(StreamEvent::ToolStart {
-            name: name.to_string(),
-            arguments: arguments.to_string(),
-        });
-    }
-    fn send_tool_result(&self, name: &str, result: &str) {
-        let _ = self.0.send(StreamEvent::ToolResult {
-            name: name.to_string(),
-            result: result.to_string(),
-        });
-    }
-    fn send_image(&self, data_url: &str) {
-        let _ = self.0.send(StreamEvent::Image { data_url: data_url.to_string() });
-    }
-    fn send_usage(&self, prompt_tokens: u64, total_tokens: u64, context_window: u32) {
-        let _ = self.0.send(StreamEvent::Usage { prompt_tokens, total_tokens, context_window });
-    }
-    fn send_done(&self) {
-        let _ = self.0.send(StreamEvent::Done {});
-    }
-    fn send_error(&self, message: &str) {
-        let _ = self.0.send(StreamEvent::Error { message: message.to_string() });
+/// Broadcasts turn activity to every window as one `turn` event; each window
+/// keeps only the notices for the session it is showing.
+struct TauriTurnEvents {
+    app: AppHandle,
+}
+
+impl TurnEvents for TauriTurnEvents {
+    fn notice(&self, notice: &TurnNotice) {
+        if let Err(e) = self.app.emit("turn", notice) {
+            eprintln!("failed to emit turn event: {e}");
+        }
     }
 }
 
-/// Emits background-task completions so the conversation can be resumed
-/// automatically (see `useChat`'s `background-finished` listener).
-///
-/// Targets the ACTIVE window only (pet or panel — they share one conversation),
-/// so the completion is injected into the window the user is looking at and never
-/// into both. Both windows listen; backend routing guarantees a single delivery.
-pub struct TauriNotifier {
-    pub app: tauri::AppHandle,
+/// Build the managed runner. Called once in `lib.rs` setup (the event sink
+/// needs the app handle).
+pub fn new_turn_store(
+    app: AppHandle,
+    mcp_store: McpManagerStore,
+    log_store: LogStore,
+    shell_store: ShellStore,
+) -> TurnStore {
+    let events = Arc::new(TauriTurnEvents { app });
+    let rt = tauri::async_runtime::handle().inner().clone();
+    TurnStore(TurnRunner::new(events, log_store, shell_store, mcp_store, rt))
 }
 
-impl TaskNotifier for TauriNotifier {
-    fn notify(&self, completion: &TaskCompletion) {
-        emit_background_finished(&self.app, completion.clone());
-    }
+/// Start a turn with the owner's input. Returns the turn id; the reply arrives
+/// through the `turn` event. Fails if the session already has a turn running.
+#[tauri::command]
+pub async fn send_chat(
+    session_id: String,
+    turn: UserTurn,
+    store: State<'_, TurnStore>,
+) -> Result<String, String> {
+    store.0.send(&session_id, turn)
 }
 
-/// Emit `background-finished` to the active window. Shared with `kill_task`,
-/// which fires the same event for a manual cancellation.
-pub fn emit_background_finished(app: &tauri::AppHandle, completion: TaskCompletion) {
-    use tauri::Emitter;
-    let label = crate::commands::window::active_window_label(app);
-    // If the target window is gone the task still stays in the store
-    // (queryable via check_task_status); log rather than silently drop.
-    if let Err(e) = app.emit_to(&label, "background-finished", completion.clone()) {
-        eprintln!("failed to emit background-finished for task {}: {}", completion.task_id, e);
-    }
+/// The turn running in `session_id`, replayed from its start — `None` when
+/// idle. Called on mount / focus / session switch to catch up with a reply that
+/// began while this window wasn't looking.
+#[tauri::command]
+pub fn attach_turn(session_id: String, store: State<'_, TurnStore>) -> Option<TurnSnapshot> {
+    store.0.attach(&session_id)
+}
+
+/// Stop the turn running in `session_id` (partial answer kept). No-op when idle.
+#[tauri::command]
+pub fn cancel_chat(session_id: String, store: State<'_, TurnStore>) {
+    store.0.cancel(&session_id);
+}
+
+/// Ids of every session with a turn in flight (the session rail marks them).
+#[tauri::command]
+pub fn running_turns(store: State<'_, TurnStore>) -> Vec<String> {
+    store.0.running()
 }
 
 /// UI side of the heartbeat-only `chat` tool: native system notification plus a
 /// `chat-inserted` event so the active window reloads the conversation (routed
-/// like `background-finished` — to whichever window the owner is looking at; the
-/// other picks it up on next focus).
+/// to whichever window the owner is looking at; the other picks it up on next
+/// focus).
 pub struct TauriChatHook {
     pub app: tauri::AppHandle,
 }
@@ -97,79 +96,10 @@ impl ChatHook for TauriChatHook {
                 eprintln!("chat: failed to show notification: {}", e);
             }
         }
-        {
-            use tauri::Emitter;
-            let label = crate::commands::window::active_window_label(&self.app);
-            let payload = serde_json::json!({ "sessionId": session_id });
-            if let Err(e) = self.app.emit_to(&label, "chat-inserted", payload) {
-                eprintln!("chat: failed to emit chat-inserted: {}", e);
-            }
+        let label = crate::commands::window::active_window_label(&self.app);
+        let payload = serde_json::json!({ "sessionId": session_id });
+        if let Err(e) = self.app.emit_to(&label, "chat-inserted", payload) {
+            eprintln!("chat: failed to emit chat-inserted: {}", e);
         }
-    }
-}
-
-/// The cancellation token of every `chat` turn in flight, keyed by session id.
-/// A session runs at most one turn at a time (both windows share the same
-/// `busyRef` lock per window and the same session on disk), so the id is enough
-/// for `cancel_chat` to find the turn the user is looking at.
-#[derive(Default)]
-pub struct ChatCancelStore(pub Mutex<HashMap<String, CancellationToken>>);
-
-/// Registers a turn's token for its lifetime and removes it on drop, so an
-/// early `?` never leaves a stale token that a later `cancel_chat` would fire
-/// into nothing.
-struct Registered<'a> {
-    store: &'a ChatCancelStore,
-    session_id: String,
-}
-
-impl Drop for Registered<'_> {
-    fn drop(&mut self) {
-        self.store.0.lock().unwrap().remove(&self.session_id);
-    }
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn chat(
-    messages: Vec<serde_json::Value>,
-    turn: UserTurn,
-    on_event: Channel<StreamEvent>,
-    session_id: String,
-    app: tauri::AppHandle,
-    log_store: State<'_, LogStore>,
-    shell_store: State<'_, ShellStore>,
-    mcp_store: State<'_, McpManagerStore>,
-    cancel_store: State<'_, ChatCancelStore>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let config = AiConfig::from_settings()?;
-    let mcp = mcp_store.inner().clone();
-    let notifier: Arc<dyn TaskNotifier> = Arc::new(TauriNotifier { app: app.clone() });
-    let ctx = ToolContext::new(
-        LogStore(log_store.0.clone()),
-        ShellStore(shell_store.0.clone()),
-        config.clone(),
-        mcp.clone(),
-        session_id.clone(),
-        Some(notifier),
-        None, // chat turns aren't heartbeats; no chat hook
-        false,
-    );
-    cancel_store.0.lock().unwrap().insert(session_id.clone(), ctx.cancel.clone());
-    let _registered = Registered { store: cancel_store.inner(), session_id };
-    let sink = ChannelSink(on_event);
-    // The updated conversation goes back to the caller, which stores it
-    // verbatim — the frontend never builds or inspects LLM messages.
-    let outcome = run_chat_pipeline(messages, turn, &sink, &config, &mcp, &ctx).await?;
-    Ok(outcome.messages)
-}
-
-/// Stop the turn streaming in `session_id`. The pipeline ends the stream with
-/// `done`, keeping the partial answer, so the frontend's normal completion path
-/// runs. A no-op when nothing is in flight.
-#[tauri::command]
-pub fn cancel_chat(session_id: String, cancel_store: State<'_, ChatCancelStore>) {
-    if let Some(token) = cancel_store.0.lock().unwrap().get(&session_id) {
-        token.cancel();
     }
 }

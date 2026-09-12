@@ -10,22 +10,28 @@ crates/pet-cli      终端 TUI（ratatui）
 
 ## pet-core
 
-全部引擎逻辑都在这里：chat pipeline（流式 + 工具调用循环）、内置工具与
-ToolRegistry、MCP 客户端管理、会话/配置/记忆/[技能](skills.md)的磁盘读写、
-系统提示词组装、后台任务（bash / 子代理 / 心跳）、多 Agent 群聊编排器。
-**pet-core 里不允许出现 `use tauri`。**
+全部引擎逻辑都在这里：chat pipeline（流式 + 工具调用循环）、**聊天轮次的
+运行与持久化（`turn::TurnRunner`）**、内置工具与 ToolRegistry、MCP 客户端管理、
+会话/配置/记忆/[技能](skills.md)的磁盘读写、系统提示词组装、后台任务
+（bash / 子代理 / 心跳）、多 Agent 群聊编排器。**pet-core 里不允许出现 `use tauri`。**
 
 界面通过四个 trait 接入：
 
 | trait | 作用 | GUI 实现 | CLI 实现 |
 | --- | --- | --- | --- |
-| `chat::ChatEventSink` | 单 Agent 运行的流式事件（chunk / reasoning / 工具 / usage） | Tauri Channel → 前端 | 终端渲染 + ItemBuilder |
-| `shell::TaskNotifier` | 后台任务完成通知 | `background-finished` 事件 → 活动窗口 | channel → 事件循环自动续聊 |
+| `turn::TurnEvents` | 聊天轮次活动（开始 / 流事件 / 结束），全会话一条流 | `turn` 全局事件 → 各窗口按会话过滤 | channel → TUI 按会话过滤 |
+| `chat::ChatEventSink` | 单 Agent 运行的流式事件（心跳、群聊 Agent 用；聊天轮次由 runner 自带的 sink 处理） | — | — |
 | `group::GroupEvents` | 群聊活动（消息 / 各 Agent 流 / 完成） | `group-*` 全局事件 | channel → 群聊视图 |
 | `tools::ChatHook` | 心跳 `chat` 工具的 UI 副作用（系统通知 + 刷新会话） | 通知插件 + `chat-inserted` | 无（CLI 不跑心跳） |
 
-`chat::ItemBuilder` 把流事件折成前端的 ChatItem JSON，群聊编排器和 CLI 共用，
-保证没有前端参与时落盘的会话与 GUI 渲染一致。
+`shell::TaskNotifier`（后台任务完成）由 `TurnRunner` 自己实现：完成结果写进
+发起该任务的会话并以一轮新对话续聊（会话忙则排队），不经过任何界面。
+
+**轮次归后端所有。** 界面只做两件事：`send` 发起一轮，`attach` 随时接上正在
+进行的一轮（回放已产生的事件）。所以切页、刷新、关窗都不会中断或丢失回复，
+多个会话可以并行各跑一轮。`chat::ItemBuilder` 把流事件折成前端的 ChatItem
+JSON，runner、群聊编排器共用；前端用同构的 reducer 渲染进行中的一轮，保证
+落盘内容与实时渲染一致。
 
 ## 两套界面
 
@@ -35,7 +41,7 @@ ToolRegistry、MCP 客户端管理、会话/配置/记忆/[技能](skills.md)的
   `AppEvent` channel，单循环消费；引擎调用全部在后台 task。详见 [cli.md](cli.md)。
 
 两者共享磁盘状态（`config.yaml`、`sessions/`、`memory/`、`group/state.json`、
-技能目录），遵守同样的「发送前重载」规则，可同时运行。
+技能目录）；轮次都经由 `TurnRunner`（它在追加前从磁盘重载会话），可同时运行。
 
 ## 加新功能的规则
 

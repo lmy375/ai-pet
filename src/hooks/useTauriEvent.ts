@@ -9,8 +9,9 @@ import { listen, type EventCallback } from "@tauri-apps/api/event";
  * deps), so it must be self-contained — read mutable values through refs, not
  * closure variables. This deliberately mirrors the always-registered listeners
  * it replaces: it does NOT use a `cancelled`/self-cancel flag (that pattern
- * previously caused a zero-notification regression for `background-finished` —
- * see CLAUDE.md). Idempotency is the handler's job, e.g. dedup by task id.
+ * previously caused a zero-notification regression for background-task
+ * completions — see CLAUDE.md). Idempotency is the handler's job, e.g. the
+ * `turn` listener ignoring a stream event whose `seq` it has already applied.
  */
 export function useTauriEvent<T>(name: string, handler: EventCallback<T>) {
   useEffect(() => {

@@ -41,9 +41,13 @@ interface Names {
 const FIVE_MIN = 5 * 60 * 1000;
 
 /** The "后台任务完成：XXX" system line. Click to expand the task's full result. */
-function NotificationItem({ content, detail }: { content: string; detail?: string }) {
+function NotificationItem({ content, label, detail }: { content: string; label?: string; detail?: string }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const hasDetail = !!detail;
+  // The backend stores the task label; the line itself is rendered in the
+  // window's language (`content` is the plain fallback the CLI shows).
+  const line = label ? t("chat.bgTaskDone", { label }) : content;
   return (
     <div className="flex w-full max-w-[90%] flex-col items-center self-center">
       <button
@@ -57,7 +61,7 @@ function NotificationItem({ content, detail }: { content: string; detail?: strin
         {hasDetail && (
           <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
         )}
-        <span>{content}</span>
+        <span>{line}</span>
       </button>
       {expanded && hasDetail && (
         <CodeBlock className="mt-1 w-full">{formatJson(detail!)}</CodeBlock>
@@ -105,7 +109,7 @@ function renderItem(item: ChatItem, names?: Names) {
     case "notification":
       // A subtle system line (not a chat bubble) marking an auto-resumed turn;
       // expandable to view the task's full result.
-      return <NotificationItem content={item.content} detail={item.detail} />;
+      return <NotificationItem content={item.content} label={item.label} detail={item.detail} />;
     default:
       return null;
   }

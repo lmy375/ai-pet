@@ -7,15 +7,15 @@
 
 use std::sync::Arc;
 
+use pet_core::chat::UserTurn;
 use pet_core::group::{self, GroupRuntime};
 use pet_core::session;
 use pet_core::settings::{self, get_settings};
 use pet_core::skills;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{CliApp, TurnInput};
+use crate::app::CliApp;
 use crate::event::AppEvent;
-use crate::sink::TuiSink;
 use crate::tui::picker::{members_picker, models_picker};
 use crate::Mode;
 
@@ -38,21 +38,15 @@ impl SubmitCtx {
     }
 }
 
-/// Handle one submitted line for `mode`. Ends by sending `CommandDone` (or
-/// `TurnDone` for chat turns) so the UI clears its busy state.
+/// Handle one submitted line for `mode`. A command ends by sending
+/// `CommandDone` so the UI clears its busy state; a chat line hands the turn to
+/// the runner, whose `Finished` notice does the same.
 pub fn spawn_submit(ctx: SubmitCtx, mode: Mode, line: String) {
     tokio::spawn(async move {
         match mode {
             Mode::Chat => handle_chat(&ctx, line.trim()).await,
             Mode::Group => handle_group(&ctx, line.trim()).await,
         }
-    });
-}
-
-/// Run a chat turn (user message or background-task resume) in a task.
-pub fn spawn_turn(ctx: SubmitCtx, input: TurnInput) {
-    tokio::spawn(async move {
-        run_turn(&ctx, input).await;
     });
 }
 
@@ -137,16 +131,23 @@ pub fn spawn_set_members(ctx: SubmitCtx, ids: Vec<String>) {
     });
 }
 
-async fn run_turn(ctx: &SubmitCtx, input: TurnInput) {
+/// Start a chat turn in the active session. The runner streams it back as
+/// `AppEvent::Turn` notices; only a turn that fails to START is reported here.
+async fn run_turn(ctx: &SubmitCtx, text: String) {
     // Connect the active agent's MCP servers first (lazy; GUI does it at boot).
     if let Some(agent) = ctx.cli.active_agent() {
         if let Some(msg) = ctx.cli.ensure_mcp(&agent).await {
             ctx.notice(msg);
         }
     }
-    let sink = TuiSink::new(ctx.tx.clone());
-    let result = ctx.cli.run_chat_turn(input, &sink).await;
-    ctx.send(AppEvent::TurnDone(result));
+    let started = ctx
+        .cli
+        .active_session_id()
+        .and_then(|sid| ctx.cli.turns.send(&sid, UserTurn::text(text)));
+    if let Err(e) = started {
+        ctx.error(e);
+        ctx.send(AppEvent::CommandDone);
+    }
 }
 
 async fn handle_chat(ctx: &SubmitCtx, line: &str) {
@@ -172,7 +173,7 @@ async fn handle_chat(ctx: &SubmitCtx, line: &str) {
         // runs as a normal chat turn rather than a command with its own path.
         cmd if skills::is_command(cmd) => {
             match skills::expand_command(line, &skills::list_skills()) {
-                Some(text) => run_turn(ctx, TurnInput::User(text)).await,
+                Some(text) => run_turn(ctx, text).await,
                 None => {
                     ctx.error(format!("没有这个技能：{cmd}。输入 / 查看可用技能"));
                     ctx.send(AppEvent::CommandDone);
@@ -183,7 +184,7 @@ async fn handle_chat(ctx: &SubmitCtx, line: &str) {
             ctx.error(format!("未知命令 {cmd}。/help 查看用法"));
             ctx.send(AppEvent::CommandDone);
         }
-        _ => run_turn(ctx, TurnInput::User(line.to_string())).await,
+        _ => run_turn(ctx, line.to_string()).await,
     }
 }
 

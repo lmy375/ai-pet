@@ -25,12 +25,15 @@
   sessions/settings/memory, group orchestrator) + two interfaces that must stay thin:
   `src-tauri` (GUI) and `crates/pet-cli` (binary `pet-cli`; single-agent chat,
   `/agent` switching, `/group` — config/heartbeat/Telegram stay GUI-only).
-- Interfaces plug in via core traits: `ChatEventSink` (stream), `TaskNotifier`
-  (background-task completions), `GroupEvents` (group activity), `ChatHook`
-  (heartbeat `chat` tool UI side effects). New engine features go in pet-core behind
-  these traits — never `use tauri` in pet-core.
-- CLI shares the GUI's config.yaml + session files and follows the same
-  reload-before-send rule, so both can run at once (see Windows below). Same
+- Interfaces plug in via core traits: `TurnEvents` (chat-turn start/stream/finish),
+  `ChatEventSink` (a single agent run's stream — heartbeats, group agents),
+  `GroupEvents` (group activity), `ChatHook` (heartbeat `chat` tool UI side effects).
+  `TaskNotifier` (background-task completions) is implemented by the core's own
+  `TurnRunner`, not by interfaces. New engine features go in pet-core behind these
+  traits — never `use tauri` in pet-core.
+- CLI shares the GUI's config.yaml + session files and runs turns through the same
+  `TurnRunner` (which reloads a session from disk before appending), so both can run
+  at once (see Windows below). Same
   build profile only: debug builds root their state at `<os config>/pet-dev`,
   release at `<os config>/pet` (`ROOT_DIR_NAME` in common.rs), so `tauri dev`
   never touches the installed app's config/sessions/memory. `PET_CONFIG_DIR`
@@ -46,13 +49,14 @@
   model (`claude-sonnet-4-6` on a litellm proxy infers Anthropic; `GPT-5.5` matches nothing
   and falls back to **Ollama**, i.e. localhost). Hence `provider` defaults to `openai`, and
   `kind()` rewrites an inferred `Ollama` to OpenAI. Do NOT "simplify" that back to auto.
-- **The backend owns the LLM conversation; no interface builds messages.** Callers pass a
-  `UserTurn { text, images }` and get back `ChatOutcome { text, messages }`, which they
-  store verbatim and never inspect (`Session::messages` = serialized genai `ChatMessage`s).
-  That is what keeps tool rounds and thought signatures in context — the old
-  frontend-side reconstruction persisted only assistant text and silently dropped every
-  tool round. Only `llm::{store_message, user_message, load_messages}` know the wire shape;
-  keep it that way, especially in TypeScript.
+- **The backend owns the LLM conversation; no interface builds messages.** Interfaces
+  never even receive `Session::messages` (`load_session` returns a `SessionView` without
+  it): `turn::TurnRunner` loads the session, runs `run_chat_pipeline` with a
+  `UserTurn { text, images }`, and stores the returned `ChatOutcome::messages` verbatim
+  (serialized genai `ChatMessage`s). That is what keeps tool rounds and thought signatures
+  in context — the old frontend-side reconstruction persisted only assistant text and
+  silently dropped every tool round. Only `llm::{store_message, user_message,
+  load_messages}` know the wire shape; keep it that way, especially in TypeScript.
   - `run_chat_pipeline` strips the leading system block from what it returns (it's rebuilt
     each turn from the memory files, so storing it would stack a tool-usage prompt per
     turn) and drops history that no longer parses, so stored == sent.
@@ -77,19 +81,36 @@
   converts the `data:` URLs the app already speaks (clipboard paste, Telegram photos,
   `screenshot` tool).
 
+## Turns (backend-owned; `crates/pet-core/src/turn.rs`)
+- **A window never runs, persists or resumes a turn.** `send_chat` hands the input to
+  `TurnRunner`, which saves the user item, streams the reply as the global `turn` event
+  (`Started` / `Stream{seq}` / `Finished`), saves the result, then emits `Finished`.
+  Windows only observe: `useChat` folds stream events with a pure reducer that mirrors
+  `chat::ItemBuilder` (what gets persisted), and `attach_turn` replays a running turn from
+  the start. So a tab switch, a webview reload or closing the panel never interrupts or
+  loses a reply — don't add frontend state that a turn depends on.
+- **Re-attach, don't guard.** On mount / focus / session switch `useChat` reloads the
+  `SessionView` and calls `attach_turn`; a stream event with an unknown turn id or a gap in
+  `seq` triggers the same re-attach. There is no `busyRef`, no reload-skipping while
+  streaming, and no frontend `save_session` — those were the sources of the clobbering
+  bugs. If two views disagree, the fix is in the runner, not a new frontend flag.
+- **One turn per session, many sessions at once.** `send` fails with "already running" for
+  a busy session; other sessions run in parallel. `save_session` must NOT touch
+  `index.active_id` (only `set_active_session` / `create_session` do): a background turn
+  finishing in session B must never yank the windows over to B.
+- **Background-task completions are injected by the runner** (`TurnRunner: TaskNotifier`):
+  it flips the launching tool call's placeholder, appends the `notification` item and
+  resumes THAT task's session with a follow-up turn, queued behind a running one. Nothing
+  is routed to a window, so there is no per-window dedup and no "active window" for
+  completions any more (`active_window_label` remains only for the heartbeat's
+  `chat-inserted` refresh). `kill_task` delivers its cancellation completion the same way.
+
 ## Windows
 - Pet window label = `main` (tauri.conf.json), Panel Chat window label = `panel` (commands/window.rs).
-- Both windows render `useChat` and share ONE conversation, but each holds its own in-memory copy
-  (`items` + `messagesRef`); disk (`save_session`/`load_session`) is the only shared state. Two
-  rules keep them in sync — don't remove either:
-  - **Focus-reload**: on focus each window calls `set_active_window(label)` and reloads the active
-    session (`useChat.ts` focus effect). **Reload-before-send**: `sendMessage` reloads the current
-    session before appending. Together these stop one window from showing stale history or
-    clobbering what the other just saved (`save_session` is last-writer-wins).
-  - **Active-window routing**: `background-finished` is emitted to the active window only
-    (`active_window_label` in window.rs; used by `TauriNotifier` and `kill_task`). Both windows
-    listen, but exactly one receives each completion, so a shared session never gets two
-    injections. Do NOT revert to hard-coding `emit_to("main")` or a `label === "main"` listener guard.
+- Both windows render `useChat` and show the SAME active session; disk plus the runner are
+  the only shared state. **Focus-reload**: on focus each window calls `set_active_window(label)`
+  and reloads the active session (`useChat.ts` focus effect), which is what makes a message
+  typed in one window (or the CLI) appear in the other.
 - Opening the panel hides the pet window (`open_panel` in window.rs) and closing it shows
   the pet again via the panel's `Destroyed` event. `useAutoHide.slideToEdge` skips invisible
   windows so the pet comes back in place rather than as an edge tab.
@@ -97,12 +118,13 @@
   lib.rs `setup()` (after restoring its saved position) to avoid a center-flash. If you remove
   that call the pet window will never appear. Position is saved (debounced) from `useAutoHide`
   on move, skipping auto-hide/animation moves so the edge "tab" position is never persisted.
-- `background-finished` handling must be IDEMPOTENT, not "exactly one listener". `listen()`
-  resolves async, so under StrictMode (mount→unmount→remount) and Vite HMR the listener can
-  leak (→ fires twice) OR a cancel-after-await dance can unregister the survivor (→ fires zero
-  times). Both have happened. The fix in useChat.ts: keep the listener always registered and
-  dedup completions by `taskId` (`seenTaskIdsRef`). Do NOT reintroduce a `cancelled`/self-cancel
-  flag to enforce a single listener — that's what caused the zero-notification regression.
+- Tauri event handling must be IDEMPOTENT, not "exactly one listener". `listen()` resolves
+  async, so under StrictMode (mount→unmount→remount) and Vite HMR the listener can leak
+  (→ fires twice) OR a cancel-after-await dance can unregister the survivor (→ fires zero
+  times). Both have happened. `useTauriEvent` keeps the listener always registered; the
+  `turn` handler tolerates duplicates because a stream event whose `seq` isn't the next one
+  is not applied (it re-attaches instead). Do NOT reintroduce a `cancelled`/self-cancel flag
+  to enforce a single listener — that's what caused the zero-notification regression.
 
 ## UI style
 - Every color / type size / radius / shadow comes from the `@theme` tokens in

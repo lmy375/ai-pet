@@ -1,10 +1,10 @@
 //! The single event stream the TUI loop consumes: terminal input, chat-turn
-//! stream events, group activity and background-task completions all funnel
-//! into one channel so the UI has exactly one place where state changes.
+//! activity and group activity all funnel into one channel so the UI has
+//! exactly one place where state changes.
 
 use pet_core::chat::StreamEvent;
 use pet_core::group::{GroupEvents, GroupMessage};
-use pet_core::shell::{TaskCompletion, TaskNotifier};
+use pet_core::turn::{TurnEvents, TurnNotice, TurnSnapshot};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::Mode;
@@ -12,11 +12,12 @@ use crate::Mode;
 pub enum AppEvent {
     /// A crossterm terminal event (keys, resize).
     Term(ratatui::crossterm::event::Event),
-    /// Stream event from the current single-agent chat turn.
-    Stream(StreamEvent),
-    /// The chat turn finished (session already saved). Err = transport failure
-    /// that never reached the sink as an Error event.
-    TurnDone(Result<(), String>),
+    /// Chat-turn activity from the runner — every session's; the TUI keeps
+    /// what concerns the session it shows.
+    Turn(TurnNotice),
+    /// Replay of a turn already running in the session being viewed (sent by
+    /// the run loop after it attaches, at startup or on a session switch).
+    TurnSnapshot(TurnSnapshot),
     /// A command handler finished (mode changes arrive separately).
     CommandDone,
     /// Informational line for the transcript.
@@ -32,8 +33,6 @@ pub enum AppEvent {
     GroupStream { agent_id: String, event: StreamEvent },
     /// A group agent's worker finished one run.
     GroupAgentDone(String),
-    /// A background task finished.
-    TaskDone(TaskCompletion),
     /// Show a modal list overlay (built by a command handler).
     OpenPicker(crate::tui::picker::Picker),
     /// Recount of the active agent's available tools (built-in + MCP).
@@ -41,12 +40,12 @@ pub enum AppEvent {
     Quit,
 }
 
-/// Background-task completions → the UI loop.
-pub struct CliNotifier(pub UnboundedSender<AppEvent>);
+/// Turn-runner notices → the UI loop.
+pub struct CliTurnEvents(pub UnboundedSender<AppEvent>);
 
-impl TaskNotifier for CliNotifier {
-    fn notify(&self, completion: &TaskCompletion) {
-        let _ = self.0.send(AppEvent::TaskDone(completion.clone()));
+impl TurnEvents for CliTurnEvents {
+    fn notice(&self, notice: &TurnNotice) {
+        let _ = self.0.send(AppEvent::Turn(notice.clone()));
     }
 }
 

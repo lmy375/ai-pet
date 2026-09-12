@@ -26,6 +26,7 @@ export function PanelChat() {
     contextUsage,
     sessionId,
     sessionList,
+    runningSessions,
     sendMessage,
     stopStreaming,
     newSession,
@@ -81,6 +82,7 @@ export function PanelChat() {
       <SessionSidebar
         sessions={sessionList}
         activeId={sessionId}
+        running={runningSessions}
         onSelect={switchSession}
         onNew={newSession}
         onRename={renameSession}
@@ -97,7 +99,7 @@ export function PanelChat() {
           <ModelSwitcher className="max-w-[36%]" />
           <div className="min-w-0 flex-1" />
           <ContextUsageRing usage={contextUsage} />
-          {items.length > 0 && !selectionMode && (
+          {items.length > 0 && !selectionMode && !isLoading && (
             <Button variant="ghost" size="sm" onClick={() => setSelectionMode(true)} title={t("chat.select.enter")}>
               <CheckIcon className="h-4 w-4" />
               {t("chat.select.enter")}
