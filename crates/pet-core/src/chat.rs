@@ -396,7 +396,13 @@ impl ItemBuilder {
     pub fn commit_text(&mut self) {
         let text = std::mem::take(&mut self.accumulated);
         let reasoning = std::mem::take(&mut self.reasoning);
-        if text.trim().is_empty() {
+        // A round that produced only thinking still becomes an item: the model
+        // thought and then called a tool with no preamble. Both fields were
+        // already taken above, so bailing out on empty text alone would drop
+        // the thought for good. This mirrors `commitText` in useChat.ts, which
+        // commits when either side is non-empty — the live view and the
+        // reloaded transcript have to agree.
+        if text.trim().is_empty() && reasoning.trim().is_empty() {
             return;
         }
         let mut item = serde_json::json!({
@@ -470,5 +476,45 @@ impl ItemBuilder {
     /// Take the accumulated display items (after the run finishes).
     pub fn take_items(&mut self) -> Vec<serde_json::Value> {
         std::mem::take(&mut self.items)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ItemBuilder;
+
+    /// The model thinks, then calls a tool without writing a preamble. That
+    /// thought has to reach the session file: it used to be taken out of the
+    /// builder and discarded by the empty-text early return, so the GUI showed
+    /// it while streaming and lost it the moment the turn finished and the
+    /// persisted transcript replaced the live view.
+    #[test]
+    fn thinking_before_a_tool_call_survives_into_the_transcript() {
+        let mut b = ItemBuilder::default();
+        b.reasoning("weighing the options");
+        b.tool_start("bash", "{}");
+        b.tool_result("bash", "ok");
+        b.chunk("done");
+        b.done();
+
+        let items = b.take_items();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["type"], "assistant");
+        assert_eq!(items[0]["content"], "");
+        assert_eq!(items[0]["reasoning"], "weighing the options");
+        assert_eq!(items[1]["type"], "tool");
+        // The thought belongs to the round that produced the call, not to the
+        // answer written after the tool returned.
+        assert_eq!(items[2]["content"], "done");
+        assert!(items[2].get("reasoning").is_none());
+    }
+
+    /// A round with neither text nor thinking adds nothing (the empty-stream
+    /// case, and every no-op `commit_text` between tool calls).
+    #[test]
+    fn an_empty_round_commits_no_item() {
+        let mut b = ItemBuilder::default();
+        b.done();
+        assert!(b.take_items().is_empty());
     }
 }

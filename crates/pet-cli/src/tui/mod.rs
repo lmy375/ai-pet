@@ -357,13 +357,17 @@ impl TuiApp {
                 }),
                 "assistant" => {
                     let text = item["content"].as_str().unwrap_or("").to_string();
-                    if text.is_empty() {
-                        continue; // image-only bubbles
+                    let reasoning = item["reasoning"].as_str().unwrap_or("").to_string();
+                    // Image-only bubbles carry neither and have nothing to show
+                    // here; a reasoning-only item (thought, then a tool call
+                    // with no preamble) still renders its collapsed thinking.
+                    if text.is_empty() && reasoning.is_empty() {
+                        continue;
                     }
                     self.push(Entry::Assistant {
                         name: name.clone(),
                         text,
-                        reasoning: item["reasoning"].as_str().unwrap_or("").to_string(),
+                        reasoning,
                         streaming: false,
                         reasoning_expanded: false,
                     });
