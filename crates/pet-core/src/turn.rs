@@ -45,8 +45,11 @@ pub enum TurnOrigin {
     Completion { label: String },
 }
 
+/// Serialized for the GUI's `turn` event, which `useChat.ts` reads as
+/// `sessionId` / `turnId`: `rename_all` alone only renames the variants, so the
+/// variant fields need `rename_all_fields` too (see the wire-shape test below).
 #[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum TurnNotice {
     /// A turn began. Its opening item(s) are already on disk.
     Started {
@@ -493,5 +496,31 @@ mod tests {
         assert!(matches!(&buf[1], StreamEvent::Reasoning { text } if text == "hmm"));
         assert!(matches!(&buf[2], StreamEvent::ToolStart { .. }));
         assert!(matches!(&buf[3], StreamEvent::Chunk { text } if text == "done"));
+    }
+
+    /// The GUI keys every notice on `sessionId` / `turnId` (`useChat.ts`); a
+    /// snake_case field silently makes it drop the whole stream.
+    #[test]
+    fn turn_notice_wire_shape_matches_the_frontend() {
+        let n = TurnNotice::Stream {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            seq: 3,
+            event: chunk("hi"),
+        };
+        let v: serde_json::Value = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "stream",
+                "sessionId": "s1",
+                "turnId": "t1",
+                "seq": 3,
+                "event": { "event": "chunk", "data": { "text": "hi" } }
+            })
+        );
+        let f = TurnNotice::Finished { session_id: "s1".into(), turn_id: "t1".into() };
+        let v: serde_json::Value = serde_json::to_value(&f).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "finished", "sessionId": "s1", "turnId": "t1" }));
     }
 }
