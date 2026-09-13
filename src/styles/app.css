@@ -104,22 +104,6 @@ body {
   will-change: transform;
 }
 
-/* Streaming cursor blink */
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
-/* Streaming cursor that rides the last line of a markdown block instead of
-   dropping onto a line of its own (see Markdown.tsx). */
-@utility stream-caret {
-  &::after {
-    content: "▌";
-    margin-left: 1px;
-    animation: blink 1s step-end infinite;
-  }
-}
-
 /* Gallery slide crossfade — each new image/video fades in (keyed remount replays it) */
 @keyframes gallery-fade {
   from { opacity: 0; }

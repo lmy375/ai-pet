@@ -198,11 +198,16 @@ export function ChatThread({
       {showStreaming && (
         <MessageBubble role="assistant" name={names?.assistant}>
           {streamingReasoning.trim() && <ReasoningBlock text={streamingReasoning} streaming />}
-          {streaming.trim() && <Markdown text={streaming} caret />}
+          {streaming.trim() && <Markdown text={streaming} />}
         </MessageBubble>
       )}
 
-      {loading && !showStreaming && currentToolCalls.length === 0 && (
+      {/* Breathing dots = "the turn is still running", the same state the input's
+          stop button shows. It stays up through every phase of a turn (waiting
+          for the first token, between rounds, while a tool runs), so it must
+          follow `loading` alone — gating it on "nothing streamed yet" made it
+          flash once at the start of a turn and never come back. */}
+      {loading && (
         <div className="flex gap-1 self-start rounded-bubble border border-line bg-surface px-3.5 py-3 shadow-card">
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.2s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.1s]" />

@@ -78,8 +78,6 @@ const components: Components = {
 
 interface Props {
   text: string;
-  /** Append a blinking cursor to the last block (while the answer streams in). */
-  caret?: boolean;
 }
 
 /** Renders assistant text as GitHub-flavored markdown (tables, task lists,
@@ -88,9 +86,9 @@ interface Props {
  *
  *  `memo`'d because streaming re-renders the whole thread on every chunk and
  *  re-parsing every past message each time is wasted work. */
-export const Markdown = memo(function Markdown({ text, caret = false }: Props) {
+export const Markdown = memo(function Markdown({ text }: Props) {
   return (
-    <div className={`whitespace-normal break-words ${caret ? "[&>:last-child]:stream-caret" : ""}`}>
+    <div className="whitespace-normal break-words">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </ReactMarkdown>
