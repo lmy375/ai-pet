@@ -3,11 +3,11 @@ import type { ReactNode } from "react";
 import type { ChatItem, ToolCall } from "../hooks/useChat";
 import { MessageBubble } from "./ui/MessageBubble";
 import { ReasoningBlock } from "./ui/ReasoningBlock";
-import { CodeBlock } from "./ui/CodeBlock";
+import { JsonView } from "./ui/JsonView";
 import { Markdown } from "./ui/Markdown";
-import { ToolCallBlock } from "./panel/ToolCallBlock";
+import { ToolCallBlock } from "./ui/ToolCallBlock";
 import { ChevronRight, CheckIcon } from "./Icons";
-import { formatHm, formatJson } from "../utils/format";
+import { formatHm } from "../utils/format";
 import { useI18n } from "../i18n";
 
 interface Props {
@@ -64,7 +64,9 @@ function NotificationItem({ content, label, detail }: { content: string; label?:
         <span>{line}</span>
       </button>
       {expanded && hasDetail && (
-        <CodeBlock className="mt-1 w-full">{formatJson(detail!)}</CodeBlock>
+        <div className="mt-1 max-h-[280px] w-full overflow-y-auto rounded-field border border-line bg-surface-soft px-2.5 py-2">
+          <JsonView value={detail} />
+        </div>
       )}
     </div>
   );

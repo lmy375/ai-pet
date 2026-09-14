@@ -146,6 +146,10 @@
   carries it.
 - Emoji are content (pet utterances, user input), never UI chrome — icons come
   from `components/Icons.tsx`.
+- **One tool-call renderer**: `ui/ToolCallBlock` (chat in both windows, group
+  agents, the LLM log — the log only starts it expanded). Its payloads are
+  `ui/JsonView`, a JSON tree where every object/array/long string folds on its
+  own. Tool payloads are never dark: `--color-code` is the app-log stream only.
 
 ## Known issues / gotchas
 

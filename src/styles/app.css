@@ -24,9 +24,17 @@
   --color-ink-soft: #5a6579;      /* secondary */
   --color-ink-faint: #93a0b5;     /* meta, placeholders */
 
-  /* Dark monospace surface — raw tool payloads, log streams */
+  /* Dark monospace surface — the app-log stream */
   --color-code: #232b3a;
   --color-code-ink: #d8dde9;
+
+  /* JSON tree (tool payloads) — syntax hues tuned for the light surfaces */
+  --color-json-key: #50607a;
+  --color-json-string: #157a5b;
+  --color-json-number: #a2600f;
+  --color-json-bool: #7048c8;
+  --color-json-null: #93a0b5;
+  --color-json-punct: #a8b3c5;
 
   /* Type scale */
   --text-meta: 11px;

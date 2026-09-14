@@ -1,4 +1,4 @@
-/** Per-tool header descriptors for ToolCallBlock — turns a raw tool name + JSON
+/** Per-tool header descriptors for ToolCallBlock — turns a raw tool name + its
  *  arguments into a glanceable summary (icon, action label, key inline info). */
 import {
   WrenchIcon,
@@ -11,6 +11,7 @@ import {
   GlobeIcon,
   SendIcon,
 } from "../components/Icons";
+import { parseJsonish } from "./format";
 
 type IconComponent = (props: { className?: string }) => React.ReactElement;
 
@@ -30,14 +31,13 @@ function basename(path: string): string {
   return i >= 0 ? trimmed.slice(i + 1) : trimmed;
 }
 
-export function describeToolCall(name: string, argsJson: string): ToolDisplay {
-  let args: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(argsJson);
-    if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
-  } catch {
-    // args may be empty or partial while streaming — fall through with {}
-  }
+/** `rawArgs` is a JSON string (chat stream) or an already-parsed object (LLM
+ *  log) — both reach the same header. */
+export function describeToolCall(name: string, rawArgs: unknown): ToolDisplay {
+  // args may be missing or partial while streaming — fall through with {}
+  const parsed = parseJsonish(rawArgs);
+  const args: Record<string, unknown> =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
 
   const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 

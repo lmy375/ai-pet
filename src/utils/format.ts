@@ -15,11 +15,17 @@ export function formatIsoTime(ts: string | undefined | null): string {
   return t ? t.slice(0, 8) : ts;
 }
 
-/** Pretty-print a JSON string; returns the original string if it isn't JSON. */
-export function formatJson(str: string): string {
+/** Parse a JSON-ish payload: a JSON string becomes its value, anything else
+ *  (plain text, an already-parsed object) is returned untouched. Tool payloads
+ *  arrive both ways — the chat stream carries raw JSON strings, the LLM log
+ *  carries genai's already-parsed `fn_arguments`. */
+export function parseJsonish(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value;
   try {
-    return JSON.stringify(JSON.parse(str), null, 2);
+    return JSON.parse(trimmed);
   } catch {
-    return str;
+    return value; // partial JSON while a tool call is still streaming
   }
 }
