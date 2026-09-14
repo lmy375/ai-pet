@@ -1,4 +1,4 @@
-use crate::settings::{get_settings, AgentConfig};
+use crate::settings::{get_settings, AgentConfig, AppSettings};
 
 #[derive(Clone)]
 pub struct AiConfig {
@@ -9,17 +9,21 @@ pub struct AiConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
-    /// Wire protocol to speak, as configured on the agent. Empty = infer from
+    /// Wire protocol to speak, from the model-pool entry. Empty = infer from
     /// the model name. See `crate::provider::kind`.
     pub provider: String,
     /// Context-window size (tokens) used as the denominator for the context
     /// usage ring. The standard OpenAI API doesn't expose this, so it's a config
-    /// value (`AgentConfig::context_window`).
+    /// value (`ModelConfig::context_window`).
     pub context_window: u32,
     /// Tavily API key for the `web_search` tool. Empty = web search disabled.
     pub search_api_key: String,
-    /// Reasoning control, as configured on the agent. See
-    /// `AgentConfig::reasoning`.
+    /// Names of the global MCP servers this agent may call, in its configured
+    /// order. Resolved here so the chat loop can ask the connection pool for
+    /// this agent's tools without re-reading settings mid-turn.
+    pub mcp_servers: Vec<String>,
+    /// Reasoning control, from the model-pool entry. See
+    /// `ModelConfig::reasoning`.
     pub reasoning: String,
 }
 
@@ -31,33 +35,43 @@ impl AiConfig {
         let agent = settings
             .active_agent_config()
             .ok_or_else(|| "No agent configured. Open Settings to add one.".to_string())?;
-        Self::build(agent, &settings.search_api_key)
+        Self::build(&settings, agent)
     }
 
     /// Build the config for a specific agent. Used by the heartbeat scheduler and
     /// Telegram bots, which run per-agent regardless of which one is active. The
-    /// `web_search` key is global, so it's read from settings here.
+    /// model pool and the `web_search` key are global, so settings are re-read
+    /// here rather than passed in.
     pub fn from_agent(agent: &AgentConfig) -> Result<Self, String> {
-        let search_api_key = get_settings().map(|s| s.search_api_key).unwrap_or_default();
-        Self::build(agent, &search_api_key)
+        let settings = get_settings()?;
+        Self::build(&settings, agent)
     }
 
-    fn build(agent: &AgentConfig, search_api_key: &str) -> Result<Self, String> {
-        if agent.api_key.is_empty() {
+    /// Resolve an agent's `model` reference against the global pool. This is the
+    /// single place that resolution happens — everything downstream sees the
+    /// flattened result and never knows the pool exists.
+    fn build(settings: &AppSettings, agent: &AgentConfig) -> Result<Self, String> {
+        let model = settings.model_for(agent)?;
+        if model.api_key.is_empty() {
             return Err(format!(
-                "Agent \"{}\" has no API Key. Open Settings to set it.",
-                agent.name
+                "模型 \"{}\" 还没有填 API Key。打开设置 → 全局 → 模型配置。",
+                agent.model
             ));
         }
         Ok(Self {
             agent_id: agent.id.clone(),
-            api_key: agent.api_key.clone(),
-            base_url: agent.api_base.clone(),
-            model: agent.model.clone(),
-            provider: agent.provider.clone(),
-            context_window: agent.context_window,
-            search_api_key: search_api_key.to_string(),
-            reasoning: agent.reasoning.clone(),
+            api_key: model.api_key.clone(),
+            base_url: model.api_base.clone(),
+            model: model.model.clone(),
+            provider: model.provider.clone(),
+            context_window: model.context_window,
+            search_api_key: settings.search_api_key.clone(),
+            mcp_servers: settings
+                .mcp_for(agent)
+                .into_iter()
+                .map(|(name, _)| name.to_string())
+                .collect(),
+            reasoning: model.reasoning.clone(),
         })
     }
 }

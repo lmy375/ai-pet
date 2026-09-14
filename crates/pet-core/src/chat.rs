@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::AiConfig;
 use crate::logging::write_llm_log;
-use crate::mcp::McpManagerStore;
+use crate::mcp::McpStore;
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
 
@@ -124,7 +124,7 @@ pub async fn run_chat_pipeline(
     turn: UserTurn,
     sink: &dyn ChatEventSink,
     config: &AiConfig,
-    mcp_store: &McpManagerStore,
+    mcp_store: &McpStore,
     ctx: &ToolContext,
 ) -> Result<ChatOutcome, String> {
     ctx.log(&format!(
@@ -178,14 +178,12 @@ pub async fn run_agent_loop(
     mut conv_messages: Vec<serde_json::Value>,
     sink: &dyn ChatEventSink,
     config: &AiConfig,
-    mcp_store: &McpManagerStore,
+    mcp_store: &McpStore,
     ctx: &ToolContext,
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    // Get MCP tool definitions for this agent (each agent has its own server set).
-    let mcp_defs = {
-        let managers = mcp_store.lock().await;
-        managers.get(&config.agent_id).map(|m| m.definitions()).unwrap_or_default()
-    };
+    // Get MCP tool definitions for this agent (the servers it references in the
+    // global pool — connections themselves are shared between agents).
+    let mcp_defs = mcp_store.lock().await.definitions(&config.mcp_servers);
     // Sub-agents (depth > 0) don't get the spawn tool, so they can't recurse.
     // The `chat` tool is offered only to heartbeat sessions. `web_search` is
     // offered only when a Tavily key is configured.
@@ -291,14 +289,13 @@ pub async fn run_agent_loop(
 
             let execute = async {
                 if registry.is_mcp_tool(tc_name) {
-                    // Route to MCP manager
+                    // Route to the shared MCP connection pool
                     ctx.log(&format!("MCP tool call: {}({})", tc_name, tc_args));
-                    let managers = mcp_store.lock().await;
-                    let call_res = match managers.get(&config.agent_id) {
-                        Some(m) => m.call_tool(tc_name, tc.fn_arguments.clone()).await,
-                        None => Err(format!("No MCP manager for agent {}", config.agent_id)),
-                    };
-                    match call_res {
+                    let hub = mcp_store.lock().await;
+                    match hub
+                        .call_tool(&config.mcp_servers, tc_name, tc.fn_arguments.clone())
+                        .await
+                    {
                         Ok(r) => r,
                         Err(e) => crate::tools::tool_error(e),
                     }

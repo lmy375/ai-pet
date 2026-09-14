@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use pet_core::chat::UserTurn;
 use pet_core::logging::LogStore;
-use pet_core::mcp::McpManagerStore;
+use pet_core::mcp::McpStore;
 use pet_core::shell::ShellStore;
 use pet_core::tools::ChatHook;
 use pet_core::turn::{TurnEvents, TurnNotice, TurnRunner, TurnSnapshot};
@@ -40,7 +40,7 @@ impl TurnEvents for TauriTurnEvents {
 /// needs the app handle).
 pub fn new_turn_store(
     app: AppHandle,
-    mcp_store: McpManagerStore,
+    mcp_store: McpStore,
     log_store: LogStore,
     shell_store: ShellStore,
 ) -> TurnStore {

@@ -44,38 +44,40 @@ if not sys.stdout.isatty():
     GREEN = RED = YELLOW = DIM = RESET = ""
 
 
-def _active_agent(root: Path) -> dict:
+def _active_model(root: Path) -> dict:
+    """主人真实配置里，当前 Agent 引用的那条模型（models 池中的一项）。"""
     config = root / "config.yaml"
     if not config.exists():
         return {}
     settings = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
     agents = settings.get("agents") or []
     active = settings.get("active_agent")
-    return next((a for a in agents if a.get("id") == active), agents[0] if agents else {})
+    agent = next((a for a in agents if a.get("id") == active), agents[0] if agents else {})
+    return (settings.get("models") or {}).get(agent.get("model", "")) or {}
 
 
 def resolve_model(env: EvalSettings, override: str | None) -> ModelSpec:
     """默认跑主人实际在用的那个 Agent 的模型，env 和 --model 可以覆盖。
 
-    多个状态根里取第一个配了 api_key 的当前 Agent（安装版的默认 Agent 往往是空壳）。
+    多个状态根里取第一个配了 api_key 的（安装版的默认配置往往是空壳）。
     """
-    agents = [_active_agent(root) for root in env.real_config_dirs()]
-    agent = next((a for a in agents if a.get("api_key")), next((a for a in agents if a), {}))
+    found = [_active_model(root) for root in env.real_config_dirs()]
+    cfg = next((m for m in found if m.get("api_key")), next((m for m in found if m), {}))
 
-    api_base = env.api_base or agent.get("api_base", "")
-    model = override or env.model or agent.get("model", "")
+    api_base = env.api_base or cfg.get("api_base", "")
+    model = override or env.model or cfg.get("model", "")
     if not api_base or not model:
         raise SystemExit(
-            "没有可用的模型配置：先在 GUI 里配好 Agent，"
+            "没有可用的模型配置：先在 GUI 里配好模型，"
             "或设 PET_EVAL_API_BASE / PET_EVAL_MODEL"
         )
     return ModelSpec(
-        provider=env.provider or agent.get("provider") or "openai",
+        provider=env.provider or cfg.get("provider") or "openai",
         api_base=api_base,
-        api_key=env.api_key or agent.get("api_key", ""),
+        api_key=env.api_key or cfg.get("api_key", ""),
         model=model,
-        context_window=agent.get("context_window", 200_000),
-        reasoning=env.reasoning or agent.get("reasoning", ""),
+        context_window=cfg.get("context_window", 200_000),
+        reasoning=env.reasoning or cfg.get("reasoning", ""),
     )
 
 

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use pet_core::logging::LogStore;
-use pet_core::mcp::{McpManager, McpManagerStore};
+use pet_core::mcp::McpStore;
 use pet_core::session;
 use pet_core::settings::{get_settings, AgentConfig};
 use pet_core::shell::ShellStore;
@@ -17,43 +17,36 @@ use pet_core::turn::TurnRunner;
 pub struct CliApp {
     pub log_store: LogStore,
     pub shell_store: ShellStore,
-    pub mcp_store: McpManagerStore,
+    pub mcp_store: McpStore,
     /// Runs and persists every chat turn (and injects background-task
     /// completions); the TUI / one-shot printer only observe its events.
     pub turns: Arc<TurnRunner>,
 }
 
 impl CliApp {
-    /// Start the agent's MCP servers if configured and not yet running (lazy —
-    /// the GUI starts every agent's servers at launch; the CLI connects only
-    /// the agents actually used). Returns a human-readable status when servers
-    /// were (re)connected, `None` when nothing needed doing.
+    /// Connect the MCP servers this agent references, skipping the ones already
+    /// running (lazy — the GUI connects every referenced server at launch; the
+    /// CLI connects only what the agents it actually uses need). Returns a
+    /// human-readable status for the agent's servers, `None` when it has none.
     pub async fn ensure_mcp(&self, agent: &AgentConfig) -> Option<String> {
-        if agent.mcp_servers.is_empty() {
+        let settings = get_settings().ok()?;
+        let servers = settings.mcp_for(agent);
+        if servers.is_empty() {
             return None;
         }
-        {
-            let managers = self.mcp_store.lock().await;
-            if managers.contains_key(&agent.id) {
-                return None;
-            }
-        }
-        let manager = McpManager::start_from_agent(agent).await;
+        let mut hub = self.mcp_store.lock().await;
+        hub.ensure(&servers).await;
         let mut lines = vec![format!("{} 的 MCP 服务器：", agent.name)];
-        for s in manager.statuses() {
+        for s in hub.statuses().iter().filter(|s| agent.mcp.contains(&s.name)) {
             let mark = if s.connected { "✓" } else { "✗" };
             lines.push(format!("  {} {} ({} tools)", mark, s.name, s.tool_count));
         }
-        self.mcp_store.lock().await.insert(agent.id.clone(), manager);
         Some(lines.join("\n"))
     }
 
     /// Best-effort shutdown of every running MCP server (child processes).
     pub async fn shutdown_mcp(&self) {
-        let mut managers = self.mcp_store.lock().await;
-        for (_, mut m) in managers.drain() {
-            m.shutdown().await;
-        }
+        self.mcp_store.lock().await.shutdown().await;
     }
 
     /// The active session's id, creating a session if there is none (or the

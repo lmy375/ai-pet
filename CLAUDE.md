@@ -43,7 +43,7 @@
 - ALL provider traffic goes through `crates/pet-core/src/llm.rs`. genai owns the wire
   protocol (OpenAI chat-completions / OpenAI Responses / Anthropic / Gemini / …); never
   hand-roll an HTTP call to a model endpoint again.
-- **Protocol is configured, not inferred.** `AgentConfig::provider` → `AdapterKind` via
+- **Protocol is configured, not inferred.** `ModelConfig::provider` → `AdapterKind` via
   `provider.rs`; requests go out as a fully-resolved `ServiceTarget` (endpoint + auth +
   adapter). genai's `from_model` name-prefix inference is wrong for every gateway-hosted
   model (`claude-sonnet-4-6` on a litellm proxy infers Anthropic; `GPT-5.5` matches nothing
@@ -69,7 +69,7 @@
   empty answer (a gateway 200-with-empty-stream silently zeroed 6/10 DeepSWE tasks); and
   the captured `assistant_turn` is replayed verbatim into the next round, which is what
   carries Anthropic thinking signatures / Responses reasoning items through a tool loop.
-- **Reasoning is one config field**, `AgentConfig::reasoning`, mapped onto genai's single
+- **Reasoning is one config field**, `ModelConfig::reasoning`, mapped onto genai's single
   `ReasoningEffort`: `""` / a keyword (`minimal`…`max`) / a plain number = token budget.
   A numeric budget only reaches the wire on Anthropic/Gemini; the OpenAI protocol has no
   such field, so its adapters drop it (`Budget(_) => return Ok(())`). That is genai being

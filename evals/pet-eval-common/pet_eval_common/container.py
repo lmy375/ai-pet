@@ -16,6 +16,8 @@ EXTRA_CA_PEM = "/installed-agent/extra-ca.pem"
 CONFIG_DIR = "/pet-config"
 CA_BUNDLE = f"{CONFIG_DIR}/ca-bundle.pem"
 AGENT_ID = "eval"
+# 全局模型池里那一条的名字；agent 靠它引用模型
+MODEL_NAME = "eval"
 
 # 常见发行版的系统 CA bundle（Debian/Ubuntu/Alpine → 前者，RHEL 系 → 后者）
 _SYSTEM_CA_BUNDLES = ("/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt")
@@ -73,18 +75,15 @@ def config_yaml(
     reasoning: str = "",
     hint: str,
 ) -> str:
-    """一次性 config.yaml。字段名对齐 pet-core settings.rs 的 AgentConfig；其余字段有 serde default。"""
+    """一次性 config.yaml。字段名对齐 pet-core settings.rs：models 是全局模型池，agent 只引用名字。"""
     if not api_base or not model:
         raise ValueError(f"需要模型配置：设 PET_API_BASE / PET_API_KEY / PET_MODEL（{hint}）")
     return yaml.safe_dump(
         {
             "skills_dir": f"{CONFIG_DIR}/skills",
             "search_api_key": "",  # 无 Tavily key ⇒ 无 web_search，工具集固定
-            "active_agent": AGENT_ID,
-            "agents": [
-                {
-                    "id": AGENT_ID,
-                    "name": "小宠",
+            "models": {
+                MODEL_NAME: {
                     "provider": provider,
                     "api_base": api_base,
                     "api_key": api_key,
@@ -92,7 +91,9 @@ def config_yaml(
                     "context_window": context_window,
                     "reasoning": reasoning,
                 }
-            ],
+            },
+            "active_agent": AGENT_ID,
+            "agents": [{"id": AGENT_ID, "name": "小宠", "model": MODEL_NAME}],
         },
         allow_unicode=True,
         sort_keys=False,

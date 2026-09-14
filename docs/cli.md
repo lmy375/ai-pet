@@ -67,4 +67,4 @@ cargo run -p pet-cli -- -p "帮我看下这个目录"   # 单次执行：输出�
 - Shift+Enter 需要终端支持 kitty 键盘协议（kitty / ghostty / WezTerm / iTerm2 3.5+）；
   其余终端把它当普通 Enter，用 Ctrl+J 换行——状态栏会显示当前可用的那个。
 - 流式过程中无法取消当前轮（与 GUI 一致）。
-- MCP 服务器按需连接：某 Agent 首次发言前才启动它配置的 MCP。
+- MCP 服务器按需连接：某 Agent 首次发言前才连它引用的那几个（连接按服务器全局共享）。

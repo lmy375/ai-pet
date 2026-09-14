@@ -41,36 +41,37 @@ pub fn run() {
             // before the builder.
             app.manage(commands::chat::new_turn_store(
                 app.handle().clone(),
-                app.state::<pet_core::mcp::McpManagerStore>().inner().clone(),
+                app.state::<pet_core::mcp::McpStore>().inner().clone(),
                 app.state::<LogStore>().inner().clone(),
                 app.state::<ShellStore>().inner().clone(),
             ));
             app.manage(commands::group::new_group_store(
                 app.handle().clone(),
-                app.state::<pet_core::mcp::McpManagerStore>().inner().clone(),
+                app.state::<pet_core::mcp::McpStore>().inner().clone(),
                 app.state::<LogStore>().inner().clone(),
                 app.state::<ShellStore>().inner().clone(),
             ));
 
             // Initialize MCP servers from config on app start
-            let mcp_store = app.state::<pet_core::mcp::McpManagerStore>().inner().clone();
+            let mcp_store = app.state::<pet_core::mcp::McpStore>().inner().clone();
             let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
             let log_store = app.state::<LogStore>().inner().clone();
             let shell_store = app.state::<ShellStore>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 let settings = pet_core::settings::get_settings().unwrap_or_default();
 
-                // Initialize each agent's MCP servers into its own manager.
+                // Connect every MCP server some agent references — one process
+                // per server, shared by all of them. A server configured but
+                // unreferenced isn't started.
                 {
-                    let mut managers = mcp_store.lock().await;
-                    for agent in &settings.agents {
-                        if agent.mcp_servers.is_empty() {
-                            continue;
-                        }
-                        let manager = pet_core::mcp::McpManager::start_from_agent(agent).await;
-                        managers.insert(agent.id.clone(), manager);
-                    }
-                    if !managers.is_empty() {
+                    let names = settings.referenced_mcp_servers();
+                    let servers: Vec<_> = names
+                        .iter()
+                        .filter_map(|n| settings.mcp_servers.get_key_value(n))
+                        .map(|(n, c)| (n.as_str(), c))
+                        .collect();
+                    if !servers.is_empty() {
+                        mcp_store.lock().await.ensure(&servers).await;
                         eprintln!("MCP servers initialized");
                     }
                 }
@@ -91,7 +92,7 @@ pub fn run() {
                 app.handle().clone(),
                 app.state::<LogStore>().inner().clone(),
                 app.state::<ShellStore>().inner().clone(),
-                app.state::<pet_core::mcp::McpManagerStore>().inner().clone(),
+                app.state::<pet_core::mcp::McpStore>().inner().clone(),
             );
             Ok(())
         })

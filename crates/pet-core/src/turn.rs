@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::chat::{run_chat_pipeline, ChatEventSink, ChatOutcome, ItemBuilder, StreamEvent, UserTurn};
 use crate::config::AiConfig;
 use crate::logging::{write_log, LogStore};
-use crate::mcp::McpManagerStore;
+use crate::mcp::McpStore;
 use crate::session::{self, ContextUsage, Session, DEFAULT_SESSION_TITLE};
 use crate::shell::{ShellStore, TaskCompletion, TaskNotifier};
 use crate::tools::ToolContext;
@@ -108,7 +108,7 @@ pub struct TurnRunner {
     events: Arc<dyn TurnEvents>,
     log_store: LogStore,
     shell_store: ShellStore,
-    mcp_store: McpManagerStore,
+    mcp_store: McpStore,
     /// Where turns run. Captured at construction so a turn can be started from
     /// any thread (a background waiter delivering a completion, a sync command).
     rt: tokio::runtime::Handle,
@@ -124,7 +124,7 @@ impl TurnRunner {
         events: Arc<dyn TurnEvents>,
         log_store: LogStore,
         shell_store: ShellStore,
-        mcp_store: McpManagerStore,
+        mcp_store: McpStore,
         rt: tokio::runtime::Handle,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {

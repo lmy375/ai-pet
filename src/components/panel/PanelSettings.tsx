@@ -1,40 +1,23 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, AgentConfig, McpServerConfig, McpStatus, TelegramStatus, SkillsInfo } from "../../hooks/useSettings";
+import type { AppSettings, AgentConfig, McpStatus, TelegramStatus, SkillsInfo } from "../../hooks/useSettings";
 import { defaultAgent } from "../../hooks/useSettings";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
-import { Badge } from "../ui/Badge";
-import { IconActionButton } from "../ui/IconButton";
 import { ErrorBox, LoadingScreen, HintText } from "../ui/feedback";
 import { Label, TextInput, TextArea, Select, SavedTextInput, NumberField } from "../ui/fields";
 import { StatusText } from "../ui/StatusText";
-import { ExpandChevron, PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
+import { PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
 import { AgentMemory } from "./PanelMemory";
+import { ModelsCard } from "./settings/ModelsCard";
+import { McpCard } from "./settings/McpCard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
 import { useI18n } from "../../i18n";
 
-// Common model context windows, offered as one-tap presets next to the free
-// numeric input (gpt-4o ~128K, Claude ~200K, Gemini ~1M).
-const CONTEXT_PRESETS: { label: string; value: number }[] = [
-  { label: "32K", value: 32000 },
-  { label: "128K", value: 128000 },
-  { label: "200K", value: 200000 },
-  { label: "1M", value: 1000000 },
-];
-
-const emptyMcpServer = (transport: McpServerConfig["transport"] = "stdio"): McpServerConfig => ({
-  transport,
-  command: "",
-  args: [],
-  url: "",
-  headers: {},
-  env: {},
-  enabled: true,
-});
-
 const blankSettings: AppSettings = {
+  models: {},
+  mcp_servers: {},
   live_2d_model_path: "",
   language: "zh",
   gallery_dir: "",
@@ -46,24 +29,12 @@ const blankSettings: AppSettings = {
   agents: [defaultAgent()],
 };
 
-/** Effort keywords genai understands; anything else in `reasoning` is a token budget. */
-const REASONING_KEYWORDS = ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-type ProviderOptions = {
-  options: { id: string; label: string }[];
-  /** What a request would actually use — equals `provider`, or genai's inference when it's empty. */
-  resolved: string;
-  /** Whether this protocol can express a numeric thinking budget. */
-  renders_budget: boolean;
-};
-
 export function PanelSettings() {
   const { t } = useI18n();
   const [form, setForm] = useState<AppSettings>(blankSettings);
   // Top-level tab: "raw" (config file), "global", or an agent id.
   const [tab, setTab] = useState<string>("global");
   const [loaded, setLoaded] = useState(false);
-  const [testing, setTesting] = useState(false);
   // Status line under the form. `ok` drives the color — derived from the action,
   // not by sniffing the message text (which breaks once it's translated).
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -71,18 +42,9 @@ export function PanelSettings() {
   const fail = (text: string) => setMessage({ text, ok: false });
   const [mcpStatuses, setMcpStatuses] = useState<McpStatus[]>([]);
   const [reconnecting, setReconnecting] = useState(false);
-  const [newServerName, setNewServerName] = useState("");
   const [telegramStatus, setTelegramStatus] = useState<TelegramStatus>({ running: false, error: null });
   const [telegramReconnecting, setTelegramReconnecting] = useState(false);
   const [rawYaml, setRawYaml] = useState("");
-  const [models, setModels] = useState<string[]>([]);
-  const [providerOptions, setProviderOptions] = useState<ProviderOptions | null>(null);
-  const [loadingModels, setLoadingModels] = useState(false);
-  // Kept separately from the toast: the auto-triggered loads are silent, and
-  // without this the only feedback was the "check URL / API Key" placeholder,
-  // which blames the credentials for every possible failure.
-  const [modelsError, setModelsError] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [skillsInfo, setSkillsInfo] = useState<SkillsInfo | null>(null);
 
   // The agent shown in the active agent tab (falls back to the first agent).
@@ -97,6 +59,12 @@ export function PanelSettings() {
     invoke<SkillsInfo>("list_skills").then(setSkillsInfo).catch(() => setSkillsInfo(null));
   };
 
+  // MCP connections are global (one process per server, shared by every agent
+  // that lists it), so there is one status list for the whole settings page.
+  const loadMcpStatuses = () => {
+    invoke<McpStatus[]>("get_mcp_status").then(setMcpStatuses).catch(() => setMcpStatuses([]));
+  };
+
   useEffect(() => {
     invoke<AppSettings>("get_settings")
       .then((s) => {
@@ -108,6 +76,7 @@ export function PanelSettings() {
         setLoaded(true);
       });
     loadSkills();
+    loadMcpStatuses();
   }, []);
 
   // Switch the top-level tab. Loads the raw YAML when entering "config file", and
@@ -115,7 +84,6 @@ export function PanelSettings() {
   const selectTab = async (next: string) => {
     if (next === tab) return;
     setMessage(null);
-    setTestResult(null);
     if (next === "raw") {
       try {
         setRawYaml(await invoke<string>("get_config_raw"));
@@ -125,37 +93,27 @@ export function PanelSettings() {
       }
       return;
     }
-    let s = form;
     if (tab === "raw") {
-      try { s = await invoke<AppSettings>("get_settings"); setForm(s); } catch {}
+      try { setForm(await invoke<AppSettings>("get_settings")); } catch {}
     }
     setTab(next);
-    if (next !== "global") refreshAgentStatuses(next, s);
+    if (next !== "global") loadTelegramStatus(next);
   };
 
-  // Fetch the editing agent's MCP/Telegram status and model list. Called on load
-  // and whenever the edited agent changes.
-  const refreshAgentStatuses = (agentId: string, s: AppSettings) => {
-    const a = s.agents.find((x) => x.id === agentId);
-    invoke<McpStatus[]>("get_mcp_status", { agentId }).then(setMcpStatuses).catch(() => setMcpStatuses([]));
+  /** Jump to one of the global pools from an agent's reference control. */
+  const goToPool = (id: "pool-models" | "pool-mcp") => {
+    setTab("global");
+    setMessage(null);
+    requestAnimationFrame(() =>
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+    );
+  };
+
+  const loadTelegramStatus = (agentId: string) => {
     invoke<TelegramStatus>("get_telegram_status", { agentId })
       .then(setTelegramStatus)
       .catch(() => setTelegramStatus({ running: false, error: null }));
-    if (a?.api_base?.trim()) loadModels(a.api_base, a.api_key, true);
-    else { setModels([]); setModelsError(null); }
   };
-
-  // Keep the provider list — and what "Auto" resolves to for the current model —
-  // in sync with the edited agent. The resolution depends on the model name, so
-  // this has to re-run when the model changes, not just on mount.
-  useEffect(() => {
-    invoke<ProviderOptions>("list_providers", {
-      model: agent?.model ?? "",
-      provider: agent?.provider ?? "",
-    })
-      .then(setProviderOptions)
-      .catch(() => setProviderOptions(null));
-  }, [agent?.model, agent?.provider]);
 
   // Auto-save current form settings (on blur / Enter). `next` lets callers persist
   // an updated value immediately without waiting for a state flush.
@@ -166,6 +124,12 @@ export function PanelSettings() {
     } catch (e: any) {
       fail(t("common.saveFailed", { error: e }));
     }
+  };
+
+  /** Persist a settings object produced by one of the pool cards. */
+  const commitSettings = (next: AppSettings) => {
+    setForm(next);
+    saveSettings(next);
   };
 
   /* ---------- Editing-agent helpers ---------- */
@@ -183,9 +147,7 @@ export function PanelSettings() {
   const commitAgent = (updates: Partial<AgentConfig>) => {
     const agents = [...form.agents];
     agents[agentIdx] = { ...agents[agentIdx], ...updates };
-    const next = { ...form, agents };
-    setForm(next);
-    saveSettings(next);
+    commitSettings({ ...form, agents });
   };
 
   const addAgent = () => {
@@ -196,12 +158,8 @@ export function PanelSettings() {
     };
     setForm(next);
     setTab(id);
-    setMcpStatuses([]);
     setTelegramStatus({ running: false, error: null });
-    setModels([]);
-    setModelsError(null);
     setMessage(null);
-    setTestResult(null);
     saveSettings(next);
   };
 
@@ -216,93 +174,23 @@ export function PanelSettings() {
   };
 
   const setActiveAgent = (id: string) => {
-    const next = { ...form, active_agent: id };
-    setForm(next);
-    saveSettings(next);
+    commitSettings({ ...form, active_agent: id });
   };
 
-  /* ---------- MCP helpers (scoped to the edited agent) ---------- */
-
+  /** Save first, then reconnect every referenced server (connections are global). */
   const handleReconnectMcp = async () => {
     setReconnecting(true);
     setMessage(null);
     try {
       await invoke("save_settings", { settings: form });
-      const statuses = await invoke<McpStatus[]>("reconnect_mcp", { agentId: agent.id });
+      const statuses = await invoke<McpStatus[]>("reconnect_mcp");
       setMcpStatuses(statuses);
       const connected = statuses.filter((s) => s.connected).length;
-      const total = statuses.length;
-      ok(t("settings.mcp.reconnected", { connected, total }));
+      ok(t("settings.mcp.reconnected", { connected, total: statuses.length }));
     } catch (e: any) {
       fail(t("settings.mcp.reconnectFailed", { error: e }));
     } finally {
       setReconnecting(false);
-    }
-  };
-
-  const updateMcpServer = (name: string, updates: Partial<McpServerConfig>) => {
-    updateAgent({ mcp_servers: { ...agent.mcp_servers, [name]: { ...agent.mcp_servers[name], ...updates } } });
-  };
-
-  const commitMcpServer = (name: string, updates: Partial<McpServerConfig>) => {
-    commitAgent({ mcp_servers: { ...agent.mcp_servers, [name]: { ...agent.mcp_servers[name], ...updates } } });
-  };
-
-  const removeMcpServer = (name: string) => {
-    const { [name]: _, ...rest } = agent.mcp_servers;
-    commitAgent({ mcp_servers: rest });
-  };
-
-  const addMcpServer = () => {
-    const name = newServerName.trim();
-    if (!name || agent.mcp_servers[name]) return;
-    commitAgent({ mcp_servers: { ...agent.mcp_servers, [name]: emptyMcpServer() } });
-    setNewServerName("");
-  };
-
-  // Load available models for the given base/key. Triggered automatically when
-  // API Base / API Key lose focus. `silent` suppresses the success message.
-  const loadModels = async (apiBase: string, apiKey: string, silent = false) => {
-    if (!apiBase.trim()) return;
-    setLoadingModels(true);
-    setModelsError(null);
-    try {
-      // The provider decides which protocol the listing speaks — an Anthropic or
-      // Gemini endpoint has no OpenAI-style /models route.
-      const list = await invoke<string[]>("list_models", {
-        apiBase,
-        apiKey,
-        provider: agent.provider ?? "",
-        model: agent.model,
-      });
-      setModels(list);
-      if (!silent) {
-        ok(list.length === 0 ? t("settings.llm.modelsNone") : t("settings.llm.modelsLoaded", { count: list.length }));
-      }
-    } catch (e: any) {
-      setModels([]);
-      setModelsError(String(e));
-      if (!silent) fail(t("settings.llm.modelsFailed", { error: e }));
-    } finally {
-      setLoadingModels(false);
-    }
-  };
-
-  const handleTestModel = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      await invoke("test_model", {
-        apiBase: agent.api_base,
-        apiKey: agent.api_key,
-        model: agent.model,
-        provider: agent.provider ?? "",
-      });
-      setTestResult({ ok: true, text: t("settings.llm.testOk") });
-    } catch (e: any) {
-      setTestResult({ ok: false, text: t("settings.llm.testFailed", { error: e }) });
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -316,11 +204,7 @@ export function PanelSettings() {
         multiple: false,
         defaultPath: form.gallery_dir || defaultPath || undefined,
       });
-      if (typeof picked === "string") {
-        const next = { ...form, gallery_dir: picked };
-        setForm(next);
-        saveSettings(next);
-      }
+      if (typeof picked === "string") commitSettings({ ...form, gallery_dir: picked });
     } catch (e: any) {
       fail(t("settings.pickDirFailed", { error: e }));
     }
@@ -386,18 +270,21 @@ export function PanelSettings() {
     return <LoadingScreen />;
   }
 
-  const serverEntries = Object.entries(agent.mcp_servers);
-  const connectedCount = mcpStatuses.filter((s) => s.connected).length;
-  const totalToolCount = mcpStatuses.reduce((sum, s) => sum + s.tool_count, 0);
-
   const messageLine = message && (
     <StatusText ok={message.ok} className="mt-1 text-[13px]">{message.text}</StatusText>
   );
 
-  const setLanguage = (language: string) => {
-    const next = { ...form, language };
-    setForm(next);
-    saveSettings(next);
+  const setLanguage = (language: string) => commitSettings({ ...form, language });
+
+  const modelNames = Object.keys(form.models);
+  const serverNames = Object.keys(form.mcp_servers);
+  // A reference that no longer resolves: show it (so it can be seen and fixed)
+  // rather than silently selecting something else.
+  const danglingModel = !!agent?.model && !form.models[agent.model];
+
+  const toggleAgentServer = (name: string, on: boolean) => {
+    const mcp = on ? [...agent.mcp, name] : agent.mcp.filter((m) => m !== name);
+    commitAgent({ mcp });
   };
 
   return (
@@ -439,6 +326,23 @@ export function PanelSettings() {
         </>
       ) : tab === "global" ? (
         <>
+          {/* The two pools agents reference, first — everything below is chrome
+              by comparison. */}
+          <div id="pool-models">
+            <ModelsCard settings={form} onDraft={setForm} onCommit={commitSettings} />
+          </div>
+
+          <div id="pool-mcp">
+            <McpCard
+              settings={form}
+              onDraft={setForm}
+              onCommit={commitSettings}
+              statuses={mcpStatuses}
+              onReconnect={handleReconnectMcp}
+              reconnecting={reconnecting}
+            />
+          </div>
+
           {/* Language */}
           <Card title={t("settings.language")}>
             <Select value={form.language === "en" ? "en" : "zh"} onChange={(e) => setLanguage(e.target.value)}>
@@ -475,11 +379,7 @@ export function PanelSettings() {
                 type="checkbox"
                 className="accent-accent"
                 checked={form.gallery_enabled}
-                onChange={(e) => {
-                  const next = { ...form, gallery_enabled: e.target.checked };
-                  setForm(next);
-                  saveSettings(next);
-                }}
+                onChange={(e) => commitSettings({ ...form, gallery_enabled: e.target.checked })}
               />
               {t("settings.gallery.enable")}
             </label>
@@ -502,11 +402,7 @@ export function PanelSettings() {
               value={form.gallery_interval}
               fallback={10}
               onChange={(v) => setForm({ ...form, gallery_interval: v })}
-              onCommit={(v) => {
-                const next = { ...form, gallery_interval: v };
-                setForm(next);
-                saveSettings(next);
-              }}
+              onCommit={(v) => commitSettings({ ...form, gallery_interval: v })}
               placeholder="10"
             />
             <HintText>{t("settings.gallery.intervalNote")}</HintText>
@@ -624,206 +520,75 @@ export function PanelSettings() {
             </div>
           </Card>
 
-          {/* LLM Config */}
-          <Card title={t("settings.llm.title")}>
-            <Label className="flex items-center gap-2">
-              <span>{t("settings.llm.provider")}</span>
-              {/* Auto-detection is a static model-name prefix map, so it guesses
-                  wrong behind a gateway. Showing what it resolved to makes a bad
-                  guess visible here instead of as a malformed request later. */}
-              {!agent.provider && providerOptions?.resolved && (
-                <span className="font-normal text-ink-faint">
-                  {t("settings.llm.providerResolved", { provider: providerOptions.resolved })}
-                </span>
-              )}
-            </Label>
-            <Select
-              value={agent.provider ?? ""}
-              onChange={(e) => {
-                commitAgent({ provider: e.target.value });
-                setTestResult(null);
-              }}
-            >
-              {(providerOptions?.options ?? [{ id: "", label: "Auto" }]).map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
-            </Select>
-            <p className="mt-1 text-[11px] text-ink-faint">{t("settings.llm.providerHint")}</p>
-
-            <Label className="mt-3">API Base URL</Label>
-            <SavedTextInput
-              value={agent.api_base}
-              onChange={(e) => updateAgent({ api_base: e.target.value })}
-              onCommit={() => { saveSettings(); loadModels(agent.api_base, agent.api_key, true); }}
-              placeholder={defaultAgent().api_base}
-            />
-            <Label className="mt-3">API Key</Label>
-            <SavedTextInput
-              type="password"
-              value={agent.api_key}
-              onChange={(e) => updateAgent({ api_key: e.target.value })}
-              onCommit={() => { saveSettings(); loadModels(agent.api_base, agent.api_key, true); }}
-              placeholder="sk-..."
-            />
-            <Label className="mt-3 flex items-center gap-2">
-              <span>Model</span>
-              {loadingModels && <span className="font-normal text-ink-faint">{t("common.loading")}</span>}
-            </Label>
-            <div className="flex gap-2">
-              <Select
-                value={models.includes(agent.model) ? agent.model : ""}
-                onChange={(e) => { commitAgent({ model: e.target.value }); setTestResult(null); }}
-                disabled={models.length === 0}
-                className="flex-1"
-              >
-                {models.length === 0 ? (
-                  <option value="">{agent.api_base.trim() ? t("settings.llm.noModelsHint") : t("settings.llm.fillBaseFirst")}</option>
-                ) : (
-                  <>
-                    <option value="" disabled>{t("settings.llm.selectFromN", { count: models.length })}</option>
-                    {models.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </>
-                )}
-              </Select>
-              <Button onClick={handleTestModel} disabled={testing || !agent.model.trim()}>
-                {testing ? t("settings.llm.testing") : t("settings.llm.test")}
-              </Button>
-            </div>
-            {modelsError && (
-              <StatusText ok={false} className="mt-1.5 text-[12px]">
-                {t("settings.llm.modelsFailed", { error: modelsError })}
-              </StatusText>
-            )}
-            {testResult && (
-              <StatusText ok={testResult.ok} className="mt-1.5 text-[12px]">{testResult.text}</StatusText>
-            )}
-
-            <Label className="mt-3">{t("settings.llm.contextWindow")}</Label>
-            <div className="mb-2 flex gap-1.5">
-              {CONTEXT_PRESETS.map((p) => {
-                const active = agent.context_window === p.value;
-                return (
-                  <button
-                    key={p.value}
-                    type="button"
-                    onClick={() => commitAgent({ context_window: p.value })}
-                    className={`rounded-lg px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                      active ? "bg-accent text-white" : "bg-surface-soft text-ink-soft hover:bg-hover"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                );
-              })}
-            </div>
-            <NumberField
-              value={agent.context_window}
-              fallback={defaultAgent().context_window}
-              onChange={(v) => updateAgent({ context_window: v })}
-              onCommit={(v) => commitAgent({ context_window: v })}
-              placeholder={String(defaultAgent().context_window)}
-            />
-            <HintText>{t("settings.llm.contextWindowNote")}</HintText>
-
-            <Label className="mt-3">{t("settings.llm.reasoning")}</Label>
-            <Select
-              value={REASONING_KEYWORDS.includes(agent.reasoning) ? agent.reasoning : "budget"}
-              onChange={(e) =>
-                commitAgent({ reasoning: e.target.value === "budget" ? "4096" : e.target.value })
-              }
-            >
-              <option value="">{t("settings.llm.reasoningOff")}</option>
-              <option value="minimal">minimal</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-              <option value="max">max</option>
-              <option value="budget">{t("settings.llm.reasoningBudget")}</option>
-            </Select>
-            {!REASONING_KEYWORDS.includes(agent.reasoning) && (
-              <div className="mt-2">
-                <NumberField
-                  value={Number(agent.reasoning) || 4096}
-                  min={1}
-                  fallback={4096}
-                  onChange={(v) => updateAgent({ reasoning: String(v) })}
-                  onCommit={(v) => commitAgent({ reasoning: String(v) })}
-                  placeholder="4096"
-                />
-                {/* The OpenAI protocol has no token-budget field, so this value
-                    would go out as nothing at all. Say so here rather than
-                    letting reasoning silently switch off. */}
-                {providerOptions && !providerOptions.renders_budget && (
-                  <p className="mt-1 text-[11px] text-amber-600">
-                    {t("settings.llm.reasoningBudgetUnsupported", {
-                      provider: providerOptions.resolved,
-                    })}
-                  </p>
-                )}
-              </div>
-            )}
-            <HintText>{t("settings.llm.reasoningNote")}</HintText>
-          </Card>
-
-          {/* MCP Servers */}
+          {/* Model: a reference into the global pool, not a copy of its settings. */}
           <Card
-            title={
-              <span>
-                MCP Servers
-                {serverEntries.length > 0 && (
-                  <span className="ml-2 font-normal text-[12px] text-ink-soft">
-                    {t("settings.mcp.connectedTools", { connected: connectedCount, total: serverEntries.length, tools: totalToolCount })}
-                  </span>
-                )}
-              </span>
-            }
+            title={t("settings.agent.modelTitle")}
             action={
-              <Button size="sm" onClick={handleReconnectMcp} disabled={reconnecting}>
-                {reconnecting ? t("settings.connecting") : t("settings.saveConnect")}
-              </Button>
+              <button onClick={() => goToPool("pool-models")} className="text-[12px] font-medium text-accent hover:underline">
+                {t("settings.agent.goConfigure")}
+              </button>
             }
           >
-            {serverEntries.length === 0 && (
-              <div className="rounded-xl border border-dashed border-line py-4 text-center text-[13px] text-ink-faint">
-                {t("settings.mcp.empty")}
-              </div>
+            {modelNames.length === 0 ? (
+              <HintText>{t("settings.agent.modelEmpty")}</HintText>
+            ) : (
+              <>
+                <Select value={agent.model} onChange={(e) => commitAgent({ model: e.target.value })}>
+                  <option value="">{t("settings.agent.modelNone")}</option>
+                  {danglingModel && <option value={agent.model}>{agent.model}</option>}
+                  {modelNames.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </Select>
+                {danglingModel ? (
+                  <StatusText ok={false} className="mt-1.5 text-[12px]">
+                    {t("settings.agent.modelMissing", { model: agent.model })}
+                  </StatusText>
+                ) : (
+                  <HintText>{t("settings.agent.modelNote")}</HintText>
+                )}
+              </>
             )}
+          </Card>
 
-            <div className="flex flex-col gap-2">
-              {serverEntries.map(([name, config]) => {
-                const status = mcpStatuses.find((s) => s.name === name);
-                return (
-                  <McpServerEntry
-                    key={name}
-                    name={name}
-                    config={config}
-                    status={status}
-                    onChange={(updates) => updateMcpServer(name, updates)}
-                    onCommit={() => saveSettings()}
-                    onCommitChange={(updates) => commitMcpServer(name, updates)}
-                    onRemove={() => removeMcpServer(name)}
-                  />
-                );
-              })}
-            </div>
-
-            {/* Add server */}
-            <div className="mt-3 flex gap-2">
-              <TextInput
-                value={newServerName}
-                onChange={(e) => setNewServerName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addMcpServer()}
-                className="flex-1"
-                placeholder={t("settings.mcp.newName")}
-              />
-              <Button variant="secondary" onClick={addMcpServer} disabled={!newServerName.trim() || !!agent.mcp_servers[newServerName.trim()]}>
-                <PlusIcon className="h-4 w-4" />
-                {t("common.add")}
-              </Button>
-            </div>
+          {/* MCP: which of the global servers this agent may call. */}
+          <Card
+            title={t("settings.agent.mcpTitle")}
+            action={
+              <button onClick={() => goToPool("pool-mcp")} className="text-[12px] font-medium text-accent hover:underline">
+                {t("settings.agent.goConfigure")}
+              </button>
+            }
+          >
+            {serverNames.length === 0 ? (
+              <HintText>{t("settings.agent.mcpEmpty")}</HintText>
+            ) : (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  {serverNames.map((name) => {
+                    const status = mcpStatuses.find((s) => s.name === name);
+                    return (
+                      <label key={name} className="flex items-center gap-2 text-[13px] text-ink">
+                        <input
+                          type="checkbox"
+                          className="accent-accent"
+                          checked={agent.mcp.includes(name)}
+                          onChange={(e) => toggleAgentServer(name, e.target.checked)}
+                        />
+                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${toneDot(connTone(status?.connected, status?.error))}`} />
+                        {name}
+                        {status?.connected && (
+                          <span className="text-[11px] text-ink-faint">
+                            {t("settings.mcp.toolsSuffix", { count: status.tool_count })}
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                <HintText>{t("settings.agent.mcpNote")}</HintText>
+              </>
+            )}
           </Card>
 
           {/* Telegram Bot */}
@@ -962,171 +727,5 @@ function TabBtn({
       {dot && <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-surface" : "bg-accent"}`} />}
       {children}
     </button>
-  );
-}
-
-/* ---------- MCP Server Card ---------- */
-
-function McpServerEntry({
-  name,
-  config,
-  status,
-  onChange,
-  onCommit,
-  onCommitChange,
-  onRemove,
-}: {
-  name: string;
-  config: McpServerConfig;
-  status?: McpStatus;
-  onChange: (updates: Partial<McpServerConfig>) => void;
-  onCommit: () => void;
-  onCommitChange: (updates: Partial<McpServerConfig>) => void;
-  onRemove: () => void;
-}) {
-  const { t } = useI18n();
-  const [expanded, setExpanded] = useState(true);
-
-  const hasError = !!status?.error && status.error !== "Disabled";
-  const dotClass = toneDot(connTone(status?.connected, status?.error));
-  const statusLabel = status?.connected
-    ? t("settings.mcp.connected")
-    : status?.error === "Disabled"
-      ? t("settings.mcp.disabled")
-      : status?.error
-        ? t("settings.mcp.connFailed")
-        : t("settings.mcp.disconnected");
-  const statusColor = toneText(connTone(status?.connected, hasError));
-
-  return (
-    <div className={`rounded-xl border bg-surface-soft ${hasError ? "border-red-300" : "border-line"}`}>
-      {/* Header row */}
-      <div className="flex cursor-pointer items-center gap-2 px-3 py-2.5" onClick={() => setExpanded(!expanded)}>
-        <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
-        <span className="flex-1 text-[13px] font-semibold text-ink">
-          {name}
-          <span className="ml-2 font-normal text-[11px] text-ink-faint">{config.transport.toUpperCase()}</span>
-          <span className={`ml-1.5 font-normal text-[11px] ${statusColor}`}>
-            {statusLabel}
-            {status?.connected && ` · ${t("settings.mcp.toolsSuffix", { count: status.tool_count })}`}
-          </span>
-        </span>
-
-        <label className="flex items-center gap-1 text-[12px] text-ink-soft" onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            className="accent-accent"
-            checked={config.enabled}
-            onChange={(e) => onCommitChange({ enabled: e.target.checked })}
-          />
-          {t("common.enable")}
-        </label>
-
-        <IconActionButton
-          variant="danger"
-          size="sm"
-          onClick={(e) => { e.stopPropagation(); onRemove(); }}
-          title={t("common.delete")}
-        >
-          <TrashIcon className="h-4 w-4" />
-        </IconActionButton>
-
-        <ExpandChevron expanded={expanded} className="h-4 w-4 text-ink-faint" />
-      </div>
-
-      {/* Expanded: config fields + tool list */}
-      {expanded && (
-        <div className="border-t border-line px-3 pb-3 pt-3">
-          {hasError && <ErrorBox className="mb-2">{status!.error}</ErrorBox>}
-
-          <Label>{t("settings.mcp.transport")}</Label>
-          <Select
-            value={config.transport}
-            onChange={(e) => onCommitChange({ transport: e.target.value as McpServerConfig["transport"] })}
-            className="mb-2"
-          >
-            <option value="stdio">{t("settings.mcp.transport.stdio")}</option>
-            <option value="sse">{t("settings.mcp.transport.sse")}</option>
-            <option value="http">{t("settings.mcp.transport.http")}</option>
-          </Select>
-
-          {config.transport === "stdio" ? (
-            <>
-              <Label>{t("settings.mcp.command")}</Label>
-              <SavedTextInput
-                value={config.command}
-                onChange={(e) => onChange({ command: e.target.value })}
-                onCommit={onCommit}
-                className="mb-1.5 font-mono !text-[12px]"
-                placeholder="npx"
-              />
-              <Label>{t("settings.mcp.args")}</Label>
-              <TextArea
-                value={config.args.join("\n")}
-                onChange={(e) => onChange({ args: e.target.value.split("\n") })}
-                onBlur={onCommit}
-                rows={3}
-                className="mb-1.5 font-mono !text-[12px]"
-                placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/tmp"}
-              />
-              <Label>{t("settings.mcp.env")}</Label>
-              <TextArea
-                value={Object.entries(config.env || {}).map(([k, v]) => `${k}=${v}`).join("\n")}
-                onChange={(e) => {
-                  const env: Record<string, string> = {};
-                  e.target.value.split("\n").forEach((line) => {
-                    const idx = line.indexOf("=");
-                    if (idx > 0) env[line.slice(0, idx)] = line.slice(idx + 1);
-                  });
-                  onChange({ env });
-                }}
-                onBlur={onCommit}
-                rows={2}
-                className="font-mono !text-[12px]"
-                placeholder="GITHUB_TOKEN=ghp_xxx"
-              />
-            </>
-          ) : (
-            <>
-              <Label>URL</Label>
-              <SavedTextInput
-                value={config.url}
-                onChange={(e) => onChange({ url: e.target.value })}
-                onCommit={onCommit}
-                className="mb-1.5 font-mono !text-[12px]"
-                placeholder="http://localhost:3000/mcp"
-              />
-              <Label>{t("settings.mcp.headers")}</Label>
-              <TextArea
-                value={Object.entries(config.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n")}
-                onChange={(e) => {
-                  const headers: Record<string, string> = {};
-                  e.target.value.split("\n").forEach((line) => {
-                    const idx = line.indexOf(":");
-                    if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-                  });
-                  onChange({ headers });
-                }}
-                onBlur={onCommit}
-                rows={2}
-                className="font-mono !text-[12px]"
-                placeholder="Authorization: Bearer xxx"
-              />
-            </>
-          )}
-
-          {status?.connected && status.tool_names.length > 0 && (
-            <div className="mt-2">
-              <Label>{t("settings.mcp.registeredTools", { count: status.tool_count })}</Label>
-              <div className="flex flex-wrap gap-1">
-                {status.tool_names.map((t) => (
-                  <Badge key={t} color="sky" className="font-mono">{t}</Badge>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }

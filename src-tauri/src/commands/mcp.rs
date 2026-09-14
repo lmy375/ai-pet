@@ -1,6 +1,5 @@
+use pet_core::mcp::{McpServerStatus, McpStore};
 use pet_core::settings::get_settings;
-use pet_core::mcp::McpManager;
-use pet_core::mcp::{McpManagerStore, McpServerStatus};
 use pet_core::tools::ToolRegistry;
 use serde::Serialize;
 use tauri::State;
@@ -15,23 +14,23 @@ pub struct ToolInfo {
 }
 
 /// List the tools available to a normal panel chat turn for `agent_id` (built-in
-/// + that agent's connected MCP). Mirrors how `run_agent_loop` builds its
-/// registry: depth 0 (so `spawn_subagent` is offered) and not a heartbeat (so no
-/// `chat` tool).
+/// + the MCP servers that agent references). Mirrors how `run_agent_loop` builds
+/// its registry: depth 0 (so `spawn_subagent` is offered) and not a heartbeat (so
+/// no `chat` tool).
 #[tauri::command]
 pub async fn list_available_tools(
     agent_id: String,
-    mcp_store: State<'_, McpManagerStore>,
+    mcp_store: State<'_, McpStore>,
 ) -> Result<Vec<ToolInfo>, String> {
-    let mcp_defs = {
-        let managers = mcp_store.lock().await;
-        managers.get(&agent_id).map(|m| m.definitions()).unwrap_or_default()
-    };
+    let settings = get_settings()?;
+    let servers = settings
+        .agent(&agent_id)
+        .map(|a| a.mcp.clone())
+        .unwrap_or_default();
+    let mcp_defs = mcp_store.lock().await.definitions(&servers);
     // Mirror the agent loop: web_search is listed only when the (global) Tavily
     // key is set.
-    let web_search_enabled = get_settings()
-        .map(|s| !s.search_api_key.trim().is_empty())
-        .unwrap_or(false);
+    let web_search_enabled = !settings.search_api_key.trim().is_empty();
     let registry = ToolRegistry::new(mcp_defs, 0, false, web_search_enabled, false);
     let defs = registry.definitions();
     let mut out = Vec::new();
@@ -49,34 +48,27 @@ pub async fn list_available_tools(
     Ok(out)
 }
 
+/// Connection status of every MCP server in the global pool. The settings UI
+/// shows the whole list; the per-agent view filters it by the agent's `mcp`
+/// names.
 #[tauri::command]
-pub async fn get_mcp_status(
-    agent_id: String,
-    mcp_store: State<'_, McpManagerStore>,
-) -> Result<Vec<McpServerStatus>, String> {
-    let managers = mcp_store.lock().await;
-    Ok(managers
-        .get(&agent_id)
-        .map(|m| m.statuses().to_vec())
-        .unwrap_or_default())
+pub async fn get_mcp_status(mcp_store: State<'_, McpStore>) -> Result<Vec<McpServerStatus>, String> {
+    Ok(mcp_store.lock().await.statuses())
 }
 
+/// Drop every connection and reconnect the servers any agent references. Global
+/// because the connections are: one server, one process, shared by every agent
+/// that lists it.
 #[tauri::command]
-pub async fn reconnect_mcp(
-    agent_id: String,
-    mcp_store: State<'_, McpManagerStore>,
-) -> Result<Vec<McpServerStatus>, String> {
+pub async fn reconnect_mcp(mcp_store: State<'_, McpStore>) -> Result<Vec<McpServerStatus>, String> {
     let settings = get_settings()?;
-    let agent = settings
-        .agent(&agent_id)
-        .ok_or_else(|| format!("Unknown agent: {}", agent_id))?;
-    let fresh = McpManager::start_from_agent(agent).await;
-    let statuses = fresh.statuses().to_vec();
-    let mut managers = mcp_store.lock().await;
-    if let Some(old) = managers.remove(&agent_id) {
-        let mut old = old;
-        old.shutdown().await;
-    }
-    managers.insert(agent_id, fresh);
-    Ok(statuses)
+    let names = settings.referenced_mcp_servers();
+    let servers: Vec<_> = names
+        .iter()
+        .filter_map(|n| settings.mcp_servers.get_key_value(n))
+        .map(|(n, c)| (n.as_str(), c))
+        .collect();
+    let mut hub = mcp_store.lock().await;
+    hub.reconnect(&servers).await;
+    Ok(hub.statuses())
 }

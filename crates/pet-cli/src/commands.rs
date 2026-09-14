@@ -10,7 +10,7 @@ use std::sync::Arc;
 use pet_core::chat::UserTurn;
 use pet_core::group::{self, GroupRuntime};
 use pet_core::session;
-use pet_core::settings::{self, get_settings};
+use pet_core::settings::get_settings;
 use pet_core::skills;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -50,27 +50,22 @@ pub fn spawn_submit(ctx: SubmitCtx, mode: Mode, line: String) {
     });
 }
 
-/// Fetch the active agent's model list from its OpenAI-compatible `/models`
-/// endpoint and open the model picker.
+/// Open the model picker over the globally configured model pool. No network
+/// call: the choices are the `models` entries in config.yaml, which is also what
+/// the agent's `model` field names.
 pub fn spawn_open_models(ctx: SubmitCtx) {
     tokio::spawn(async move {
-        let Some(agent) = ctx.cli.active_agent() else {
+        let Ok(settings) = get_settings() else {
+            return ctx.error("读取配置失败");
+        };
+        let Some(agent) = settings.active_agent_config() else {
             return ctx.error("没有可用的 Agent");
         };
-        ctx.notice("正在获取模型列表…");
-        match settings::list_models(
-            agent.api_base.clone(),
-            agent.api_key.clone(),
-            agent.provider.clone(),
-            agent.model.clone(),
-        )
-        .await {
-            Ok(models) if !models.is_empty() => {
-                ctx.send(AppEvent::OpenPicker(models_picker(&agent.model, &models)));
-            }
-            Ok(_) => ctx.notice("接口没有返回任何模型"),
-            Err(e) => ctx.error(format!("获取模型列表失败：{e}")),
+        if settings.models.is_empty() {
+            return ctx.notice("还没有配置模型：在 GUI 设置 → 全局 → 模型配置里添加");
         }
+        let names: Vec<String> = settings.models.keys().cloned().collect();
+        ctx.send(AppEvent::OpenPicker(models_picker(&agent.model, &names)));
     });
 }
 
@@ -81,10 +76,7 @@ pub fn spawn_refresh_tools(ctx: SubmitCtx) {
     tokio::spawn(async move {
         let Ok(settings) = get_settings() else { return };
         let Some(agent) = settings.active_agent_config() else { return };
-        let mcp_defs = {
-            let managers = ctx.cli.mcp_store.lock().await;
-            managers.get(&agent.id).map(|m| m.definitions()).unwrap_or_default()
-        };
+        let mcp_defs = ctx.cli.mcp_store.lock().await.definitions(&agent.mcp);
         let web_search = !settings.search_api_key.trim().is_empty();
         let registry = pet_core::tools::ToolRegistry::new(mcp_defs, 0, false, web_search, false);
         let n = registry.definitions().as_array().map(|a| a.len()).unwrap_or(0);

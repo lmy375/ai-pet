@@ -29,11 +29,57 @@
 上面的 debug/release 之分。[评测](evals.md)靠它把每条用例跑在一次性目录里，碰不到
 真实的配置与记忆。
 
-## 多 Agent
+## 全局池 + Agent 引用
 
-配置的核心是 `agents` 列表——每个 Agent 有自己的模型、人设/记忆目录
-（`memory/<id>/`）、MCP 工具集、Telegram 机器人和心跳计划。`active_agent`
-指定当前应答桌面聊天的 Agent；聊天历史是全局共享的，切换只改变「谁来回答」。
+配置分三块：全局的 `models`（模型池）和 `mcp_servers`（MCP 服务池），以及 `agents`
+列表——每个 Agent 只按名字引用池里的条目，自己保留人设/记忆目录（`memory/<id>/`）、
+Telegram 机器人和心跳计划。`active_agent` 指定当前应答桌面聊天的 Agent；聊天历史是
+全局共享的，切换只改变「谁来回答」。
+
+```yaml
+models:                      # 模型池，key 就是切换器里显示的名字
+  cobo-gpt:
+    provider: openai
+    api_base: https://litellm.1cobo.com
+    api_key: sk-...
+    model: gpt-5.6-sol-sub2api   # 真正发到 wire 上的模型 id
+    context_window: 200000
+    reasoning: medium
+mcp_servers:                 # MCP 服务池，一台服务器一个进程，被引用的 Agent 共用
+  fs:
+    transport: stdio
+    command: npx
+    args: [-y, "@modelcontextprotocol/server-filesystem", /Users/you]
+agents:
+  - id: default
+    name: 默认
+    model: cobo-gpt          # 引用 models 里的名字
+    mcp: [fs]                # 引用 mcp_servers 里的名字
+```
+
+同一个模型想要两种推理强度，就建两条（`gpt-fast` / `gpt-deep`）——上下文窗口和推理
+强度属于模型，切模型时跟着一起切。在设置里改条目名会自动改掉引用它的 Agent。
+
+### 模型池条目（`models.<名字>`）
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `provider` | `openai` | 线上协议：`openai`（chat-completions）/ `anthropic` / `gemini` / …，见 [provider.rs](../crates/pet-core/src/provider.rs)；网关托管的模型也要显式写，不按模型名猜 |
+| `api_base` | `https://api.openai.com/v1/` | 端点，可填本地服务或代理（如 litellm） |
+| `api_key` | 空 | API 密钥 |
+| `model` | `gpt-4o-mini` | 模型名；视觉需用支持图像的模型 |
+| `context_window` | `128000` | 上下文窗口大小（token），用于占用率显示 |
+| `reasoning` | 空 | 推理强度：空 = 不传；关键字 `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`；或纯数字 = thinking token 预算（仅 Anthropic/Gemini 协议生效） |
+
+### MCP 服务池条目（`mcp_servers.<名字>`）
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `transport` | `stdio` | `stdio`（本地进程）/ `sse` / `http` |
+| `command` / `args` / `env` | 空 | stdio：可执行文件、参数、环境变量 |
+| `url` / `headers` | 空 | sse / http：端点与自定义请求头 |
+
+没有开关字段：没有任何 Agent 引用的服务器压根不会被启动。
 
 ### 每个 Agent 的字段（`agents[]`）
 
@@ -41,13 +87,8 @@
 | --- | --- | --- |
 | `id` | `default` | 稳定标识，也是记忆子目录名；创建后不要改 |
 | `name` | `默认` | 显示名（切换器 / 群聊发言人） |
-| `provider` | `openai` | 线上协议：`openai`（chat-completions）/ `anthropic` / `gemini` / …，见 [provider.rs](../crates/pet-core/src/provider.rs)；网关托管的模型也要显式写，不按模型名猜 |
-| `api_base` | `https://api.openai.com/v1` | 端点，可填本地服务或代理（如 litellm） |
-| `api_key` | 空 | API 密钥 |
-| `model` | `gpt-4o-mini` | 模型名；视觉需用支持图像的模型 |
-| `context_window` | `128000` | 上下文窗口大小（token），用于占用率显示 |
-| `reasoning` | 空 | 推理强度：空 = 不传；关键字 `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`；或纯数字 = thinking token 预算（仅 Anthropic/Gemini 协议生效） |
-| `mcp_servers` | `{}` | MCP 服务表（transport：`stdio` / `sse` / `http`） |
+| `model` | 空 | 引用的模型池条目名；空或指向不存在的条目 ⇒ 该 Agent 无法对话（会直接报错，不会悄悄换个默认值） |
+| `mcp` | `[]` | 引用的 MCP 服务名列表；指向不存在的条目会被忽略 |
 | `telegram` | 关闭 | `bot_token` / `allowed_username` / `enabled`，见 [telegram.md](telegram.md) |
 | `heartbeat_enabled` / `heartbeat_interval` | 关 / `60` | 定时心跳开关 / 间隔（分钟） |
 | `heartbeat_context_turns` | `10` | 心跳携带的最近对话轮数 |

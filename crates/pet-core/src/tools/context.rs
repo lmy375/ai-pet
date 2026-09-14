@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::AiConfig;
 use crate::logging::{write_log, LogStore};
-use crate::mcp::McpManagerStore;
+use crate::mcp::McpStore;
 use crate::shell::{ShellStore, TaskNotifier};
 
 /// UI side effects of the heartbeat-only `chat` tool, performed AFTER the core
@@ -29,7 +29,7 @@ pub struct ToolContext {
     pub shell_store: ShellStore,
     pub log_store: LogStore,
     pub config: AiConfig,
-    pub mcp_store: McpManagerStore,
+    pub mcp_store: McpStore,
     pub depth: usize,
     pub session_id: String,
     /// Grouping key for `llm.log` entries (the LLM-log view keeps only the
@@ -69,7 +69,7 @@ impl ToolContext {
         log_store: LogStore,
         shell_store: ShellStore,
         config: AiConfig,
-        mcp_store: McpManagerStore,
+        mcp_store: McpStore,
         session_id: String,
         notifier: Option<Arc<dyn TaskNotifier>>,
         chat_hook: Option<Arc<dyn ChatHook>>,

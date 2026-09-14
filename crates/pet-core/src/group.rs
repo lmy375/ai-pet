@@ -33,7 +33,7 @@ use tokio::task::AbortHandle;
 use crate::chat::{run_agent_loop, ChatEventSink, ItemBuilder, StreamEvent};
 use crate::config::AiConfig;
 use crate::logging::LogStore;
-use crate::mcp::McpManagerStore;
+use crate::mcp::McpStore;
 use crate::prompt;
 use crate::session;
 use crate::settings::get_settings;
@@ -112,7 +112,7 @@ pub trait GroupEvents: Send + Sync {
 pub struct GroupRuntime {
     pub state: Arc<Mutex<GroupState>>,
     pub events: Arc<dyn GroupEvents>,
-    pub mcp_store: McpManagerStore,
+    pub mcp_store: McpStore,
     pub log_store: LogStore,
     pub shell_store: ShellStore,
 }
@@ -121,7 +121,7 @@ impl GroupRuntime {
     /// Build a runtime with state seeded from disk.
     pub fn new(
         events: Arc<dyn GroupEvents>,
-        mcp_store: McpManagerStore,
+        mcp_store: McpStore,
         log_store: LogStore,
         shell_store: ShellStore,
     ) -> Self {

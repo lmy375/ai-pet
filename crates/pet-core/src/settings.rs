@@ -2,10 +2,14 @@ use genai::chat::ChatRequest;
 use genai::resolver::AuthData;
 use genai::{ModelIden, ServiceTarget};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// One MCP server, defined once globally (`mcp_servers` in config.yaml) and
+/// referenced by name from `AgentConfig::mcp`. There is no per-server "enabled"
+/// flag: an agent either lists a server or it doesn't, and the connection pool
+/// only starts the servers somebody references.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     /// Transport type: "stdio", "sse", or "http"
@@ -22,21 +26,92 @@ pub struct McpServerConfig {
     pub url: String,
     /// Custom HTTP headers (sse/http transport)
     #[serde(default)]
-    pub headers: HashMap<String, String>,
+    pub headers: BTreeMap<String, String>,
     /// Environment variables for the process (stdio transport)
     #[serde(default)]
-    pub env: HashMap<String, String>,
-    /// Whether this server is enabled
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            transport: default_transport(),
+            command: String::new(),
+            args: Vec::new(),
+            url: String::new(),
+            headers: BTreeMap::new(),
+            env: BTreeMap::new(),
+        }
+    }
 }
 
 fn default_transport() -> String {
     "stdio".to_string()
 }
 
-fn default_true() -> bool {
-    true
+/// One entry of the global model pool (`models` in config.yaml), keyed by a
+/// user-chosen name. Everything needed to reach a model lives here — endpoint,
+/// credentials, wire protocol, context window and reasoning effort — so an
+/// agent only has to name one (`AgentConfig::model`), and switching models in
+/// the chat switches the context window and thinking budget with it.
+///
+/// The same underlying model at two reasoning strengths is two entries
+/// (`gpt-5.6-fast` / `gpt-5.6-deep`), which is the point: that choice belongs
+/// to the model, not to the persona using it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    /// Which LLM wire protocol to speak: "" (auto) / "openai" / "openai_resp" /
+    /// "anthropic" / "gemini" / "deepseek" / "xai" / "groq" / "ollama" /
+    /// "openrouter" / "together" / "cohere" / "zai" / "moonshot" / "minimax".
+    /// Auto asks genai to infer from the model name, which is a static prefix
+    /// map (`gpt*`→OpenAI, `claude*`→Anthropic, `gemini*`→Gemini, …) that falls
+    /// back to Ollama when nothing matches — so it guesses wrong for
+    /// gateway-hosted or renamed models. Set it explicitly there.
+    /// See `crate::provider`.
+    ///
+    /// Defaults to `openai` rather than auto: every model this app has ever
+    /// talked to spoke OpenAI chat-completions by definition, and
+    /// auto-detection would silently re-route them (a gateway-hosted
+    /// `claude-sonnet-4-6` infers Anthropic, `GPT-5.5` matches nothing and
+    /// falls back to Ollama). Auto stays available as an explicit choice.
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default = "default_api_base")]
+    pub api_base: String,
+    #[serde(default)]
+    pub api_key: String,
+    /// The model id sent on the wire (the map key is just the display name).
+    #[serde(default = "default_model")]
+    pub model: String,
+    /// Context-window size (tokens), the denominator of the chat context-usage
+    /// ring. Not exposed by the OpenAI API, so it's user-configured.
+    #[serde(default = "default_context_window")]
+    pub context_window: u32,
+    /// How hard the model should think, as genai's single `ReasoningEffort`:
+    /// `""` (send nothing, model default) / `none` / `minimal` / `low` /
+    /// `medium` / `high` / `xhigh` / `max`, or a plain token count for an
+    /// explicit thinking budget (e.g. `4096`).
+    ///
+    /// Each adapter renders this to its own wire format — `reasoning_effort`
+    /// for OpenAI, `output_config.effort` or `thinking` for Anthropic,
+    /// `thinkingConfig.thinkingBudget` for Gemini. A numeric budget is only
+    /// native to Anthropic/Gemini; see `llm::chat_options` for how it reaches
+    /// OpenAI-protocol gateways.
+    #[serde(default)]
+    pub reasoning: String,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_provider(),
+            api_base: default_api_base(),
+            api_key: String::new(),
+            model: default_model(),
+            context_window: default_context_window(),
+            reasoning: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -58,8 +133,9 @@ pub struct WindowPosition {
     pub y: i32,
 }
 
-/// One configurable agent. Each agent has its own model, persona/memory
-/// (under `memory/<id>/`), MCP tool set, Telegram bot and heartbeat schedule.
+/// One configurable agent: a persona/memory (under `memory/<id>/`) plus
+/// references into the global pools — which model it speaks through and which
+/// MCP servers it may use — and its own Telegram bot and heartbeat schedule.
 /// Global concerns (Live2D, gallery, language) live on `AppSettings` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -70,46 +146,14 @@ pub struct AgentConfig {
     /// Human-readable name shown in the agent switcher / settings.
     #[serde(default = "default_agent_name")]
     pub name: String,
-    /// Which LLM wire protocol to speak: "" (auto) / "openai" / "openai_resp" /
-    /// "anthropic" / "gemini" / "deepseek" / "xai" / "groq" / "ollama" /
-    /// "openrouter" / "together" / "cohere" / "zai" / "moonshot" / "minimax".
-    /// Auto asks genai to infer from the model name, which is a static prefix
-    /// map (`gpt*`→OpenAI, `claude*`→Anthropic, `gemini*`→Gemini, …) that falls
-    /// back to Ollama when nothing matches — so it guesses wrong for
-    /// gateway-hosted or renamed models. Set it explicitly there.
-    /// See `crate::provider`.
-    ///
-    /// Defaults to `openai` rather than auto: every agent that worked before
-    /// the genai migration spoke OpenAI chat-completions by definition, and
-    /// auto-detection would silently re-route them (a gateway-hosted
-    /// `claude-sonnet-4-6` infers Anthropic, `GPT-5.5` matches nothing and
-    /// falls back to Ollama). Auto stays available as an explicit choice.
-    #[serde(default = "default_provider")]
-    pub provider: String,
-    #[serde(default = "default_api_base")]
-    pub api_base: String,
+    /// Name of the `models` entry this agent talks through. Empty or unknown is
+    /// a configuration error reported at chat time, not silently patched.
     #[serde(default)]
-    pub api_key: String,
-    #[serde(default = "default_model")]
     pub model: String,
-    /// Context-window size (tokens), the denominator of the chat context-usage
-    /// ring. Not exposed by the OpenAI API, so it's user-configured.
-    #[serde(default = "default_context_window")]
-    pub context_window: u32,
-    /// How hard the model should think, as genai's single `ReasoningEffort`:
-    /// `""` (send nothing, model default) / `none` / `minimal` / `low` /
-    /// `medium` / `high` / `xhigh` / `max`, or a plain token count for an
-    /// explicit thinking budget (e.g. `4096`).
-    ///
-    /// Each adapter renders this to its own wire format — `reasoning_effort`
-    /// for OpenAI, `output_config.effort` or `thinking` for Anthropic,
-    /// `thinkingConfig.thinkingBudget` for Gemini. A numeric budget is only
-    /// native to Anthropic/Gemini; see `llm::chat_options` for how it reaches
-    /// OpenAI-protocol gateways.
+    /// Names of the `mcp_servers` entries this agent may call. Unknown names are
+    /// ignored (see `AppSettings::mcp_for`).
     #[serde(default)]
-    pub reasoning: String,
-    #[serde(default)]
-    pub mcp_servers: HashMap<String, McpServerConfig>,
+    pub mcp: Vec<String>,
     #[serde(default)]
     pub telegram: TelegramConfig,
     /// When true, this agent wakes up in the background on a fixed interval to
@@ -131,13 +175,8 @@ impl Default for AgentConfig {
         Self {
             id: default_agent_id(),
             name: default_agent_name(),
-            provider: default_provider(),
-            api_base: default_api_base(),
-            api_key: String::new(),
-            model: default_model(),
-            context_window: default_context_window(),
-            reasoning: String::new(),
-            mcp_servers: HashMap::new(),
+            model: String::new(),
+            mcp: Vec::new(),
             telegram: TelegramConfig::default(),
             heartbeat_enabled: false,
             heartbeat_interval: default_heartbeat_interval(),
@@ -148,6 +187,14 @@ impl Default for AgentConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    /// The global model pool, keyed by display name. Agents reference an entry
+    /// by name; the in-chat model switcher picks from these keys.
+    #[serde(default)]
+    pub models: BTreeMap<String, ModelConfig>,
+    /// The global MCP server pool, keyed by name. Agents reference entries by
+    /// name; one connection is shared by every agent that lists it.
+    #[serde(default)]
+    pub mcp_servers: BTreeMap<String, McpServerConfig>,
     #[serde(default = "default_model_path")]
     pub live_2d_model_path: String,
     /// UI language: "zh" or "en".
@@ -201,6 +248,57 @@ impl AppSettings {
     pub fn agent(&self, id: &str) -> Option<&AgentConfig> {
         self.agents.iter().find(|a| a.id == id)
     }
+
+    /// Look up a model-pool entry by name.
+    pub fn model(&self, name: &str) -> Option<&ModelConfig> {
+        self.models.get(name)
+    }
+
+    /// Resolve the model an agent speaks through. A missing or dangling
+    /// reference is a real configuration error — reported here, in the one
+    /// place that resolves it, rather than substituted with a default that
+    /// would quietly talk to the wrong endpoint.
+    pub fn model_for(&self, agent: &AgentConfig) -> Result<&ModelConfig, String> {
+        if agent.model.trim().is_empty() {
+            return Err(format!(
+                "Agent \"{}\" 还没有选择模型。打开设置 → 全局 → 模型配置。",
+                agent.name
+            ));
+        }
+        self.model(&agent.model).ok_or_else(|| {
+            format!(
+                "Agent \"{}\" 引用了不存在的模型 \"{}\"。打开设置 → 全局 → 模型配置。",
+                agent.name, agent.model
+            )
+        })
+    }
+
+    /// The MCP servers an agent may call, in the order it lists them. Names with
+    /// no matching entry are skipped: a deleted server should cost that agent
+    /// its tools, not its ability to chat.
+    pub fn mcp_for<'a>(&'a self, agent: &'a AgentConfig) -> Vec<(&'a str, &'a McpServerConfig)> {
+        agent
+            .mcp
+            .iter()
+            .filter_map(|name| self.mcp_servers.get_key_value(name.as_str()))
+            .map(|(name, config)| (name.as_str(), config))
+            .collect()
+    }
+
+    /// Every MCP server name referenced by any agent — what the GUI connects at
+    /// startup, so nothing spawns for a server nobody uses.
+    pub fn referenced_mcp_servers(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .agents
+            .iter()
+            .flat_map(|a| a.mcp.iter())
+            .filter(|name| self.mcp_servers.contains_key(name.as_str()))
+            .cloned()
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
 }
 
 /// The active agent's id (resolved like `active_agent_config`), or "default"
@@ -251,7 +349,6 @@ fn default_context_window() -> u32 {
     128000
 }
 
-
 fn default_model() -> String {
     "gpt-4o-mini".to_string()
 }
@@ -275,6 +372,8 @@ fn default_agents() -> Vec<AgentConfig> {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            models: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
             live_2d_model_path: default_model_path(),
             language: default_language(),
             gallery_dir: String::new(),
@@ -407,10 +506,13 @@ pub fn set_active_agent(id: &str) -> Result<(), String> {
     save_settings(&settings)
 }
 
-/// Change one agent's `model` without rewriting the whole settings object — used
-/// by the in-chat model switcher.
+/// Point one agent at a different entry of the global model pool, without
+/// rewriting the whole settings object — used by the in-chat model switcher.
 pub fn set_agent_model(id: &str, model: &str) -> Result<(), String> {
     let mut settings = get_settings()?;
+    if !settings.models.contains_key(model) {
+        return Err(format!("Unknown model: {}", model));
+    }
     let agent = settings
         .agents
         .iter_mut()
@@ -450,4 +552,81 @@ pub fn save_config_raw(content: &str) -> Result<(), String> {
     write_config_file(content)?;
     ensure_agent_dirs(&settings);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The on-disk contract: two global pools, agents that only reference them.
+    /// Pinned as YAML because this is the file people hand-edit.
+    const CONFIG: &str = r#"
+models:
+  fast:
+    provider: openai
+    api_base: https://litellm.example.com
+    api_key: sk-test
+    model: gpt-5.6-sol-sub2api
+    context_window: 200000
+    reasoning: medium
+mcp_servers:
+  fs:
+    transport: stdio
+    command: npx
+agents:
+  - id: default
+    name: 小宠
+    model: fast
+    mcp: [fs, gone]
+  - id: other
+    name: 别的
+    model: missing
+"#;
+
+    fn parse() -> AppSettings {
+        serde_yaml::from_str(CONFIG).expect("config parses")
+    }
+
+    #[test]
+    fn agent_resolves_its_model_through_the_global_pool() {
+        let s = parse();
+        let model = s.model_for(s.agent("default").unwrap()).unwrap();
+        // The map key is the display name; `model` is what goes on the wire.
+        assert_eq!(model.model, "gpt-5.6-sol-sub2api");
+        assert_eq!(model.context_window, 200000);
+        assert_eq!(model.reasoning, "medium");
+    }
+
+    #[test]
+    fn dangling_or_empty_model_reference_is_an_error_not_a_default() {
+        // Substituting a default here would silently talk to api.openai.com with
+        // no key; the agent must refuse instead.
+        let s = parse();
+        assert!(s.model_for(s.agent("other").unwrap()).is_err());
+
+        let mut s = s;
+        s.agents[0].model = String::new();
+        assert!(s.model_for(&s.agents[0]).is_err());
+    }
+
+    #[test]
+    fn unknown_mcp_reference_is_skipped_not_fatal() {
+        // A server deleted from the global pool should cost the agent its tools,
+        // not its ability to chat.
+        let s = parse();
+        let servers = s.mcp_for(s.agent("default").unwrap());
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].0, "fs");
+        assert_eq!(servers[0].1.command, "npx");
+    }
+
+    #[test]
+    fn only_referenced_servers_are_started() {
+        // What the GUI connects at boot: nothing spawns for a server no agent
+        // lists, and a server two agents share is listed once.
+        let mut s = parse();
+        s.mcp_servers.insert("idle".to_string(), McpServerConfig::default());
+        s.agents[1].mcp = vec!["fs".to_string()];
+        assert_eq!(s.referenced_mcp_servers(), vec!["fs".to_string()]);
+    }
 }

@@ -1,19 +1,21 @@
-use crate::settings::{AgentConfig, McpServerConfig};
+use crate::settings::McpServerConfig;
 use rmcp::model::{CallToolRequestParams, Tool as McpTool};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::ServiceExt;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// One `McpManager` per agent, keyed by agent id. Each agent has its own set of
-/// MCP servers / tools, so chat / heartbeat / telegram resolve their manager by
-/// `config.agent_id`.
-pub type McpManagerStore = Arc<Mutex<HashMap<String, McpManager>>>;
+/// One process (or HTTP session) per configured MCP server, shared by every
+/// agent that lists it. Servers are defined once globally (`mcp_servers` in
+/// config.yaml) and referenced by name from `AgentConfig::mcp`, so two agents
+/// using the same server talk to the same connection instead of spawning a
+/// child process each.
+pub type McpStore = Arc<Mutex<McpHub>>;
 
-pub fn new_mcp_store() -> McpManagerStore {
-    Arc::new(Mutex::new(HashMap::new()))
+pub fn new_mcp_store() -> McpStore {
+    Arc::new(Mutex::new(McpHub::new()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,81 +27,80 @@ pub struct McpServerStatus {
     pub error: Option<String>,
 }
 
-/// Holds a running MCP client connection
-struct McpConnection {
+/// A live MCP client connection plus the tool set it advertised at handshake.
+struct Connection {
     service: RunningService<RoleClient, ()>,
+    /// Tool definitions in OpenAI function-calling format.
+    definitions: Vec<serde_json::Value>,
+    tool_names: Vec<String>,
 }
 
-pub struct McpManager {
-    connections: HashMap<String, McpConnection>,
-    /// tool_name -> server_name mapping
-    tool_map: HashMap<String, String>,
-    /// Cached tool definitions in OpenAI function calling format
-    tool_definitions: Vec<serde_json::Value>,
-    /// Server statuses for UI
-    statuses: Vec<McpServerStatus>,
+pub struct McpHub {
+    connections: HashMap<String, Connection>,
+    /// Outcome of the last connection attempt per server name, including
+    /// failures (which have no `Connection`), for the settings UI.
+    statuses: BTreeMap<String, McpServerStatus>,
 }
 
-impl McpManager {
+impl McpHub {
     pub fn new() -> Self {
         Self {
             connections: HashMap::new(),
-            tool_map: HashMap::new(),
-            tool_definitions: Vec::new(),
-            statuses: Vec::new(),
+            statuses: BTreeMap::new(),
         }
     }
 
-    /// Connect to all enabled MCP servers configured for one agent.
-    pub async fn start_from_agent(agent: &AgentConfig) -> Self {
-        let mut manager = Self::new();
+    /// Connect every named server that isn't connected yet. Cheap to call
+    /// repeatedly — an already-connected server is skipped, which is what makes
+    /// the CLI's lazy "connect before this agent's first turn" and the GUI's
+    /// "connect everything at startup" the same code path.
+    pub async fn ensure(&mut self, servers: &[(&str, &McpServerConfig)]) {
+        for (name, config) in servers {
+            if self.connections.contains_key(*name) {
+                continue;
+            }
+            self.connect(name, config).await;
+        }
+    }
 
-        for (name, config) in &agent.mcp_servers {
-            if !config.enabled {
-                manager.statuses.push(McpServerStatus {
-                    name: name.clone(),
+    /// Drop every connection and reconnect the given servers — the settings
+    /// "reconnect" button, after the server list or a command line changed.
+    pub async fn reconnect(&mut self, servers: &[(&str, &McpServerConfig)]) {
+        self.shutdown().await;
+        self.ensure(servers).await;
+    }
+
+    async fn connect(&mut self, name: &str, config: &McpServerConfig) {
+        let status = match Self::connect_server(config).await {
+            Ok((service, tools)) => {
+                let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+                let definitions: Vec<serde_json::Value> =
+                    tools.iter().map(mcp_tool_to_openai).collect();
+                let status = McpServerStatus {
+                    name: name.to_string(),
+                    connected: true,
+                    tool_count: tool_names.len(),
+                    tool_names: tool_names.clone(),
+                    error: None,
+                };
+                self.connections.insert(
+                    name.to_string(),
+                    Connection { service, definitions, tool_names },
+                );
+                status
+            }
+            Err(e) => {
+                eprintln!("Failed to connect MCP server '{}': {}", name, e);
+                McpServerStatus {
+                    name: name.to_string(),
                     connected: false,
                     tool_count: 0,
                     tool_names: vec![],
-                    error: Some("Disabled".to_string()),
-                });
-                continue;
-            }
-
-            match Self::connect_server(config).await {
-                Ok((service, tools)) => {
-                    let tool_count = tools.len();
-                    let tool_names: Vec<String> =
-                        tools.iter().map(|t| t.name.to_string()).collect();
-                    for tool in &tools {
-                        let tool_name = tool.name.to_string();
-                        let openai_def = mcp_tool_to_openai(tool);
-                        manager.tool_map.insert(tool_name, name.clone());
-                        manager.tool_definitions.push(openai_def);
-                    }
-                    manager.connections.insert(name.clone(), McpConnection { service });
-                    manager.statuses.push(McpServerStatus {
-                        name: name.clone(),
-                        connected: true,
-                        tool_count,
-                        tool_names,
-                        error: None,
-                    });
-                }
-                Err(e) => {
-                    eprintln!("Failed to connect MCP server '{}': {}", name, e);
-                    manager.statuses.push(McpServerStatus {
-                        name: name.clone(),
-                        connected: false,
-                        tool_count: 0,
-                        tool_names: vec![],
-                        error: Some(e),
-                    });
+                    error: Some(e),
                 }
             }
-        }
-
-        manager
+        };
+        self.statuses.insert(name.to_string(), status);
     }
 
     async fn connect_server(
@@ -177,26 +178,39 @@ impl McpManager {
         Self::serve_and_list(transport).await
     }
 
-    /// Get all MCP tool definitions in OpenAI function calling format
-    pub fn definitions(&self) -> Vec<serde_json::Value> {
-        self.tool_definitions.clone()
+    /// Tool definitions offered to one agent: the union of the servers it lists,
+    /// in that order. A tool name served by two of them resolves to the first —
+    /// the same server `call_tool` will route to.
+    pub fn definitions(&self, servers: &[String]) -> Vec<serde_json::Value> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut defs = Vec::new();
+        for name in servers {
+            let Some(conn) = self.connections.get(name) else { continue };
+            for (def, tool) in conn.definitions.iter().zip(&conn.tool_names) {
+                if seen.contains(&tool.as_str()) {
+                    continue;
+                }
+                seen.push(tool);
+                defs.push(def.clone());
+            }
+        }
+        defs
     }
 
-    /// Call an MCP tool by name
+    /// Call an MCP tool on behalf of an agent, routed to the first server in
+    /// that agent's list which advertises it. A tool from a server the agent
+    /// doesn't list is not callable, even if another agent has it connected.
     pub async fn call_tool(
         &self,
+        servers: &[String],
         name: &str,
         arguments: serde_json::Value,
     ) -> Result<String, String> {
-        let server_name = self
-            .tool_map
-            .get(name)
+        let conn = servers
+            .iter()
+            .filter_map(|s| self.connections.get(s))
+            .find(|c| c.tool_names.iter().any(|t| t == name))
             .ok_or_else(|| format!("MCP tool not found: {}", name))?;
-
-        let conn = self
-            .connections
-            .get(server_name)
-            .ok_or_else(|| format!("MCP server not connected: {}", server_name))?;
 
         // Convert serde_json::Value to JsonObject (Map<String, Value>)
         let args_obj = match arguments {
@@ -209,8 +223,7 @@ impl McpManager {
             }
         };
 
-        let tool_name = name.to_string();
-        let params = CallToolRequestParams::new(tool_name).with_arguments(args_obj);
+        let params = CallToolRequestParams::new(name.to_string()).with_arguments(args_obj);
         let result = conn
             .service
             .call_tool(params)
@@ -244,9 +257,10 @@ impl McpManager {
         Ok(output)
     }
 
-    /// Get status of all servers
-    pub fn statuses(&self) -> &[McpServerStatus] {
-        &self.statuses
+    /// Status of every server that has been connected (or failed to), for the
+    /// global MCP settings card. Agent-scoped views filter this by name.
+    pub fn statuses(&self) -> Vec<McpServerStatus> {
+        self.statuses.values().cloned().collect()
     }
 
     /// Shutdown all connections
@@ -255,9 +269,13 @@ impl McpManager {
             eprintln!("Shutting down MCP server: {}", name);
             let _ = conn.service.cancel().await;
         }
-        self.tool_map.clear();
-        self.tool_definitions.clear();
         self.statuses.clear();
+    }
+}
+
+impl Default for McpHub {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

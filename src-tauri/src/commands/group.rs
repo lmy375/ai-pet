@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, State};
 use pet_core::chat::StreamEvent;
 use pet_core::group::{self, GroupEvents, GroupMessage, GroupRuntime, GroupState};
 use pet_core::logging::LogStore;
-use pet_core::mcp::McpManagerStore;
+use pet_core::mcp::McpStore;
 use pet_core::shell::ShellStore;
 
 /// Tauri-managed handle to the group runtime.
@@ -43,7 +43,7 @@ impl GroupEvents for TauriGroupEvents {
 /// (the event sink needs the app handle).
 pub fn new_group_store(
     app: AppHandle,
-    mcp_store: McpManagerStore,
+    mcp_store: McpStore,
     log_store: LogStore,
     shell_store: ShellStore,
 ) -> GroupStore {

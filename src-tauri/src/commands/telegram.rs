@@ -4,7 +4,7 @@ use tauri::State;
 use pet_core::logging::LogStore;
 use pet_core::settings::get_settings;
 use pet_core::shell::ShellStore;
-use pet_core::mcp::McpManagerStore;
+use pet_core::mcp::McpStore;
 use crate::telegram::bot::TelegramBot;
 use crate::telegram::TelegramStore;
 
@@ -19,7 +19,7 @@ pub struct TelegramStatus {
 /// `reconnect_telegram` command. Errors per agent are logged, not fatal.
 pub async fn restart_all_bots(
     telegram_store: &TelegramStore,
-    mcp_store: McpManagerStore,
+    mcp_store: McpStore,
     log_store: LogStore,
     shell_store: ShellStore,
 ) {
@@ -73,7 +73,7 @@ pub async fn get_telegram_status(
 #[tauri::command]
 pub async fn reconnect_telegram(
     telegram_store: State<'_, TelegramStore>,
-    mcp_store: State<'_, McpManagerStore>,
+    mcp_store: State<'_, McpStore>,
     log_store: State<'_, LogStore>,
     shell_store: State<'_, ShellStore>,
 ) -> Result<(), String> {

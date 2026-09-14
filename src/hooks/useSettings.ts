@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTauriEvent } from "./useTauriEvent";
 
+/** One MCP server in the global pool. Agents reference it by name. */
 export interface McpServerConfig {
   transport: "stdio" | "sse" | "http";
   command: string;
@@ -9,7 +10,20 @@ export interface McpServerConfig {
   url: string;
   headers: Record<string, string>;
   env: Record<string, string>;
-  enabled: boolean;
+}
+
+/** One entry of the global model pool: everything needed to reach a model. */
+export interface ModelConfig {
+  /** Wire protocol to speak; "" = auto-detect from the model name. Defaults to "openai". */
+  provider: string;
+  api_base: string;
+  api_key: string;
+  /** The model id sent on the wire (the pool key is just the display name). */
+  model: string;
+  context_window: number;
+  /** Reasoning control: "" (off) or an effort keyword (minimal/low/medium/high/xhigh/max),
+   *  or a plain token count for an explicit thinking budget. */
+  reasoning: string;
 }
 
 export interface TelegramConfig {
@@ -18,21 +32,14 @@ export interface TelegramConfig {
   enabled: boolean;
 }
 
-/** One configurable agent: its own model, persona/memory, MCP, telegram, heartbeat. */
+/** One configurable agent: a persona/memory plus references into the global pools. */
 export interface AgentConfig {
   id: string;
   name: string;
-  /** Wire protocol to speak; "" = auto-detect from the model name. Defaults to "openai". */
-  provider: string;
-  api_base: string;
-  api_key: string;
+  /** Name of the `models` entry this agent talks through. */
   model: string;
-  context_window: number;
-  /** OpenAI-style reasoning effort ("minimal"/"low"/"medium"/"high"); "" = omit. */
-  /** Reasoning control: "" (off) or an effort keyword (minimal/low/medium/high/xhigh/max),
-   *  or a plain token count for an explicit thinking budget. */
-  reasoning: string;
-  mcp_servers: Record<string, McpServerConfig>;
+  /** Names of the `mcp_servers` entries this agent may call. */
+  mcp: string[];
   telegram: TelegramConfig;
   heartbeat_enabled: boolean;
   heartbeat_interval: number;
@@ -40,6 +47,10 @@ export interface AgentConfig {
 }
 
 export interface AppSettings {
+  /** The global model pool, keyed by display name. */
+  models: Record<string, ModelConfig>;
+  /** The global MCP server pool, keyed by name. */
+  mcp_servers: Record<string, McpServerConfig>;
   live_2d_model_path: string;
   language: string;
   gallery_dir: string;
@@ -93,13 +104,8 @@ export function defaultAgent(id = "default", name = "默认"): AgentConfig {
   return {
     id,
     name,
-    provider: "openai",
-    api_base: "https://api.openai.com/v1/",
-    api_key: "",
-    model: "gpt-4o-mini",
-    context_window: 128000,
-    reasoning: "",
-    mcp_servers: {},
+    model: "",
+    mcp: [],
     telegram: { bot_token: "", allowed_username: "", enabled: false },
     heartbeat_enabled: false,
     heartbeat_interval: 60,
@@ -107,7 +113,25 @@ export function defaultAgent(id = "default", name = "默认"): AgentConfig {
   };
 }
 
+/** A fresh model-pool entry (also the source of the settings placeholders). */
+export function defaultModel(): ModelConfig {
+  return {
+    provider: "openai",
+    api_base: "https://api.openai.com/v1/",
+    api_key: "",
+    model: "",
+    context_window: 128000,
+    reasoning: "",
+  };
+}
+
+export function emptyMcpServer(transport: McpServerConfig["transport"] = "stdio"): McpServerConfig {
+  return { transport, command: "", args: [], url: "", headers: {}, env: {} };
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
+  models: {},
+  mcp_servers: {},
   live_2d_model_path: "/models/miku/miku.model3.json",
   language: "zh",
   gallery_dir: "",

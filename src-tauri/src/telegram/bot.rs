@@ -12,7 +12,7 @@ use pet_core::session;
 use pet_core::settings::TelegramConfig;
 use pet_core::shell::ShellStore;
 use pet_core::config::AiConfig;
-use pet_core::mcp::McpManagerStore;
+use pet_core::mcp::McpStore;
 use pet_core::tools::ToolContext;
 
 /// A running Telegram bot instance.
@@ -26,7 +26,7 @@ struct HandlerState {
     /// persona/memory and MCP set on each message.
     agent_id: String,
     allowed_username: String,
-    mcp_store: McpManagerStore,
+    mcp_store: McpStore,
     log_store: LogStore,
     shell_store: ShellStore,
     /// Messages for the dedicated Telegram session (kept in memory for fast access).
@@ -47,7 +47,7 @@ impl TelegramBot {
     pub async fn start(
         agent_id: String,
         config: TelegramConfig,
-        mcp_store: McpManagerStore,
+        mcp_store: McpStore,
         log_store: LogStore,
         shell_store: ShellStore,
     ) -> Result<Self, String> {

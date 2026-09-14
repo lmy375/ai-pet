@@ -14,7 +14,7 @@ use pet_core::shell::{run_or_background, ShellStore, TaskKind};
 use pet_core::prompt;
 use pet_core::session;
 use pet_core::config::AiConfig;
-use pet_core::mcp::McpManagerStore;
+use pet_core::mcp::McpStore;
 use pet_core::tools::ToolContext;
 
 /// How long a heartbeat session may run before it auto-converts to a background
@@ -28,7 +28,7 @@ pub fn start_scheduler(
     app: tauri::AppHandle,
     log_store: LogStore,
     shell_store: ShellStore,
-    mcp_store: McpManagerStore,
+    mcp_store: McpStore,
 ) {
     tauri::async_runtime::spawn(async move {
         // Minutes elapsed per agent since its last fire (or since it was enabled).
@@ -89,7 +89,7 @@ async fn run_one_heartbeat(
     app: &tauri::AppHandle,
     log_store: &LogStore,
     shell_store: &ShellStore,
-    mcp_store: &McpManagerStore,
+    mcp_store: &McpStore,
     agent: &AgentConfig,
 ) {
     let config = match AiConfig::from_agent(agent) {

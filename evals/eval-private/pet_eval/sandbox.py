@@ -32,6 +32,9 @@ AGENT_NAME = "小宠"
 
 MEMORY_FILES = ("SOUL.md", "USER.md", "MEMORY.md", "HEARTBEAT.md")
 
+# 全局模型池里那一条的名字；agent 靠它引用模型
+MODEL_NAME = "eval"
+
 
 class ModelSpec(BaseModel):
     """评测跑在哪个模型上、怎么寻址。"""
@@ -79,15 +82,12 @@ def _read_memory(memory_dir: Path) -> dict[str, str]:
 
 
 def _config_yaml(root: Path, model: ModelSpec) -> dict:
-    # 字段名对齐 pet-core settings.rs 的 AgentConfig；其余字段有 serde default，只写评测关心的。
+    # 字段名对齐 pet-core settings.rs：models 是全局模型池，agent 只引用池里的名字。
     return {
         "skills_dir": str(root / "skills"),
         "search_api_key": "",  # 没有 Tavily key ⇒ 不提供 web_search，工具集在每台机器上一致
-        "active_agent": AGENT_ID,
-        "agents": [
-            {
-                "id": AGENT_ID,
-                "name": AGENT_NAME,
+        "models": {
+            MODEL_NAME: {
                 "provider": model.provider,
                 "api_base": model.api_base,
                 "api_key": model.api_key,
@@ -95,7 +95,9 @@ def _config_yaml(root: Path, model: ModelSpec) -> dict:
                 "context_window": model.context_window,
                 "reasoning": model.reasoning,
             }
-        ],
+        },
+        "active_agent": AGENT_ID,
+        "agents": [{"id": AGENT_ID, "name": AGENT_NAME, "model": MODEL_NAME}],
     }
 
 
