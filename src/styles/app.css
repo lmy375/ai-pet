@@ -28,12 +28,6 @@
   --color-code: #232b3a;
   --color-code-ink: #d8dde9;
 
-  /* Reasoning ("thinking") — a distinct hue so internal thought never reads
-     as part of the answer */
-  --color-think: #5a4fbd;
-  --color-think-soft: #f4f2fe;
-  --color-think-line: #e2ddfb;
-
   /* Type scale */
   --text-meta: 11px;
   --text-note: 12px;

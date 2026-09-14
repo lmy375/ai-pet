@@ -140,12 +140,15 @@ export function SessionSidebar({ sessions, activeId, running = [], onSelect, onN
                       }
                     }}
                     placeholder={t("chat.session.titlePlaceholder")}
-                    className="w-full rounded-field border border-accent bg-surface px-2 py-1.5 text-body text-ink outline-none"
+                    className="h-8 w-full rounded-field border border-accent bg-surface px-2 text-body text-ink outline-none"
                   />
                 ) : (
+                  // Fixed height: the hover state swaps the 11px timestamp for
+                  // 24px icon buttons, which would otherwise grow the row and
+                  // shove every row below it down.
                   <div
                     key={s.id}
-                    className={`group flex items-center gap-1 rounded-field px-2 py-1.5 transition-colors ${
+                    className={`group flex h-8 items-center gap-1 rounded-field px-2 transition-colors ${
                       active ? "bg-accent-soft" : "hover:bg-hover"
                     }`}
                   >
