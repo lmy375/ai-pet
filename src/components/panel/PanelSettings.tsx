@@ -352,7 +352,7 @@ export function PanelSettings() {
           {/* The two pools agents reference, first — everything below is chrome
               by comparison. */}
           <div id="pool-models">
-            <ModelsCard settings={form} onDraft={setForm} onCommit={commitSettings} />
+            <ModelsCard settings={form} onDraft={setForm} onCommit={commitSettings} notify={ok} />
           </div>
 
           <div id="pool-mcp">
