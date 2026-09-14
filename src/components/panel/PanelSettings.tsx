@@ -312,9 +312,8 @@ export function PanelSettings() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Tab bar: config file | global | per-agent... | + add | open folder */}
+      {/* Tab bar: global | per-agent... | + add | config file (far right) */}
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line/70 bg-surface/80 px-3 py-2 backdrop-blur">
-        <TabBtn active={tab === "raw"} onClick={() => selectTab("raw")}>{t("settings.tab.file")}</TabBtn>
         <TabBtn active={tab === "global"} onClick={() => selectTab("global")}>{t("settings.tab.global")}</TabBtn>
         {form.agents.map((a) => (
           <TabBtn key={a.id} active={tab === a.id} onClick={() => selectTab(a.id)} dot={a.id === form.active_agent}>
@@ -329,16 +328,24 @@ export function PanelSettings() {
           <PlusIcon className="h-4 w-4" />
           {t("settings.agent.add")}
         </button>
-        <Button variant="ghost" size="sm" className="ml-auto shrink-0" onClick={handleOpenConfigDir} title={t("settings.openConfigDirTitle")}>
-          {t("settings.openConfigDir")}
-        </Button>
+        <div className="ml-auto shrink-0">
+          <TabBtn active={tab === "raw"} onClick={() => selectTab("raw")}>{t("settings.tab.file")}</TabBtn>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-5">
       {tab === "raw" ? (
         <>
-          <Card title="config.yaml">
+          <Card
+            title="config.yaml"
+            action={
+              <Button variant="ghost" size="sm" onClick={handleOpenConfigDir} title={t("settings.openConfigDirTitle")}>
+                {t("settings.openConfigDir")}
+              </Button>
+            }
+          >
             <TextArea
+              autoGrow
               value={rawYaml}
               onChange={(e) => setRawYaml(e.target.value)}
               onBlur={saveRaw}

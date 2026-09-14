@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import type {
   InputHTMLAttributes,
   TextareaHTMLAttributes,
@@ -19,8 +20,32 @@ export function TextInput({ className = "", ...rest }: InputHTMLAttributes<HTMLI
   return <input className={`${inputClass} ${className}`} {...rest} />;
 }
 
-export function TextArea({ className = "", ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={`${inputClass} resize-y leading-relaxed ${className}`} {...rest} />;
+type TextAreaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  /** Grow to fit the whole value instead of scrolling inside a fixed box. */
+  autoGrow?: boolean;
+};
+
+export function TextArea({ className = "", autoGrow = false, value, ...rest }: TextAreaProps) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  // Measure after every value change (and after mount, once the font is applied):
+  // reset to `auto` first so the box can shrink as well as grow.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!autoGrow || !el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [autoGrow, value]);
+  // Only the vertical scroll is replaced by growth; a `whitespace-pre` field
+  // (config.yaml) still needs to scroll sideways for long lines.
+  const sizing = autoGrow ? "resize-none overflow-y-hidden overflow-x-auto" : "resize-y";
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      className={`${inputClass} ${sizing} leading-relaxed ${className}`}
+      {...rest}
+    />
+  );
 }
 
 export function Select({ className = "", ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
