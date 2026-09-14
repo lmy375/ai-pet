@@ -14,6 +14,8 @@
 | `memory/<agent id>/USER.md` | 关于主人的事实与偏好（宠物维护） |
 | `memory/<agent id>/MEMORY.md` | 长期记忆（宠物维护，只记有价值的，非流水账日记） |
 | `memory/<agent id>/HEARTBEAT.md` | 定时任务清单（心跳读取/维护） |
+| `prompts/<名字>.md` | 改过的系统提示词（没改过就没有这个文件，跟随 App 内置文本） |
+| `prompts/tools/<工具名>.md` | 改过的工具描述（同上，没改过就没有） |
 | `~/.agents/skills/<技能名>/SKILL.md` | 技能手册（默认目录，所有 Agent 共享，见 [skills.md](skills.md)） |
 | `sessions/` | 各会话历史（含每个 Agent 的 Telegram 会话 `telegram-<agent id>`） |
 | `group/state.json` | 群聊转录与各成员私有上下文 |
@@ -104,7 +106,49 @@ agents:
 | `live_2d_model_path` | `/models/miku/...` | 模型 `.model3.json` 路径（指向 `public/` 下你自己的模型） |
 | `language` | `zh` | 界面语言：`zh` / `en` |
 | `gallery_dir` / `gallery_enabled` / `gallery_interval` | — | 画廊幻灯片目录 / 开关 / 每张秒数 |
+| `tools.disabled` | `[]` | 关掉的工具名列表，对所有 Agent 生效；见下 |
 | `window` | — | 宠物窗口位置，随拖动自动写入，不在设置 UI 里 |
+
+## 提示词与工具
+
+面板「提示词 & 工具」。发给模型的两类文字都可以改：每轮的系统提示词，和每个工具的
+`description`。
+
+改之前 App 用内置文本，并随版本更新；一旦保存，就在 `prompts/` 下写出同名文件，之后
+以你那份为准——所以「恢复默认」= 删掉那个文件。两边都是每轮重读，改完下一条消息就生效，
+不用重启。
+
+| 文件 | 内容 | 必须保留的变量 |
+| --- | --- | --- |
+| `prompts/persona.md` | 人设 + 长期记忆框架（聊天的第一条 system） | `{{soul}}` `{{user}}` `{{memory}}` |
+| `prompts/tool_usage.md` | 工具使用指南（第二条 system） | `{{workdir}}` |
+| `prompts/skills.md` | 技能清单的开头说明（清单本身是生成的） | — |
+| `prompts/subagent.md` | 子代理的系统提示词 | — |
+| `prompts/group.md` | 群聊礼仪 | — |
+| `prompts/heartbeat.md` | 心跳说明 | `{{heartbeat}}` |
+
+`{{变量}}` 由后端填：`persona` 还能用 `{{name}}` `{{memory_dir}}` `{{user_path}}`
+`{{memory_path}}` `{{heartbeat_path}}`，`heartbeat` 还能用 `{{interval}}`
+`{{heartbeat_path}}`。认不出来的 `{{xxx}}` 原样留着（方便在 LLM 日志里看出拼错了）；
+少了上表里「必须保留」的那几个则直接拒绝保存——`{{memory}}` 掉了，宠物就再也看不到
+MEMORY.md，而唯一的现象只是它变笨了。
+
+哪些段落拼在一起、顺序如何，仍由代码决定；这里能改的是措辞。
+
+```yaml
+tools:
+  disabled: [screenshot, web_search]   # 对所有 Agent 关掉
+```
+
+关掉的工具既不会出现在发给模型的工具列表里，模型从旧对话里翻出名字硬调也会得到
+`unknown tool`。名字对 MCP 工具同样有效（面板里只列内置工具，MCP 按服务器开关；
+要精确到单个 MCP 工具就在这里写名字）。
+
+开关只能做减法：`chat` 只给心跳、`GroupChat` 只给群聊、`spawn_subagent` 不给子代理、
+`web_search` 要有 Tavily Key——这些门在开关之前，配置里「打开」也不会绕过它们。
+
+工具描述改的是 `prompts/tools/<工具名>.md`，只替换 `description`，参数结构不变。描述和
+工具的实际行为对不上，模型就会用错——这是把它交给你的代价。
 
 > GUI 内保存设置会广播 `settings-changed`，两个窗口热重载，无需重启。
 > CLI 每轮重读配置；但 CLI 侧的修改（如切 Agent）不会通知已开启的 GUI 窗口。

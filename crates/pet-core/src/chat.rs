@@ -5,7 +5,7 @@ use crate::config::AiConfig;
 use crate::logging::{write_llm_log, RoundStat};
 use crate::mcp::McpStore;
 use crate::tools::ToolContext;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolPolicy, ToolRegistry};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
@@ -184,16 +184,20 @@ pub async fn run_agent_loop(
     // Get MCP tool definitions for this agent (the servers it references in the
     // global pool — connections themselves are shared between agents).
     let mcp_defs = mcp_store.lock().await.definitions(&config.mcp_servers);
-    // Sub-agents (depth > 0) don't get the spawn tool, so they can't recurse.
-    // The `chat` tool is offered only to heartbeat sessions. `web_search` is
-    // offered only when a Tavily key is configured.
-    let web_search_enabled = !config.search_api_key.trim().is_empty();
+    // Context gates: sub-agents (depth > 0) don't get the spawn tool, so they
+    // can't recurse; `chat` is offered only to heartbeat sessions; `web_search`
+    // only when a Tavily key is configured; `GroupChat` only in a group run.
+    // `from_config` adds the owner's own layer on top (tools switched off,
+    // descriptions rewritten), which can only subtract from these.
     let registry = ToolRegistry::new(
         mcp_defs,
-        ctx.depth,
-        ctx.is_heartbeat,
-        web_search_enabled,
-        ctx.group.is_some(),
+        ToolPolicy {
+            depth: ctx.depth,
+            include_chat: ctx.is_heartbeat,
+            include_web_search: !config.search_api_key.trim().is_empty(),
+            include_group: ctx.group.is_some(),
+            ..ToolPolicy::from_config()
+        },
     );
     let client = crate::llm::client();
     let options = crate::llm::chat_options(config);

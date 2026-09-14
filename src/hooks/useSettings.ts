@@ -48,6 +48,11 @@ export interface AgentConfig {
   heartbeat_context_turns: number;
 }
 
+/** Tool names the owner switched off. Descriptions live in `<config>/prompts/`. */
+export interface ToolSettings {
+  disabled: string[];
+}
+
 export interface AppSettings {
   /** The global model pool, keyed by display name. */
   models: Record<string, ModelConfig>;
@@ -62,6 +67,8 @@ export interface AppSettings {
   search_api_key: string;
   /** Directory scanned for Agent Skills (shared by all agents). Empty = ~/.agents/skills. */
   skills_dir: string;
+  /** Tools switched off for every agent (built-in or MCP, by name). */
+  tools: ToolSettings;
   /** Id of the agent that answers the desktop chat window. */
   active_agent: string;
   agents: AgentConfig[];
@@ -141,6 +148,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   gallery_interval: 10,
   search_api_key: "",
   skills_dir: "",
+  tools: { disabled: [] },
   active_agent: "default",
   agents: [defaultAgent()],
 };

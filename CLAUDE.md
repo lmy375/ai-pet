@@ -87,6 +87,27 @@
   converts the `data:` URLs the app already speaks (clipboard paste, Telegram photos,
   `screenshot` tool).
 
+## Model-facing text (`prompts.rs`, `prompts/*.md`)
+- Every word the app itself says to the model — the system prompts and the built-in
+  tool `description`s — ships as a Markdown file in `crates/pet-core/prompts/`
+  (`include_str!`) and is overridable by the same-named file under
+  `<config>/prompts/` (tool descriptions: `<config>/prompts/tools/<name>.md`).
+  Don't reintroduce prompt text as a Rust `const`.
+- **Nothing is seeded on disk.** No override file = the built-in text, which keeps
+  improving with the app; a file appears only when the owner saves an edit, and
+  "restore default" deletes it. Do NOT `ensure_*` these files the way `memory` does.
+- Templates are `{{var}}` holes filled by `prompts::render` (single pass; unknown
+  placeholders stay verbatim, values are never rescanned). Which sections get
+  concatenated, and in what order, stays in `prompt.rs` — the owner edits wording,
+  not the shape of the conversation. `PromptKey::required_vars` is what stops an
+  edit from silently dropping `{{memory}}`.
+- Tool availability is `tools::ToolPolicy`: context gates (`depth` / heartbeat /
+  group / Tavily key, declared per tool as a `ToolScope` in one table) plus the
+  owner's `tools.disabled`. The owner's layer can only SUBTRACT — never re-enable
+  what a gate withholds. Filtering happens once in `ToolRegistry::new`, which is
+  why a disabled tool vanishes from `definitions()` AND answers `unknown tool` in
+  `execute()` (MCP tools included).
+
 ## Turns (backend-owned; `crates/pet-core/src/turn.rs`)
 - **A window never runs, persists or resumes a turn.** `send_chat` hands the input to
   `TurnRunner`, which saves the user item, streams the reply as the global `turn` event

@@ -194,6 +194,20 @@ impl Default for AgentConfig {
     }
 }
 
+/// Which tools the owner has switched off (`tools` in config.yaml). A deny list
+/// rather than a flag per tool: the built-ins are a fixed set that should stay
+/// available by default, so a tool added in a later release needs no config
+/// change to work.
+///
+/// Names apply to MCP tools too — everything reaches the model through the same
+/// registry (see `tools::ToolPolicy`). A disabled tool is neither offered nor
+/// executable; it can never re-enable something a context gate withholds.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolSettings {
+    #[serde(default)]
+    pub disabled: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// The global model pool, keyed by display name. Agents reference an entry
@@ -223,6 +237,11 @@ pub struct AppSettings {
     /// `ToolRegistry::new`).
     #[serde(default)]
     pub search_api_key: String,
+    /// Tools switched off for every agent. Model-facing tool descriptions are
+    /// not here: like the system prompts they are Markdown files under
+    /// `<config>/prompts/` (see `crate::prompts`).
+    #[serde(default)]
+    pub tools: ToolSettings,
     /// Directory scanned for Agent Skills — every subdirectory holding a
     /// `SKILL.md` is one skill, offered to every agent. Empty = `~/.agents/skills`;
     /// a leading `~` is expanded (see `skills::resolve_skills_dir`).
@@ -412,6 +431,7 @@ impl Default for AppSettings {
             gallery_interval: default_gallery_interval(),
             search_api_key: String::new(),
             skills_dir: String::new(),
+            tools: ToolSettings::default(),
             active_agent: default_agent_id(),
             agents: default_agents(),
             app_log_max_mb: default_app_log_max_mb(),

@@ -12,7 +12,8 @@ crates/pet-cli      终端 TUI（ratatui）
 
 全部引擎逻辑都在这里：chat pipeline（流式 + 工具调用循环）、**聊天轮次的
 运行与持久化（`turn::TurnRunner`）**、内置工具与 ToolRegistry、MCP 客户端管理、
-会话/配置/记忆/[技能](skills.md)的磁盘读写、系统提示词组装、后台任务
+会话/配置/记忆/[技能](skills.md)的磁盘读写、系统提示词组装（措辞在 `prompts/`，
+可被主人覆盖，见 [configuration.md](configuration.md#提示词与工具)）、后台任务
 （bash / 子代理 / 心跳）、多 Agent 群聊编排器。**pet-core 里不允许出现 `use tauri`。**
 
 界面通过四个 trait 接入：

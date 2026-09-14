@@ -10,5 +10,5 @@ pub mod screenshot_tool;
 pub mod web_search_tool;
 
 pub use context::{ChatHook, ToolContext};
-pub use registry::ToolRegistry;
+pub use registry::{builtin_catalog, BuiltinTool, ToolPolicy, ToolRegistry, ToolScope};
 pub use tool::{parse_args, required_str, tool_error, Tool};

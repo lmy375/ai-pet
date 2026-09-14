@@ -26,6 +26,7 @@ pub mod logging;
 pub mod mcp;
 pub mod memory;
 pub mod prompt;
+pub mod prompts;
 pub mod provider;
 pub mod session;
 pub mod settings;

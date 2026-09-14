@@ -10,6 +10,8 @@ import { StatusText } from "../ui/StatusText";
 import { PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
 import { AgentMemory } from "./PanelMemory";
 import { ModelsCard } from "./settings/ModelsCard";
+import { PromptsCard } from "./settings/PromptsCard";
+import { ToolsCard } from "./settings/ToolsCard";
 import { McpCard } from "./settings/McpCard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
@@ -25,6 +27,7 @@ const blankSettings: AppSettings = {
   gallery_interval: 10,
   search_api_key: "",
   skills_dir: "",
+  tools: { disabled: [] },
   active_agent: "default",
   agents: [defaultAgent()],
 };
@@ -32,7 +35,7 @@ const blankSettings: AppSettings = {
 export function PanelSettings() {
   const { t } = useI18n();
   const [form, setForm] = useState<AppSettings>(blankSettings);
-  // Top-level tab: "raw" (config file), "global", or an agent id.
+  // Top-level tab: "raw" (config file), "global", "prompts", or an agent id.
   const [tab, setTab] = useState<string>("global");
   const [loaded, setLoaded] = useState(false);
   // Status line under the form. `ok` drives the color — derived from the action,
@@ -50,7 +53,7 @@ export function PanelSettings() {
   const [skillsInfo, setSkillsInfo] = useState<SkillsInfo | null>(null);
 
   // The agent shown in the active agent tab (falls back to the first agent).
-  const isAgentTab = tab !== "raw" && tab !== "global";
+  const isAgentTab = tab !== "raw" && tab !== "global" && tab !== "prompts";
   const editingAgentId = isAgentTab ? tab : (form.agents[0]?.id ?? "default");
   const agentIdx = Math.max(0, form.agents.findIndex((a) => a.id === editingAgentId));
   const agent = form.agents[agentIdx] ?? form.agents[0];
@@ -99,7 +102,7 @@ export function PanelSettings() {
       try { setForm(await invoke<AppSettings>("get_settings")); } catch {}
     }
     setTab(next);
-    if (next !== "global") loadTelegramStatus(next);
+    if (next !== "global" && next !== "prompts") loadTelegramStatus(next);
   };
 
   /** Jump to one of the global pools from an agent's reference control. */
@@ -312,9 +315,10 @@ export function PanelSettings() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Tab bar: global | per-agent... | + add | config file (far right) */}
+      {/* Tab bar: global | prompts & tools | per-agent... | + add | config file (far right) */}
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line/70 bg-surface/80 px-3 py-2 backdrop-blur">
         <TabBtn active={tab === "global"} onClick={() => selectTab("global")}>{t("settings.tab.global")}</TabBtn>
+        <TabBtn active={tab === "prompts"} onClick={() => selectTab("prompts")}>{t("settings.tab.prompts")}</TabBtn>
         {form.agents.map((a) => (
           <TabBtn key={a.id} active={tab === a.id} onClick={() => selectTab(a.id)} dot={a.id === form.active_agent}>
             {a.name}
@@ -353,6 +357,13 @@ export function PanelSettings() {
               className="min-h-[300px] whitespace-pre font-mono !text-[12px] leading-relaxed"
             />
           </Card>
+        </>
+      ) : tab === "prompts" ? (
+        <>
+          {/* What the model reads before every turn: the system prompts, and
+              the tool list with each tool's description. */}
+          <PromptsCard notify={ok} fail={fail} />
+          <ToolsCard notify={ok} fail={fail} />
         </>
       ) : tab === "global" ? (
         <>

@@ -198,17 +198,8 @@ pub fn prompt_block(skills: &[Skill]) -> Option<String> {
     if usable.is_empty() {
         return None;
     }
-    let mut out = String::from(
-        "# 技能\n\n\
-主人给你准备了一些「技能包」——每个技能是一份写好的操作手册，讲清楚某类任务该怎么做。\
-下面只列出名称和用途，正文没有加载。\n\n\
-- 接到任务先扫一眼这个清单：命中某条技能的用途时，先用 read_file 打开它的 SKILL.md，\
-按里面的说明动手，不要凭印象猜它怎么用。\n\
-- SKILL.md 里常会指向同目录下的其他文件（references/、scripts/ 等），需要时同样用 \
-read_file 打开、用 bash 执行。\n\
-- 没有命中的就正常做事，不要硬套技能。\n\n\
-## 可用技能\n",
-    );
+    // The header is owner-overridable text; only the list below it is generated.
+    let mut out = format!("{}\n", crate::prompts::text(crate::prompts::PromptKey::Skills));
     for s in usable {
         out.push_str(&format!("\n- **{}**：{}\n  SKILL.md：{}\n", s.name, s.description, s.path));
     }
