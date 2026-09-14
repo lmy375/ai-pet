@@ -19,8 +19,8 @@ import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
 import { useI18n } from "./i18n";
 
-// Breathing room under the collapse toggle once the window shrinks to it, so
-// the bottom corner marks still read as a frame.
+// Breathing room under the pet once the window shrinks to it, so the bottom
+// corner marks still read as a frame.
 const COLLAPSED_PAD = 8;
 
 function App() {
@@ -30,7 +30,7 @@ function App() {
   const { hidden, handleMouseEnter, pauseTimer, resumeTimer, hideToEdge } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
-  const toggleRowRef = useRef<HTMLDivElement>(null);
+  const petBlockRef = useRef<HTMLDivElement>(null);
   const expandedHeightRef = useRef<number | null>(null);
   // Corner marks fade out when the cursor leaves the window and become solid
   // while it's over the pet. Driven by explicit enter/leave state (reliable on
@@ -57,23 +57,23 @@ function App() {
     hideToEdge();
   }, [pinned, applyPin, hideToEdge]);
 
-  // Collapsing pulls the window's bottom edge up to the toggle row instead of
-  // leaving dead space under the pet; expanding restores the height the window
-  // had. setSize keeps the top-left anchored, so the pet never moves. Gallery
-  // mode is excluded: the slideshow is sized to fill whatever height it's given,
-  // so it has no collapsed height to shrink to.
+  // Collapsing pulls the window's bottom edge up under the pet instead of
+  // leaving dead space; expanding restores the height the window had. setSize
+  // keeps the top-left anchored, so the pet never moves. Gallery mode is
+  // excluded: the slideshow is sized to fill whatever height it's given, so it
+  // has no collapsed height to shrink to.
   useEffect(() => {
     if (galleryOn) return;
     const win = getCurrentWindow();
     const apply = async () => {
       const { width, height } = (await win.innerSize()).toLogical(await win.scaleFactor());
       if (chatCollapsed) {
-        const row = toggleRowRef.current;
-        if (!row) return;
+        const block = petBlockRef.current;
+        if (!block) return;
         expandedHeightRef.current = height;
-        // The row's viewport-relative bottom is its distance from the window
-        // top, i.e. exactly the height the collapsed shell needs.
-        const collapsed = Math.ceil(row.getBoundingClientRect().bottom) + COLLAPSED_PAD;
+        // offsetTop/Height, not getBoundingClientRect: the block carries the
+        // breathing transform, and its bob would leak into the window height.
+        const collapsed = block.offsetTop + block.offsetHeight + COLLAPSED_PAD;
         await win.setSize(new LogicalSize(width, collapsed));
       } else {
         const restored = expandedHeightRef.current;
@@ -140,7 +140,7 @@ function App() {
           <GallerySlideshow dir={settings.gallery_dir} intervalSec={settings.gallery_interval} />
         </div>
       ) : (
-        <div className="animate-breath pointer-events-none mx-auto w-[300px] shrink-0">
+        <div ref={petBlockRef} className="animate-breath pointer-events-none mx-auto w-[300px] shrink-0">
           <Live2DCharacter
             key={settings.live_2d_model_path}
             modelPath={settings.live_2d_model_path}
@@ -183,9 +183,18 @@ function App() {
             <PinIcon />
           </FloatingIconButton>
 
-          {/* Top-right pair — hide the pet, open the panel. Aligned with the
-              chat window's right edge. */}
-          <div className="absolute right-2 top-2 z-20 flex items-center gap-1.5">
+          {/* Top-right cluster — collapse the chat, hide the pet, open the
+              panel. Aligned with the chat window's right edge. */}
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="absolute right-2 top-2 z-20 flex items-center gap-1.5"
+          >
+            <FloatingIconButton
+              onClick={() => setChatCollapsed((v) => !v)}
+              title={chatCollapsed ? t("app.chat.expand") : t("app.chat.collapse")}
+            >
+              <ChevronDown className={`transition-transform ${chatCollapsed ? "" : "rotate-180"}`} />
+            </FloatingIconButton>
             <FloatingIconButton onClick={hidePet} title={t("app.hidePet")}>
               <HideEdgeIcon />
             </FloatingIconButton>
@@ -194,30 +203,13 @@ function App() {
             </FloatingIconButton>
           </div>
 
-          {/* Collapse toggle — directly above the chat box. It hangs off the
-              pet/gallery block above it, which keeps its height either way, so
-              the icon stays on the exact same pixel through a toggle; only the
-              chevron flips (rotation, not layout). */}
-          <div
-            ref={toggleRowRef}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="z-20 flex shrink-0 items-center px-3 py-1"
-          >
-            <FloatingIconButton
-              onClick={() => setChatCollapsed((v) => !v)}
-              title={chatCollapsed ? t("app.chat.expand") : t("app.chat.collapse")}
-            >
-              <ChevronDown className={`transition-transform ${chatCollapsed ? "" : "rotate-180"}`} />
-            </FloatingIconButton>
-          </div>
-
-          {/* Chat thread — collapsible. When collapsed only the pet/gallery (and
-              the toggle) remain. Same component & logic as the panel; in
-              gallery mode the slideshow sits above it at fixed height. */}
+          {/* Chat thread — collapsible. When collapsed only the pet/gallery
+              remains. Same component & logic as the panel; in gallery mode the
+              slideshow sits above it at fixed height. */}
           {!chatCollapsed && (
             <div
               onMouseDown={(e) => e.stopPropagation()}
-              className="z-10 min-h-0 flex-1 px-2"
+              className="z-10 min-h-0 flex-1 px-2 pt-2"
             >
               <ChatThread
                 items={items}

@@ -4,15 +4,26 @@ interface Props {
   modelPath: string;
 }
 
+// PIXI drawing area. It is deliberately taller than any model needs: the model
+// is fitted inside it, so where the feet land depends on the model's aspect
+// ratio. `drawnHeight` below reports where they actually landed.
+const CANVAS_W = 300;
+const CANVAS_H = 350;
+
 export function Live2DCharacter({ modelPath }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState("initializing...");
+  // Height the model actually occupies, measured from the canvas top. The
+  // wrapper shrinks to it so the empty canvas below the feet doesn't push the
+  // chat box down (and doesn't become dead space when the window collapses).
+  const [drawnHeight, setDrawnHeight] = useState<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     let disposed = false; // component unmounted or modelPath changed
+    setDrawnHeight(null); // a different model lands its feet somewhere else
     let app: any = null; // current PIXI application
     let building = false; // guard against overlapping (re)builds
 
@@ -59,8 +70,8 @@ export function Live2DCharacter({ modelPath }: Props) {
         app = new PIXI.Application({
           view: canvas,
           backgroundAlpha: 0,
-          width: 300,
-          height: 350,
+          width: CANVAS_W,
+          height: CANVAS_H,
           autoDensity: true,
           resolution: window.devicePixelRatio || 1,
         });
@@ -75,16 +86,19 @@ export function Live2DCharacter({ modelPath }: Props) {
           return;
         }
 
-        const scale = Math.min(
-          (app.screen.width * 0.65) / model.width,
-          (app.screen.height * 0.75) / model.height,
-        );
+        // Read the unscaled size once: PIXI's width/height getters fold in
+        // scale, so after scale.set() they no longer describe the model.
+        const rawW = model.width;
+        const rawH = model.height;
+        const scale = Math.min((app.screen.width * 0.65) / rawW, (app.screen.height * 0.75) / rawH);
         model.scale.set(scale);
         model.anchor.set(0.5, 0.5);
         model.x = app.screen.width / 2;
         model.y = app.screen.height * 0.45;
 
         app.stage.addChild(model as any);
+        // Anchored at its middle, so the feet sit half a scaled height below y.
+        setDrawnHeight(Math.ceil(model.y + (rawH * scale) / 2));
         setStatus("");
       } catch (err: any) {
         console.error("Live2D init error:", err);
@@ -121,8 +135,14 @@ export function Live2DCharacter({ modelPath }: Props) {
   }, [modelPath]);
 
   return (
-    <div className="relative h-[350px] w-full">
-      <canvas ref={canvasRef} className="pointer-events-auto h-full w-full bg-transparent" />
+    // overflow-hidden, not a shorter canvas: the canvas keeps its full drawing
+    // area (PIXI sizes it inline) and we just crop the transparent strip under
+    // the feet, so nothing below it sits beneath an invisible click target.
+    <div
+      className="relative w-full overflow-hidden"
+      style={{ height: drawnHeight ?? CANVAS_H }}
+    >
+      <canvas ref={canvasRef} className="pointer-events-auto absolute left-0 top-0 bg-transparent" />
       {status && (
         <div
           className={`absolute left-1/2 top-1/2 max-w-[90%] -translate-x-1/2 -translate-y-1/2 break-all rounded-lg bg-surface/85 p-3 text-center text-[12px] ${
