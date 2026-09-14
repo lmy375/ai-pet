@@ -41,7 +41,9 @@ export function PanelSettings() {
   const ok = (text: string) => setMessage({ text, ok: true });
   const fail = (text: string) => setMessage({ text, ok: false });
   const [mcpStatuses, setMcpStatuses] = useState<McpStatus[]>([]);
-  const [reconnecting, setReconnecting] = useState(false);
+  // One busy flag for the MCP card: both the reconnect button and the per-server
+  // switch talk to the same connection pool.
+  const [mcpBusy, setMcpBusy] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState<TelegramStatus>({ running: false, error: null });
   const [telegramReconnecting, setTelegramReconnecting] = useState(false);
   const [rawYaml, setRawYaml] = useState("");
@@ -179,7 +181,7 @@ export function PanelSettings() {
 
   /** Save first, then reconnect every referenced server (connections are global). */
   const handleReconnectMcp = async () => {
-    setReconnecting(true);
+    setMcpBusy(true);
     setMessage(null);
     try {
       await invoke("save_settings", { settings: form });
@@ -190,7 +192,28 @@ export function PanelSettings() {
     } catch (e: any) {
       fail(t("settings.mcp.reconnectFailed", { error: e }));
     } finally {
-      setReconnecting(false);
+      setMcpBusy(false);
+    }
+  };
+
+  /** Flip one server's switch and apply it to the running pool immediately:
+   *  persist the flag, then let the backend start or stop just that server. */
+  const toggleMcpServer = async (name: string, enabled: boolean) => {
+    const next = {
+      ...form,
+      mcp_servers: { ...form.mcp_servers, [name]: { ...form.mcp_servers[name], enabled } },
+    };
+    setForm(next);
+    setMcpBusy(true);
+    setMessage(null);
+    try {
+      await invoke("save_settings", { settings: next });
+      setMcpStatuses(await invoke<McpStatus[]>("sync_mcp_server", { name }));
+      ok(enabled ? t("settings.mcp.started", { name }) : t("settings.mcp.stopped", { name }));
+    } catch (e: any) {
+      fail(t("settings.mcp.reconnectFailed", { error: e }));
+    } finally {
+      setMcpBusy(false);
     }
   };
 
@@ -339,7 +362,8 @@ export function PanelSettings() {
               onCommit={commitSettings}
               statuses={mcpStatuses}
               onReconnect={handleReconnectMcp}
-              reconnecting={reconnecting}
+              onToggle={toggleMcpServer}
+              busy={mcpBusy}
             />
           </div>
 
@@ -567,6 +591,7 @@ export function PanelSettings() {
                 <div className="flex flex-col gap-1.5">
                   {serverNames.map((name) => {
                     const status = mcpStatuses.find((s) => s.name === name);
+                    const off = !form.mcp_servers[name].enabled;
                     return (
                       <label key={name} className="flex items-center gap-2 text-[13px] text-ink">
                         <input
@@ -577,11 +602,15 @@ export function PanelSettings() {
                         />
                         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${toneDot(connTone(status?.connected, status?.error))}`} />
                         {name}
-                        {status?.connected && (
-                          <span className="text-[11px] text-ink-faint">
-                            {t("settings.mcp.toolsSuffix", { count: status.tool_count })}
-                          </span>
-                        )}
+                        {/* A server switched off globally offers no tools here,
+                            so say so instead of showing a silently dead entry. */}
+                        <span className="text-[11px] text-ink-faint">
+                          {off
+                            ? t("settings.mcp.disabled")
+                            : status?.connected
+                              ? t("settings.mcp.toolsSuffix", { count: status.tool_count })
+                              : ""}
+                        </span>
                       </label>
                     );
                   })}

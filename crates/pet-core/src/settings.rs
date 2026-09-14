@@ -7,9 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 
 /// One MCP server, defined once globally (`mcp_servers` in config.yaml) and
-/// referenced by name from `AgentConfig::mcp`. There is no per-server "enabled"
-/// flag: an agent either lists a server or it doesn't, and the connection pool
-/// only starts the servers somebody references.
+/// referenced by name from `AgentConfig::mcp`. The connection pool only starts
+/// servers that are enabled AND referenced by some agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     /// Transport type: "stdio", "sse", or "http"
@@ -30,6 +29,11 @@ pub struct McpServerConfig {
     /// Environment variables for the process (stdio transport)
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Off = the server is not connected for anyone, without editing every
+    /// agent that lists it. Kept out of `AppSettings::mcp_for`, so a disabled
+    /// server offers no tools even to an agent that still references it.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 impl Default for McpServerConfig {
@@ -41,12 +45,17 @@ impl Default for McpServerConfig {
             url: String::new(),
             headers: BTreeMap::new(),
             env: BTreeMap::new(),
+            enabled: true,
         }
     }
 }
 
 fn default_transport() -> String {
     "stdio".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One entry of the global model pool (`models` in config.yaml), keyed by a
@@ -274,25 +283,31 @@ impl AppSettings {
     }
 
     /// The MCP servers an agent may call, in the order it lists them. Names with
-    /// no matching entry are skipped: a deleted server should cost that agent
-    /// its tools, not its ability to chat.
+    /// no matching entry — and servers switched off globally — are skipped: that
+    /// should cost the agent its tools, not its ability to chat.
     pub fn mcp_for<'a>(&'a self, agent: &'a AgentConfig) -> Vec<(&'a str, &'a McpServerConfig)> {
         agent
             .mcp
             .iter()
             .filter_map(|name| self.mcp_servers.get_key_value(name.as_str()))
+            .filter(|(_, config)| config.enabled)
             .map(|(name, config)| (name.as_str(), config))
             .collect()
     }
 
-    /// Every MCP server name referenced by any agent — what the GUI connects at
-    /// startup, so nothing spawns for a server nobody uses.
+    /// Every enabled MCP server some agent references — what the GUI connects at
+    /// startup, so nothing spawns for a server that is switched off or that
+    /// nobody uses.
     pub fn referenced_mcp_servers(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .agents
             .iter()
             .flat_map(|a| a.mcp.iter())
-            .filter(|name| self.mcp_servers.contains_key(name.as_str()))
+            .filter(|name| {
+                self.mcp_servers
+                    .get(name.as_str())
+                    .is_some_and(|c| c.enabled)
+            })
             .cloned()
             .collect();
         names.sort();
@@ -573,11 +588,15 @@ mcp_servers:
   fs:
     transport: stdio
     command: npx
+  off:
+    transport: stdio
+    command: sleep
+    enabled: false
 agents:
   - id: default
     name: 小宠
     model: fast
-    mcp: [fs, gone]
+    mcp: [fs, "off", gone]
   - id: other
     name: 别的
     model: missing
@@ -610,9 +629,9 @@ agents:
     }
 
     #[test]
-    fn unknown_mcp_reference_is_skipped_not_fatal() {
-        // A server deleted from the global pool should cost the agent its tools,
-        // not its ability to chat.
+    fn unknown_or_disabled_mcp_reference_is_skipped_not_fatal() {
+        // A server deleted from the pool, or switched off globally, should cost
+        // the agent its tools — not its ability to chat.
         let s = parse();
         let servers = s.mcp_for(s.agent("default").unwrap());
         assert_eq!(servers.len(), 1);
@@ -621,12 +640,12 @@ agents:
     }
 
     #[test]
-    fn only_referenced_servers_are_started() {
-        // What the GUI connects at boot: nothing spawns for a server no agent
-        // lists, and a server two agents share is listed once.
+    fn only_enabled_referenced_servers_are_started() {
+        // What the GUI connects at boot: nothing spawns for a server that is off
+        // or that no agent lists, and a server two agents share is listed once.
         let mut s = parse();
         s.mcp_servers.insert("idle".to_string(), McpServerConfig::default());
-        s.agents[1].mcp = vec!["fs".to_string()];
+        s.agents[1].mcp = vec!["fs".to_string(), "off".to_string()];
         assert_eq!(s.referenced_mcp_servers(), vec!["fs".to_string()]);
     }
 }

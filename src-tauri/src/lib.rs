@@ -60,9 +60,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let settings = pet_core::settings::get_settings().unwrap_or_default();
 
-                // Connect every MCP server some agent references — one process
-                // per server, shared by all of them. A server configured but
-                // unreferenced isn't started.
+                // Connect every enabled MCP server some agent references — one
+                // process per server, shared by all of them. A server switched
+                // off, or referenced by nobody, isn't started.
                 {
                     let names = settings.referenced_mcp_servers();
                     let servers: Vec<_> = names
@@ -139,6 +139,7 @@ pub fn run() {
             commands::shell::kill_task,
             commands::mcp::get_mcp_status,
             commands::mcp::reconnect_mcp,
+            commands::mcp::sync_mcp_server,
             commands::mcp::list_available_tools,
             commands::session::list_sessions,
             commands::session::set_active_session,

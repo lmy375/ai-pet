@@ -10,6 +10,8 @@ export interface McpServerConfig {
   url: string;
   headers: Record<string, string>;
   env: Record<string, string>;
+  /** Off = not connected for anyone, without editing the agents that list it. */
+  enabled: boolean;
 }
 
 /** One entry of the global model pool: everything needed to reach a model. */
@@ -126,7 +128,7 @@ export function defaultModel(): ModelConfig {
 }
 
 export function emptyMcpServer(transport: McpServerConfig["transport"] = "stdio"): McpServerConfig {
-  return { transport, command: "", args: [], url: "", headers: {}, env: {} };
+  return { transport, command: "", args: [], url: "", headers: {}, env: {}, enabled: true };
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

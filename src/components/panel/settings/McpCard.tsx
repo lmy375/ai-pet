@@ -20,14 +20,16 @@ interface Props {
   /** Live status of every server in the pool (connections are global). */
   statuses: McpStatus[];
   onReconnect: () => void;
-  reconnecting: boolean;
+  /** Flip one server on/off and apply it to the running pool right away. */
+  onToggle: (name: string, enabled: boolean) => void;
+  busy: boolean;
 }
 
 /**
  * The global MCP server pool. One connection per server, shared by every agent
  * that lists it in its `mcp` — so reconnecting here reconnects for everyone.
  */
-export function McpCard({ settings, onDraft, onCommit, statuses, onReconnect, reconnecting }: Props) {
+export function McpCard({ settings, onDraft, onCommit, statuses, onReconnect, onToggle, busy }: Props) {
   const { t } = useI18n();
   const names = Object.keys(settings.mcp_servers);
   const [selected, setSelected] = useState<string | null>(names[0] ?? null);
@@ -85,18 +87,20 @@ export function McpCard({ settings, onDraft, onCommit, statuses, onReconnect, re
   };
 
   const hasError = !!status?.error;
-  const statusLabel = status?.connected
-    ? t("settings.mcp.connected")
-    : status?.error
-      ? t("settings.mcp.connFailed")
-      : t("settings.mcp.disconnected");
+  const statusLabel = !config?.enabled
+    ? t("settings.mcp.disabled")
+    : status?.connected
+      ? t("settings.mcp.connected")
+      : status?.error
+        ? t("settings.mcp.connFailed")
+        : t("settings.mcp.disconnected");
 
   return (
     <Card
       title={t("settings.mcp.title")}
       action={
-        <Button size="sm" onClick={onReconnect} disabled={reconnecting}>
-          {reconnecting ? t("settings.connecting") : t("settings.saveConnect")}
+        <Button size="sm" onClick={onReconnect} disabled={busy}>
+          {busy ? t("settings.connecting") : t("settings.saveConnect")}
         </Button>
       }
     >
@@ -133,6 +137,19 @@ export function McpCard({ settings, onDraft, onCommit, statuses, onReconnect, re
               <TrashIcon className="h-4 w-4" />
             </IconActionButton>
           </div>
+
+          {/* Global switch: turning it off stops the process for every agent
+              that lists this server, without editing any of them. */}
+          <label className="mt-2 flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
+            <input
+              type="checkbox"
+              className="accent-accent"
+              checked={config.enabled}
+              disabled={busy}
+              onChange={(e) => onToggle(selected!, e.target.checked)}
+            />
+            {t("settings.mcp.enable")}
+          </label>
 
           {hasError && <ErrorBox className="mt-2">{status!.error}</ErrorBox>}
 

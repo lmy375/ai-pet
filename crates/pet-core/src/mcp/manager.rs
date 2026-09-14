@@ -70,6 +70,16 @@ impl McpHub {
         self.ensure(servers).await;
     }
 
+    /// Stop one server and forget its status — the settings switch turning a
+    /// server off, which takes its tools away from every agent at once.
+    pub async fn disconnect(&mut self, name: &str) {
+        if let Some(conn) = self.connections.remove(name) {
+            eprintln!("Shutting down MCP server: {}", name);
+            let _ = conn.service.cancel().await;
+        }
+        self.statuses.remove(name);
+    }
+
     async fn connect(&mut self, name: &str, config: &McpServerConfig) {
         let status = match Self::connect_server(config).await {
             Ok((service, tools)) => {

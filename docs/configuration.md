@@ -78,8 +78,9 @@ agents:
 | `transport` | `stdio` | `stdio`（本地进程）/ `sse` / `http` |
 | `command` / `args` / `env` | 空 | stdio：可执行文件、参数、环境变量 |
 | `url` / `headers` | 空 | sse / http：端点与自定义请求头 |
+| `enabled` | `true` | 全局开关，关掉则所有 Agent 都不连它（设置里切换即时生效，不用重连） |
 
-没有开关字段：没有任何 Agent 引用的服务器压根不会被启动。
+没有任何 Agent 引用、或被停用的服务器压根不会启动。
 
 ### 每个 Agent 的字段（`agents[]`）
 
