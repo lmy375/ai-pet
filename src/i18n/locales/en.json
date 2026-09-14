@@ -11,6 +11,7 @@
   "common.zoomImage": "Click to enlarge",
   "app.pin.on": "Unpin",
   "app.pin.off": "Pin (stay on top, no auto-hide)",
+  "app.hidePet": "Hide the pet to the screen edge",
   "app.openSettings": "Open settings panel",
   "app.chat.expand": "Expand chat",
   "app.chat.collapse": "Collapse chat",

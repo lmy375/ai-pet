@@ -192,6 +192,12 @@ export function ArrowDownIcon({ className }: IconProps) {
   return <Stroke className={className}><path d="M12 5v14M19 12l-7 7-7-7" /></Stroke>;
 }
 
+/** Slide-to-the-edge glyph — arrow pushed against a wall. Used by the pet's
+ *  manual hide button, whose action is the idle auto-hide slide. */
+export function HideEdgeIcon({ className }: IconProps) {
+  return <Stroke className={className}><path d="M4 12h11M11 8l4 4-4 4M20 4v16" /></Stroke>;
+}
+
 export function PinIcon({ className }: IconProps) {
   return <Stroke className={className}><path d="M12 17v5M9 10.76V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v5.76l1.5 2.24H7.5L9 10.76z" /></Stroke>;
 }

@@ -1,7 +1,9 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
+// Compact chip: small enough to sit on the pet without covering it. The glyph
+// size lives here too, so every overlay button matches.
 const base =
-  "flex h-9 w-9 items-center justify-center rounded-xl border backdrop-blur-md transition-colors";
+  "flex size-6 items-center justify-center rounded-lg border backdrop-blur-md transition-colors [&>svg]:size-3.5";
 const idle = "border-line/60 bg-surface/80 text-ink-soft hover:bg-surface";
 const active = "border-accent bg-accent text-white";
 

@@ -11,6 +11,7 @@
   "common.zoomImage": "点击查看大图",
   "app.pin.on": "取消钉住",
   "app.pin.off": "钉住（保持置顶、不自动收起）",
+  "app.hidePet": "收起宠物到屏幕边缘",
   "app.openSettings": "打开设置面板",
   "app.chat.expand": "展开聊天",
   "app.chat.collapse": "收起聊天",

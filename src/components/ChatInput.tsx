@@ -26,7 +26,8 @@ function readImage(file: File): Promise<string> {
   });
 }
 
-/** Shared chat input row (auto-resizing textarea + send button). Used by both
+/** Shared chat input field (auto-resizing textarea + send button inside the
+ *  rounded box, with pasted images stacked above it). Used by both
  *  the pet window and the panel — the caller provides the surrounding bar.
  *  Supports Cmd+V pasting images, sent to the model as multimodal content.
  *
@@ -137,86 +138,90 @@ export function ChatInput({ onSend, isLoading, onStop, placeholder }: Props) {
   };
 
   return (
-    <div onMouseDown={(e) => e.stopPropagation()} className="flex flex-col gap-2">
-      {images.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {images.map((url, i) => (
-            <div key={i} className="group relative">
-              <img
-                src={url}
-                alt=""
-                className="h-14 w-14 rounded-field border border-line object-cover"
-              />
-              <button
-                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
-                title={t("chat.input.removeImage")}
-                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-white opacity-0 transition-opacity group-hover:opacity-100"
-              >
-                <span className="text-[12px] leading-none">×</span>
-              </button>
-            </div>
+    <div onMouseDown={(e) => e.stopPropagation()} className="relative">
+      {menuOpen && (
+        <div className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-52 overflow-y-auto rounded-card border border-line bg-surface/95 py-1 shadow-pop backdrop-blur-md">
+          <div className="px-3 py-1 text-meta font-medium uppercase tracking-wide text-ink-faint">
+            {t("chat.skillMenu.title")}
+          </div>
+          {matches.map((s, i) => (
+            <button
+              key={s.slug}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                accept(s);
+              }}
+              onMouseEnter={() => setMenuSel(i)}
+              className={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left ${
+                i === sel ? "bg-accent/10" : ""
+              }`}
+            >
+              <span className="shrink-0 font-mono text-note text-accent">
+                {SKILL_PREFIX}
+                {s.slug}
+              </span>
+              <span className="truncate text-note text-ink-soft">{s.description}</span>
+            </button>
           ))}
         </div>
       )}
-      <div className="relative flex items-end gap-2">
-        {menuOpen && (
-          <div className="absolute bottom-full left-0 right-12 z-20 mb-2 max-h-52 overflow-y-auto rounded-card border border-line bg-surface/95 py-1 shadow-pop backdrop-blur-md">
-            <div className="px-3 py-1 text-meta font-medium uppercase tracking-wide text-ink-faint">
-              {t("chat.skillMenu.title")}
-            </div>
-            {matches.map((s, i) => (
-              <button
-                key={s.slug}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  accept(s);
-                }}
-                onMouseEnter={() => setMenuSel(i)}
-                className={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left ${
-                  i === sel ? "bg-accent/10" : ""
-                }`}
-              >
-                <span className="shrink-0 font-mono text-note text-accent">
-                  {SKILL_PREFIX}
-                  {s.slug}
-                </span>
-                <span className="truncate text-note text-ink-soft">{s.description}</span>
-              </button>
+      {/* One composed field: attachments and the send button live inside the
+          rounded box, so the border is the only edge the eye has to follow. */}
+      <div className="flex flex-col gap-2 rounded-[20px] border border-line bg-surface-soft px-3 py-2 transition-colors focus-within:border-accent focus-within:bg-surface">
+        {images.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-1 pt-1">
+            {images.map((url, i) => (
+              <div key={i} className="group relative">
+                <img
+                  src={url}
+                  alt=""
+                  className="h-14 w-14 rounded-field border border-line object-cover"
+                />
+                <button
+                  onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                  title={t("chat.input.removeImage")}
+                  className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-white opacity-0 transition-opacity group-hover:opacity-100"
+                >
+                  <span className="text-[12px] leading-none">×</span>
+                </button>
+              </div>
             ))}
           </div>
         )}
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={(e) => {
-            setInput(e.target.value);
-            setMenuDismissed(false);
-            setMenuSel(0);
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={placeholder ?? t("chat.input.placeholder")}
-          rows={1}
-          className="flex-1 resize-none overflow-hidden rounded-[20px] border border-line bg-surface-soft px-4 py-2.5 text-chat leading-snug text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent focus:bg-surface"
-        />
-        {canStop ? (
-          <button
-            onClick={onStop}
-            title={t("chat.input.stop")}
-            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-ink text-white shadow-card transition-colors hover:bg-ink-soft"
-          >
-            <StopIcon className="h-4 w-4" />
-          </button>
-        ) : (
-          <button
-            onClick={submit}
-            disabled={isLoading || (!input.trim() && images.length === 0)}
-            title={t("chat.input.send")}
-            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-card transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-ink-faint disabled:shadow-none"
-          >
-            <EnterIcon className="h-5 w-5" />
-          </button>
-        )}
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setMenuDismissed(false);
+              setMenuSel(0);
+            }}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder={placeholder ?? t("chat.input.placeholder")}
+            rows={1}
+            className="flex-1 resize-none overflow-hidden bg-transparent px-1 py-1 text-chat leading-snug text-ink outline-none placeholder:text-ink-faint"
+          />
+          {canStop ? (
+            <button
+              onClick={onStop}
+              title={t("chat.input.stop")}
+              className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-field bg-ink text-white transition-colors hover:bg-ink-soft"
+            >
+              <StopIcon className="h-3.5 w-3.5" />
+            </button>
+          ) : (
+            <button
+              onClick={submit}
+              disabled={isLoading || (!input.trim() && images.length === 0)}
+              title={t("chat.input.send")}
+              className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-field bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-transparent disabled:text-ink-faint"
+            >
+              <EnterIcon className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

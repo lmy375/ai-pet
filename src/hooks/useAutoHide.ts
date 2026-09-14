@@ -191,5 +191,7 @@ export function useAutoHide() {
     };
   }, []);
 
-  return { hidden, handleMouseEnter, pauseTimer, resumeTimer };
+  // `hideToEdge` is the idle timer's own slide, exposed so the pet's hide
+  // button collapses it exactly the way inactivity does.
+  return { hidden, handleMouseEnter, pauseTimer, resumeTimer, hideToEdge: slideToEdge };
 }

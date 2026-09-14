@@ -1,24 +1,37 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import { Live2DCharacter } from "./components/Live2DCharacter";
 import { GallerySlideshow } from "./components/GallerySlideshow";
 import { ChatThread } from "./components/ChatThread";
 import { ChatInput } from "./components/ChatInput";
-import { ExternalLinkIcon, ChevronRight, ChevronDown, PinIcon } from "./components/Icons";
+import {
+  ExternalLinkIcon,
+  ChevronRight,
+  ChevronDown,
+  HideEdgeIcon,
+  PinIcon,
+} from "./components/Icons";
 import { FloatingIconButton } from "./components/ui/IconButton";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
 import { useI18n } from "./i18n";
 
+// Breathing room under the collapse toggle once the window shrinks to it, so
+// the bottom corner marks still read as a frame.
+const COLLAPSED_PAD = 8;
+
 function App() {
   const { settings, loaded } = useSettings();
   const { t } = useI18n();
   const { items, currentResponse, currentReasoning, currentToolCalls, isLoading, sendMessage, stopStreaming } = useChat();
-  const { hidden, handleMouseEnter, pauseTimer, resumeTimer } = useAutoHide();
+  const { hidden, handleMouseEnter, pauseTimer, resumeTimer, hideToEdge } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const toggleRowRef = useRef<HTMLDivElement>(null);
+  const expandedHeightRef = useRef<number | null>(null);
   // Corner marks fade out when the cursor leaves the window and become solid
   // while it's over the pet. Driven by explicit enter/leave state (reliable on
   // this transparent, borderless window) rather than CSS :hover.
@@ -28,14 +41,48 @@ function App() {
 
   // Pin: keep the pet pinned above every window and stop it auto-hiding (handy
   // for watching the gallery slideshow). Unpin restores auto-hide.
-  const togglePin = useCallback(() => {
-    setPinned((prev) => {
-      const next = !prev;
+  const applyPin = useCallback(
+    (next: boolean) => {
+      setPinned(next);
       getCurrentWindow().setAlwaysOnTop(next).catch(console.error);
       next ? pauseTimer() : resumeTimer();
-      return next;
-    });
-  }, [pauseTimer, resumeTimer]);
+    },
+    [pauseTimer, resumeTimer],
+  );
+
+  // Hide on demand: the same slide the idle timer runs. Pinning suppresses that
+  // slide, so unpin first (synchronously) instead of leaving a dead button.
+  const hidePet = useCallback(() => {
+    if (pinned) applyPin(false);
+    hideToEdge();
+  }, [pinned, applyPin, hideToEdge]);
+
+  // Collapsing pulls the window's bottom edge up to the toggle row instead of
+  // leaving dead space under the pet; expanding restores the height the window
+  // had. setSize keeps the top-left anchored, so the pet never moves. Gallery
+  // mode is excluded: the slideshow is sized to fill whatever height it's given,
+  // so it has no collapsed height to shrink to.
+  useEffect(() => {
+    if (galleryOn) return;
+    const win = getCurrentWindow();
+    const apply = async () => {
+      const { width, height } = (await win.innerSize()).toLogical(await win.scaleFactor());
+      if (chatCollapsed) {
+        const row = toggleRowRef.current;
+        if (!row) return;
+        expandedHeightRef.current = height;
+        // The row's viewport-relative bottom is its distance from the window
+        // top, i.e. exactly the height the collapsed shell needs.
+        const collapsed = Math.ceil(row.getBoundingClientRect().bottom) + COLLAPSED_PAD;
+        await win.setSize(new LogicalSize(width, collapsed));
+      } else {
+        const restored = expandedHeightRef.current;
+        expandedHeightRef.current = null;
+        if (restored !== null) await win.setSize(new LogicalSize(width, restored));
+      }
+    };
+    apply().catch(console.error);
+  }, [chatCollapsed, galleryOn]);
 
   const handleSend = useCallback(
     (msg: string, images?: string[]) => sendMessage(msg, images),
@@ -43,8 +90,10 @@ function App() {
   );
 
   const handleDrag = (e: React.MouseEvent) => {
-    const tag = (e.target as HTMLElement).tagName;
-    if (tag === "INPUT" || tag === "BUTTON" || tag === "TEXTAREA") return;
+    // An icon is an <svg> child of its button, so match the closest interactive
+    // ancestor: a mousedown on the glyph must click the button, not drag the
+    // window out from under it.
+    if ((e.target as Element).closest("button, input, textarea")) return;
     e.preventDefault();
     getCurrentWindow().startDragging();
   };
@@ -85,9 +134,9 @@ function App() {
           mounted (when not in gallery mode) so it survives auto-hide —
           unmounting would tear down and fail to re-init the PIXI canvas. */}
       {galleryOn ? (
-        // Top padding reserves a strip for the pin / open icons so the media
-        // never sits under them (the buttons float at top-2, h-9).
-        <div className="min-h-0 flex-1 px-2 pb-2 pt-12">
+        // Top padding reserves a strip for the pin / hide / open icons so the
+        // media never sits under them (the buttons float at top-2, size-6).
+        <div className="min-h-0 flex-1 px-2 pb-2 pt-9">
           <GallerySlideshow dir={settings.gallery_dir} intervalSec={settings.gallery_interval} />
         </div>
       ) : (
@@ -127,24 +176,43 @@ function App() {
           {/* Pin toggle — top-left. Pinned = stay above all windows + no auto-hide. */}
           <FloatingIconButton
             active={pinned}
-            onClick={togglePin}
+            onClick={() => applyPin(!pinned)}
             title={pinned ? t("app.pin.on") : t("app.pin.off")}
             className="absolute left-2 top-2 z-20"
           >
-            <PinIcon className="h-5 w-5" />
+            <PinIcon />
           </FloatingIconButton>
 
-          {/* Settings — top-right, aligned with the chat window's right edge */}
-          <FloatingIconButton
-            onClick={openPanel}
-            title={t("app.openSettings")}
-            className="absolute right-2 top-2 z-20"
+          {/* Top-right pair — hide the pet, open the panel. Aligned with the
+              chat window's right edge. */}
+          <div className="absolute right-2 top-2 z-20 flex items-center gap-1.5">
+            <FloatingIconButton onClick={hidePet} title={t("app.hidePet")}>
+              <HideEdgeIcon />
+            </FloatingIconButton>
+            <FloatingIconButton onClick={openPanel} title={t("app.openSettings")}>
+              <ExternalLinkIcon />
+            </FloatingIconButton>
+          </div>
+
+          {/* Collapse toggle — directly above the chat box. It hangs off the
+              pet/gallery block above it, which keeps its height either way, so
+              the icon stays on the exact same pixel through a toggle; only the
+              chevron flips (rotation, not layout). */}
+          <div
+            ref={toggleRowRef}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="z-20 flex shrink-0 items-center px-3 py-1"
           >
-            <ExternalLinkIcon className="h-5 w-5" />
-          </FloatingIconButton>
+            <FloatingIconButton
+              onClick={() => setChatCollapsed((v) => !v)}
+              title={chatCollapsed ? t("app.chat.expand") : t("app.chat.collapse")}
+            >
+              <ChevronDown className={`transition-transform ${chatCollapsed ? "" : "rotate-180"}`} />
+            </FloatingIconButton>
+          </div>
 
           {/* Chat thread — collapsible. When collapsed only the pet/gallery (and
-              the bottom toggle) remain. Same component & logic as the panel; in
+              the toggle) remain. Same component & logic as the panel; in
               gallery mode the slideshow sits above it at fixed height. */}
           {!chatCollapsed && (
             <div
@@ -162,26 +230,15 @@ function App() {
             </div>
           )}
 
-          {/* Bottom bar: collapse toggle sits right beside the chat box. The
-              toggle stays put when collapsed (so the chat can be reopened); the
-              input only renders while expanded. */}
-          <div
-            onMouseDown={(e) => e.stopPropagation()}
-            className="z-10 flex shrink-0 items-end gap-1.5 px-3 pb-3.5 pt-2"
-          >
-            <FloatingIconButton
-              onClick={() => setChatCollapsed((v) => !v)}
-              title={chatCollapsed ? t("app.chat.expand") : t("app.chat.collapse")}
-              className="shrink-0"
+          {/* Bottom bar: the input, only while expanded. */}
+          {!chatCollapsed && (
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              className="z-10 shrink-0 px-3 pb-3.5 pt-2"
             >
-              <ChevronDown className={`h-5 w-5 transition-transform ${chatCollapsed ? "" : "rotate-180"}`} />
-            </FloatingIconButton>
-            {!chatCollapsed && (
-              <div className="flex-1">
-                <ChatInput onSend={handleSend} isLoading={isLoading} onStop={stopStreaming} />
-              </div>
-            )}
-          </div>
+              <ChatInput onSend={handleSend} isLoading={isLoading} onStop={stopStreaming} />
+            </div>
+          )}
 
           {/* Resize grip — drag to freely resize the window. Transparent hit area
               only; the bottom-right corner mark above is its visual. */}
