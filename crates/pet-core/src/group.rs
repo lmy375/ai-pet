@@ -417,7 +417,7 @@ async fn run_one_agent(rt: &Arc<GroupRuntime>, run: AgentRun) {
         false, // not a heartbeat
     );
     ctx.group = Some(rt.clone());
-    ctx.log_session = format!("group:{}:{}", run.agent_id, uuid::Uuid::new_v4());
+    ctx.log_session = crate::logging::LogSession::group(&run.agent_id);
 
     let sink = GroupSink::new(rt.events.clone(), run.agent_id.clone());
 

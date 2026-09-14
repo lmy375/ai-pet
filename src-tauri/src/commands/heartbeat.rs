@@ -138,10 +138,10 @@ async fn run_one_heartbeat(
         true,
     );
     // Each heartbeat is an independent conversation, not an extension of the last.
-    // Give it its own LLM-log group so the view keeps every heartbeat run, not
+    // Give it its own LLM-log entry so the view keeps every heartbeat run, not
     // just the most recent (the shared "heartbeat" session_id is kept for task
     // routing).
-    work_ctx.log_session = format!("heartbeat:{}", uuid::Uuid::new_v4());
+    work_ctx.log_session = pet_core::logging::LogSession::heartbeat();
 
     let work_config = config.clone();
     let work_mcp = mcp_store.clone();

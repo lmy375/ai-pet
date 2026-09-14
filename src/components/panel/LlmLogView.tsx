@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -17,19 +17,33 @@ import {
 } from "../Icons";
 import { usePolling } from "../../hooks/usePolling";
 
-interface LlmLogEntry {
-  session_id: string;
+type LogKind = "chat" | "sub" | "group" | "heartbeat";
+
+interface RoundStat {
   round: number;
+  ttft_ms: number | null;
+  total_ms: number;
+  tools: string[];
+}
+
+/** One line of `index.jsonl` — everything a collapsed row needs, ~300 bytes. */
+interface LlmMeta {
+  id: string;
+  kind: LogKind;
+  /** Agent id for a group run, parent session for a sub-agent, else empty. */
+  label: string;
+  model: string;
   request_time: string;
+  rounds: RoundStat[];
+  preview: string;
+}
+
+/** The body file, fetched only when a row is opened. */
+interface LlmEntry {
+  meta: LlmMeta;
   first_token_time: string | null;
   done_time: string;
-  first_token_latency_ms: number | null;
-  total_latency_ms: number;
-  request: {
-    model: string;
-    messages: Array<{ role: string; content: unknown; tool_calls?: ToolCall[]; tool_call_id?: string }>;
-    tools?: unknown[];
-  };
+  messages: Array<{ role: string; content: unknown; tool_calls?: ToolCall[]; tool_call_id?: string }>;
   response: {
     text: string;
     reasoning?: string | null;
@@ -265,187 +279,116 @@ function ToolResultView({ content, call }: { content: unknown; call?: ToolCall }
   );
 }
 
+const kindColors: Record<LogKind, BadgeColor> = {
+  chat: "sky",
+  sub: "purple",
+  group: "green",
+  heartbeat: "slate",
+};
+
 export function LlmLogView() {
   const { t } = useI18n();
-  const [entries, setEntries] = useState<LlmLogEntry[]>([]);
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [metas, setMetas] = useState<LlmMeta[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Bodies are fetched on demand and cached; `null` means the file is gone
+  // (compaction dropped it after the index line was read).
+  const [bodies, setBodies] = useState<Record<string, LlmEntry | null>>({});
   const [zoomed, setZoomed] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const fetchLogs = async () => {
+  // The index is one small record per conversation, so polling it is cheap —
+  // the messages stay on disk until a row is actually opened.
+  const fetchIndex = async () => {
     try {
-      const lines = await invoke<string[]>("get_llm_logs", { limit: 200 });
-      const parsed = lines
-        .map((l) => {
-          try {
-            const raw = JSON.parse(l);
-            // Normalize old format: "ts" -> "request_time"
-            if (!raw.request_time && raw.ts) raw.request_time = raw.ts;
-            if (!raw.done_time) raw.done_time = raw.request_time ?? "";
-            if (raw.first_token_latency_ms == null) raw.first_token_latency_ms = null;
-            if (raw.total_latency_ms == null) raw.total_latency_ms = 0;
-            return raw as LlmLogEntry;
-          } catch { return null; }
-        })
-        .filter((e): e is LlmLogEntry => e !== null && !!e.request_time)
-        .reverse();
-      // Within one session each LLM request carries the full prior history, so
-      // the newest entry of a session is a superset of every earlier one. Keep
-      // only that newest entry per session.
-      const seen = new Set<string>();
-      const deduped = parsed.filter((e) => {
-        if (seen.has(e.session_id)) return false;
-        seen.add(e.session_id);
-        return true;
-      });
-      setEntries(deduped);
+      setMetas(await invoke<LlmMeta[]>("get_llm_index"));
     } catch (e) {
-      console.error("Failed to fetch LLM logs:", e);
+      console.error("Failed to fetch LLM log index:", e);
     }
   };
 
-  usePolling(fetchLogs, 2000);
+  usePolling(fetchIndex, 2000);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
-  }, [entries.length]);
+  }, [metas.length]);
 
-  const lastUserMsg = (entry: LlmLogEntry): string => {
-    const msgs = entry.request.messages;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === "User") {
-        const text = contentToText(msgs[i].content);
-        return text.length > 80 ? text.slice(0, 80) + "..." : text;
+  const toggle = useCallback(
+    async (id: string) => {
+      if (expandedId === id) {
+        setExpandedId(null);
+        return;
       }
-    }
-    return "(no user message)";
-  };
-
-  const toolCallNames = (entry: LlmLogEntry): string[] =>
-    entry.response.tool_calls.map((tc) => tc.function?.name).filter((name): name is string => !!name);
-
-  const toggle = (idx: number) => {
-    setExpandedIdx(expandedIdx === idx ? null : idx);
-  };
+      setExpandedId(id);
+      if (id in bodies) return;
+      try {
+        const entry = await invoke<LlmEntry | null>("get_llm_entry", { id });
+        setBodies((prev) => ({ ...prev, [id]: entry }));
+      } catch (e) {
+        console.error("Failed to fetch LLM log entry:", e);
+        setBodies((prev) => ({ ...prev, [id]: null }));
+      }
+    },
+    [expandedId, bodies],
+  );
 
   return (
     <div className="flex h-full flex-col bg-surface-soft">
       {/* Toolbar */}
       <div className="flex shrink-0 items-center gap-2 border-b border-line/70 bg-surface px-4 py-2.5">
-        <Button variant="ghost" size="sm" onClick={fetchLogs}>
+        <Button variant="ghost" size="sm" onClick={fetchIndex}>
           <RefreshIcon className="h-4 w-4" />
           {t("common.refresh")}
         </Button>
         <span className="flex-1" />
-        <span className="text-[12px] text-ink-faint">{t("llm.recordCount", { count: entries.length })}</span>
+        <span className="text-[12px] text-ink-faint">{t("llm.recordCount", { count: metas.length })}</span>
       </div>
 
       {/* Log entries */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2">
-        {entries.length === 0 ? (
+        {metas.length === 0 ? (
           <div className="mt-10 text-center text-[13px] text-ink-faint">
             {t("llm.empty")}
           </div>
         ) : (
-          entries.map((entry, i) => {
-            const isExpanded = expandedIdx === i;
-            const tcNames = toolCallNames(entry);
-            const toolCallsById = new Map<string, ToolCall>();
-            for (const msg of entry.request.messages) {
-              msg.tool_calls?.forEach((call) => {
-                if (call.id) toolCallsById.set(call.id, call);
-              });
-            }
-            entry.response.tool_calls.forEach((call) => {
-              if (call.id) toolCallsById.set(call.id, call);
-            });
+          metas.map((meta) => {
+            const isExpanded = expandedId === meta.id;
+            const last = meta.rounds[meta.rounds.length - 1];
+            const tcNames = [...new Set(meta.rounds.flatMap((r) => r.tools))];
             return (
-              <div key={i} className="mb-1.5 overflow-hidden rounded-xl border border-line bg-surface">
+              <div key={meta.id} className="mb-1.5 overflow-hidden rounded-xl border border-line bg-surface">
                 {/* Summary row */}
                 <div
-                  onClick={() => toggle(i)}
+                  onClick={() => toggle(meta.id)}
                   className="flex cursor-pointer select-none items-center gap-2.5 px-3.5 py-2.5"
                 >
                   <span className="whitespace-nowrap font-mono text-[11px] text-ink-faint">
-                    {formatIsoTime(entry.request_time)}
+                    {formatIsoTime(meta.request_time)}
                   </span>
-                  <Badge color="sky">{entry.request.model}</Badge>
-                  <Badge color="green">R{entry.round}</Badge>
-                  {entry.first_token_latency_ms != null && (
-                    <Badge color="amber">TTFT {entry.first_token_latency_ms}ms</Badge>
+                  <Badge color={kindColors[meta.kind] ?? "slate"}>{t(`llm.kind.${meta.kind}`)}</Badge>
+                  {meta.label && (
+                    <span className="max-w-[140px] truncate font-mono text-[11px] text-ink-faint">
+                      {meta.label}
+                    </span>
                   )}
-                  <Badge color="purple">{entry.total_latency_ms}ms</Badge>
+                  <Badge color="sky">{meta.model}</Badge>
+                  {last && <Badge color="green">R{last.round}</Badge>}
+                  {last?.ttft_ms != null && <Badge color="amber">TTFT {last.ttft_ms}ms</Badge>}
+                  {last && <Badge color="purple">{last.total_ms}ms</Badge>}
                   {tcNames.length > 0 && (
                     <Badge color="orange">
                       <WrenchIcon className="h-3 w-3" />
                       {tcNames.join(", ")}
                     </Badge>
                   )}
-                  <span className="flex-1 truncate text-[12px] text-ink-soft">{lastUserMsg(entry)}</span>
+                  <span className="flex-1 truncate text-[12px] text-ink-soft">{meta.preview}</span>
                   <ExpandChevron expanded={isExpanded} />
                 </div>
 
                 {/* Expanded detail */}
                 {isExpanded && (
-                  <div className="border-t border-line px-3.5 py-3">
-                    <DetailSection icon={<ClockIcon className="h-3.5 w-3.5" />} title={t("llm.section.time")}>
-                      <Row label={t("llm.row.requestTime")} value={entry.request_time} />
-                      <Row label={t("llm.row.firstToken")} value={entry.first_token_time ?? "—"} />
-                      <Row label={t("llm.row.doneTime")} value={entry.done_time} />
-                      <Row label={t("llm.row.firstTokenLatency")} value={entry.first_token_latency_ms != null ? `${entry.first_token_latency_ms} ms` : "—"} />
-                      <Row label={t("llm.row.totalLatency")} value={`${entry.total_latency_ms} ms`} />
-                    </DetailSection>
-
-                    <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title={t("llm.section.request")}>
-                      {entry.request.messages.map((msg, j) => {
-                        if (msg.role === "Tool") {
-                          return (
-                            <div key={j} className="mb-1.5">
-                              <ToolResultView content={msg.content} call={msg.tool_call_id ? toolCallsById.get(msg.tool_call_id) : undefined} />
-                            </div>
-                          );
-                        }
-                        const hasContent = msg.content != null && contentToText(msg.content).trim().length > 0;
-                        return (
-                          <div key={j} className="mb-1.5">
-                            {hasContent && (
-                              <>
-                                <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
-                                {renderContent(msg.content, setZoomed, t("common.zoomImage"))}
-                              </>
-                            )}
-                            {msg.tool_calls?.map((call, k) => (
-                              <ToolCallView key={call.id ?? k} call={call} />
-                            ))}
-                          </div>
-                        );
-                      })}
-                    </DetailSection>
-
-                    <DetailSection icon={<ArrowDownIcon className="h-3.5 w-3.5" />} title={t("llm.section.response")}>
-                      {entry.response.reasoning?.trim() && (
-                        <div className="mb-1.5">
-                          <Badge color="slate">{t("chat.reasoning")}</Badge>
-                          <pre className={preClass}>{entry.response.reasoning}</pre>
-                        </div>
-                      )}
-                      {entry.response.text && (
-                        <div className="mb-1.5">
-                          <Badge color="purple">assistant</Badge>
-                          <pre className={preClass}>{entry.response.text}</pre>
-                        </div>
-                      )}
-                      {entry.response.tool_calls.length > 0 && (
-                        <div className="space-y-1.5">
-                          {entry.response.tool_calls.map((call, k) => (
-                            <ToolCallView key={call.id ?? k} call={call} />
-                          ))}
-                        </div>
-                      )}
-                    </DetailSection>
-                  </div>
+                  <EntryDetail meta={meta} entry={bodies[meta.id]} loaded={meta.id in bodies} onZoom={setZoomed} />
                 )}
               </div>
             );
@@ -453,6 +396,116 @@ export function LlmLogView() {
         )}
       </div>
       {zoomed && <ImageLightbox src={zoomed} onClose={() => setZoomed(null)} />}
+    </div>
+  );
+}
+
+/** The opened row: timings from the index, messages from the body file. */
+function EntryDetail({
+  meta,
+  entry,
+  loaded,
+  onZoom,
+}: {
+  meta: LlmMeta;
+  entry: LlmEntry | null | undefined;
+  loaded: boolean;
+  onZoom: (src: string) => void;
+}) {
+  const { t } = useI18n();
+
+  if (!loaded) {
+    return <div className="border-t border-line px-3.5 py-3 text-[12px] text-ink-faint">{t("llm.loading")}</div>;
+  }
+  if (!entry) {
+    return <div className="border-t border-line px-3.5 py-3 text-[12px] text-ink-faint">{t("llm.gone")}</div>;
+  }
+
+  const toolCallsById = new Map<string, ToolCall>();
+  for (const msg of entry.messages) {
+    msg.tool_calls?.forEach((call) => {
+      if (call.id) toolCallsById.set(call.id, call);
+    });
+  }
+  entry.response.tool_calls.forEach((call) => {
+    if (call.id) toolCallsById.set(call.id, call);
+  });
+
+  return (
+    <div className="border-t border-line px-3.5 py-3">
+      <DetailSection icon={<ClockIcon className="h-3.5 w-3.5" />} title={t("llm.section.time")}>
+        <Row label={t("llm.row.requestTime")} value={meta.request_time} />
+        <Row label={t("llm.row.firstToken")} value={entry.first_token_time ?? "—"} />
+        <Row label={t("llm.row.doneTime")} value={entry.done_time} />
+      </DetailSection>
+
+      {/* The body only holds the final round — every round's request is a
+          superset of the one before — so this table is where the earlier
+          rounds' latency survives. */}
+      <DetailSection icon={<ClockIcon className="h-3.5 w-3.5" />} title={t("llm.section.rounds")}>
+        <div className="grid grid-cols-[auto_auto_auto_minmax(0,1fr)] gap-x-4 gap-y-1 font-mono text-[12px]">
+          <span className="text-ink-faint">{t("llm.round")}</span>
+          <span className="text-ink-faint">{t("llm.row.firstTokenLatency")}</span>
+          <span className="text-ink-faint">{t("llm.row.totalLatency")}</span>
+          <span className="text-ink-faint">{t("llm.tools")}</span>
+          {meta.rounds.map((r) => (
+            <div key={r.round} className="contents">
+              <span className="text-ink">R{r.round}</span>
+              <span className="text-ink">{r.ttft_ms != null ? `${r.ttft_ms} ms` : "—"}</span>
+              <span className="text-ink">{r.total_ms} ms</span>
+              <span className="truncate text-ink-soft">{r.tools.join(", ") || "—"}</span>
+            </div>
+          ))}
+        </div>
+      </DetailSection>
+
+      <DetailSection icon={<ArrowUpIcon className="h-3.5 w-3.5" />} title={t("llm.section.request")}>
+        {entry.messages.map((msg, j) => {
+          if (msg.role === "Tool") {
+            return (
+              <div key={j} className="mb-1.5">
+                <ToolResultView content={msg.content} call={msg.tool_call_id ? toolCallsById.get(msg.tool_call_id) : undefined} />
+              </div>
+            );
+          }
+          const hasContent = msg.content != null && contentToText(msg.content).trim().length > 0;
+          return (
+            <div key={j} className="mb-1.5">
+              {hasContent && (
+                <>
+                  <Badge color={roleColors[msg.role] ?? "slate"}>{msg.role}</Badge>
+                  {renderContent(msg.content, onZoom, t("common.zoomImage"))}
+                </>
+              )}
+              {msg.tool_calls?.map((call, k) => (
+                <ToolCallView key={call.id ?? k} call={call} />
+              ))}
+            </div>
+          );
+        })}
+      </DetailSection>
+
+      <DetailSection icon={<ArrowDownIcon className="h-3.5 w-3.5" />} title={t("llm.section.response")}>
+        {entry.response.reasoning?.trim() && (
+          <div className="mb-1.5">
+            <Badge color="slate">{t("chat.reasoning")}</Badge>
+            <pre className={preClass}>{entry.response.reasoning}</pre>
+          </div>
+        )}
+        {entry.response.text && (
+          <div className="mb-1.5">
+            <Badge color="purple">assistant</Badge>
+            <pre className={preClass}>{entry.response.text}</pre>
+          </div>
+        )}
+        {entry.response.tool_calls.length > 0 && (
+          <div className="space-y-1.5">
+            {entry.response.tool_calls.map((call, k) => (
+              <ToolCallView key={call.id ?? k} call={call} />
+            ))}
+          </div>
+        )}
+      </DetailSection>
     </div>
   );
 }

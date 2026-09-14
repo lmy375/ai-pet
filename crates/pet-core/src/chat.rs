@@ -2,7 +2,7 @@ use genai::chat::{ChatMessage as GenAiMessage, ChatRequest, MessageContent, Tool
 use serde::{Deserialize, Serialize};
 
 use crate::config::AiConfig;
-use crate::logging::write_llm_log;
+use crate::logging::{write_llm_log, RoundStat};
 use crate::mcp::McpStore;
 use crate::tools::ToolContext;
 use crate::tools::ToolRegistry;
@@ -201,6 +201,10 @@ pub async fn run_agent_loop(
 
     // Tool calling loop (unlimited rounds)
     let mut round = 0usize;
+    // Per-round latency for the LLM log. The log body only keeps the final
+    // round (every round's request is a superset of the previous one), so this
+    // is the only place earlier rounds' timings survive.
+    let mut round_stats: Vec<RoundStat> = Vec::new();
     loop {
         ctx.log(&format!("LLM round {} ({} messages)", round, conv_messages.len()));
 
@@ -220,22 +224,28 @@ pub async fn run_agent_loop(
             ctx.log(&format!("Reasoning ({} chars)", result.reasoning.len()));
         }
 
+        let tool_calls: Vec<serde_json::Value> = result
+            .tool_calls
+            .iter()
+            .map(|tc| serde_json::to_value(tc).unwrap_or(serde_json::Value::Null))
+            .collect();
+        round_stats.push(RoundStat {
+            round,
+            ttft_ms: result.first_token_latency_ms,
+            total_ms: result.total_latency_ms,
+            tools: result.tool_calls.iter().map(|tc| tc.fn_name.clone()).collect(),
+        });
         write_llm_log(
             &ctx.log_session,
-            round,
-            &serde_json::json!({ "model": config.model, "messages": conv_messages }),
+            &config.model,
+            &round_stats,
+            &conv_messages,
             &result.text,
             &result.reasoning,
-            &result
-                .tool_calls
-                .iter()
-                .map(|tc| serde_json::to_value(tc).unwrap_or(serde_json::Value::Null))
-                .collect::<Vec<_>>(),
+            &tool_calls,
             &result.request_time,
             result.first_token_time.as_deref(),
             &result.done_time,
-            result.first_token_latency_ms,
-            result.total_latency_ms,
         );
 
         // An aborted round comes back with its tool calls cleared, so it takes

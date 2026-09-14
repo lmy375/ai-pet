@@ -162,6 +162,28 @@ occluded/minimized), the Live2D model renders blank/frozen.
   remounting Live2D (keyed by model path) re-inits cleanly. Do NOT confuse this with the
   `!hidden` gating bug above; gating on `galleryOn` is fine, gating on `hidden` is not.
 
+## Logs
+- `logs/app.log` is a live tail for a human and is never read back by the app (the
+  Debug window's app tab renders the in-memory `LogStore`, capped at 500 lines).
+  It is truncated — deliberately no rollover file — once past `app_log_max_mb`
+  (default 10). The size is tracked in a counter, not a `stat` per line.
+- LLM logs are one body file per conversation, `logs/llm-log/<id>.json`, plus a
+  shared `index.jsonl` holding one small metadata record each. The list view reads
+  only the index (~300 B per row); a row's messages are fetched on click. The old
+  single `llm.log` grew to 283 MB because every tool round re-logged the whole
+  conversation, and the view re-read all of it every 2 seconds.
+- **The index is append-only; deduping is the reader's job.** A round appends a
+  line rather than rewriting one, because the CLI and the GUI run at once and
+  heartbeat / group / sub-agent runs are concurrent inside one process — an
+  atomic append needs no lock, a read-modify-write would. `compact_llm_logs`
+  does the rewriting, at most every 30s, off the hot path.
+- `LogSession::id` is used verbatim as the filename, which is safe only because
+  every constructor supplies a UUID (a chat session's own id, so successive turns
+  overwrite one file; a fresh one for heartbeat / group / sub, which are
+  independent conversations). Don't add a constructor that takes a free-form name.
+- Retention is per `LogKind::quota()` bucket, `llm_log_keep_per_kind` each
+  (default 100). Sub-agent runs share the chat bucket.
+
 ## Gallery slideshow / pin
 - Settings `gallery_dir` + `gallery_enabled` (config.yaml). `list_gallery_media` (commands/gallery.rs)
   scans the dir for images/videos; the frontend loads them via `convertFileSrc` (asset protocol —

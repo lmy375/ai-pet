@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::AiConfig;
-use crate::logging::{write_log, LogStore};
+use crate::logging::{write_log, LogSession, LogStore};
 use crate::mcp::McpStore;
 use crate::shell::{ShellStore, TaskNotifier};
 
@@ -32,13 +32,13 @@ pub struct ToolContext {
     pub mcp_store: McpStore,
     pub depth: usize,
     pub session_id: String,
-    /// Grouping key for `llm.log` entries (the LLM-log view keeps only the
-    /// newest entry per group, since within one group every request carries the
-    /// full prior history). For the main chat this equals `session_id`. Sub-agents
-    /// and heartbeats run independent conversations that are NOT supersets of the
-    /// parent, so each gets its own unique id (see `child()` and the heartbeat
-    /// command) — otherwise they'd collapse into, or evict, the parent's row.
-    pub log_session: String,
+    /// Which conversation this run's LLM requests are logged under. For the main
+    /// chat it is the session itself, so successive turns overwrite one log file
+    /// (every request carries the full prior history, so the newest is a superset
+    /// of them all). Sub-agents, heartbeats and group runs are independent
+    /// conversations that are NOT supersets of the parent, so each mints its own
+    /// id — otherwise they'd collapse into, or evict, the parent's row.
+    pub log_session: LogSession,
     pub notifier: Option<Arc<dyn TaskNotifier>>,
     /// UI hook for the `chat` tool (notification + conversation refresh),
     /// present only for UI-backed heartbeat runs. `None` for non-UI callers.
@@ -81,7 +81,7 @@ impl ToolContext {
             config,
             mcp_store,
             depth: 0,
-            log_session: session_id.clone(),
+            log_session: LogSession::chat(session_id.clone()),
             session_id,
             notifier,
             chat_hook,
@@ -105,9 +105,9 @@ impl ToolContext {
             mcp_store: self.mcp_store.clone(),
             depth: self.depth + 1,
             session_id: self.session_id.clone(),
-            // Independent conversation: own log group so it neither evicts nor
+            // Independent conversation: own log entry so it neither evicts nor
             // merges with the parent's LLM-log row.
-            log_session: format!("{}:sub:{}", self.session_id, uuid::Uuid::new_v4()),
+            log_session: LogSession::sub(&self.session_id),
             notifier: None,
             // Sub-agents never speak to the owner directly; drop the chat hook
             // and the heartbeat flag so the `chat` tool is unavailable to them.

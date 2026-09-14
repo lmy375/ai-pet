@@ -235,6 +235,14 @@ pub struct AppSettings {
     /// The configured agents. Always at least one after `ensure`.
     #[serde(default = "default_agents")]
     pub agents: Vec<AgentConfig>,
+    /// Size cap for `logs/app.log`, in MB. Past it the file is truncated and
+    /// starts over — nothing reads it back, so only the live tail matters.
+    #[serde(default = "default_app_log_max_mb")]
+    pub app_log_max_mb: u64,
+    /// How many LLM-log conversations to keep per kind (chat — sub-agent runs
+    /// included — / group / heartbeat). Older ones are deleted by compaction.
+    #[serde(default = "default_llm_log_keep")]
+    pub llm_log_keep_per_kind: usize,
     /// Saved pet-window position so it reopens where the user left it. Written
     /// (debounced) on window move, not through the Settings UI; omitted from the
     /// file until the window has been moved at least once.
@@ -372,6 +380,14 @@ fn default_language() -> String {
     "zh".to_string()
 }
 
+fn default_app_log_max_mb() -> u64 {
+    10
+}
+
+fn default_llm_log_keep() -> usize {
+    100
+}
+
 fn default_agent_id() -> String {
     "default".to_string()
 }
@@ -398,6 +414,8 @@ impl Default for AppSettings {
             skills_dir: String::new(),
             active_agent: default_agent_id(),
             agents: default_agents(),
+            app_log_max_mb: default_app_log_max_mb(),
+            llm_log_keep_per_kind: default_llm_log_keep(),
             window: None,
         }
     }
@@ -472,13 +490,17 @@ pub fn ensure_config_dir() -> Result<std::path::PathBuf, String> {
 
 pub fn get_settings() -> Result<AppSettings, String> {
     let path = config_path()?;
-    if !path.exists() {
-        return Ok(AppSettings::default());
-    }
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read config: {}", e))?;
-    let settings: AppSettings = serde_yaml::from_str(&content)
-        .map_err(|e| format!("Failed to parse config: {}", e))?;
+    let settings = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        serde_yaml::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?
+    } else {
+        AppSettings::default()
+    };
+    // Every read of the config funnels through here — startup, each turn, and
+    // each settings write — so the logger picks up a changed limit without any
+    // wiring of its own. It's two relaxed atomic stores.
+    crate::logging::configure(settings.app_log_max_mb, settings.llm_log_keep_per_kind);
     Ok(settings)
 }
 
