@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "app": "tauri dev",
-    "app:restart": "pkill -f 'target/debug/pet$' 2>/dev/null; pkill -f 'tauri dev' 2>/dev/null; sleep 1 && pnpm app",
+    "app:restart": "pkill -f 'target/debug/pet$' 2>/dev/null; pkill -f 'tauri dev' 2>/dev/null; lsof -ti tcp:1420 | xargs kill 2>/dev/null; sleep 1 && pnpm app",
     "cli": "cargo run -q -p pet-cli --",
     "app:build": "tauri build",
     "cli:build": "cargo build --release -p pet-cli",

@@ -6,7 +6,7 @@
   underlying cargo/tauri invocations:
   | | |
   |---|---|
-  | `pnpm app` / `pnpm app:restart` | run the desktop app (dev); restart kills a stale instance first |
+  | `pnpm app` / `pnpm app:restart` | run the desktop app (dev); restart kills a stale instance and frees port 1420 first — tauri's vite child outlives a pkill of its parent and keeps the port (`strictPort`), which is the usual "port already in use" |
   | `pnpm cli -p "hi"` | run pet-cli (args forward; `--` optional) |
   | `pnpm app:build` / `pnpm cli:build` | release builds; `pnpm build:all` for both |
   | `pnpm check` / `pnpm test` / `pnpm lint` | tsc+cargo check / cargo test / clippy |
