@@ -58,6 +58,7 @@
   "chat.session.week": "This week",
   "chat.session.earlier": "Earlier",
   "chat.session.yesterday": "Yesterday",
+  "chat.workdir.tooltip": "Working directory: {dir} (click to change)",
   "chat.select.enter": "Select",
   "chat.select.cancel": "Cancel",
   "chat.select.delete": "Delete ({count})",

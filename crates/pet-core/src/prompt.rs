@@ -12,8 +12,9 @@ use serde_json::Value;
 
 use crate::memory;
 
-/// Tool usage best practices, injected as a second system message.
-const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
+/// Tool usage best practices, injected as a second system message. Not used
+/// directly — `tool_usage_prompt` appends the live working directory to it.
+const TOOL_USAGE_BASE: &str = r#"# 工具使用指南
 
 你可以使用工具帮主人把事情真正做完，而不只是给建议。遵循以下原则。
 
@@ -35,7 +36,7 @@ const TOOL_USAGE_PROMPT: &str = r#"# 工具使用指南
 
 ## bash
 - 每次调用都填 description：一句话说明这条命令在做什么——它会作为“用途”展示给主人。
-- 工作目录在多次调用间不保持：用绝对路径，或设置 working_directory，不要用 cd。
+- 不写 working_directory 时，命令在下面「当前工作目录」里执行；要换目录就设 working_directory，不要用 cd（cd 只在本次调用内有效，不会留到下一次）。
 - 路径或参数含空格时用引号包裹。
 - 没有依赖关系的命令可以用 && 串联，减少往返。
 
@@ -213,6 +214,20 @@ pub fn format_interval_label(minutes: u32) -> String {
     }
 }
 
+/// The tool-usage system message: the static guidance plus the working directory
+/// as it stands right now. Built per turn (like the memory prompt), so a
+/// directory switched in the UI applies from the very next message on.
+fn tool_usage_prompt() -> String {
+    format!(
+        "{TOOL_USAGE_BASE}\n\n\
+# 当前工作目录\n\
+- 你现在的工作目录是 `{}`。主人说“当前目录 / 这个项目 / 这里”，默认指的就是它。\n\
+- bash 不传 working_directory 时就在这个目录下执行；read_file / write_file / edit_file 仍然只收绝对路径，相对路径请自己拼到这个目录下面。\n\
+- 主人随时可能在界面上换掉它，所以每轮以这里写的为准，不要沿用旧的。",
+        crate::workdir::get_string()
+    )
+}
+
 /// Shape the message list: override a leading system message with `system_content`
 /// (or insert one if absent), then insert the tool-usage system message right
 /// after it. Split out from `prepend_system_messages` so this contract can be
@@ -224,7 +239,7 @@ fn apply_system_messages(conv_messages: &mut Vec<Value>, system_content: String)
     } else {
         conv_messages.insert(0, system_msg(&system_content));
     }
-    conv_messages.insert(1, system_msg(TOOL_USAGE_PROMPT));
+    conv_messages.insert(1, system_msg(&tool_usage_prompt()));
 }
 
 #[cfg(test)]
@@ -260,7 +275,7 @@ mod tests {
             shape(&msgs),
             vec![
                 (ChatRole::System, "MEMORY".to_string()),
-                (ChatRole::System, TOOL_USAGE_PROMPT.to_string()),
+                (ChatRole::System, tool_usage_prompt()),
                 (ChatRole::User, "hi".to_string()),
             ]
         );
@@ -275,7 +290,7 @@ mod tests {
             shape(&msgs),
             vec![
                 (ChatRole::System, "MEMORY".to_string()),
-                (ChatRole::System, TOOL_USAGE_PROMPT.to_string()),
+                (ChatRole::System, tool_usage_prompt()),
                 (ChatRole::User, "hi".to_string()),
             ]
         );
@@ -301,7 +316,7 @@ mod tests {
             shape(&msgs),
             vec![
                 (ChatRole::System, "MEMORY".to_string()),
-                (ChatRole::System, TOOL_USAGE_PROMPT.to_string()),
+                (ChatRole::System, tool_usage_prompt()),
                 (ChatRole::User, "hi".to_string()),
             ]
         );

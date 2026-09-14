@@ -12,3 +12,4 @@ pub mod shell;
 pub mod skills;
 pub mod telegram;
 pub mod window;
+pub mod workdir;

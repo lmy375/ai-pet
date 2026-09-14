@@ -31,6 +31,12 @@
   `TaskNotifier` (background-task completions) is implemented by the core's own
   `TurnRunner`, not by interfaces. New engine features go in pet-core behind these
   traits — never `use tauri` in pet-core.
+- **Working directory** (`pet-core/src/workdir.rs`): process-global, in memory, never
+  persisted (config.yaml is shared, the two interfaces want different defaults).
+  GUI = `$HOME`, CLI = the directory it was launched from (its startup `set` is the
+  only override). It is where `bash` runs without an explicit `working_directory`,
+  and it is rebuilt into the tool-usage system prompt every turn — the panel's
+  session rail can switch it mid-session.
 - CLI shares the GUI's config.yaml + session files and runs turns through the same
   `TurnRunner` (which reloads a session from disk before appending), so both can run
   at once (see Windows below). Same

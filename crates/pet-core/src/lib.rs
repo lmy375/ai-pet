@@ -33,3 +33,4 @@ pub mod shell;
 pub mod skills;
 pub mod tools;
 pub mod turn;
+pub mod workdir;

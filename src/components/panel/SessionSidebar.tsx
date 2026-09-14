@@ -4,6 +4,7 @@ import { DEFAULT_SESSION_TITLE } from "../../hooks/useChat";
 import { Button } from "../ui/Button";
 import { IconActionButton } from "../ui/IconButton";
 import { PlusIcon, PencilIcon, TrashIcon, SearchIcon } from "../Icons";
+import { WorkdirPicker } from "./WorkdirPicker";
 import { useI18n, type Lang } from "../../i18n";
 
 interface Props {
@@ -110,6 +111,9 @@ export function SessionSidebar({ sessions, activeId, running = [], onSelect, onN
           />
         </div>
       </div>
+
+      {/* Where the agent works — shared by every session, not per-conversation. */}
+      <WorkdirPicker />
 
       {/* Grouped session list */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">

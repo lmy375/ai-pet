@@ -84,6 +84,12 @@ fn main() {
         }
     }
 
+    // A terminal tool works where it was started; the GUI's default ($HOME) is
+    // meaningless here. This is the only override of `workdir`'s default.
+    if let Ok(dir) = std::env::current_dir() {
+        let _ = pet_core::workdir::set(&dir.to_string_lossy());
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

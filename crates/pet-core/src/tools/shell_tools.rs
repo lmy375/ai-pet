@@ -36,7 +36,7 @@ impl Tool for BashTool {
                         },
                         "working_directory": {
                             "type": "string",
-                            "description": "Working directory for the command. Defaults to the system default if not specified."
+                            "description": "Working directory for the command. Defaults to the current working directory, which is stated in the tool-usage guide."
                         },
                         "timeout": {
                             "type": "integer",
@@ -106,9 +106,13 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
     #[cfg(unix)]
     cmd.process_group(0);
 
-    if let Some(cwd) = working_directory {
-        cmd.current_dir(cwd);
-    }
+    // No explicit directory means the session's working directory ($HOME in the
+    // GUI unless the owner picked another one, the launch directory in the CLI)
+    // — never whatever the app process happens to have been started in.
+    match working_directory {
+        Some(dir) => cmd.current_dir(dir),
+        None => cmd.current_dir(crate::workdir::get()),
+    };
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,

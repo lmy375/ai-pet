@@ -122,6 +122,8 @@ pub fn run() {
             commands::settings::list_providers,
             commands::settings::test_model,
             commands::gallery::default_gallery_dir,
+            commands::workdir::get_workdir,
+            commands::workdir::set_workdir,
             commands::gallery::list_gallery_media,
             commands::skills::list_skills,
             commands::skills::open_skills_dir,

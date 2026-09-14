@@ -58,6 +58,7 @@
   "chat.session.week": "本周",
   "chat.session.earlier": "更早",
   "chat.session.yesterday": "昨天",
+  "chat.workdir.tooltip": "工作目录：{dir}（点击切换）",
   "chat.select.enter": "多选",
   "chat.select.cancel": "取消",
   "chat.select.delete": "删除选中 ({count})",
