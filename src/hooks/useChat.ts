@@ -415,16 +415,21 @@ export function useChat() {
   // context, then persist. The backend owns that mapping (`prune_session_items`)
   // because it requires understanding the stored message format, and refuses
   // while a turn is running in the session.
-  const deleteItems = useCallback(async (selectedIds: string[]) => {
-    if (selectedIds.length === 0) return;
+  // Returns the backend's refusal (a turn is running in this session,
+  // unreadable file) so a caller that acts on the pruned transcript — the
+  // edit-and-resend below — can stop instead of building on a stale view.
+  const deleteItems = useCallback(async (selectedIds: string[]): Promise<string | null> => {
+    if (selectedIds.length === 0) return null;
     const id = sessionIdRef.current;
-    if (!id) return;
+    if (!id) return null;
     try {
       const view = await invoke<SessionView>("prune_session_items", { id, itemIds: selectedIds });
       setItems(view.items);
       await refreshSessionList();
+      return null;
     } catch (e) {
       console.error("Failed to delete items:", e);
+      return `${e}`;
     }
   }, []);
 
@@ -452,6 +457,29 @@ export function useChat() {
       ]);
     }
   }, []);
+
+  // Rewrite a message already sent and send it again: everything from it
+  // onward leaves the transcript AND the LLM context first, so the reply is
+  // produced from the edited history rather than from the original next to it.
+  // Its images ride along — the edit is of the text, not of the attachment.
+  const editMessage = useCallback(
+    async (itemId: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || !sessionIdRef.current) return;
+      const idx = itemsRef.current.findIndex((i) => i.id === itemId);
+      if (idx < 0) return;
+      const { images } = itemsRef.current[idx];
+      const err = await deleteItems(itemsRef.current.slice(idx).map((i) => i.id));
+      if (err) {
+        // Nothing was pruned (a turn started in this session meanwhile), so
+        // resending would duplicate the message instead of replacing it.
+        setItems([...itemsRef.current, { id: newItemId(), type: "error", content: err, ts: Date.now() }]);
+        return;
+      }
+      await sendMessage(trimmed, images);
+    },
+    [deleteItems, sendMessage],
+  );
 
   // Abort the turn running in this session. The backend ends the stream with
   // `done` (partial answer kept) and finishes the turn through the normal path.
@@ -560,6 +588,7 @@ export function useChat() {
     sessionList,
     runningSessions: running,
     sendMessage,
+    editMessage,
     stopStreaming,
     newSession,
     renameSession,

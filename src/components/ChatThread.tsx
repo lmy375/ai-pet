@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ChatItem, ToolCall } from "../hooks/useChat";
 import { MessageBubble } from "./ui/MessageBubble";
+import { MessageEditor } from "./ui/MessageEditor";
 import { ReasoningBlock } from "./ui/ReasoningBlock";
 import { JsonView } from "./ui/JsonView";
 import { Markdown } from "./ui/Markdown";
@@ -30,6 +31,9 @@ interface Props {
   selectedKeys?: Set<string>;
   /** Toggle selection for the item with id `id`. */
   onToggleSelect?: (id: string) => void;
+  /** Rewrite the user message `id` and resend it, dropping everything after it.
+   *  Omitted by read-only threads (the group tabs). */
+  onEditMessage?: (id: string, text: string) => void;
 }
 
 /** Sender labels for the meta row; absent in the compact (pet window) mode. */
@@ -72,14 +76,22 @@ function NotificationItem({ content, label, detail }: { content: string; label?:
   );
 }
 
-/** `copyable` is false in selection mode, where the row itself owns the click
- *  (and a copy button would also nest a button inside the row's button). */
-function renderItem(item: ChatItem, names?: Names, copyable = true) {
-  const copyText = copyable ? item.content : undefined;
+/** `actionable` is false in selection mode, where the row itself owns the click
+ *  (and the buttons would also nest a button inside the row's button — `onEdit`
+ *  is likewise left off there). */
+function renderItem(item: ChatItem, names?: Names, actionable = true, onEdit?: () => void) {
+  const copyText = actionable ? item.content : undefined;
   switch (item.type) {
     case "user":
       return (
-        <MessageBubble role="user" images={item.images} name={names?.user} ts={item.ts} copyText={copyText}>
+        <MessageBubble
+          role="user"
+          images={item.images}
+          name={names?.user}
+          ts={item.ts}
+          copyText={copyText}
+          onEdit={onEdit}
+        >
           {item.content}
         </MessageBubble>
       );
@@ -141,9 +153,12 @@ export function ChatThread({
   selectionMode = false,
   selectedKeys,
   onToggleSelect,
+  onEditMessage,
 }: Props) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
+  // Id of the message open in the composer (one at a time).
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -168,12 +183,26 @@ export function ChatThread({
         const showTime =
           !names && item.ts !== undefined && (i === 0 || prev?.ts === undefined || item.ts - prev.ts > FIVE_MIN);
         const selected = item.id ? (selectedKeys?.has(item.id) ?? false) : false;
+        // Editing means resending, so it is offered only on a user message, and
+        // only while the session is idle — a running turn would refuse both the
+        // prune and the send.
+        const editable = !!onEditMessage && item.type === "user" && !!item.id && !loading;
         return (
           <div key={item.id ?? i} className="flex flex-col gap-2">
             {showTime && (
               <div className="self-center px-2 py-0.5 text-meta text-ink-faint">{formatHm(item.ts!)}</div>
             )}
-            {selectionMode ? (
+            {editingId === item.id ? (
+              <MessageEditor
+                text={item.content}
+                dropCount={items.slice(i + 1).filter((it) => it.type !== "tool").length}
+                onCancel={() => setEditingId(null)}
+                onSubmit={(text) => {
+                  setEditingId(null);
+                  onEditMessage?.(item.id, text);
+                }}
+              />
+            ) : selectionMode ? (
               <button
                 type="button"
                 onClick={() => item.id && onToggleSelect?.(item.id)}
@@ -192,7 +221,7 @@ export function ChatThread({
                 <div className="min-w-0 flex-1 pointer-events-none">{renderItem(item, names, false)}</div>
               </button>
             ) : (
-              renderItem(item, names)
+              renderItem(item, names, true, editable ? () => setEditingId(item.id) : undefined)
             )}
           </div>
         );

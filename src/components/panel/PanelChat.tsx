@@ -28,6 +28,7 @@ export function PanelChat() {
     sessionList,
     runningSessions,
     sendMessage,
+    editMessage,
     stopStreaming,
     newSession,
     renameSession,
@@ -120,6 +121,7 @@ export function PanelChat() {
           selectionMode={selectionMode}
           selectedKeys={selected}
           onToggleSelect={toggleSelect}
+          onEditMessage={editMessage}
         />
 
         {/* Selection action bar (replaces the input while choosing messages) */}
