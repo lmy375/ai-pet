@@ -8,6 +8,8 @@
   "common.add": "Add",
   "common.open": "Open",
   "common.enable": "Enabled",
+  "common.copy": "Copy",
+  "common.copied": "Copied",
   "common.zoomImage": "Click to enlarge",
   "app.pin.on": "Unpin",
   "app.pin.off": "Pin (stay on top, no auto-hide)",

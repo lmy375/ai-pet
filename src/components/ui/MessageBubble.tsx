@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { CopyButton } from "./CopyButton";
 import { ImageLightbox } from "./ImageLightbox";
 import { formatHm } from "../../utils/format";
 import { useI18n } from "../../i18n";
@@ -12,13 +13,16 @@ interface Props {
   name?: string;
   /** Epoch ms shown next to `name`. Only used when `name` is set. */
   ts?: number;
+  /** Raw text of the message. When set, a copy button appears on hover in the
+   *  gutter beside the bubble. Omitted while a reply is still streaming. */
+  copyText?: string;
   children: ReactNode;
 }
 
 /** Chat bubble: user = accent blue (right), assistant = white card (left). With
  *  `name` it grows a meta row (sender + time) — the panel layout; without it,
  *  the bubble alone (pet window). */
-export function MessageBubble({ role, error = false, images, name, ts, children }: Props) {
+export function MessageBubble({ role, error = false, images, name, ts, copyText, children }: Props) {
   const { t } = useI18n();
   const isUser = role === "user";
   const tone = error
@@ -30,8 +34,18 @@ export function MessageBubble({ role, error = false, images, name, ts, children 
   const hasImages = images && images.length > 0;
   const [zoomed, setZoomed] = useState<string | null>(null);
 
+  // Sits in the free gutter on the bubble's inner side, so bubbles keep their
+  // edge alignment and revealing it on hover shifts nothing.
+  const copy = copyText?.trim() ? (
+    <CopyButton
+      text={copyText}
+      className="mb-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+    />
+  ) : null;
+
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex items-end gap-1 ${isUser ? "justify-end" : "justify-start"}`}>
+      {isUser && copy}
       <div className={`flex min-w-0 max-w-[80%] flex-col ${isUser ? "items-end" : "items-start"}`}>
         {name && (
           <div className="mb-1 flex items-baseline gap-1.5 px-0.5 text-meta">
@@ -59,6 +73,7 @@ export function MessageBubble({ role, error = false, images, name, ts, children 
           {children}
         </div>
       </div>
+      {!isUser && copy}
       {zoomed && <ImageLightbox src={zoomed} onClose={() => setZoomed(null)} />}
     </div>
   );

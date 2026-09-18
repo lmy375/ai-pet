@@ -72,11 +72,14 @@ function NotificationItem({ content, label, detail }: { content: string; label?:
   );
 }
 
-function renderItem(item: ChatItem, names?: Names) {
+/** `copyable` is false in selection mode, where the row itself owns the click
+ *  (and a copy button would also nest a button inside the row's button). */
+function renderItem(item: ChatItem, names?: Names, copyable = true) {
+  const copyText = copyable ? item.content : undefined;
   switch (item.type) {
     case "user":
       return (
-        <MessageBubble role="user" images={item.images} name={names?.user} ts={item.ts}>
+        <MessageBubble role="user" images={item.images} name={names?.user} ts={item.ts} copyText={copyText}>
           {item.content}
         </MessageBubble>
       );
@@ -88,7 +91,13 @@ function renderItem(item: ChatItem, names?: Names) {
       const hasReasoning = !!item.reasoning?.trim();
       if (!item.content.trim() && !item.images?.length && !hasReasoning) return null;
       return (
-        <MessageBubble role="assistant" images={item.images} name={names?.assistant} ts={item.ts}>
+        <MessageBubble
+          role="assistant"
+          images={item.images}
+          name={names?.assistant}
+          ts={item.ts}
+          copyText={copyText}
+        >
           {hasReasoning && <ReasoningBlock text={item.reasoning!} />}
           {item.content.trim() && <Markdown text={item.content} />}
         </MessageBubble>
@@ -104,7 +113,7 @@ function renderItem(item: ChatItem, names?: Names) {
       );
     case "error":
       return (
-        <MessageBubble role="assistant" error name={names?.assistant} ts={item.ts}>
+        <MessageBubble role="assistant" error name={names?.assistant} ts={item.ts} copyText={copyText}>
           {item.content}
         </MessageBubble>
       );
@@ -180,7 +189,7 @@ export function ChatThread({
                   {selected && <CheckIcon className="h-3 w-3" />}
                 </span>
                 {/* Disable inner pointer events so the row click owns the toggle. */}
-                <div className="min-w-0 flex-1 pointer-events-none">{renderItem(item, names)}</div>
+                <div className="min-w-0 flex-1 pointer-events-none">{renderItem(item, names, false)}</div>
               </button>
             ) : (
               renderItem(item, names)

@@ -8,6 +8,8 @@
   "common.add": "添加",
   "common.open": "打开",
   "common.enable": "启用",
+  "common.copy": "复制",
+  "common.copied": "已复制",
   "common.zoomImage": "点击查看大图",
   "app.pin.on": "取消钉住",
   "app.pin.off": "钉住（保持置顶、不自动收起）",
