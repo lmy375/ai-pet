@@ -53,3 +53,23 @@ export function parseJsonish(value: unknown): unknown {
     return value; // partial JSON while a tool call is still streaming
   }
 }
+
+/** Milliseconds → how long a turn has been running: `42s` / `22m 32s` /
+ *  `1h 08m`. Seconds are dropped past an hour — at that scale they're noise. */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m.toString().padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${s.toString().padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
+/** Token counts as a running total reads best: `842` / `12.4k` / `1.8M`.
+ *  One decimal, and a trailing `.0` is dropped (`181k`, not `181.0k`). */
+export function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  const [value, unit] = n < 1_000_000 ? [n / 1000, "k"] : [n / 1_000_000, "M"];
+  return `${value.toFixed(1).replace(/\.0$/, "")}${unit}`;
+}

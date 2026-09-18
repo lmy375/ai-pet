@@ -7,6 +7,7 @@ import { ReasoningBlock } from "./ui/ReasoningBlock";
 import { JsonView } from "./ui/JsonView";
 import { Markdown } from "./ui/Markdown";
 import { ToolCallBlock } from "./ui/ToolCallBlock";
+import { TurnStatus } from "./ui/TurnStatus";
 import { ChevronRight, CheckIcon } from "./Icons";
 import { formatHm } from "../utils/format";
 import { useI18n } from "../i18n";
@@ -17,6 +18,11 @@ interface Props {
   streaming: string; // in-progress assistant text (empty when idle)
   streamingReasoning?: string; // in-progress chain-of-thought (empty when idle)
   loading: boolean;
+  /** Epoch ms the running turn started, and what it has burned so far — the
+   *  running indicator's figures. Omitted by views without a turn of their own
+   *  (the group tabs), which then show only what the turn is doing. */
+  turnStartedAt?: number;
+  turnTokens?: number;
   /** Extra classes for the scroll container (controls bg/padding/position). */
   className?: string;
   /** Shown when there are no messages. If omitted, the whole thread renders nothing when empty. */
@@ -147,6 +153,8 @@ export function ChatThread({
   streaming,
   streamingReasoning = "",
   loading,
+  turnStartedAt,
+  turnTokens,
   className = "",
   emptyHint,
   assistantName,
@@ -242,17 +250,19 @@ export function ChatThread({
         </MessageBubble>
       )}
 
-      {/* Breathing dots = "the turn is still running", the same state the input's
-          stop button shows. It stays up through every phase of a turn (waiting
-          for the first token, between rounds, while a tool runs), so it must
-          follow `loading` alone — gating it on "nothing streamed yet" made it
-          flash once at the start of a turn and never come back. */}
+      {/* "The turn is still running" — the same state the input's stop button
+          shows. It stays up through every phase of a turn (waiting for the
+          first token, between rounds, while a tool runs), so it must follow
+          `loading` alone — gating it on "nothing streamed yet" made it flash
+          once at the start of a turn and never come back. */}
       {loading && (
-        <div className="flex gap-1 self-start rounded-bubble border border-line bg-surface px-3.5 py-3 shadow-card">
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.2s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.1s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint" />
-        </div>
+        <TurnStatus
+          startedAt={turnStartedAt}
+          tokens={turnTokens}
+          toolCalls={currentToolCalls}
+          streaming={streaming}
+          reasoning={streamingReasoning}
+        />
       )}
 
       <div ref={endRef} />

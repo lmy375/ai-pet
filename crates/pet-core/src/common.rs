@@ -65,3 +65,8 @@ pub fn iso_now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
 }
 
+/// Epoch milliseconds — the timestamp shape the frontend does arithmetic on
+/// (`Date.now()`), used where a duration matters rather than a displayed date.
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}

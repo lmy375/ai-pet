@@ -24,6 +24,8 @@ export function PanelChat() {
     currentToolCalls,
     loaded,
     contextUsage,
+    turnStartedAt,
+    turnTokens,
     sessionId,
     sessionList,
     runningSessions,
@@ -115,6 +117,8 @@ export function PanelChat() {
           streaming={currentResponse}
           streamingReasoning={currentReasoning}
           loading={isLoading}
+          turnStartedAt={turnStartedAt}
+          turnTokens={turnTokens}
           className="flex-1 px-5 py-4"
           emptyHint={t("chat.empty")}
           assistantName={petName}

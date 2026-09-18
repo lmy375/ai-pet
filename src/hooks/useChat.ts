@@ -75,7 +75,7 @@ type StreamEvent =
 /** Turn activity from the backend (`turn` event, camelCase via serde). One
  *  stream for every session; this hook keeps what concerns its own. */
 type TurnNotice =
-  | { kind: "started"; sessionId: string; turnId: string }
+  | { kind: "started"; sessionId: string; turnId: string; startedAt: number }
   | { kind: "stream"; sessionId: string; turnId: string; seq: number; event: StreamEvent }
   | { kind: "finished"; sessionId: string; turnId: string };
 
@@ -84,6 +84,7 @@ type StreamNotice = Extract<TurnNotice, { kind: "stream" }>;
 /** Everything a running turn has streamed so far (`attach_turn`). */
 interface TurnSnapshot {
   turnId: string;
+  startedAt: number;
   seq: number;
   events: StreamEvent[];
 }
@@ -101,9 +102,13 @@ interface TurnView {
   reasoning: string;
   toolCalls: ToolCall[];
   usage: Usage | null;
+  /** Tokens this turn has burned so far: every round's own total added up (a
+   *  tool loop re-sends the conversation each round, so that IS the cost).
+   *  Distinct from `usage`, which is the latest round's context occupancy. */
+  spent: number;
 }
 
-const EMPTY_VIEW: TurnView = { items: [], response: "", reasoning: "", toolCalls: [], usage: null };
+const EMPTY_VIEW: TurnView = { items: [], response: "", reasoning: "", toolCalls: [], usage: null, spent: 0 };
 
 function flushToolCalls(v: TurnView): TurnView {
   if (v.toolCalls.length === 0) return v;
@@ -166,7 +171,11 @@ function reduceTurn(v: TurnView, e: StreamEvent): TurnView {
       };
     }
     case "usage":
-      return { ...v, usage: { used: e.data.totalTokens, total: e.data.contextWindow } };
+      return {
+        ...v,
+        usage: { used: e.data.totalTokens, total: e.data.contextWindow },
+        spent: v.spent + e.data.totalTokens,
+      };
     case "done":
       return commitText(flushToolCalls(v));
     case "error": {
@@ -184,6 +193,9 @@ function reduceTurn(v: TurnView, e: StreamEvent): TurnView {
 /** The turn this window is following: id, last applied `seq`, and its view. */
 interface TurnState {
   id: string;
+  /** Epoch ms the backend stamped on the turn — never `Date.now()` here, so a
+   *  window that re-attaches mid-turn shows the real elapsed time, not zero. */
+  startedAt: number;
   seq: number;
   view: TurnView;
 }
@@ -294,7 +306,7 @@ export function useChat() {
         seq = n.seq;
       }
     }
-    setTurn({ id: snap.turnId, seq, view });
+    setTurn({ id: snap.turnId, startedAt: snap.startedAt, seq, view });
   };
 
   // Re-read the persisted transcript of the session being shown (the backend
@@ -447,7 +459,7 @@ export function useChat() {
         turn: { text: content, images: images ?? [] },
       });
       // `started` usually lands first; either way the turn is now followed.
-      if (!turnRef.current) setTurn({ id: turnId, seq: 0, view: EMPTY_VIEW });
+      if (!turnRef.current) setTurn({ id: turnId, startedAt: Date.now(), seq: 0, view: EMPTY_VIEW });
     } catch (err) {
       // The turn never started (another window is mid-turn here, unreadable
       // file): nothing was persisted, so replace the bubble with the reason.
@@ -514,7 +526,7 @@ export function useChat() {
     if (n.sessionId !== sessionIdRef.current) return;
     if (n.kind === "started") {
       resetSync();
-      setTurn({ id: n.turnId, seq: 0, view: EMPTY_VIEW });
+      setTurn({ id: n.turnId, startedAt: n.startedAt, seq: 0, view: EMPTY_VIEW });
       reloadItems(n.sessionId); // the turn's opening item(s) are already persisted
       return;
     }
@@ -532,7 +544,7 @@ export function useChat() {
       backlogRef.current.push(n);
       return;
     }
-    setTurn({ id: t.id, seq: n.seq, view: reduceTurn(t.view, n.event) });
+    setTurn({ ...t, seq: n.seq, view: reduceTurn(t.view, n.event) });
   });
 
   // A heartbeat's `chat` tool inserts a pet message into the active session on
@@ -584,6 +596,8 @@ export function useChat() {
     currentToolCalls: turn?.view.toolCalls ?? [],
     loaded,
     contextUsage: turn?.view.usage ?? contextUsage,
+    turnStartedAt: turn?.startedAt,
+    turnTokens: turn?.view.spent ?? 0,
     sessionId,
     sessionList,
     runningSessions: running,

@@ -1169,6 +1169,7 @@ mod tests {
             session_id: session_id.into(),
             turn_id: "t".into(),
             origin,
+            started_at: 0,
         }))
     }
 

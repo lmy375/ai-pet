@@ -26,8 +26,18 @@ const COLLAPSED_PAD = 8;
 function App() {
   const { settings, loaded } = useSettings();
   const { t } = useI18n();
-  const { items, currentResponse, currentReasoning, currentToolCalls, isLoading, sendMessage, editMessage, stopStreaming } =
-    useChat();
+  const {
+    items,
+    currentResponse,
+    currentReasoning,
+    currentToolCalls,
+    isLoading,
+    turnStartedAt,
+    turnTokens,
+    sendMessage,
+    editMessage,
+    stopStreaming,
+  } = useChat();
   const { hidden, handleMouseEnter, pauseTimer, resumeTimer, hideToEdge } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
@@ -218,6 +228,8 @@ function App() {
                 streaming={currentResponse}
                 streamingReasoning={currentReasoning}
                 loading={isLoading}
+                turnStartedAt={turnStartedAt}
+                turnTokens={turnTokens}
                 className="h-full rounded-card border border-line bg-surface/55 px-3 py-3 backdrop-blur-md"
                 onEditMessage={editMessage}
               />

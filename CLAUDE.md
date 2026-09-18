@@ -121,6 +121,12 @@
   `seq` triggers the same re-attach. There is no `busyRef`, no reload-skipping while
   streaming, and no frontend `save_session` — those were the sources of the clobbering
   bugs. If two views disagree, the fix is in the runner, not a new frontend flag.
+- **A turn's elapsed time comes from the backend**, not from when a window noticed
+  it: the runner stamps `started_at` on the turn and carries it on `Started` AND in
+  the snapshot, so the running indicator (`ui/TurnStatus`) shows the same clock in a
+  window that re-attached mid-turn as in one that watched from the start. Its token
+  figure is the sum of every round's `usage` event — replayed from the same buffer,
+  so it survives a re-attach too.
 - **One turn per session, many sessions at once.** `send` fails with "already running" for
   a busy session; other sessions run in parallel. `save_session` must NOT touch
   `index.active_id` (only `set_active_session` / `create_session` do): a background turn

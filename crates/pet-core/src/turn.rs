@@ -56,6 +56,11 @@ pub enum TurnNotice {
         session_id: String,
         turn_id: String,
         origin: TurnOrigin,
+        /// Epoch ms the turn began. The runner stamps it (rather than each
+        /// listener noting its own arrival time) so a window that joins late
+        /// through `attach` shows the same elapsed time as one that was there
+        /// from the start.
+        started_at: i64,
     },
     /// One stream event. `seq` counts from 1 within the turn so a listener can
     /// tell whether it missed anything (and re-attach if so).
@@ -78,6 +83,8 @@ pub enum TurnNotice {
 pub struct TurnSnapshot {
     pub turn_id: String,
     pub origin: TurnOrigin,
+    /// Epoch ms the turn began — see `TurnNotice::Started`.
+    pub started_at: i64,
     pub seq: u64,
     pub events: Vec<StreamEvent>,
 }
@@ -85,6 +92,7 @@ pub struct TurnSnapshot {
 struct LiveTurn {
     turn_id: String,
     origin: TurnOrigin,
+    started_at: i64,
     cancel: CancellationToken,
     /// Last emitted `seq` and the events so far. Consecutive text deltas are
     /// merged (see `coalesce`), so the buffer stays small on long answers.
@@ -227,9 +235,11 @@ impl TurnRunner {
         session::save_session(sess)?;
 
         let turn_id = uuid::Uuid::new_v4().to_string();
+        let started_at = crate::common::now_ms();
         let lt = Arc::new(LiveTurn {
             turn_id: turn_id.clone(),
             origin: origin.clone(),
+            started_at,
             cancel: CancellationToken::new(),
             buffer: Mutex::new((0, Vec::new())),
         });
@@ -238,6 +248,7 @@ impl TurnRunner {
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             origin,
+            started_at,
         });
 
         let me = self.me.upgrade().ok_or_else(|| "turn runner is shutting down".to_string())?;
@@ -352,6 +363,7 @@ impl TurnRunner {
         Some(TurnSnapshot {
             turn_id: lt.turn_id.clone(),
             origin: lt.origin.clone(),
+            started_at: lt.started_at,
             seq: buffer.0,
             events: buffer.1.clone(),
         })
@@ -522,5 +534,25 @@ mod tests {
         let f = TurnNotice::Finished { session_id: "s1".into(), turn_id: "t1".into() };
         let v: serde_json::Value = serde_json::to_value(&f).unwrap();
         assert_eq!(v, serde_json::json!({ "kind": "finished", "sessionId": "s1", "turnId": "t1" }));
+
+        // `startedAt` is what the running indicator counts elapsed time from;
+        // as snake_case it would read as `undefined` and the timer would sit at 0.
+        let s = TurnNotice::Started {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            origin: TurnOrigin::User { text: "hi".into() },
+            started_at: 1_700_000_000_000,
+        };
+        let v: serde_json::Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "started",
+                "sessionId": "s1",
+                "turnId": "t1",
+                "origin": { "type": "user", "text": "hi" },
+                "startedAt": 1_700_000_000_000i64
+            })
+        );
     }
 }
