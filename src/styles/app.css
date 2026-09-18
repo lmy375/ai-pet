@@ -115,13 +115,3 @@ body {
 .animate-gallery-fade {
   animation: gallery-fade 0.9s ease-in-out;
 }
-
-/* Running turn: an indeterminate sweep under the status line (TurnStatus). */
-@keyframes turn-sweep {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(300%); }
-}
-
-.animate-turn-sweep {
-  animation: turn-sweep 1.6s ease-in-out infinite;
-}

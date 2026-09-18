@@ -123,7 +123,8 @@
   bugs. If two views disagree, the fix is in the runner, not a new frontend flag.
 - **A turn's elapsed time comes from the backend**, not from when a window noticed
   it: the runner stamps `started_at` on the turn and carries it on `Started` AND in
-  the snapshot, so the running indicator (`ui/TurnStatus`) shows the same clock in a
+  the snapshot, so the running indicator (`ui/TurnStatus` — a chrome-less status
+  line, never a bubble: it isn't a message) shows the same clock in a
   window that re-attached mid-turn as in one that watched from the start. Its token
   figure is the sum of every round's `usage` event — replayed from the same buffer,
   so it survives a re-attach too.

@@ -35,6 +35,10 @@ function useSecondTick(active: boolean): number {
  * dots, which said only "something is happening" during turns that can run for
  * many minutes across a dozen tool rounds.
  *
+ * Deliberately chrome-less — no bubble, border or shadow. It is the thread's
+ * status line, not a message from the pet, and a card would read as one. The
+ * spinner alone carries "running"; the text carries everything else.
+ *
  * Everything shown is derived from the turn stream the thread already has, so
  * a window that re-attaches mid-turn (reload, tab switch, focus) shows the same
  * figures as one that watched from the start.
@@ -58,20 +62,13 @@ export function TurnStatus({ startedAt, tokens = 0, toolCalls, streaming, reason
   ].filter(Boolean) as string[];
 
   return (
-    <div className="flex w-[min(100%,300px)] flex-col gap-2 self-start rounded-bubble border border-line bg-surface px-3.5 py-2.5 shadow-card">
-      <div className="flex min-w-0 items-center gap-1.5 text-note">
-        <SpinnerIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
-        {stats.length > 0 && (
-          <span className="shrink-0 font-medium tabular-nums text-ink-soft">{stats.join(" · ")}</span>
-        )}
-        {stats.length > 0 && <span className="shrink-0 text-ink-faint">·</span>}
-        <span className="truncate text-ink-faint">{phase}</span>
-      </div>
-      {/* Indeterminate on purpose: a turn has no measurable progress, only
-          "still going" — the numbers above carry the actual information. */}
-      <div className="h-[3px] overflow-hidden rounded-full bg-hover">
-        <div className="h-full w-1/3 animate-turn-sweep rounded-full bg-accent" />
-      </div>
+    <div className="flex min-w-0 max-w-full items-center gap-1.5 self-start px-1 py-0.5 text-note">
+      <SpinnerIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+      {stats.length > 0 && (
+        <span className="shrink-0 font-medium tabular-nums text-ink-soft">{stats.join(" · ")}</span>
+      )}
+      {stats.length > 0 && <span className="shrink-0 text-ink-faint">·</span>}
+      <span className="truncate text-ink-faint">{phase}</span>
     </div>
   );
 }
