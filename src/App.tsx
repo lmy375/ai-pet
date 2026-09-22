@@ -176,12 +176,7 @@ function App() {
             <span className="absolute left-0 top-0 h-3 w-3 rounded-tl-md border-l-2 border-t-2 border-line/90" />
             <span className="absolute right-0 top-0 h-3 w-3 rounded-tr-md border-r-2 border-t-2 border-line/90" />
             <span className="absolute bottom-0 left-0 h-3 w-3 rounded-bl-md border-b-2 border-l-2 border-line/90" />
-            {/* Bottom-right is the "busy" corner: when expanded it holds the send
-                button + resize grip, so we skip the mark there to avoid crowding.
-                Shown only when collapsed (no send button then). */}
-            {chatCollapsed && (
-              <span className="absolute bottom-0 right-0 h-3 w-3 rounded-br-md border-b-2 border-r-2 border-line/90" />
-            )}
+            <span className="absolute bottom-0 right-0 h-3 w-3 rounded-br-md border-b-2 border-r-2 border-line/90" />
           </div>
 
           {/* Pin toggle — top-left. Pinned = stay above all windows + no auto-hide. */}
