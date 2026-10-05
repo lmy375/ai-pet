@@ -201,6 +201,12 @@ export function ArrowDownIcon({ className }: IconProps) {
   return <Stroke className={className}><path d="M12 5v14M19 12l-7 7-7-7" /></Stroke>;
 }
 
+/** Down chevron — the affordance on a select / search-select trigger. */
+export function ChevronDownIcon({ className }: IconProps) {
+  return <Stroke className={className}><path d="m6 9 6 6 6-6" /></Stroke>;
+}
+
+
 /** Slide-to-the-edge glyph — arrow pushed against a wall. Used by the pet's
  *  manual hide button, whose action is the idle auto-hide slide. */
 export function HideEdgeIcon({ className }: IconProps) {

@@ -223,6 +223,8 @@
   "settings.llm.noModelsHint": "No models available — check the URL / API Key",
   "settings.llm.fillBaseFirst": "Enter the API Base URL first",
   "settings.llm.selectFromN": "Choose from {count} available models...",
+  "settings.llm.noMatch": "No matching models",
+
   "settings.llm.test": "Test",
   "settings.llm.testing": "Testing...",
   "settings.llm.contextWindow": "Context window (tokens)",

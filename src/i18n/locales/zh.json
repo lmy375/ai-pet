@@ -223,6 +223,8 @@
   "settings.llm.noModelsHint": "无可用模型，请检查 URL / API Key",
   "settings.llm.fillBaseFirst": "请先填写 API Base URL",
   "settings.llm.selectFromN": "从 {count} 个可用模型中选择...",
+  "settings.llm.noMatch": "没有匹配的模型",
+
   "settings.llm.test": "测试",
   "settings.llm.testing": "测试中...",
   "settings.llm.contextWindow": "上下文窗口 (tokens)",
