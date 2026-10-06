@@ -200,6 +200,44 @@ occluded/minimized), the Live2D model renders blank/frozen.
   remounting Live2D (keyed by model path) re-inits cleanly. Do NOT confuse this with the
   `!hidden` gating bug above; gating on `galleryOn` is fine, gating on `hidden` is not.
 
+### Live2D blank after switching model in settings (fixed 2026-10-06)
+Symptom: pick a different `live_2d_model_path` in the panel, return to the pet, and the model is
+blank. The console floods with `WebGL: INVALID_OPERATION: useProgram: object does not belong to
+this context` plus `uniform*: location not for current program`, thrown from the plugin's
+`setupShaderProgram` on every single frame.
+- Cause: `CubismShader_WebGL` (in `pixi-live2d-display-lipsyncpatch/cubism4`) is a **module-level
+  singleton**. Its `_shaderSets` hold `WebGLProgram` objects that belong to the WebGL context they
+  were compiled in. Swapping the model changes the `key` in `src/App.tsx`, so React mounts a fresh
+  `<canvas>` — a fresh context — while the singleton (ESM module cache outlives the unmount) keeps
+  handing out the previous context's programs.
+- The plugin CANNOT self-heal here: its only reset path, `InternalModel.updateWebGLContext()`,
+  does `this.renderer.startUp(gl)` and then `if (!this.renderer._clippingManager) return;` —
+  clearing `_shaderSets` is the line AFTER that early return, so models **without clipping masks**
+  never reset. `public/models/wanko` has no `Drawable.Masks` in its `.cdi3.json`, so it always hits
+  this. A masked model would happen to work, which is why this looks model-dependent.
+- FIX (`Live2DCharacter.tsx`): `teardown()` now calls
+  `CubismShader_WebGL.deleteInstance()` (`releaseCubismShaderSingleton`) after the PIXI app is
+  destroyed. It must stay **synchronous** and run **after** `app.destroy()`: the ticker must be
+  stopped before the programs go away, and an `await` in between would let a slow release land
+  after the next build and delete the freshly compiled shaders.
+- Also in `teardown()`: the model's Automator is detached via
+  `model.automator.destroy()`, NOT `model.destroy()`. Two reasons:
+  `Application.destroy()` only tears down the stage without destroying children,
+  so something must detach the Automator it registered on `PIXI.Ticker.shared`;
+  and `model.destroy()` is a landmine — it reaches `InternalModel.destroy()` →
+  `renderer.release()`, which calls `this._clippingManager.release()`
+  UNCONDITIONALLY, while `_clippingManager` is only created when
+  `isUsingMasking()` is true. Maskless models (wanko) throw
+  "TypeError: undefined is not an object (evaluating 'this._clippingManager.release')"
+  mid-chain — after the automator is gone but before `super.destroy()` runs — so
+  the model ends up half-destroyed. `automator.destroy()` does the part we need
+  (ticker + `globalpointermove` + `pointertap` listeners) and can't hit that
+  null deref. Textures are left to PIXI's texture GC on purpose:
+  `createTexture()` builds them via `Texture.fromURL` (uncached), so releasing
+  them buys nothing and risks pulling GL textures out from under a rebuild.
+- When touching teardown: the `loseContext` nulling hack above depends on the canvas being
+  reused, so do not "clean up" the `extensions.loseContext` line.
+
 ## Logs
 - `logs/app.log` is a live tail for a human and is never read back by the app (the
   Debug window's app tab renders the in-memory `LogStore`, capped at 500 lines).

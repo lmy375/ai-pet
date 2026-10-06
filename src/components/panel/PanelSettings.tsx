@@ -21,6 +21,7 @@ const blankSettings: AppSettings = {
   models: {},
   mcp_servers: {},
   live_2d_model_path: "",
+  live_2d_core_path: "",
   language: "zh",
   gallery_dir: "",
   gallery_enabled: false,
@@ -283,6 +284,37 @@ export function PanelSettings() {
     }
   };
 
+  // Pick the Live2D core JS file (live2dcubismcore.min.js).
+  // Empty = use the SDK bundled into the app.
+  const handlePickLive2DCore = async () => {
+    try {
+      const defaultDir = await invoke<string>("default_live2d_dir").catch(() => null);
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "JavaScript", extensions: ["js"] }],
+        defaultPath: form.live_2d_core_path || defaultDir || undefined,
+      });
+      if (typeof picked === "string") commitSettings({ ...form, live_2d_core_path: picked });
+    } catch (e: any) {
+      fail(t("settings.pickDirFailed", { error: e }));
+    }
+  };
+
+  // Pick the Live2D model file (.model3.json).
+  const handlePickLive2DModel = async () => {
+    try {
+      const defaultDir = await invoke<string>("default_live2d_dir").catch(() => null);
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "Live2D Model", extensions: ["json"] }],
+        defaultPath: form.live_2d_model_path || defaultDir || undefined,
+      });
+      if (typeof picked === "string") commitSettings({ ...form, live_2d_model_path: picked });
+    } catch (e: any) {
+      fail(t("settings.pickDirFailed", { error: e }));
+    }
+  };
+
   const saveRaw = async () => {
     try {
       await invoke("save_config_raw", { content: rawYaml });
@@ -405,13 +437,37 @@ export function PanelSettings() {
 
           {/* Live2D */}
           <Card title={t("settings.live2d.title")}>
-            <Label>{t("settings.live2d.path")}</Label>
-            <SavedTextInput
-              value={form.live_2d_model_path}
-              onChange={(e) => setForm({ ...form, live_2d_model_path: e.target.value })}
-              onCommit={() => saveSettings()}
-              placeholder="/models/miku/miku.model3.json"
-            />
+            <Label>{t("settings.live2d.corePath")}</Label>
+            <div className="flex gap-2">
+              <SavedTextInput
+                value={form.live_2d_core_path}
+                onChange={(e) => setForm({ ...form, live_2d_core_path: e.target.value })}
+                onCommit={() => saveSettings()}
+                className="flex-1"
+                placeholder={t("settings.live2d.bundled")}
+              />
+              <Button variant="secondary" onClick={handlePickLive2DCore}>
+                <ImageIcon className="h-4 w-4" />
+                {t("settings.gallery.pick")}
+              </Button>
+            </div>
+            <HintText>{t("settings.live2d.corePathNote")}</HintText>
+
+            <Label>{t("settings.live2d.modelPath")}</Label>
+            <div className="flex gap-2">
+              <SavedTextInput
+                value={form.live_2d_model_path}
+                onChange={(e) => setForm({ ...form, live_2d_model_path: e.target.value })}
+                onCommit={() => saveSettings()}
+                className="flex-1"
+                placeholder="/models/wanko/wanko_touch.model3.json"
+              />
+              <Button variant="secondary" onClick={handlePickLive2DModel}>
+                <ImageIcon className="h-4 w-4" />
+                {t("settings.gallery.pick")}
+              </Button>
+            </div>
+            <HintText>{t("settings.live2d.modelPathNote")}</HintText>
           </Card>
 
           {/* Gallery slideshow */}

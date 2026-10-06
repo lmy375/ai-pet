@@ -109,6 +109,15 @@ pub async fn test_model(
     settings::test_model(api_base, api_key, model, provider).await
 }
 
+/// The default Live2D directory: `<config>/live2d`. Used as the starting point
+/// for the file pickers when choosing an external core or model — the owner
+/// drops files here instead of rebuilding the app.
+#[tauri::command]
+pub fn default_live2d_dir() -> Result<String, String> {
+    let dir = settings::ensure_config_dir()?.join("live2d");
+    Ok(dir.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn open_config_dir(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;

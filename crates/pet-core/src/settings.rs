@@ -220,6 +220,11 @@ pub struct AppSettings {
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
     #[serde(default = "default_model_path")]
     pub live_2d_model_path: String,
+    /// Path to `live2dcubismcore.min.js`. Empty = use the SDK bundled into the
+    /// app (loaded by index.html). An absolute filesystem path is loaded via the
+    /// asset protocol, so an end user can swap SDK versions without rebuilding.
+    #[serde(default)]
+    pub live_2d_core_path: String,
     /// UI language: "zh" or "en".
     #[serde(default = "default_language")]
     pub language: String,
@@ -376,7 +381,7 @@ fn default_heartbeat_context_turns() -> u32 {
 }
 
 fn default_model_path() -> String {
-    "/models/miku/miku.model3.json".to_string()
+    "/models/wanko/wanko_touch.model3.json".to_string()
 }
 
 fn default_provider() -> String {
@@ -425,6 +430,7 @@ impl Default for AppSettings {
             models: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
             live_2d_model_path: default_model_path(),
+            live_2d_core_path: String::new(),
             language: default_language(),
             gallery_dir: String::new(),
             gallery_enabled: false,

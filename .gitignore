@@ -1,3 +1,5 @@
+.*
+
 # Logs
 logs
 *.log
@@ -14,9 +16,6 @@ dist-ssr
 *.local
 .env
 
-# Live2D SDK & models (copyrighted, download separately)
-public/lib/
-public/models/
 
 # Editor directories and files
 .vscode/*
@@ -28,3 +27,6 @@ public/models/
 *.njsproj
 *.sln
 *.sw?
+# Live2D assets (Cubism Core SDK + bundled models) — proprietary, not redistributable
+public/lib/
+public/models/

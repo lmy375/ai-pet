@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 interface Props {
+  /** Path to the .model3.json. A `/`-prefixed web path is used as-is (bundled);
+   *  an absolute filesystem path is loaded via the asset protocol. */
   modelPath: string;
+  /** Path to live2dcubismcore.min.js. Empty = bundled (loaded by index.html). */
+  corePath: string;
 }
 
 // PIXI drawing area. It is deliberately taller than any model needs: the model
@@ -10,7 +15,86 @@ interface Props {
 const CANVAS_W = 300;
 const CANVAS_H = 350;
 
-export function Live2DCharacter({ modelPath }: Props) {
+// Live2DCubismCore is an IIFE that attaches to `window`. The bundled copy is
+// loaded by index.html; when an external assets dir is set we load that copy
+// instead, so a user can swap SDK versions without rebuilding. Cache by URL so
+// repeated builds (e.g. after a WebGL context restore) don't re-inject.
+let loadedCoreUrl: string | null = null;
+let coreLoadPromise: Promise<void> | null = null;
+
+async function ensureCore(externalUrl: string | null): Promise<void> {
+  if (externalUrl === null) {
+    if (!(window as any).Live2DCubismCore) {
+      throw new Error(
+        "Live2DCubismCore not found on window. Check that live2dcubismcore.min.js is loaded in index.html."
+      );
+    }
+    return;
+  }
+  if (loadedCoreUrl === externalUrl && (window as any).Live2DCubismCore) return;
+  if (coreLoadPromise) return coreLoadPromise;
+  const p = new Promise<void>((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = externalUrl;
+    s.onload = () => {
+      loadedCoreUrl = externalUrl;
+      resolve();
+    };
+    s.onerror = () => reject(new Error(`Failed to load Live2D core from ${externalUrl}`));
+    document.head.appendChild(s);
+  });
+  coreLoadPromise = p;
+  try {
+    await p;
+  } finally {
+    coreLoadPromise = null;
+  }
+}
+
+// Resolve a Live2D asset path (core JS or model3.json) to a loadable URL.
+// A `/models/` or `/lib/` prefix is a bundled web path served by vite from
+// public/ — used as-is. An absolute filesystem path needs protocol routing:
+// in dev mode the Tauri asset:// protocol is blocked by WKWebView CORS (page
+// origin is http://localhost:1420), so we route through a vite middleware at
+// /__live2d__/. In release mode the page itself is served via the asset
+// protocol, so convertFileSrc works. encodeURI (not encodeURIComponent) keeps
+// slashes intact so relative references in model3.json resolve correctly.
+function resolveAssetUrl(path: string): string {
+  if (/^(https?:|asset:|tauri:)/.test(path)) return path;
+  if (/^\/(models|lib)\//.test(path)) return path;
+  if (import.meta.env.DEV) {
+    return `/__live2d__/${encodeURI(path)}`;
+  }
+  return convertFileSrc(path);
+}
+
+// Reset the module-level `CubismShader_WebGL` singleton so the next build
+// compiles fresh shader programs. That singleton outlives React unmounts (ESM
+// module cache) but its `_shaderSets` hold `WebGLProgram` objects belonging to
+// the context they were compiled in. A model swap tears down the PIXI app and
+// mounts a fresh <canvas> — hence a fresh WebGL context — while the singleton
+// still hands out the previous context's programs, so `gl.useProgram()` throws
+// INVALID_OPERATION "object does not belong to this context" on every frame and
+// the model never appears.
+//
+// This is not self-healing: the plugin's own reset path
+// (`InternalModel.updateWebGLContext`) returns early via
+// `if (!this.renderer._clippingManager) return;` when a model has no clipping
+// masks, so it never reaches its `_shaderSets = []` line.
+//
+// Called synchronously right after the old app is destroyed and before the new
+// one is constructed. `deleteProgram` runs on the OLD context, which may already
+// be lost, hence the try/catch. Also fine on a first build: the singleton does
+// not exist yet and `deleteInstance()` is a no-op.
+function releaseCubismShaderSingleton(mod: any) {
+  try {
+    mod?.CubismShader_WebGL?.deleteInstance?.();
+  } catch (e) {
+    console.warn("Live2D: failed to release Cubism shader singleton:", e);
+  }
+}
+
+export function Live2DCharacter({ modelPath, corePath }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState("initializing...");
   // Height the model actually occupies, measured from the canvas top. The
@@ -22,13 +106,29 @@ export function Live2DCharacter({ modelPath }: Props) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+
     let disposed = false; // component unmounted or modelPath changed
     setDrawnHeight(null); // a different model lands its feet somewhere else
     let app: any = null; // current PIXI application
+    let model: any = null; // current Live2DModel (an automator on Ticker.shared)
     let building = false; // guard against overlapping (re)builds
+    // Set once the plugin module has loaded, so the unmount cleanup below can
+    // release the shader singleton even if the build never got that far.
+    let live2dMod: any = null;
 
-    const teardown = () => {
+    const teardown = (mod: any = null) => {
       if (app) {
+        // PIXI's ContextSystem.destroy() calls loseContext(), which permanently
+        // breaks the canvas's WebGL context. Under React StrictMode the same
+        // canvas element is reused across the double-invoked effect, so the next
+        // build gets an already-lost context and fails with
+        // "useProgram: object does not belong to this context". Null out the
+        // extension so destroy() skips that call; the context is released when
+        // the canvas is garbage-collected (unmount / key change).
+        try {
+          const ext = app.renderer?.context?.extensions;
+          if (ext) ext.loseContext = null;
+        } catch {}
         // The GL context may already be gone here, so destroy can throw.
         try {
           app.destroy(true);
@@ -37,6 +137,33 @@ export function Live2DCharacter({ modelPath }: Props) {
         }
         app = null;
       }
+      // Live2DModel registers an Automator on Ticker.shared, and Application
+      // .destroy() only tears down the stage without destroying its children — so
+      // the model would keep updating a discarded instance every frame. Destroy
+      // the automator to detach: it clears the ticker's update listener plus the
+      // `globalpointermove` / `pointertap` listeners, and drops the ticker ref.
+      //
+      // Deliberately NOT `model.destroy()`: that chain reaches
+      // `InternalModel.destroy()` → `renderer.release()`, which does
+      // `this._clippingManager.release()` UNCONDITIONALLY — and _clippingManager
+      // only exists when `isUsingMasking()` is true. Models without clipping masks
+      // (wanko) throw "undefined is not an object" mid-chain, after the automator
+      // was already detached but before `super.destroy()` runs, leaving the model
+      // half-destroyed. `automator.destroy()` covers the part we actually need
+      // and cannot hit that null deref.
+      if (model) {
+        try {
+          model.automator.destroy();
+        } catch (e) {
+          console.warn("Live2D automator detach error:", e);
+        }
+        model = null;
+      }
+      // Release the plugin's cached GL programs AFTER the app is gone, so the
+      // ticker can't draw against a half-released singleton. Done on every
+      // teardown (not just unmount) so a rebuild onto a new canvas/context —
+      // model swap, gallery toggle, context restore — starts from clean shaders.
+      if (mod) releaseCubismShaderSingleton(mod);
     };
 
     // (Re)create the PIXI app and load the model onto the SAME canvas. Used for
@@ -50,21 +177,28 @@ export function Live2DCharacter({ modelPath }: Props) {
         (window as any).PIXI = PIXI;
 
         setStatus("checking cubism core...");
-        // Ensure Live2DCubismCore is loaded from the <script> tag
-        if (!(window as any).Live2DCubismCore) {
-          throw new Error("Live2DCubismCore not found on window. Check that live2dcubismcore.min.js is loaded in index.html.");
+        const externalCore = corePath ? resolveAssetUrl(corePath) : null;
+        try {
+          await ensureCore(externalCore);
+        } catch {
+          // External core failed to load — fall back to the bundled copy
+          // (index.html). If that's missing too, this throws and we surface it.
+          await ensureCore(null);
         }
 
         setStatus("importing live2d...");
-        // Use cubism4-specific entry to avoid cubism2 conflicts
-        const { Live2DModel } = await import(
-          "pixi-live2d-display-lipsyncpatch/cubism4"
-        );
+        // Use cubism4-specific entry to avoid cubism2 conflicts. Keep the whole
+        // module: teardown() needs it to release the shader singleton.
+        const live2d = await import("pixi-live2d-display-lipsyncpatch/cubism4");
+        live2dMod = live2d;
+        const { Live2DModel } = live2d;
 
         if (disposed) return;
 
-        // Drop any previous (e.g. context-lost) app before creating a new one.
-        teardown();
+        // Drop any previous app (e.g. a context-lost one, or the StrictMode
+        // double-invoke) before creating a new one, and clear the plugin's
+        // shader cache so the new context compiles its own programs.
+        teardown(live2d);
 
         setStatus("creating pixi app...");
         app = new PIXI.Application({
@@ -76,33 +210,36 @@ export function Live2DCharacter({ modelPath }: Props) {
           resolution: window.devicePixelRatio || 1,
         });
 
-        setStatus(`loading model: ${modelPath}...`);
-        const model = await Live2DModel.from(modelPath, {
+        const modelUrl = resolveAssetUrl(modelPath);
+
+        setStatus(`loading model: ${modelUrl}...`);
+        const loaded = await Live2DModel.from(modelUrl, {
           autoInteract: false,
         });
+        model = loaded;
 
         if (disposed) {
-          teardown();
+          teardown(live2d);
           return;
         }
 
         // Read the unscaled size once: PIXI's width/height getters fold in
         // scale, so after scale.set() they no longer describe the model.
-        const rawW = model.width;
-        const rawH = model.height;
+        const rawW = loaded.width;
+        const rawH = loaded.height;
         const scale = Math.min((app.screen.width * 0.65) / rawW, (app.screen.height * 0.75) / rawH);
-        model.scale.set(scale);
-        model.anchor.set(0.5, 0.5);
-        model.x = app.screen.width / 2;
-        model.y = app.screen.height * 0.45;
+        loaded.scale.set(scale);
+        loaded.anchor.set(0.5, 0.5);
+        loaded.x = app.screen.width / 2;
+        loaded.y = app.screen.height * 0.45;
 
-        app.stage.addChild(model as any);
+        app.stage.addChild(loaded as any);
         // Anchored at its middle, so the feet sit half a scaled height below y.
-        setDrawnHeight(Math.ceil(model.y + (rawH * scale) / 2));
+        setDrawnHeight(Math.ceil(loaded.y + (rawH * scale) / 2));
         setStatus("");
       } catch (err: any) {
         console.error("Live2D init error:", err);
-        if (!disposed) setStatus(`Error: ${err.message || err}`);
+        if (!disposed) setStatus(`Error: ${err?.message || err}`);
       } finally {
         building = false;
       }
@@ -130,9 +267,9 @@ export function Live2DCharacter({ modelPath }: Props) {
       disposed = true;
       canvas.removeEventListener("webglcontextlost", onContextLost);
       canvas.removeEventListener("webglcontextrestored", onContextRestored);
-      teardown();
+      teardown(live2dMod);
     };
-  }, [modelPath]);
+  }, [modelPath, corePath]);
 
   return (
     // overflow-hidden, not a shorter canvas: the canvas keeps its full drawing

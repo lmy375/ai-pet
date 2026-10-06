@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 // --- Active-window tracking (for routing background-task notifications) ---
 
@@ -103,6 +103,10 @@ pub async fn open_panel(app: AppHandle) -> Result<(), String> {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
     }
+    // The pet window is now hidden. Its Live2D WebGL context cannot survive
+    // offscreen, so tell the frontend to tear the canvas down until it's shown
+    // again (see the panel's Destroyed handler) rather than rebuilding it here.
+    let _ = app.emit("main-hidden", ());
     if created {
         if let Some(panel) = app.get_webview_window("panel") {
             let app = app.clone();
@@ -112,6 +116,10 @@ pub async fn open_panel(app: AppHandle) -> Result<(), String> {
                         let _ = main.show();
                         let _ = main.set_focus();
                     }
+                    // The pet window was hidden the whole time the panel was open,
+                    // so anything that can't initialize while hidden (Live2D's
+                    // WebGL context) needs to be rebuilt now that it's visible.
+                    let _ = app.emit("main-shown", ());
                 }
             });
         }

@@ -17,6 +17,7 @@ import { FloatingIconButton } from "./components/ui/IconButton";
 import { useChat } from "./hooks/useChat";
 import { useAutoHide } from "./hooks/useAutoHide";
 import { useSettings } from "./hooks/useSettings";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 import { useI18n } from "./i18n";
 
 // Breathing room under the pet once the window shrinks to it, so the bottom
@@ -49,6 +50,17 @@ function App() {
   const [hovered, setHovered] = useState(false);
 
   const galleryOn = settings.gallery_enabled && !!settings.gallery_dir;
+
+  // The main window is hidden while the panel is open (open_panel) — and that's
+  // where Live2D settings are edited. A Live2D canvas built while the window is
+  // hidden can never get a working WebGL context, so rather than rebuilding it
+  // offscreen (which leaves a blank canvas when it reappears) we unmount the
+  // canvas entirely while hidden and remount it once the window is shown again.
+  // Visibility is driven by the backend (main-hidden / main-shown) instead of
+  // the focus event, which doesn't reliably fire on hide. See CLAUDE.md.
+  const [windowVisible, setWindowVisible] = useState(true);
+  useTauriEvent("main-hidden", () => setWindowVisible(false));
+  useTauriEvent("main-shown", () => setWindowVisible(true));
 
   // Pin: keep the pet pinned above every window and stop it auto-hiding (handy
   // for watching the gallery slideshow). Unpin restores auto-hide.
@@ -152,10 +164,13 @@ function App() {
         </div>
       ) : (
         <div ref={petBlockRef} className="animate-breath pointer-events-none mx-auto w-[300px] shrink-0">
-          <Live2DCharacter
-            key={settings.live_2d_model_path}
-            modelPath={settings.live_2d_model_path}
-          />
+          {windowVisible && (
+            <Live2DCharacter
+              key={`${settings.live_2d_core_path}|${settings.live_2d_model_path}`}
+              modelPath={settings.live_2d_model_path}
+              corePath={settings.live_2d_core_path}
+            />
+          )}
         </div>
       )}
 

@@ -59,6 +59,8 @@ export interface AppSettings {
   /** The global MCP server pool, keyed by name. */
   mcp_servers: Record<string, McpServerConfig>;
   live_2d_model_path: string;
+  /** Path to live2dcubismcore.min.js. Empty = bundled SDK. */
+  live_2d_core_path: string;
   language: string;
   gallery_dir: string;
   gallery_enabled: boolean;
@@ -141,7 +143,8 @@ export function emptyMcpServer(transport: McpServerConfig["transport"] = "stdio"
 const DEFAULT_SETTINGS: AppSettings = {
   models: {},
   mcp_servers: {},
-  live_2d_model_path: "/models/miku/miku.model3.json",
+  live_2d_model_path: "/models/wanko/wanko_touch.model3.json",
+  live_2d_core_path: "",
   language: "zh",
   gallery_dir: "",
   gallery_enabled: false,

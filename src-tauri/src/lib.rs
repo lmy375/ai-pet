@@ -31,7 +31,54 @@ pub fn run() {
         .manage(pet_core::mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
         .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))
+        .on_menu_event(|app, event| {
+            if event.id() == "toggle-devtools" {
+                #[cfg(debug_assertions)]
+                {
+                    let target = app
+                        .webview_windows()
+                        .into_iter()
+                        .find(|(_, w)| w.is_focused().unwrap_or(false))
+                        .map(|(_, w)| w)
+                        .or_else(|| app.get_webview_window("main"));
+                    if let Some(wv) = target {
+                        if wv.is_devtools_open() {
+                            wv.close_devtools();
+                        } else {
+                            wv.open_devtools();
+                        }
+                    }
+                }
+            }
+        })
         .setup(|app| {
+            if let Err(e) = (|| -> tauri::Result<()> {
+                use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
+                let handle = app.handle();
+                let menu = Menu::default(handle)?;
+                let devtools = MenuItem::with_id(
+                    handle,
+                    "toggle-devtools",
+                    "Toggle Web Console",
+                    true,
+                    Some("CmdOrCtrl+Shift+I"),
+                )?;
+                let items = menu.items()?;
+                for item in &items {
+                    if let MenuItemKind::Submenu(sub) = item {
+                        if sub.text()?.as_str() == "View" {
+                            sub.append(&PredefinedMenuItem::separator(handle)?)?;
+                            sub.append(&devtools)?;
+                            break;
+                        }
+                    }
+                }
+                handle.set_menu(menu)?;
+                Ok(())
+            })() {
+                eprintln!("Failed to set app menu: {e}");
+            }
+
             // Restore the pet window to its last position (and show it — it starts
             // hidden so it's positioned before appearing, avoiding a center flash).
             commands::window::restore_main_window(app.handle());
@@ -117,6 +164,7 @@ pub fn run() {
             commands::heartbeat_file::get_heartbeat,
             commands::heartbeat_file::save_heartbeat,
             commands::settings::open_config_dir,
+            commands::settings::default_live2d_dir,
             commands::settings::open_path,
             commands::settings::list_models,
             commands::settings::list_providers,
