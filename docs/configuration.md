@@ -103,11 +103,15 @@ agents:
 | `active_agent` | `default` | 应答桌面聊天的 Agent id |
 | `search_api_key` | 空 | [Tavily](https://tavily.com) API Key；填了才启用 `web_search`，所有 Agent 共享 |
 | `skills_dir` | 空（= `~/.agents/skills`） | [技能](skills.md)目录，所有 Agent 共享；支持开头的 `~` |
-| `live_2d_model_path` | `/models/miku/...` | 模型 `.model3.json` 路径（指向 `public/` 下你自己的模型） |
+| `live_2d_model_path` | 空（未设置时宠物窗口显示提示） | 模型 `.model3.json` 路径；`/` 开头 = 内置（`public/` 下），绝对路径 = 外部文件 |
+| `live_2d_core_path` | 空（同上） | `live2dcubismcore.min.js` 路径，规则同上 |
 | `language` | `zh` | 界面语言：`zh` / `en` |
 | `gallery_dir` / `gallery_enabled` / `gallery_interval` | — | 画廊幻灯片目录 / 开关 / 每张秒数 |
 | `tools.disabled` | `[]` | 关掉的工具名列表，对所有 Agent 生效；见下 |
 | `window` | — | 宠物窗口位置，随拖动自动写入，不在设置 UI 里 |
+
+「设置 → Live2D」里的「使用示例模型」按钮会自动下载 Live2D 官方示例（示例 SDK + wanko
+模型，版权归 Live2D Inc. 所有）到配置目录 `live2d/` 下，并把上面两个字段一次配好。
 
 ## 提示词与工具
 

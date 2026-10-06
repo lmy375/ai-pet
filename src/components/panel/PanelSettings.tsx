@@ -7,7 +7,7 @@ import { Button } from "../ui/Button";
 import { ErrorBox, LoadingScreen, HintText } from "../ui/feedback";
 import { Label, TextInput, TextArea, Select, SavedTextInput, NumberField } from "../ui/fields";
 import { StatusText } from "../ui/StatusText";
-import { PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon } from "../Icons";
+import { PlusIcon, TrashIcon, ImageIcon, ExternalLinkIcon, DownloadIcon, SpinnerIcon } from "../Icons";
 import { AgentMemory } from "./PanelMemory";
 import { ModelsCard } from "./settings/ModelsCard";
 import { PromptsCard } from "./settings/PromptsCard";
@@ -52,6 +52,8 @@ export function PanelSettings() {
   const [telegramReconnecting, setTelegramReconnecting] = useState(false);
   const [rawYaml, setRawYaml] = useState("");
   const [skillsInfo, setSkillsInfo] = useState<SkillsInfo | null>(null);
+  // "Use sample model" download in flight (one button, so one flag).
+  const [exampleBusy, setExampleBusy] = useState(false);
 
   // The agent shown in the active agent tab (falls back to the first agent).
   const isAgentTab = tab !== "raw" && tab !== "global" && tab !== "prompts";
@@ -315,6 +317,28 @@ export function PanelSettings() {
     }
   };
 
+  // "Use sample model": download Live2D's official sample SDK + wanko model
+  // (© Live2D Inc.) into <config>/live2d/ and wire both paths up in one go.
+  // Rerunning re-downloads and overwrites, so it doubles as a repair.
+  const handleDownloadExample = async () => {
+    setExampleBusy(true);
+    try {
+      const paths = await invoke<{ core_path: string; model_path: string }>(
+        "download_example_live2d",
+      );
+      commitSettings({
+        ...form,
+        live_2d_core_path: paths.core_path,
+        live_2d_model_path: paths.model_path,
+      });
+      ok(t("settings.live2d.exampleDone"));
+    } catch (e: any) {
+      fail(t("settings.live2d.exampleFailed", { error: e }));
+    } finally {
+      setExampleBusy(false);
+    }
+  };
+
   const saveRaw = async () => {
     try {
       await invoke("save_config_raw", { content: rawYaml });
@@ -444,7 +468,7 @@ export function PanelSettings() {
                 onChange={(e) => setForm({ ...form, live_2d_core_path: e.target.value })}
                 onCommit={() => saveSettings()}
                 className="flex-1"
-                placeholder={t("settings.live2d.bundled")}
+                placeholder={t("settings.live2d.corePlaceholder")}
               />
               <Button variant="secondary" onClick={handlePickLive2DCore}>
                 <ImageIcon className="h-4 w-4" />
@@ -460,7 +484,7 @@ export function PanelSettings() {
                 onChange={(e) => setForm({ ...form, live_2d_model_path: e.target.value })}
                 onCommit={() => saveSettings()}
                 className="flex-1"
-                placeholder="/models/wanko/wanko_touch.model3.json"
+                placeholder={t("settings.live2d.modelPathPlaceholder")}
               />
               <Button variant="secondary" onClick={handlePickLive2DModel}>
                 <ImageIcon className="h-4 w-4" />
@@ -468,6 +492,29 @@ export function PanelSettings() {
               </Button>
             </div>
             <HintText>{t("settings.live2d.modelPathNote")}</HintText>
+
+            {/* Sample installer: hover shows exactly what it downloads and
+                configures before anything happens; click runs the download and
+                fills both paths above. */}
+            <div className="mt-1">
+              <div className="group relative inline-flex">
+                <Button variant="secondary" disabled={exampleBusy} onClick={handleDownloadExample}>
+                  {exampleBusy ? (
+                    <SpinnerIcon className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <DownloadIcon className="h-4 w-4" />
+                  )}
+                  {exampleBusy
+                    ? t("settings.live2d.exampleDownloading")
+                    : t("settings.live2d.useExample")}
+                </Button>
+                <div className="pointer-events-none invisible absolute bottom-full left-0 z-50 mb-2 w-80 rounded-field border border-line bg-surface p-3 text-note leading-relaxed text-ink-soft opacity-0 shadow-card transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
+                  <div className="whitespace-pre-line [overflow-wrap:anywhere]">
+                    {t("settings.live2d.exampleTooltip")}
+                  </div>
+                </div>
+              </div>
+            </div>
           </Card>
 
           {/* Gallery slideshow */}

@@ -65,9 +65,12 @@ pulldown-cmark).
 - [Node.js](https://nodejs.org/) + [pnpm](https://pnpm.io/)
 - [Rust toolchain](https://rustup.rs/) and the
   [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/)
-- A **Live2D model + Cubism SDK** of your own. These are copyrighted and **not**
-  bundled — drop them into `public/models/` and `public/lib/` (both gitignored),
-  then point `live_2d_model_path` at your model's `.model3.json`.
+- A **Live2D model + Cubism SDK** of your own — or let the app fetch a sample.
+  These are copyrighted and **not** bundled: either drop them into
+  `public/models/` and `public/lib/` (both gitignored) and point
+  `live_2d_model_path` at your model's `.model3.json`, or click **Use sample
+  model** in Settings → Live2D to download Live2D's official sample
+  (© Live2D Inc.) automatically.
 
 ## Quick start
 
@@ -150,9 +153,10 @@ pulldown-cmark）。
 - [Node.js](https://nodejs.org/) + [pnpm](https://pnpm.io/)
 - [Rust 工具链](https://rustup.rs/) 及
   [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
-- 你自己的 **Live2D 模型 + Cubism SDK**。它们受版权保护、**不随仓库分发** —— 放进
-  `public/models/` 和 `public/lib/`（均已 gitignore），再把 `live_2d_model_path`
-  指向你模型的 `.model3.json`。
+- 你自己的 **Live2D 模型 + Cubism SDK**，或者用 app 内置的示例获取按钮。它们受版权
+  保护、**不随仓库分发** —— 既可以放进 `public/models/` 和 `public/lib/`（均已
+  gitignore），再把 `live_2d_model_path` 指向你模型的 `.model3.json`；也可以在
+  「设置 → Live2D」点「使用示例模型」，自动下载 Live2D 官方示例（版权归 Live2D 所有）。
 
 ## 快速开始
 

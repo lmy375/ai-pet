@@ -165,6 +165,7 @@ pub fn run() {
             commands::heartbeat_file::save_heartbeat,
             commands::settings::open_config_dir,
             commands::settings::default_live2d_dir,
+            commands::settings::download_example_live2d,
             commands::settings::open_path,
             commands::settings::list_models,
             commands::settings::list_providers,

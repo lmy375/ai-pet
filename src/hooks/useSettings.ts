@@ -58,8 +58,9 @@ export interface AppSettings {
   models: Record<string, ModelConfig>;
   /** The global MCP server pool, keyed by name. */
   mcp_servers: Record<string, McpServerConfig>;
+  /** Path to the .model3.json. Empty = not set (pet window shows a notice). */
   live_2d_model_path: string;
-  /** Path to live2dcubismcore.min.js. Empty = bundled SDK. */
+  /** Path to live2dcubismcore.min.js. Empty = not set (same notice). */
   live_2d_core_path: string;
   language: string;
   gallery_dir: string;
@@ -143,7 +144,7 @@ export function emptyMcpServer(transport: McpServerConfig["transport"] = "stdio"
 const DEFAULT_SETTINGS: AppSettings = {
   models: {},
   mcp_servers: {},
-  live_2d_model_path: "/models/wanko/wanko_touch.model3.json",
+  live_2d_model_path: "",
   live_2d_core_path: "",
   language: "zh",
   gallery_dir: "",

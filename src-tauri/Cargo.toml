@@ -27,3 +27,4 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 teloxide = { version = "0.13", features = ["macros"] }
 base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }

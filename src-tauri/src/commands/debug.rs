@@ -25,11 +25,3 @@ pub fn get_logs(store: State<'_, LogStore>) -> Vec<String> {
 pub fn clear_logs(store: State<'_, LogStore>) {
     logging::clear_logs(store.inner())
 }
-/// Log a message from the frontend into app.log + the in-memory store. The pet
-/// window is borderless with no devtools affordance, so webview-side errors
-/// (Live2D / WebGL in particular) are otherwise invisible — this lets the
-/// backend log tail carry them.
-#[tauri::command]
-pub fn frontend_log(store: State<'_, LogStore>, message: String) {
-    logging::write_log(&store.0, &format!("[web] {message}"));
-}

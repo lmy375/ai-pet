@@ -218,11 +218,17 @@ pub struct AppSettings {
     /// name; one connection is shared by every agent that lists it.
     #[serde(default)]
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
-    #[serde(default = "default_model_path")]
+    /// Path to the `.model3.json`. Empty = not set: the pet window shows a
+    /// "no Live2D model" notice instead of a character — no bundled fallback.
+    /// A `/`-prefixed path is a bundled web path served from `public/`; an
+    /// absolute filesystem path is loaded via the asset protocol.
+    #[serde(default)]
     pub live_2d_model_path: String,
-    /// Path to `live2dcubismcore.min.js`. Empty = use the SDK bundled into the
-    /// app (loaded by index.html). An absolute filesystem path is loaded via the
-    /// asset protocol, so an end user can swap SDK versions without rebuilding.
+    /// Path to `live2dcubismcore.min.js`. Empty = not set (the pet window then
+    /// shows the same notice). An absolute filesystem path is loaded via the
+    /// asset protocol; a `/lib/…` path is the SDK bundled into the app. The
+    /// settings card's "use sample model" button downloads Live2D's official
+    /// sample assets and fills both fields automatically.
     #[serde(default)]
     pub live_2d_core_path: String,
     /// UI language: "zh" or "en".
@@ -380,10 +386,6 @@ fn default_heartbeat_context_turns() -> u32 {
     10
 }
 
-fn default_model_path() -> String {
-    "/models/wanko/wanko_touch.model3.json".to_string()
-}
-
 fn default_provider() -> String {
     "openai".to_string()
 }
@@ -429,7 +431,7 @@ impl Default for AppSettings {
         Self {
             models: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
-            live_2d_model_path: default_model_path(),
+            live_2d_model_path: String::new(),
             live_2d_core_path: String::new(),
             language: default_language(),
             gallery_dir: String::new(),

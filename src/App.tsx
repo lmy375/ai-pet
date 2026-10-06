@@ -162,7 +162,7 @@ function App() {
         <div className="min-h-0 flex-1 px-2 pb-2 pt-9">
           <GallerySlideshow dir={settings.gallery_dir} intervalSec={settings.gallery_interval} />
         </div>
-      ) : (
+      ) : settings.live_2d_model_path && settings.live_2d_core_path ? (
         <div ref={petBlockRef} className="animate-breath pointer-events-none mx-auto w-[300px] shrink-0">
           {windowVisible && (
             <Live2DCharacter
@@ -171,6 +171,20 @@ function App() {
               corePath={settings.live_2d_core_path}
             />
           )}
+        </div>
+      ) : (
+        // Live2D not configured: a notice instead of a character. Deliberately
+        // no bundled fallback — configure the two paths in the panel settings,
+        // or click its "use sample model" button to fetch Live2D's official
+        // sample assets at runtime.
+        <div ref={petBlockRef} className="mx-auto w-[300px] shrink-0 px-6 py-14 text-center">
+          <div className="text-[32px] leading-none">🐾</div>
+          <div className="mt-3 text-[13px] font-medium text-white/90 [text-shadow:0_1px_4px_rgba(0,0,0,0.55)]">
+            {t("pet.live2d.unset")}
+          </div>
+          <div className="mt-1 text-[12px] leading-relaxed text-white/70 [text-shadow:0_1px_4px_rgba(0,0,0,0.55)]">
+            {t("pet.live2d.unsetHint")}
+          </div>
         </div>
       )}
 

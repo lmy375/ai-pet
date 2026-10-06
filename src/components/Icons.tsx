@@ -127,6 +127,16 @@ export function CheckIcon({ className }: IconProps) {
   return <Stroke className={className}><path d="M20 6 9 17l-5-5" /></Stroke>;
 }
 
+export function DownloadIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </Stroke>
+  );
+}
+
 export function SpinnerIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">

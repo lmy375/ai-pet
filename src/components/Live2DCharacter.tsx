@@ -5,7 +5,9 @@ interface Props {
   /** Path to the .model3.json. A `/`-prefixed web path is used as-is (bundled);
    *  an absolute filesystem path is loaded via the asset protocol. */
   modelPath: string;
-  /** Path to live2dcubismcore.min.js. Empty = bundled (loaded by index.html). */
+  /** Path to live2dcubismcore.min.js, resolved like modelPath. Callers must
+   *  gate on both paths being set — App.tsx shows a "no model" notice instead
+   *  of mounting this component when either is empty. */
   corePath: string;
 }
 
@@ -15,22 +17,15 @@ interface Props {
 const CANVAS_W = 300;
 const CANVAS_H = 350;
 
-// Live2DCubismCore is an IIFE that attaches to `window`. The bundled copy is
-// loaded by index.html; when an external assets dir is set we load that copy
-// instead, so a user can swap SDK versions without rebuilding. Cache by URL so
-// repeated builds (e.g. after a WebGL context restore) don't re-inject.
+// Live2DCubismCore is an IIFE that attaches to `window`. It is loaded here —
+// never by index.html — from the configured core path (a bundled `/lib/…` web
+// path or an absolute file path), so a user can swap SDK versions without
+// rebuilding. Cache by URL so repeated builds (e.g. after a WebGL context
+// restore) don't re-inject.
 let loadedCoreUrl: string | null = null;
 let coreLoadPromise: Promise<void> | null = null;
 
-async function ensureCore(externalUrl: string | null): Promise<void> {
-  if (externalUrl === null) {
-    if (!(window as any).Live2DCubismCore) {
-      throw new Error(
-        "Live2DCubismCore not found on window. Check that live2dcubismcore.min.js is loaded in index.html."
-      );
-    }
-    return;
-  }
+async function ensureCore(externalUrl: string): Promise<void> {
   if (loadedCoreUrl === externalUrl && (window as any).Live2DCubismCore) return;
   if (coreLoadPromise) return coreLoadPromise;
   const p = new Promise<void>((resolve, reject) => {
@@ -177,14 +172,9 @@ export function Live2DCharacter({ modelPath, corePath }: Props) {
         (window as any).PIXI = PIXI;
 
         setStatus("checking cubism core...");
-        const externalCore = corePath ? resolveAssetUrl(corePath) : null;
-        try {
-          await ensureCore(externalCore);
-        } catch {
-          // External core failed to load — fall back to the bundled copy
-          // (index.html). If that's missing too, this throws and we surface it.
-          await ensureCore(null);
-        }
+        // No bundled fallback: the configured core path is the only source.
+        // Callers guarantee it's non-empty; failures surface via the status UI.
+        await ensureCore(resolveAssetUrl(corePath));
 
         setStatus("importing live2d...");
         // Use cubism4-specific entry to avoid cubism2 conflicts. Keep the whole

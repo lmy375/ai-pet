@@ -15,8 +15,11 @@ Assets: `pet-<version>-macos-{arm64,x64}.dmg`,
 
 - `LIVE2D_ASSETS_URL` — zip that unpacks into `public/` (i.e. contains
   `lib/live2dcubismcore.min.js` and `models/…`). The Cubism SDK and models are
-  copyrighted and gitignored, so **without this the released app has no pet** —
-  it builds and runs, but Live2D fails to load.
+  copyrighted and gitignored. Without this the released app starts with no
+  Live2D assets: the pet window shows a "no Live2D model" notice until the user
+  picks their own files, or clicks the settings card's "use sample model"
+  button, which downloads Live2D's official sample assets (© Live2D Inc.) at
+  runtime.
 - `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
   `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` — sign + notarize. Unset means
   the `.dmg` ships unsigned and users need
