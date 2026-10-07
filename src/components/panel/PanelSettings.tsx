@@ -1,7 +1,7 @@
 import { useState, useEffect, type ComponentType, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, AgentConfig, McpStatus, TelegramStatus, SkillsInfo } from "../../hooks/useSettings";
-import { defaultAgent } from "../../hooks/useSettings";
+import { EMPTY_SETTINGS, newAgent } from "../../hooks/useSettings";
 import { Button } from "../ui/Button";
 import { ErrorBox, LoadingScreen, HintText } from "../ui/feedback";
 import { TextInput, TextArea, Select, SavedTextInput, NumberField } from "../ui/fields";
@@ -31,23 +31,6 @@ import { McpCard } from "./settings/McpCard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
 import { useI18n, type TKey } from "../../i18n";
-
-const blankSettings: AppSettings = {
-  models: {},
-  mcp_servers: {},
-  live_2d_model_path: "",
-  live_2d_core_path: "",
-  language: "zh",
-  pet_kind: "image",
-  pet_image_dir: "",
-  gallery_dir: "",
-  gallery_interval: 10,
-  search_api_key: "",
-  skills_dir: "",
-  tools: { disabled: [] },
-  active_agent: "owen",
-  agents: [defaultAgent()],
-};
 
 /** Agent tabs are keyed by id so every agent gets its own rail entry. */
 const AGENT_PREFIX = "agent:";
@@ -101,7 +84,7 @@ const GENERAL_ITEMS: NavEntry[] = [
 
 export function PanelSettings() {
   const { t } = useI18n();
-  const [form, setForm] = useState<AppSettings>(blankSettings);
+  const [form, setForm] = useState<AppSettings>(EMPTY_SETTINGS);
   const [tab, setTab] = useState<TabId>("ai-models");
   // Which agent the agent tabs edit (derived from the active agent tab).
   const [agentTab, setAgentTab] = useState<string>("default");
@@ -227,11 +210,11 @@ export function PanelSettings() {
     commitSettings({ ...form, agents });
   };
 
-  const addAgent = () => {
+  const addAgent = async () => {
     const id = crypto.randomUUID();
     const next = {
       ...form,
-      agents: [...form.agents, defaultAgent(id, t("settings.agent.newName"))],
+      agents: [...form.agents, await newAgent(id, t("settings.agent.newName"))],
     };
     setForm(next);
     setTab(`${AGENT_PREFIX}${id}`);

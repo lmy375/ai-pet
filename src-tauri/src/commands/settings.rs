@@ -4,7 +4,7 @@
 //! wouldn't react to a panel-side change, e.g. enabling gallery mode, until
 //! refocused). Keep the emit on any new settings-writing command.
 
-use pet_core::settings::{self, AppSettings};
+use pet_core::settings::{self, AgentConfig, AppSettings, McpServerConfig, ModelConfig};
 use tauri::Emitter;
 
 fn emit_settings_changed(app: &tauri::AppHandle) {
@@ -21,6 +21,25 @@ pub fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(),
     settings::save_settings(&settings)?;
     emit_settings_changed(&app);
     Ok(())
+}
+
+/// Templates for the settings UI's "add" buttons. Default VALUES live on this
+/// side (pet-core's `Default` impls) — the UI keeps no copy that could drift.
+#[tauri::command]
+pub fn new_agent(id: String, name: String) -> AgentConfig {
+    AgentConfig { id, name, ..Default::default() }
+}
+
+#[tauri::command]
+pub fn new_model() -> ModelConfig {
+    // The wire model id is the user's pick and starts empty; the `gpt-4o-mini`
+    // default only covers fields missing from a hand-edited config file.
+    ModelConfig { model: String::new(), ..Default::default() }
+}
+
+#[tauri::command]
+pub fn new_mcp_server() -> McpServerConfig {
+    McpServerConfig::default()
 }
 
 /// Switch the active agent (the one answering the desktop chat window).

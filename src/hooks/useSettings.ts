@@ -116,54 +116,41 @@ export interface TelegramStatus {
   error: string | null;
 }
 
-export function defaultAgent(id = "owen", name = "Owen"): AgentConfig {
-  return {
-    id,
-    name,
-    model: "",
-    mcp: [],
-    telegram: { bot_token: "", allowed_username: "", enabled: false },
-    heartbeat_enabled: false,
-    heartbeat_interval: 60,
-    heartbeat_context_turns: 10,
-  };
-}
+/** A fresh agent for the settings "add agent" button. Default VALUES live on
+ *  the Rust side (`AgentConfig::default` in pet-core) — the UI keeps no copy
+ *  that could drift; it only supplies the identity (id + display name). */
+export const newAgent = (id: string, name: string) =>
+  invoke<AgentConfig>("new_agent", { id, name });
 
-/** A fresh model-pool entry (also the source of the settings placeholders). */
-export function defaultModel(): ModelConfig {
-  return {
-    provider: "openai",
-    api_base: "https://api.openai.com/v1/",
-    api_key: "",
-    model: "",
-    context_window: 128000,
-    reasoning: "",
-  };
-}
+/** A fresh model-pool entry — same single-source rule as `newAgent`. */
+export const newModel = () => invoke<ModelConfig>("new_model");
 
-export function emptyMcpServer(transport: McpServerConfig["transport"] = "stdio"): McpServerConfig {
-  return { transport, command: "", args: [], url: "", headers: {}, env: {}, enabled: true };
-}
+/** A fresh MCP server entry — same single-source rule as `newAgent`. */
+export const newMcpServer = () => invoke<McpServerConfig>("new_mcp_server");
 
-const DEFAULT_SETTINGS: AppSettings = {
+/** Structural shell for the pre-load instant only — App renders nothing until
+ *  settings arrive (`loaded`), so no meaningful default lives here. All default
+ *  VALUES live in pet-core `settings.rs` (`Default` impls + serde defaults),
+ *  served to the UI through `get_settings` and the `new_*` templates. */
+export const EMPTY_SETTINGS: AppSettings = {
   models: {},
   mcp_servers: {},
   live_2d_model_path: "",
   live_2d_core_path: "",
-  language: "zh",
-  pet_kind: "image",
+  language: "",
+  pet_kind: "",
   pet_image_dir: "",
   gallery_dir: "",
-  gallery_interval: 10,
+  gallery_interval: 0,
   search_api_key: "",
   skills_dir: "",
   tools: { disabled: [] },
-  active_agent: "owen",
-  agents: [defaultAgent()],
+  active_agent: "",
+  agents: [],
 };
 
 export function useSettings() {
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings>(EMPTY_SETTINGS);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {

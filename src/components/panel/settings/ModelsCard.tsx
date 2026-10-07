@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, ModelConfig } from "../../../hooks/useSettings";
-import { defaultModel } from "../../../hooks/useSettings";
+import { newModel } from "../../../hooks/useSettings";
 import { Button } from "../../ui/Button";
 import { ChipTabs } from "../../ui/ChipTabs";
 import { IconActionButton } from "../../ui/IconButton";
@@ -58,6 +58,12 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [providerOptions, setProviderOptions] = useState<ProviderOptions | null>(null);
+  // Default values live on the Rust side; fetch the template once for the
+  // "add" fallback and the placeholders (no local copy that could drift).
+  const [tpl, setTpl] = useState<ModelConfig | null>(null);
+  useEffect(() => {
+    newModel().then(setTpl).catch((e) => console.error("Failed to load model template:", e));
+  }, []);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -118,9 +124,9 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
     (commit ? onCommit : onDraft)(next);
   };
 
-  const add = (from?: ModelConfig) => {
+  const add = async (from?: ModelConfig) => {
     const name = uniqueName(from ? `${selected} copy` : t("settings.models.newName"), names);
-    onCommit(withPool({ ...settings.models, [name]: from ? { ...from } : defaultModel() }));
+    onCommit(withPool({ ...settings.models, [name]: from ?? (await newModel()) }));
     setSelected(name);
     setNameDraft(name);
   };
@@ -266,7 +272,7 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
               value={config.api_base}
               onChange={(e) => update({ api_base: e.target.value }, false)}
               onCommit={() => { update({}, true); loadModels(config.api_base, config.api_key, config.provider, config.model); }}
-              placeholder={defaultModel().api_base}
+              placeholder={tpl?.api_base ?? ""}
             />
           </SettingsRow>
 
@@ -333,10 +339,10 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
             </div>
             <NumberField
               value={config.context_window}
-              fallback={defaultModel().context_window}
+              fallback={tpl?.context_window ?? 0}
               onChange={(v) => update({ context_window: v }, false)}
               onCommit={(v) => update({ context_window: v }, true)}
-              placeholder={String(defaultModel().context_window)}
+              placeholder={String(tpl?.context_window ?? 0)}
             />
           </SettingsRow>
 

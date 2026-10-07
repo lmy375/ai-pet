@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AppSettings, McpServerConfig, McpStatus } from "../../../hooks/useSettings";
-import { emptyMcpServer } from "../../../hooks/useSettings";
+import { newMcpServer } from "../../../hooks/useSettings";
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { ChipTabs } from "../../ui/ChipTabs";
@@ -53,9 +53,9 @@ export function McpCard({ settings, onDraft, onCommit, statuses, onReconnect, on
     (commit ? onCommit : onDraft)(next);
   };
 
-  const add = () => {
+  const add = async () => {
     const name = uniqueName(t("settings.mcp.newName"), names);
-    onCommit(withServers({ ...settings.mcp_servers, [name]: emptyMcpServer() }));
+    onCommit(withServers({ ...settings.mcp_servers, [name]: await newMcpServer() }));
     setSelected(name);
     setNameDraft(name);
   };
