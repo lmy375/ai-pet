@@ -362,7 +362,7 @@ impl AppSettings {
     }
 }
 
-/// The active agent's id (resolved like `active_agent_config`), or "default"
+/// The active agent's id (resolved like `active_agent_config`), or "owen"
 /// when settings can't be read. Used by memory/session paths that need an agent
 /// even outside a chat turn.
 pub fn active_agent_id() -> String {
@@ -427,11 +427,11 @@ fn default_llm_log_keep() -> usize {
 }
 
 fn default_agent_id() -> String {
-    "default".to_string()
+    "owen".to_string()
 }
 
 fn default_agent_name() -> String {
-    "默认".to_string()
+    "Owen".to_string()
 }
 
 fn default_agents() -> Vec<AgentConfig> {
@@ -656,7 +656,7 @@ mcp_servers:
     command: sleep
     enabled: false
 agents:
-  - id: default
+  - id: owen
     name: 小宠
     model: fast
     mcp: [fs, "off", gone]
@@ -672,7 +672,7 @@ agents:
     #[test]
     fn agent_resolves_its_model_through_the_global_pool() {
         let s = parse();
-        let model = s.model_for(s.agent("default").unwrap()).unwrap();
+        let model = s.model_for(s.agent("owen").unwrap()).unwrap();
         // The map key is the display name; `model` is what goes on the wire.
         assert_eq!(model.model, "gpt-5.6-sol-sub2api");
         assert_eq!(model.context_window, 200000);
@@ -696,7 +696,7 @@ agents:
         // A server deleted from the pool, or switched off globally, should cost
         // the agent its tools — not its ability to chat.
         let s = parse();
-        let servers = s.mcp_for(s.agent("default").unwrap());
+        let servers = s.mcp_for(s.agent("owen").unwrap());
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].0, "fs");
         assert_eq!(servers[0].1.command, "npx");
