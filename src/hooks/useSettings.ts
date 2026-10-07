@@ -63,8 +63,12 @@ export interface AppSettings {
   /** Path to live2dcubismcore.min.js. Empty = not set (same notice). */
   live_2d_core_path: string;
   language: string;
+  /** Which visual the pet window shows: "live2d" | "gallery" | "image". */
+  pet_kind: string;
+  /** Directory the image pet reads its art from (idle/thinking/happy files).
+   *  Empty = the bundled public/pet art. */
+  pet_image_dir: string;
   gallery_dir: string;
-  gallery_enabled: boolean;
   gallery_interval: number;
   /** Tavily API key for the web_search tool (shared by all agents). Empty = disabled. */
   search_api_key: string;
@@ -147,8 +151,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   live_2d_model_path: "",
   live_2d_core_path: "",
   language: "zh",
+  pet_kind: "image",
+  pet_image_dir: "",
   gallery_dir: "",
-  gallery_enabled: false,
   gallery_interval: 10,
   search_api_key: "",
   skills_dir: "",

@@ -106,7 +106,9 @@ agents:
 | `live_2d_model_path` | 空（未设置时宠物窗口显示提示） | 模型 `.model3.json` 路径；`/` 开头 = 内置（`public/` 下），绝对路径 = 外部文件 |
 | `live_2d_core_path` | 空（同上） | `live2dcubismcore.min.js` 路径，规则同上 |
 | `language` | `zh` | 界面语言：`zh` / `en` |
-| `gallery_dir` / `gallery_enabled` / `gallery_interval` | — | 画廊幻灯片目录 / 开关 / 每张秒数 |
+| `pet_kind` | `image` | 宠物形象三选一：`live2d` / `gallery`（图片轮播）/ `image`（图片宠物） |
+| `pet_image_dir` | 空（使用内置形象） | 图片宠物的图片目录，须含全部三种表情图片（idle / thinking / happy），设置页选择时校验，不完整报错 |
+| `gallery_dir` / `gallery_interval` | — | 图片轮播的目录 / 每张秒数（`pet_kind: gallery` 时生效） |
 | `tools.disabled` | `[]` | 关掉的工具名列表，对所有 Agent 生效；见下 |
 | `window` | — | 宠物窗口位置，随拖动自动写入，不在设置 UI 里 |
 

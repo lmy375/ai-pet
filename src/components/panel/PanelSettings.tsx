@@ -23,8 +23,9 @@ const blankSettings: AppSettings = {
   live_2d_model_path: "",
   live_2d_core_path: "",
   language: "zh",
+  pet_kind: "image",
+  pet_image_dir: "",
   gallery_dir: "",
-  gallery_enabled: false,
   gallery_interval: 10,
   search_api_key: "",
   skills_dir: "",
@@ -33,11 +34,15 @@ const blankSettings: AppSettings = {
   agents: [defaultAgent()],
 };
 
+/** The three top-level groups. Agents get their own sub-tab bar inside. */
+type TopTab = "ai" | "pet" | "agents" | "raw";
+
 export function PanelSettings() {
   const { t } = useI18n();
   const [form, setForm] = useState<AppSettings>(blankSettings);
-  // Top-level tab: "raw" (config file), "global", "prompts", or an agent id.
-  const [tab, setTab] = useState<string>("global");
+  const [tab, setTab] = useState<TopTab>("ai");
+  // Which agent is edited inside the "agents" group (its own sub-tab bar).
+  const [agentTab, setAgentTab] = useState<string>("default");
   const [loaded, setLoaded] = useState(false);
   // Status line under the form. `ok` drives the color — derived from the action,
   // not by sniffing the message text (which breaks once it's translated).
@@ -55,10 +60,9 @@ export function PanelSettings() {
   // "Use sample model" download in flight (one button, so one flag).
   const [exampleBusy, setExampleBusy] = useState(false);
 
-  // The agent shown in the active agent tab (falls back to the first agent).
-  const isAgentTab = tab !== "raw" && tab !== "global" && tab !== "prompts";
-  const editingAgentId = isAgentTab ? tab : (form.agents[0]?.id ?? "default");
-  const agentIdx = Math.max(0, form.agents.findIndex((a) => a.id === editingAgentId));
+  // The agent shown in the agents group (falls back to the first agent, e.g.
+  // after the edited one is deleted).
+  const agentIdx = Math.max(0, form.agents.findIndex((a) => a.id === agentTab));
   const agent = form.agents[agentIdx] ?? form.agents[0];
 
   // Re-scan the skills dir. Cheap (one read_dir), so it runs on load, after the
@@ -77,6 +81,7 @@ export function PanelSettings() {
     invoke<AppSettings>("get_settings")
       .then((s) => {
         setForm(s);
+        setAgentTab(s.agents[0]?.id ?? "default");
         setLoaded(true);
       })
       .catch((e) => {
@@ -87,9 +92,10 @@ export function PanelSettings() {
     loadMcpStatuses();
   }, []);
 
-  // Switch the top-level tab. Loads the raw YAML when entering "config file", and
-  // reloads settings from disk when leaving it (raw edits may have changed them).
-  const selectTab = async (next: string) => {
+  // Switch the top-level tab. Loads the raw YAML when entering "config file",
+  // and reloads settings from disk when leaving it (raw edits may have changed
+  // them).
+  const selectTab = async (next: TopTab) => {
     if (next === tab) return;
     setMessage(null);
     if (next === "raw") {
@@ -105,12 +111,19 @@ export function PanelSettings() {
       try { setForm(await invoke<AppSettings>("get_settings")); } catch {}
     }
     setTab(next);
-    if (next !== "global" && next !== "prompts") loadTelegramStatus(next);
+    if (next === "agents" && agent) loadTelegramStatus(agent.id);
   };
 
-  /** Jump to one of the global pools from an agent's reference control. */
+  // Switch the edited agent inside the agents group.
+  const selectAgent = (id: string) => {
+    setAgentTab(id);
+    setMessage(null);
+    loadTelegramStatus(id);
+  };
+
+  /** Jump to one of the AI pools from an agent's reference control. */
   const goToPool = (id: "pool-models" | "pool-mcp") => {
-    setTab("global");
+    setTab("ai");
     setMessage(null);
     requestAnimationFrame(() =>
       document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })
@@ -165,7 +178,8 @@ export function PanelSettings() {
       agents: [...form.agents, defaultAgent(id, t("settings.agent.newName"))],
     };
     setForm(next);
-    setTab(id);
+    setTab("agents");
+    setAgentTab(id);
     setTelegramStatus({ running: false, error: null });
     setMessage(null);
     saveSettings(next);
@@ -177,7 +191,7 @@ export function PanelSettings() {
     const active_agent = form.active_agent === id ? agents[0].id : form.active_agent;
     const next = { ...form, agents, active_agent };
     setForm(next);
-    if (tab === id) setTab("global");
+    if (agentTab === id) setAgentTab(agents[0].id);
     saveSettings(next);
   };
 
@@ -223,28 +237,53 @@ export function PanelSettings() {
     }
   };
 
-  // Pick the gallery folder via the native dialog, defaulting to the OS Pictures
-  // directory, then persist immediately.
-  const handlePickGalleryDir = async () => {
+  /** Pick a directory via the native dialog, defaulting to `current` (or the
+   *  OS Pictures folder), then persist immediately. */
+  const pickDirectory = async (current: string, onPicked: (path: string) => void) => {
     try {
-      const defaultPath = await invoke<string | null>("default_gallery_dir").catch(() => null);
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        defaultPath: form.gallery_dir || defaultPath || undefined,
-      });
-      if (typeof picked === "string") commitSettings({ ...form, gallery_dir: picked });
+      const defaultPath = current || (await invoke<string | null>("default_gallery_dir").catch(() => null)) || undefined;
+      const picked = await open({ directory: true, multiple: false, defaultPath });
+      if (typeof picked === "string") onPicked(picked);
     } catch (e: any) {
       fail(t("settings.pickDirFailed", { error: e }));
     }
   };
 
-  const handleOpenGalleryDir = async () => {
-    if (!form.gallery_dir) return;
+  const handleOpenPath = async (path: string) => {
+    if (!path) return;
     try {
-      await invoke("open_path", { path: form.gallery_dir });
+      await invoke("open_path", { path });
     } catch (e: any) {
       fail(t("settings.openGalleryDirFailed", { error: e }));
+    }
+  };
+
+  /** Pick the image-pet directory and validate it before committing: every
+   *  emotion (idle / thinking / happy) must have an image file, otherwise the
+   *  choice is rejected — no silent fallback to the built-in art. */
+  const handlePickPetImageDir = async () => {
+    try {
+      const defaultPath =
+        form.pet_image_dir ||
+        (await invoke<string | null>("default_gallery_dir").catch(() => null)) ||
+        undefined;
+      const picked = await open({ directory: true, multiple: false, defaultPath });
+      if (typeof picked !== "string") return;
+
+      const items = await invoke<{ path: string; kind: string }[]>("list_gallery_media", { dir: picked });
+      const stems = new Set(
+        items
+          .filter((i) => i.kind === "image")
+          .map((i) => i.path.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, "").toLowerCase()),
+      );
+      const missing = (["idle", "thinking", "happy"] as const).filter((e) => !stems.has(e));
+      if (missing.length > 0) {
+        fail(t("settings.pet.imageIncomplete", { missing: missing.join(", ") }));
+        return;
+      }
+      commitSettings({ ...form, pet_image_dir: picked });
+    } catch (e: any) {
+      fail(t("settings.pickDirFailed", { error: e }));
     }
   };
 
@@ -267,14 +306,6 @@ export function PanelSettings() {
       if (typeof picked === "string") commitSkillsDir(picked);
     } catch (e: any) {
       fail(t("settings.pickDirFailed", { error: e }));
-    }
-  };
-
-  const handleOpenSkillsDir = async () => {
-    try {
-      await invoke("open_skills_dir");
-    } catch (e: any) {
-      fail(t("settings.skills.openDirFailed", { error: e }));
     }
   };
 
@@ -364,6 +395,12 @@ export function PanelSettings() {
   // rather than silently selecting something else.
   const danglingModel = !!agent?.model && !form.models[agent.model];
 
+  // Prerequisites for the two path-backed pet kinds. The pet-kind picker
+  // disables those options until met, so the choice can never strand the pet
+  // window on a kind with nothing to render.
+  const live2dReady = !!form.live_2d_model_path.trim() && !!form.live_2d_core_path.trim();
+  const galleryReady = !!form.gallery_dir.trim();
+
   const toggleAgentServer = (name: string, on: boolean) => {
     const mcp = on ? [...agent.mcp, name] : agent.mcp.filter((m) => m !== name);
     commitAgent({ mcp });
@@ -371,23 +408,11 @@ export function PanelSettings() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Tab bar: global | prompts & tools | per-agent... | + add | config file (far right) */}
+      {/* Top-level groups: AI 配置 | 宠物配置 | Agent 配置 ... 配置文件 (far right) */}
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line/70 bg-surface/80 px-3 py-2 backdrop-blur">
-        <TabBtn active={tab === "global"} onClick={() => selectTab("global")}>{t("settings.tab.global")}</TabBtn>
-        <TabBtn active={tab === "prompts"} onClick={() => selectTab("prompts")}>{t("settings.tab.prompts")}</TabBtn>
-        {form.agents.map((a) => (
-          <TabBtn key={a.id} active={tab === a.id} onClick={() => selectTab(a.id)} dot={a.id === form.active_agent}>
-            {a.name}
-          </TabBtn>
-        ))}
-        <button
-          onClick={addAgent}
-          title={t("settings.agent.add")}
-          className="flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-accent transition-colors hover:bg-accent/10"
-        >
-          <PlusIcon className="h-4 w-4" />
-          {t("settings.agent.add")}
-        </button>
+        <TabBtn active={tab === "ai"} onClick={() => selectTab("ai")}>{t("settings.tab.ai")}</TabBtn>
+        <TabBtn active={tab === "pet"} onClick={() => selectTab("pet")}>{t("settings.tab.pet")}</TabBtn>
+        <TabBtn active={tab === "agents"} onClick={() => selectTab("agents")}>{t("settings.tab.agents")}</TabBtn>
         <div className="ml-auto shrink-0">
           <TabBtn active={tab === "raw"} onClick={() => selectTab("raw")}>{t("settings.tab.file")}</TabBtn>
         </div>
@@ -414,14 +439,7 @@ export function PanelSettings() {
             />
           </Card>
         </>
-      ) : tab === "prompts" ? (
-        <>
-          {/* What the model reads before every turn: the system prompts, and
-              the tool list with each tool's description. */}
-          <PromptsCard notify={ok} fail={fail} />
-          <ToolsCard notify={ok} fail={fail} />
-        </>
-      ) : tab === "global" ? (
+      ) : tab === "ai" ? (
         <>
           {/* The two pools agents reference, first — everything below is chrome
               by comparison. */}
@@ -441,22 +459,127 @@ export function PanelSettings() {
             />
           </div>
 
-          {/* Language */}
-          <Card title={t("settings.language")}>
-            <Select value={form.language === "en" ? "en" : "zh"} onChange={(e) => setLanguage(e.target.value)}>
-              <option value="zh">中文</option>
-              <option value="en">English</option>
-            </Select>
+          {/* What the model reads before every turn: the system prompts, and
+              the tool list with each tool's description. */}
+          <PromptsCard notify={ok} fail={fail} />
+          <ToolsCard notify={ok} fail={fail} />
+
+          {/* Web Search (shared by all agents) */}
+          <Card title={t("settings.search.title")}>
+            <Label>{t("settings.search.apiKey")}</Label>
+            <SavedTextInput
+              type="password"
+              value={form.search_api_key}
+              onChange={(e) => setForm({ ...form, search_api_key: e.target.value })}
+              onCommit={() => saveSettings()}
+              placeholder="tvly-..."
+            />
+            <HintText>{t("settings.search.apiKeyNote")}</HintText>
           </Card>
 
-          {/* Default agent */}
-          <Card title={t("settings.agent.defaultTitle")}>
-            <Select value={form.active_agent} onChange={(e) => setActiveAgent(e.target.value)}>
-              {form.agents.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
+          {/* Agent Skills (shared by all agents). Read-only: skills are authored
+              on disk, this card only shows what was discovered there. */}
+          <Card
+            title={t("settings.skills.title")}
+            action={
+              <button onClick={loadSkills} className="text-[12px] font-medium text-accent hover:underline">
+                {t("common.refresh")}
+              </button>
+            }
+          >
+            <Label>{t("settings.skills.dir")}</Label>
+            <div className="flex gap-2">
+              <SavedTextInput
+                value={form.skills_dir}
+                onChange={(e) => setForm({ ...form, skills_dir: e.target.value })}
+                onCommit={() => commitSkillsDir(form.skills_dir)}
+                className="flex-1"
+                placeholder={skillsInfo?.dir ?? "~/.agents/skills"}
+              />
+              <Button variant="secondary" onClick={handlePickSkillsDir}>
+                {t("settings.skills.pick")}
+              </Button>
+              <Button variant="secondary" onClick={() => invoke("open_skills_dir").catch((e: any) => fail(t("settings.skills.openDirFailed", { error: e })))} title={t("settings.skills.openDirTitle")}>
+                <ExternalLinkIcon className="h-4 w-4" />
+                {t("common.open")}
+              </Button>
+            </div>
+
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(skillsInfo?.presets ?? []).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => commitSkillsDir(p)}
+                  className="rounded-lg bg-surface-soft px-2 py-1 font-mono text-[11px] text-ink-soft transition-colors hover:bg-hover"
+                >
+                  {p}
+                </button>
               ))}
-            </Select>
-            <HintText>{t("settings.agent.defaultNote")}</HintText>
+            </div>
+            <HintText>{t("settings.skills.dirNote", { dir: skillsInfo?.dir ?? "" })}</HintText>
+
+            <div className="mt-3 space-y-2">
+              {skillsInfo && skillsInfo.skills.length === 0 && (
+                <HintText>{t("settings.skills.empty")}</HintText>
+              )}
+              {skillsInfo?.skills.map((s) => (
+                <div key={s.path} className="rounded-xl border border-line/70 px-3 py-2">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-[13px] font-medium text-ink">{s.name}</span>
+                    <span className="font-mono text-[11px] text-accent">/skill:{s.slug}</span>
+                  </div>
+                  {s.error ? (
+                    <ErrorBox className="mt-1">{s.error}</ErrorBox>
+                  ) : (
+                    <p className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-ink-soft">{s.description}</p>
+                  )}
+                  <p className="mt-1 truncate font-mono text-[10px] text-ink-faint">{s.path}</p>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </>
+      ) : tab === "pet" ? (
+        <>
+          {/* The pet's visual: an explicit three-way choice. The two kinds that
+              read from disk are disabled until their paths are configured in
+              the cards below, so the pet window can never end up blank. */}
+          <Card title={t("settings.pet.title")}>
+            <div className="flex flex-wrap gap-2">
+              <PetKindBtn
+                active={form.pet_kind === "live2d"}
+                disabled={!live2dReady}
+                title={live2dReady ? "" : t("settings.pet.needLive2d")}
+                onClick={() => commitSettings({ ...form, pet_kind: "live2d" })}
+              >
+                {t("settings.pet.kind.live2d")}
+              </PetKindBtn>
+              <PetKindBtn
+                active={form.pet_kind === "gallery"}
+                disabled={!galleryReady}
+                title={galleryReady ? "" : t("settings.pet.needGallery")}
+                onClick={() => commitSettings({ ...form, pet_kind: "gallery" })}
+              >
+                {t("settings.pet.kind.gallery")}
+              </PetKindBtn>
+              <PetKindBtn
+                active={form.pet_kind === "image"}
+                onClick={() => commitSettings({ ...form, pet_kind: "image" })}
+              >
+                {t("settings.pet.kind.image")}
+              </PetKindBtn>
+            </div>
+            {(!live2dReady || !galleryReady) && (
+              <HintText>{t("settings.pet.gateHint")}</HintText>
+            )}
+            {/* Hand-edited config can still name an unready kind — say so
+                instead of silently rendering something else. */}
+            {form.pet_kind === "live2d" && !live2dReady && (
+              <StatusText ok={false} className="mt-1.5 text-[12px]">{t("settings.pet.needLive2d")}</StatusText>
+            )}
+            {form.pet_kind === "gallery" && !galleryReady && (
+              <StatusText ok={false} className="mt-1.5 text-[12px]">{t("settings.pet.needGallery")}</StatusText>
+            )}
           </Card>
 
           {/* Live2D */}
@@ -519,24 +642,14 @@ export function PanelSettings() {
 
           {/* Gallery slideshow */}
           <Card title={t("settings.gallery.title")}>
-            <label className="mb-3 flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
-              <input
-                type="checkbox"
-                className="accent-accent"
-                checked={form.gallery_enabled}
-                onChange={(e) => commitSettings({ ...form, gallery_enabled: e.target.checked })}
-              />
-              {t("settings.gallery.enable")}
-            </label>
-
             <Label>{t("settings.gallery.dir")}</Label>
             <div className="flex gap-2">
               <TextInput value={form.gallery_dir} readOnly className="flex-1" placeholder={t("settings.gallery.noDir")} />
-              <Button variant="secondary" onClick={handlePickGalleryDir}>
+              <Button variant="secondary" onClick={() => pickDirectory(form.gallery_dir, (gallery_dir) => commitSettings({ ...form, gallery_dir }))}>
                 <ImageIcon className="h-4 w-4" />
                 {t("settings.gallery.pick")}
               </Button>
-              <Button variant="secondary" onClick={handleOpenGalleryDir} disabled={!form.gallery_dir} title={t("settings.gallery.openDirTitle")}>
+              <Button variant="secondary" onClick={() => handleOpenPath(form.gallery_dir)} disabled={!form.gallery_dir} title={t("settings.gallery.openDirTitle")}>
                 <ExternalLinkIcon className="h-4 w-4" />
                 {t("common.open")}
               </Button>
@@ -553,86 +666,63 @@ export function PanelSettings() {
             <HintText>{t("settings.gallery.intervalNote")}</HintText>
           </Card>
 
-          {/* Web Search (shared by all agents) */}
-          <Card title={t("settings.search.title")}>
-            <Label>{t("settings.search.apiKey")}</Label>
-            <SavedTextInput
-              type="password"
-              value={form.search_api_key}
-              onChange={(e) => setForm({ ...form, search_api_key: e.target.value })}
-              onCommit={() => saveSettings()}
-              placeholder="tvly-..."
-            />
-            <HintText>{t("settings.search.apiKeyNote")}</HintText>
-          </Card>
-
-          {/* Agent Skills (shared by all agents). Read-only: skills are authored
-              on disk, this card only shows what was discovered there. */}
-          <Card
-            title={t("settings.skills.title")}
-            action={
-              <button onClick={loadSkills} className="text-[12px] font-medium text-accent hover:underline">
-                {t("common.refresh")}
-              </button>
-            }
-          >
-            <Label>{t("settings.skills.dir")}</Label>
+          {/* Image pet: bundled art by default, or a directory of the owner's
+              own images (one file per emotion, missing ones fall back). */}
+          <Card title={t("settings.pet.imageTitle")}>
+            <Label>{t("settings.pet.imageDir")}</Label>
             <div className="flex gap-2">
-              <SavedTextInput
-                value={form.skills_dir}
-                onChange={(e) => setForm({ ...form, skills_dir: e.target.value })}
-                onCommit={() => commitSkillsDir(form.skills_dir)}
-                className="flex-1"
-                placeholder={skillsInfo?.dir ?? "~/.agents/skills"}
-              />
-              <Button variant="secondary" onClick={handlePickSkillsDir}>
-                {t("settings.skills.pick")}
+              <TextInput value={form.pet_image_dir} readOnly className="flex-1" placeholder={t("settings.pet.imageNoDir")} />
+              <Button variant="secondary" onClick={handlePickPetImageDir}>
+                <ImageIcon className="h-4 w-4" />
+                {t("settings.gallery.pick")}
               </Button>
-              <Button variant="secondary" onClick={handleOpenSkillsDir} title={t("settings.skills.openDirTitle")}>
+              <Button variant="secondary" onClick={() => handleOpenPath(form.pet_image_dir)} disabled={!form.pet_image_dir} title={t("settings.gallery.openDirTitle")}>
                 <ExternalLinkIcon className="h-4 w-4" />
                 {t("common.open")}
               </Button>
             </div>
-
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {(skillsInfo?.presets ?? []).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => commitSkillsDir(p)}
-                  className="rounded-lg bg-surface-soft px-2 py-1 font-mono text-[11px] text-ink-soft transition-colors hover:bg-hover"
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
-            <HintText>{t("settings.skills.dirNote", { dir: skillsInfo?.dir ?? "" })}</HintText>
-
-            <div className="mt-3 space-y-2">
-              {skillsInfo && skillsInfo.skills.length === 0 && (
-                <HintText>{t("settings.skills.empty")}</HintText>
-              )}
-              {skillsInfo?.skills.map((s) => (
-                <div key={s.path} className="rounded-xl border border-line/70 px-3 py-2">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-[13px] font-medium text-ink">{s.name}</span>
-                    <span className="font-mono text-[11px] text-accent">/skill:{s.slug}</span>
-                  </div>
-                  {s.error ? (
-                    <ErrorBox className="mt-1">{s.error}</ErrorBox>
-                  ) : (
-                    <p className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-ink-soft">{s.description}</p>
-                  )}
-                  <p className="mt-1 truncate font-mono text-[10px] text-ink-faint">{s.path}</p>
-                </div>
-              ))}
-            </div>
+            <HintText>{t("settings.pet.imageDirNote")}</HintText>
           </Card>
 
+          {/* Language */}
+          <Card title={t("settings.language")}>
+            <Select value={form.language === "en" ? "en" : "zh"} onChange={(e) => setLanguage(e.target.value)}>
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </Select>
+          </Card>
         </>
       ) : (
         <>
+          {/* Agent sub-tabs: one tab per agent, + add. */}
+          <div className="mb-4 flex items-center gap-1 overflow-x-auto">
+            {form.agents.map((a) => (
+              <TabBtn key={a.id} active={a.id === agent?.id} onClick={() => selectAgent(a.id)} dot={a.id === form.active_agent}>
+                {a.name}
+              </TabBtn>
+            ))}
+            <button
+              onClick={addAgent}
+              title={t("settings.agent.add")}
+              className="flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-accent transition-colors hover:bg-accent/10"
+            >
+              <PlusIcon className="h-4 w-4" />
+              {t("settings.agent.add")}
+            </button>
+          </div>
+
+          {/* Default agent */}
+          <Card title={t("settings.agent.defaultTitle")}>
+            <Select value={form.active_agent} onChange={(e) => setActiveAgent(e.target.value)}>
+              {form.agents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </Select>
+            <HintText>{t("settings.agent.defaultNote")}</HintText>
+          </Card>
+
           {/* Agent identity: name + delete. Selecting/adding agents is done via
-              the tab bar; the default agent is chosen in the Global tab. */}
+              the sub-tab bar; the default agent is chosen in the card above. */}
           <Card title={agent.name || t("settings.agent.newName")}>
             <Label>{t("settings.agent.name")}</Label>
             <div className="flex gap-2">
@@ -854,7 +944,7 @@ export function PanelSettings() {
   );
 }
 
-/* ---------- Tab button ---------- */
+/* ---------- Tab buttons ---------- */
 
 function TabBtn({
   active,
@@ -875,6 +965,39 @@ function TabBtn({
       }`}
     >
       {dot && <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-surface" : "bg-accent"}`} />}
+      {children}
+    </button>
+  );
+}
+
+/** One of the three pet-kind choices. Disabled (with the reason as `title`)
+ *  while its prerequisite paths are unconfigured. */
+function PetKindBtn({
+  active,
+  disabled,
+  title,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors ${
+        active
+          ? "bg-accent text-white"
+          : disabled
+            ? "cursor-not-allowed bg-surface-soft text-ink-faint"
+            : "bg-surface-soft text-ink-soft hover:bg-hover"
+      }`}
+    >
       {children}
     </button>
   );

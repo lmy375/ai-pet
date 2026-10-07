@@ -4,6 +4,7 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import { Live2DCharacter } from "./components/Live2DCharacter";
 import { GallerySlideshow } from "./components/GallerySlideshow";
+import { AnimatedPet, type Emotion } from "./components/AnimatedPet";
 import { ChatThread } from "./components/ChatThread";
 import { ChatInput } from "./components/ChatInput";
 import {
@@ -49,7 +50,45 @@ function App() {
   // this transparent, borderless window) rather than CSS :hover.
   const [hovered, setHovered] = useState(false);
 
-  const galleryOn = settings.gallery_enabled && !!settings.gallery_dir;
+  // Which visual fills the window, from the settings' explicit three-way
+  // choice. Gallery additionally needs a directory; Live2D needs both paths —
+  // the settings UI gates the choice, but hand-edited config can still name a
+  // kind with nothing configured, so each branch re-checks and falls through to
+  // the built-in image pet rather than showing a blank window.
+  const galleryOn = settings.pet_kind === "gallery" && !!settings.gallery_dir;
+  const live2dOn =
+    settings.pet_kind === "live2d" &&
+    !!settings.live_2d_model_path &&
+    !!settings.live_2d_core_path;
+
+  // Built-in pet emotion, derived purely from chat state (no backend / LLM tag):
+  // idle by default → thinking while a turn streams → happy for a couple of
+  // seconds the moment a reply finishes → back to idle. Tracks the previous
+  // loading flag so a happy burst only fires on the true→false edge (not on
+  // launch). The Live2D/gallery modes ignore this; it only feeds AnimatedPet.
+  const [emotion, setEmotion] = useState<Emotion>("idle");
+  const prevLoadingRef = useRef(isLoading);
+  const happyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const wasLoading = prevLoadingRef.current;
+    prevLoadingRef.current = isLoading;
+    if (isLoading) {
+      if (happyTimerRef.current) {
+        clearTimeout(happyTimerRef.current);
+        happyTimerRef.current = null;
+      }
+      setEmotion("thinking");
+    } else if (wasLoading) {
+      setEmotion("happy");
+      if (happyTimerRef.current) clearTimeout(happyTimerRef.current);
+      happyTimerRef.current = setTimeout(() => setEmotion("idle"), 2000);
+    }
+    return () => {
+      if (happyTimerRef.current) {
+        clearTimeout(happyTimerRef.current);
+      }
+    };
+  }, [isLoading]);
 
   // The main window is hidden while the panel is open (open_panel) — and that's
   // where Live2D settings are edited. A Live2D canvas built while the window is
@@ -162,7 +201,7 @@ function App() {
         <div className="min-h-0 flex-1 px-2 pb-2 pt-9">
           <GallerySlideshow dir={settings.gallery_dir} intervalSec={settings.gallery_interval} />
         </div>
-      ) : settings.live_2d_model_path && settings.live_2d_core_path ? (
+      ) : live2dOn ? (
         <div ref={petBlockRef} className="animate-breath pointer-events-none mx-auto w-[300px] shrink-0">
           {windowVisible && (
             <Live2DCharacter
@@ -173,18 +212,12 @@ function App() {
           )}
         </div>
       ) : (
-        // Live2D not configured: a notice instead of a character. Deliberately
-        // no bundled fallback — configure the two paths in the panel settings,
-        // or click its "use sample model" button to fetch Live2D's official
-        // sample assets at runtime.
-        <div ref={petBlockRef} className="mx-auto w-[300px] shrink-0 px-6 py-14 text-center">
-          <div className="text-[32px] leading-none">🐾</div>
-          <div className="mt-3 text-[13px] font-medium text-white/90 [text-shadow:0_1px_4px_rgba(0,0,0,0.55)]">
-            {t("pet.live2d.unset")}
-          </div>
-          <div className="mt-1 text-[12px] leading-relaxed text-white/70 [text-shadow:0_1px_4px_rgba(0,0,0,0.55)]">
-            {t("pet.live2d.unsetHint")}
-          </div>
+        // Image pet: the raster character — bundled `public/pet` art by default,
+        // or the user-chosen `pet_image_dir` when set (per-emotion files with a
+        // bundled fallback, see AnimatedPet). Emotions come from chat state:
+        // idle → thinking while a turn streams → happy when it finishes.
+        <div ref={petBlockRef} className="animate-breath pointer-events-none mx-auto w-[300px] shrink-0">
+          <AnimatedPet emotion={emotion} dir={settings.pet_image_dir} />
         </div>
       )}
 

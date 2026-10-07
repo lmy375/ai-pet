@@ -234,12 +234,20 @@ pub struct AppSettings {
     /// UI language: "zh" or "en".
     #[serde(default = "default_language")]
     pub language: String,
+    /// Which visual the pet window shows: `"live2d"` | `"gallery"` | `"image"`.
+    /// Live2D additionally requires both `live_2d_*` paths, gallery requires
+    /// `gallery_dir` — the settings UI enforces this before switching kinds.
+    #[serde(default = "default_pet_kind")]
+    pub pet_kind: String,
+    /// Directory the image pet reads its art from. Files are matched to
+    /// emotions by file stem (`idle` / `thinking` / `happy`, any image
+    /// extension); a missing emotion falls back to the bundled `public/pet`
+    /// art. Empty = fully built-in.
+    #[serde(default)]
+    pub pet_image_dir: String,
     /// Directory the gallery slideshow draws media from (empty = not chosen).
     #[serde(default)]
     pub gallery_dir: String,
-    /// When true, the pet window shows the gallery slideshow instead of Live2D.
-    #[serde(default)]
-    pub gallery_enabled: bool,
     /// Seconds each image stays on screen before advancing.
     #[serde(default = "default_gallery_interval")]
     pub gallery_interval: u32,
@@ -378,6 +386,10 @@ fn default_gallery_interval() -> u32 {
     10
 }
 
+fn default_pet_kind() -> String {
+    "image".to_string()
+}
+
 fn default_heartbeat_interval() -> u32 {
     60
 }
@@ -434,8 +446,9 @@ impl Default for AppSettings {
             live_2d_model_path: String::new(),
             live_2d_core_path: String::new(),
             language: default_language(),
+            pet_kind: default_pet_kind(),
+            pet_image_dir: String::new(),
             gallery_dir: String::new(),
-            gallery_enabled: false,
             gallery_interval: default_gallery_interval(),
             search_api_key: String::new(),
             skills_dir: String::new(),
@@ -697,5 +710,23 @@ agents:
         s.mcp_servers.insert("idle".to_string(), McpServerConfig::default());
         s.agents[1].mcp = vec!["fs".to_string(), "off".to_string()];
         assert_eq!(s.referenced_mcp_servers(), vec!["fs".to_string()]);
+    }
+
+    #[test]
+    fn empty_config_defaults_to_the_image_pet() {
+        // A fresh (or hand-emptied) config must parse and land on a valid
+        // three-way pet choice without any legacy fields.
+        let s: AppSettings = serde_yaml::from_str("").expect("empty config parses");
+        assert_eq!(s.pet_kind, "image");
+        assert_eq!(s.pet_image_dir, "");
+        assert_eq!(s.gallery_dir, "");
+    }
+
+    #[test]
+    fn pet_kind_round_trips_through_yaml() {
+        let yaml = "pet_kind: gallery\npet_image_dir: /tmp/pets\ngallery_dir: /tmp/pics\n";
+        let s: AppSettings = serde_yaml::from_str(yaml).expect("pet fields parse");
+        assert_eq!(s.pet_kind, "gallery");
+        assert_eq!(s.pet_image_dir, "/tmp/pets");
     }
 }

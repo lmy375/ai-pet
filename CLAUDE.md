@@ -195,7 +195,7 @@ occluded/minimized), the Live2D model renders blank/frozen.
   so they survive teardown. Keep this — removing it brings the blank-canvas bug back.
 - Before changing anything around auto-hide, window show/hide, or the Live2D mount, verify the
   model still renders after a full collapse → expand cycle.
-- Gallery mode (`gallery_enabled`) DOES unmount Live2D and render `<GallerySlideshow>` instead
+- Gallery mode (`pet_kind: gallery`) DOES unmount Live2D and render `<GallerySlideshow>` instead
   (`src/App.tsx`). This is intentional — a user-initiated full mode switch, not occlusion — and
   remounting Live2D (keyed by model path) re-inits cleanly. Do NOT confuse this with the
   `!hidden` gating bug above; gating on `galleryOn` is fine, gating on `hidden` is not.
@@ -261,7 +261,7 @@ this context` plus `uniform*: location not for current program`, thrown from the
   (default 100). Sub-agent runs share the chat bucket.
 
 ## Gallery slideshow / pin
-- Settings `gallery_dir` + `gallery_enabled` (config.yaml). `list_gallery_media` (commands/gallery.rs)
+- Settings `pet_kind: gallery` + `gallery_dir` (config.yaml). `list_gallery_media` (commands/gallery.rs)
   scans the dir for images/videos; the frontend loads them via `convertFileSrc` (asset protocol —
   enabled in tauri.conf.json `assetProtocol.scope`; needs the `protocol-asset` tauri feature).
 - Pin slider (main window, App.tsx `togglePin`) = `pauseTimer()` (disable auto-hide) +

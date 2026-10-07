@@ -115,3 +115,34 @@ body {
 .animate-gallery-fade {
   animation: gallery-fade 0.9s ease-in-out;
 }
+
+/* ---------- Built-in pet (raster /pet/*.png) ----------
+   Whole-character breathing is the shared .animate-breath on the wrapper. The
+   <img> swaps per emotion for the expression; CSS adds a thinking head tilt and
+   a happy little hop. The img is a normal HTML box, so % origins just work. */
+.builtin-pet {
+  -webkit-user-drag: none;
+}
+
+/* Thinking: gentle tilt, eases in/out as the state changes */
+.builtin-pet[data-emotion="thinking"] {
+  transform: rotate(-4deg);
+  transform-origin: 50% 86%;
+  transition: transform 0.4s ease;
+}
+
+/* Happy: small hop, twice */
+.builtin-pet[data-emotion="happy"] {
+  transform-origin: 50% 90%;
+  animation: builtin-pet-hop 0.55s ease-in-out 2;
+}
+@keyframes builtin-pet-hop {
+  0%, 100% { transform: translateY(0); }
+  45%, 55% { transform: translateY(-11px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .builtin-pet[data-emotion="thinking"] { transform: none; }
+  .builtin-pet[data-emotion="happy"] { animation: none; }
+}
+
