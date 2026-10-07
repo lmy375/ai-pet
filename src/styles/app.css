@@ -42,6 +42,7 @@
   --text-body: 13px;
   --text-chat: 14px;
   --text-title: 15px;
+  --text-heading: 18px;         /* page titles */
 
   /* Radii + elevation */
   --radius-field: 10px;

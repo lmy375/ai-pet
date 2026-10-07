@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, ModelConfig } from "../../../hooks/useSettings";
 import { defaultModel } from "../../../hooks/useSettings";
-import { Card } from "../../ui/Card";
 import { Button } from "../../ui/Button";
 import { ChipTabs } from "../../ui/ChipTabs";
 import { IconActionButton } from "../../ui/IconButton";
 import { HintText } from "../../ui/feedback";
-import { Label, SavedTextInput, Select, NumberField } from "../../ui/fields";
+import { SavedTextInput, Select, NumberField } from "../../ui/fields";
+import { SettingsSection, SettingsRow } from "../../ui/settings";
 import { SearchSelect } from "../../ui/SearchSelect";
 import { StatusText } from "../../ui/StatusText";
 import { CopyIcon, TrashIcon } from "../../Icons";
@@ -190,153 +190,180 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
   const modelOptions = config?.model && !models.includes(config.model) ? [config.model, ...models] : models;
 
   return (
-    <Card title={t("settings.models.title")}>
-      <ChipTabs
-        items={names.map((name) => ({ name }))}
-        selected={selected}
-        onSelect={(name) => { setSelected(name); setNameDraft(name); }}
-        onAdd={() => add()}
-        addTitle={t("settings.models.add")}
-      />
+    <SettingsSection>
+      <SettingsRow>
+        <ChipTabs
+          items={names.map((name) => ({ name }))}
+          selected={selected}
+          onSelect={(name) => { setSelected(name); setNameDraft(name); }}
+          onAdd={() => add()}
+          addTitle={t("settings.models.add")}
+        />
+      </SettingsRow>
 
       {!config ? (
-        <HintText className="mt-3">{t("settings.models.empty")}</HintText>
+        <SettingsRow>
+          <HintText className="mt-0">{t("settings.models.empty")}</HintText>
+        </SettingsRow>
       ) : (
-        <div className="mt-3 border-t border-line pt-3">
-          <Label>{t("settings.models.name")}</Label>
-          <div className="flex gap-2">
-            <SavedTextInput
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              onCommit={() => rename(nameDraft)}
-              className="flex-1"
-            />
-            <IconActionButton size="sm" onClick={() => add(config)} title={t("settings.models.duplicate")}>
-              <CopyIcon className="h-4 w-4" />
-            </IconActionButton>
-            <IconActionButton
-              variant="danger"
-              size="sm"
-              onClick={remove}
-              title={
-                usedBy.length > 0
-                  ? t("settings.models.inUse", { agents: usedBy.map((a) => a.name).join("、") })
-                  : t("common.delete")
-              }
-            >
-              <TrashIcon className="h-4 w-4" />
-            </IconActionButton>
-          </div>
-          <HintText>{t("settings.models.duplicateNote")}</HintText>
-
-          <Label className="mt-3 flex items-center gap-2">
-            <span>{t("settings.llm.provider")}</span>
-            {/* Auto-detection is a static model-name prefix map, so it guesses
-                wrong behind a gateway. Showing what it resolved to makes a bad
-                guess visible here instead of as a malformed request later. */}
-            {!config.provider && providerOptions?.resolved && (
-              <span className="font-normal text-ink-faint">
-                {t("settings.llm.providerResolved", { provider: providerOptions.resolved })}
-              </span>
-            )}
-          </Label>
-          <Select
-            value={config.provider}
-            onChange={(e) => { update({ provider: e.target.value }, true); setTestResult(null); }}
-          >
-            {(providerOptions?.options ?? [{ id: "", label: "Auto" }]).map((p) => (
-              <option key={p.id} value={p.id}>{p.label}</option>
-            ))}
-          </Select>
-          <p className="mt-1 text-[11px] text-ink-faint">{t("settings.llm.providerHint")}</p>
-
-          <Label className="mt-3">API Base URL</Label>
-          <SavedTextInput
-            value={config.api_base}
-            onChange={(e) => update({ api_base: e.target.value }, false)}
-            onCommit={() => { update({}, true); loadModels(config.api_base, config.api_key, config.provider, config.model); }}
-            placeholder={defaultModel().api_base}
-          />
-          <Label className="mt-3">API Key</Label>
-          <SavedTextInput
-            type="password"
-            value={config.api_key}
-            onChange={(e) => update({ api_key: e.target.value }, false)}
-            onCommit={() => { update({}, true); loadModels(config.api_base, config.api_key, config.provider, config.model); }}
-            placeholder="sk-..."
-          />
-
-          <Label className="mt-3 flex items-center gap-2">
-            <span>Model</span>
-            {loadingModels && <span className="font-normal text-ink-faint">{t("common.loading")}</span>}
-          </Label>
-          <div className="flex gap-2">
-            <SearchSelect
-              value={config.model}
-              options={modelOptions}
-              onChange={(m) => { update({ model: m }, true); setTestResult(null); }}
-              disabled={modelOptions.length === 0}
-              placeholder={
-                modelOptions.length === 0
-                  ? (config.api_base.trim() ? t("settings.llm.noModelsHint") : t("settings.llm.fillBaseFirst"))
-                  : t("settings.llm.selectFromN", { count: models.length })
-              }
-              emptyText={t("settings.llm.noMatch")}
-              className="flex-1"
-            />
-            <Button onClick={handleTest} disabled={testing || !config.model.trim()}>
-              {testing ? t("settings.llm.testing") : t("settings.llm.test")}
-            </Button>
-          </div>
-          {modelsError && (
-            <StatusText ok={false} className="mt-1.5 text-[12px]">
-              {t("settings.llm.modelsFailed", { error: modelsError })}
-            </StatusText>
-          )}
-          {testResult && (
-            <StatusText ok={testResult.ok} className="mt-1.5 text-[12px]">{testResult.text}</StatusText>
-          )}
-
-          <Label className="mt-3">{t("settings.llm.contextWindow")}</Label>
-          <div className="mb-2 flex gap-1.5">
-            {CONTEXT_PRESETS.map((p) => (
-              <button
-                key={p.value}
-                type="button"
-                onClick={() => update({ context_window: p.value }, true)}
-                className={`rounded-lg px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                  config.context_window === p.value ? "bg-accent text-white" : "bg-surface-soft text-ink-soft hover:bg-hover"
-                }`}
+        <>
+          <SettingsRow label={t("settings.models.name")} description={t("settings.models.duplicateNote")}>
+            <div className="flex gap-2">
+              <SavedTextInput
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onCommit={() => rename(nameDraft)}
+                className="flex-1"
+              />
+              <IconActionButton size="sm" onClick={() => add(config)} title={t("settings.models.duplicate")}>
+                <CopyIcon className="h-4 w-4" />
+              </IconActionButton>
+              <IconActionButton
+                variant="danger"
+                size="sm"
+                onClick={remove}
+                title={
+                  usedBy.length > 0
+                    ? t("settings.models.inUse", { agents: usedBy.map((a) => a.name).join("、") })
+                    : t("common.delete")
+                }
               >
-                {p.label}
-              </button>
-            ))}
-          </div>
-          <NumberField
-            value={config.context_window}
-            fallback={defaultModel().context_window}
-            onChange={(v) => update({ context_window: v }, false)}
-            onCommit={(v) => update({ context_window: v }, true)}
-            placeholder={String(defaultModel().context_window)}
-          />
-          <HintText>{t("settings.llm.contextWindowNote")}</HintText>
+                <TrashIcon className="h-4 w-4" />
+              </IconActionButton>
+            </div>
+          </SettingsRow>
 
-          <Label className="mt-3">{t("settings.llm.reasoning")}</Label>
-          <Select
-            value={REASONING_KEYWORDS.includes(config.reasoning) ? config.reasoning : "budget"}
-            onChange={(e) => update({ reasoning: e.target.value === "budget" ? "4096" : e.target.value }, true)}
+          <SettingsRow
+            label={
+              <span className="flex items-center gap-2">
+                <span>{t("settings.llm.provider")}</span>
+                {/* Auto-detection is a static model-name prefix map, so it guesses
+                    wrong behind a gateway. Showing what it resolved to makes a bad
+                    guess visible here instead of as a malformed request later. */}
+                {!config.provider && providerOptions?.resolved && (
+                  <span className="font-normal text-ink-faint">
+                    {t("settings.llm.providerResolved", { provider: providerOptions.resolved })}
+                  </span>
+                )}
+              </span>
+            }
+            description={t("settings.llm.providerHint")}
+            control={
+              <Select
+                className="w-48"
+                value={config.provider}
+                onChange={(e) => { update({ provider: e.target.value }, true); setTestResult(null); }}
+              >
+                {(providerOptions?.options ?? [{ id: "", label: "Auto" }]).map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </Select>
+            }
+          />
+
+          <SettingsRow label="API Base URL">
+            <SavedTextInput
+              value={config.api_base}
+              onChange={(e) => update({ api_base: e.target.value }, false)}
+              onCommit={() => { update({}, true); loadModels(config.api_base, config.api_key, config.provider, config.model); }}
+              placeholder={defaultModel().api_base}
+            />
+          </SettingsRow>
+
+          <SettingsRow label="API Key">
+            <SavedTextInput
+              type="password"
+              value={config.api_key}
+              onChange={(e) => update({ api_key: e.target.value }, false)}
+              onCommit={() => { update({}, true); loadModels(config.api_base, config.api_key, config.provider, config.model); }}
+              placeholder="sk-..."
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label={
+              <span className="flex items-center gap-2">
+                <span>Model</span>
+                {loadingModels && <span className="font-normal text-ink-faint">{t("common.loading")}</span>}
+              </span>
+            }
           >
-            <option value="">{t("settings.llm.reasoningOff")}</option>
-            <option value="minimal">minimal</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="xhigh">xhigh</option>
-            <option value="max">max</option>
-            <option value="budget">{t("settings.llm.reasoningBudget")}</option>
-          </Select>
+            <div className="flex gap-2">
+              <SearchSelect
+                value={config.model}
+                options={modelOptions}
+                onChange={(m) => { update({ model: m }, true); setTestResult(null); }}
+                disabled={modelOptions.length === 0}
+                placeholder={
+                  modelOptions.length === 0
+                    ? (config.api_base.trim() ? t("settings.llm.noModelsHint") : t("settings.llm.fillBaseFirst"))
+                    : t("settings.llm.selectFromN", { count: models.length })
+                }
+                emptyText={t("settings.llm.noMatch")}
+                className="flex-1"
+              />
+              <Button onClick={handleTest} disabled={testing || !config.model.trim()}>
+                {testing ? t("settings.llm.testing") : t("settings.llm.test")}
+              </Button>
+            </div>
+            {modelsError && (
+              <StatusText ok={false} className="mt-1.5 text-note">
+                {t("settings.llm.modelsFailed", { error: modelsError })}
+              </StatusText>
+            )}
+            {testResult && (
+              <StatusText ok={testResult.ok} className="mt-1.5 text-note">{testResult.text}</StatusText>
+            )}
+          </SettingsRow>
+
+          <SettingsRow label={t("settings.llm.contextWindow")} description={t("settings.llm.contextWindowNote")}>
+            <div className="mb-2 flex gap-1.5">
+              {CONTEXT_PRESETS.map((p) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => update({ context_window: p.value }, true)}
+                  className={`rounded-full px-2.5 py-1 text-note font-medium transition-colors ${
+                    config.context_window === p.value ? "bg-accent text-white" : "bg-surface-soft text-ink-soft hover:bg-hover"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <NumberField
+              value={config.context_window}
+              fallback={defaultModel().context_window}
+              onChange={(v) => update({ context_window: v }, false)}
+              onCommit={(v) => update({ context_window: v }, true)}
+              placeholder={String(defaultModel().context_window)}
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label={t("settings.llm.reasoning")}
+            description={t("settings.llm.reasoningNote")}
+            align="start"
+            control={
+              <Select
+                className="w-48"
+                value={REASONING_KEYWORDS.includes(config.reasoning) ? config.reasoning : "budget"}
+                onChange={(e) => update({ reasoning: e.target.value === "budget" ? "4096" : e.target.value }, true)}
+              >
+                <option value="">{t("settings.llm.reasoningOff")}</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+                <option value="budget">{t("settings.llm.reasoningBudget")}</option>
+              </Select>
+            }
+          />
+
           {!REASONING_KEYWORDS.includes(config.reasoning) && (
-            <div className="mt-2">
+            <SettingsRow>
               <NumberField
                 value={Number(config.reasoning) || 4096}
                 min={1}
@@ -349,15 +376,14 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
                   would go out as nothing at all. Say so here rather than
                   letting reasoning silently switch off. */}
               {providerOptions && !providerOptions.renders_budget && (
-                <p className="mt-1 text-[11px] text-amber-600">
+                <p className="mt-1 text-meta text-amber-600">
                   {t("settings.llm.reasoningBudgetUnsupported", { provider: providerOptions.resolved })}
                 </p>
               )}
-            </div>
+            </SettingsRow>
           )}
-          <HintText>{t("settings.llm.reasoningNote")}</HintText>
-        </div>
+        </>
       )}
-    </Card>
+    </SettingsSection>
   );
 }

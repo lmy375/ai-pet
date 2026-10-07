@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Card } from "../../ui/Card";
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { TextArea } from "../../ui/fields";
 import { HintText } from "../../ui/feedback";
+import { SettingsSection, SettingsRow } from "../../ui/settings";
 import { ExpandChevron, ExternalLinkIcon } from "../../Icons";
 import { useI18n, type TKey } from "../../../i18n";
 
@@ -86,8 +86,9 @@ export function PromptsCard({ notify, fail }: Props) {
   };
 
   return (
-    <Card
-      title={t("settings.prompts.title")}
+    <SettingsSection
+
+      description={t("settings.prompts.note")}
       action={
         <Button variant="ghost" size="sm" onClick={openDir} title={t("settings.prompts.openDirTitle")}>
           <ExternalLinkIcon className="h-4 w-4" />
@@ -95,65 +96,61 @@ export function PromptsCard({ notify, fail }: Props) {
         </Button>
       }
     >
-      <HintText className="mb-3">{t("settings.prompts.note")}</HintText>
-
-      <div className="flex flex-col gap-1.5">
-        {prompts?.map((p) => {
-          const open = openKey === p.key;
-          return (
-            <div key={p.key} className="rounded-xl border border-line/70">
-              <button
-                onClick={() => toggle(p)}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-hover"
-              >
-                <ExpandChevron expanded={open} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                <span className="text-body font-medium text-ink">
-                  {t(`settings.prompts.name.${p.key}` as TKey)}
-                </span>
-                {p.customized ? (
-                  <Badge color="amber">{t("settings.prompts.customized")}</Badge>
-                ) : (
-                  <Badge>{t("settings.prompts.default")}</Badge>
-                )}
-              </button>
-
-              {open && (
-                <div className="border-t border-line/70 px-3 py-3">
-                  <TextArea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    spellCheck={false}
-                    className="min-h-[260px] font-mono !text-[12px]"
-                  />
-                  {p.vars.length > 0 && (
-                    <HintText className="mt-2">
-                      {t("settings.prompts.vars", {
-                        vars: p.vars.map((v) => `{{${v}}}`).join(" "),
-                        required: p.required_vars.map((v) => `{{${v}}}`).join(" ") || "—",
-                      })}
-                    </HintText>
-                  )}
-                  <div className="mt-2 flex items-center gap-2">
-                    <Button size="sm" onClick={() => save(p.key)} disabled={draft === p.content}>
-                      {t("settings.prompts.save")}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => reset(p.key)}
-                      disabled={!p.customized}
-                      title={t("settings.prompts.restoreTitle")}
-                    >
-                      {t("settings.prompts.restore")}
-                    </Button>
-                    <span className="truncate font-mono text-[10px] text-ink-faint">{p.path}</span>
-                  </div>
-                </div>
+      {prompts?.map((p) => {
+        const open = openKey === p.key;
+        return (
+          <SettingsRow key={p.key}>
+            <button
+              onClick={() => toggle(p)}
+              className="flex w-full items-center gap-2 text-left"
+            >
+              <ExpandChevron expanded={open} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+              <span className="text-body font-medium text-ink">
+                {t(`settings.prompts.name.${p.key}` as TKey)}
+              </span>
+              {p.customized ? (
+                <Badge color="amber">{t("settings.prompts.customized")}</Badge>
+              ) : (
+                <Badge>{t("settings.prompts.default")}</Badge>
               )}
-            </div>
-          );
-        })}
-      </div>
-    </Card>
+            </button>
+
+            {open && (
+              <div className="mt-3">
+                <TextArea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  spellCheck={false}
+                  className="min-h-[260px] font-mono !text-[12px]"
+                />
+                {p.vars.length > 0 && (
+                  <HintText className="mt-2">
+                    {t("settings.prompts.vars", {
+                      vars: p.vars.map((v) => `{{${v}}}`).join(" "),
+                      required: p.required_vars.map((v) => `{{${v}}}`).join(" ") || "—",
+                    })}
+                  </HintText>
+                )}
+                <div className="mt-2 flex items-center gap-2">
+                  <Button size="sm" onClick={() => save(p.key)} disabled={draft === p.content}>
+                    {t("settings.prompts.save")}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => reset(p.key)}
+                    disabled={!p.customized}
+                    title={t("settings.prompts.restoreTitle")}
+                  >
+                    {t("settings.prompts.restore")}
+                  </Button>
+                  <span className="truncate font-mono text-[10px] text-ink-faint">{p.path}</span>
+                </div>
+              </div>
+            )}
+          </SettingsRow>
+        );
+      })}
+    </SettingsSection>
   );
 }

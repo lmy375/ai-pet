@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Card } from "../ui/Card";
 import { TextArea } from "../ui/fields";
 import { Button } from "../ui/Button";
 import { StatusText } from "../ui/StatusText";
+import { SettingsSection, SettingsRow } from "../ui/settings";
 import { ExternalLinkIcon } from "../Icons";
 import { useI18n, type TKey } from "../../i18n";
 
@@ -105,35 +105,38 @@ export function AgentMemory({ agentId }: { agentId: string }) {
   };
 
   if (!loaded) {
-    return <div className="py-4 text-center text-[13px] text-ink-faint">{t("common.loading")}</div>;
+    return <div className="py-4 text-center text-note text-ink-faint">{t("common.loading")}</div>;
   }
 
   return (
-    <div>
-      <div className="mb-3 flex items-center justify-between">
-        <p className="text-[12px] text-ink-soft">{t("memory.subtitle")}</p>
-        <Button variant="ghost" size="sm" onClick={openMemoryDir} title={t("memory.openDir")}>
-          <ExternalLinkIcon className="h-4 w-4" />
-          {t("memory.openDirBtn")}
-        </Button>
-      </div>
-
-      {FIELDS.map((f) => (
-        <Card key={f.key} title={t(f.titleKey)}>
-          <TextArea
-            value={values[f.key]}
-            onChange={(e) => setValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
-            onFocus={() => refreshField(f)}
-            onBlur={() => saveField(f, values[f.key])}
-            rows={f.rows}
-            placeholder={t(f.placeholderKey)}
-          />
-        </Card>
-      ))}
+    <>
+      <SettingsSection
+        title={t("settings.agent.memoryTitle")}
+        description={t("memory.subtitle")}
+        action={
+          <Button variant="ghost" size="sm" onClick={openMemoryDir} title={t("memory.openDir")}>
+            <ExternalLinkIcon className="h-4 w-4" />
+            {t("memory.openDirBtn")}
+          </Button>
+        }
+      >
+        {FIELDS.map((f) => (
+          <SettingsRow key={f.key} label={t(f.titleKey)}>
+            <TextArea
+              value={values[f.key]}
+              onChange={(e) => setValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
+              onFocus={() => refreshField(f)}
+              onBlur={() => saveField(f, values[f.key])}
+              rows={f.rows}
+              placeholder={t(f.placeholderKey)}
+            />
+          </SettingsRow>
+        ))}
+      </SettingsSection>
 
       {message && (
-        <StatusText ok={message.ok} className="mt-1 text-[13px]">{message.text}</StatusText>
+        <StatusText ok={message.ok} className="text-note">{message.text}</StatusText>
       )}
-    </div>
+    </>
   );
 }
