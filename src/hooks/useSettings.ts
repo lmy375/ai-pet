@@ -116,7 +116,7 @@ export interface TelegramStatus {
   error: string | null;
 }
 
-export function defaultAgent(id = "default", name = "默认"): AgentConfig {
+export function defaultAgent(id = "owen", name = "Owen"): AgentConfig {
   return {
     id,
     name,
@@ -158,7 +158,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   search_api_key: "",
   skills_dir: "",
   tools: { disabled: [] },
-  active_agent: "default",
+  active_agent: "owen",
   agents: [defaultAgent()],
 };
 

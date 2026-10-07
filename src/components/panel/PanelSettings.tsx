@@ -45,7 +45,7 @@ const blankSettings: AppSettings = {
   search_api_key: "",
   skills_dir: "",
   tools: { disabled: [] },
-  active_agent: "default",
+  active_agent: "owen",
   agents: [defaultAgent()],
 };
 
