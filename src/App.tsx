@@ -221,7 +221,7 @@ function App() {
         // or the user-chosen `pet_image_dir` when set (per-emotion files with a
         // bundled fallback, see AnimatedPet). Emotions come from chat state:
         // idle → thinking while a turn streams → happy when it finishes.
-        <div ref={petBlockRef} className="animate-breath pointer-events-none mx-auto w-[300px] shrink-0">
+        <div ref={petBlockRef} className="animate-breath pointer-events-none mx-auto w-[260px] shrink-0 pt-11">
           <AnimatedPet emotion={emotion} dir={settings.pet_image_dir} />
         </div>
       )}
