@@ -1,89 +1,45 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { currentMonitor } from "@tauri-apps/api/window";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 
-const BLUR_TIMEOUT = 3000; // 3s after blur → slide to edge
-const TAB_WIDTH = 12; // pixels visible when hidden (the "tab")
-const ANIM_DURATION = 300; // ms for slide animation
-const ANIM_STEPS = 20;
+const BLUR_TIMEOUT = 3000; // 3s after blur → collapse into the ball
 const SAVE_DEBOUNCE = 500; // ms idle after a move before persisting position
+const COLLAPSE_FADE = 280; // ms shrink/fade before the backend swaps the windows
 
 export function useAutoHide() {
   const [hidden, setHidden] = useState(false);
   const state = useRef({
     hidden: false,
     paused: false,
-    animating: false,
-    savedX: null as number | null,
+    collapsing: false,
     timer: null as ReturnType<typeof setTimeout> | null,
     saveTimer: null as ReturnType<typeof setTimeout> | null,
   });
 
-  // Eased (ease-out cubic) horizontal slide from startX to targetX over
-  // ANIM_DURATION. Shared by slideToEdge/slideBack — only the target differs.
-  const animateTo = async (
-    win: ReturnType<typeof getCurrentWindow>,
-    startX: number,
-    targetX: number,
-    y: number,
-  ) => {
-    for (let i = 1; i <= ANIM_STEPS; i++) {
-      const progress = i / ANIM_STEPS;
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const x = Math.round(startX + (targetX - startX) * eased);
-      await win.setPosition(new PhysicalPosition(x, y));
-      await new Promise((r) => setTimeout(r, ANIM_DURATION / ANIM_STEPS));
-    }
-  };
-
-  const slideToEdge = async () => {
+  // Pet → ball: flag hidden so the window plays its shrink/fade, then let the
+  // backend swap the pet window for the ball. Expansion is owned by the ball
+  // (click → expand_from_ball → main-shown), which resets the flags below.
+  const collapseToBall = async () => {
     const s = state.current;
-    if (s.hidden || s.paused || s.animating) return;
+    if (s.hidden || s.paused || s.collapsing) return;
 
     const win = getCurrentWindow();
-    // While the panel is open the pet window is hidden (not just blurred), and
-    // the blur timer still fires. Don't slide an invisible window to the edge:
-    // it would reappear as a tab instead of in place when the panel closes.
+    // While the panel is open the pet window is already hidden (not just
+    // blurred) and the blur timer still fires — don't swap an invisible window.
     if (!(await win.isVisible())) return;
-    const monitor = await currentMonitor();
-    if (!monitor) return;
 
-    const pos = await win.outerPosition();
-
-    s.savedX = pos.x;
-    s.animating = true;
-
-    // Target: right edge of screen, leaving TAB_WIDTH visible
-    // TAB_WIDTH is in logical pixels, scale to physical
-    const scale = window.devicePixelRatio || 1;
-    const tabPhysical = Math.round(TAB_WIDTH * scale);
-    const targetX = monitor.position.x + monitor.size.width - tabPhysical;
-
-    await animateTo(win, pos.x, targetX, pos.y);
-
+    s.collapsing = true;
     s.hidden = true;
-    s.animating = false;
     setHidden(true);
-  };
-
-  const slideBack = async () => {
-    const s = state.current;
-    if (!s.hidden || s.animating || s.savedX === null) return;
-
-    const win = getCurrentWindow();
-    const pos = await win.outerPosition();
-    const targetX = s.savedX;
-
-    s.animating = true;
-
-    await animateTo(win, pos.x, targetX, pos.y);
-
-    s.hidden = false;
-    s.animating = false;
-    s.savedX = null;
-    setHidden(false);
+    await new Promise((r) => setTimeout(r, COLLAPSE_FADE));
+    try {
+      await invoke("collapse_to_ball");
+    } catch (e) {
+      console.error("Failed to collapse to ball:", e);
+      s.hidden = false;
+      setHidden(false);
+    }
+    s.collapsing = false;
   };
 
   const cancelTimer = () => {
@@ -100,17 +56,14 @@ export function useAutoHide() {
     cancelTimer();
     s.timer = setTimeout(() => {
       if (!s.hidden && !s.paused) {
-        slideToEdge();
+        collapseToBall();
       }
     }, BLUR_TIMEOUT);
   };
 
-  // Called when mouse enters the tab area (visible strip)
+  // The window itself no longer expands on hover: while collapsed it's hidden
+  // and the ball owns the click-to-expand. Enter/leave only manages the timer.
   const handleMouseEnter = () => {
-    const s = state.current;
-    if (s.hidden && !s.animating) {
-      slideBack();
-    }
     cancelTimer();
   };
 
@@ -118,7 +71,6 @@ export function useAutoHide() {
     const s = state.current;
     s.paused = true;
     cancelTimer();
-    if (s.hidden) slideBack();
   };
 
   const resumeTimer = () => {
@@ -130,15 +82,16 @@ export function useAutoHide() {
     const win = getCurrentWindow();
     let unlistenFocus: (() => void) | null = null;
     let unlistenMoved: (() => void) | null = null;
-    // `onFocusChanged`/`onMoved` register asynchronously. Under StrictMode
-    // (mount → unmount → remount) and Vite HMR the cleanup can run before the
-    // `await` resolves, leaving `unlisten*` null so the listener leaks — and a
-    // leaked focus listener closes over the DISCARDED instance's `state` ref,
-    // whose `paused` is always false, so it keeps auto-hiding the window even
-    // after the live instance is pinned. The `cancelled` flag tears down any
-    // listener that resolves after cleanup. (Same async-leak hazard CLAUDE.md
-    // flags for the `turn` event, but here a single owned listener must be
-    // unregistered, so the flag is the correct fix rather than dedup.)
+    let unlistenShown: (() => void) | null = null;
+    // `onFocusChanged`/`onMoved`/`listen` register asynchronously. Under
+    // StrictMode (mount → unmount → remount) and Vite HMR the cleanup can run
+    // before the `await` resolves, leaving `unlisten*` null so the listener
+    // leaks — and a leaked focus listener closes over the DISCARDED instance's
+    // `state` ref, whose `paused` is always false, so it keeps auto-hiding the
+    // window even after the live instance is pinned. The `cancelled` flag tears
+    // down any listener that resolves after cleanup. (Same async-leak hazard
+    // CLAUDE.md flags for the `turn` event, but each of these is a single owned
+    // listener that must be unregistered, so the flag is the correct fix.)
     let cancelled = false;
 
     const setup = async () => {
@@ -147,11 +100,8 @@ export function useAutoHide() {
         if (s.paused) return;
         if (focused) {
           cancelTimer();
-          if (s.hidden) slideBack();
-        } else {
-          if (!s.hidden) {
-            startBlurTimer();
-          }
+        } else if (!s.hidden) {
+          startBlurTimer();
         }
       });
       if (cancelled) {
@@ -161,11 +111,11 @@ export function useAutoHide() {
       unlistenFocus = focus;
 
       // Persist the user's window position so it reopens where they left it.
-      // Skip auto-hide / animation moves so the edge "tab" position is never
-      // saved as the real position.
+      // Skipped while hidden: the collapse never moves the window, and a save
+      // fired mid-fade could race the real position.
       const moved = await win.onMoved(({ payload }) => {
         const s = state.current;
-        if (s.hidden || s.animating || s.paused) return;
+        if (s.hidden || s.paused) return;
         if (s.saveTimer) clearTimeout(s.saveTimer);
         s.saveTimer = setTimeout(() => {
           invoke("save_window_position", { x: payload.x, y: payload.y }).catch(
@@ -178,6 +128,22 @@ export function useAutoHide() {
         return;
       }
       unlistenMoved = moved;
+
+      // Expanded again from the ball (or the panel closed): the window just
+      // reappeared, so reset the hide bookkeeping — otherwise the blur timer
+      // would refuse to start and the pet could never auto-hide again.
+      const shown = await win.listen<unknown>("main-shown", () => {
+        const s = state.current;
+        s.hidden = false;
+        s.collapsing = false;
+        setHidden(false);
+        cancelTimer();
+      });
+      if (cancelled) {
+        shown();
+        return;
+      }
+      unlistenShown = shown;
     };
 
     setup();
@@ -188,10 +154,9 @@ export function useAutoHide() {
       if (state.current.saveTimer) clearTimeout(state.current.saveTimer);
       unlistenFocus?.();
       unlistenMoved?.();
+      unlistenShown?.();
     };
   }, []);
 
-  // `hideToEdge` is the idle timer's own slide, exposed so the pet's hide
-  // button collapses it exactly the way inactivity does.
-  return { hidden, handleMouseEnter, pauseTimer, resumeTimer, hideToEdge: slideToEdge };
+  return { hidden, handleMouseEnter, pauseTimer, resumeTimer, collapseToBall };
 }

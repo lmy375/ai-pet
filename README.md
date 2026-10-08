@@ -13,8 +13,8 @@ memory — see [docs/architecture.md](docs/architecture.md).
 
 ## Features
 
-- **Live2D pet** — an animated character that floats on your desktop, auto‑hides
-  to the screen edge, and can be pinned on top.
+- **Live2D pet** — an animated character that floats on your desktop, auto‑collapses
+  into a floating ball, and can be pinned on top.
 - **Chat in two windows** — the pet itself and a panel window share one
   conversation; talk to whichever is in front.
 - **Multiple agents & group chat** — configure several agents (each with its
@@ -113,7 +113,7 @@ ratatui 终端界面（`pet-cli`）—— 见 [docs/architecture.md](docs/archit
 
 ## 功能
 
-- **Live2D 宠物** —— 浮在桌面上的动画角色，会自动隐藏到屏幕边缘，可一键置顶。
+- **Live2D 宠物** —— 浮在桌面上的动画角色，会自动收起为悬浮球，可一键置顶。
 - **双窗口聊天** —— 宠物本体和面板窗口共享同一段对话，哪个在前就跟哪个说。
 - **多 Agent 与群聊** —— 可配置多个 Agent（各自的模型、人设/记忆、MCP 工具集），
   随时切换应答者，或拉进同一个群里，让它们并发地回应你和彼此。

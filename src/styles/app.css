@@ -147,3 +147,32 @@ body {
   .builtin-pet[data-emotion="happy"] { animation: none; }
 }
 
+/* ---------- Floating ball ----------
+   The pet collapses into this always-on-top avatar ball. Pop plays once when
+   the ball appears. No idle float on purpose: the 52px window is barely bigger
+   than the ball, so a bob would clip the ball's top against the window edge. */
+@keyframes ball-pop {
+  from {
+    transform: scale(0.3);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.ball-pop {
+  animation: ball-pop 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ball-pop {
+    animation: none;
+  }
+}
+

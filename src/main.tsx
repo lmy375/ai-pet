@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { PanelApp } from "./PanelApp";
 import { DebugApp } from "./DebugApp";
+import { BallApp } from "./BallApp";
 import "./styles/app.css";
 
 const params = new URLSearchParams(window.location.search);
@@ -11,6 +12,7 @@ const windowType = params.get("window");
 function Root() {
   if (windowType === "panel") return <PanelApp />;
   if (windowType === "debug") return <DebugApp />;
+  if (windowType === "ball") return <BallApp />;
   return <App />;
 }
 

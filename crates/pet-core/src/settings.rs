@@ -286,6 +286,11 @@ pub struct AppSettings {
     /// file until the window has been moved at least once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowPosition>,
+    /// Saved floating-ball position (physical pixels), same rules as `window`:
+    /// written (debounced) when the user drags the ball, omitted until then.
+    /// While `None` the ball appears wherever the pet collapsed from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ball: Option<WindowPosition>,
 }
 
 impl AppSettings {
@@ -458,6 +463,7 @@ impl Default for AppSettings {
             app_log_max_mb: default_app_log_max_mb(),
             llm_log_keep_per_kind: default_llm_log_keep(),
             window: None,
+            ball: None,
         }
     }
 }
@@ -606,6 +612,17 @@ pub fn set_agent_model(id: &str, model: &str) -> Result<(), String> {
 pub fn set_window_position(x: i32, y: i32) -> Result<(), String> {
     let mut settings = get_settings()?;
     settings.window = Some(WindowPosition { x, y });
+    let yaml = serde_yaml::to_string(&settings)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    write_config_file(&yaml)
+}
+
+/// Persist only the floating-ball position into config.yaml (read-modify-write).
+/// Same no-broadcast rule as `set_window_position`: a ball drag shouldn't make
+/// every window reload its settings.
+pub fn set_ball_position(x: i32, y: i32) -> Result<(), String> {
+    let mut settings = get_settings()?;
+    settings.ball = Some(WindowPosition { x, y });
     let yaml = serde_yaml::to_string(&settings)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
     write_config_file(&yaml)

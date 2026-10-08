@@ -28,7 +28,7 @@ pub fn active_window_label(app: &AppHandle) -> String {
 
 // --- Pet window position persistence (stored in config.yaml) ---
 
-use pet_core::settings::{get_settings, set_window_position, WindowPosition};
+use pet_core::settings::{get_settings, set_ball_position, set_window_position, WindowPosition};
 
 /// Persist the pet window's top-left position so it reopens where the user left
 /// it. Called (debounced) from the frontend whenever the user moves the window.
@@ -39,6 +39,18 @@ pub fn save_window_position(x: i32, y: i32) -> Result<(), String> {
 
 fn load_window_position() -> Option<WindowPosition> {
     get_settings().ok()?.window
+}
+
+/// Saved floating-ball position (see `save_ball_position`).
+fn load_ball_position() -> Option<WindowPosition> {
+    get_settings().ok()?.ball
+}
+
+/// Persist the ball's top-left position so it reappears where the user dragged
+/// it. Called (debounced) from the ball webview after a drag.
+#[tauri::command]
+pub fn save_ball_position(x: i32, y: i32) -> Result<(), String> {
+    set_ball_position(x, y)
 }
 
 /// True if `(x, y)` falls within some connected monitor, so a saved position from
@@ -72,6 +84,89 @@ pub fn restore_main_window(app: &AppHandle) {
         let _ = win.center();
     }
     let _ = win.show();
+}
+
+// --- Floating ball (the pet collapses into it when idle) ---
+
+/// Logical size of the ball window; the frontend renders a round ball inside it.
+/// Slightly larger than the ball so its drop shadow renders un-clipped — a
+/// shadow cut by the window edge reads as a gray ring (the bug this fixed).
+const BALL_SIZE: f64 = 64.0;
+
+/// Return the existing ball webview, creating it on first use. Created hidden so
+/// `collapse_to_ball` can position it before it pops in. It stays alive after
+/// the pet expands back (just hidden), so repeated collapses are cheap.
+fn ensure_ball_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(win) = app.get_webview_window("ball") {
+        return Ok(win);
+    }
+    WebviewWindowBuilder::new(app, "ball", WebviewUrl::App("index.html?window=ball".into()))
+        .title("Pet")
+        .inner_size(BALL_SIZE, BALL_SIZE)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .visible(false)
+        .focused(false)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Collapse the pet into the floating ball: show the ball (at the user's saved
+/// spot, else where the pet is so it reads as the pet shrinking into the ball),
+/// then hide the pet window. Emits `main-hidden` first so the frontend tears the
+/// Live2D canvas down — a WebGL context can't survive the window being hidden
+/// (same mechanism the panel uses; see `open_panel`).
+#[tauri::command]
+pub async fn collapse_to_ball(app: AppHandle) -> Result<(), String> {
+    let main = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => return Err("main window missing".to_string()),
+    };
+    let ball = ensure_ball_window(&app)?;
+
+    let saved = load_ball_position().filter(|p| position_on_screen(&ball, p.x, p.y));
+    let (x, y) = match saved {
+        Some(p) => (p.x, p.y),
+        None => {
+            // Land on the pet's face: main is 320 logical px wide, the face sits
+            // ~96 logical px from the top, the ball centers on that point.
+            let scale = main.scale_factor().map_err(|e| e.to_string())?;
+            let pos = main.outer_position().map_err(|e| e.to_string())?;
+            let size = BALL_SIZE * scale;
+            let cx = pos.x as f64 + (320.0 / 2.0) * scale;
+            let cy = pos.y as f64 + 96.0 * scale;
+            ((cx - size / 2.0).round() as i32, (cy - size / 2.0).round() as i32)
+        }
+    };
+    ball.set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+
+    let _ = app.emit("main-hidden", ());
+    let _ = main.hide();
+    let _ = ball.show();
+    Ok(())
+}
+
+/// Expand the pet back out of the ball (the ball's click handler): hide the
+/// ball, show the pet at its previous position and refocus it so the idle timer
+/// doesn't instantly collapse it again. Emits `main-shown` so the frontend
+/// rebuilds the Live2D canvas and replays the pop-in.
+#[tauri::command]
+pub async fn expand_from_ball(app: AppHandle) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    if let Some(ball) = app.get_webview_window("ball") {
+        let _ = ball.hide();
+    }
+    let _ = main.show();
+    let _ = main.set_focus();
+    let _ = app.emit("main-shown", ());
+    Ok(())
 }
 
 /// Focus an existing window with `label`, or build a new centered, resizable one

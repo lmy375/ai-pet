@@ -9,9 +9,8 @@ import { ChatThread } from "./components/ChatThread";
 import { ChatInput } from "./components/ChatInput";
 import {
   ExternalLinkIcon,
-  ChevronRight,
   ChevronDown,
-  HideEdgeIcon,
+  MinimizeIcon,
   PinIcon,
 } from "./components/Icons";
 import { FloatingIconButton } from "./components/ui/IconButton";
@@ -40,7 +39,7 @@ function App() {
     editMessage,
     stopStreaming,
   } = useChat();
-  const { hidden, handleMouseEnter, pauseTimer, resumeTimer, hideToEdge } = useAutoHide();
+  const { hidden, handleMouseEnter, pauseTimer, resumeTimer, collapseToBall } = useAutoHide();
   const [pinned, setPinned] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const petBlockRef = useRef<HTMLDivElement>(null);
@@ -98,8 +97,16 @@ function App() {
   // Visibility is driven by the backend (main-hidden / main-shown) instead of
   // the focus event, which doesn't reliably fire on hide. See CLAUDE.md.
   const [windowVisible, setWindowVisible] = useState(true);
+  // One-shot pop-in replayed whenever the window reappears — from the ball or
+  // from the panel closing — so the pet eases back in instead of blinking.
+  const [reappearing, setReappearing] = useState(false);
   useTauriEvent("main-hidden", () => setWindowVisible(false));
-  useTauriEvent("main-shown", () => setWindowVisible(true));
+  useTauriEvent("main-shown", () => {
+    setWindowVisible(true);
+    setReappearing(true);
+    // Double rAF: let the hidden frame paint first, then transition in.
+    requestAnimationFrame(() => requestAnimationFrame(() => setReappearing(false)));
+  });
 
   // Pin: keep the pet pinned above every window and stop it auto-hiding (handy
   // for watching the gallery slideshow). Unpin restores auto-hide.
@@ -112,12 +119,12 @@ function App() {
     [pauseTimer, resumeTimer],
   );
 
-  // Hide on demand: the same slide the idle timer runs. Pinning suppresses that
-  // slide, so unpin first (synchronously) instead of leaving a dead button.
+  // Hide on demand: the same collapse the idle timer runs. Pinning suppresses
+  // it, so unpin first (synchronously) instead of leaving a dead button.
   const hidePet = useCallback(() => {
     if (pinned) applyPin(false);
-    hideToEdge();
-  }, [pinned, applyPin, hideToEdge]);
+    collapseToBall();
+  }, [pinned, applyPin, collapseToBall]);
 
   // Collapsing pulls the window's bottom edge up under the pet instead of
   // leaving dead space; expanding restores the height the window had. setSize
@@ -180,16 +187,14 @@ function App() {
         setHovered(true);
       }}
       onMouseLeave={() => setHovered(false)}
-      className="relative flex h-screen w-full flex-col overflow-hidden bg-transparent select-none"
+      className={`relative flex h-screen w-full flex-col overflow-hidden bg-transparent select-none transition-all duration-300 ease-out ${
+        hidden
+          ? "scale-50 opacity-0" // collapse: shrink toward where the ball pops in
+          : reappearing
+            ? "scale-75 opacity-0" // just re-shown: start small, transition in
+            : "scale-100 opacity-100"
+      }`}
     >
-      {/* Tab indicator — visible strip when auto-hidden at the screen edge.
-          Hovering it triggers the root onMouseEnter → slideBack to expand. */}
-      {hidden && (
-        <div className="absolute left-0 top-1/2 z-50 flex h-[52px] w-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-l-xl bg-accent shadow-lg">
-          <ChevronRight className="h-4 w-4 rotate-180 text-white" />
-        </div>
-      )}
-
       {/* Main visual: either the gallery slideshow or the Live2D character.
           Gallery mode fills the window so the slideshow is prominent; the pet
           stays a fixed-size block at the top. The Live2D canvas is always
@@ -264,7 +269,7 @@ function App() {
               <ChevronDown className={`transition-transform ${chatCollapsed ? "" : "rotate-180"}`} />
             </FloatingIconButton>
             <FloatingIconButton onClick={hidePet} title={t("app.hidePet")}>
-              <HideEdgeIcon />
+              <MinimizeIcon />
             </FloatingIconButton>
             <FloatingIconButton onClick={openPanel} title={t("app.openSettings")}>
               <ExternalLinkIcon />

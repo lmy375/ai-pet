@@ -217,10 +217,10 @@ export function ChevronDownIcon({ className }: IconProps) {
 }
 
 
-/** Slide-to-the-edge glyph — arrow pushed against a wall. Used by the pet's
- *  manual hide button, whose action is the idle auto-hide slide. */
-export function HideEdgeIcon({ className }: IconProps) {
-  return <Stroke className={className}><path d="M4 12h11M11 8l4 4-4 4M20 4v16" /></Stroke>;
+/** Minimize glyph — a single bar. Used by the pet's manual collapse button,
+ *  whose action is the same collapse into the floating ball as the idle timer. */
+export function MinimizeIcon({ className }: IconProps) {
+  return <Stroke className={className}><path d="M5 12h14" /></Stroke>;
 }
 
 export function PinIcon({ className }: IconProps) {
