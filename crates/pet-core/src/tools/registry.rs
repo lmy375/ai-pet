@@ -5,6 +5,7 @@ use super::chat_tool::ChatTool;
 use super::context::ToolContext;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
 use super::group_tool::GroupChatTool;
+use super::read_image_tool::ReadImageTool;
 use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool, WriteStdinTool};
 use super::tool::Tool;
@@ -93,6 +94,7 @@ fn builtins() -> Vec<(Box<dyn Tool>, ToolScope)> {
         (Box::new(ReadFileTool), ToolScope::Always),
         (Box::new(WriteFileTool), ToolScope::Always),
         (Box::new(EditFileTool), ToolScope::Always),
+        (Box::new(ReadImageTool), ToolScope::Always),
         (Box::new(ScreenshotTool), ToolScope::Always),
         (Box::new(WebSearchTool), ToolScope::WebSearch),
         (Box::new(SpawnSubagentTool), ToolScope::TopLevel),

@@ -6,6 +6,7 @@ pub mod chat_tool;
 pub mod group_tool;
 pub mod shell_tools;
 pub mod file_tools;
+pub mod read_image_tool;
 pub mod screenshot_tool;
 pub mod web_search_tool;
 

@@ -4,6 +4,7 @@ import {
   WrenchIcon,
   TerminalIcon,
   FileTextIcon,
+  ImageIcon,
   FilePlusIcon,
   PencilIcon,
   ClockIcon,
@@ -56,6 +57,10 @@ export function describeToolCall(name: string, rawArgs: unknown): ToolDisplay {
     case "read_file": {
       const path = str(args.file_path);
       return { Icon: FileTextIcon, label: "Read", summary: path && basename(path), fullSummary: path };
+    }
+    case "read_image": {
+      const path = str(args.file_path);
+      return { Icon: ImageIcon, label: "Image", summary: path && basename(path), fullSummary: path };
     }
     case "write_file": {
       const path = str(args.file_path);
