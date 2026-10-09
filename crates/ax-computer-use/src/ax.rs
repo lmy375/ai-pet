@@ -46,27 +46,36 @@ pub fn find_app(name: &str) -> Result<(i32, AXUIElement), AxError> {
         // lacking owner/pid fields are skipped, not fatal.
         let cf = unsafe { CFType::wrap_under_get_rule(*w) };
         let Some(dict) = cf.downcast_into::<UntypedDict>() else { continue };
-        let Some(owner) = dict_cf(&dict, unsafe { kCGWindowOwnerName })
-            .and_then(|v| v.downcast_into::<CFString>())
-        else {
-            continue;
-        };
-        if !owner.to_string().to_lowercase().contains(&target) {
+        let Some((pid, owner)) = window_owner(&dict) else { continue };
+        if !owner.to_lowercase().contains(&target) {
             continue;
         }
-        let Some(pid_num) = dict_cf(&dict, unsafe { kCGWindowOwnerPID })
-            .and_then(|v| v.downcast_into::<CFNumber>())
-        else {
-            continue;
-        };
-        let Some(pid_f) = pid_num.to_f64() else { continue };
-        let pid = pid_f as i32;
         let app = AXUIElement::application(pid);
         app.set_messaging_timeout(0.5)
             .map_err(|e| AxError::Ax(e.to_string()))?;
         return Ok((pid, app));
     }
     Err(AxError::AppNotFound(name.into()))
+}
+
+/// The on-screen window owners, frontmost first, deduplicated by pid. Any name
+/// listed here is a valid argument to [`find_app`].
+pub fn list_apps() -> Vec<(i32, String)> {
+    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let Some(windows) = copy_window_info(options, kCGNullWindowID) else {
+        return Vec::new();
+    };
+    let mut apps: Vec<(i32, String)> = Vec::new();
+    for w in windows.iter() {
+        let cf = unsafe { CFType::wrap_under_get_rule(*w) };
+        let Some(dict) = cf.downcast_into::<UntypedDict>() else { continue };
+        let Some((pid, owner)) = window_owner(&dict) else { continue };
+        if apps.iter().any(|(p, _)| *p == pid) {
+            continue;
+        }
+        apps.push((pid, owner));
+    }
+    apps
 }
 
 /// The app's on-screen window: `focused_window` first (the reliable entry),
@@ -100,6 +109,17 @@ type UntypedDict = CFDictionary<*const core::ffi::c_void, *const core::ffi::c_vo
 fn dict_cf(dict: &UntypedDict, key: CFStringRef) -> Option<CFType> {
     let v = *dict.find(key as *const core::ffi::c_void)?;
     Some(unsafe { CFType::wrap_under_get_rule(v) })
+}
+
+/// A window's owner pid and name from its window-info dictionary. Windows
+/// lacking either field are skipped by returning `None`.
+fn window_owner(dict: &UntypedDict) -> Option<(i32, String)> {
+    let owner = dict_cf(dict, unsafe { kCGWindowOwnerName })
+        .and_then(|v| v.downcast_into::<CFString>())?;
+    let pid = dict_cf(dict, unsafe { kCGWindowOwnerPID })
+        .and_then(|v| v.downcast_into::<CFNumber>())
+        .and_then(|n| n.to_f64())? as i32;
+    Some((pid, owner.to_string()))
 }
 
 /// The published accessibility 0.2.0 crate doesn't wrap `AXFrame`, so read it

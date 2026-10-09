@@ -2,7 +2,7 @@
 name = "ax-computer-use"
 version = "0.1.0"
 edition = "2021"
-description = "macOS computer-use primitives over the Accessibility API: read app state as a text tree, click, type, press keys, scroll"
+description = "macOS computer-use primitives over the Accessibility API: list apps, read app state as a text tree, click, type, press keys, scroll"
 
 # macOS-only by design: everything goes through the AX API and CGEvent.
 [dependencies]

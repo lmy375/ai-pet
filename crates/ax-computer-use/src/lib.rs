@@ -123,6 +123,32 @@ pub fn get_app_state(app: &str) -> Result<AppState, AxError> {
     Ok(AppState { pid, app_name: app.to_string(), window_title, snap })
 }
 
+/// An on-screen app as reported by [`list_apps`]: its pid and window-owner
+/// name — the same name [`get_app_state`] matches against.
+pub struct AppInfo {
+    pid: i32,
+    name: String,
+}
+
+impl AppInfo {
+    pub fn pid(&self) -> i32 {
+        self.pid
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// The on-screen apps, frontmost first, deduplicated by pid. Any name listed
+/// here is a valid argument to [`get_app_state`].
+pub fn list_apps() -> Vec<AppInfo> {
+    ax::list_apps()
+        .into_iter()
+        .map(|(pid, name)| AppInfo { pid, name })
+        .collect()
+}
+
 impl AppState {
     pub fn pid(&self) -> i32 {
         self.pid

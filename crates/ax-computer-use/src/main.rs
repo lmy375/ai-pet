@@ -4,14 +4,14 @@
 //! the action subcommands reference those indices. The walk is deterministic,
 //! so indices hold across invocations until the app's UI changes.
 
-use ax_computer_use::{get_app_state, AppState, AxError, ScrollDirection};
+use ax_computer_use::{get_app_state, list_apps, AppState, AxError, ScrollDirection};
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
     name = "axcu",
-    about = "macOS computer use over the Accessibility API: read app state, click, type, press keys, scroll",
-    after_help = "Workflow: run `axcu state <app>` to print the element tree with [index] numbers, then use those indices with the action subcommands."
+    about = "macOS computer use over the Accessibility API: list apps, read app state, click, type, press keys, scroll",
+    after_help = "Workflow: run `axcu list-apps` to find a target app, `axcu state <app>` to print its element tree with [index] numbers, then use those indices with the action subcommands."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -20,6 +20,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List on-screen apps (frontmost first) usable with the other subcommands
+    ListApps,
     /// Print the app's front window as a text tree with element indices
     State {
         /// App name, case-insensitive substring of the window owner (e.g. "safari")
@@ -69,6 +71,12 @@ impl From<DirectionArg> for ScrollDirection {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::ListApps => {
+            for app in list_apps() {
+                println!("{} | {}", app.pid(), app.name());
+            }
+            Ok(())
+        }
         Command::State { app } => {
             let state = state_of(&app);
             state.map(|s| {
