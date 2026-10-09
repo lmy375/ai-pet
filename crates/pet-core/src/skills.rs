@@ -182,7 +182,7 @@ pub fn list_skills_in(dir: &Path) -> Vec<Skill> {
     }
     // Sorted so the prompt prefix is stable across turns — `read_dir` order is
     // filesystem-dependent, and an unstable prefix defeats prompt caching.
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 

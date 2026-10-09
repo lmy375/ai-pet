@@ -1,0 +1,20 @@
+[package]
+name = "ax-computer-use"
+version = "0.1.0"
+edition = "2021"
+description = "macOS computer-use primitives over the Accessibility API: read app state as a text tree, click, type, press keys, scroll"
+
+# macOS-only by design: everything goes through the AX API and CGEvent.
+[dependencies]
+accessibility = "0.2"
+accessibility-sys = "0.2"
+clap = { version = "4", features = ["derive"] }
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+core-graphics = { version = "0.25", features = ["elcapitan", "highsierra"] }
+core-graphics-types = "0.2"
+foreign-types = "0.5"
+
+[[bin]]
+name = "axcu"
+path = "src/main.rs"
