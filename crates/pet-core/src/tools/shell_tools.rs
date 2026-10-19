@@ -66,6 +66,9 @@ async fn bash_impl(arguments: &str, ctx: &ToolContext) -> String {
         Ok(v) => v,
         Err(e) => return e,
     };
+    if !ctx.swarm_worker_command_allowed(&command) {
+        return tool_error("swarm workers cannot access long-term memory files");
+    }
 
     let description = args["description"].as_str().unwrap_or("");
     let working_directory = args["working_directory"].as_str();

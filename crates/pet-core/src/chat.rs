@@ -197,6 +197,8 @@ pub async fn run_agent_loop(
             include_chat: ctx.is_heartbeat,
             include_web_search: !config.search_api_key.trim().is_empty(),
             include_group: ctx.group.is_some(),
+            include_swarm: ctx.swarm.is_some(),
+            include_swarm_worker: ctx.swarm_task_id.is_some() && ctx.swarm_worker_id.is_some(),
             ..ToolPolicy::from_config()
         },
     );

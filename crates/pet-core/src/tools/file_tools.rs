@@ -48,6 +48,9 @@ async fn read_file_impl(arguments: &str, ctx: &ToolContext) -> String {
         Ok(v) => v,
         Err(e) => return e,
     };
+    if !ctx.swarm_worker_path_allowed(&file_path) {
+        return tool_error("swarm workers cannot access long-term memory files");
+    }
 
     // Read file once as bytes, then detect binary and convert to string
     let bytes = match std::fs::read(&file_path) {
@@ -158,6 +161,9 @@ async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
         Ok(v) => v,
         Err(e) => return e,
     };
+    if !ctx.swarm_worker_path_allowed(&file_path) {
+        return tool_error("swarm workers cannot access long-term memory files");
+    }
     // `content` may legitimately be "", so require a string rather than non-empty.
     if !args.get("content").is_some_and(|v| v.is_string()) {
         return tool_error("missing 'content' parameter");
@@ -238,6 +244,9 @@ async fn edit_file_impl(arguments: &str, ctx: &ToolContext) -> String {
         Ok(v) => v,
         Err(e) => return e,
     };
+    if !ctx.swarm_worker_path_allowed(&file_path) {
+        return tool_error("swarm workers cannot access long-term memory files");
+    }
     let old_string = args["old_string"].as_str().unwrap_or("").to_string();
     let new_string = args["new_string"].as_str().unwrap_or("").to_string();
     let replace_all = args["replace_all"].as_bool().unwrap_or(false);

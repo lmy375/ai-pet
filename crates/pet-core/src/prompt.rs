@@ -74,6 +74,38 @@ pub fn prepend_subagent_system_messages(conv_messages: &mut Vec<Value>) {
     apply_system_messages(conv_messages, system_content);
 }
 
+/// Build a swarm worker conversation. Workers deliberately do not receive an
+/// Agent's persona or long-term memory files: every run is scoped to one task,
+/// and concurrent copies of the same Agent must never race on USER/MEMORY or
+/// HEARTBEAT files. The selected Agent's model and MCP configuration are still
+/// resolved by `AiConfig::from_agent`.
+pub fn prepend_swarm_worker_system_messages(conv_messages: &mut Vec<Value>, role_prompt: &str) {
+    let mut system = String::from(
+        "You are a swarm worker. Work only on the current task. Do not use or modify USER.md, MEMORY.md, SOUL.md, or HEARTBEAT.md. Do not spawn sub-agents. Use the swarm task tools to report progress, create child tasks when needed, and submit the final result. Keep the final result concise and evidence-based.",
+    );
+    if !role_prompt.trim().is_empty() {
+        system.push_str("\n\nYour swarm role:\n");
+        system.push_str(role_prompt.trim());
+    }
+    apply_system_messages(conv_messages, system);
+}
+
+/// Main Agent prompt for a swarm page. The normal Agent persona and memory are
+/// prepended by the caller; this role block adds task-board awareness without
+/// changing the Agent's identity.
+pub fn prepend_swarm_main_system_message(conv_messages: &mut Vec<Value>) {
+    let index = conv_messages
+        .iter()
+        .take_while(|message| crate::llm::is_system_message(message))
+        .count();
+    conv_messages.insert(
+        index,
+        crate::llm::store_message(&genai::chat::ChatMessage::system(
+            "You are the Main Agent for a swarm. Help the user plan and coordinate work. Use swarm task tools to create tasks and inspect progress. Do not claim worker tasks yourself; workers execute them. Summarize results clearly and ask for clarification when the task decomposition is ambiguous.",
+        )),
+    );
+}
+
 /// Prepend the group-chat system messages: the agent's full persona + memory
 /// (it's the agent itself in the room, not a worker), followed by the group
 /// etiquette, then the shared tool guidance. Scoped to `agent_id`.
@@ -227,5 +259,16 @@ mod tests {
                 (ChatRole::User, "hi".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn swarm_main_role_stays_inside_system_block() {
+        let mut msgs = vec![crate::llm::store_message(&ChatMessage::user("hi"))];
+        prepend_system_messages(&mut msgs, "agent");
+        prepend_swarm_main_system_message(&mut msgs);
+        assert!(crate::llm::is_system_message(&msgs[0]));
+        assert!(crate::llm::is_system_message(&msgs[1]));
+        assert!(crate::llm::is_system_message(&msgs[2]));
+        assert!(!crate::llm::is_system_message(&msgs[3]));
     }
 }

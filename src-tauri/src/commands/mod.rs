@@ -11,6 +11,7 @@ pub mod session;
 pub mod settings;
 pub mod shell;
 pub mod skills;
+pub mod swarm;
 pub mod telegram;
 pub mod tools;
 pub mod window;

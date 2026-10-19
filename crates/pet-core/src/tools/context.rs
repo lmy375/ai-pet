@@ -50,6 +50,12 @@ pub struct ToolContext {
     /// Gates the `GroupChat` tool (see `ToolRegistry::new`) and gives it the
     /// room to post into. The group orchestrator sets it after construction.
     pub group: Option<Arc<crate::group::GroupRuntime>>,
+    /// The swarm this run belongs to. Main-agent and worker runs both receive
+    /// this handle; workers additionally set `swarm_task_id` and
+    /// `swarm_worker_id`, which gates claim/update/complete operations.
+    pub swarm: Option<Arc<crate::swarm::SwarmSession>>,
+    pub swarm_task_id: Option<String>,
+    pub swarm_worker_id: Option<String>,
     /// Images a tool wants the model to actually SEE. A tool's String return is
     /// appended as a `tool` role message, which can't carry an image, so tools
     /// like `screenshot` push a data URL here instead; the agent loop drains this
@@ -87,6 +93,9 @@ impl ToolContext {
             chat_hook,
             is_heartbeat,
             group: None,
+            swarm: None,
+            swarm_task_id: None,
+            swarm_worker_id: None,
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
             cancel: CancellationToken::new(),
         }
@@ -114,6 +123,9 @@ impl ToolContext {
             chat_hook: None,
             is_heartbeat: false,
             group: None,
+            swarm: None,
+            swarm_task_id: None,
+            swarm_worker_id: None,
             // Fresh queue: a sub-agent's screenshots are consumed by its own loop.
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
             cancel: self.cancel.child_token(),
@@ -140,6 +152,9 @@ impl ToolContext {
             chat_hook: self.chat_hook.clone(),
             is_heartbeat: self.is_heartbeat,
             group: self.group.clone(),
+            swarm: self.swarm.clone(),
+            swarm_task_id: self.swarm_task_id.clone(),
+            swarm_worker_id: self.swarm_worker_id.clone(),
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
             cancel: self.cancel.clone(),
         }
@@ -158,5 +173,36 @@ impl ToolContext {
             Ok(mut imgs) => std::mem::take(&mut *imgs),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// Swarm workers are task-scoped and must never read or modify the Agent's
+    /// long-term memory directory. The check is deliberately path-based and is
+    /// used by file and shell tools before touching the filesystem.
+    pub fn swarm_worker_path_allowed(&self, path: &str) -> bool {
+        if self.swarm_task_id.is_none() || self.swarm_worker_id.is_none() {
+            return true;
+        }
+        let Ok(root) = crate::memory::memory_dir(&self.config.agent_id) else {
+            return true;
+        };
+        let path = std::path::Path::new(path);
+        if path.starts_with(&root) {
+            return false;
+        }
+        let root_name = root.to_string_lossy();
+        !path.to_string_lossy().contains(root_name.as_ref())
+            && !path.to_string_lossy().ends_with("MEMORY.md")
+            && !path.to_string_lossy().ends_with("USER.md")
+            && !path.to_string_lossy().ends_with("HEARTBEAT.md")
+            && !path.to_string_lossy().ends_with("SOUL.md")
+    }
+
+    pub fn swarm_worker_command_allowed(&self, command: &str) -> bool {
+        if self.swarm_task_id.is_none() || self.swarm_worker_id.is_none() {
+            return true;
+        }
+        let lower = command.to_ascii_lowercase();
+        let protected = ["memory.md", "user.md", "heartbeat.md", "soul.md", "memory/"];
+        !protected.iter().any(|item| lower.contains(item))
     }
 }

@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { PanelSettings } from "./components/panel/PanelSettings";
 import { PanelChat } from "./components/panel/PanelChat";
 import { PanelGroup } from "./components/panel/PanelGroup";
+import { PanelSwarm } from "./components/panel/PanelSwarm";
 import { IconActionButton } from "./components/ui/IconButton";
 import { BugIcon } from "./components/Icons";
 import { useI18n } from "./i18n";
 
-type Tab = "chat" | "group" | "settings";
+type Tab = "chat" | "group" | "swarm" | "settings";
 
 export function PanelApp() {
   const { t } = useI18n();
@@ -16,6 +17,7 @@ export function PanelApp() {
   const tabs = [
     { value: "chat" as const, label: t("panel.tab.chat") },
     { value: "group" as const, label: t("panel.tab.group") },
+    { value: "swarm" as const, label: t("panel.tab.swarm") },
     { value: "settings" as const, label: t("panel.tab.settings") },
   ];
 
@@ -62,6 +64,7 @@ export function PanelApp() {
         {activeTab === "settings" && <PanelSettings />}
         {activeTab === "chat" && <PanelChat />}
         {activeTab === "group" && <PanelGroup />}
+        {activeTab === "swarm" && <PanelSwarm />}
       </div>
     </div>
   );

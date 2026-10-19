@@ -98,6 +98,12 @@ pub fn run() {
                 app.state::<LogStore>().inner().clone(),
                 app.state::<ShellStore>().inner().clone(),
             ));
+            app.manage(commands::swarm::new_swarm_store(
+                app.handle().clone(),
+                app.state::<pet_core::mcp::McpStore>().inner().clone(),
+                app.state::<LogStore>().inner().clone(),
+                app.state::<ShellStore>().inner().clone(),
+            ));
 
             // Initialize MCP servers from config on app start
             let mcp_store = app.state::<pet_core::mcp::McpStore>().inner().clone();
@@ -221,6 +227,16 @@ pub fn run() {
             commands::group::group_set_members,
             commands::group::group_set_paused,
             commands::group::group_reset,
+            commands::swarm::swarm_list,
+            commands::swarm::swarm_create,
+            commands::swarm::swarm_load,
+            commands::swarm::swarm_configure,
+            commands::swarm::swarm_create_task,
+            commands::swarm::swarm_start,
+            commands::swarm::swarm_end,
+            commands::swarm::swarm_stop,
+            commands::swarm::swarm_send_main,
+            commands::swarm::swarm_cancel_main,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

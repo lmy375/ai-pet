@@ -129,6 +129,7 @@ pub enum LogKind {
     Sub,
     Group,
     Heartbeat,
+    Swarm,
 }
 
 impl LogKind {
@@ -140,6 +141,7 @@ impl LogKind {
             LogKind::Chat | LogKind::Sub => "chat",
             LogKind::Group => "group",
             LogKind::Heartbeat => "heartbeat",
+            LogKind::Swarm => "swarm",
         }
     }
 }
@@ -187,6 +189,14 @@ impl LogSession {
             kind: LogKind::Heartbeat,
             label: String::new(),
         }
+    }
+
+    pub fn swarm_main(swarm_id: &str) -> Self {
+        Self { id: uuid::Uuid::new_v4().to_string(), kind: LogKind::Swarm, label: format!("{swarm_id}:main") }
+    }
+
+    pub fn swarm_worker(swarm_id: &str, worker_id: &str) -> Self {
+        Self { id: uuid::Uuid::new_v4().to_string(), kind: LogKind::Swarm, label: format!("{swarm_id}:{worker_id}") }
     }
 }
 

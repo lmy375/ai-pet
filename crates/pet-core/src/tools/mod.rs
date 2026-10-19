@@ -8,6 +8,7 @@ pub mod shell_tools;
 pub mod file_tools;
 pub mod read_image_tool;
 pub mod screenshot_tool;
+pub mod swarm_tools;
 pub mod web_search_tool;
 
 pub use context::{ChatHook, ToolContext};

@@ -17,7 +17,7 @@ import {
 } from "../Icons";
 import { usePolling } from "../../hooks/usePolling";
 
-type LogKind = "chat" | "sub" | "group" | "heartbeat";
+type LogKind = "chat" | "sub" | "group" | "heartbeat" | "swarm";
 
 interface RoundStat {
   round: number;
@@ -138,7 +138,7 @@ const roleColors: Record<string, BadgeColor> = {
 // Display order, most useful first. Retention is per kind too (sub shares the
 // chat bucket), so a noisy heartbeat run can never push chat logs off the list —
 // but it can still fill a hundred rows, hence the collapsed-by-default groups.
-const KIND_ORDER: LogKind[] = ["chat", "sub", "group", "heartbeat"];
+const KIND_ORDER: LogKind[] = ["chat", "sub", "group", "heartbeat", "swarm"];
 
 export function LlmLogView() {
   const { t } = useI18n();
@@ -148,7 +148,7 @@ export function LlmLogView() {
   // scrolling past them to reach the conversation you came for is the whole
   // problem grouping is here to solve.
   const [collapsed, setCollapsed] = useState<Set<LogKind>>(
-    () => new Set<LogKind>(["sub", "group", "heartbeat"]),
+    () => new Set<LogKind>(["sub", "group", "heartbeat", "swarm"]),
   );
   // Bodies are fetched on demand and cached; `null` means the file is gone
   // (compaction dropped it after the index line was read).

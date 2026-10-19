@@ -8,6 +8,10 @@ use super::group_tool::GroupChatTool;
 use super::read_image_tool::ReadImageTool;
 use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool, WriteStdinTool};
+use super::swarm_tools::{
+    SwarmClaimTaskTool, SwarmCompleteTaskTool, SwarmCreateTaskTool, SwarmGetSummaryTool,
+    SwarmUpdateTaskTool,
+};
 use super::tool::Tool;
 use super::web_search_tool::WebSearchTool;
 
@@ -28,6 +32,10 @@ pub enum ToolScope {
     Group,
     /// Only when a Tavily key is configured — the tool cannot work without one.
     WebSearch,
+    /// Only for runs attached to a task-oriented swarm.
+    Swarm,
+    /// Only for a worker that already owns one task.
+    SwarmWorker,
 }
 
 impl ToolScope {
@@ -38,6 +46,8 @@ impl ToolScope {
             ToolScope::Heartbeat => policy.include_chat,
             ToolScope::Group => policy.include_group,
             ToolScope::WebSearch => policy.include_web_search,
+            ToolScope::Swarm => policy.include_swarm,
+            ToolScope::SwarmWorker => policy.include_swarm_worker,
         }
     }
 }
@@ -56,6 +66,8 @@ pub struct ToolPolicy {
     pub include_chat: bool,
     pub include_web_search: bool,
     pub include_group: bool,
+    pub include_swarm: bool,
+    pub include_swarm_worker: bool,
     /// Tool names the owner switched off (`tools.disabled` in config.yaml).
     /// Applies to MCP tools too — they go through the same registry.
     pub disabled: Vec<String>,
@@ -100,6 +112,11 @@ fn builtins() -> Vec<(Box<dyn Tool>, ToolScope)> {
         (Box::new(SpawnSubagentTool), ToolScope::TopLevel),
         (Box::new(ChatTool), ToolScope::Heartbeat),
         (Box::new(GroupChatTool), ToolScope::Group),
+        (Box::new(SwarmClaimTaskTool), ToolScope::SwarmWorker),
+        (Box::new(SwarmUpdateTaskTool), ToolScope::SwarmWorker),
+        (Box::new(SwarmCompleteTaskTool), ToolScope::SwarmWorker),
+        (Box::new(SwarmCreateTaskTool), ToolScope::Swarm),
+        (Box::new(SwarmGetSummaryTool), ToolScope::Swarm),
     ]
 }
 
@@ -313,6 +330,20 @@ mod tests {
         // gets the GroupChat tool.
         assert!(!tool_names(&registry(policy(0, false, false, false))).contains(&"GroupChat".to_string()));
         assert!(tool_names(&registry(policy(0, false, false, true))).contains(&"GroupChat".to_string()));
+    }
+
+    #[test]
+    fn swarm_tools_are_offered_only_to_swarm_runs() {
+        let normal = ToolRegistry::new(vec![], policy(0, false, false, false));
+        assert!(!tool_names(&normal).contains(&"swarm_get_summary".to_string()));
+        let swarm = ToolRegistry::new(
+            vec![],
+            ToolPolicy {
+                include_swarm: true,
+                ..policy(1, false, false, false)
+            },
+        );
+        assert!(tool_names(&swarm).contains(&"swarm_get_summary".to_string()));
     }
 
     #[tokio::test]
