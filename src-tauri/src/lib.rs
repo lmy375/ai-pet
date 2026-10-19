@@ -20,7 +20,7 @@ pub fn run() {
         }
     }
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -30,7 +30,9 @@ pub fn run() {
         ))))
         .manage(pet_core::mcp::new_mcp_store())
         .manage(telegram::new_telegram_store())
-        .manage(commands::window::ActiveWindow(std::sync::Mutex::new("main".to_string())))
+        .manage(commands::window::ActiveWindow(std::sync::Mutex::new(
+            "main".to_string(),
+        )))
         .on_menu_event(|app, event| {
             if event.id() == "toggle-devtools" {
                 #[cfg(debug_assertions)]
@@ -82,6 +84,7 @@ pub fn run() {
             // Restore the pet window to its last position (and show it — it starts
             // hidden so it's positioned before appearing, avoiding a center flash).
             commands::window::restore_main_window(app.handle());
+            commands::window::start_visibility_watch(app.handle().clone());
 
             // The turn runner and group runtime need event sinks bound to the
             // app handle, so they're built (and managed) here rather than
@@ -197,6 +200,7 @@ pub fn run() {
             commands::window::open_panel,
             commands::window::open_debug,
             commands::window::open_devtools,
+            commands::window::keep_window_visible,
             commands::window::save_window_position,
             commands::window::save_ball_position,
             commands::window::collapse_to_ball,
@@ -238,6 +242,21 @@ pub fn run() {
             commands::swarm::swarm_send_main,
             commands::swarm::swarm_cancel_main,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        match event {
+            tauri::RunEvent::Reopen { .. } => {
+                // A hidden pet plus an off-screen floating ball looks like a
+                // dead process. Reopening the app must always recover the main
+                // window instead of leaving the user with no visible surface.
+                commands::window::restore_main_window(app_handle);
+            }
+            _ => {}
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
 }

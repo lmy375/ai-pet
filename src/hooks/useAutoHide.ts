@@ -82,6 +82,7 @@ export function useAutoHide() {
     const win = getCurrentWindow();
     let unlistenFocus: (() => void) | null = null;
     let unlistenMoved: (() => void) | null = null;
+    let unlistenResized: (() => void) | null = null;
     let unlistenShown: (() => void) | null = null;
     // `onFocusChanged`/`onMoved`/`listen` register asynchronously. Under
     // StrictMode (mount → unmount → remount) and Vite HMR the cleanup can run
@@ -113,13 +114,17 @@ export function useAutoHide() {
       // Persist the user's window position so it reopens where they left it.
       // Skipped while hidden: the collapse never moves the window, and a save
       // fired mid-fade could race the real position.
-      const moved = await win.onMoved(({ payload }) => {
+      const moved = await win.onMoved(() => {
         const s = state.current;
-        if (s.hidden || s.paused) return;
+        if (s.hidden) return;
+        invoke("keep_window_visible").catch((e) =>
+          console.error("Failed to keep window on screen:", e),
+        );
+        if (s.paused) return;
         if (s.saveTimer) clearTimeout(s.saveTimer);
         s.saveTimer = setTimeout(() => {
-          invoke("save_window_position", { x: payload.x, y: payload.y }).catch(
-            (e) => console.error("Failed to save window position:", e),
+          invoke("save_window_position").catch((e) =>
+            console.error("Failed to save window position:", e),
           );
         }, SAVE_DEBOUNCE);
       });
@@ -128,6 +133,19 @@ export function useAutoHide() {
         return;
       }
       unlistenMoved = moved;
+
+      const resized = await win.onResized(() => {
+        const s = state.current;
+        if (s.hidden) return;
+        invoke("keep_window_visible").catch((e) =>
+          console.error("Failed to keep window on screen:", e),
+        );
+      });
+      if (cancelled) {
+        resized();
+        return;
+      }
+      unlistenResized = resized;
 
       // Expanded again from the ball (or the panel closed): the window just
       // reappeared, so reset the hide bookkeeping — otherwise the blur timer
@@ -154,6 +172,7 @@ export function useAutoHide() {
       if (state.current.saveTimer) clearTimeout(state.current.saveTimer);
       unlistenFocus?.();
       unlistenMoved?.();
+      unlistenResized?.();
       unlistenShown?.();
     };
   }, []);

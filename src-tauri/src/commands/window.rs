@@ -1,5 +1,8 @@
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 
 // --- Active-window tracking (for routing background-task notifications) ---
 
@@ -33,8 +36,14 @@ use pet_core::settings::{get_settings, set_ball_position, set_window_position, W
 /// Persist the pet window's top-left position so it reopens where the user left
 /// it. Called (debounced) from the frontend whenever the user moves the window.
 #[tauri::command]
-pub fn save_window_position(x: i32, y: i32) -> Result<(), String> {
-    set_window_position(x, y)
+pub fn keep_window_visible(window: WebviewWindow) -> Result<(), String> {
+    clamp_window_to_screen(&window).map(|_| ())
+}
+
+#[tauri::command]
+pub fn save_window_position(window: WebviewWindow) -> Result<(), String> {
+    let pos = clamp_window_to_screen(&window)?;
+    set_window_position(pos.x.round() as i32, pos.y.round() as i32)
 }
 
 fn load_window_position() -> Option<WindowPosition> {
@@ -49,41 +58,161 @@ fn load_ball_position() -> Option<WindowPosition> {
 /// Persist the ball's top-left position so it reappears where the user dragged
 /// it. Called (debounced) from the ball webview after a drag.
 #[tauri::command]
-pub fn save_ball_position(x: i32, y: i32) -> Result<(), String> {
-    set_ball_position(x, y)
+pub fn save_ball_position(window: WebviewWindow) -> Result<(), String> {
+    let pos = clamp_window_to_screen(&window)?;
+    set_ball_position(pos.x.round() as i32, pos.y.round() as i32)
 }
 
-/// True if `(x, y)` falls within some connected monitor, so a saved position from
-/// a now-disconnected display doesn't strand the window offscreen.
-fn position_on_screen(win: &WebviewWindow, x: i32, y: i32) -> bool {
-    let monitors = match win.available_monitors() {
-        Ok(m) => m,
-        Err(_) => return true, // can't verify → trust the saved position
-    };
-    monitors.iter().any(|m| {
-        let p = m.position();
-        let s = m.size();
-        x >= p.x && x < p.x + s.width as i32 && y >= p.y && y < p.y + s.height as i32
-    })
+/// Fit a rectangle into the monitor work area with the largest overlap. The
+/// saved position is only useful when a meaningful part of the window would be
+/// visible; clamping makes it fully visible when it is near an edge.
+fn clamp_into_area(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    area: (f64, f64, f64, f64),
+) -> LogicalPosition<f64> {
+    let (left, top, area_width, area_height) = area;
+    let right = left + area_width;
+    let bottom = top + area_height;
+    LogicalPosition::new(
+        x.clamp(left, (right - width).max(left)),
+        y.clamp(top, (bottom - height).max(top)),
+    )
 }
 
-/// Restore the saved pet-window position (if any and still on-screen), else
-/// center it, then show the window. Called once at startup. The window starts
-/// hidden (see tauri.conf.json) so it's positioned before it appears, avoiding a
-/// flash at the default center. Always shows so a bad saved position never hides
-/// the pet.
+/// Choose the display with the largest overlap, or the nearest one when the
+/// rectangle is completely offscreen.
+fn choose_area(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    areas: &[(f64, f64, f64, f64)],
+) -> Option<(f64, f64, f64, f64)> {
+    let overlap = areas
+        .iter()
+        .map(|&(ax, ay, aw, ah)| {
+            let overlap_w = (x + width).min(ax + aw) - x.max(ax);
+            let overlap_h = (y + height).min(ay + ah) - y.max(ay);
+            (overlap_w.max(0.0) * overlap_h.max(0.0), ax, ay, aw, ah)
+        })
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .filter(|candidate| candidate.0 > 0.0);
+    if let Some((_, ax, ay, aw, ah)) = overlap {
+        return Some((ax, ay, aw, ah));
+    }
+
+    areas
+        .iter()
+        .min_by(|&&(ax, ay, aw, ah), &&(bx, by, bw, bh)| {
+            let distance = |left: f64, top: f64, area_w: f64, area_h: f64| {
+                let dx = (left - (x + width)).max(x - (left + area_w)).max(0.0);
+                let dy = (top - (y + height)).max(y - (top + area_h)).max(0.0);
+                dx * dx + dy * dy
+            };
+            distance(ax, ay, aw, ah).total_cmp(&distance(bx, by, bw, bh))
+        })
+        .copied()
+}
+
+fn fit_position(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    areas: &[(f64, f64, f64, f64)],
+) -> Option<LogicalPosition<f64>> {
+    let area = choose_area(x, y, width, height, areas)?;
+    Some(clamp_into_area(x, y, width, height, area))
+}
+
+fn clamp_window_to_screen(win: &WebviewWindow) -> Result<LogicalPosition<f64>, String> {
+    let scale = win.scale_factor().map_err(|e| e.to_string())?;
+    let current = win
+        .outer_position()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    let mut size = win
+        .outer_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    let areas = monitor_work_areas(win)?;
+    let area = choose_area(current.x, current.y, size.width, size.height, &areas)
+        .ok_or_else(|| "no display available".to_string())?;
+    if size.width > area.2 || size.height > area.3 {
+        size = LogicalSize::new(size.width.min(area.2), size.height.min(area.3));
+        win.set_size(size).map_err(|e| e.to_string())?;
+    }
+    let target = clamp_into_area(current.x, current.y, size.width, size.height, area);
+    if (current.x - target.x).abs() > 0.5 || (current.y - target.y).abs() > 0.5 {
+        win.set_position(target).map_err(|e| e.to_string())?;
+    }
+    Ok(target)
+}
+
+/// Recover a window shown outside every display. The periodic caller covers
+/// monitor unplug/rearrangement, which produces no window move event.
+pub fn keep_windows_visible(app: &AppHandle) {
+    for label in ["main", "ball"] {
+        if let Some(win) = app.get_webview_window(label) {
+            let _ = clamp_window_to_screen(&win);
+        }
+    }
+}
+
+pub fn start_visibility_watch(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            ticker.tick().await;
+            keep_windows_visible(&app);
+        }
+    });
+}
+
+fn monitor_work_areas(win: &WebviewWindow) -> Result<Vec<(f64, f64, f64, f64)>, String> {
+    win.available_monitors()
+        .map_err(|e| e.to_string())
+        .map(|monitors| {
+            monitors
+                .iter()
+                .map(|monitor| {
+                    let scale = monitor.scale_factor();
+                    let area = monitor.work_area();
+                    let pos = area.position.to_logical::<f64>(scale);
+                    let size = area.size.to_logical::<f64>(scale);
+                    (pos.x, pos.y, size.width, size.height)
+                })
+                .collect()
+        })
+}
+
+/// Restore the saved pet-window position when the full window can be fitted
+/// onto a connected display; otherwise center it. Saved positions now use
+/// logical coordinates, matching the coordinate space macOS uses for windows.
 pub fn restore_main_window(app: &AppHandle) {
     let win = match app.get_webview_window("main") {
         Some(w) => w,
         None => return,
     };
-    let restored = load_window_position()
-        .filter(|pos| position_on_screen(&win, pos.x, pos.y))
-        .and_then(|pos| win.set_position(PhysicalPosition::new(pos.x, pos.y)).ok());
-    if restored.is_none() {
-        let _ = win.center();
+    let restored = load_window_position().and_then(|pos| {
+        let scale = win.scale_factor().ok()?;
+        let size = win.outer_size().ok()?.to_logical::<f64>(scale);
+        let areas = monitor_work_areas(&win).ok()?;
+        fit_position(pos.x as f64, pos.y as f64, size.width, size.height, &areas)
+    });
+    match restored {
+        Some(pos) => {
+            let _ = win.set_position(pos);
+        }
+        None => {
+            let _ = win.center();
+        }
     }
     let _ = win.show();
+    let _ = win.set_focus();
 }
 
 // --- Floating ball (the pet collapses into it when idle) ---
@@ -100,19 +229,23 @@ fn ensure_ball_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(win) = app.get_webview_window("ball") {
         return Ok(win);
     }
-    WebviewWindowBuilder::new(app, "ball", WebviewUrl::App("index.html?window=ball".into()))
-        .title("Pet")
-        .inner_size(BALL_SIZE, BALL_SIZE)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .shadow(false)
-        .visible(false)
-        .focused(false)
-        .build()
-        .map_err(|e| e.to_string())
+    WebviewWindowBuilder::new(
+        app,
+        "ball",
+        WebviewUrl::App("index.html?window=ball".into()),
+    )
+    .title("Pet")
+    .inner_size(BALL_SIZE, BALL_SIZE)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .visible(false)
+    .focused(false)
+    .build()
+    .map_err(|e| e.to_string())
 }
 
 /// Collapse the pet into the floating ball: show the ball (at the user's saved
@@ -128,22 +261,30 @@ pub async fn collapse_to_ball(app: AppHandle) -> Result<(), String> {
     };
     let ball = ensure_ball_window(&app)?;
 
-    let saved = load_ball_position().filter(|p| position_on_screen(&ball, p.x, p.y));
-    let (x, y) = match saved {
-        Some(p) => (p.x, p.y),
+    let areas = monitor_work_areas(&ball)?;
+    let saved = load_ball_position()
+        .and_then(|p| fit_position(p.x as f64, p.y as f64, BALL_SIZE, BALL_SIZE, &areas));
+    let position = match saved {
+        Some(pos) => pos,
         None => {
             // Land on the pet's face: main is 320 logical px wide, the face sits
             // ~96 logical px from the top, the ball centers on that point.
             let scale = main.scale_factor().map_err(|e| e.to_string())?;
-            let pos = main.outer_position().map_err(|e| e.to_string())?;
-            let size = BALL_SIZE * scale;
-            let cx = pos.x as f64 + (320.0 / 2.0) * scale;
-            let cy = pos.y as f64 + 96.0 * scale;
-            ((cx - size / 2.0).round() as i32, (cy - size / 2.0).round() as i32)
+            let pos = main
+                .outer_position()
+                .map_err(|e| e.to_string())?
+                .to_logical::<f64>(scale);
+            fit_position(
+                pos.x + 320.0 / 2.0 - BALL_SIZE / 2.0,
+                pos.y + 96.0 - BALL_SIZE / 2.0,
+                BALL_SIZE,
+                BALL_SIZE,
+                &areas,
+            )
+            .ok_or_else(|| "no display available for the floating ball".to_string())?
         }
     };
-    ball.set_position(PhysicalPosition::new(x, y))
-        .map_err(|e| e.to_string())?;
+    ball.set_position(position).map_err(|e| e.to_string())?;
 
     let _ = app.emit("main-hidden", ());
     let _ = main.hide();
@@ -163,7 +304,7 @@ pub async fn expand_from_ball(app: AppHandle) -> Result<(), String> {
     if let Some(ball) = app.get_webview_window("ball") {
         let _ = ball.hide();
     }
-    let _ = main.show();
+    restore_main_window(&app);
     let _ = main.set_focus();
     let _ = app.emit("main-shown", ());
     Ok(())
@@ -235,4 +376,36 @@ pub fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
     #[cfg(not(debug_assertions))]
     let _ = window;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_position;
+    use tauri::LogicalPosition;
+
+    fn areas() -> Vec<(f64, f64, f64, f64)> {
+        vec![(0.0, 0.0, 1512.0, 982.0), (-262.0, -1080.0, 1920.0, 1080.0)]
+    }
+
+    fn assert_fully_visible(pos: LogicalPosition<f64>, width: f64, height: f64) {
+        assert!(areas().iter().any(|&(ax, ay, aw, ah)| {
+            pos.x >= ax && pos.y >= ay && pos.x + width <= ax + aw && pos.y + height <= ay + ah
+        }));
+    }
+
+    #[test]
+    fn an_offscreen_position_returns_to_the_nearest_display() {
+        let main = fit_position(1690.0, 368.0, 320.0, 560.0, &areas()).unwrap();
+        assert_fully_visible(main, 320.0, 560.0);
+        assert_eq!((main.x, main.y), (1192.0, 368.0));
+
+        let ball = fit_position(2576.0, 902.0, 64.0, 64.0, &areas()).unwrap();
+        assert_fully_visible(ball, 64.0, 64.0);
+    }
+
+    #[test]
+    fn a_partly_visible_position_is_clamped_into_the_monitor() {
+        let pos = fit_position(1500.0, 900.0, 320.0, 560.0, &areas()).unwrap();
+        assert_eq!((pos.x, pos.y), (1192.0, 422.0));
+    }
 }

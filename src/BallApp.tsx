@@ -22,10 +22,13 @@ export function BallApp() {
     // Remember where the user dragged the ball so the next collapse reappears
     // there (debounced like the pet window's own position save).
     const setup = async () => {
-      const off = await win.onMoved(({ payload }) => {
+      const off = await win.onMoved(() => {
+        invoke("keep_window_visible").catch((e) =>
+          console.error("Failed to keep ball on screen:", e),
+        );
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
-          invoke("save_ball_position", { x: payload.x, y: payload.y }).catch((e) =>
+          invoke("save_ball_position").catch((e) =>
             console.error("Failed to save ball position:", e),
           );
         }, SAVE_DEBOUNCE);
