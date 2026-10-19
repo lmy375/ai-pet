@@ -202,94 +202,95 @@ function ProjectSettings({
   };
 
   return (
-    <div className="flex flex-col gap-5 p-4">
-      <section>
-        <div className="mb-2 text-note font-semibold text-ink">{t("swarm.settings.project")}</div>
-        <label className="text-meta text-ink-faint">{t("swarm.project.name")}</label>
-        <input
-          value={form.title}
-          disabled={locked}
-          onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
-          className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
-        />
-        <label className="mt-3 block text-meta text-ink-faint">Orchestrator</label>
-        <select
-          value={form.main_agent_id}
-          disabled={locked}
-          onChange={(e) => setForm((prev) => ({ ...prev, main_agent_id: e.target.value }))}
-          className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
-        >
-          {settings.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-        </select>
-      </section>
-
-      <section>
-        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.workers")}</div>
-        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.inherited")}</div>
-        <div className="flex flex-col gap-2">
-          {settings.agents.map((agent) => {
-            const count = form.pool.find((item) => item.agent_id === agent.id)?.count ?? 0;
-            const model = settings.models[agent.model]?.model ?? agent.model;
-            return (
-              <div key={agent.id} className="flex items-center gap-3 rounded-field border border-line bg-surface px-3 py-2">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-body text-ink">{agent.name}</div>
-                  <div className="truncate text-meta text-ink-faint">{model || t("chat.model.none")}</div>
-                </div>
-                <input
-                  type="number"
-                  min={0}
-                  max={64}
-                  disabled={locked}
-                  value={count}
-                  onChange={(e) => updatePool(agent.id, Number(e.target.value) || 0)}
-                  className="w-16 rounded-field border border-line bg-surface-soft px-2 py-1 text-body text-ink outline-none disabled:text-ink-soft"
-                />
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section>
-        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.sharedPrompt")}</div>
-        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.sharedPromptHint")}</div>
-        <textarea
-          value={form.shared_prompt}
-          disabled={locked}
-          onChange={(e) => setForm((prev) => ({ ...prev, shared_prompt: e.target.value }))}
-          rows={6}
-          className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
-        />
-      </section>
-
-      <section>
-        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.orchestratorPrompt")}</div>
-        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.orchestratorPromptHint")}</div>
-        <textarea
-          value={form.orchestrator_prompt}
-          disabled={locked}
-          onChange={(e) => setForm((prev) => ({ ...prev, orchestrator_prompt: e.target.value }))}
-          rows={5}
-          className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
-        />
-      </section>
-
-      <section>
-        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.workerPrompt")}</div>
-        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.workerPromptHint")}</div>
-        <textarea
-          value={form.worker_prompt}
-          disabled={locked}
-          onChange={(e) => setForm((prev) => ({ ...prev, worker_prompt: e.target.value }))}
-          rows={5}
-          className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
-        />
-      </section>
-
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-note text-ink-soft">{locked ? t("swarm.settings.locked") : message}</span>
+    <div className="flex flex-col">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-line bg-surface/95 px-4 py-3 backdrop-blur">
+        <span className="min-w-0 truncate text-note text-ink-soft">{locked ? t("swarm.settings.locked") : message}</span>
         <Button size="sm" onClick={save} disabled={locked}>{t("common.save")}</Button>
+      </div>
+      <div className="flex flex-col gap-5 p-4">
+        <section>
+          <div className="mb-2 text-note font-semibold text-ink">{t("swarm.settings.project")}</div>
+          <label className="text-meta text-ink-faint">{t("swarm.project.name")}</label>
+          <input
+            value={form.title}
+            disabled={locked}
+            onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+            className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+          />
+          <label className="mt-3 block text-meta text-ink-faint">Orchestrator</label>
+          <select
+            value={form.main_agent_id}
+            disabled={locked}
+            onChange={(e) => setForm((prev) => ({ ...prev, main_agent_id: e.target.value }))}
+            className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+          >
+            {settings.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+          </select>
+        </section>
+
+        <section>
+          <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.workers")}</div>
+          <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.inherited")}</div>
+          <div className="flex flex-col gap-2">
+            {settings.agents.map((agent) => {
+              const count = form.pool.find((item) => item.agent_id === agent.id)?.count ?? 0;
+              const model = settings.models[agent.model]?.model ?? agent.model;
+              return (
+                <div key={agent.id} className="flex items-center gap-3 rounded-field border border-line bg-surface px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-body text-ink">{agent.name}</div>
+                    <div className="truncate text-meta text-ink-faint">{model || t("chat.model.none")}</div>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={64}
+                    disabled={locked}
+                    value={count}
+                    onChange={(e) => updatePool(agent.id, Number(e.target.value) || 0)}
+                    className="w-16 rounded-field border border-line bg-surface-soft px-2 py-1 text-body text-ink outline-none disabled:text-ink-soft"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.sharedPrompt")}</div>
+          <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.sharedPromptHint")}</div>
+          <textarea
+            value={form.shared_prompt}
+            disabled={locked}
+            onChange={(e) => setForm((prev) => ({ ...prev, shared_prompt: e.target.value }))}
+            rows={6}
+            className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+          />
+        </section>
+
+        <section>
+          <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.orchestratorPrompt")}</div>
+          <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.orchestratorPromptHint")}</div>
+          <textarea
+            value={form.orchestrator_prompt}
+            disabled={locked}
+            onChange={(e) => setForm((prev) => ({ ...prev, orchestrator_prompt: e.target.value }))}
+            rows={5}
+            className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+          />
+        </section>
+
+        <section>
+          <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.workerPrompt")}</div>
+          <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.workerPromptHint")}</div>
+          <textarea
+            value={form.worker_prompt}
+            disabled={locked}
+            onChange={(e) => setForm((prev) => ({ ...prev, worker_prompt: e.target.value }))}
+            rows={5}
+            className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+          />
+        </section>
       </div>
     </div>
   );
@@ -383,20 +384,6 @@ export function PanelSwarm() {
           <Button size="sm" variant="ghost" onClick={() => setNewProjectOpen(true)}>{t("swarm.project.new")}</Button>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
-          <span className="rounded-full bg-accent-soft px-2 py-1 text-meta text-accent">{t(`swarm.status.${snapshot.status}`)}</span>
-          {snapshot.status !== "running" && snapshot.status !== "draining" && (
-            <Button size="sm" onClick={() => runAction(swarm.start)}>{t("swarm.start")}</Button>
-          )}
-          {snapshot.status === "running" && (
-            <Button size="sm" variant="ghost" onClick={() => runAction(swarm.end)}>{t("swarm.end")}</Button>
-          )}
-          {(snapshot.status === "running" || snapshot.status === "draining") && (
-            <Button size="sm" variant="danger" onClick={() => runAction(swarm.stop)}>{t("swarm.stop")}</Button>
-          )}
-          <span className="ml-auto text-meta text-ink-faint">{totalWorkers} {t("swarm.workers")}</span>
-        </div>
-
         <div className="flex shrink-0 border-b border-line px-3 py-2">
           <Segmented<LeftTab>
             value={leftTab}
@@ -412,12 +399,25 @@ export function PanelSwarm() {
 
         {leftTab === "board" ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-2 flex items-center justify-between">
               <div className="text-note font-semibold text-ink">{t("swarm.tasks")} <span className="font-normal text-ink-faint">{snapshot.tasks.length}</span></div>
               <Button size="sm" onClick={() => setNewTaskOpen(true)}>
                 <PlusIcon className="h-4 w-4" />
                 {t("swarm.task.new")}
               </Button>
+            </div>
+            <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-field bg-surface-soft px-2 py-2">
+              <span className="rounded-full bg-accent-soft px-2 py-1 text-meta text-accent">{t(`swarm.status.${snapshot.status}`)}</span>
+              {snapshot.status !== "running" && snapshot.status !== "draining" && (
+                <Button size="sm" onClick={() => runAction(swarm.start)}>{t("swarm.start")}</Button>
+              )}
+              {snapshot.status === "running" && (
+                <Button size="sm" variant="ghost" onClick={() => runAction(swarm.end)}>{t("swarm.end")}</Button>
+              )}
+              {(snapshot.status === "running" || snapshot.status === "draining") && (
+                <Button size="sm" variant="danger" onClick={() => runAction(swarm.stop)}>{t("swarm.stop")}</Button>
+              )}
+              <span className="ml-auto text-meta text-ink-faint">{totalWorkers} {t("swarm.workers")}</span>
             </div>
             {(["pending", "running", "completed"] as const).map((status) => (
               <div key={status} className="mb-4">
