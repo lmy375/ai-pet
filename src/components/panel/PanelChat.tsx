@@ -4,10 +4,11 @@ import { useChat } from "../../hooks/useChat";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { SessionSidebar } from "./SessionSidebar";
+import { TaskDrawer } from "./TaskDrawer";
 import { Button } from "../ui/Button";
 import { ProgressRing } from "../ui/ProgressRing";
 import { LoadingScreen } from "../ui/feedback";
-import { TrashIcon, CheckIcon } from "../Icons";
+import { TrashIcon, CheckIcon, TasksIcon } from "../Icons";
 import { AgentSwitcher } from "../AgentSwitcher";
 import { ModelSwitcher } from "../ModelSwitcher";
 import { useSettings } from "../../hooks/useSettings";
@@ -44,6 +45,7 @@ export function PanelChat() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
 
   const exitSelection = () => {
     setSelectionMode(false);
@@ -73,6 +75,15 @@ export function PanelChat() {
     exitSelection();
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!tasksOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTasksOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tasksOpen]);
+
   if (!loaded) {
     return <LoadingScreen />;
   }
@@ -92,7 +103,7 @@ export function PanelChat() {
         onDelete={deleteSession}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col bg-canvas">
+      <div className="relative flex min-w-0 flex-1 flex-col bg-canvas">
         {/* Conversation toolbar: who answers, with what model, plus the
             context gauge and message selection. */}
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
@@ -102,6 +113,17 @@ export function PanelChat() {
           <ModelSwitcher className="max-w-[36%]" />
           <div className="min-w-0 flex-1" />
           <ContextUsageRing usage={contextUsage} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setTasksOpen((open) => !open)}
+            aria-expanded={tasksOpen}
+            aria-controls="tasks-drawer"
+            title={tasksOpen ? t("tasks.close") : t("tasks.open")}
+          >
+            <TasksIcon className="h-4 w-4" />
+            {t("tasks.button")}
+          </Button>
           {items.length > 0 && !selectionMode && !isLoading && (
             <Button variant="ghost" size="sm" onClick={() => setSelectionMode(true)} title={t("chat.select.enter")}>
               <CheckIcon className="h-4 w-4" />
@@ -147,6 +169,8 @@ export function PanelChat() {
             <ChatInput onSend={sendMessage} isLoading={isLoading} onStop={stopStreaming} />
           </div>
         )}
+
+        {tasksOpen && <TaskDrawer onClose={() => setTasksOpen(false)} />}
       </div>
     </div>
   );

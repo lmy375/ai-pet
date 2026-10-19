@@ -64,6 +64,20 @@ export function ChevronDown({ className }: IconProps) {
   return <Stroke className={className}><path d="m6 9 6 6 6-6" /></Stroke>;
 }
 
+export function CloseIcon({ className }: IconProps) {
+  return <Stroke className={className}><path d="M18 6 6 18M6 6l12 12" /></Stroke>;
+}
+
+/** Check-list glyph — the chat toolbar's task-drawer toggle. */
+export function TasksIcon({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <path d="M9 5h11M9 12h11M9 19h11" />
+      <path d="m3 5 1.5 1.5L7 4M3 12l1.5 1.5L7 11M3 19l1.5 1.5L7 18" />
+    </Stroke>
+  );
+}
+
 /** Disclosure chevron that points right when collapsed, down when expanded.
  *  The single source for the expand/collapse arrow used by collapsible rows. */
 export function ExpandChevron({

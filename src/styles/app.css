@@ -176,3 +176,28 @@ body {
   }
 }
 
+
+/* ---------- Chat task drawer ----------
+   The background-task list slides in from the right edge of the chat column.
+   Kept as a small keyframe rather than a layout transition so the chat text
+   underneath never reflows while the drawer opens. */
+@keyframes task-drawer-in {
+  from {
+    transform: translateX(18px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.task-drawer-in {
+  animation: task-drawer-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-drawer-in {
+    animation: none;
+  }
+}

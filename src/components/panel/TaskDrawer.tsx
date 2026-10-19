@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { Badge, type BadgeColor } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { CodeBlock } from "../ui/CodeBlock";
-import { RefreshIcon, ClockIcon, ChevronRight } from "../Icons";
+import { RefreshIcon, ClockIcon, ChevronRight, CloseIcon } from "../Icons";
+import { IconActionButton } from "../ui/IconButton";
 import { useI18n } from "../../i18n";
 import { formatIsoTime } from "../../utils/format";
 import { usePolling } from "../../hooks/usePolling";
@@ -72,41 +73,46 @@ function TaskRow({
       {/* Header — click to expand */}
       <div
         onClick={() => onToggle(task.taskId)}
-        className="flex cursor-pointer select-none items-center gap-2 px-3 py-2.5"
+        className="flex cursor-pointer select-none items-start gap-2 px-3 py-2.5"
       >
         <ChevronRight
-          className={`h-3.5 w-3.5 shrink-0 text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+          className={`mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`}
         />
-        <Badge color={kindColor}>{kindText}</Badge>
-        <span title={task.label} className="min-w-0 flex-1 truncate text-[13px] text-ink">
-          {task.label || t("tasks.noLabel")}
-        </span>
-        <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">
-          {t("tasks.triggeredAt", { time: formatIsoTime(task.startedAt) })}
-        </span>
-        <span className="flex shrink-0 items-center gap-1 text-[12px] text-ink-faint">
-          <ClockIcon className="h-3.5 w-3.5" />
-          {fmtDuration(task.elapsedMs)}
-        </span>
-        {running ? (
-          <Button
-            variant="danger"
-            size="sm"
-            disabled={killing}
-            onClick={(e) => {
-              e.stopPropagation();
-              onKill(task.taskId);
-            }}
-          >
-            {killing ? t("tasks.killing") : t("tasks.kill")}
-          </Button>
-        ) : killed ? (
-          <Badge color="amber">{t("tasks.killed")}</Badge>
-        ) : task.returnCode === 0 ? (
-          <Badge color="green">{t("tasks.done")}</Badge>
-        ) : (
-          <Badge color="slate">{t("tasks.ended")}{task.returnCode != null ? ` (${task.returnCode})` : ""}</Badge>
-        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Badge color={kindColor}>{kindText}</Badge>
+            <span title={task.label} className="min-w-0 flex-1 truncate text-[13px] text-ink">
+              {task.label || t("tasks.noLabel")}
+            </span>
+          </div>
+          <div className="mt-1 flex items-center gap-1 text-meta text-ink-faint">
+            <ClockIcon className="h-3 w-3" />
+            {fmtDuration(task.elapsedMs)}
+            <span>·</span>
+            {formatIsoTime(task.startedAt)}
+          </div>
+        </div>
+        <div className="mt-0.5 shrink-0">
+          {running ? (
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={killing}
+              onClick={(e) => {
+                e.stopPropagation();
+                onKill(task.taskId);
+              }}
+            >
+              {killing ? t("tasks.killing") : t("tasks.kill")}
+            </Button>
+          ) : killed ? (
+            <Badge color="amber">{t("tasks.killed")}</Badge>
+          ) : task.returnCode === 0 ? (
+            <Badge color="green">{t("tasks.done")}</Badge>
+          ) : (
+            <Badge color="slate">{t("tasks.ended")}{task.returnCode != null ? ` (${task.returnCode})` : ""}</Badge>
+          )}
+        </div>
       </div>
 
       {/* Detail — lazy-loaded on expand */}
@@ -144,7 +150,7 @@ function TaskRow({
   );
 }
 
-export function PanelTasks() {
+export function TaskDrawer({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [killing, setKilling] = useState<Set<string>>(new Set());
@@ -215,54 +221,61 @@ export function PanelTasks() {
     .filter((t) => t.status !== "running")
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 
-  const renderRow = (t: TaskListItem) => (
+  const renderRow = (task: TaskListItem) => (
     <TaskRow
-      key={t.taskId}
-      task={t}
-      expanded={expandedId === t.taskId}
-      detail={expandedId === t.taskId ? detail : null}
+      key={task.taskId}
+      task={task}
+      expanded={expandedId === task.taskId}
+      detail={expandedId === task.taskId ? detail : null}
       onToggle={toggle}
       onKill={kill}
-      killing={killing.has(t.taskId)}
+      killing={killing.has(task.taskId)}
     />
   );
 
   return (
-    <div className="h-full overflow-y-auto px-5 py-5">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold text-ink">{t("tasks.title")}</h2>
-        <button
-          onClick={fetchTasks}
-          title={t("common.refresh")}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-hover hover:text-ink"
-        >
-          <RefreshIcon className="h-[18px] w-[18px]" />
-        </button>
+    <aside
+      id="tasks-drawer"
+      aria-label={t("tasks.title")}
+      className="task-drawer-in absolute inset-y-0 right-0 z-20 flex w-[360px] max-w-[calc(100%-1rem)] flex-col border-l border-line bg-surface shadow-pop"
+    >
+      <div className="flex shrink-0 items-center justify-between border-b border-line px-4 py-3">
+        <h2 className="text-title font-semibold text-ink">{t("tasks.title")}</h2>
+        <div className="flex items-center gap-1">
+          <IconActionButton onClick={fetchTasks} title={t("common.refresh")}>
+            <RefreshIcon className="h-4 w-4" />
+          </IconActionButton>
+          <IconActionButton onClick={onClose} title={t("tasks.close")}>
+            <CloseIcon className="h-4 w-4" />
+          </IconActionButton>
+        </div>
       </div>
 
-      {tasks.length === 0 ? (
-        <div className="mt-16 text-center text-[13px] text-ink-faint">{t("tasks.empty")}</div>
-      ) : (
-        <div className="space-y-5">
-          <section>
-            <div className="mb-1.5 text-[12px] font-semibold text-ink-faint">{t("tasks.running", { count: running.length })}</div>
-            {running.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-line px-3 py-3 text-[12px] text-ink-faint">
-                {t("tasks.runningEmpty")}
-              </div>
-            ) : (
-              <div className="space-y-2">{running.map(renderRow)}</div>
-            )}
-          </section>
-
-          {finished.length > 0 && (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {tasks.length === 0 ? (
+          <div className="mt-16 text-center text-[13px] text-ink-faint">{t("tasks.empty")}</div>
+        ) : (
+          <div className="space-y-5">
             <section>
-              <div className="mb-1.5 text-[12px] font-semibold text-ink-faint">{t("tasks.recent", { count: finished.length })}</div>
-              <div className="space-y-2">{finished.map(renderRow)}</div>
+              <div className="mb-1.5 text-[12px] font-semibold text-ink-faint">{t("tasks.running", { count: running.length })}</div>
+              {running.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-line px-3 py-3 text-[12px] text-ink-faint">
+                  {t("tasks.runningEmpty")}
+                </div>
+              ) : (
+                <div className="space-y-2">{running.map(renderRow)}</div>
+              )}
             </section>
-          )}
-        </div>
-      )}
-    </div>
+
+            {finished.length > 0 && (
+              <section>
+                <div className="mb-1.5 text-[12px] font-semibold text-ink-faint">{t("tasks.recent", { count: finished.length })}</div>
+                <div className="space-y-2">{finished.map(renderRow)}</div>
+              </section>
+            )}
+          </div>
+        )}
+      </div>
+    </aside>
   );
 }
