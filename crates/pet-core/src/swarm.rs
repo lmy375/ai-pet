@@ -47,8 +47,19 @@ pub enum SwarmTaskStatus {
 pub struct WorkerProfile {
     pub agent_id: String,
     pub count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwarmConfig {
+    pub title: String,
+    pub main_agent_id: String,
+    pub pool: Vec<WorkerProfile>,
     #[serde(default)]
-    pub role_prompt: String,
+    pub shared_prompt: String,
+    #[serde(default)]
+    pub orchestrator_prompt: String,
+    #[serde(default)]
+    pub worker_prompt: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +108,12 @@ pub struct SwarmSnapshot {
     pub title: String,
     pub main_agent_id: String,
     pub pool: Vec<WorkerProfile>,
+    #[serde(default)]
+    pub shared_prompt: String,
+    #[serde(default)]
+    pub orchestrator_prompt: String,
+    #[serde(default)]
+    pub worker_prompt: String,
     pub status: SwarmStatus,
     pub tasks: Vec<SwarmTask>,
     pub main: SwarmConversation,
@@ -273,15 +290,18 @@ impl SwarmRuntime {
     ) -> Result<SwarmSnapshot, String> {
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = now();
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("项目名称不能为空".to_string());
+        }
         let snapshot = SwarmSnapshot {
             id: id.clone(),
-            title: if title.trim().is_empty() {
-                "新蜂群".to_string()
-            } else {
-                title.trim().to_string()
-            },
+            title: title.to_string(),
             main_agent_id,
             pool: Vec::new(),
+            shared_prompt: String::new(),
+            orchestrator_prompt: String::new(),
+            worker_prompt: String::new(),
             status: SwarmStatus::Idle,
             tasks: Vec::new(),
             main: SwarmConversation::default(),
@@ -310,16 +330,23 @@ impl SwarmRuntime {
     pub async fn update_config(
         self: &Arc<Self>,
         id: &str,
-        main_agent_id: String,
-        pool: Vec<WorkerProfile>,
+        config: SwarmConfig,
     ) -> Result<(), String> {
+        let title = config.title.trim();
+        if title.is_empty() {
+            return Err("项目名称不能为空".to_string());
+        }
         let session = self.session(id).await?;
         let mut state = session.state.lock().await;
         if matches!(state.status, SwarmStatus::Running | SwarmStatus::Draining) {
-            return Err("蜂群运行中不能修改 Worker Pool".to_string());
+            return Err("项目运行中不能修改设置".to_string());
         }
-        state.main_agent_id = main_agent_id;
-        state.pool = pool;
+        state.title = title.to_string();
+        state.main_agent_id = config.main_agent_id;
+        state.pool = config.pool;
+        state.shared_prompt = config.shared_prompt;
+        state.orchestrator_prompt = config.orchestrator_prompt;
+        state.worker_prompt = config.worker_prompt;
         state.updated_at = now();
         save_snapshot(&state);
         session.events.snapshot(&state);
@@ -337,7 +364,7 @@ impl SwarmRuntime {
         let task = {
             let mut state = session.state.lock().await;
             if state.tasks.len() >= 10_000 {
-                return Err("蜂群任务数量已达到 10000 上限".to_string());
+                return Err("项目任务数量已达到 10000 上限".to_string());
             }
             let task = SwarmTask {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -506,12 +533,12 @@ impl SwarmRuntime {
     pub async fn start(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let session = self.session(id).await?;
         if !session.workers.lock().await.is_empty() {
-            return Err("蜂群仍在停止当前 Worker，请稍后再开始".to_string());
+            return Err("项目仍在停止当前 Worker，请稍后再开始".to_string());
         }
         {
             let mut state = session.state.lock().await;
             if matches!(state.status, SwarmStatus::Running | SwarmStatus::Draining) {
-                return Err("蜂群已经在运行".to_string());
+                return Err("项目已经在运行".to_string());
             }
             if state.pool.iter().map(|p| p.count).sum::<u32>() == 0 {
                 return Err("请先配置至少一个 Worker".to_string());
@@ -583,7 +610,7 @@ impl SwarmRuntime {
         {
             let mut current = session.main_cancel.lock().await;
             if current.is_some() {
-                return Err("Main Agent 正在回复".to_string());
+                return Err("Orchestrator 正在回复".to_string());
             }
             *current = Some(cancel.clone());
         }
@@ -691,7 +718,15 @@ async fn run_worker_task(
     task: &SwarmTask,
     cancel: CancellationToken,
 ) {
-    let id = session.state.lock().await.id.clone();
+    let (id, project_name, shared_prompt, worker_prompt) = {
+        let state = session.state.lock().await;
+        (
+            state.id.clone(),
+            state.title.clone(),
+            state.shared_prompt.clone(),
+            state.worker_prompt.clone(),
+        )
+    };
     let run_id = format!(
         "{}-{}",
         worker_id,
@@ -732,10 +767,18 @@ async fn run_worker_task(
         }
     };
     let mut conv = vec![crate::llm::store_message(&crate::llm::user_message(
-        &format!("任务标题：{}\n\n任务详情：{}", task.title, task.detail),
+        &format!(
+            "项目：{}\n\n任务标题：{}\n\n任务详情：{}",
+            project_name, task.title, task.detail
+        ),
         &[],
     ))];
-    prompt::prepend_swarm_worker_system_messages(&mut conv, &profile.role_prompt);
+    prompt::prepend_swarm_worker_system_messages(
+        &mut conv,
+        &project_name,
+        &shared_prompt,
+        &worker_prompt,
+    );
     let mut ctx = ToolContext::new(
         runtime.log_store.clone(),
         runtime.shell_store.clone(),
@@ -779,8 +822,16 @@ async fn run_main(
     turn: UserTurn,
     cancel: CancellationToken,
 ) {
-    let id = session.state.lock().await.id.clone();
-    let agent_id = session.state.lock().await.main_agent_id.clone();
+    let (id, agent_id, project_name, shared_prompt, orchestrator_prompt) = {
+        let state = session.state.lock().await;
+        (
+            state.id.clone(),
+            state.main_agent_id.clone(),
+            state.title.clone(),
+            state.shared_prompt.clone(),
+            state.orchestrator_prompt.clone(),
+        )
+    };
     let config = crate::settings::get_settings()
         .ok()
         .and_then(|s| s.agent(&agent_id).cloned())
@@ -796,7 +847,12 @@ async fn run_main(
         &turn.images,
     )));
     prompt::prepend_system_messages(&mut conv, &config.agent_id);
-    prompt::prepend_swarm_main_system_message(&mut conv);
+    prompt::prepend_swarm_orchestrator_system_messages(
+        &mut conv,
+        &project_name,
+        &shared_prompt,
+        &orchestrator_prompt,
+    );
     let mut ctx = ToolContext::new(
         runtime.log_store.clone(),
         runtime.shell_store.clone(),

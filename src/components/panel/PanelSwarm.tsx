@@ -1,22 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSwarm, type SwarmTask, type WorkerProfile } from "../../hooks/useSwarm";
-import { useSettings } from "../../hooks/useSettings";
+import { useSwarm, type SwarmConfig, type SwarmSnapshot, type SwarmTask } from "../../hooks/useSwarm";
+import { useSettings, type AgentConfig, type AppSettings } from "../../hooks/useSettings";
 import { useI18n } from "../../i18n";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Segmented";
 import { LoadingScreen } from "../ui/feedback";
+import { PlusIcon } from "../Icons";
 
-type Conversation = { kind: "main" } | { kind: "worker"; id: string };
+type Conversation = { kind: "orchestrator" } | { kind: "worker"; id: string };
+type LeftTab = "board" | "settings";
 
-function statusLabel(status: string, t: (key: string) => string) {
-  if (status === "pending") return t("swarm.task.pending");
-  if (status === "running") return t("swarm.task.running");
-  return t("swarm.task.completed");
-}
-
-function TaskCard({ task, t }: { task: SwarmTask; t: (key: string) => string }) {
+function TaskCard({ task }: { task: SwarmTask }) {
+  const { t } = useI18n();
+  const label = task.status === "pending"
+    ? t("swarm.task.pending")
+    : task.status === "running"
+      ? t("swarm.task.running")
+      : t("swarm.task.completed");
   return (
     <div className="rounded-card border border-line bg-surface p-3 shadow-sm">
       <div className="flex items-start justify-between gap-2">
@@ -24,16 +26,271 @@ function TaskCard({ task, t }: { task: SwarmTask; t: (key: string) => string }) 
           <div className="truncate text-body font-medium text-ink">{task.title}</div>
           <div className="mt-1 line-clamp-2 text-note text-ink-soft">{task.detail}</div>
         </div>
-        <span className="shrink-0 rounded-full bg-surface-soft px-2 py-0.5 text-meta text-ink-soft">{statusLabel(task.status, t)}</span>
+        <span className="shrink-0 rounded-full bg-surface-soft px-2 py-0.5 text-meta text-ink-soft">{label}</span>
       </div>
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-line">
         <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${task.progress}%` }} />
       </div>
-      <div className="mt-1 flex justify-between text-meta text-ink-faint">
-        <span>{task.progress}% {task.progress_summary}</span>
-        <span>{task.attempt > 0 ? `${t("swarm.task.attempt")} ${task.attempt}` : ""}</span>
+      <div className="mt-1 flex justify-between gap-2 text-meta text-ink-faint">
+        <span className="truncate">{task.progress}% {task.progress_summary}</span>
+        <span className="shrink-0">{task.attempt > 0 ? t("swarm.task.attempt", { count: task.attempt }) : ""}</span>
       </div>
-      {task.result && <div className="mt-2 max-h-24 overflow-y-auto rounded-field bg-surface-soft px-2 py-1.5 text-note text-ink-soft">{task.result}</div>}
+      {task.result && <div className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap rounded-field bg-surface-soft px-2 py-1.5 text-note text-ink-soft">{task.result}</div>}
+    </div>
+  );
+}
+
+function CreateProjectDialog({
+  agents,
+  defaultAgentId,
+  onCreate,
+  onClose,
+}: {
+  agents: AgentConfig[];
+  defaultAgentId: string;
+  onCreate: (title: string, orchestratorId: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [title, setTitle] = useState("");
+  const [orchestratorId, setOrchestratorId] = useState(defaultAgentId || agents[0]?.id || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!title.trim() || !orchestratorId || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onCreate(title.trim(), orchestratorId);
+    } catch (e) {
+      setError(String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 px-4">
+      <div className="w-full max-w-[440px] rounded-card border border-line bg-surface p-5 shadow-pop">
+        <div className="text-title font-semibold text-ink">{t("swarm.project.create")}</div>
+        <div className="mt-1 text-note text-ink-soft">{t("swarm.project.createHint")}</div>
+        <label className="mt-4 block text-note font-medium text-ink">{t("swarm.project.name")}</label>
+        <input
+          autoFocus
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          placeholder={t("swarm.project.namePlaceholder")}
+          className="mt-1 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
+        />
+        <label className="mt-4 block text-note font-medium text-ink">Orchestrator</label>
+        <select
+          value={orchestratorId}
+          onChange={(e) => setOrchestratorId(e.target.value)}
+          className="mt-1 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
+        >
+          {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+        {error && <div className="mt-3 text-note text-red-500">{error}</div>}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
+          <Button size="sm" onClick={submit} disabled={!title.trim() || !orchestratorId || busy}>{t("common.create")}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreateTaskDialog({ onCreate, onClose }: { onCreate: (title: string, detail: string) => Promise<void>; onClose: () => void }) {
+  const { t } = useI18n();
+  const [title, setTitle] = useState("");
+  const [detail, setDetail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!title.trim() || !detail.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onCreate(title.trim(), detail.trim());
+    } catch (e) {
+      setError(String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 px-4">
+      <div className="w-full max-w-[520px] rounded-card border border-line bg-surface p-5 shadow-pop">
+        <div className="text-title font-semibold text-ink">{t("swarm.task.create")}</div>
+        <input
+          autoFocus
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder={t("swarm.task.title")}
+          className="mt-4 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
+        />
+        <textarea
+          value={detail}
+          onChange={(e) => setDetail(e.target.value)}
+          placeholder={t("swarm.task.detail")}
+          rows={7}
+          className="mt-2 w-full resize-y rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
+        />
+        {error && <div className="mt-3 text-note text-red-500">{error}</div>}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
+          <Button size="sm" onClick={submit} disabled={!title.trim() || !detail.trim() || busy}>{t("common.create")}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectSettings({
+  snapshot,
+  settings,
+  onSave,
+}: {
+  snapshot: SwarmSnapshot;
+  settings: AppSettings;
+  onSave: (config: SwarmConfig) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const [form, setForm] = useState<SwarmConfig>({
+    title: snapshot.title,
+    main_agent_id: snapshot.main_agent_id,
+    pool: snapshot.pool,
+    shared_prompt: snapshot.shared_prompt,
+    orchestrator_prompt: snapshot.orchestrator_prompt,
+    worker_prompt: snapshot.worker_prompt,
+  });
+  const [message, setMessage] = useState("");
+  const locked = snapshot.status === "running" || snapshot.status === "draining";
+
+  useEffect(() => {
+    setForm({
+      title: snapshot.title,
+      main_agent_id: snapshot.main_agent_id,
+      pool: snapshot.pool,
+      shared_prompt: snapshot.shared_prompt,
+      orchestrator_prompt: snapshot.orchestrator_prompt,
+      worker_prompt: snapshot.worker_prompt,
+    });
+  }, [snapshot.id]);
+
+  const updatePool = (agentId: string, count: number) => {
+    setForm((prev) => ({
+      ...prev,
+      pool: [...prev.pool.filter((item) => item.agent_id !== agentId), { agent_id: agentId, count }],
+    }));
+  };
+
+  const save = async () => {
+    if (!form.title.trim()) {
+      setMessage(t("swarm.project.nameRequired"));
+      return;
+    }
+    setMessage("");
+    try {
+      await onSave({ ...form, title: form.title.trim(), pool: form.pool.filter((item) => item.count > 0) });
+      setMessage(t("common.saved"));
+    } catch (e) {
+      setMessage(String(e));
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-5 p-4">
+      <section>
+        <div className="mb-2 text-note font-semibold text-ink">{t("swarm.settings.project")}</div>
+        <label className="text-meta text-ink-faint">{t("swarm.project.name")}</label>
+        <input
+          value={form.title}
+          disabled={locked}
+          onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+          className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+        />
+        <label className="mt-3 block text-meta text-ink-faint">Orchestrator</label>
+        <select
+          value={form.main_agent_id}
+          disabled={locked}
+          onChange={(e) => setForm((prev) => ({ ...prev, main_agent_id: e.target.value }))}
+          className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+        >
+          {settings.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+      </section>
+
+      <section>
+        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.workers")}</div>
+        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.inherited")}</div>
+        <div className="flex flex-col gap-2">
+          {settings.agents.map((agent) => {
+            const count = form.pool.find((item) => item.agent_id === agent.id)?.count ?? 0;
+            const model = settings.models[agent.model]?.model ?? agent.model;
+            return (
+              <div key={agent.id} className="flex items-center gap-3 rounded-field border border-line bg-surface px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-body text-ink">{agent.name}</div>
+                  <div className="truncate text-meta text-ink-faint">{model || t("chat.model.none")}</div>
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  max={64}
+                  disabled={locked}
+                  value={count}
+                  onChange={(e) => updatePool(agent.id, Number(e.target.value) || 0)}
+                  className="w-16 rounded-field border border-line bg-surface-soft px-2 py-1 text-body text-ink outline-none disabled:text-ink-soft"
+                />
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.sharedPrompt")}</div>
+        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.sharedPromptHint")}</div>
+        <textarea
+          value={form.shared_prompt}
+          disabled={locked}
+          onChange={(e) => setForm((prev) => ({ ...prev, shared_prompt: e.target.value }))}
+          rows={6}
+          className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+        />
+      </section>
+
+      <section>
+        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.orchestratorPrompt")}</div>
+        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.orchestratorPromptHint")}</div>
+        <textarea
+          value={form.orchestrator_prompt}
+          disabled={locked}
+          onChange={(e) => setForm((prev) => ({ ...prev, orchestrator_prompt: e.target.value }))}
+          rows={5}
+          className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+        />
+      </section>
+
+      <section>
+        <div className="mb-1 text-note font-semibold text-ink">{t("swarm.settings.workerPrompt")}</div>
+        <div className="mb-2 text-meta text-ink-faint">{t("swarm.settings.workerPromptHint")}</div>
+        <textarea
+          value={form.worker_prompt}
+          disabled={locked}
+          onChange={(e) => setForm((prev) => ({ ...prev, worker_prompt: e.target.value }))}
+          rows={5}
+          className="w-full resize-y rounded-field border border-line bg-surface px-3 py-2 text-note text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
+        />
+      </section>
+
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-note text-ink-soft">{locked ? t("swarm.settings.locked") : message}</span>
+        <Button size="sm" onClick={save} disabled={locked}>{t("common.save")}</Button>
+      </div>
     </div>
   );
 }
@@ -42,29 +299,20 @@ export function PanelSwarm() {
   const { t } = useI18n();
   const { settings, loaded } = useSettings();
   const swarm = useSwarm();
-  const [conversation, setConversation] = useState<Conversation>({ kind: "main" });
-  const [pool, setPool] = useState<WorkerProfile[]>([]);
-  const [mainAgentId, setMainAgentId] = useState("");
-  const [taskTitle, setTaskTitle] = useState("");
-  const [taskDetail, setTaskDetail] = useState("");
-  const [showConfig, setShowConfig] = useState(false);
+  const [conversation, setConversation] = useState<Conversation>({ kind: "orchestrator" });
+  const [leftTab, setLeftTab] = useState<LeftTab>("board");
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    if (!swarm.snapshot) return;
-    setMainAgentId(swarm.snapshot.main_agent_id);
-    setPool(swarm.snapshot.pool);
-    setConversation({ kind: "main" });
+    setConversation({ kind: "orchestrator" });
+    setLeftTab("board");
+    setNotice("");
   }, [swarm.snapshot?.id]);
 
-  useEffect(() => {
-    if (!mainAgentId && settings.agents[0]) setMainAgentId(settings.agents[0].id);
-  }, [mainAgentId, settings.agents]);
-
-  const workerName = (id: string) => settings.agents.find((a) => a.id === id)?.name ?? id;
-  const tx = (key: string) => t(key as Parameters<typeof t>[0]);
   const workers = swarm.snapshot?.workers ?? [];
-  const activeView = conversation.kind === "main" ? swarm.mainView : swarm.workerViews[conversation.id];
-  const totalWorkers = pool.reduce((sum, item) => sum + item.count, 0);
+  const activeView = conversation.kind === "orchestrator" ? swarm.mainView : swarm.workerViews[conversation.id];
   const groups = useMemo(() => {
     const tasks = swarm.snapshot?.tasks ?? [];
     return {
@@ -75,79 +323,164 @@ export function PanelSwarm() {
   }, [swarm.snapshot?.tasks]);
 
   if (!loaded) return <LoadingScreen />;
+
+  const createProject = async (title: string, orchestratorId: string) => {
+    await swarm.create(title, orchestratorId);
+    setNewProjectOpen(false);
+  };
+
   if (!swarm.snapshot) {
     return (
-      <div className="flex h-full items-center justify-center bg-canvas">
-        <Button onClick={() => swarm.create(t("swarm.defaultTitle"), settings.active_agent)}>{t("swarm.create")}</Button>
+      <div className="flex h-full items-center justify-center bg-canvas px-6">
+        <div className="max-w-[420px] text-center">
+          <div className="text-title font-semibold text-ink">{t("swarm.noProjects")}</div>
+          <div className="mt-2 text-body text-ink-soft">{t("swarm.noProjectsHint")}</div>
+          <Button className="mt-5" onClick={() => setNewProjectOpen(true)}>{t("swarm.project.create")}</Button>
+        </div>
+        {newProjectOpen && (
+          <CreateProjectDialog
+            agents={settings.agents}
+            defaultAgentId={settings.active_agent}
+            onCreate={createProject}
+            onClose={() => setNewProjectOpen(false)}
+          />
+        )}
       </div>
     );
   }
 
-  const saveConfig = () => swarm.configure(mainAgentId, pool.filter((item) => item.count > 0));
-  const addTask = async () => {
-    if (!taskTitle.trim() || !taskDetail.trim()) return;
-    await swarm.createTask(taskTitle, taskDetail);
-    setTaskTitle("");
-    setTaskDetail("");
-  };
-
+  const snapshot = swarm.snapshot;
+  const totalWorkers = snapshot.pool.reduce((sum, item) => sum + item.count, 0);
+  const agentName = (id: string) => settings.agents.find((agent) => agent.id === id)?.name ?? id;
   const conversationOptions = [
-    { value: "main", label: `${t("swarm.mainAgent")} · ${workerName(swarm.snapshot.main_agent_id)}` },
-    ...workers.map((worker) => ({ value: worker.id, label: `${workerName(worker.agent_id)} · ${worker.task_id?.slice(0, 8) ?? ""}` })),
+    { value: "orchestrator", label: `Orchestrator · ${agentName(snapshot.main_agent_id)}` },
+    ...workers.map((worker) => {
+      const task = snapshot.tasks.find((item) => item.id === worker.task_id);
+      return { value: worker.id, label: `${agentName(worker.agent_id)} · ${task?.title ?? worker.task_id?.slice(0, 8) ?? ""}` };
+    }),
   ];
+
+  const runAction = async (action: () => Promise<void>) => {
+    setNotice("");
+    try {
+      await action();
+    } catch (e) {
+      setNotice(String(e));
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 w-full bg-canvas">
-      <aside className="flex w-[360px] shrink-0 flex-col border-r border-line bg-surface">
+      <aside className="flex w-[420px] shrink-0 flex-col border-r border-line bg-surface">
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
-          <select value={swarm.activeId} onChange={(e) => swarm.setActiveId(e.target.value)} className="min-w-0 flex-1 rounded-field border border-line bg-surface-soft px-2 py-1.5 text-body text-ink">
+          <select
+            value={swarm.activeId}
+            onChange={(e) => swarm.setActiveId(e.target.value)}
+            className="min-w-0 flex-1 rounded-field border border-line bg-surface-soft px-2 py-1.5 text-body text-ink"
+          >
             {swarm.swarms.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
           </select>
-          <Button size="sm" onClick={() => swarm.create(t("swarm.defaultTitle"), settings.active_agent)}>{t("swarm.new")}</Button>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
-          <span className="rounded-full bg-accent-soft px-2 py-1 text-meta text-accent">{t(`swarm.status.${swarm.snapshot.status}`)}</span>
-          {swarm.snapshot.status === "running" && <Button size="sm" variant="ghost" onClick={() => swarm.end()}>{t("swarm.end")}</Button>}
-          {swarm.snapshot.status === "draining" && <Button size="sm" variant="ghost" onClick={() => swarm.stop()}>{t("swarm.stop")}</Button>}
-          {swarm.snapshot.status !== "running" && swarm.snapshot.status !== "draining" && <Button size="sm" onClick={() => swarm.start()}>{t("swarm.start")}</Button>}
-          {(swarm.snapshot.status === "running" || swarm.snapshot.status === "draining") && <Button size="sm" variant="danger" onClick={() => swarm.stop()}>{t("swarm.stop")}</Button>}
-          <Button size="sm" variant="ghost" onClick={() => setShowConfig((value) => !value)}>{t("swarm.configure")}</Button>
+          <Button size="sm" variant="ghost" onClick={() => setNewProjectOpen(true)}>{t("swarm.project.new")}</Button>
         </div>
 
-        {showConfig && (
-          <div className="shrink-0 border-b border-line bg-surface-soft px-3 py-2">
-            <label className="mb-1 block text-meta text-ink-faint">{t("swarm.mainAgent")}</label>
-            <select value={mainAgentId} onChange={(e) => setMainAgentId(e.target.value)} className="mb-2 w-full rounded-field border border-line bg-surface px-2 py-1.5 text-note text-ink">
-              {settings.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-            </select>
-            <div className="mb-1 flex items-center justify-between text-meta text-ink-faint"><span>{t("swarm.pool")}</span><span>{totalWorkers}</span></div>
-            {settings.agents.map((agent) => {
-              const current = pool.find((item) => item.agent_id === agent.id);
-              return <div key={agent.id} className="mb-2 rounded-field border border-line bg-surface p-2"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-note text-ink">{agent.name}</span><input type="number" min={0} max={64} value={current?.count ?? 0} onChange={(e) => setPool((prev) => [...prev.filter((item) => item.agent_id !== agent.id), { agent_id: agent.id, count: Number(e.target.value) || 0, role_prompt: current?.role_prompt ?? "" }])} className="w-14 rounded-field border border-line bg-surface-soft px-2 py-1 text-note text-ink" /></div><textarea value={current?.role_prompt ?? ""} onChange={(e) => setPool((prev) => [...prev.filter((item) => item.agent_id !== agent.id), { agent_id: agent.id, count: current?.count ?? 0, role_prompt: e.target.value }])} placeholder={t("swarm.rolePrompt")} rows={2} className="mt-1 w-full resize-none bg-transparent text-meta text-ink outline-none" /></div>;
-            })}
-            <Button size="sm" onClick={saveConfig}>{t("common.save")}</Button>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
+          <span className="rounded-full bg-accent-soft px-2 py-1 text-meta text-accent">{t(`swarm.status.${snapshot.status}`)}</span>
+          {snapshot.status !== "running" && snapshot.status !== "draining" && (
+            <Button size="sm" onClick={() => runAction(swarm.start)}>{t("swarm.start")}</Button>
+          )}
+          {snapshot.status === "running" && (
+            <Button size="sm" variant="ghost" onClick={() => runAction(swarm.end)}>{t("swarm.end")}</Button>
+          )}
+          {(snapshot.status === "running" || snapshot.status === "draining") && (
+            <Button size="sm" variant="danger" onClick={() => runAction(swarm.stop)}>{t("swarm.stop")}</Button>
+          )}
+          <span className="ml-auto text-meta text-ink-faint">{totalWorkers} {t("swarm.workers")}</span>
+        </div>
+
+        <div className="flex shrink-0 border-b border-line px-3 py-2">
+          <Segmented<LeftTab>
+            value={leftTab}
+            options={[
+              { value: "board", label: t("swarm.board") },
+              { value: "settings", label: t("swarm.settings") },
+            ]}
+            onChange={setLeftTab}
+          />
+        </div>
+
+        {notice && <div className="shrink-0 border-b border-line px-3 py-1.5 text-note text-red-500">{notice}</div>}
+
+        {leftTab === "board" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-note font-semibold text-ink">{t("swarm.tasks")} <span className="font-normal text-ink-faint">{snapshot.tasks.length}</span></div>
+              <Button size="sm" onClick={() => setNewTaskOpen(true)}>
+                <PlusIcon className="h-4 w-4" />
+                {t("swarm.task.new")}
+              </Button>
+            </div>
+            {(["pending", "running", "completed"] as const).map((status) => (
+              <div key={status} className="mb-4">
+                <div className="mb-1.5 text-meta font-medium text-ink-faint">
+                  {status === "pending" ? t("swarm.task.pending") : status === "running" ? t("swarm.task.running") : t("swarm.task.completed")} · {groups[status].length}
+                </div>
+                <div className="flex flex-col gap-2">
+                  {groups[status].map((task) => <TaskCard key={task.id} task={task} />)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <ProjectSettings snapshot={snapshot} settings={settings} onSave={swarm.configure} />
           </div>
         )}
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <div className="mb-2 flex items-center justify-between text-note font-medium text-ink"><span>{t("swarm.tasks")}</span><span className="text-ink-faint">{swarm.snapshot.tasks.length}</span></div>
-          <div className="mb-3 rounded-card border border-line bg-surface-soft p-2">
-            <input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder={t("swarm.task.title")} className="mb-1 w-full bg-transparent text-note text-ink outline-none" />
-            <textarea value={taskDetail} onChange={(e) => setTaskDetail(e.target.value)} placeholder={t("swarm.task.detail")} rows={2} className="w-full resize-none bg-transparent text-note text-ink outline-none" />
-            <Button size="sm" onClick={addTask}>{t("swarm.task.add")}</Button>
-          </div>
-          {(["pending", "running", "completed"] as const).map((status) => <div key={status} className="mb-4"><div className="mb-1 text-meta font-medium text-ink-faint">{statusLabel(status, tx)} · {groups[status].length}</div><div className="flex flex-col gap-2">{groups[status].map((task) => <TaskCard key={task.id} task={task} t={tx} />)}</div></div>)}
-        </div>
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
-          <div className="min-w-0 flex-1 overflow-x-auto"><Segmented value={conversation.kind === "main" ? "main" : conversation.id} options={conversationOptions} onChange={(value) => setConversation(value === "main" ? { kind: "main" } : { kind: "worker", id: value })} /></div>
-          {conversation.kind === "main" && <span className="text-meta text-ink-faint">{totalWorkers} {t("swarm.workers")}</span>}
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            <Segmented
+              value={conversation.kind === "orchestrator" ? "orchestrator" : conversation.id}
+              options={conversationOptions}
+              onChange={(value) => setConversation(value === "orchestrator" ? { kind: "orchestrator" } : { kind: "worker", id: value })}
+            />
+          </div>
         </div>
-        <ChatThread items={activeView.items} currentToolCalls={activeView.toolCalls} streaming={activeView.streaming} streamingReasoning={activeView.reasoning} loading={activeView.running || (conversation.kind === "main" && swarm.mainRunning)} className="min-h-0 flex-1" emptyHint={conversation.kind === "main" ? t("swarm.mainEmpty") : t("swarm.workerEmpty")} assistantName={conversation.kind === "main" ? workerName(swarm.snapshot.main_agent_id) : workerName(workers.find((worker) => worker.id === conversation.id)?.agent_id ?? "")}/>
-        {conversation.kind === "main" && <div className="shrink-0 border-t border-line bg-surface px-4 py-3"><ChatInput onSend={swarm.sendMain} isLoading={swarm.mainRunning} onStop={swarm.cancelMain} placeholder={t("swarm.mainPlaceholder")} /></div>}
+        <ChatThread
+          items={activeView.items}
+          currentToolCalls={activeView.toolCalls}
+          streaming={activeView.streaming}
+          streamingReasoning={activeView.reasoning}
+          loading={activeView.running || (conversation.kind === "orchestrator" && swarm.mainRunning)}
+          className="min-h-0 flex-1 px-5 py-4"
+          emptyHint={conversation.kind === "orchestrator" ? t("swarm.orchestratorEmpty") : t("swarm.workerEmpty")}
+          assistantName={conversation.kind === "orchestrator" ? "Orchestrator" : `Worker · ${agentName(workers.find((worker) => worker.id === conversation.id)?.agent_id ?? "")}`}
+        />
+        {conversation.kind === "orchestrator" && (
+          <div className="shrink-0 border-t border-line bg-surface px-4 py-3">
+            <ChatInput onSend={swarm.sendMain} isLoading={swarm.mainRunning} onStop={swarm.cancelMain} placeholder={t("swarm.orchestratorPlaceholder")} />
+          </div>
+        )}
       </section>
+
+      {newProjectOpen && (
+        <CreateProjectDialog
+          agents={settings.agents}
+          defaultAgentId={settings.active_agent}
+          onCreate={createProject}
+          onClose={() => setNewProjectOpen(false)}
+        />
+      )}
+      {newTaskOpen && (
+        <CreateTaskDialog
+          onCreate={async (title, detail) => {
+            await swarm.createTask(title, detail);
+            setNewTaskOpen(false);
+          }}
+          onClose={() => setNewTaskOpen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -9,7 +9,15 @@ export type SwarmTaskStatus = "pending" | "running" | "completed";
 export interface WorkerProfile {
   agent_id: string;
   count: number;
-  role_prompt: string;
+}
+
+export interface SwarmConfig {
+  title: string;
+  main_agent_id: string;
+  pool: WorkerProfile[];
+  shared_prompt: string;
+  orchestrator_prompt: string;
+  worker_prompt: string;
 }
 
 export interface SwarmTask {
@@ -41,6 +49,9 @@ export interface SwarmSnapshot {
   title: string;
   main_agent_id: string;
   pool: WorkerProfile[];
+  shared_prompt: string;
+  orchestrator_prompt: string;
+  worker_prompt: string;
   status: SwarmStatus;
   tasks: SwarmTask[];
   main: { messages: unknown[]; items: ChatItem[] };
@@ -183,13 +194,35 @@ export function useSwarm() {
     setSwarms((prev) => [created, ...prev]);
     setActiveId(created.id);
   }, []);
-  const configure = useCallback((mainAgentId: string, pool: WorkerProfile[]) => activeId ? invoke("swarm_configure", { id: activeId, mainAgentId, pool }).then(() => load(activeId)) : Promise.resolve(), [activeId, load]);
-  const createTask = useCallback((title: string, detail: string, parentTaskId?: string) => activeId ? invoke("swarm_create_task", { id: activeId, title, detail, parentTaskId }).then(() => load(activeId)) : Promise.resolve(), [activeId, load]);
-  const start = useCallback(() => activeId ? invoke("swarm_start", { id: activeId }) : Promise.resolve(), [activeId]);
-  const end = useCallback(() => activeId ? invoke("swarm_end", { id: activeId }) : Promise.resolve(), [activeId]);
-  const stop = useCallback(() => activeId ? invoke("swarm_stop", { id: activeId }) : Promise.resolve(), [activeId]);
-  const sendMain = useCallback((text: string, images?: string[]) => activeId ? invoke("swarm_send_main", { id: activeId, turn: { text, images: images ?? [] } }) : Promise.resolve(), [activeId]);
-  const cancelMain = useCallback(() => activeId ? invoke("swarm_cancel_main", { id: activeId }) : Promise.resolve(), [activeId]);
+  const configure = useCallback(async (config: SwarmConfig): Promise<void> => {
+    if (!activeId) return;
+    await invoke("swarm_configure", { id: activeId, config });
+    await load(activeId);
+    await loadList();
+  }, [activeId, load, loadList]);
+  const createTask = useCallback(async (title: string, detail: string, parentTaskId?: string): Promise<void> => {
+    if (!activeId) return;
+    await invoke("swarm_create_task", { id: activeId, title, detail, parentTaskId });
+    await load(activeId);
+  }, [activeId, load]);
+  const start = useCallback(async (): Promise<void> => {
+    if (activeId) await invoke("swarm_start", { id: activeId });
+  }, [activeId]);
+  const end = useCallback(async (): Promise<void> => {
+    if (activeId) await invoke("swarm_end", { id: activeId });
+  }, [activeId]);
+  const stop = useCallback(async (): Promise<void> => {
+    if (activeId) await invoke("swarm_stop", { id: activeId });
+  }, [activeId]);
+  const sendMain = useCallback(async (text: string, images?: string[]): Promise<void> => {
+    if (activeId) await invoke("swarm_send_main", { id: activeId, turn: { text, images: images ?? [] } });
+  }, [activeId]);
+  const cancelMain = useCallback(async (): Promise<void> => {
+    if (activeId) await invoke("swarm_cancel_main", { id: activeId });
+  }, [activeId]);
+  const reload = useCallback(async (): Promise<void> => {
+    if (activeId) await load(activeId);
+  }, [activeId, load]);
 
-  return { swarms, activeId, setActiveId, snapshot, mainView, workerViews, mainRunning, create, configure, createTask, start, end, stop, sendMain, cancelMain, reload: () => activeId ? load(activeId) : Promise.resolve() };
+  return { swarms, activeId, setActiveId, snapshot, mainView, workerViews, mainRunning, create, configure, createTask, start, end, stop, sendMain, cancelMain, reload };
 }

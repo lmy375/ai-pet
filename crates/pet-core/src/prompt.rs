@@ -74,35 +74,71 @@ pub fn prepend_subagent_system_messages(conv_messages: &mut Vec<Value>) {
     apply_system_messages(conv_messages, system_content);
 }
 
-/// Build a swarm worker conversation. Workers deliberately do not receive an
+fn swarm_system_prompt(
+    built_in: PromptKey,
+    project_name: &str,
+    shared_prompt: &str,
+    role_prompt: &str,
+) -> String {
+    let mut system = format!(
+        "{}\n\n当前项目：{}",
+        prompts::text(built_in),
+        project_name.trim()
+    );
+    if !shared_prompt.trim().is_empty() {
+        system.push_str("\n\n## 项目共享上下文\n");
+        system.push_str(shared_prompt.trim());
+    }
+    if !role_prompt.trim().is_empty() {
+        system.push_str("\n\n## 项目角色指令\n");
+        system.push_str(role_prompt.trim());
+    }
+    system
+}
+
+/// Build a project Worker conversation. Workers deliberately do not receive an
 /// Agent's persona or long-term memory files: every run is scoped to one task,
 /// and concurrent copies of the same Agent must never race on USER/MEMORY or
 /// HEARTBEAT files. The selected Agent's model and MCP configuration are still
 /// resolved by `AiConfig::from_agent`.
-pub fn prepend_swarm_worker_system_messages(conv_messages: &mut Vec<Value>, role_prompt: &str) {
-    let mut system = String::from(
-        "You are a swarm worker. Work only on the current task. Do not use or modify USER.md, MEMORY.md, SOUL.md, or HEARTBEAT.md. Do not spawn sub-agents. Use the swarm task tools to report progress, create child tasks when needed, and submit the final result. Keep the final result concise and evidence-based.",
+pub fn prepend_swarm_worker_system_messages(
+    conv_messages: &mut Vec<Value>,
+    project_name: &str,
+    shared_prompt: &str,
+    worker_prompt: &str,
+) {
+    apply_system_messages(
+        conv_messages,
+        swarm_system_prompt(
+            PromptKey::SwarmWorker,
+            project_name,
+            shared_prompt,
+            worker_prompt,
+        ),
     );
-    if !role_prompt.trim().is_empty() {
-        system.push_str("\n\nYour swarm role:\n");
-        system.push_str(role_prompt.trim());
-    }
-    apply_system_messages(conv_messages, system);
 }
 
-/// Main Agent prompt for a swarm page. The normal Agent persona and memory are
-/// prepended by the caller; this role block adds task-board awareness without
-/// changing the Agent's identity.
-pub fn prepend_swarm_main_system_message(conv_messages: &mut Vec<Value>) {
+/// Add the Orchestrator's project instructions after the Agent's persona and
+/// memory, so the built-in collaboration rules and the project context coexist
+/// with the selected Agent's identity.
+pub fn prepend_swarm_orchestrator_system_messages(
+    conv_messages: &mut Vec<Value>,
+    project_name: &str,
+    shared_prompt: &str,
+    orchestrator_prompt: &str,
+) {
     let index = conv_messages
         .iter()
         .take_while(|message| crate::llm::is_system_message(message))
         .count();
     conv_messages.insert(
         index,
-        crate::llm::store_message(&genai::chat::ChatMessage::system(
-            "You are the Main Agent for a swarm. Help the user plan and coordinate work. Use swarm task tools to create tasks and inspect progress. Do not claim worker tasks yourself; workers execute them. Summarize results clearly and ask for clarification when the task decomposition is ambiguous.",
-        )),
+        crate::llm::store_message(&ChatMessage::system(swarm_system_prompt(
+            PromptKey::SwarmOrchestrator,
+            project_name,
+            shared_prompt,
+            orchestrator_prompt,
+        ))),
     );
 }
 
@@ -262,10 +298,25 @@ mod tests {
     }
 
     #[test]
+    fn swarm_prompt_layers_builtin_shared_and_role_text() {
+        let text = swarm_system_prompt(
+            PromptKey::SwarmWorker,
+            "竞品调研",
+            "只使用已核实的来源。",
+            "输出 Markdown 表格。",
+        );
+        assert!(text.contains("当前项目：竞品调研"));
+        assert!(text.contains("只使用已核实的来源。"));
+        assert!(text.contains("输出 Markdown 表格。"));
+        assert!(text.contains("## 项目共享上下文"));
+        assert!(text.contains("## 项目角色指令"));
+    }
+
+    #[test]
     fn swarm_main_role_stays_inside_system_block() {
         let mut msgs = vec![crate::llm::store_message(&ChatMessage::user("hi"))];
         prepend_system_messages(&mut msgs, "agent");
-        prepend_swarm_main_system_message(&mut msgs);
+        prepend_swarm_orchestrator_system_messages(&mut msgs, "项目", "共享", "角色");
         assert!(crate::llm::is_system_message(&msgs[0]));
         assert!(crate::llm::is_system_message(&msgs[1]));
         assert!(crate::llm::is_system_message(&msgs[2]));

@@ -39,16 +39,22 @@ pub enum PromptKey {
     Group,
     /// Heartbeat instructions, appended after the persona in a heartbeat run.
     Heartbeat,
+    /// Built-in instructions for a project's Orchestrator.
+    SwarmOrchestrator,
+    /// Built-in instructions for a project's Workers.
+    SwarmWorker,
 }
 
 impl PromptKey {
-    pub const ALL: [PromptKey; 6] = [
+    pub const ALL: [PromptKey; 8] = [
         PromptKey::Persona,
         PromptKey::ToolUsage,
         PromptKey::Skills,
         PromptKey::Subagent,
         PromptKey::Group,
         PromptKey::Heartbeat,
+        PromptKey::SwarmOrchestrator,
+        PromptKey::SwarmWorker,
     ];
 
     pub fn key(self) -> &'static str {
@@ -59,6 +65,8 @@ impl PromptKey {
             PromptKey::Subagent => "subagent",
             PromptKey::Group => "group",
             PromptKey::Heartbeat => "heartbeat",
+            PromptKey::SwarmOrchestrator => "swarm_orchestrator",
+            PromptKey::SwarmWorker => "swarm_worker",
         }
     }
 
@@ -75,6 +83,8 @@ impl PromptKey {
             PromptKey::Subagent => include_str!("../prompts/subagent.md"),
             PromptKey::Group => include_str!("../prompts/group.md"),
             PromptKey::Heartbeat => include_str!("../prompts/heartbeat.md"),
+            PromptKey::SwarmOrchestrator => include_str!("../prompts/swarm_orchestrator.md"),
+            PromptKey::SwarmWorker => include_str!("../prompts/swarm_worker.md"),
         }
     }
 
@@ -87,7 +97,11 @@ impl PromptKey {
             PromptKey::Persona => &["soul", "user", "memory"],
             PromptKey::ToolUsage => &["workdir"],
             PromptKey::Heartbeat => &["heartbeat"],
-            PromptKey::Skills | PromptKey::Subagent | PromptKey::Group => &[],
+            PromptKey::Skills
+            | PromptKey::Subagent
+            | PromptKey::Group
+            | PromptKey::SwarmOrchestrator
+            | PromptKey::SwarmWorker => &[],
         }
     }
 
@@ -106,7 +120,11 @@ impl PromptKey {
             ],
             PromptKey::ToolUsage => &["workdir"],
             PromptKey::Heartbeat => &["interval", "heartbeat_path", "heartbeat"],
-            PromptKey::Skills | PromptKey::Subagent | PromptKey::Group => &[],
+            PromptKey::Skills
+            | PromptKey::Subagent
+            | PromptKey::Group
+            | PromptKey::SwarmOrchestrator
+            | PromptKey::SwarmWorker => &[],
         }
     }
 

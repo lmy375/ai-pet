@@ -9,7 +9,7 @@ use pet_core::chat::{StreamEvent, UserTurn};
 use pet_core::logging::LogStore;
 use pet_core::mcp::McpStore;
 use pet_core::shell::ShellStore;
-use pet_core::swarm::{SwarmEvents, SwarmRuntime, SwarmSnapshot, WorkerProfile};
+use pet_core::swarm::{SwarmConfig, SwarmEvents, SwarmRuntime, SwarmSnapshot};
 
 pub struct SwarmStore(pub Arc<SwarmRuntime>);
 
@@ -89,11 +89,10 @@ pub async fn swarm_load(id: String, store: State<'_, SwarmStore>) -> Result<Swar
 #[tauri::command]
 pub async fn swarm_configure(
     id: String,
-    main_agent_id: String,
-    pool: Vec<WorkerProfile>,
+    config: SwarmConfig,
     store: State<'_, SwarmStore>,
 ) -> Result<(), String> {
-    store.0.update_config(&id, main_agent_id, pool).await
+    store.0.update_config(&id, config).await
 }
 
 #[tauri::command]

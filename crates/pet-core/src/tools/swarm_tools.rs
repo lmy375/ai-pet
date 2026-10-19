@@ -1,36 +1,5 @@
 use crate::tools::{required_str, tool_error, Tool, ToolContext};
 
-pub struct SwarmClaimTaskTool;
-impl Tool for SwarmClaimTaskTool {
-    fn name(&self) -> &str {
-        "swarm_claim_task"
-    }
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({"type":"function","function":{"name":"swarm_claim_task","description":"Inspect the task already exclusively claimed for this worker. The worker runtime claims tasks before starting your loop.","parameters":{"type":"object","properties":{}}}})
-    }
-    crate::impl_execute!(swarm_claim_task_impl);
-}
-async fn swarm_claim_task_impl(_arguments: &str, ctx: &ToolContext) -> String {
-    let Some(session) = ctx.swarm.clone() else {
-        return tool_error("swarm unavailable");
-    };
-    let Some(task_id) = ctx.swarm_task_id.as_deref() else {
-        return tool_error("only a swarm worker can claim tasks");
-    };
-    let Some(worker_id) = ctx.swarm_worker_id.as_deref() else {
-        return tool_error("worker identity missing");
-    };
-    let state = session.state.lock().await;
-    let Some(task) = state
-        .tasks
-        .iter()
-        .find(|task| task.id == task_id && task.claimed_by.as_deref() == Some(worker_id))
-    else {
-        return tool_error("this worker has no claimed task");
-    };
-    serde_json::json!({"status":"claimed","task":task}).to_string()
-}
-
 pub struct SwarmUpdateTaskTool;
 impl Tool for SwarmUpdateTaskTool {
     fn name(&self) -> &str {

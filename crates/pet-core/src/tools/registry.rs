@@ -9,8 +9,7 @@ use super::read_image_tool::ReadImageTool;
 use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool, WriteStdinTool};
 use super::swarm_tools::{
-    SwarmClaimTaskTool, SwarmCompleteTaskTool, SwarmCreateTaskTool, SwarmGetSummaryTool,
-    SwarmUpdateTaskTool,
+    SwarmCompleteTaskTool, SwarmCreateTaskTool, SwarmGetSummaryTool, SwarmUpdateTaskTool,
 };
 use super::tool::Tool;
 use super::web_search_tool::WebSearchTool;
@@ -112,7 +111,6 @@ fn builtins() -> Vec<(Box<dyn Tool>, ToolScope)> {
         (Box::new(SpawnSubagentTool), ToolScope::TopLevel),
         (Box::new(ChatTool), ToolScope::Heartbeat),
         (Box::new(GroupChatTool), ToolScope::Group),
-        (Box::new(SwarmClaimTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmUpdateTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmCompleteTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmCreateTaskTool), ToolScope::Swarm),
