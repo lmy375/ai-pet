@@ -178,9 +178,8 @@ body {
 
 
 /* ---------- Chat task drawer ----------
-   The background-task list slides in from the right edge of the chat column.
-   Kept as a small keyframe rather than a layout transition so the chat text
-   underneath never reflows while the drawer opens. */
+   The task list slides in at the right edge while the native panel window
+   grows by the same width, so the conversation column keeps its size. */
 @keyframes task-drawer-in {
   from {
     transform: translateX(18px);

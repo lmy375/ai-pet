@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useChat } from "../../hooks/useChat";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { SessionSidebar } from "./SessionSidebar";
-import { TaskDrawer } from "./TaskDrawer";
+import { TASKS_DRAWER_WIDTH, TaskDrawer } from "./TaskDrawer";
 import { Button } from "../ui/Button";
 import { ProgressRing } from "../ui/ProgressRing";
 import { LoadingScreen } from "../ui/feedback";
@@ -46,6 +47,20 @@ export function PanelChat() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
+  const resizeQueue = useRef<Promise<void>>(Promise.resolve());
+
+  // Resize the native panel window in logical pixels. Operations are queued so
+  // opening and closing in quick succession can't both read the old size.
+  const resizePanelWidth = useCallback((deltaWidth: number) => {
+    resizeQueue.current = resizeQueue.current
+      .then(async () => {
+        const win = getCurrentWindow();
+        const [size, scale] = await Promise.all([win.innerSize(), win.scaleFactor()]);
+        const logical = size.toLogical(scale);
+        await win.setSize(new LogicalSize(logical.width + deltaWidth, logical.height));
+      })
+      .catch((e) => console.error("Failed to resize panel:", e));
+  }, []);
 
   const exitSelection = () => {
     setSelectionMode(false);
@@ -84,6 +99,15 @@ export function PanelChat() {
     return () => window.removeEventListener("keydown", onKey);
   }, [tasksOpen]);
 
+  // The drawer takes real layout width, so grow the native window by the same
+  // amount to keep the conversation column unchanged. Cleanup covers closing
+  // the drawer as well as leaving the chat tab while it is open.
+  useEffect(() => {
+    if (!tasksOpen) return;
+    resizePanelWidth(TASKS_DRAWER_WIDTH);
+    return () => resizePanelWidth(-TASKS_DRAWER_WIDTH);
+  }, [tasksOpen, resizePanelWidth]);
+
   if (!loaded) {
     return <LoadingScreen />;
   }
@@ -103,7 +127,7 @@ export function PanelChat() {
         onDelete={deleteSession}
       />
 
-      <div className="relative flex min-w-0 flex-1 flex-col bg-canvas">
+      <div className="flex min-w-0 flex-1 flex-col bg-canvas">
         {/* Conversation toolbar: who answers, with what model, plus the
             context gauge and message selection. */}
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
@@ -169,9 +193,9 @@ export function PanelChat() {
             <ChatInput onSend={sendMessage} isLoading={isLoading} onStop={stopStreaming} />
           </div>
         )}
-
-        {tasksOpen && <TaskDrawer onClose={() => setTasksOpen(false)} />}
       </div>
+
+      {tasksOpen && <TaskDrawer onClose={() => setTasksOpen(false)} />}
     </div>
   );
 }
