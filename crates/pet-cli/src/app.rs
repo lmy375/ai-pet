@@ -34,7 +34,7 @@ impl CliApp {
         if servers.is_empty() {
             return None;
         }
-        let mut hub = self.mcp_store.lock().await;
+        let mut hub = self.mcp_store.write().await;
         hub.ensure(&servers).await;
         let mut lines = vec![format!("{} 的 MCP 服务器：", agent.name)];
         for s in hub.statuses().iter().filter(|s| agent.mcp.contains(&s.name)) {
@@ -46,7 +46,7 @@ impl CliApp {
 
     /// Best-effort shutdown of every running MCP server (child processes).
     pub async fn shutdown_mcp(&self) {
-        self.mcp_store.lock().await.shutdown().await;
+        self.mcp_store.write().await.shutdown().await;
     }
 
     /// The active session's id, creating a session if there is none (or the

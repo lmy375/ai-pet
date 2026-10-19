@@ -1,4 +1,5 @@
-use genai::chat::{ChatMessage as GenAiMessage, ChatRequest, MessageContent, ToolResponse};
+use futures_util::future::join_all;
+use genai::chat::{ChatMessage as GenAiMessage, ChatRequest, MessageContent, ToolCall, ToolResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::config::AiConfig;
@@ -183,7 +184,7 @@ pub async fn run_agent_loop(
 ) -> Result<(String, Vec<serde_json::Value>), String> {
     // Get MCP tool definitions for this agent (the servers it references in the
     // global pool — connections themselves are shared between agents).
-    let mcp_defs = mcp_store.lock().await.definitions(&config.mcp_servers);
+    let mcp_defs = mcp_store.read().await.definitions(&config.mcp_servers);
     // Context gates: sub-agents (depth > 0) don't get the spawn tool, so they
     // can't recurse; `chat` is offered only to heartbeat sessions; `web_search`
     // only when a Tavily key is configured; `GroupChat` only in a group run.
@@ -289,57 +290,24 @@ pub async fn run_agent_loop(
             conv_messages.push(crate::llm::store_message(turn));
         }
 
-        // Execute each tool call via registry or MCP manager
-        for tc in &result.tool_calls {
-            let tc_name = tc.fn_name.as_str();
-            // Tools take their arguments as a JSON string.
-            let tc_args = if tc.fn_arguments.is_null() {
-                "{}".to_string()
-            } else {
-                tc.fn_arguments.to_string()
-            };
-
-            sink.send_tool_start(tc_name, &tc_args);
-
-            let execute = async {
-                if registry.is_mcp_tool(tc_name) {
-                    // Route to the shared MCP connection pool
-                    ctx.log(&format!("MCP tool call: {}({})", tc_name, tc_args));
-                    let hub = mcp_store.lock().await;
-                    match hub
-                        .call_tool(&config.mcp_servers, tc_name, tc.fn_arguments.clone())
-                        .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => crate::tools::tool_error(e),
-                    }
-                } else {
-                    // Built-in tool
-                    registry.execute(tc_name, &tc_args, ctx).await
-                }
-            };
-            // A stop mid-tool drops the running call. Every call the assistant
-            // turn issued still gets a `tool` response — a turn with dangling
-            // tool calls is rejected by the providers — so the calls after it
-            // are answered as cancelled without being started.
-            let output = tokio::select! {
-                biased;
-                _ = ctx.cancel.cancelled() => {
-                    ctx.log(&format!("Tool call [{}] cancelled by user", tc_name));
-                    crate::tools::tool_error("cancelled by user")
-                }
-                out = execute => out,
-            };
-
-            ctx.log(&format!("Tool result [{}]: {} chars", tc_name, output.len()));
-
-            sink.send_tool_result(tc_name, &output);
-
+        // Run every call from this assistant turn concurrently. Result order is
+        // preserved below so the UI and provider transcript stay deterministic.
+        let outputs = execute_tool_calls(
+            &result.tool_calls,
+            sink,
+            config,
+            mcp_store,
+            &registry,
+            ctx,
+        )
+        .await;
+        for (tc, output) in result.tool_calls.iter().zip(outputs) {
             // `fn_name` is carried alongside `call_id` because Gemini correlates
             // tool responses by function name, not by id.
             conv_messages.push(crate::llm::store_message(&GenAiMessage::tool(
                 MessageContent::from_tool_responses(vec![
-                    ToolResponse::new(tc.call_id.clone(), output).with_fn_name(tc_name),
+                    ToolResponse::new(tc.call_id.clone(), output)
+                        .with_fn_name(tc.fn_name.clone()),
                 ]),
             )));
         }
@@ -366,6 +334,75 @@ pub async fn run_agent_loop(
 
         round += 1;
     }
+}
+
+/// Execute one assistant turn's tool calls concurrently, preserving the order of
+/// `tool_calls` in both the emitted result events and the returned outputs.
+async fn execute_tool_calls(
+    tool_calls: &[ToolCall],
+    sink: &dyn ChatEventSink,
+    config: &AiConfig,
+    mcp_store: &McpStore,
+    registry: &ToolRegistry,
+    ctx: &ToolContext,
+) -> Vec<String> {
+    let executions = tool_calls.iter().map(|tc| {
+        let name = tc.fn_name.clone();
+        // Tools take their arguments as a JSON string.
+        let arguments = if tc.fn_arguments.is_null() {
+            "{}".to_string()
+        } else {
+            tc.fn_arguments.to_string()
+        };
+        let arguments_for_mcp = tc.fn_arguments.clone();
+        let call_ctx = ctx.for_tool_call();
+
+        sink.send_tool_start(&name, &arguments);
+
+        async move {
+            let execute = async {
+                if registry.is_mcp_tool(&name) {
+                    // Read locks let different MCP calls run concurrently while
+                    // still excluding reconnect/shutdown mutations.
+                    call_ctx.log(&format!("MCP tool call: {}({})", name, arguments));
+                    let hub = mcp_store.read().await;
+                    match hub
+                        .call_tool(&config.mcp_servers, &name, arguments_for_mcp)
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(error) => crate::tools::tool_error(error),
+                    }
+                } else {
+                    registry.execute(&name, &arguments, &call_ctx).await
+                }
+            };
+            // Cancellation reaches every in-flight call at once. Each call still
+            // returns a tool response, since providers reject dangling calls.
+            let output = tokio::select! {
+                biased;
+                _ = call_ctx.cancel.cancelled() => {
+                    call_ctx.log(&format!("Tool call [{}] cancelled by user", name));
+                    crate::tools::tool_error("cancelled by user")
+                }
+                output = execute => output,
+            };
+
+            (output, call_ctx.take_images())
+        }
+    });
+
+    let results = join_all(executions).await;
+    let mut outputs = Vec::with_capacity(results.len());
+    for (tc, (output, images)) in tool_calls.iter().zip(results) {
+        ctx.log(&format!("Tool result [{}]: {} chars", tc.fn_name, output.len()));
+        sink.send_tool_result(&tc.fn_name, &output);
+        for image in images {
+            ctx.emit_image(image);
+        }
+        outputs.push(output);
+    }
+    outputs
 }
 
 /// Builds the display-transcript items (`ChatItem` JSON, see `useChat.ts`) for
@@ -492,7 +529,174 @@ impl ItemBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::ItemBuilder;
+    use std::collections::HashMap;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use genai::chat::ToolCall;
+    use tokio::sync::{Barrier, Notify};
+
+    use super::{execute_tool_calls, ImageCollectingSink, ItemBuilder};
+    use crate::config::AiConfig;
+    use crate::logging::LogStore;
+    use crate::shell::ShellStore;
+    use crate::tools::{Tool, ToolContext, ToolRegistry};
+
+    struct BarrierTool {
+        name: &'static str,
+        barrier: Arc<Barrier>,
+    }
+
+    struct ImageTool {
+        name: &'static str,
+        image: &'static str,
+        wait_for: Option<Arc<Notify>>,
+        notify: Option<Arc<Notify>>,
+    }
+
+    impl Tool for BarrierTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn definition(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _arguments: &'a str,
+            _ctx: &'a ToolContext,
+        ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+            let name = self.name.to_string();
+            let barrier = self.barrier.clone();
+            Box::pin(async move {
+                barrier.wait().await;
+                name
+            })
+        }
+    }
+
+    impl Tool for ImageTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn definition(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _arguments: &'a str,
+            ctx: &'a ToolContext,
+        ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+            let name = self.name.to_string();
+            let image = self.image.to_string();
+            let wait_for = self.wait_for.clone();
+            let notify = self.notify.clone();
+            Box::pin(async move {
+                if let Some(wait_for) = wait_for {
+                    wait_for.notified().await;
+                }
+                ctx.emit_image(image);
+                if let Some(notify) = notify {
+                    notify.notify_one();
+                }
+                name
+            })
+        }
+    }
+
+    fn tool_call(call_id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            call_id: call_id.to_string(),
+            fn_name: name.to_string(),
+            fn_arguments: serde_json::json!({}),
+            thought_signatures: None,
+        }
+    }
+
+    fn test_context() -> (AiConfig, ToolContext) {
+        let config = AiConfig {
+            agent_id: "test".to_string(),
+            api_key: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            provider: String::new(),
+            context_window: 0,
+            search_api_key: String::new(),
+            mcp_servers: Vec::new(),
+            reasoning: String::new(),
+        };
+        let ctx = ToolContext::new(
+            LogStore(Arc::new(Mutex::new(Vec::new()))),
+            ShellStore(Arc::new(Mutex::new(HashMap::new()))),
+            config.clone(),
+            crate::mcp::new_mcp_store(),
+            "test-session".to_string(),
+            None,
+            None,
+            false,
+        );
+        (config, ctx)
+    }
+
+    /// Both tools must enter `execute` before either can finish. A serial loop
+    /// would park on the first barrier forever and hit the timeout.
+    #[tokio::test]
+    async fn tool_calls_in_one_round_run_concurrently() {
+        let barrier = Arc::new(Barrier::new(2));
+        let registry = ToolRegistry::for_test(vec![
+            Box::new(BarrierTool { name: "first", barrier: barrier.clone() }),
+            Box::new(BarrierTool { name: "second", barrier }),
+        ]);
+        let calls = vec![tool_call("call-1", "first"), tool_call("call-2", "second")];
+        let (config, ctx) = test_context();
+        let mcp_store = ctx.mcp_store.clone();
+        let sink = ImageCollectingSink::new();
+
+        let outputs = tokio::time::timeout(
+            Duration::from_secs(2),
+            execute_tool_calls(&calls, &sink, &config, &mcp_store, &registry, &ctx),
+        )
+        .await
+        .expect("tool calls did not reach the barrier concurrently");
+
+        assert_eq!(outputs, vec!["first", "second"]);
+    }
+
+    /// The second call finishes (and emits its image) first. The parent context
+    /// must still receive images in call order, matching the tool results.
+    #[tokio::test]
+    async fn images_are_merged_in_tool_call_order() {
+        let notify = Arc::new(Notify::new());
+        let registry = ToolRegistry::for_test(vec![
+            Box::new(ImageTool {
+                name: "first",
+                image: "data:first",
+                wait_for: Some(notify.clone()),
+                notify: None,
+            }),
+            Box::new(ImageTool {
+                name: "second",
+                image: "data:second",
+                wait_for: None,
+                notify: Some(notify),
+            }),
+        ]);
+        let calls = vec![tool_call("call-1", "first"), tool_call("call-2", "second")];
+        let (config, ctx) = test_context();
+        let mcp_store = ctx.mcp_store.clone();
+        let sink = ImageCollectingSink::new();
+
+        let outputs = execute_tool_calls(&calls, &sink, &config, &mcp_store, &registry, &ctx).await;
+
+        assert_eq!(outputs, vec!["first", "second"]);
+        assert_eq!(ctx.take_images(), vec!["data:first", "data:second"]);
+    }
 
     /// The model thinks, then calls a tool without writing a preamble. That
     /// thought has to reach the session file: it used to be taken out of the

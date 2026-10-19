@@ -35,7 +35,7 @@ pub async fn list_available_tools(
         .agent(&agent_id)
         .map(|a| a.mcp.clone())
         .unwrap_or_default();
-    let mcp_defs = mcp_store.lock().await.definitions(&servers);
+    let mcp_defs = mcp_store.read().await.definitions(&servers);
     // Mirror the agent loop: web_search is listed only when the (global) Tavily
     // key is set.
     let registry = ToolRegistry::new(

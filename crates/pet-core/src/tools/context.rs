@@ -124,6 +124,27 @@ impl ToolContext {
         write_log(&self.log_store.0, msg);
     }
 
+    /// A context for one tool call within a concurrent batch. Shared stores,
+    /// config and cancellation stay shared; images get a private queue so the
+    /// agent loop can merge them in tool-call order instead of completion order.
+    pub(crate) fn for_tool_call(&self) -> Self {
+        Self {
+            shell_store: ShellStore(self.shell_store.0.clone()),
+            log_store: LogStore(self.log_store.0.clone()),
+            config: self.config.clone(),
+            mcp_store: self.mcp_store.clone(),
+            depth: self.depth,
+            session_id: self.session_id.clone(),
+            log_session: self.log_session.clone(),
+            notifier: self.notifier.clone(),
+            chat_hook: self.chat_hook.clone(),
+            is_heartbeat: self.is_heartbeat,
+            group: self.group.clone(),
+            pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
+            cancel: self.cancel.clone(),
+        }
+    }
+
     /// Queue an image (a data URL) for the model to see on the next round.
     pub fn emit_image(&self, data_url: String) {
         if let Ok(mut imgs) = self.pending_images.lock() {

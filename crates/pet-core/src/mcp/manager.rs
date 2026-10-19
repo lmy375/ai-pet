@@ -5,17 +5,17 @@ use rmcp::ServiceExt;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 /// One process (or HTTP session) per configured MCP server, shared by every
 /// agent that lists it. Servers are defined once globally (`mcp_servers` in
 /// config.yaml) and referenced by name from `AgentConfig::mcp`, so two agents
 /// using the same server talk to the same connection instead of spawning a
 /// child process each.
-pub type McpStore = Arc<Mutex<McpHub>>;
+pub type McpStore = Arc<RwLock<McpHub>>;
 
 pub fn new_mcp_store() -> McpStore {
-    Arc::new(Mutex::new(McpHub::new()))
+    Arc::new(RwLock::new(McpHub::new()))
 }
 
 #[derive(Debug, Clone, Serialize)]

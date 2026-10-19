@@ -7,7 +7,7 @@ use tauri::State;
 /// names.
 #[tauri::command]
 pub async fn get_mcp_status(mcp_store: State<'_, McpStore>) -> Result<Vec<McpServerStatus>, String> {
-    Ok(mcp_store.lock().await.statuses())
+    Ok(mcp_store.read().await.statuses())
 }
 
 /// Drop every connection and reconnect the servers any agent references. Global
@@ -17,7 +17,7 @@ pub async fn get_mcp_status(mcp_store: State<'_, McpStore>) -> Result<Vec<McpSer
 pub async fn reconnect_mcp(mcp_store: State<'_, McpStore>) -> Result<Vec<McpServerStatus>, String> {
     let settings = get_settings()?;
     let servers = referenced(&settings);
-    let mut hub = mcp_store.lock().await;
+    let mut hub = mcp_store.write().await;
     hub.reconnect(&servers).await;
     Ok(hub.statuses())
 }
@@ -36,7 +36,7 @@ pub async fn sync_mcp_server(
         .into_iter()
         .find(|(n, _)| *n == name)
         .map(|(n, c)| (n, c));
-    let mut hub = mcp_store.lock().await;
+    let mut hub = mcp_store.write().await;
     match wanted {
         Some(server) => hub.ensure(&[server]).await,
         None => hub.disconnect(&name).await,

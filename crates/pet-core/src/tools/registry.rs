@@ -171,6 +171,16 @@ impl ToolRegistry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(tools: Vec<Box<dyn Tool>>) -> Self {
+        Self {
+            tools,
+            mcp_definitions: Vec::new(),
+            mcp_tool_names: Vec::new(),
+            descriptions: BTreeMap::new(),
+        }
+    }
+
     /// Get all tool definitions for the LLM API request (built-in + MCP), with
     /// any owner-rewritten description swapped in. Only the description is
     /// replaced — the parameter schema is the tool's implementation contract,

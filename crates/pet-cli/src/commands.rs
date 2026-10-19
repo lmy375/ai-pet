@@ -76,7 +76,7 @@ pub fn spawn_refresh_tools(ctx: SubmitCtx) {
     tokio::spawn(async move {
         let Ok(settings) = get_settings() else { return };
         let Some(agent) = settings.active_agent_config() else { return };
-        let mcp_defs = ctx.cli.mcp_store.lock().await.definitions(&agent.mcp);
+        let mcp_defs = ctx.cli.mcp_store.read().await.definitions(&agent.mcp);
         let registry = pet_core::tools::ToolRegistry::new(
             mcp_defs,
             pet_core::tools::ToolPolicy {

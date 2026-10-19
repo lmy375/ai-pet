@@ -118,7 +118,7 @@ pub fn run() {
                         .map(|(n, c)| (n.as_str(), c))
                         .collect();
                     if !servers.is_empty() {
-                        mcp_store.lock().await.ensure(&servers).await;
+                        mcp_store.write().await.ensure(&servers).await;
                         eprintln!("MCP servers initialized");
                     }
                 }
