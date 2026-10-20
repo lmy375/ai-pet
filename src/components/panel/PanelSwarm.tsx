@@ -7,7 +7,7 @@ import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Segmented";
 import { LoadingScreen } from "../ui/feedback";
-import { ChatIcon, ChevronRight, CloseIcon, FileTextIcon, PlusIcon } from "../Icons";
+import { ChatIcon, ChevronRight, CloseIcon, PlusIcon } from "../Icons";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { IconActionButton } from "../ui/IconButton";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
@@ -50,31 +50,38 @@ function TaskCard({
         ? t("swarm.task.error")
         : t("swarm.task.completed");
   return (
-    <div className="rounded-card border border-line bg-surface p-2.5 shadow-sm">
+    <div
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      onClick={() => setExpanded((value) => !value)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          setExpanded((value) => !value);
+        }
+      }}
+      className="cursor-pointer rounded-card border border-line bg-surface p-2.5 shadow-sm transition-colors hover:border-accent-line focus:outline-none focus:ring-1 focus:ring-accent"
+    >
       <div className="flex items-center gap-1.5">
-        <div className="min-w-0 flex-1 truncate text-body font-medium text-ink">{task.title}</div>
         <span
           role="img"
           aria-label={label}
           title={label}
           className={`h-2.5 w-2.5 shrink-0 rounded-full ${TASK_DOT[group]}`}
         />
-        <IconActionButton
-          size="sm"
-          aria-label={expanded ? t("swarm.task.hideDetails") : t("swarm.task.details")}
-          aria-expanded={expanded}
-          title={expanded ? t("swarm.task.hideDetails") : t("swarm.task.details")}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          <FileTextIcon className="h-4 w-4" />
-        </IconActionButton>
+        <div className="min-w-0 flex-1 truncate text-body font-medium text-ink">{task.title}</div>
         <IconActionButton
           size="sm"
           disabled={!workerId}
           aria-label={t("swarm.task.chat")}
           title={workerId ? t("swarm.task.chat") : t("swarm.task.chatUnavailable")}
           className="disabled:cursor-not-allowed disabled:opacity-35"
-          onClick={() => workerId && onOpenChat(workerId)}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (workerId) onOpenChat(workerId);
+          }}
         >
           <ChatIcon className="h-4 w-4" />
         </IconActionButton>

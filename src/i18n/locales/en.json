@@ -67,8 +67,6 @@
   "swarm.task.attempt": "Attempt {count}",
   "swarm.task.title": "Task title",
   "swarm.task.detail": "Task details, scope, and completion criteria",
-  "swarm.task.details": "Details",
-  "swarm.task.hideDetails": "Hide",
   "swarm.task.chat": "Chat",
   "swarm.task.chatUnavailable": "This task has no Worker conversation yet",
   "swarm.task.closeChat": "Close chat tab",

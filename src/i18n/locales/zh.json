@@ -67,8 +67,6 @@
   "swarm.task.attempt": "尝试 {count}",
   "swarm.task.title": "任务标题",
   "swarm.task.detail": "任务详情、范围与完成标准",
-  "swarm.task.details": "详情",
-  "swarm.task.hideDetails": "收起",
   "swarm.task.chat": "聊天",
   "swarm.task.chatUnavailable": "该任务还没有 Worker 会话",
   "swarm.task.closeChat": "关闭聊天 Tab",
