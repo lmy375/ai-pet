@@ -417,7 +417,7 @@ export function PanelSwarm() {
             <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-field bg-surface-soft px-2 py-2">
               <span className="rounded-full bg-accent-soft px-2 py-1 text-meta text-accent">{t(`swarm.status.${snapshot.status}`)}</span>
               {snapshot.status !== "running" && snapshot.status !== "draining" && (
-                <Button size="sm" onClick={() => runAction(swarm.start)}>{t("swarm.start")}</Button>
+                <Button size="sm" disabled={groups.pending.length === 0} onClick={() => runAction(swarm.start)}>{t("swarm.start")}</Button>
               )}
               {snapshot.status === "running" && (
                 <Button size="sm" variant="ghost" onClick={() => runAction(swarm.end)}>{t("swarm.end")}</Button>
