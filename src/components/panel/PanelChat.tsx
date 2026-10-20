@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useChat } from "../../hooks/useChat";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { SessionSidebar } from "./SessionSidebar";
-import { TASKS_DRAWER_WIDTH, TaskDrawer } from "./TaskDrawer";
+import { TaskDrawer } from "./TaskDrawer";
 import { Button } from "../ui/Button";
 import { ProgressRing } from "../ui/ProgressRing";
 import { LoadingScreen } from "../ui/feedback";
@@ -14,6 +13,8 @@ import { AgentSwitcher } from "../AgentSwitcher";
 import { ModelSwitcher } from "../ModelSwitcher";
 import { useSettings } from "../../hooks/useSettings";
 import { useI18n } from "../../i18n";
+import { useResizableWidth } from "../../hooks/useResizableWidth";
+import { ResizeHandle } from "../ui/ResizeHandle";
 
 export function PanelChat() {
   const { t } = useI18n();
@@ -47,20 +48,18 @@ export function PanelChat() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
-  const resizeQueue = useRef<Promise<void>>(Promise.resolve());
-
-  // Resize the native panel window in logical pixels. Operations are queued so
-  // opening and closing in quick succession can't both read the old size.
-  const resizePanelWidth = useCallback((deltaWidth: number) => {
-    resizeQueue.current = resizeQueue.current
-      .then(async () => {
-        const win = getCurrentWindow();
-        const [size, scale] = await Promise.all([win.innerSize(), win.scaleFactor()]);
-        const logical = size.toLogical(scale);
-        await win.setSize(new LogicalSize(logical.width + deltaWidth, logical.height));
-      })
-      .catch((e) => console.error("Failed to resize panel:", e));
-  }, []);
+  const sessionsPane = useResizableWidth({
+    storageKey: "chat-sessions",
+    initialWidth: 236,
+    minWidth: 180,
+    maxWidth: 440,
+  });
+  const tasksPane = useResizableWidth({
+    storageKey: "chat-tasks",
+    initialWidth: 360,
+    minWidth: 280,
+    maxWidth: 620,
+  });
 
   const exitSelection = () => {
     setSelectionMode(false);
@@ -99,15 +98,6 @@ export function PanelChat() {
     return () => window.removeEventListener("keydown", onKey);
   }, [tasksOpen]);
 
-  // The drawer takes real layout width, so grow the native window by the same
-  // amount to keep the conversation column unchanged. Cleanup covers closing
-  // the drawer as well as leaving the chat tab while it is open.
-  useEffect(() => {
-    if (!tasksOpen) return;
-    resizePanelWidth(TASKS_DRAWER_WIDTH);
-    return () => resizePanelWidth(-TASKS_DRAWER_WIDTH);
-  }, [tasksOpen, resizePanelWidth]);
-
   if (!loaded) {
     return <LoadingScreen />;
   }
@@ -117,43 +107,54 @@ export function PanelChat() {
 
   return (
     <div className="flex h-full min-h-0">
-      <SessionSidebar
-        sessions={sessionList}
-        activeId={sessionId}
-        running={runningSessions}
-        onSelect={switchSession}
-        onNew={newSession}
-        onRename={renameSession}
-        onDelete={deleteSession}
+      <div style={{ width: sessionsPane.width }} className="flex min-h-0 shrink-0">
+        <SessionSidebar
+          sessions={sessionList}
+          activeId={sessionId}
+          running={runningSessions}
+          onSelect={switchSession}
+          onNew={newSession}
+          onRename={renameSession}
+          onDelete={deleteSession}
+        />
+      </div>
+      <ResizeHandle
+        side="left"
+        width={sessionsPane.width}
+        minWidth={180}
+        maxWidth={440}
+        onChange={sessionsPane.setWidth}
+        label={t("common.resizePanel")}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col bg-canvas">
-        {/* Conversation toolbar: who answers, with what model, plus the
-            context gauge and message selection. */}
-        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
-          <span className="shrink-0 text-note text-ink-faint">{t("chat.agentLabel")}</span>
-          <AgentSwitcher />
-          <span className="shrink-0 pl-1 text-note text-ink-faint">{t("chat.modelLabel")}</span>
-          <ModelSwitcher className="max-w-[36%]" />
-          <div className="min-w-0 flex-1" />
-          <ContextUsageRing usage={contextUsage} />
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setTasksOpen((open) => !open)}
-            aria-expanded={tasksOpen}
-            aria-controls="tasks-drawer"
-            title={tasksOpen ? t("tasks.close") : t("tasks.open")}
-          >
-            <TasksIcon className="h-4 w-4" />
-            {t("tasks.button")}
-          </Button>
-          {items.length > 0 && !selectionMode && !isLoading && (
-            <Button variant="ghost" size="sm" onClick={() => setSelectionMode(true)} title={t("chat.select.enter")}>
-              <CheckIcon className="h-4 w-4" />
-              {t("chat.select.enter")}
+      <div className="flex min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col bg-canvas">
+          {/* Conversation toolbar: who answers, with what model, plus the
+              context gauge and message selection. */}
+          <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
+            <span className="shrink-0 text-note text-ink-faint">{t("chat.agentLabel")}</span>
+            <AgentSwitcher />
+            <span className="shrink-0 pl-1 text-note text-ink-faint">{t("chat.modelLabel")}</span>
+            <ModelSwitcher className="max-w-[36%]" />
+            <div className="min-w-0 flex-1" />
+            <ContextUsageRing usage={contextUsage} />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setTasksOpen((open) => !open)}
+              aria-expanded={tasksOpen}
+              aria-controls="tasks-drawer"
+              title={tasksOpen ? t("tasks.close") : t("tasks.open")}
+            >
+              <TasksIcon className="h-4 w-4" />
+              {t("tasks.button")}
             </Button>
-          )}
+            {items.length > 0 && !selectionMode && !isLoading && (
+              <Button variant="ghost" size="sm" onClick={() => setSelectionMode(true)} title={t("chat.select.enter")}>
+                <CheckIcon className="h-4 w-4" />
+                {t("chat.select.enter")}
+              </Button>
+            )}
         </div>
 
         {/* Message list */}
@@ -193,9 +194,24 @@ export function PanelChat() {
             <ChatInput onSend={sendMessage} isLoading={isLoading} onStop={stopStreaming} />
           </div>
         )}
-      </div>
+        </div>
 
-      {tasksOpen && <TaskDrawer onClose={() => setTasksOpen(false)} />}
+        {tasksOpen && (
+          <>
+            <ResizeHandle
+              side="right"
+              width={tasksPane.width}
+              minWidth={280}
+              maxWidth={620}
+              onChange={tasksPane.setWidth}
+              label={t("common.resizePanel")}
+            />
+            <div style={{ width: tasksPane.width }} className="flex min-h-0 shrink-0">
+              <TaskDrawer onClose={() => setTasksOpen(false)} />
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

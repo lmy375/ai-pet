@@ -98,7 +98,7 @@ export function SessionSidebar({ sessions, activeId, running = [], onSelect, onN
     .filter((g) => g.rows.length > 0);
 
   return (
-    <aside className="flex w-[236px] shrink-0 flex-col border-r border-line bg-surface">
+    <aside className="flex h-full min-h-0 w-full flex-col bg-surface">
       {/* Search */}
       <div className="shrink-0 px-3 pb-2 pt-3">
         <div className="flex items-center gap-1.5 rounded-field border border-line bg-surface-soft px-2.5 py-1.5 focus-within:border-accent">

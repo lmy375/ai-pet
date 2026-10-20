@@ -31,6 +31,8 @@ import { McpCard } from "./settings/McpCard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toneText, toneDot, connTone } from "../../utils/tone";
 import { useI18n, type TKey } from "../../i18n";
+import { useResizableWidth } from "../../hooks/useResizableWidth";
+import { ResizeHandle } from "../ui/ResizeHandle";
 
 /** Agent tabs are keyed by id so every agent gets its own rail entry. */
 const AGENT_PREFIX = "agent:";
@@ -84,6 +86,12 @@ const GENERAL_ITEMS: NavEntry[] = [
 
 export function PanelSettings() {
   const { t } = useI18n();
+  const settingsNav = useResizableWidth({
+    storageKey: "settings-navigation",
+    initialWidth: 224,
+    minWidth: 180,
+    maxWidth: 360,
+  });
   const [form, setForm] = useState<AppSettings>(EMPTY_SETTINGS);
   const [tab, setTab] = useState<TabId>("ai-models");
   // Which agent the agent tabs edit (derived from the active agent tab).
@@ -984,7 +992,10 @@ export function PanelSettings() {
   return (
     <div className="flex h-full min-h-0">
       {/* Left rail: grouped tabs. */}
-      <aside className="flex w-56 shrink-0 flex-col overflow-y-auto border-r border-line bg-canvas px-2.5 py-3">
+      <aside
+        style={{ width: settingsNav.width }}
+        className="flex min-h-0 shrink-0 flex-col overflow-y-auto bg-canvas px-2.5 py-3"
+      >
         {NAV_GROUPS.map((group, gi) => (
           <div key={group.title} className={gi === 0 ? "" : "mt-4"}>
             <div className="px-3 pb-1.5 text-meta font-semibold text-ink-faint">{t(group.title)}</div>
@@ -1036,6 +1047,14 @@ export function PanelSettings() {
           </div>
         </div>
       </aside>
+      <ResizeHandle
+        side="left"
+        width={settingsNav.width}
+        minWidth={180}
+        maxWidth={360}
+        onChange={settingsNav.setWidth}
+        label={t("common.resizePanel")}
+      />
 
       {/* Right content: page title + the active tab's sections. */}
       <div className="flex min-h-0 flex-1 flex-col bg-surface">

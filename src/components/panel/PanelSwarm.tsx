@@ -8,6 +8,8 @@ import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Segmented";
 import { LoadingScreen } from "../ui/feedback";
 import { PlusIcon } from "../Icons";
+import { ResizeHandle } from "../ui/ResizeHandle";
+import { useResizableWidth } from "../../hooks/useResizableWidth";
 
 type Conversation = { kind: "orchestrator" } | { kind: "worker"; id: string };
 type LeftTab = "board" | "settings";
@@ -305,6 +307,12 @@ export function PanelSwarm() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [notice, setNotice] = useState("");
+  const projectPane = useResizableWidth({
+    storageKey: "swarm-project",
+    initialWidth: 420,
+    minWidth: 320,
+    maxWidth: 760,
+  });
 
   useEffect(() => {
     setConversation({ kind: "orchestrator" });
@@ -372,7 +380,7 @@ export function PanelSwarm() {
 
   return (
     <div className="flex h-full min-h-0 w-full bg-canvas">
-      <aside className="flex w-[420px] shrink-0 flex-col border-r border-line bg-surface">
+      <aside style={{ width: projectPane.width }} className="flex min-h-0 shrink-0 flex-col bg-surface">
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
           <select
             value={swarm.activeId}
@@ -436,6 +444,15 @@ export function PanelSwarm() {
           </div>
         )}
       </aside>
+
+      <ResizeHandle
+        side="left"
+        width={projectPane.width}
+        minWidth={320}
+        maxWidth={760}
+        onChange={projectPane.setWidth}
+        label={t("common.resizePanel")}
+      />
 
       <section className="flex min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2.5">

@@ -12,6 +12,7 @@
   "common.copied": "Copied",
   "common.cancel": "Cancel",
   "common.create": "Create",
+  "common.resizePanel": "Drag to resize",
   "common.save": "Save",
   "common.zoomImage": "Click to enlarge",
   "app.pin.on": "Unpin",

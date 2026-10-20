@@ -9,8 +9,6 @@ import { useI18n } from "../../i18n";
 import { formatIsoTime } from "../../utils/format";
 import { usePolling } from "../../hooks/usePolling";
 
-export const TASKS_DRAWER_WIDTH = 360;
-
 interface TaskListItem {
   taskId: string;
   kind: string; // "bash" | "subagent"
@@ -239,8 +237,7 @@ export function TaskDrawer({ onClose }: { onClose: () => void }) {
     <aside
       id="tasks-drawer"
       aria-label={t("tasks.title")}
-      style={{ width: TASKS_DRAWER_WIDTH }}
-      className="task-drawer-in flex shrink-0 flex-col border-l border-line bg-surface"
+      className="task-drawer-in flex h-full min-h-0 w-full flex-col bg-surface"
     >
       <div className="flex shrink-0 items-center justify-between border-b border-line px-4 py-3">
         <h2 className="text-title font-semibold text-ink">{t("tasks.title")}</h2>
