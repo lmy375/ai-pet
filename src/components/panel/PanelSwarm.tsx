@@ -7,37 +7,65 @@ import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Segmented";
 import { LoadingScreen } from "../ui/feedback";
-import { PlusIcon } from "../Icons";
+import { ChevronRight, CloseIcon, PlusIcon } from "../Icons";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
 
 type Conversation = { kind: "orchestrator" } | { kind: "worker"; id: string };
 type LeftTab = "board" | "settings";
+type TaskGroup = "pending" | "running" | "completed";
 
-function TaskCard({ task }: { task: SwarmTask }) {
+const TASK_GROUPS: TaskGroup[] = ["pending", "running", "completed"];
+
+function TaskCard({
+  task,
+  workerId,
+  onOpenChat,
+}: {
+  task: SwarmTask;
+  workerId?: string;
+  onOpenChat: (workerId: string) => void;
+}) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
   const label = task.status === "pending"
     ? t("swarm.task.pending")
     : task.status === "running"
       ? t("swarm.task.running")
       : t("swarm.task.completed");
   return (
-    <div className="rounded-card border border-line bg-surface p-3 shadow-sm">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-body font-medium text-ink">{task.title}</div>
-          <div className="mt-1 line-clamp-2 text-note text-ink-soft">{task.detail}</div>
-        </div>
+    <div className="rounded-card border border-line bg-surface p-2.5 shadow-sm">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1 truncate text-body font-medium text-ink">{task.title}</div>
         <span className="shrink-0 rounded-full bg-surface-soft px-2 py-0.5 text-meta text-ink-soft">{label}</span>
       </div>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-line">
-        <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${task.progress}%` }} />
+      <div className="mt-2 flex justify-end gap-1.5">
+        <Button variant="ghost" size="sm" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? t("swarm.task.hideDetails") : t("swarm.task.details")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!workerId}
+          title={workerId ? undefined : t("swarm.task.chatUnavailable")}
+          onClick={() => workerId && onOpenChat(workerId)}
+        >
+          {t("swarm.task.chat")}
+        </Button>
       </div>
-      <div className="mt-1 flex justify-between gap-2 text-meta text-ink-faint">
-        <span className="truncate">{task.progress}% {task.progress_summary}</span>
-        <span className="shrink-0">{task.attempt > 0 ? t("swarm.task.attempt", { count: task.attempt }) : ""}</span>
-      </div>
-      {task.result && <div className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap rounded-field bg-surface-soft px-2 py-1.5 text-note text-ink-soft">{task.result}</div>}
+      {expanded && (
+        <div className="mt-2 border-t border-line/70 pt-2">
+          <div className="whitespace-pre-wrap text-note text-ink-soft">{task.detail}</div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
+            <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${task.progress}%` }} />
+          </div>
+          <div className="mt-1 flex justify-between gap-2 text-meta text-ink-faint">
+            <span className="truncate">{task.progress}% {task.progress_summary}</span>
+            <span className="shrink-0">{task.attempt > 0 ? t("swarm.task.attempt", { count: task.attempt }) : ""}</span>
+          </div>
+          {task.result && <div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-field bg-surface-soft px-2 py-1.5 text-note text-ink-soft">{task.result}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -307,6 +335,8 @@ export function PanelSwarm() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [notice, setNotice] = useState("");
+  const [openWorkerIds, setOpenWorkerIds] = useState<string[]>([]);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<TaskGroup>>(new Set());
   const projectPane = useResizableWidth({
     storageKey: "swarm-project",
     initialWidth: 420,
@@ -316,6 +346,8 @@ export function PanelSwarm() {
 
   useEffect(() => {
     setConversation({ kind: "orchestrator" });
+    setOpenWorkerIds([]);
+    setCollapsedGroups(new Set());
     setLeftTab("board");
     setNotice("");
   }, [swarm.snapshot?.id]);
@@ -361,13 +393,29 @@ export function PanelSwarm() {
   const snapshot = swarm.snapshot;
   const totalWorkers = snapshot.pool.reduce((sum, item) => sum + item.count, 0);
   const agentName = (id: string) => settings.agents.find((agent) => agent.id === id)?.name ?? id;
-  const conversationOptions = [
-    { value: "orchestrator", label: `Orchestrator · ${agentName(snapshot.main_agent_id)}` },
-    ...workers.map((worker) => {
-      const task = snapshot.tasks.find((item) => item.id === worker.task_id);
-      return { value: worker.id, label: `${agentName(worker.agent_id)} · ${task?.title ?? worker.task_id?.slice(0, 8) ?? ""}` };
-    }),
-  ];
+  const workerForTask = (taskId: string) =>
+    [...workers].reverse().find((worker) => worker.task_id === taskId);
+
+  const openWorkerChat = (workerId: string) => {
+    setOpenWorkerIds((ids) => ids.includes(workerId) ? ids : [...ids, workerId]);
+    setConversation({ kind: "worker", id: workerId });
+  };
+
+  const closeWorkerTab = (workerId: string) => {
+    setOpenWorkerIds((ids) => ids.filter((id) => id !== workerId));
+    setConversation((current) => current.kind === "worker" && current.id === workerId
+      ? { kind: "orchestrator" }
+      : current);
+  };
+
+  const toggleTaskGroup = (group: TaskGroup) => {
+    setCollapsedGroups((groups) => {
+      const next = new Set(groups);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
+  };
 
   const runAction = async (action: () => Promise<void>) => {
     setNotice("");
@@ -427,16 +475,30 @@ export function PanelSwarm() {
               )}
               <span className="ml-auto text-meta text-ink-faint">{totalWorkers} {t("swarm.workers")}</span>
             </div>
-            {(["pending", "running", "completed"] as const).map((status) => (
-              <div key={status} className="mb-4">
-                <div className="mb-1.5 text-meta font-medium text-ink-faint">
-                  {status === "pending" ? t("swarm.task.pending") : status === "running" ? t("swarm.task.running") : t("swarm.task.completed")} · {groups[status].length}
+            {TASK_GROUPS.map((status) => {
+              const collapsed = collapsedGroups.has(status);
+              return (
+                <div key={status} className="mb-3">
+                  <button
+                    type="button"
+                    aria-expanded={!collapsed}
+                    onClick={() => toggleTaskGroup(status)}
+                    className="mb-1.5 flex w-full items-center gap-1 text-left text-meta font-medium text-ink-faint hover:text-ink"
+                  >
+                    <ChevronRight className={`h-3.5 w-3.5 transition-transform ${collapsed ? "" : "rotate-90"}`} />
+                    {status === "pending" ? t("swarm.task.pending") : status === "running" ? t("swarm.task.running") : t("swarm.task.completed")} · {groups[status].length}
+                  </button>
+                  {!collapsed && (
+                    <div className="flex flex-col gap-2">
+                      {groups[status].map((task) => {
+                        const worker = workerForTask(task.id);
+                        return <TaskCard key={task.id} task={task} workerId={worker?.id} onOpenChat={openWorkerChat} />;
+                      })}
+                    </div>
+                  )}
                 </div>
-                <div className="flex flex-col gap-2">
-                  {groups[status].map((task) => <TaskCard key={task.id} task={task} />)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -455,13 +517,54 @@ export function PanelSwarm() {
       />
 
       <section className="flex min-w-0 flex-1 flex-col">
-        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
-          <div className="min-w-0 flex-1 overflow-x-auto">
-            <Segmented
-              value={conversation.kind === "orchestrator" ? "orchestrator" : conversation.id}
-              options={conversationOptions}
-              onChange={(value) => setConversation(value === "orchestrator" ? { kind: "orchestrator" } : { kind: "worker", id: value })}
-            />
+        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-4 py-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            <div className={`flex shrink-0 items-center rounded-field border ${
+              conversation.kind === "orchestrator" ? "border-accent-line bg-accent-soft" : "border-line bg-surface-soft"
+            }`}>
+              <button
+                type="button"
+                onClick={() => setConversation({ kind: "orchestrator" })}
+                className={`px-2.5 py-1 text-note font-medium ${conversation.kind === "orchestrator" ? "text-accent" : "text-ink-soft hover:text-ink"}`}
+              >
+                Orchestrator · {agentName(snapshot.main_agent_id)}
+              </button>
+            </div>
+            {openWorkerIds.map((workerId) => {
+              const worker = workers.find((item) => item.id === workerId);
+              const task = worker?.task_id ? snapshot.tasks.find((item) => item.id === worker.task_id) : undefined;
+              const active = conversation.kind === "worker" && conversation.id === workerId;
+              const label = worker
+                ? `${agentName(worker.agent_id)} · ${task?.title ?? worker.task_id?.slice(0, 8) ?? ""}`
+                : workerId;
+              return (
+                <div
+                  key={workerId}
+                  className={`flex shrink-0 items-center rounded-field border ${
+                    active ? "border-accent-line bg-accent-soft" : "border-line bg-surface-soft"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setConversation({ kind: "worker", id: workerId })}
+                    className={`max-w-[220px] truncate px-2.5 py-1 text-note font-medium ${
+                      active ? "text-accent" : "text-ink-soft hover:text-ink"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => closeWorkerTab(workerId)}
+                    aria-label={t("swarm.task.closeChat")}
+                    title={t("swarm.task.closeChat")}
+                    className="flex h-6 w-6 items-center justify-center rounded-full text-ink-faint hover:bg-hover hover:text-ink"
+                  >
+                    <CloseIcon className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
         <ChatThread
