@@ -249,10 +249,11 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         match event {
             tauri::RunEvent::Reopen { .. } => {
-                // A hidden pet plus an off-screen floating ball looks like a
-                // dead process. Reopening the app must always recover the main
-                // window instead of leaving the user with no visible surface.
-                commands::window::restore_main_window(app_handle);
+                // Dock click or Finder relaunch of an already-running app. The
+                // panel keeps the screen while it exists; otherwise recover the
+                // pet. A hidden pet plus an off-screen ball looks like a dead
+                // process, and `has_visible_windows` cannot express that.
+                commands::window::present_foreground(app_handle);
             }
             _ => {}
         }

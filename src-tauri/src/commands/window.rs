@@ -192,6 +192,9 @@ fn monitor_work_areas(win: &WebviewWindow) -> Result<Vec<(f64, f64, f64, f64)>, 
 /// Restore the saved pet-window position when the full window can be fitted
 /// onto a connected display; otherwise center it. Saved positions now use
 /// logical coordinates, matching the coordinate space macOS uses for windows.
+///
+/// This always shows the pet. Callers that can run while the panel is open must
+/// use `present_foreground` instead.
 pub fn restore_main_window(app: &AppHandle) {
     let win = match app.get_webview_window("main") {
         Some(w) => w,
@@ -213,6 +216,49 @@ pub fn restore_main_window(app: &AppHandle) {
     }
     let _ = win.show();
     let _ = win.set_focus();
+}
+
+/// Hide the pet and the floating ball, and tell the pet webview to tear down
+/// Live2D. A WebGL context cannot survive the window being hidden.
+fn hide_pet_surface(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if let Some(ball) = app.get_webview_window("ball") {
+        let _ = ball.hide();
+    }
+    let _ = app.emit("main-hidden", ());
+}
+
+/// Bring the surface the user should be looking at to the front.
+///
+/// The panel replaces the pet for as long as that window exists — open,
+/// minimized, or briefly hidden. Dock clicks and ball clicks both come through
+/// here, so neither can show the pet beside an open panel. The pet is restored
+/// only after the panel is destroyed.
+pub fn present_foreground(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.unminimize();
+        let _ = panel.show();
+        let _ = panel.set_focus();
+        hide_pet_surface(app);
+        return;
+    }
+
+    let was_hidden = app
+        .get_webview_window("main")
+        .and_then(|win| win.is_visible().ok())
+        .map(|visible| !visible)
+        .unwrap_or(true);
+    if let Some(ball) = app.get_webview_window("ball") {
+        let _ = ball.hide();
+    }
+    restore_main_window(app);
+    // Replay the show only when the pet was actually hidden. A Dock click on an
+    // already-visible pet must not restart the pop-in animation.
+    if was_hidden {
+        let _ = app.emit("main-shown", ());
+    }
 }
 
 // --- Floating ball (the pet collapses into it when idle) ---
@@ -292,21 +338,16 @@ pub async fn collapse_to_ball(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Expand the pet back out of the ball (the ball's click handler): hide the
-/// ball, show the pet at its previous position and refocus it so the idle timer
-/// doesn't instantly collapse it again. Emits `main-shown` so the frontend
-/// rebuilds the Live2D canvas and replays the pop-in.
+/// Expand out of the ball (the ball's click handler). If the panel is still
+/// open it keeps the screen; otherwise the pet returns at its previous position.
+/// `present_foreground` emits `main-shown` only in that second case, so Live2D
+/// is rebuilt without the panel path stealing focus back onto a hidden pet.
 #[tauri::command]
 pub async fn expand_from_ball(app: AppHandle) -> Result<(), String> {
-    let main = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window missing".to_string())?;
-    if let Some(ball) = app.get_webview_window("ball") {
-        let _ = ball.hide();
+    if app.get_webview_window("main").is_none() {
+        return Err("main window missing".to_string());
     }
-    restore_main_window(&app);
-    let _ = main.set_focus();
-    let _ = app.emit("main-shown", ());
+    present_foreground(&app);
     Ok(())
 }
 
@@ -336,13 +377,10 @@ fn open_or_focus(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) -> R
 pub async fn open_panel(app: AppHandle) -> Result<(), String> {
     let created = app.get_webview_window("panel").is_none();
     open_or_focus(&app, "panel", "Pet", 900.0, 700.0)?;
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
-    }
-    // The pet window is now hidden. Its Live2D WebGL context cannot survive
-    // offscreen, so tell the frontend to tear the canvas down until it's shown
-    // again (see the panel's Destroyed handler) rather than rebuilding it here.
-    let _ = app.emit("main-hidden", ());
+    // Panel replaces both the pet and the floating ball. Live2D cannot survive
+    // offscreen, so tear the canvas down until the panel's Destroyed handler
+    // shows the pet again.
+    hide_pet_surface(&app);
     if created {
         if let Some(panel) = app.get_webview_window("panel") {
             let app = app.clone();
