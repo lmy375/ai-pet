@@ -7,8 +7,9 @@ import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Segmented";
 import { LoadingScreen } from "../ui/feedback";
-import { ChevronRight, CloseIcon, PlusIcon } from "../Icons";
+import { ChatIcon, ChevronRight, CloseIcon, FileTextIcon, PlusIcon } from "../Icons";
 import { ResizeHandle } from "../ui/ResizeHandle";
+import { IconActionButton } from "../ui/IconButton";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
 
 type Conversation = { kind: "orchestrator" } | { kind: "worker"; id: string };
@@ -16,6 +17,12 @@ type LeftTab = "board" | "settings";
 type TaskGroup = "pending" | "running" | "completed";
 
 const TASK_GROUPS: TaskGroup[] = ["pending", "running", "completed"];
+
+const TASK_DOT: Record<TaskGroup, string> = {
+  pending: "bg-amber-400",
+  running: "bg-sky-500",
+  completed: "bg-emerald-500",
+};
 
 function TaskCard({
   task,
@@ -37,21 +44,33 @@ function TaskCard({
     <div className="rounded-card border border-line bg-surface p-2.5 shadow-sm">
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1 truncate text-body font-medium text-ink">{task.title}</div>
-        <span className="shrink-0 rounded-full bg-surface-soft px-2 py-0.5 text-meta text-ink-soft">{label}</span>
+        <span
+          role="img"
+          aria-label={label}
+          title={label}
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${TASK_DOT[task.status]}`}
+        />
       </div>
-      <div className="mt-2 flex justify-end gap-1.5">
-        <Button variant="ghost" size="sm" onClick={() => setExpanded((value) => !value)}>
-          {expanded ? t("swarm.task.hideDetails") : t("swarm.task.details")}
-        </Button>
-        <Button
-          variant="ghost"
+      <div className="mt-1.5 flex justify-end gap-0.5">
+        <IconActionButton
+          size="sm"
+          aria-label={expanded ? t("swarm.task.hideDetails") : t("swarm.task.details")}
+          aria-expanded={expanded}
+          title={expanded ? t("swarm.task.hideDetails") : t("swarm.task.details")}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <FileTextIcon className="h-4 w-4" />
+        </IconActionButton>
+        <IconActionButton
           size="sm"
           disabled={!workerId}
-          title={workerId ? undefined : t("swarm.task.chatUnavailable")}
+          aria-label={t("swarm.task.chat")}
+          title={workerId ? t("swarm.task.chat") : t("swarm.task.chatUnavailable")}
+          className="disabled:cursor-not-allowed disabled:opacity-35"
           onClick={() => workerId && onOpenChat(workerId)}
         >
-          {t("swarm.task.chat")}
-        </Button>
+          <ChatIcon className="h-4 w-4" />
+        </IconActionButton>
       </div>
       {expanded && (
         <div className="mt-2 border-t border-line/70 pt-2">
@@ -483,9 +502,10 @@ export function PanelSwarm() {
                     type="button"
                     aria-expanded={!collapsed}
                     onClick={() => toggleTaskGroup(status)}
-                    className="mb-1.5 flex w-full items-center gap-1 text-left text-meta font-medium text-ink-faint hover:text-ink"
+                    className="mb-1.5 flex w-full items-center gap-1.5 text-left text-meta font-medium text-ink-faint hover:text-ink"
                   >
                     <ChevronRight className={`h-3.5 w-3.5 transition-transform ${collapsed ? "" : "rotate-90"}`} />
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${TASK_DOT[status]}`} />
                     {status === "pending" ? t("swarm.task.pending") : status === "running" ? t("swarm.task.running") : t("swarm.task.completed")} · {groups[status].length}
                   </button>
                   {!collapsed && (
