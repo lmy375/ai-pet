@@ -14,15 +14,21 @@ import { useResizableWidth } from "../../hooks/useResizableWidth";
 
 type Conversation = { kind: "orchestrator" } | { kind: "worker"; id: string };
 type LeftTab = "board" | "settings";
-type TaskGroup = "pending" | "running" | "completed";
+type TaskGroup = "pending" | "running" | "error" | "completed";
 
-const TASK_GROUPS: TaskGroup[] = ["pending", "running", "completed"];
+const TASK_GROUPS: TaskGroup[] = ["pending", "running", "error", "completed"];
 
 const TASK_DOT: Record<TaskGroup, string> = {
   pending: "bg-amber-400",
   running: "bg-sky-500",
+  error: "bg-red-500",
   completed: "bg-emerald-500",
 };
+
+function taskGroup(task: SwarmTask): TaskGroup {
+  if (task.status === "completed" && task.outcome === "failed") return "error";
+  return task.status;
+}
 
 function TaskCard({
   task,
@@ -35,23 +41,24 @@ function TaskCard({
 }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
-  const label = task.status === "pending"
+  const group = taskGroup(task);
+  const label = group === "pending"
     ? t("swarm.task.pending")
-    : task.status === "running"
+    : group === "running"
       ? t("swarm.task.running")
-      : t("swarm.task.completed");
+      : group === "error"
+        ? t("swarm.task.error")
+        : t("swarm.task.completed");
   return (
     <div className="rounded-card border border-line bg-surface p-2.5 shadow-sm">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         <div className="min-w-0 flex-1 truncate text-body font-medium text-ink">{task.title}</div>
         <span
           role="img"
           aria-label={label}
           title={label}
-          className={`h-2.5 w-2.5 shrink-0 rounded-full ${TASK_DOT[task.status]}`}
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${TASK_DOT[group]}`}
         />
-      </div>
-      <div className="mt-1.5 flex justify-end gap-0.5">
         <IconActionButton
           size="sm"
           aria-label={expanded ? t("swarm.task.hideDetails") : t("swarm.task.details")}
@@ -376,9 +383,10 @@ export function PanelSwarm() {
   const groups = useMemo(() => {
     const tasks = swarm.snapshot?.tasks ?? [];
     return {
-      pending: tasks.filter((task) => task.status === "pending"),
-      running: tasks.filter((task) => task.status === "running"),
-      completed: tasks.filter((task) => task.status === "completed"),
+      pending: tasks.filter((task) => taskGroup(task) === "pending"),
+      running: tasks.filter((task) => taskGroup(task) === "running"),
+      error: tasks.filter((task) => taskGroup(task) === "error"),
+      completed: tasks.filter((task) => taskGroup(task) === "completed"),
     };
   }, [swarm.snapshot?.tasks]);
 
@@ -506,7 +514,13 @@ export function PanelSwarm() {
                   >
                     <ChevronRight className={`h-3.5 w-3.5 transition-transform ${collapsed ? "" : "rotate-90"}`} />
                     <span className={`h-2 w-2 shrink-0 rounded-full ${TASK_DOT[status]}`} />
-                    {status === "pending" ? t("swarm.task.pending") : status === "running" ? t("swarm.task.running") : t("swarm.task.completed")} · {groups[status].length}
+                    {status === "pending"
+                      ? t("swarm.task.pending")
+                      : status === "running"
+                        ? t("swarm.task.running")
+                        : status === "error"
+                          ? t("swarm.task.error")
+                          : t("swarm.task.completed")} · {groups[status].length}
                   </button>
                   {!collapsed && (
                     <div className="flex flex-col gap-2">

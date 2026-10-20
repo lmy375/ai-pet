@@ -63,6 +63,7 @@
   "swarm.task.pending": "Pending",
   "swarm.task.running": "Working",
   "swarm.task.completed": "Completed",
+  "swarm.task.error": "Error",
   "swarm.task.attempt": "Attempt {count}",
   "swarm.task.title": "Task title",
   "swarm.task.detail": "Task details, scope, and completion criteria",
