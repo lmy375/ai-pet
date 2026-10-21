@@ -187,16 +187,15 @@ pub async fn run_agent_loop(
     let mcp_defs = mcp_store.read().await.definitions(&config.mcp_servers);
     // Context gates: sub-agents (depth > 0) don't get the spawn tool, so they
     // can't recurse; `chat` is offered only to heartbeat sessions; `web_search`
-    // only when a Tavily key is configured; `GroupChat` only in a group run.
-    // `from_config` adds the owner's own layer on top (tools switched off,
-    // descriptions rewritten), which can only subtract from these.
+    // only when a Tavily key is configured. `from_config` adds the owner's own
+    // layer on top (tools switched off, descriptions rewritten), which can only
+    // subtract from these.
     let registry = ToolRegistry::new(
         mcp_defs,
         ToolPolicy {
             depth: ctx.depth,
             include_chat: ctx.is_heartbeat,
             include_web_search: !config.search_api_key.trim().is_empty(),
-            include_group: ctx.group.is_some(),
             include_swarm: ctx.swarm.is_some(),
             include_swarm_worker: ctx.swarm_task_id.is_some() && ctx.swarm_worker_id.is_some(),
             ..ToolPolicy::from_config()

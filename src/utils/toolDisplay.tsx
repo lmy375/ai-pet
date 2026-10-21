@@ -10,7 +10,6 @@ import {
   ClockIcon,
   AgentIcon,
   GlobeIcon,
-  SendIcon,
 } from "../components/Icons";
 import { parseJsonish } from "./format";
 
@@ -82,10 +81,6 @@ export function describeToolCall(name: string, rawArgs: unknown): ToolDisplay {
       const prompt = str(args.prompt);
       const summary = str(args.description) ?? prompt?.split("\n")[0];
       return { Icon: AgentIcon, label: "Agent", summary, fullSummary: str(args.description) ?? prompt };
-    }
-    case "GroupChat": {
-      const message = str(args.message);
-      return { Icon: SendIcon, label: "Group", summary: message, fullSummary: message };
     }
     default:
       return { Icon: WrenchIcon, label: name };

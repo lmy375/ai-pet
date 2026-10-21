@@ -27,7 +27,7 @@ export function newItemId(): string {
 
 export interface ChatItem {
   id: string; // stable per-item id for React keys + multi-select; stamped by whichever side creates the item
-  type: "user" | "assistant" | "tool" | "error" | "notification";
+  type: "user" | "assistant" | "tool" | "error" | "notification" | "group";
   content: string;
   reasoning?: string; // assistant items: chain-of-thought from a reasoning model, shown in a collapsed block. Display-only — never sent back to the model.
   images?: string[]; // base64 data URLs rendered in the bubble — user pastes, or tool-produced images (e.g. screenshots) on assistant items
@@ -35,6 +35,12 @@ export interface ChatItem {
   ts: number; // epoch ms, stamped at creation
   label?: string; // notification items: the finished task's label (localized into the line at render time)
   detail?: string; // notification items: the task's full result, shown on expand
+  // Group items: a line injected into a group agent's private context. The
+  // sender is carried as data (never parsed out of `content`), so ChatThread can
+  // render it as an incoming chat message instead of raw tag text.
+  senderKind?: "human" | "agent";
+  senderId?: string;
+  senderName?: string;
 }
 
 export interface SessionMeta {

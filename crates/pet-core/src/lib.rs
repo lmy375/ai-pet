@@ -20,6 +20,7 @@ pub mod chat;
 pub mod common;
 pub mod config;
 pub mod group;
+pub(crate) mod group_public;
 pub mod heartbeat_file;
 pub mod llm;
 pub mod logging;

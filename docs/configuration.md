@@ -150,7 +150,7 @@ tools:
 `unknown tool`。名字对 MCP 工具同样有效（面板里只列内置工具，MCP 按服务器开关；
 要精确到单个 MCP 工具就在这里写名字）。
 
-开关只能做减法：`chat` 只给心跳、`GroupChat` 只给群聊、`spawn_subagent` 不给子代理、
+开关只能做减法：`chat` 只给心跳、`spawn_subagent` 不给子代理、
 `web_search` 要有 Tavily Key——这些门在开关之前，配置里「打开」也不会绕过它们。
 
 工具描述改的是 `prompts/tools/<工具名>.md`，只替换 `description`，参数结构不变。描述和

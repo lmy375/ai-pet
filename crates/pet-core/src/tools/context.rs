@@ -46,10 +46,6 @@ pub struct ToolContext {
     /// True only for scheduled heartbeat sessions. Gates the `chat` tool (offered
     /// only to heartbeats) — see `ToolRegistry::new`.
     pub is_heartbeat: bool,
-    /// The group room this run belongs to, set only for group-chat agent runs.
-    /// Gates the `GroupChat` tool (see `ToolRegistry::new`) and gives it the
-    /// room to post into. The group worker sets it after construction.
-    pub group: Option<Arc<crate::group::GroupSession>>,
     /// The swarm this run belongs to. Main-agent and worker runs both receive
     /// this handle; workers additionally set `swarm_task_id` and
     /// `swarm_worker_id`, which gates claim/update/complete operations.
@@ -92,7 +88,6 @@ impl ToolContext {
             notifier,
             chat_hook,
             is_heartbeat,
-            group: None,
             swarm: None,
             swarm_task_id: None,
             swarm_worker_id: None,
@@ -122,7 +117,6 @@ impl ToolContext {
             // and the heartbeat flag so the `chat` tool is unavailable to them.
             chat_hook: None,
             is_heartbeat: false,
-            group: None,
             swarm: None,
             swarm_task_id: None,
             swarm_worker_id: None,
@@ -151,7 +145,6 @@ impl ToolContext {
             notifier: self.notifier.clone(),
             chat_hook: self.chat_hook.clone(),
             is_heartbeat: self.is_heartbeat,
-            group: self.group.clone(),
             swarm: self.swarm.clone(),
             swarm_task_id: self.swarm_task_id.clone(),
             swarm_worker_id: self.swarm_worker_id.clone(),

@@ -4,7 +4,6 @@ use super::agent_tools::SpawnSubagentTool;
 use super::chat_tool::ChatTool;
 use super::context::ToolContext;
 use super::file_tools::{EditFileTool, ReadFileTool, WriteFileTool};
-use super::group_tool::GroupChatTool;
 use super::read_image_tool::ReadImageTool;
 use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool, WriteStdinTool};
@@ -28,8 +27,6 @@ pub enum ToolScope {
     /// Only to scheduled heartbeat runs, which have no UI stream and otherwise
     /// no way to reach the owner.
     Heartbeat,
-    /// Only to group-page agent runs, the one place an agent speaks to a room.
-    Group,
     /// Only when a Tavily key is configured — the tool cannot work without one.
     WebSearch,
     /// Only for runs attached to a task-oriented swarm.
@@ -46,7 +43,6 @@ impl ToolScope {
             ToolScope::Always => true,
             ToolScope::TopLevel => policy.depth == 0,
             ToolScope::Heartbeat => policy.include_chat,
-            ToolScope::Group => policy.include_group,
             ToolScope::WebSearch => policy.include_web_search,
             ToolScope::Swarm => policy.include_swarm,
             ToolScope::SwarmOrchestrator => policy.include_swarm && !policy.include_swarm_worker,
@@ -68,7 +64,6 @@ pub struct ToolPolicy {
     pub depth: usize,
     pub include_chat: bool,
     pub include_web_search: bool,
-    pub include_group: bool,
     pub include_swarm: bool,
     pub include_swarm_worker: bool,
     /// Tool names the owner switched off (`tools.disabled` in config.yaml).
@@ -114,7 +109,6 @@ fn builtins() -> Vec<(Box<dyn Tool>, ToolScope)> {
         (Box::new(WebSearchTool), ToolScope::WebSearch),
         (Box::new(SpawnSubagentTool), ToolScope::TopLevel),
         (Box::new(ChatTool), ToolScope::Heartbeat),
-        (Box::new(GroupChatTool), ToolScope::Group),
         (Box::new(SwarmUpdateTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmCompleteTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmCreateTaskTool), ToolScope::Swarm),
@@ -250,12 +244,11 @@ mod tests {
     }
 
     /// A policy with no owner configuration — the context gates only.
-    fn policy(depth: usize, chat: bool, web_search: bool, group: bool) -> ToolPolicy {
+    fn policy(depth: usize, chat: bool, web_search: bool) -> ToolPolicy {
         ToolPolicy {
             depth,
             include_chat: chat,
             include_web_search: web_search,
-            include_group: group,
             ..ToolPolicy::default()
         }
     }
@@ -301,50 +294,42 @@ mod tests {
     fn spawn_subagent_offered_only_at_top_level() {
         // Depth 0 (the pet itself) can delegate; deeper sub-agents cannot, which
         // is what prevents runaway recursive spawning.
-        assert!(tool_names(&registry(policy(0, false, false, false))).contains(&"spawn_subagent".to_string()));
-        assert!(!tool_names(&registry(policy(1, false, false, false))).contains(&"spawn_subagent".to_string()));
+        assert!(tool_names(&registry(policy(0, false, false))).contains(&"spawn_subagent".to_string()));
+        assert!(!tool_names(&registry(policy(1, false, false))).contains(&"spawn_subagent".to_string()));
     }
 
     #[test]
     fn screenshot_tool_always_offered() {
         // The pet can look at the user's screen at any depth and in any session.
-        assert!(tool_names(&registry(policy(0, false, false, false))).contains(&"screenshot".to_string()));
-        assert!(tool_names(&registry(policy(1, false, false, false))).contains(&"screenshot".to_string()));
+        assert!(tool_names(&registry(policy(0, false, false))).contains(&"screenshot".to_string()));
+        assert!(tool_names(&registry(policy(1, false, false))).contains(&"screenshot".to_string()));
     }
 
     #[test]
     fn web_search_offered_only_when_key_configured() {
         // The tool needs a Tavily key to work, so it's withheld without one and
         // offered (at any depth) once a key is present.
-        assert!(!tool_names(&registry(policy(0, false, false, false))).contains(&"web_search".to_string()));
-        assert!(tool_names(&registry(policy(0, false, true, false))).contains(&"web_search".to_string()));
-        assert!(tool_names(&registry(policy(1, false, true, false))).contains(&"web_search".to_string()));
+        assert!(!tool_names(&registry(policy(0, false, false))).contains(&"web_search".to_string()));
+        assert!(tool_names(&registry(policy(0, false, true))).contains(&"web_search".to_string()));
+        assert!(tool_names(&registry(policy(1, false, true))).contains(&"web_search".to_string()));
     }
 
     #[test]
     fn chat_tool_offered_only_to_heartbeats() {
         // Normal sessions can't proactively message the owner; heartbeats can.
-        assert!(!tool_names(&registry(policy(0, false, false, false))).contains(&"chat".to_string()));
-        assert!(tool_names(&registry(policy(0, true, false, false))).contains(&"chat".to_string()));
-    }
-
-    #[test]
-    fn group_chat_tool_offered_only_in_group_runs() {
-        // Only group-page agent runs can post into the shared room; nothing else
-        // gets the GroupChat tool.
-        assert!(!tool_names(&registry(policy(0, false, false, false))).contains(&"GroupChat".to_string()));
-        assert!(tool_names(&registry(policy(0, false, false, true))).contains(&"GroupChat".to_string()));
+        assert!(!tool_names(&registry(policy(0, false, false))).contains(&"chat".to_string()));
+        assert!(tool_names(&registry(policy(0, true, false))).contains(&"chat".to_string()));
     }
 
     #[test]
     fn swarm_tools_are_offered_only_to_swarm_runs() {
-        let normal = ToolRegistry::new(vec![], policy(0, false, false, false));
+        let normal = ToolRegistry::new(vec![], policy(0, false, false));
         assert!(!tool_names(&normal).contains(&"swarm_get_summary".to_string()));
         let swarm = ToolRegistry::new(
             vec![],
             ToolPolicy {
                 include_swarm: true,
-                ..policy(1, false, false, false)
+                ..policy(1, false, false)
             },
         );
         assert!(tool_names(&swarm).contains(&"swarm_get_summary".to_string()));
@@ -356,7 +341,7 @@ mod tests {
             ToolPolicy {
                 include_swarm: true,
                 include_swarm_worker: true,
-                ..policy(1, false, false, false)
+                ..policy(1, false, false)
             },
         );
         assert!(!tool_names(&worker).contains(&"swarm_delete_task".to_string()));
@@ -367,7 +352,7 @@ mod tests {
     async fn a_disabled_tool_is_neither_offered_nor_executable() {
         // Withholding the definition isn't enough: the model can call a name it
         // saw in an earlier turn of the same session.
-        let policy = ToolPolicy { disabled: vec!["bash".to_string()], ..policy(0, false, false, false) };
+        let policy = ToolPolicy { disabled: vec!["bash".to_string()], ..policy(0, false, false) };
         let registry = ToolRegistry::new(vec![mcp_def("mcp_tool")], policy);
         assert!(!tool_names(&registry).contains(&"bash".to_string()));
 
@@ -381,7 +366,7 @@ mod tests {
         // MCP tools go through the same registry, so one switch covers both —
         // and `is_mcp_tool` must stop claiming it, or the chat loop would route
         // the call to the server anyway.
-        let policy = ToolPolicy { disabled: vec!["mcp_tool".to_string()], ..policy(0, false, false, false) };
+        let policy = ToolPolicy { disabled: vec!["mcp_tool".to_string()], ..policy(0, false, false) };
         let registry = ToolRegistry::new(vec![mcp_def("mcp_tool"), mcp_def("kept")], policy);
         let names = tool_names(&registry);
         assert!(!names.contains(&"mcp_tool".to_string()));
@@ -393,7 +378,7 @@ mod tests {
     fn the_owner_switch_can_only_subtract() {
         // Enabling a context-gated tool in config must not hand it to a run the
         // gate excludes.
-        let policy = ToolPolicy { disabled: vec![], ..policy(1, false, false, false) };
+        let policy = ToolPolicy { disabled: vec![], ..policy(1, false, false) };
         let names = tool_names(&ToolRegistry::new(vec![], policy));
         assert!(!names.contains(&"chat".to_string()));
         assert!(!names.contains(&"spawn_subagent".to_string()));
@@ -404,7 +389,7 @@ mod tests {
         let mut descriptions = BTreeMap::new();
         descriptions.insert("bash".to_string(), "只用来跑 git".to_string());
         descriptions.insert("mcp_tool".to_string(), "改过的 MCP 描述".to_string());
-        let policy = ToolPolicy { descriptions, ..policy(0, false, false, false) };
+        let policy = ToolPolicy { descriptions, ..policy(0, false, false) };
         let registry = ToolRegistry::new(vec![mcp_def("mcp_tool")], policy);
 
         let defs = registry.definitions();

@@ -143,18 +143,32 @@ pub fn prepend_swarm_orchestrator_system_messages(
 }
 
 /// Prepend the group-chat system messages: the agent's full persona + memory
-/// (it's the agent itself in the room, not a worker), the room name, the group
-/// etiquette, then the shared tool guidance. Scoped to `agent_id`.
+/// (it's the agent itself in the room, not a worker), the room name, topic and
+/// member roster, the group etiquette, then the shared tool guidance. Scoped to
+/// `agent_id`.
 pub fn prepend_group_system_messages(
     conv_messages: &mut Vec<Value>,
     agent_id: &str,
     group_title: &str,
+    group_topic: &str,
+    group_members: &[String],
 ) {
-    let room = if group_title.trim().is_empty() {
-        String::new()
-    } else {
-        format!("当前群聊：{}\n\n", group_title.trim())
-    };
+    let mut room = String::new();
+    if !group_title.trim().is_empty() {
+        room.push_str(&format!("当前群聊：{}\n", group_title.trim()));
+    }
+    if !group_topic.trim().is_empty() {
+        room.push_str(&format!("群主题：{}\n", group_topic.trim()));
+    }
+    let mut members = vec!["主人".to_string()];
+    for name in group_members {
+        let name = name.trim();
+        if !name.is_empty() && !members.iter().any(|existing| existing == name) {
+            members.push(name.to_string());
+        }
+    }
+    room.push_str(&format!("群成员：{}\n\n", members.join("、")));
+
     let system_content = format!(
         "{}\n\n{}{}",
         build_memory_prompt(agent_id),
@@ -334,5 +348,21 @@ mod tests {
         assert!(crate::llm::is_system_message(&msgs[1]));
         assert!(crate::llm::is_system_message(&msgs[2]));
         assert!(!crate::llm::is_system_message(&msgs[3]));
+    }
+
+    #[test]
+    fn group_prompt_lists_the_topic_and_member_roster() {
+        let mut msgs = vec![crate::llm::store_message(&ChatMessage::user("hi"))];
+        prepend_group_system_messages(
+            &mut msgs,
+            "agent",
+            "产品讨论",
+            "确定下个版本的功能优先级",
+            &["小宠".to_string(), "小智".to_string()],
+        );
+        let system = &shape(&msgs)[0].1;
+        assert!(system.contains("当前群聊：产品讨论"));
+        assert!(system.contains("群主题：确定下个版本的功能优先级"));
+        assert!(system.contains("群成员：主人、小宠、小智"));
     }
 }

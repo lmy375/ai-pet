@@ -41,6 +41,8 @@ interface Props {
   /** Rewrite the user message `id` and resend it, dropping everything after it.
    *  Omitted by read-only threads (the group tabs). */
   onEditMessage?: (id: string, text: string) => void;
+  /** Accent for a group sender's dot (group agent tabs). Omitted elsewhere. */
+  groupColorFor?: (agentId?: string) => string;
 }
 
 /** Sender labels for the meta row; absent in the compact (pet window) mode. */
@@ -99,7 +101,7 @@ function buildBlocks(items: ChatItem[], liveToolCalls: ToolCall[], mergeActiviti
   };
 
   items.forEach((item, index) => {
-    if (item.type === "user" || item.type === "notification") turnStartTs = item.ts;
+    if (item.type === "user" || item.type === "notification" || item.type === "group") turnStartTs = item.ts;
     if (item.type === "tool" && item.toolCalls?.length) {
       pushActivity(
         item.toolCalls.map((tc, j) => ({
@@ -408,12 +410,51 @@ function NotificationItem({ content, label, detail }: { content: string; label?:
   );
 }
 
+/** A group line injected into an agent's private context. The sender is stored
+ *  on the item (not parsed from the text), so it renders as an ordinary chat
+ *  message: the owner on the right, other agents on the left with their name
+ *  and membership color. */
+function GroupMessageItem({
+  item,
+  colorFor,
+}: {
+  item: ChatItem;
+  colorFor?: (agentId?: string) => string;
+}) {
+  if (item.senderKind !== "agent") {
+    return (
+      <MessageBubble role="user" name={item.senderName} ts={item.ts} copyText={item.content}>
+        {item.content}
+      </MessageBubble>
+    );
+  }
+  return (
+    <div className="flex flex-col items-start gap-0.5">
+      <div className="flex items-center gap-1.5 px-1 text-meta font-medium text-ink-soft">
+        <span className={`h-2 w-2 rounded-full ${colorFor?.(item.senderId) ?? "bg-ink-faint"}`} />
+        {item.senderName}
+      </div>
+      <MessageBubble role="assistant" meta ts={item.ts} copyText={item.content}>
+        <Markdown text={item.content} />
+      </MessageBubble>
+    </div>
+  );
+}
+
 /** `actionable` is false in selection mode, where the row itself owns the click
  *  (and the buttons would also nest a button inside the row's button — `onEdit`
  *  is likewise left off there). */
-function renderItem(item: ChatItem, names?: Names, actionable = true, onEdit?: () => void) {
+function renderItem(
+  item: ChatItem,
+  names?: Names,
+  actionable = true,
+  onEdit?: () => void,
+  groupColorFor?: (agentId?: string) => string,
+) {
   const copyText = actionable ? item.content : undefined;
   switch (item.type) {
+    case "group":
+      return <GroupMessageItem item={item} colorFor={groupColorFor} />;
     case "user":
       return (
         <MessageBubble
@@ -488,6 +529,7 @@ export function ChatThread({
   selectedKeys,
   onToggleSelect,
   onEditMessage,
+  groupColorFor,
 }: Props) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
@@ -602,10 +644,10 @@ export function ChatThread({
                   {selected && <CheckIcon className="h-3 w-3" />}
                 </span>
                 {/* Disable inner pointer events so the row click owns the toggle. */}
-                <div className="min-w-0 flex-1 pointer-events-none">{renderItem(item, names, false)}</div>
+                <div className="min-w-0 flex-1 pointer-events-none">{renderItem(item, names, false, undefined, groupColorFor)}</div>
               </button>
             ) : (
-              renderItem(item, names, true, editable ? () => setEditingId(item.id) : undefined)
+              renderItem(item, names, true, editable ? () => setEditingId(item.id) : undefined, groupColorFor)
             )}
           </div>
         );

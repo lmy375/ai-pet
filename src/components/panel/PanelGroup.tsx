@@ -100,17 +100,31 @@ function ThinkingBar({
   );
 }
 
-/** One agent's private session (full thinking + tool calls), reusing ChatThread. */
-function AgentTab({ view, emptyHint }: { view: AgentView | undefined; emptyHint: string }) {
+/** One agent's private session (full thinking + tool calls), reusing ChatThread
+ *  with the same name/reasoning/meta treatment as the panel chat. */
+function AgentTab({
+  view,
+  agentName,
+  colorFor,
+  emptyHint,
+}: {
+  view: AgentView | undefined;
+  agentName: string;
+  colorFor: (agentId?: string) => string;
+  emptyHint: string;
+}) {
   if (!view) return <div className="mt-10 text-center text-[14px] text-ink-faint">{emptyHint}</div>;
   return (
     <ChatThread
       items={view.items}
       currentToolCalls={view.toolCalls}
       streaming={view.streaming}
+      streamingReasoning={view.reasoning}
       loading={view.running}
       className="h-full"
       emptyHint={emptyHint}
+      assistantName={agentName}
+      groupColorFor={colorFor}
     />
   );
 }
@@ -127,12 +141,13 @@ function GroupDialog({
   mode: "create" | "edit";
   group?: GroupSummary;
   agents: AgentConfig[];
-  onSubmit: (title: string, members: string[]) => Promise<void>;
+  onSubmit: (title: string, topic: string, members: string[]) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }) {
   const { t } = useI18n();
   const [title, setTitle] = useState(group?.title ?? "");
+  const [topic, setTopic] = useState(group?.topic ?? "");
   const [members, setMembers] = useState<string[]>(group?.members ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -142,7 +157,7 @@ function GroupDialog({
     setBusy(true);
     setError("");
     try {
-      await onSubmit(title.trim(), members);
+      await onSubmit(title.trim(), topic.trim(), members);
     } catch (e) {
       setError(String(e));
       setBusy(false);
@@ -189,6 +204,15 @@ function GroupDialog({
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder={t("group.namePlaceholder")}
           className="mt-1 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
+        />
+
+        <label className="mt-3 block text-note font-medium text-ink">{t("group.topic")}</label>
+        <textarea
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+          placeholder={t("group.topicPlaceholder")}
+          rows={2}
+          className="mt-1 w-full resize-none rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
         />
 
         <div className="mt-4 flex items-center gap-1.5 text-note font-medium text-ink">
@@ -383,6 +407,9 @@ export function PanelGroup() {
             <div className="flex items-center gap-2">
               <div className="min-w-0 flex-1">
                 <div className="truncate text-title font-semibold text-ink">{title}</div>
+                {group.topic.trim() && (
+                  <div className="truncate text-meta text-ink-soft">{group.topic}</div>
+                )}
                 <div className="truncate text-meta text-ink-faint">
                   {group.members.length === 0
                     ? t("group.noMembers")
@@ -430,7 +457,12 @@ export function PanelGroup() {
             </>
           ) : (
             <div className="flex-1 overflow-hidden px-3 py-3">
-              <AgentTab view={group.agents[subTab]} emptyHint={t("group.agent.empty")} />
+              <AgentTab
+                view={group.agents[subTab]}
+                agentName={nameOf(subTab)}
+                colorFor={colorFor}
+                emptyHint={t("group.agent.empty")}
+              />
             </div>
           )}
         </section>
@@ -441,11 +473,11 @@ export function PanelGroup() {
           mode={dialog.mode}
           group={dialog.mode === "edit" ? dialog.group : undefined}
           agents={settings.agents}
-          onSubmit={async (name, members) => {
+          onSubmit={async (name, topic, members) => {
             if (dialog.mode === "create") {
-              await group.create(name, members);
+              await group.create(name, topic, members);
             } else {
-              await group.configure(dialog.group.id, name, members);
+              await group.configure(dialog.group.id, name, topic, members);
             }
             setDialog(null);
           }}

@@ -15,10 +15,12 @@
 //!   `consumed_upto`). When the current run finishes, the worker drains ALL pending
 //!   messages at once and feeds them into a single coalesced LLM loop — never one
 //!   loop per message.
-//! - Agents speak by calling the `GroupChat` tool (`post_agent_message`), which
-//!   appends to the transcript and wakes the OTHER idle agents. This cascades
-//!   freely — there's no round cap. The owner stops runaway chatter with the pause
-//!   control (`set_paused`), which aborts every in-flight worker.
+//! - Agents speak by emitting `<public>…</public>` text. Each complete block is
+//!   appended to the transcript (`post_agent_message`), which wakes the OTHER idle
+//!   agents. Text outside the tags — reasoning, tool calls, private notes — never
+//!   reaches the room. This cascades freely; there's no round cap. The owner stops
+//!   runaway chatter with the pause control (`set_paused`), which aborts every
+//!   in-flight worker.
 //!
 //! The orchestrator is interface-agnostic: all UI delivery goes through the
 //! [`GroupEvents`] trait (the Tauri layer emits window events; the CLI prints).
@@ -35,6 +37,7 @@ use tokio::task::AbortHandle;
 
 use crate::chat::{run_agent_loop, ChatEventSink, ItemBuilder, StreamEvent};
 use crate::config::AiConfig;
+use crate::group_public::{Piece, PublicFilter};
 use crate::logging::LogStore;
 use crate::mcp::McpStore;
 use crate::prompt;
@@ -79,6 +82,9 @@ pub struct GroupState {
     pub id: String,
     #[serde(default)]
     pub title: String,
+    /// What this room is about. Injected into every member's system prompt.
+    #[serde(default)]
+    pub topic: String,
     #[serde(default)]
     pub transcript: Vec<GroupMessage>,
     /// Agent ids participating in the group (user-selected subset).
@@ -106,6 +112,7 @@ pub struct GroupState {
 pub struct GroupSummary {
     pub id: String,
     pub title: String,
+    pub topic: String,
     pub members: Vec<String>,
     pub paused: bool,
     pub updated_at: i64,
@@ -192,7 +199,12 @@ impl GroupRuntime {
     }
 
     /// Create a room and make it available immediately.
-    pub async fn create(&self, title: &str, members: Vec<String>) -> Result<GroupState, String> {
+    pub async fn create(
+        &self,
+        title: &str,
+        topic: &str,
+        members: Vec<String>,
+    ) -> Result<GroupState, String> {
         let title = title.trim();
         if title.is_empty() {
             return Err("群聊名称不能为空".to_string());
@@ -202,6 +214,7 @@ impl GroupRuntime {
         let mut state = GroupState {
             id: id.clone(),
             title: title.to_string(),
+            topic: topic.trim().to_string(),
             created_at: now,
             updated_at: now,
             ..GroupState::default()
@@ -230,6 +243,7 @@ impl GroupRuntime {
         &self,
         id: &str,
         title: &str,
+        topic: &str,
         members: Vec<String>,
     ) -> Result<(), String> {
         let title = title.trim();
@@ -239,6 +253,7 @@ impl GroupRuntime {
         let session = self.session(id).await?;
         let mut s = session.state.lock().await;
         s.title = title.to_string();
+        s.topic = topic.trim().to_string();
         apply_members(&mut s, members);
         s.updated_at = now_ms();
         session.save(&s);
@@ -308,7 +323,7 @@ impl GroupRuntime {
         if let Some(first) = self.list().first() {
             return Ok(first.id.clone());
         }
-        Ok(self.create("群聊", Vec::new()).await?.id)
+        Ok(self.create("群聊", "", Vec::new()).await?.id)
     }
 
     async fn session(&self, id: &str) -> Result<Arc<GroupSession>, String> {
@@ -363,9 +378,17 @@ impl GroupSession {
         Ok(())
     }
 
-    /// Append an agent's message to the transcript (the `GroupChat` tool's
-    /// effect) and wake the OTHER idle agents so they can react.
+    /// Append a completed `<public>` block to the transcript and wake the OTHER
+    /// idle agents so they can react. The group sink calls this once per closed
+    /// block, in generation order.
     pub async fn post_agent_message(self: &Arc<Self>, agent_id: &str, content: &str) {
+        if self.deleted.load(Ordering::SeqCst) {
+            return;
+        }
+        let content = content.trim();
+        if content.is_empty() {
+            return;
+        }
         let name = get_settings()
             .ok()
             .and_then(|s| s.agent(agent_id).map(|a| a.name.clone()))
@@ -381,6 +404,11 @@ impl GroupSession {
 
         let group_id = {
             let mut s = self.state.lock().await;
+            // A pause aborts the worker, but a block that was already handed to
+            // the poster can still arrive here. Paused means "say nothing".
+            if s.paused {
+                return;
+            }
             s.transcript.push(msg.clone());
             s.updated_at = msg.ts;
             // Wake the other idle agents (skips this one — it's still running).
@@ -434,6 +462,7 @@ fn summary(state: &GroupState) -> GroupSummary {
     GroupSummary {
         id: state.id.clone(),
         title: state.title.clone(),
+        topic: state.topic.clone(),
         members: state.members.clone(),
         paused: state.paused,
         updated_at: state.updated_at,
@@ -508,16 +537,6 @@ fn remove_state(id: &str) -> Result<(), String> {
     }
 }
 
-/// `HH:MM` for the injected `[time] name:` prefix.
-fn fmt_hm(ts_ms: i64) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_millis_opt(ts_ms)
-        .single()
-        .map(|dt| dt.format("%H:%M").to_string())
-        .unwrap_or_default()
-}
-
 fn now_ms() -> i64 {
     chrono::Local::now().timestamp_millis()
 }
@@ -561,6 +580,9 @@ fn wake_agents(session: &Arc<GroupSession>, s: &mut GroupState) {
 struct AgentRun {
     agent_id: String,
     group_title: String,
+    group_topic: String,
+    /// Display names of the AI members. The owner is added when building the prompt.
+    group_members: Vec<String>,
     config: AiConfig,
     /// The agent's private context (incoming messages already injected), minus
     /// the system messages (added fresh per run).
@@ -568,6 +590,39 @@ struct AgentRun {
     /// Display items for the messages injected this run, so the Agent sub-tab can
     /// render the incoming group lines live (injection isn't a sink event).
     injected_items: Vec<Value>,
+}
+
+/// The tag name the model sees for one speaker, e.g. `<chat-小宠-message>`.
+/// The speaker's display name is kept for readability; whitespace and angle
+/// brackets become `-` so the wrapper can never be broken by a name.
+fn chat_tag(name: &str) -> String {
+    let speaker: String = name
+        .chars()
+        .map(|c| if c.is_whitespace() || c == '<' || c == '>' { '-' } else { c })
+        .collect();
+    format!("chat-{speaker}-message")
+}
+
+/// The line injected into an agent's private context. Every group line is
+/// wrapped in `<chat-{speaker}-message>…</chat-{speaker}-message>` so the model
+/// can tell speakers apart without the old `[HH:MM] name:` prefix.
+fn injected_line(m: &GroupMessage) -> String {
+    let tag = chat_tag(&m.name);
+    format!("<{tag}>{}</{tag}>", m.content)
+}
+
+/// The display item for an injected line. It carries the sender explicitly —
+/// the Agent sub-tab renders it as a chat message instead of raw tag text.
+fn injected_item(m: &GroupMessage) -> Value {
+    json!({
+        "id": session::item_id(),
+        "ts": m.ts,
+        "type": "group",
+        "content": m.content,
+        "senderKind": m.speaker_kind,
+        "senderId": m.agent_id,
+        "senderName": m.name,
+    })
 }
 
 /// Coalesce ALL of the agent's pending (unconsumed, non-self) messages into its
@@ -597,19 +652,38 @@ fn prepare_run(session: &GroupSession, s: &mut GroupState, agent_id: &str, tlen:
     let st = s.agents.entry(agent_id.to_string()).or_default();
     let mut injected_items = Vec::new();
     for m in &foreign {
-        let line = format!("[{}] {}: {}", fmt_hm(m.ts), m.name, m.content);
+        let line = injected_line(m);
         st.messages
             .push(crate::llm::store_message(&crate::llm::user_message(&line, &[])));
-        let mut item = session::user_item(&line, &[]);
-        item["ts"] = json!(m.ts);
+        let item = injected_item(m);
         st.items.push(item.clone());
         injected_items.push(item);
     }
     st.consumed_upto = tlen;
     let messages = st.messages.clone();
     let group_title = s.title.clone();
+    let group_topic = s.topic.clone();
+    let group_members = s
+        .members
+        .iter()
+        .map(|id| {
+            settings
+                .as_ref()
+                .and_then(|st| st.agent(id))
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| id.clone())
+        })
+        .collect();
     session.save(s);
-    Some(AgentRun { agent_id: agent_id.to_string(), group_title, config, messages, injected_items })
+    Some(AgentRun {
+        agent_id: agent_id.to_string(),
+        group_title,
+        group_topic,
+        group_members,
+        config,
+        messages,
+        injected_items,
+    })
 }
 
 /// One agent's worker: drains pending → runs one coalesced loop → repeats until
@@ -660,7 +734,13 @@ async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
     session.events.injected(&group_id, &run.agent_id, &run.injected_items);
 
     let mut conv = run.messages.clone();
-    prompt::prepend_group_system_messages(&mut conv, &run.agent_id, &run.group_title);
+    prompt::prepend_group_system_messages(
+        &mut conv,
+        &run.agent_id,
+        &run.group_title,
+        &run.group_topic,
+        &run.group_members,
+    );
 
     let mut ctx = ToolContext::new(
         LogStore(session.log_store.0.clone()),
@@ -669,15 +749,38 @@ async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
         session.mcp_store.clone(),
         format!("group:{group_id}:{}", run.agent_id),
         None, // group runs never inject background-task completions into main chat
-        None, // no chat hook — group agents speak via the GroupChat tool
+        None, // no chat hook — group agents speak through public text
         false, // not a heartbeat
     );
-    ctx.group = Some(session.clone());
     ctx.log_session = crate::logging::LogSession::group(&group_id, &run.agent_id);
 
-    let sink = GroupSink::new(session.events.clone(), group_id.clone(), run.agent_id.clone());
+    // Completed `<public>` blocks go through a channel to a poster task. That
+    // keeps room delivery in generation order while the LLM run continues, and
+    // lets the sync sink hand off without blocking on the async room lock.
+    let (public_tx, mut public_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let poster = {
+        let session = session.clone();
+        let agent_id = run.agent_id.clone();
+        tokio::spawn(async move {
+            while let Some(message) = public_rx.recv().await {
+                session.post_agent_message(&agent_id, &message).await;
+            }
+        })
+    };
+
+    let sink = GroupSink::new(
+        session.events.clone(),
+        group_id.clone(),
+        run.agent_id.clone(),
+        public_tx,
+    );
 
     let result = run_agent_loop(conv, &sink, &run.config, &session.mcp_store, &ctx).await;
+    let items = sink.take_items();
+    // Closing the sender lets the poster finish, then wait for every block it
+    // still holds before persisting this run's display items.
+    drop(sink);
+    let _ = poster.await;
 
     {
         let mut s = session.state.lock().await;
@@ -694,7 +797,7 @@ async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
                     eprintln!("group agent {} failed: {}", run.agent_id, e);
                 }
             }
-            st.items.extend(sink.take_items());
+            st.items.extend(items);
             s.updated_at = now_ms();
             // NOTE: do NOT advance `consumed_upto` here. `prepare_run` already moved
             // it to this run's start length; messages that arrived from OTHER agents
@@ -718,20 +821,82 @@ async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
 /// interface via `GroupEvents::stream` (tagged with room + agent id) AND builds
 /// the agent's display items for persistence (via the shared `ItemBuilder`, so
 /// persisted items match what the live listener rendered).
+///
+/// Text is additionally run through a [`PublicFilter`]: only complete
+/// `<public>…</public>` blocks are posted to the room, while the agent's private
+/// sub-tab still sees the full text (without the tag markers).
 struct GroupSink {
     events: Arc<dyn GroupEvents>,
     group_id: String,
     agent_id: String,
     items: std::sync::Mutex<ItemBuilder>,
+    public: std::sync::Mutex<PublicState>,
+    /// Completed blocks, posted in order by the task started in `run_one_agent`.
+    public_tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+#[derive(Default)]
+struct PublicState {
+    filter: PublicFilter,
+    /// The block currently being generated.
+    buffer: String,
 }
 
 impl GroupSink {
-    fn new(events: Arc<dyn GroupEvents>, group_id: String, agent_id: String) -> Self {
-        Self { events, group_id, agent_id, items: std::sync::Mutex::new(ItemBuilder::default()) }
+    fn new(
+        events: Arc<dyn GroupEvents>,
+        group_id: String,
+        agent_id: String,
+        public_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Self {
+        Self {
+            events,
+            group_id,
+            agent_id,
+            items: std::sync::Mutex::new(ItemBuilder::default()),
+            public: std::sync::Mutex::new(PublicState::default()),
+            public_tx,
+        }
     }
 
     fn emit(&self, event: StreamEvent) {
         self.events.stream(&self.group_id, &self.agent_id, &event);
+    }
+
+    /// Consume the filter's output: private text is kept for this agent,
+    /// closed public blocks are queued for the room.
+    fn handle_pieces(&self, pieces: Vec<Piece>) {
+        let mut display = String::new();
+        let mut completed = Vec::new();
+        {
+            let mut state = self.public.lock().unwrap();
+            for piece in pieces {
+                match piece {
+                    Piece::Private(text) => display.push_str(&text),
+                    Piece::Public(text) => {
+                        state.buffer.push_str(&text);
+                        display.push_str(&text);
+                    }
+                    Piece::PublicEnd => {
+                        let message = std::mem::take(&mut state.buffer);
+                        let message = message.trim();
+                        if !message.is_empty() {
+                            completed.push(message.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Both channels see the same tag-free text: the agent's own sub-tab is a
+        // private view of the full stream, the room gets only the blocks above.
+        if !display.is_empty() {
+            self.items.lock().unwrap().chunk(&display);
+            self.emit(StreamEvent::Chunk { text: display });
+        }
+        for message in completed {
+            let _ = self.public_tx.send(message);
+        }
     }
 
     /// Take the accumulated display items (after the run finishes).
@@ -742,13 +907,15 @@ impl GroupSink {
 
 impl ChatEventSink for GroupSink {
     fn send_chunk(&self, text: &str) {
-        self.items.lock().unwrap().chunk(text);
-        self.emit(StreamEvent::Chunk { text: text.to_string() });
+        let pieces = self.public.lock().unwrap().filter.push(text);
+        self.handle_pieces(pieces);
     }
 
     fn send_reasoning(&self, text: &str) {
-        // Forward chain-of-thought to the interface (the group reducer ignores it
-        // for now); never fold it into the persisted message — it's not the answer.
+        // Persist the chain-of-thought on the assistant item (same as the main
+        // chat's sink) so the Agent sub-tab can render it after a reload, and
+        // forward it live.
+        self.items.lock().unwrap().reasoning(text);
         self.emit(StreamEvent::Reasoning { text: text.to_string() });
     }
 
@@ -772,6 +939,10 @@ impl ChatEventSink for GroupSink {
     }
 
     fn send_done(&self) {
+        // An unterminated `<public>` still counts as public: the model simply
+        // ran out of output. Flushing here also releases any held tag prefix.
+        let pieces = self.public.lock().unwrap().filter.finish();
+        self.handle_pieces(pieces);
         self.items.lock().unwrap().done();
         self.emit(StreamEvent::Done {});
     }
@@ -781,3 +952,120 @@ impl ChatEventSink for GroupSink {
         self.emit(StreamEvent::Error { message: message.to_string() });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingEvents {
+        chunks: std::sync::Mutex<String>,
+        messages: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl GroupEvents for RecordingEvents {
+        fn message(&self, _group_id: &str, msg: &GroupMessage) {
+            self.messages.lock().unwrap().push(msg.content.clone());
+        }
+
+        fn stream(&self, _group_id: &str, _agent_id: &str, event: &StreamEvent) {
+            if let StreamEvent::Chunk { text } = event {
+                self.chunks.lock().unwrap().push_str(text);
+            }
+        }
+
+        fn injected(&self, _group_id: &str, _agent_id: &str, _items: &[Value]) {}
+
+        fn agent_done(&self, _group_id: &str, _agent_id: &str) {}
+    }
+
+    /// The injected line is an XML-ish wrapper named after the speaker, so the
+    /// model can tell who said what without the old `[HH:MM] name:` prefix.
+    #[test]
+    fn injected_lines_are_wrapped_in_sender_tags() {
+        let human = GroupMessage {
+            id: "1".into(),
+            speaker_kind: "human".into(),
+            agent_id: None,
+            name: "主人".into(),
+            content: "在吗".into(),
+            ts: 1,
+        };
+        assert_eq!(injected_line(&human), "<chat-主人-message>在吗</chat-主人-message>");
+
+        let agent = GroupMessage {
+            id: "2".into(),
+            speaker_kind: "agent".into(),
+            agent_id: Some("owen".into()),
+            name: "小 宠".into(),
+            content: "晚上好".into(),
+            ts: 2,
+        };
+        assert_eq!(injected_line(&agent), "<chat-小-宠-message>晚上好</chat-小-宠-message>");
+    }
+
+    /// The display item carries the sender separately, so the Agent sub-tab can
+    /// render a chat row without parsing the tag back out of the content.
+    #[test]
+    fn injected_items_carry_the_sender_for_the_ui() {
+        let agent = GroupMessage {
+            id: "2".into(),
+            speaker_kind: "agent".into(),
+            agent_id: Some("owen".into()),
+            name: "小宠".into(),
+            content: "晚上好".into(),
+            ts: 42,
+        };
+        let item = injected_item(&agent);
+        assert_eq!(item["type"], "group");
+        assert_eq!(item["content"], "晚上好");
+        assert_eq!(item["senderKind"], "agent");
+        assert_eq!(item["senderId"], "owen");
+        assert_eq!(item["senderName"], "小宠");
+        assert_eq!(item["ts"], 42);
+    }
+
+    /// The room gets complete `<public>` blocks only, in generation order —
+    /// including a block whose opening tag was split across chunks and a block
+    /// whose closing tag was. The agent's private view keeps all the text, with
+    /// the markers stripped.
+    #[tokio::test]
+    async fn the_sink_posts_only_closed_public_blocks_in_order() {
+        let events = Arc::new(RecordingEvents::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = GroupSink::new(events.clone(), "g".into(), "a".into(), tx);
+
+        sink.send_chunk("thinking <pub");
+        sink.send_chunk("lic>one</public> between");
+        sink.send_chunk(" <public>two</public");
+        sink.send_chunk(">");
+        sink.send_done();
+        drop(sink);
+
+        let mut posted = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            posted.push(message);
+        }
+        assert_eq!(posted, vec!["one", "two"]);
+        assert_eq!(events.chunks.lock().unwrap().as_str(), "thinking one between two");
+    }
+
+    /// Thinking is part of the Agent sub-tab's standard chat rendering, so it
+    /// must reach the persisted item (not only the live stream).
+    #[tokio::test]
+    async fn the_sink_persists_reasoning_on_the_assistant_item() {
+        let events = Arc::new(RecordingEvents::default());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = GroupSink::new(events, "g".into(), "a".into(), tx);
+
+        sink.send_reasoning("let me think");
+        sink.send_chunk("answer");
+        sink.send_done();
+
+        let items = sink.take_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["content"], "answer");
+        assert_eq!(items[0]["reasoning"], "let me think");
+    }
+}
+

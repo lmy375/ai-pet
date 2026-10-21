@@ -17,6 +17,7 @@ export interface GroupMessage {
 export interface GroupSummary {
   id: string;
   title: string;
+  topic: string;
   members: string[];
   paused: boolean;
   updated_at: number;
@@ -27,6 +28,7 @@ export interface AgentView {
   items: ChatItem[];
   toolCalls: ToolCall[]; // in-progress (not yet flushed) tool calls
   streaming: string; // in-progress assistant text
+  reasoning: string; // in-progress chain-of-thought
   running: boolean;
 }
 
@@ -34,6 +36,7 @@ export interface AgentView {
 interface GroupStateSnapshot {
   id: string;
   title: string;
+  topic: string;
   transcript: GroupMessage[];
   members: string[];
   agents: Record<string, { items?: ChatItem[] }>;
@@ -43,6 +46,7 @@ interface GroupStateSnapshot {
 /** A `group-stream` event payload: a chat StreamEvent tagged with the room + agent. */
 type StreamEvent =
   | { event: "chunk"; data: { text: string } }
+  | { event: "reasoning"; data: { text: string } }
   | { event: "toolStart"; data: { name: string; arguments: string } }
   | { event: "toolResult"; data: { name: string; result: string } }
   | { event: "image"; data: { dataUrl: string } }
@@ -51,7 +55,7 @@ type StreamEvent =
   | { event: "error"; data: { message: string } };
 
 function emptyView(items: ChatItem[] = []): AgentView {
-  return { items, toolCalls: [], streaming: "", running: false };
+  return { items, toolCalls: [], streaming: "", reasoning: "", running: false };
 }
 
 /** Apply one StreamEvent to an agent's view — the exact reducer `useChat` runs,
@@ -67,14 +71,34 @@ function applyStream(view: AgentView, ev: StreamEvent): AgentView {
           toolCalls: [],
         };
   const commitText = (v: AgentView): AgentView =>
-    v.streaming.trim()
-      ? { ...v, items: [...v.items, { id: newItemId(), type: "assistant", content: v.streaming, ts }], streaming: "" }
-      : { ...v, streaming: "" };
+    !v.streaming.trim() && !v.reasoning.trim()
+      ? { ...v, streaming: "", reasoning: "" }
+      : {
+          ...v,
+          items: [
+            ...v.items,
+            {
+              id: newItemId(),
+              type: "assistant",
+              content: v.streaming,
+              reasoning: v.reasoning || undefined,
+              ts,
+            },
+          ],
+          streaming: "",
+          reasoning: "",
+        };
 
   switch (ev.event) {
     case "chunk": {
       const v = flushTools(view);
       return { ...v, running: true, streaming: v.streaming + ev.data.text };
+    }
+    case "reasoning": {
+      // A new round's thinking starts only after the previous round's tool
+      // calls returned — same boundary the main chat's reducer uses.
+      const v = flushTools(view);
+      return { ...v, running: true, reasoning: v.reasoning + ev.data.text };
     }
     case "toolStart": {
       const v = commitText(view);
@@ -112,6 +136,7 @@ function applyStream(view: AgentView, ev: StreamEvent): AgentView {
         ...v,
         items: [...v.items, { id: newItemId(), type: "error", content: ev.data.message, ts }],
         streaming: "",
+        reasoning: "",
         running: false,
       };
     }
@@ -162,6 +187,7 @@ export function useGroupChat() {
   const [ready, setReady] = useState(false);
   const [activeId, setActiveId] = useState("");
   const [title, setTitle] = useState("");
+  const [topic, setTopic] = useState("");
   const [transcript, setTranscript] = useState<GroupMessage[]>([]);
   const [members, setMembers] = useState<string[]>([]);
   const [agents, setAgents] = useState<Record<string, AgentView>>({});
@@ -178,6 +204,7 @@ export function useGroupChat() {
     if (activeRef.current !== id) return;
     seenMsgIds.current = new Set(state.transcript.map((m) => m.id));
     setTitle(state.title);
+    setTopic(state.topic ?? "");
     setTranscript(state.transcript);
     setMembers(state.members);
     const views: Record<string, AgentView> = {};
@@ -279,6 +306,7 @@ export function useGroupChat() {
     if (!activeId) {
       seenMsgIds.current = new Set();
       setTitle("");
+      setTopic("");
       setTranscript([]);
       setMembers([]);
       setAgents({});
@@ -288,11 +316,12 @@ export function useGroupChat() {
     load(activeId).catch(console.error);
   }, [activeId, load]);
 
-  const create = useCallback(async (title: string, members: string[]): Promise<void> => {
-    const state = await invoke<GroupStateSnapshot>("group_create", { title, members });
+  const create = useCallback(async (title: string, topic: string, members: string[]): Promise<void> => {
+    const state = await invoke<GroupStateSnapshot>("group_create", { title, topic, members });
     const summary: GroupSummary = {
       id: state.id,
       title: state.title,
+      topic: state.topic,
       members: state.members,
       paused: state.paused,
       updated_at: Date.now(),
@@ -301,14 +330,20 @@ export function useGroupChat() {
     setActiveId(state.id);
   }, []);
 
-  const configure = useCallback(async (id: string, title: string, members: string[]): Promise<void> => {
+  const configure = useCallback(async (id: string, title: string, topic: string, members: string[]): Promise<void> => {
     const trimmed = title.trim();
-    await invoke("group_configure", { id, title: trimmed, members });
+    const trimmedTopic = topic.trim();
+    await invoke("group_configure", { id, title: trimmed, topic: trimmedTopic, members });
     setGroups((prev) =>
-      prev.map((group) => (group.id === id ? { ...group, title: trimmed, members, updated_at: Date.now() } : group)),
+      prev.map((group) =>
+        group.id === id
+          ? { ...group, title: trimmed, topic: trimmedTopic, members, updated_at: Date.now() }
+          : group,
+      ),
     );
     if (id !== activeRef.current) return;
     setTitle(trimmed);
+    setTopic(trimmedTopic);
     setMembers(members);
     setAgents((prev) => {
       const next: Record<string, AgentView> = {};
@@ -351,6 +386,7 @@ export function useGroupChat() {
     activeId,
     setActiveId,
     title,
+    topic,
     transcript,
     members,
     agents,

@@ -71,10 +71,11 @@ pub async fn group_list(store: State<'_, GroupStore>) -> Result<Vec<GroupSummary
 #[tauri::command]
 pub async fn group_create(
     title: String,
+    topic: String,
     members: Vec<String>,
     store: State<'_, GroupStore>,
 ) -> Result<GroupState, String> {
-    store.0.create(&title, members).await
+    store.0.create(&title, &topic, members).await
 }
 
 #[tauri::command]
@@ -82,16 +83,17 @@ pub async fn group_load(id: String, store: State<'_, GroupStore>) -> Result<Grou
     store.0.load(&id).await
 }
 
-/// Rename a room and set its participating agents. Creates private state for new
-/// members and drops state for removed ones.
+/// Rename a room, set its topic and its participating agents. Creates private
+/// state for new members and drops state for removed ones.
 #[tauri::command]
 pub async fn group_configure(
     id: String,
     title: String,
+    topic: String,
     members: Vec<String>,
     store: State<'_, GroupStore>,
 ) -> Result<(), String> {
-    store.0.configure(&id, &title, members).await
+    store.0.configure(&id, &title, &topic, members).await
 }
 
 #[tauri::command]

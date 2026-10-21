@@ -9,7 +9,7 @@ import { ExpandChevron } from "../../Icons";
 import { useI18n, type TKey } from "../../../i18n";
 
 /** The context gate a built-in tool sits behind (`ToolScope` in the core). */
-type ToolScope = "always" | "top_level" | "heartbeat" | "group" | "web_search" | "swarm" | "swarm_orchestrator" | "swarm_worker";
+type ToolScope = "always" | "top_level" | "heartbeat" | "web_search" | "swarm" | "swarm_orchestrator" | "swarm_worker";
 
 /** One built-in tool, from the `list_tools` command. */
 export interface ToolEntry {
@@ -33,7 +33,7 @@ interface Props {
  * the text the model reads to decide when to reach for the tool.
  *
  * Switching a tool on can't widen its reach: the badges name gates (heartbeat,
- * group, sub-agent depth, missing key) that still apply on top.
+ * sub-agent depth, missing key) that still apply on top.
  */
 export function ToolsCard({ notify, fail }: Props) {
   const { t } = useI18n();
