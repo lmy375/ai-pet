@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { ExpandChevron, LightbulbIcon } from "../Icons";
 import { Markdown } from "./Markdown";
+import { useI18n } from "../../i18n";
 
 interface Props {
   text: string;
@@ -60,42 +62,58 @@ const CLAMPED = [
   "[&_code]:py-0 [&_:is(pre,code)]:text-note",
 ].join(" ");
 
-/** Chain-of-thought from a reasoning model, shown above the answer it produced.
- *  Collapsed to a single faint line (click to read it all) so thinking stays
- *  peripheral: no box, no label, just an aside rule and the faintest ink. The
- *  thinking is display-only — it is never re-sent to the model.
+/** Chain-of-thought from a reasoning model, shown above the answer it produced:
+ *  a compact row (chevron, accent icon + label, one-line preview) that expands
+ *  in place. Same row in a merged activity card and inside a chat bubble — only
+ *  `embedded` drops the card padding and paints the expanded body inline.
+ *
+ *  The thinking is display-only — it is never re-sent to the model.
  *
  *  Not a <button>: the rendered markdown may contain links, which must not nest
  *  inside one. */
-export function ReasoningBlock({ text, streaming = false }: Props) {
+export function ReasoningRow({ text, streaming = false, embedded = false }: Props & { embedded?: boolean }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-expanded={expanded}
-      onClick={(e) => {
-        // A link opens (Markdown hands it to the OS browser) and a click that
-        // ends a selection leaves the thought expanded, so it stays copyable.
-        if ((e.target as HTMLElement).closest("a")) return;
-        if (window.getSelection()?.isCollapsed === false) return;
-        setExpanded((v) => !v);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") setExpanded((v) => !v);
-        if (e.key === "Escape") setExpanded(false);
-      }}
-      className={`mb-2 cursor-pointer border-l border-line pl-2.5 text-note leading-relaxed text-ink-faint transition-colors ${
-        expanded
-          ? "max-h-[260px] overflow-y-auto"
-          : `select-none hover:text-ink-soft ${streaming ? "animate-pulse" : ""}`
-      }`}
-    >
-      <Markdown
-        text={expanded ? sections(text) : headline(text, streaming)}
-        className={expanded ? THOUGHT : `${THOUGHT} ${CLAMPED}`}
-      />
+    <div className={embedded ? "mb-2" : ""}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={(e) => {
+          // A link opens (Markdown hands it to the OS browser) and a click that
+          // ends a selection leaves the thought expanded, so it stays copyable.
+          if ((e.target as HTMLElement).closest("a")) return;
+          if (window.getSelection()?.isCollapsed === false) return;
+          setExpanded((v) => !v);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") setExpanded((v) => !v);
+          if (e.key === "Escape") setExpanded(false);
+        }}
+        className={`flex cursor-pointer select-none items-center gap-1.5 text-ink-soft ${
+          embedded ? "py-0.5" : "px-3 py-1.5"
+        }`}
+      >
+        <ExpandChevron expanded={expanded} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+        <LightbulbIcon className="h-4 w-4 shrink-0 text-accent" />
+        <span className="shrink-0 font-semibold text-accent">{t("chat.reasoning")}</span>
+        <div className={`min-w-0 flex-1 overflow-hidden ${streaming && !expanded ? "animate-pulse" : ""}`}>
+          <Markdown text={headline(text, streaming)} className={`${THOUGHT} ${CLAMPED} text-note text-ink-faint`} />
+        </div>
+      </div>
+      {expanded && (
+        <div
+          className={
+            embedded
+              ? "mt-1 max-h-[260px] overflow-y-auto border-t border-line/70 pt-1.5"
+              : "max-h-[260px] overflow-y-auto border-t border-line bg-surface px-3 py-2"
+          }
+        >
+          <Markdown text={sections(text)} className={`${THOUGHT} text-note leading-relaxed text-ink-faint`} />
+        </div>
+      )}
     </div>
   );
 }

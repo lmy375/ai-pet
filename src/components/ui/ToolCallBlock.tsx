@@ -16,6 +16,9 @@ interface Props {
   callId?: string;
   /** Open on first render — the LLM log shows a full replay, chat starts folded. */
   defaultExpanded?: boolean;
+  /** Render as a row inside a shared activity card: the caller owns the border,
+   *  background and row separators, so the block drops its own card chrome. */
+  grouped?: boolean;
 }
 
 /** A backgrounded task returns `{status:"running", task_id}` — still running
@@ -39,6 +42,7 @@ export function ToolCallBlock({
   isRunning,
   callId,
   defaultExpanded = false,
+  grouped = false,
 }: Props) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -47,12 +51,14 @@ export function ToolCallBlock({
   const hasArgs = args !== undefined && args !== null;
   const hasResult = result !== undefined && result !== null;
 
-  return (
-    <div className="my-1 overflow-hidden rounded-field border border-line bg-surface-soft text-body">
+  const body = (
+    <>
       {/* Header — always visible */}
       <div
         onClick={() => setExpanded(!expanded)}
-        className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-ink-soft"
+        className={`flex cursor-pointer select-none items-center gap-1.5 px-3 text-ink-soft ${
+          grouped ? "py-1.5" : "py-2"
+        }`}
       >
         <ExpandChevron expanded={expanded} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
         <Icon className="h-4 w-4 shrink-0 text-accent" />
@@ -98,7 +104,13 @@ export function ToolCallBlock({
           )}
         </div>
       )}
-    </div>
+    </>
+  );
+
+  if (grouped) return <div className="text-body">{body}</div>;
+
+  return (
+    <div className="my-1 overflow-hidden rounded-field border border-line bg-surface-soft text-body">{body}</div>
   );
 }
 
