@@ -2,6 +2,8 @@
 //! activity and group activity all funnel into one channel so the UI has
 //! exactly one place where state changes.
 
+use std::sync::{Arc, Mutex};
+
 use pet_core::chat::StreamEvent;
 use pet_core::group::{GroupEvents, GroupMessage};
 use pet_core::turn::{TurnEvents, TurnNotice, TurnSnapshot};
@@ -51,20 +53,39 @@ impl TurnEvents for CliTurnEvents {
 
 /// Group orchestrator events → the UI loop. Chunks/reasoning are dropped here:
 /// concurrent agents' token streams would interleave unreadably, so the room
-/// shows finished messages plus a light tool/error trace.
-pub struct TuiGroupEvents(pub UnboundedSender<AppEvent>);
+/// shows finished messages plus a light tool/error trace. Events from other
+/// rooms (the GUI can run several at once) are ignored.
+pub struct TuiGroupEvents {
+    pub tx: UnboundedSender<AppEvent>,
+    /// The room the TUI is currently showing (empty = group mode not entered).
+    pub group_id: Arc<Mutex<String>>,
+}
+
+impl TuiGroupEvents {
+    fn active(&self, group_id: &str) -> bool {
+        self.group_id
+            .lock()
+            .map(|id| id.as_str() == group_id)
+            .unwrap_or(false)
+    }
+}
 
 impl GroupEvents for TuiGroupEvents {
-    fn message(&self, msg: &GroupMessage) {
-        let _ = self.0.send(AppEvent::GroupMsg(msg.clone()));
+    fn message(&self, group_id: &str, msg: &GroupMessage) {
+        if self.active(group_id) {
+            let _ = self.tx.send(AppEvent::GroupMsg(msg.clone()));
+        }
     }
 
-    fn stream(&self, agent_id: &str, event: &StreamEvent) {
+    fn stream(&self, group_id: &str, agent_id: &str, event: &StreamEvent) {
+        if !self.active(group_id) {
+            return;
+        }
         match event {
             StreamEvent::ToolStart { .. }
             | StreamEvent::ToolResult { .. }
             | StreamEvent::Error { .. } => {
-                let _ = self.0.send(AppEvent::GroupStream {
+                let _ = self.tx.send(AppEvent::GroupStream {
                     agent_id: agent_id.to_string(),
                     event: event.clone(),
                 });
@@ -73,10 +94,12 @@ impl GroupEvents for TuiGroupEvents {
         }
     }
 
-    fn injected(&self, _agent_id: &str, _items: &[serde_json::Value]) {}
+    fn injected(&self, _group_id: &str, _agent_id: &str, _items: &[serde_json::Value]) {}
 
-    fn agent_done(&self, agent_id: &str) {
-        let _ = self.0.send(AppEvent::GroupAgentDone(agent_id.to_string()));
+    fn agent_done(&self, group_id: &str, agent_id: &str) {
+        if self.active(group_id) {
+            let _ = self.tx.send(AppEvent::GroupAgentDone(agent_id.to_string()));
+        }
     }
 }
 

@@ -136,8 +136,11 @@ async fn async_main(oneshot: Option<String>) -> i32 {
     }
 
     // Group runtime (shared state with the GUI's group page, seeded from disk).
+    // The CLI shows one room at a time; `group_id` is the cursor shared with the
+    // event sink so only that room's activity reaches the TUI.
+    let group_id = Arc::new(Mutex::new(String::new()));
     let group_rt = Arc::new(GroupRuntime::new(
-        Arc::new(TuiGroupEvents(tx.clone())),
+        Arc::new(TuiGroupEvents { tx: tx.clone(), group_id: group_id.clone() }),
         cli.mcp_store.clone(),
         LogStore(cli.log_store.0.clone()),
         ShellStore(cli.shell_store.0.clone()),
@@ -151,7 +154,7 @@ async fn async_main(oneshot: Option<String>) -> i32 {
     let shift_enter = enable_key_disambiguation();
     event::spawn_term_reader(tx.clone());
 
-    let ctx = SubmitCtx { cli: cli.clone(), group: group_rt, tx: tx.clone() };
+    let ctx = SubmitCtx { cli: cli.clone(), group: group_rt, group_id, tx: tx.clone() };
     let mut app = TuiApp::new();
     app.shift_enter = shift_enter;
     // A turn may already be running in the active session (started by the GUI,

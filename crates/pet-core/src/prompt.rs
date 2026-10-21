@@ -143,11 +143,24 @@ pub fn prepend_swarm_orchestrator_system_messages(
 }
 
 /// Prepend the group-chat system messages: the agent's full persona + memory
-/// (it's the agent itself in the room, not a worker), followed by the group
+/// (it's the agent itself in the room, not a worker), the room name, the group
 /// etiquette, then the shared tool guidance. Scoped to `agent_id`.
-pub fn prepend_group_system_messages(conv_messages: &mut Vec<Value>, agent_id: &str) {
-    let system_content =
-        format!("{}\n\n{}", build_memory_prompt(agent_id), prompts::text(PromptKey::Group));
+pub fn prepend_group_system_messages(
+    conv_messages: &mut Vec<Value>,
+    agent_id: &str,
+    group_title: &str,
+) {
+    let room = if group_title.trim().is_empty() {
+        String::new()
+    } else {
+        format!("当前群聊：{}\n\n", group_title.trim())
+    };
+    let system_content = format!(
+        "{}\n\n{}{}",
+        build_memory_prompt(agent_id),
+        room,
+        prompts::text(PromptKey::Group)
+    );
     apply_system_messages(conv_messages, system_content);
 }
 

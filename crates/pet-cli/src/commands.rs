@@ -5,10 +5,10 @@
 //! List commands (`/agents`, `/sessions`, `/tasks`, `/members`) never reach
 //! this module — the TUI intercepts them and opens a picker overlay instead.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pet_core::chat::UserTurn;
-use pet_core::group::{self, GroupRuntime};
+use pet_core::group::GroupRuntime;
 use pet_core::session;
 use pet_core::settings::get_settings;
 use pet_core::skills;
@@ -23,6 +23,8 @@ use crate::Mode;
 pub struct SubmitCtx {
     pub cli: Arc<CliApp>,
     pub group: Arc<GroupRuntime>,
+    /// The room the TUI is currently showing (shared with the event sink).
+    pub group_id: Arc<Mutex<String>>,
     pub tx: UnboundedSender<AppEvent>,
 }
 
@@ -35,6 +37,18 @@ impl SubmitCtx {
     }
     fn send(&self, ev: AppEvent) {
         let _ = self.tx.send(ev);
+    }
+    fn active_group(&self) -> Result<String, String> {
+        let id = self
+            .group_id
+            .lock()
+            .map_err(|_| "群聊状态异常".to_string())?
+            .clone();
+        if id.is_empty() {
+            Err("尚未进入群聊".to_string())
+        } else {
+            Ok(id)
+        }
     }
 }
 
@@ -92,10 +106,17 @@ pub fn spawn_refresh_tools(ctx: SubmitCtx) {
 /// Load the current member set and open the members picker (group `/members`).
 pub fn spawn_open_members(ctx: SubmitCtx) {
     tokio::spawn(async move {
-        let members = group::load(&ctx.group).await.members;
+        let id = match ctx.active_group() {
+            Ok(id) => id,
+            Err(e) => return ctx.error(e),
+        };
+        let state = match ctx.group.load(&id).await {
+            Ok(state) => state,
+            Err(e) => return ctx.error(e),
+        };
         match get_settings() {
             Ok(s) if !s.agents.is_empty() => {
-                ctx.send(AppEvent::OpenPicker(members_picker(&s, &members)));
+                ctx.send(AppEvent::OpenPicker(members_picker(&s, &state.members)));
             }
             Ok(_) => ctx.notice("还没有配置 Agent"),
             Err(e) => ctx.error(e),
@@ -106,6 +127,10 @@ pub fn spawn_open_members(ctx: SubmitCtx) {
 /// Apply the member set chosen in the picker (connects MCP for new members).
 pub fn spawn_set_members(ctx: SubmitCtx, ids: Vec<String>) {
     tokio::spawn(async move {
+        let group_id = match ctx.active_group() {
+            Ok(id) => id,
+            Err(e) => return ctx.error(e),
+        };
         let settings = get_settings().unwrap_or_default();
         for id in &ids {
             if let Some(a) = settings.agent(id) {
@@ -114,7 +139,9 @@ pub fn spawn_set_members(ctx: SubmitCtx, ids: Vec<String>) {
                 }
             }
         }
-        group::set_members(&ctx.group, ids.clone()).await;
+        if let Err(e) = ctx.group.set_members(&group_id, ids.clone()).await {
+            return ctx.error(e);
+        }
         if ids.is_empty() {
             ctx.notice("群成员已清空");
         } else {
@@ -198,16 +225,31 @@ async fn handle_group(ctx: &SubmitCtx, line: &str) {
         }
         "/help" => ctx.notice(GROUP_HELP),
         "/pause" => {
-            group::set_paused(&ctx.group, true).await;
-            ctx.notice("已暂停（所有进行中的回复已中止），/resume 恢复");
+            if let Ok(id) = ctx.active_group() {
+                if let Err(e) = ctx.group.set_paused(&id, true).await {
+                    ctx.error(e);
+                } else {
+                    ctx.notice("已暂停（所有进行中的回复已中止），/resume 恢复");
+                }
+            }
         }
         "/resume" => {
-            group::set_paused(&ctx.group, false).await;
-            ctx.notice("已恢复");
+            if let Ok(id) = ctx.active_group() {
+                if let Err(e) = ctx.group.set_paused(&id, false).await {
+                    ctx.error(e);
+                } else {
+                    ctx.notice("已恢复");
+                }
+            }
         }
         "/reset" => {
-            group::reset(&ctx.group).await;
-            ctx.notice("群聊已清空（成员保留）");
+            if let Ok(id) = ctx.active_group() {
+                if let Err(e) = ctx.group.reset(&id).await {
+                    ctx.error(e);
+                } else {
+                    ctx.notice("群聊已清空（成员保留）");
+                }
+            }
         }
         "/history" => {
             let n = line
@@ -220,10 +262,15 @@ async fn handle_group(ctx: &SubmitCtx, line: &str) {
             ctx.error(format!("未知命令 {cmd}。/help 查看群聊命令"));
         }
         _ => {
-            // The owner's line comes back through the transcript event stream
-            // (GroupMsg), so it isn't echoed locally.
-            if let Err(e) = group::send_user_message(&ctx.group, line).await {
-                ctx.error(e);
+            match ctx.active_group() {
+                Ok(id) => {
+                    // The owner's line comes back through the transcript event
+                    // stream (GroupMsg), so it isn't echoed locally.
+                    if let Err(e) = ctx.group.send(&id, line).await {
+                        ctx.error(e);
+                    }
+                }
+                Err(e) => ctx.error(e),
             }
         }
     }
@@ -231,7 +278,17 @@ async fn handle_group(ctx: &SubmitCtx, line: &str) {
 }
 
 async fn enter_group(ctx: &SubmitCtx) {
-    let state = group::load(&ctx.group).await;
+    let id = match ctx.group.ensure_default().await {
+        Ok(id) => id,
+        Err(e) => return ctx.error(e),
+    };
+    if let Ok(mut current) = ctx.group_id.lock() {
+        *current = id.clone();
+    }
+    let state = match ctx.group.load(&id).await {
+        Ok(state) => state,
+        Err(e) => return ctx.error(e),
+    };
     let settings = get_settings().unwrap_or_default();
 
     if state.members.is_empty() {
@@ -263,7 +320,14 @@ async fn enter_group(ctx: &SubmitCtx) {
 }
 
 async fn replay_history(ctx: &SubmitCtx, n: usize) {
-    let state = group::load(&ctx.group).await;
+    let id = match ctx.active_group() {
+        Ok(id) => id,
+        Err(e) => return ctx.error(e),
+    };
+    let state = match ctx.group.load(&id).await {
+        Ok(state) => state,
+        Err(e) => return ctx.error(e),
+    };
     if state.transcript.is_empty() {
         return ctx.notice("群聊还没有记录");
     }

@@ -1,9 +1,11 @@
-//! Multi-agent group chat.
+//! Multi-agent group chat — multiple independent rooms.
 //!
-//! All participating agents + the owner share ONE transcript (`GroupState.transcript`).
-//! Each agent additionally keeps its own private LLM context (`GroupAgentState`),
-//! so it sees the group conversation but reasons/uses tools in isolation — the
-//! Agent sub-tabs render those private sessions.
+//! All participating agents + the owner share ONE transcript per room
+//! (`GroupState.transcript`). Each agent additionally keeps its own private LLM
+//! context (`GroupAgentState`), so it sees the group conversation but
+//! reasons/uses tools in isolation — the Agent sub-tabs render those private
+//! sessions. Rooms are fully independent: their own members, transcript, agent
+//! contexts and pause state, persisted as one file each.
 //!
 //! Concurrency model:
 //! - Agents react **concurrently** with each other — a new message wakes every
@@ -21,8 +23,9 @@
 //! The orchestrator is interface-agnostic: all UI delivery goes through the
 //! [`GroupEvents`] trait (the Tauri layer emits window events; the CLI prints).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -73,6 +76,10 @@ pub struct GroupAgentState {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GroupState {
     #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
     pub transcript: Vec<GroupMessage>,
     /// Agent ids participating in the group (user-selected subset).
     #[serde(default)]
@@ -83,6 +90,10 @@ pub struct GroupState {
     /// reopening the panel reflects it.
     #[serde(default)]
     pub paused: bool,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
     /// Abort handles for the currently-running per-agent workers. In-memory only
     /// (a worker can't survive a restart). Also the source of truth for "is this
     /// agent running" (so we never spawn two workers for one agent).
@@ -90,35 +101,57 @@ pub struct GroupState {
     pub aborts: HashMap<String, AbortHandle>,
 }
 
+/// Lightweight room record for the sidebar list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupSummary {
+    pub id: String,
+    pub title: String,
+    pub members: Vec<String>,
+    pub paused: bool,
+    pub updated_at: i64,
+}
+
 /// Where group-chat activity is delivered to the user. Implemented per
 /// interface: the Tauri layer forwards each callback as a window event
 /// (`group-message`, `group-stream`, …); the CLI prints to the terminal.
+/// Every callback carries the room id so interfaces can ignore other rooms.
 pub trait GroupEvents: Send + Sync {
-    /// A new line landed in the shared transcript (owner or agent).
-    fn message(&self, msg: &GroupMessage);
+    /// A new line landed in a room's transcript (owner or agent).
+    fn message(&self, group_id: &str, msg: &GroupMessage);
     /// A stream event from one agent's private run (chunk/tool/error/…).
-    fn stream(&self, agent_id: &str, event: &StreamEvent);
+    fn stream(&self, group_id: &str, agent_id: &str, event: &StreamEvent);
     /// Group lines injected into an agent's private context before a run
     /// (display items for the Agent sub-tab; injection isn't a sink event).
-    fn injected(&self, agent_id: &str, items: &[Value]);
+    fn injected(&self, group_id: &str, agent_id: &str, items: &[Value]);
     /// An agent's worker finished one run (clears its "running" indicator, even
     /// on transport-error paths where the sink emitted neither done nor error).
-    fn agent_done(&self, agent_id: &str);
+    fn agent_done(&self, group_id: &str, agent_id: &str);
 }
 
-/// Everything a group room needs to run: the shared state, the event sink and
-/// the stores its agent workers execute with. Interfaces construct one at
-/// startup (seeded from disk) and share it via `Arc`.
+/// A live room: its shared state, the event sink and the stores its agent
+/// workers execute with.
+pub struct GroupSession {
+    pub state: Mutex<GroupState>,
+    events: Arc<dyn GroupEvents>,
+    mcp_store: McpStore,
+    log_store: LogStore,
+    shell_store: ShellStore,
+    /// Tombstone: a deleted room must not be written back by an in-flight run.
+    deleted: AtomicBool,
+}
+
+/// Owns every room. Interfaces construct one at startup and share it via
+/// `Arc`; sessions are loaded from disk on first use.
 pub struct GroupRuntime {
-    pub state: Arc<Mutex<GroupState>>,
-    pub events: Arc<dyn GroupEvents>,
-    pub mcp_store: McpStore,
-    pub log_store: LogStore,
-    pub shell_store: ShellStore,
+    sessions: Mutex<HashMap<String, Arc<GroupSession>>>,
+    deleted: Mutex<HashSet<String>>,
+    events: Arc<dyn GroupEvents>,
+    mcp_store: McpStore,
+    log_store: LogStore,
+    shell_store: ShellStore,
 }
 
 impl GroupRuntime {
-    /// Build a runtime with state seeded from disk.
     pub fn new(
         events: Arc<dyn GroupEvents>,
         mcp_store: McpStore,
@@ -126,34 +159,352 @@ impl GroupRuntime {
         shell_store: ShellStore,
     ) -> Self {
         Self {
-            state: Arc::new(Mutex::new(load_state())),
+            sessions: Mutex::new(HashMap::new()),
+            deleted: Mutex::new(HashSet::new()),
             events,
             mcp_store,
             log_store,
             shell_store,
         }
     }
+
+    /// All rooms, newest activity first.
+    pub fn list(&self) -> Vec<GroupSummary> {
+        let Ok(dir) = groups_dir() else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+        let mut out: Vec<GroupSummary> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    return None;
+                }
+                let state: GroupState =
+                    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+                if state.id.is_empty() {
+                    return None;
+                }
+                Some(summary(&state))
+            })
+            .collect();
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out
+    }
+
+    /// Create a room and make it available immediately.
+    pub async fn create(&self, title: &str, members: Vec<String>) -> Result<GroupState, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("群聊名称不能为空".to_string());
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = now_ms();
+        let mut state = GroupState {
+            id: id.clone(),
+            title: title.to_string(),
+            created_at: now,
+            updated_at: now,
+            ..GroupState::default()
+        };
+        apply_members(&mut state, members);
+        save_state(&state);
+
+        let session = Arc::new(GroupSession {
+            state: Mutex::new(state.clone()),
+            events: self.events.clone(),
+            mcp_store: self.mcp_store.clone(),
+            log_store: LogStore(self.log_store.0.clone()),
+            shell_store: ShellStore(self.shell_store.0.clone()),
+            deleted: AtomicBool::new(false),
+        });
+        self.sessions.lock().await.insert(id, session);
+        Ok(state)
+    }
+
+    /// Snapshot one room (for rendering a freshly-opened group view).
+    pub async fn load(&self, id: &str) -> Result<GroupState, String> {
+        Ok(self.session(id).await?.state.lock().await.clone())
+    }
+
+    pub async fn configure(
+        &self,
+        id: &str,
+        title: &str,
+        members: Vec<String>,
+    ) -> Result<(), String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("群聊名称不能为空".to_string());
+        }
+        let session = self.session(id).await?;
+        let mut s = session.state.lock().await;
+        s.title = title.to_string();
+        apply_members(&mut s, members);
+        s.updated_at = now_ms();
+        session.save(&s);
+        Ok(())
+    }
+
+    /// Change membership only (title untouched).
+    pub async fn set_members(&self, id: &str, members: Vec<String>) -> Result<(), String> {
+        let session = self.session(id).await?;
+        let mut s = session.state.lock().await;
+        apply_members(&mut s, members);
+        s.updated_at = now_ms();
+        session.save(&s);
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: &str) -> Result<(), String> {
+        // Keep the sessions lock for the whole operation so a concurrent
+        // `session()` can't load a fresh room while its file is being removed.
+        let mut sessions = self.sessions.lock().await;
+        let removed = sessions.remove(id);
+        self.deleted.lock().await.insert(id.to_string());
+        if let Some(session) = &removed {
+            session.deleted.store(true, Ordering::SeqCst);
+            let mut s = session.state.lock().await;
+            for (_, handle) in s.aborts.drain() {
+                handle.abort();
+            }
+        }
+        match remove_state(id) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // The file is still there: keep serving the room instead of
+                // leaving an unopenable entry in the list.
+                if let Some(session) = removed {
+                    session.deleted.store(false, Ordering::SeqCst);
+                    sessions.insert(id.to_string(), session);
+                }
+                self.deleted.lock().await.remove(id);
+                Err(e)
+            }
+        }
+    }
+
+    /// Pause (stop ALL in-flight loops) or resume a room.
+    pub async fn set_paused(&self, id: &str, paused: bool) -> Result<(), String> {
+        let session = self.session(id).await?;
+        session.set_paused(paused).await;
+        Ok(())
+    }
+
+    /// Clear a room's transcript and every agent's private context (keeps
+    /// membership). Aborts any in-flight workers and clears the paused state.
+    pub async fn reset(&self, id: &str) -> Result<(), String> {
+        self.session(id).await?.reset().await;
+        Ok(())
+    }
+
+    /// The owner sends a message into a room.
+    pub async fn send(&self, id: &str, content: &str) -> Result<(), String> {
+        self.session(id).await?.send(content).await
+    }
+
+    /// First room (newest activity), creating a default one when none exists.
+    /// Used by interfaces that expose a single group room (the CLI).
+    pub async fn ensure_default(&self) -> Result<String, String> {
+        if let Some(first) = self.list().first() {
+            return Ok(first.id.clone());
+        }
+        Ok(self.create("群聊", Vec::new()).await?.id)
+    }
+
+    async fn session(&self, id: &str) -> Result<Arc<GroupSession>, String> {
+        let mut sessions = self.sessions.lock().await;
+        if self.deleted.lock().await.contains(id) {
+            return Err("群聊不存在".to_string());
+        }
+        if let Some(session) = sessions.get(id) {
+            return Ok(session.clone());
+        }
+        let state = load_state(id)?;
+        let session = Arc::new(GroupSession {
+            state: Mutex::new(state),
+            events: self.events.clone(),
+            mcp_store: self.mcp_store.clone(),
+            log_store: LogStore(self.log_store.0.clone()),
+            shell_store: ShellStore(self.shell_store.0.clone()),
+            deleted: AtomicBool::new(false),
+        });
+        sessions.insert(id.to_string(), session.clone());
+        Ok(session)
+    }
 }
 
-fn group_path() -> Result<PathBuf, String> {
-    let dir = crate::common::config_dir()?.join("group");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create group dir: {e}"))?;
-    Ok(dir.join("state.json"))
+impl GroupSession {
+    /// The owner sends a message into the room, waking every idle member
+    /// (unless paused — then it just queues until resume).
+    pub async fn send(self: &Arc<Self>, content: &str) -> Result<(), String> {
+        let content = content.trim().to_string();
+        if content.is_empty() {
+            return Err("消息为空".to_string());
+        }
+        let msg = GroupMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            speaker_kind: "human".to_string(),
+            agent_id: None,
+            name: "主人".to_string(),
+            content,
+            ts: now_ms(),
+        };
+
+        let group_id = {
+            let mut s = self.state.lock().await;
+            s.transcript.push(msg.clone());
+            s.updated_at = msg.ts;
+            wake_agents(self, &mut s);
+            self.save(&s);
+            s.id.clone()
+        };
+
+        self.events.message(&group_id, &msg);
+        Ok(())
+    }
+
+    /// Append an agent's message to the transcript (the `GroupChat` tool's
+    /// effect) and wake the OTHER idle agents so they can react.
+    pub async fn post_agent_message(self: &Arc<Self>, agent_id: &str, content: &str) {
+        let name = get_settings()
+            .ok()
+            .and_then(|s| s.agent(agent_id).map(|a| a.name.clone()))
+            .unwrap_or_else(|| agent_id.to_string());
+        let msg = GroupMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            speaker_kind: "agent".to_string(),
+            agent_id: Some(agent_id.to_string()),
+            name,
+            content: content.to_string(),
+            ts: now_ms(),
+        };
+
+        let group_id = {
+            let mut s = self.state.lock().await;
+            s.transcript.push(msg.clone());
+            s.updated_at = msg.ts;
+            // Wake the other idle agents (skips this one — it's still running).
+            wake_agents(self, &mut s);
+            self.save(&s);
+            s.id.clone()
+        };
+
+        self.events.message(&group_id, &msg);
+    }
+
+    async fn set_paused(self: &Arc<Self>, paused: bool) {
+        let mut s = self.state.lock().await;
+        s.paused = paused;
+        s.updated_at = now_ms();
+        if paused {
+            for (_, handle) in s.aborts.drain() {
+                handle.abort();
+            }
+            self.save(&s);
+        } else {
+            self.save(&s);
+            wake_agents(self, &mut s);
+        }
+    }
+
+    async fn reset(&self) {
+        let mut s = self.state.lock().await;
+        for (_, handle) in s.aborts.drain() {
+            handle.abort();
+        }
+        s.transcript.clear();
+        for st in s.agents.values_mut() {
+            *st = GroupAgentState::default();
+        }
+        s.paused = false;
+        s.updated_at = now_ms();
+        self.save(&s);
+    }
+
+    /// Persist unless the room has been deleted (an in-flight run must not
+    /// resurrect its file).
+    fn save(&self, state: &GroupState) {
+        if !self.deleted.load(Ordering::SeqCst) {
+            save_state(state);
+        }
+    }
 }
 
-fn load_state() -> GroupState {
-    group_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default()
+fn summary(state: &GroupState) -> GroupSummary {
+    GroupSummary {
+        id: state.id.clone(),
+        title: state.title.clone(),
+        members: state.members.clone(),
+        paused: state.paused,
+        updated_at: state.updated_at,
+    }
+}
+
+/// Apply a membership set: create private state for new members, drop it for
+/// removed ones, and abort workers that belong to removed agents.
+fn apply_members(s: &mut GroupState, ids: Vec<String>) {
+    for id in &ids {
+        s.agents.entry(id.clone()).or_default();
+    }
+    s.agents.retain(|id, _| ids.contains(id));
+    let removed: Vec<String> = s
+        .aborts
+        .keys()
+        .filter(|id| !ids.contains(id))
+        .cloned()
+        .collect();
+    for id in removed {
+        if let Some(handle) = s.aborts.remove(&id) {
+            handle.abort();
+        }
+    }
+    s.members = ids;
+}
+
+fn groups_dir() -> Result<PathBuf, String> {
+    let dir = crate::common::config_dir()?.join("groups");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create groups dir: {e}"))?;
+    Ok(dir)
+}
+
+/// Room ids are generated UUIDs. Refuse anything else so a client-supplied id
+/// can never escape the groups directory.
+fn group_path(id: &str) -> Result<PathBuf, String> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("群聊不存在".to_string());
+    }
+    Ok(groups_dir()?.join(format!("{id}.json")))
+}
+
+fn load_state(id: &str) -> Result<GroupState, String> {
+    let path = group_path(id)?;
+    let content = std::fs::read_to_string(&path).map_err(|_| "群聊不存在".to_string())?;
+    let mut state: GroupState =
+        serde_json::from_str(&content).map_err(|e| format!("群聊数据损坏: {e}"))?;
+    if state.id.is_empty() {
+        state.id = id.to_string();
+    }
+    Ok(state)
 }
 
 fn save_state(state: &GroupState) {
-    if let Ok(p) = group_path() {
+    if let Ok(path) = group_path(&state.id) {
         if let Ok(json) = serde_json::to_string_pretty(state) {
-            let _ = std::fs::write(p, json);
+            let _ = std::fs::write(path, json);
         }
+    }
+}
+
+fn remove_state(id: &str) -> Result<(), String> {
+    let path = group_path(id)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("删除群聊失败：{e}")),
     }
 }
 
@@ -185,7 +536,7 @@ fn has_pending(s: &GroupState, agent_id: &str, tlen: usize) -> bool {
 /// Spawn a worker for every member that has pending messages and isn't already
 /// running. No-op while paused. Agents run concurrently; each agent's own runs are
 /// serialized by its single worker. Must be called while holding the state lock.
-fn wake_agents(rt: &Arc<GroupRuntime>, s: &mut GroupState) {
+fn wake_agents(session: &Arc<GroupSession>, s: &mut GroupState) {
     if s.paused {
         return;
     }
@@ -195,117 +546,11 @@ fn wake_agents(rt: &Arc<GroupRuntime>, s: &mut GroupState) {
         if s.aborts.contains_key(&id) || !has_pending(s, &id, tlen) {
             continue;
         }
-        let rt2 = rt.clone();
-        let id2 = id.clone();
-        let handle = tokio::spawn(async move { agent_worker(rt2, id2).await });
+        let session = session.clone();
+        let worker_agent = id.clone();
+        let handle = tokio::spawn(async move { agent_worker(session, worker_agent).await });
         s.aborts.insert(id, handle.abort_handle());
     }
-}
-
-// ---------------------------------------------------------------------------
-// Operations (called by interface commands / the GroupChat tool)
-// ---------------------------------------------------------------------------
-
-/// Snapshot the current state (for rendering a freshly-opened group view).
-pub async fn load(rt: &GroupRuntime) -> GroupState {
-    rt.state.lock().await.clone()
-}
-
-/// Set the participating agents. Creates private state for new members and drops
-/// state for removed ones.
-pub async fn set_members(rt: &GroupRuntime, ids: Vec<String>) {
-    let mut s = rt.state.lock().await;
-    for id in &ids {
-        s.agents.entry(id.clone()).or_default();
-    }
-    s.agents.retain(|k, _| ids.contains(k));
-    s.members = ids;
-    save_state(&s);
-}
-
-/// Pause (stop ALL in-flight loops) or resume the group. Pausing aborts every
-/// running worker; resuming wakes any agent with pending messages.
-pub async fn set_paused(rt: &Arc<GroupRuntime>, paused: bool) {
-    let mut s = rt.state.lock().await;
-    s.paused = paused;
-    if paused {
-        for (_, h) in s.aborts.drain() {
-            h.abort();
-        }
-        save_state(&s);
-    } else {
-        save_state(&s);
-        wake_agents(rt, &mut s);
-    }
-}
-
-/// Clear the transcript and every agent's private context (keeps membership).
-/// Aborts any in-flight workers and clears the paused state.
-pub async fn reset(rt: &GroupRuntime) {
-    let mut s = rt.state.lock().await;
-    for (_, h) in s.aborts.drain() {
-        h.abort();
-    }
-    s.transcript.clear();
-    for st in s.agents.values_mut() {
-        *st = GroupAgentState::default();
-    }
-    s.paused = false;
-    save_state(&s);
-}
-
-/// The owner sends a message into the group, waking every idle member (unless
-/// paused — then it just queues until resume).
-pub async fn send_user_message(rt: &Arc<GroupRuntime>, content: &str) -> Result<(), String> {
-    let content = content.trim().to_string();
-    if content.is_empty() {
-        return Err("消息为空".to_string());
-    }
-    let msg = GroupMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        speaker_kind: "human".to_string(),
-        agent_id: None,
-        name: "主人".to_string(),
-        content,
-        ts: now_ms(),
-    };
-
-    {
-        let mut s = rt.state.lock().await;
-        s.transcript.push(msg.clone());
-        wake_agents(rt, &mut s);
-        save_state(&s);
-    }
-
-    rt.events.message(&msg);
-    Ok(())
-}
-
-/// Append an agent's message to the transcript (the `GroupChat` tool's effect)
-/// and wake the OTHER idle agents so they can react.
-pub async fn post_agent_message(rt: &Arc<GroupRuntime>, agent_id: &str, content: &str) {
-    let name = get_settings()
-        .ok()
-        .and_then(|s| s.agent(agent_id).map(|a| a.name.clone()))
-        .unwrap_or_else(|| agent_id.to_string());
-    let msg = GroupMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        speaker_kind: "agent".to_string(),
-        agent_id: Some(agent_id.to_string()),
-        name,
-        content: content.to_string(),
-        ts: now_ms(),
-    };
-
-    {
-        let mut s = rt.state.lock().await;
-        s.transcript.push(msg.clone());
-        // Wake the other idle agents (skips this one — it's still running).
-        wake_agents(rt, &mut s);
-        save_state(&s);
-    }
-
-    rt.events.message(&msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +560,7 @@ pub async fn post_agent_message(rt: &Arc<GroupRuntime>, agent_id: &str, content:
 /// A scheduled agent reaction, prepared under the state lock and run unlocked.
 struct AgentRun {
     agent_id: String,
+    group_title: String,
     config: AiConfig,
     /// The agent's private context (incoming messages already injected), minus
     /// the system messages (added fresh per run).
@@ -328,7 +574,7 @@ struct AgentRun {
 /// context and return a single run. Advances `consumed_upto` to `tlen`. Returns
 /// `None` if the agent has no usable config (then its pending messages are marked
 /// consumed so the worker doesn't spin on them).
-fn prepare_run(s: &mut GroupState, agent_id: &str, tlen: usize) -> Option<AgentRun> {
+fn prepare_run(session: &GroupSession, s: &mut GroupState, agent_id: &str, tlen: usize) -> Option<AgentRun> {
     let consumed = s.agents.get(agent_id).map(|a| a.consumed_upto).unwrap_or(0);
     let foreign: Vec<GroupMessage> = s.transcript[consumed..tlen]
         .iter()
@@ -361,8 +607,9 @@ fn prepare_run(s: &mut GroupState, agent_id: &str, tlen: usize) -> Option<AgentR
     }
     st.consumed_upto = tlen;
     let messages = st.messages.clone();
-    save_state(s);
-    Some(AgentRun { agent_id: agent_id.to_string(), config, messages, injected_items })
+    let group_title = s.title.clone();
+    session.save(s);
+    Some(AgentRun { agent_id: agent_id.to_string(), group_title, config, messages, injected_items })
 }
 
 /// One agent's worker: drains pending → runs one coalesced loop → repeats until
@@ -370,61 +617,70 @@ fn prepare_run(s: &mut GroupState, agent_id: &str, tlen: usize) -> Option<AgentR
 /// "no pending → exit" decision is atomic with that map so a message arriving as
 /// the worker winds down is never lost (either this worker sees it and loops, or
 /// `wake_agents` spawns a fresh one).
-async fn agent_worker(rt: Arc<GroupRuntime>, agent_id: String) {
+async fn agent_worker(session: Arc<GroupSession>, agent_id: String) {
     loop {
         let run = {
-            let mut s = rt.state.lock().await;
+            let mut s = session.state.lock().await;
+            if session.deleted.load(Ordering::SeqCst) {
+                s.aborts.remove(&agent_id);
+                return;
+            }
             let tlen = s.transcript.len();
             if s.paused || !has_pending(&s, &agent_id, tlen) {
                 s.aborts.remove(&agent_id);
-                save_state(&s);
+                session.save(&s);
                 return;
             }
-            prepare_run(&mut s, &agent_id, tlen)
+            prepare_run(&session, &mut s, &agent_id, tlen)
         };
 
         let Some(run) = run else {
             // No usable config — its pending messages were consumed in prepare_run.
-            let mut s = rt.state.lock().await;
+            let mut s = session.state.lock().await;
             s.aborts.remove(&agent_id);
-            save_state(&s);
+            session.save(&s);
             return;
         };
 
-        run_one_agent(&rt, run).await;
+        run_one_agent(&session, run).await;
         // Loop: messages may have arrived during the run — coalesce and continue.
     }
 }
 
 /// Run one agent's reaction (no state lock held during the LLM call) and persist
 /// the result into its private session.
-async fn run_one_agent(rt: &Arc<GroupRuntime>, run: AgentRun) {
+async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
+    let group_id = {
+        let s = session.state.lock().await;
+        s.id.clone()
+    };
+
     // Surface the incoming group lines to the Agent sub-tab before the agent
     // starts reasoning (injection isn't a sink event).
-    rt.events.injected(&run.agent_id, &run.injected_items);
+    session.events.injected(&group_id, &run.agent_id, &run.injected_items);
 
     let mut conv = run.messages.clone();
-    prompt::prepend_group_system_messages(&mut conv, &run.agent_id);
+    prompt::prepend_group_system_messages(&mut conv, &run.agent_id, &run.group_title);
 
     let mut ctx = ToolContext::new(
-        LogStore(rt.log_store.0.clone()),
-        ShellStore(rt.shell_store.0.clone()),
+        LogStore(session.log_store.0.clone()),
+        ShellStore(session.shell_store.0.clone()),
         run.config.clone(),
-        rt.mcp_store.clone(),
-        format!("group:{}", run.agent_id),
+        session.mcp_store.clone(),
+        format!("group:{group_id}:{}", run.agent_id),
         None, // group runs never inject background-task completions into main chat
         None, // no chat hook — group agents speak via the GroupChat tool
         false, // not a heartbeat
     );
-    ctx.group = Some(rt.clone());
-    ctx.log_session = crate::logging::LogSession::group(&run.agent_id);
+    ctx.group = Some(session.clone());
+    ctx.log_session = crate::logging::LogSession::group(&group_id, &run.agent_id);
 
-    let sink = GroupSink::new(rt.events.clone(), run.agent_id.clone());
+    let sink = GroupSink::new(session.events.clone(), group_id.clone(), run.agent_id.clone());
 
-    let result = run_agent_loop(conv, &sink, &run.config, &rt.mcp_store, &ctx).await;
+    let result = run_agent_loop(conv, &sink, &run.config, &session.mcp_store, &ctx).await;
 
     {
-        let mut s = rt.state.lock().await;
+        let mut s = session.state.lock().await;
         if let Some(st) = s.agents.get_mut(&run.agent_id) {
             match result {
                 Ok((_text, full_conv)) => {
@@ -439,18 +695,19 @@ async fn run_one_agent(rt: &Arc<GroupRuntime>, run: AgentRun) {
                 }
             }
             st.items.extend(sink.take_items());
+            s.updated_at = now_ms();
             // NOTE: do NOT advance `consumed_upto` here. `prepare_run` already moved
             // it to this run's start length; messages that arrived from OTHER agents
             // DURING this run must stay unconsumed so the worker's next iteration
             // injects them. (The agent's own posts are skipped by `has_pending` /
             // `prepare_run`'s self filter, so they don't trigger a needless re-run.)
         }
-        save_state(&s);
+        session.save(&s);
     }
 
     // Clears the Agent sub-tab's "running" indicator even on a transport-error
     // path where the sink emitted neither done nor error.
-    rt.events.agent_done(&run.agent_id);
+    session.events.agent_done(&group_id, &run.agent_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -458,22 +715,23 @@ async fn run_one_agent(rt: &Arc<GroupRuntime>, run: AgentRun) {
 // ---------------------------------------------------------------------------
 
 /// A `ChatEventSink` for a group agent run: forwards every event to the
-/// interface via `GroupEvents::stream` (tagged with the agent id) AND builds
+/// interface via `GroupEvents::stream` (tagged with room + agent id) AND builds
 /// the agent's display items for persistence (via the shared `ItemBuilder`, so
 /// persisted items match what the live listener rendered).
 struct GroupSink {
     events: Arc<dyn GroupEvents>,
+    group_id: String,
     agent_id: String,
     items: std::sync::Mutex<ItemBuilder>,
 }
 
 impl GroupSink {
-    fn new(events: Arc<dyn GroupEvents>, agent_id: String) -> Self {
-        Self { events, agent_id, items: std::sync::Mutex::new(ItemBuilder::default()) }
+    fn new(events: Arc<dyn GroupEvents>, group_id: String, agent_id: String) -> Self {
+        Self { events, group_id, agent_id, items: std::sync::Mutex::new(ItemBuilder::default()) }
     }
 
     fn emit(&self, event: StreamEvent) {
-        self.events.stream(&self.agent_id, &event);
+        self.events.stream(&self.group_id, &self.agent_id, &event);
     }
 
     /// Take the accumulated display items (after the run finishes).

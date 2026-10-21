@@ -175,11 +175,11 @@ impl LogSession {
         }
     }
 
-    pub fn group(agent_id: &str) -> Self {
+    pub fn group(group_id: &str, agent_id: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             kind: LogKind::Group,
-            label: agent_id.to_string(),
+            label: format!("{group_id}:{agent_id}"),
         }
     }
 

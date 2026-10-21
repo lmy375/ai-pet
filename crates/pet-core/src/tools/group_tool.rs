@@ -45,13 +45,13 @@ async fn group_chat_impl(arguments: &str, ctx: &ToolContext) -> String {
         return tool_error("missing 'message' parameter");
     }
 
-    let rt = match &ctx.group {
-        Some(rt) => rt.clone(),
+    let room = match &ctx.group {
+        Some(room) => room.clone(),
         None => return tool_error("GroupChat unavailable in this context"),
     };
 
     let agent_id = ctx.config.agent_id.clone();
-    crate::group::post_agent_message(&rt, &agent_id, &message).await;
+    room.post_agent_message(&agent_id, &message).await;
 
     r#"{"status": "posted"}"#.to_string()
 }

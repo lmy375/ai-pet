@@ -48,8 +48,8 @@ pub struct ToolContext {
     pub is_heartbeat: bool,
     /// The group room this run belongs to, set only for group-chat agent runs.
     /// Gates the `GroupChat` tool (see `ToolRegistry::new`) and gives it the
-    /// room to post into. The group orchestrator sets it after construction.
-    pub group: Option<Arc<crate::group::GroupRuntime>>,
+    /// room to post into. The group worker sets it after construction.
+    pub group: Option<Arc<crate::group::GroupSession>>,
     /// The swarm this run belongs to. Main-agent and worker runs both receive
     /// this handle; workers additionally set `swarm_task_id` and
     /// `swarm_worker_id`, which gates claim/update/complete operations.
