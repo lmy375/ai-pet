@@ -66,6 +66,18 @@ export function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
+/** Milliseconds → a localised elapsed label in the reader's units:
+ *  `3分钟 7秒` / `7秒` / `1小时 2分钟`. */
+export function formatElapsed(ms: number, t: Translate): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return t("time.elapsed.hm", { h, m });
+  if (m > 0) return t("time.elapsed.ms", { m, s });
+  return t("time.elapsed.s", { s });
+}
+
 /** Token counts as a running total reads best: `842` / `12.4k` / `1.8M`.
  *  One decimal, and a trailing `.0` is dropped (`181k`, not `181.0k`). */
 export function formatTokens(n: number): string {

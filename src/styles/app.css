@@ -117,6 +117,47 @@ body {
   animation: gallery-fade 0.9s ease-in-out;
 }
 
+/* Latest activity in the folded chat block: a muted→accent gradient sweeps
+   across the line while the model is still working, eased in and out so it
+   reads as breathing rather than a hard marquee. */
+@keyframes activity-shimmer {
+  0% {
+    background-position: 130% center;
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    background-position: -130% center;
+    opacity: 0.55;
+  }
+}
+
+.activity-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-ink-faint) 0%,
+    var(--color-ink-soft) 35%,
+    var(--color-accent) 50%,
+    var(--color-ink-soft) 65%,
+    var(--color-ink-faint) 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: activity-shimmer 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-shimmer {
+    animation: none;
+    background: none;
+    color: var(--color-ink-soft);
+  }
+}
+
 /* ---------- Built-in pet (raster /pet/*.png) ----------
    Whole-character breathing is the shared .animate-breath on the wrapper. The
    <img> swaps per emotion for the expression; CSS adds a thinking head tilt and

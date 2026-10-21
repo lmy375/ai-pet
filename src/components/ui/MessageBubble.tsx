@@ -20,6 +20,10 @@ interface Props {
   /** Turns the message into an editable one (user messages): a pencil that
    *  reopens it in the composer. */
   onEdit?: () => void;
+  /** Render the time/actions row under the bubble even without a sender name.
+   *  A merged activity group shows its name once at the top, so its output
+   *  bubble still needs that row. */
+  meta?: boolean;
   children: ReactNode;
 }
 
@@ -27,7 +31,7 @@ interface Props {
  *  `name` it grows a meta row (sender) plus an action row (time + buttons) —
  *  the panel layout; without it, the bubble with the buttons alone in the
  *  gutter beside it (pet window, too small for a row per message). */
-export function MessageBubble({ role, error = false, images, name, ts, copyText, onEdit, children }: Props) {
+export function MessageBubble({ role, error = false, images, name, ts, copyText, onEdit, meta = false, children }: Props) {
   const { t } = useI18n();
   const isUser = role === "user";
   const tone = error
@@ -52,11 +56,12 @@ export function MessageBubble({ role, error = false, images, name, ts, copyText,
       )}
     </>
   );
+  const hasMeta = !!name || meta;
   const hasActions = !!copyText?.trim() || !!onEdit;
   // Compact mode has no room for a row under every bubble, so the buttons sit
   // in the free gutter on the bubble's inner side instead (the thread keeps its
   // periodic time separators there).
-  const gutter = hasActions && !name ? <div className="mb-0.5 flex items-center">{buttons}</div> : null;
+  const gutter = hasActions && !hasMeta ? <div className="mb-0.5 flex items-center">{buttons}</div> : null;
 
   return (
     <div className={`group flex items-end gap-1 ${isUser ? "justify-end" : "justify-start"}`}>
@@ -82,7 +87,7 @@ export function MessageBubble({ role, error = false, images, name, ts, copyText,
           )}
           {children}
         </div>
-        {name && (hasActions || ts !== undefined) && (
+        {hasMeta && (hasActions || ts !== undefined) && (
           <div className="mt-0.5 flex items-center gap-0.5 px-0.5 text-meta text-ink-faint">
             {ts !== undefined && <span className="mr-1">{formatWhen(ts, t)}</span>}
             {buttons}
