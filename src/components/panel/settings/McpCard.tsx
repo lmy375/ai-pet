@@ -170,12 +170,13 @@ export function McpCard({ settings, onDraft, onCommit, statuses, onReconnect, on
               <Select
                 className="w-52"
                 value={config.transport}
-                onChange={(e) => update({ transport: e.target.value as McpServerConfig["transport"] }, true)}
-              >
-                <option value="stdio">{t("settings.mcp.transport.stdio")}</option>
-                <option value="sse">{t("settings.mcp.transport.sse")}</option>
-                <option value="http">{t("settings.mcp.transport.http")}</option>
-              </Select>
+                onChange={(transport) => update({ transport: transport as McpServerConfig["transport"] }, true)}
+                options={[
+                  { value: "stdio", label: t("settings.mcp.transport.stdio") },
+                  { value: "sse", label: t("settings.mcp.transport.sse") },
+                  { value: "http", label: t("settings.mcp.transport.http") },
+                ]}
+              />
             }
           />
 

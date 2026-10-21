@@ -528,13 +528,16 @@ export function PanelSettings() {
             label={t("settings.agent.modelTitle")}
             description={danglingModel ? undefined : t("settings.agent.modelNote")}
             control={
-              <Select className="w-56" value={agent.model} onChange={(e) => commitAgent({ model: e.target.value })}>
-                <option value="">{t("settings.agent.modelNone")}</option>
-                {danglingModel && <option value={agent.model}>{agent.model}</option>}
-                {modelNames.map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </Select>
+              <Select
+                className="w-56"
+                value={agent.model}
+                onChange={(model) => commitAgent({ model })}
+                options={[
+                  { value: "", label: t("settings.agent.modelNone") },
+                  ...(danglingModel ? [{ value: agent.model, label: agent.model }] : []),
+                  ...modelNames.map((name) => ({ value: name, label: name })),
+                ]}
+              />
             }
           />
         )}
@@ -975,10 +978,15 @@ export function PanelSettings() {
             <SettingsRow
               label={t("settings.language")}
               control={
-                <Select className="w-40" value={form.language === "en" ? "en" : "zh"} onChange={(e) => setLanguage(e.target.value)}>
-                  <option value="zh">中文</option>
-                  <option value="en">English</option>
-                </Select>
+                <Select
+                  className="w-40"
+                  value={form.language === "en" ? "en" : "zh"}
+                  onChange={setLanguage}
+                  options={[
+                    { value: "zh", label: "中文" },
+                    { value: "en", label: "English" },
+                  ]}
+                />
               }
             />
           </SettingsSection>

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
+import { Select } from "./ui/fields";
 
 /**
  * Compact dropdown to switch the active agent (the one answering the desktop
@@ -20,15 +21,13 @@ export function AgentSwitcher({ className = "" }: { className?: string }) {
   };
 
   return (
-    <select
+    <Select
+      size="sm"
+      className={`shrink-0 ${className}`}
       value={settings.active_agent}
-      onChange={(e) => switchAgent(e.target.value)}
+      onChange={switchAgent}
       title={t("chat.agent.switch")}
-      className={`shrink-0 rounded-field border border-line bg-surface px-2 py-1.5 text-note font-medium text-ink outline-none transition-colors hover:border-accent-line focus:border-accent ${className}`}
-    >
-      {settings.agents.map((a) => (
-        <option key={a.id} value={a.id}>{a.name}</option>
-      ))}
-    </select>
+      options={settings.agents.map((a) => ({ value: a.id, label: a.name }))}
+    />
   );
 }

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
+import { Select } from "./ui/fields";
 
 /**
  * Compact dropdown to switch the active agent's model from inside the chat view.
@@ -18,10 +19,16 @@ export function ModelSwitcher({ className = "" }: { className?: string }) {
   if (!loaded || !agent) return null;
 
   const current = agent.model;
-  const names = Object.keys(settings.models);
+  const pool = Object.keys(settings.models);
   // A dangling reference stays visible instead of being silently swapped out.
-  const options = current && !names.includes(current) ? [current, ...names] : names;
+  const names = current && !pool.includes(current) ? [current, ...pool] : pool;
   const config = settings.models[current];
+
+  const options = [
+    ...(names.length === 0 ? [{ value: "", label: t("chat.model.none") }] : []),
+    ...(!current && names.length > 0 ? [{ value: "", label: "—" }] : []),
+    ...names.map((m) => ({ value: m, label: m })),
+  ];
 
   const switchModel = (model: string) => {
     if (!model || model === current) return;
@@ -30,17 +37,14 @@ export function ModelSwitcher({ className = "" }: { className?: string }) {
   };
 
   return (
-    <select
+    <Select
+      size="sm"
+      className={`min-w-0 shrink ${className}`}
       value={current}
-      onChange={(e) => switchModel(e.target.value)}
+      onChange={switchModel}
+      placeholder={t("chat.model.none")}
       title={config ? `${config.provider || "auto"} · ${config.model}` : t("chat.model.switch")}
-      className={`min-w-0 shrink rounded-field border border-line bg-surface px-2 py-1.5 text-note font-medium text-ink outline-none transition-colors hover:border-accent-line focus:border-accent ${className}`}
-    >
-      {options.length === 0 && <option value="">{t("chat.model.none")}</option>}
-      {!current && options.length > 0 && <option value="">—</option>}
-      {options.map((m) => (
-        <option key={m} value={m}>{m}</option>
-      ))}
-    </select>
+      options={options}
+    />
   );
 }

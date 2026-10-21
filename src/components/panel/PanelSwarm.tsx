@@ -5,6 +5,7 @@ import { useI18n } from "../../i18n";
 import { ChatThread } from "../ChatThread";
 import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
+import { Select } from "../ui/fields";
 import { Segmented } from "../ui/Segmented";
 import { LoadingScreen } from "../ui/feedback";
 import { ChatIcon, ChevronRight, CloseIcon, PlusIcon, TrashIcon } from "../Icons";
@@ -161,13 +162,12 @@ function CreateProjectDialog({
           className="mt-1 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
         />
         <label className="mt-4 block text-note font-medium text-ink">Orchestrator</label>
-        <select
+        <Select
+          className="mt-1 w-full"
           value={orchestratorId}
-          onChange={(e) => setOrchestratorId(e.target.value)}
-          className="mt-1 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
-        >
-          {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-        </select>
+          onChange={setOrchestratorId}
+          options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+        />
         {error && <div className="mt-3 text-note text-red-500">{error}</div>}
         <div className="mt-5 flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
@@ -295,14 +295,13 @@ function ProjectSettings({
             className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
           />
           <label className="mt-3 block text-meta text-ink-faint">Orchestrator</label>
-          <select
+          <Select
+            className="mt-1 w-full"
             value={form.main_agent_id}
             disabled={locked}
-            onChange={(e) => setForm((prev) => ({ ...prev, main_agent_id: e.target.value }))}
-            className="mt-1 w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none focus:border-accent disabled:bg-surface-soft disabled:text-ink-soft"
-          >
-            {settings.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-          </select>
+            onChange={(id) => setForm((prev) => ({ ...prev, main_agent_id: id }))}
+            options={settings.agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+          />
         </section>
 
         <section>
@@ -488,13 +487,13 @@ export function PanelSwarm() {
     <div className="flex h-full min-h-0 w-full bg-canvas">
       <aside style={{ width: projectPane.width }} className="flex min-h-0 shrink-0 flex-col bg-surface">
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
-          <select
+          <Select
+            size="sm"
+            className="min-w-0 flex-1"
             value={swarm.activeId}
-            onChange={(e) => swarm.setActiveId(e.target.value)}
-            className="min-w-0 flex-1 rounded-field border border-line bg-surface-soft px-2 py-1.5 text-body text-ink"
-          >
-            {swarm.swarms.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
-          </select>
+            onChange={swarm.setActiveId}
+            options={swarm.swarms.map((item) => ({ value: item.id, label: item.title }))}
+          />
           <Button size="sm" variant="ghost" onClick={() => setNewProjectOpen(true)}>{t("swarm.project.new")}</Button>
           <IconActionButton
             variant="danger"

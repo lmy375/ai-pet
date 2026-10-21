@@ -258,12 +258,12 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
               <Select
                 className="w-48"
                 value={config.provider}
-                onChange={(e) => { update({ provider: e.target.value }, true); setTestResult(null); }}
-              >
-                {(providerOptions?.options ?? [{ id: "", label: "Auto" }]).map((p) => (
-                  <option key={p.id} value={p.id}>{p.label}</option>
-                ))}
-              </Select>
+                onChange={(provider) => { update({ provider }, true); setTestResult(null); }}
+                options={(providerOptions?.options ?? [{ id: "", label: "Auto" }]).map((p) => ({
+                  value: p.id,
+                  label: p.label,
+                }))}
+              />
             }
           />
 
@@ -354,17 +354,18 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
               <Select
                 className="w-48"
                 value={REASONING_KEYWORDS.includes(config.reasoning) ? config.reasoning : "budget"}
-                onChange={(e) => update({ reasoning: e.target.value === "budget" ? "4096" : e.target.value }, true)}
-              >
-                <option value="">{t("settings.llm.reasoningOff")}</option>
-                <option value="minimal">minimal</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-                <option value="max">max</option>
-                <option value="budget">{t("settings.llm.reasoningBudget")}</option>
-              </Select>
+                onChange={(reasoning) => update({ reasoning: reasoning === "budget" ? "4096" : reasoning }, true)}
+                options={[
+                  { value: "", label: t("settings.llm.reasoningOff") },
+                  { value: "minimal", label: "minimal" },
+                  { value: "low", label: "low" },
+                  { value: "medium", label: "medium" },
+                  { value: "high", label: "high" },
+                  { value: "xhigh", label: "xhigh" },
+                  { value: "max", label: "max" },
+                  { value: "budget", label: t("settings.llm.reasoningBudget") },
+                ]}
+              />
             }
           />
 
