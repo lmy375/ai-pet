@@ -7,7 +7,7 @@ import { ChatInput } from "../ChatInput";
 import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Segmented";
 import { LoadingScreen } from "../ui/feedback";
-import { ChatIcon, ChevronRight, CloseIcon, PlusIcon } from "../Icons";
+import { ChatIcon, ChevronRight, CloseIcon, PlusIcon, TrashIcon } from "../Icons";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { IconActionButton } from "../ui/IconButton";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
@@ -34,10 +34,12 @@ function TaskCard({
   task,
   workerId,
   onOpenChat,
+  onDelete,
 }: {
   task: SwarmTask;
   workerId?: string;
   onOpenChat: (workerId: string) => void;
+  onDelete: (task: SwarmTask) => void;
 }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
@@ -84,6 +86,18 @@ function TaskCard({
           }}
         >
           <ChatIcon className="h-4 w-4" />
+        </IconActionButton>
+        <IconActionButton
+          size="sm"
+          variant="danger"
+          aria-label={t("swarm.task.delete")}
+          title={t("swarm.task.delete")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete(task);
+          }}
+        >
+          <TrashIcon className="h-4 w-4" />
         </IconActionButton>
       </div>
       {expanded && (
@@ -460,6 +474,16 @@ export function PanelSwarm() {
     }
   };
 
+  const deleteTask = (task: SwarmTask) => {
+    if (!window.confirm(t("swarm.task.confirmDelete", { title: task.title }))) return;
+    void runAction(() => swarm.deleteTask(task.id));
+  };
+
+  const deleteProject = () => {
+    if (!window.confirm(t("swarm.project.confirmDelete", { title: snapshot.title }))) return;
+    void runAction(swarm.deleteSwarm);
+  };
+
   return (
     <div className="flex h-full min-h-0 w-full bg-canvas">
       <aside style={{ width: projectPane.width }} className="flex min-h-0 shrink-0 flex-col bg-surface">
@@ -472,6 +496,14 @@ export function PanelSwarm() {
             {swarm.swarms.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
           </select>
           <Button size="sm" variant="ghost" onClick={() => setNewProjectOpen(true)}>{t("swarm.project.new")}</Button>
+          <IconActionButton
+            variant="danger"
+            aria-label={t("swarm.project.delete")}
+            title={t("swarm.project.delete")}
+            onClick={deleteProject}
+          >
+            <TrashIcon className="h-4 w-4" />
+          </IconActionButton>
         </div>
 
         <div className="flex shrink-0 border-b border-line px-3 py-2">
@@ -533,7 +565,7 @@ export function PanelSwarm() {
                     <div className="flex flex-col gap-2">
                       {groups[status].map((task) => {
                         const worker = workerForTask(task.id);
-                        return <TaskCard key={task.id} task={task} workerId={worker?.id} onOpenChat={openWorkerChat} />;
+                        return <TaskCard key={task.id} task={task} workerId={worker?.id} onOpenChat={openWorkerChat} onDelete={deleteTask} />;
                       })}
                     </div>
                   )}

@@ -6,9 +6,10 @@
 //! conversations together so the GUI can observe it through a small event
 //! trait.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -142,10 +143,17 @@ pub struct SwarmSession {
     pub mcp_store: McpStore,
     pub log_store: LogStore,
     pub shell_store: ShellStore,
+    /// Set when the swarm is deleted. In-flight Workers and the Orchestrator
+    /// still hold this session, so every persistence path checks it before
+    /// writing a snapshot back to disk.
+    deleted: AtomicBool,
 }
 
 pub struct SwarmRuntime {
     sessions: Mutex<HashMap<String, Arc<SwarmSession>>>,
+    /// Ids whose snapshot file was deleted. `session()` refuses to reload them,
+    /// so a Worker that is still winding down cannot resurrect a deleted swarm.
+    deleted: Mutex<HashSet<String>>,
     events: Arc<dyn SwarmEvents>,
     mcp_store: McpStore,
     log_store: LogStore,
@@ -182,9 +190,19 @@ fn load_snapshot(id: &str) -> Option<SwarmSnapshot> {
     serde_json::from_str(&text).ok()
 }
 
+/// Write one snapshot to disk and tell the UI, unless the swarm was deleted
+/// while this update was in flight. All state writers go through here so a
+/// deleted swarm cannot be recreated by a late Worker or tool call.
+fn persist_state(session: &SwarmSession, snapshot: &SwarmSnapshot) {
+    if session.is_deleted() {
+        return;
+    }
+    save_snapshot(snapshot);
+    session.events.snapshot(snapshot);
+}
+
 pub async fn persist_session(session: &Arc<SwarmSession>, snapshot: SwarmSnapshot) {
-    save_snapshot(&snapshot);
-    session.events.snapshot(&snapshot);
+    persist_state(session, &snapshot);
 }
 
 fn list_snapshots() -> Vec<SwarmSnapshot> {
@@ -232,6 +250,7 @@ impl SwarmRuntime {
     ) -> Arc<Self> {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
+            deleted: Mutex::new(HashSet::new()),
             events,
             mcp_store,
             log_store,
@@ -241,6 +260,9 @@ impl SwarmRuntime {
     }
 
     async fn session(self: &Arc<Self>, id: &str) -> Result<Arc<SwarmSession>, String> {
+        if self.deleted.lock().await.contains(id) {
+            return Err(format!("Unknown swarm {id}"));
+        }
         if let Some(s) = self.sessions.lock().await.get(id).cloned() {
             return Ok(s);
         }
@@ -271,6 +293,7 @@ impl SwarmRuntime {
             mcp_store: self.mcp_store.clone(),
             log_store: self.log_store.clone(),
             shell_store: self.shell_store.clone(),
+            deleted: AtomicBool::new(false),
         });
         self.sessions
             .lock()
@@ -318,6 +341,7 @@ impl SwarmRuntime {
             mcp_store: self.mcp_store.clone(),
             log_store: self.log_store.clone(),
             shell_store: self.shell_store.clone(),
+            deleted: AtomicBool::new(false),
         });
         self.sessions.lock().await.insert(id, session);
         Ok(snapshot)
@@ -325,6 +349,35 @@ impl SwarmRuntime {
 
     pub async fn load(self: &Arc<Self>, id: &str) -> Result<SwarmSnapshot, String> {
         Ok(self.session(id).await?.state.lock().await.clone())
+    }
+
+    /// Delete a swarm: cancel anything still running, drop it from memory, and
+    /// remove its snapshot file. The tombstone keeps still-running Workers from
+    /// reloading the file we are about to remove.
+    pub async fn delete(self: &Arc<Self>, id: &str) -> Result<(), String> {
+        let session = self.session(id).await?;
+        let path = swarm_path(id)?;
+        self.deleted.lock().await.insert(id.to_string());
+        session.deleted.store(true, Ordering::SeqCst);
+        for worker in session.workers.lock().await.values() {
+            worker.cancel.cancel();
+        }
+        if let Some(cancel) = session.main_cancel.lock().await.take() {
+            cancel.cancel();
+        }
+        self.sessions.lock().await.remove(id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => {
+                // Keep the project usable instead of leaving a file that no
+                // longer has a matching in-memory session.
+                self.deleted.lock().await.remove(id);
+                session.deleted.store(false, Ordering::SeqCst);
+                self.sessions.lock().await.insert(id.to_string(), session);
+                Err(format!("删除项目失败：{e}"))
+            }
+        }
     }
 
     pub async fn update_config(
@@ -348,8 +401,7 @@ impl SwarmRuntime {
         state.orchestrator_prompt = config.orchestrator_prompt;
         state.worker_prompt = config.worker_prompt;
         state.updated_at = now();
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(&session, &state);
         Ok(())
     }
 
@@ -386,11 +438,24 @@ impl SwarmRuntime {
             }
             state.tasks.push(task.clone());
             state.updated_at = now();
-            save_snapshot(&state);
-            session.events.snapshot(&state);
+            persist_state(&session, &state);
             task
         };
         Ok(task)
+    }
+
+    pub async fn delete_task(self: &Arc<Self>, id: &str, task_id: &str) -> Result<(), String> {
+        let session = self.session(id).await?;
+        let mut state = session.state.lock().await;
+        let Some(index) = state.tasks.iter().position(|task| task.id == task_id) else {
+            return Err("任务不存在".to_string());
+        };
+        state.tasks.remove(index);
+        state.updated_at = now();
+        let snapshot = state.clone();
+        drop(state);
+        persist_session(&session, snapshot).await;
+        Ok(())
     }
 
     pub async fn summary(self: &Arc<Self>, id: &str) -> Result<Value, String> {
@@ -440,8 +505,7 @@ impl SwarmRuntime {
         task.updated_at = now();
         let copy = task.clone();
         state.updated_at = now();
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(&session, &state);
         Ok(Some(copy))
     }
 
@@ -468,8 +532,7 @@ impl SwarmRuntime {
         task.progress_summary = summary;
         task.updated_at = now();
         state.updated_at = now();
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(&session, &state);
         Ok(())
     }
 
@@ -509,8 +572,7 @@ impl SwarmRuntime {
         task.outcome = Some(outcome);
         task.updated_at = now();
         state.updated_at = now();
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(&session, &state);
         Ok(())
     }
 
@@ -532,6 +594,9 @@ impl SwarmRuntime {
 
     pub async fn start(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let session = self.session(id).await?;
+        if session.is_deleted() {
+            return Err(format!("Unknown swarm {id}"));
+        }
         if !session.workers.lock().await.is_empty() {
             return Err("项目仍在停止当前 Worker，请稍后再开始".to_string());
         }
@@ -543,10 +608,12 @@ impl SwarmRuntime {
             if state.pool.iter().map(|p| p.count).sum::<u32>() == 0 {
                 return Err("请先配置至少一个 Worker".to_string());
             }
+            if session.is_deleted() {
+                return Err(format!("Unknown swarm {id}"));
+            }
             state.status = SwarmStatus::Running;
             state.updated_at = now();
-            save_snapshot(&state);
-            session.events.snapshot(&state);
+            persist_state(&session, &state);
         }
         let profiles = session.state.lock().await.pool.clone();
         for profile in profiles {
@@ -575,8 +642,7 @@ impl SwarmRuntime {
         if state.status == SwarmStatus::Running {
             state.status = SwarmStatus::Draining;
             state.updated_at = now();
-            save_snapshot(&state);
-            session.events.snapshot(&state);
+            persist_state(&session, &state);
         }
         Ok(())
     }
@@ -599,13 +665,15 @@ impl SwarmRuntime {
             }
         }
         state.updated_at = now();
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(&session, &state);
         Ok(())
     }
 
     pub async fn send_main(self: &Arc<Self>, id: &str, turn: UserTurn) -> Result<(), String> {
         let session = self.session(id).await?;
+        if session.is_deleted() {
+            return Err(format!("Unknown swarm {id}"));
+        }
         let cancel = CancellationToken::new();
         {
             let mut current = session.main_cancel.lock().await;
@@ -621,8 +689,7 @@ impl SwarmRuntime {
             .push(crate::session::user_item(&turn.text, &turn.images));
         let prior = state.main.messages.clone();
         state.updated_at = now();
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(&session, &state);
         drop(state);
 
         let rt = self.clone();
@@ -648,7 +715,7 @@ async fn worker_loop(
     cancel: CancellationToken,
 ) {
     loop {
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() || session.is_deleted() {
             break;
         }
         let state = session.state.lock().await.clone();
@@ -661,14 +728,19 @@ async fn worker_loop(
             .ok()
             .flatten()
         else {
+            if session.is_deleted() {
+                break;
+            }
             let mut current = session.state.lock().await;
             let has_pending = current.tasks.iter().any(|task| task.status == SwarmTaskStatus::Pending);
             let has_running = current.tasks.iter().any(|task| task.status == SwarmTaskStatus::Running);
             if current.status == SwarmStatus::Running && !has_pending && !has_running {
+                if session.is_deleted() {
+                    break;
+                }
                 current.status = SwarmStatus::Completed;
                 current.updated_at = now();
-                save_snapshot(&current);
-                session.events.snapshot(&current);
+                persist_state(&session, &current);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
@@ -689,6 +761,9 @@ async fn worker_loop(
         }
     }
     session.workers.lock().await.remove(&worker_id);
+    if session.is_deleted() {
+        return;
+    }
     let mut state = session.state.lock().await;
     let has_running = state
         .tasks
@@ -705,8 +780,7 @@ async fn worker_loop(
             SwarmStatus::Completed
         };
         state.updated_at = now();
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(&session, &state);
     }
 }
 
@@ -718,6 +792,9 @@ async fn run_worker_task(
     task: &SwarmTask,
     cancel: CancellationToken,
 ) {
+    if session.is_deleted() {
+        return;
+    }
     let (id, project_name, shared_prompt, worker_prompt) = {
         let state = session.state.lock().await;
         (
@@ -742,10 +819,12 @@ async fn run_worker_task(
     session.events.worker_status(&id, &run_id, "running");
     {
         let mut state = session.state.lock().await;
+        if session.is_deleted() {
+            return;
+        }
         state.workers.retain(|w| w.id != worker_id);
         state.workers.push(worker_record);
-        save_snapshot(&state);
-        session.events.snapshot(&state);
+        persist_state(session, &state);
     }
     let config = match crate::settings::get_settings()
         .ok()
@@ -797,6 +876,9 @@ async fn run_worker_task(
     ctx.log_session = LogSession::swarm_worker(&id, worker_id);
     let sink = SwarmSink::worker(session.events.clone(), id.clone(), run_id.clone());
     let result = run_agent_loop(conv, &sink, &config, &runtime.mcp_store, &ctx).await;
+    if session.is_deleted() {
+        return;
+    }
     if cancel.is_cancelled() {
         runtime.requeue_task(&id, &task.id, worker_id, "任务被用户停止，等待重新执行").await;
     } else {
@@ -806,12 +888,14 @@ async fn run_worker_task(
     }
     let items = sink.take_items();
     let mut state = session.state.lock().await;
+    if session.is_deleted() {
+        return;
+    }
     if let Some(worker) = state.workers.iter_mut().find(|w| w.id == run_id) {
         worker.status = "done".to_string();
         worker.items.extend(items);
     }
-    save_snapshot(&state);
-    session.events.snapshot(&state);
+    persist_state(session, &state);
     session.events.worker_status(&id, &run_id, "done");
 }
 
@@ -822,6 +906,10 @@ async fn run_main(
     turn: UserTurn,
     cancel: CancellationToken,
 ) {
+    if session.is_deleted() {
+        *session.main_cancel.lock().await = None;
+        return;
+    }
     let (id, agent_id, project_name, shared_prompt, orchestrator_prompt) = {
         let state = session.state.lock().await;
         (
@@ -868,6 +956,10 @@ async fn run_main(
     ctx.log_session = LogSession::swarm_main(&id);
     let sink = SwarmSink::main(session.events.clone(), id.clone());
     let result = run_agent_loop(conv, &sink, &config, &runtime.mcp_store, &ctx).await;
+    if session.is_deleted() {
+        *session.main_cancel.lock().await = None;
+        return;
+    }
     let items = sink.take_items();
     let mut state = session.state.lock().await;
     state.main.items.extend(items);
@@ -878,8 +970,7 @@ async fn run_main(
             .collect();
     }
     state.updated_at = now();
-    save_snapshot(&state);
-    session.events.snapshot(&state);
+    persist_state(&session, &state);
     *session.main_cancel.lock().await = None;
     session.events.main_done(&id);
 }
@@ -973,6 +1064,10 @@ impl ChatEventSink for SwarmSink {
 }
 
 impl SwarmSession {
+    fn is_deleted(&self) -> bool {
+        self.deleted.load(Ordering::SeqCst)
+    }
+
     pub async fn task_for_worker(
         &self,
         task_id: &str,

@@ -110,6 +110,20 @@ pub async fn swarm_create_task(
 }
 
 #[tauri::command]
+pub async fn swarm_delete_task(
+    id: String,
+    task_id: String,
+    store: State<'_, SwarmStore>,
+) -> Result<(), String> {
+    store.0.delete_task(&id, &task_id).await
+}
+
+#[tauri::command]
+pub async fn swarm_delete(id: String, store: State<'_, SwarmStore>) -> Result<(), String> {
+    store.0.delete(&id).await
+}
+
+#[tauri::command]
 pub async fn swarm_start(id: String, store: State<'_, SwarmStore>) -> Result<(), String> {
     store.0.start(&id).await
 }

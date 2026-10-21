@@ -236,6 +236,8 @@ pub fn run() {
             commands::swarm::swarm_load,
             commands::swarm::swarm_configure,
             commands::swarm::swarm_create_task,
+            commands::swarm::swarm_delete_task,
+            commands::swarm::swarm_delete,
             commands::swarm::swarm_start,
             commands::swarm::swarm_end,
             commands::swarm::swarm_stop,

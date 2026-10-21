@@ -473,6 +473,12 @@ impl ItemBuilder {
     }
 
     pub fn reasoning(&mut self, text: &str) {
+        // Thinking for a new round starts only after the previous round's tool
+        // calls returned, so flush their group here. Otherwise a reasoning-only
+        // run would collect every round's calls and commit them as one item
+        // after all the thinking, at `done` — the live view and the reloaded
+        // transcript both then show "all thoughts, then all tools".
+        self.flush_tool_calls();
         self.reasoning.push_str(text);
     }
 
@@ -724,6 +730,33 @@ mod tests {
         // answer written after the tool returned.
         assert_eq!(items[2]["content"], "done");
         assert!(items[2].get("reasoning").is_none());
+    }
+
+    /// Each round's thinking must stay next to the tool calls it produced. The
+    /// builder used to leave a previous round's calls in the pending buffer
+    /// while the next round's reasoning accumulated, then commit them all as one
+    /// item after every thought item — "all thinking, then all tools" in both
+    /// the live view and the reloaded transcript.
+    #[test]
+    fn thinking_stays_adjacent_to_its_own_tool_round() {
+        let mut b = ItemBuilder::default();
+        b.reasoning("round one");
+        b.tool_start("bash", "{}");
+        b.tool_result("bash", "ok");
+        b.reasoning("round two");
+        b.tool_start("bash", "{}");
+        b.tool_result("bash", "ok");
+        b.chunk("answer");
+        b.done();
+
+        let items = b.take_items();
+        let kinds: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["assistant", "tool", "assistant", "tool", "assistant"]);
+        assert_eq!(items[0]["reasoning"], "round one");
+        assert_eq!(items[1]["toolCalls"][0]["name"], "bash");
+        assert_eq!(items[2]["reasoning"], "round two");
+        assert_eq!(items[3]["toolCalls"][0]["name"], "bash");
+        assert_eq!(items[4]["content"], "answer");
     }
 
     /// A round with neither text nor thinking adds nothing (the empty-stream

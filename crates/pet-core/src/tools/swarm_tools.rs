@@ -148,6 +148,40 @@ async fn swarm_create_task_impl(arguments: &str, ctx: &ToolContext) -> String {
     serde_json::json!({"status":"created","task_id":task.id}).to_string()
 }
 
+pub struct SwarmDeleteTaskTool;
+impl Tool for SwarmDeleteTaskTool {
+    fn name(&self) -> &str {
+        "swarm_delete_task"
+    }
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({"type":"function","function":{"name":"swarm_delete_task","description":"Delete a task from the swarm board by its task_id. Use swarm_get_summary to find task ids. Only the Orchestrator can delete tasks.","parameters":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}}})
+    }
+    crate::impl_execute!(swarm_delete_task_impl);
+}
+async fn swarm_delete_task_impl(arguments: &str, ctx: &ToolContext) -> String {
+    let args = super::parse_args(arguments);
+    let Some(session) = ctx.swarm.clone() else {
+        return tool_error("swarm unavailable");
+    };
+    if ctx.swarm_worker_id.is_some() {
+        return tool_error("only the Orchestrator can delete tasks");
+    }
+    let task_id = match required_str(&args, "task_id") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e,
+    };
+    let mut state = session.state.lock().await;
+    let Some(index) = state.tasks.iter().position(|task| task.id == task_id) else {
+        return tool_error("task not found");
+    };
+    state.tasks.remove(index);
+    state.updated_at = crate::common::iso_now();
+    let snapshot = state.clone();
+    drop(state);
+    crate::swarm::persist_session(&session, snapshot).await;
+    serde_json::json!({"status":"deleted","task_id":task_id}).to_string()
+}
+
 pub struct SwarmGetSummaryTool;
 impl Tool for SwarmGetSummaryTool {
     fn name(&self) -> &str {

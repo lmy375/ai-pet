@@ -9,7 +9,8 @@ use super::read_image_tool::ReadImageTool;
 use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool, WriteStdinTool};
 use super::swarm_tools::{
-    SwarmCompleteTaskTool, SwarmCreateTaskTool, SwarmGetSummaryTool, SwarmUpdateTaskTool,
+    SwarmCompleteTaskTool, SwarmCreateTaskTool, SwarmDeleteTaskTool, SwarmGetSummaryTool,
+    SwarmUpdateTaskTool,
 };
 use super::tool::Tool;
 use super::web_search_tool::WebSearchTool;
@@ -33,6 +34,8 @@ pub enum ToolScope {
     WebSearch,
     /// Only for runs attached to a task-oriented swarm.
     Swarm,
+    /// Only for the swarm Orchestrator, not its Workers.
+    SwarmOrchestrator,
     /// Only for a worker that already owns one task.
     SwarmWorker,
 }
@@ -46,6 +49,7 @@ impl ToolScope {
             ToolScope::Group => policy.include_group,
             ToolScope::WebSearch => policy.include_web_search,
             ToolScope::Swarm => policy.include_swarm,
+            ToolScope::SwarmOrchestrator => policy.include_swarm && !policy.include_swarm_worker,
             ToolScope::SwarmWorker => policy.include_swarm_worker,
         }
     }
@@ -114,6 +118,7 @@ fn builtins() -> Vec<(Box<dyn Tool>, ToolScope)> {
         (Box::new(SwarmUpdateTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmCompleteTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmCreateTaskTool), ToolScope::Swarm),
+        (Box::new(SwarmDeleteTaskTool), ToolScope::SwarmOrchestrator),
         (Box::new(SwarmGetSummaryTool), ToolScope::Swarm),
     ]
 }
@@ -342,6 +347,17 @@ mod tests {
             },
         );
         assert!(tool_names(&swarm).contains(&"swarm_get_summary".to_string()));
+        // Deleting tasks is the Orchestrator's call; Workers only run them.
+        assert!(tool_names(&swarm).contains(&"swarm_delete_task".to_string()));
+        let worker = ToolRegistry::new(
+            vec![],
+            ToolPolicy {
+                include_swarm: true,
+                include_swarm_worker: true,
+                ..policy(1, false, false, false)
+            },
+        );
+        assert!(!tool_names(&worker).contains(&"swarm_delete_task".to_string()));
     }
 
     #[tokio::test]

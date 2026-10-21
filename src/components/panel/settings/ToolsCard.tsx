@@ -9,7 +9,7 @@ import { ExpandChevron } from "../../Icons";
 import { useI18n, type TKey } from "../../../i18n";
 
 /** The context gate a built-in tool sits behind (`ToolScope` in the core). */
-type ToolScope = "always" | "top_level" | "heartbeat" | "group" | "web_search" | "swarm" | "swarm_worker";
+type ToolScope = "always" | "top_level" | "heartbeat" | "group" | "web_search" | "swarm" | "swarm_orchestrator" | "swarm_worker";
 
 /** One built-in tool, from the `list_tools` command. */
 export interface ToolEntry {

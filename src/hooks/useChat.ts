@@ -141,8 +141,15 @@ function reduceTurn(v: TurnView, e: StreamEvent): TurnView {
       const f = flushToolCalls(v);
       return { ...f, response: f.response + e.data.text };
     }
-    case "reasoning":
-      return { ...v, reasoning: v.reasoning + e.data.text };
+    case "reasoning": {
+      // A new round's thinking starts only after the previous round's tool
+      // calls have all returned, so this is the round boundary: close their
+      // group here. Without it a reasoning-only agent (no text chunks) keeps
+      // every round's calls in one buffer and flushes them as one item after
+      // all the thinking, at `done`.
+      const f = flushToolCalls(v);
+      return { ...f, reasoning: f.reasoning + e.data.text };
+    }
     case "toolStart": {
       // Text/thinking streamed before the call stays with the round it came from.
       const c = commitText(v);

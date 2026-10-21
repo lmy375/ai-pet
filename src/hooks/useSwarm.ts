@@ -205,6 +205,23 @@ export function useSwarm() {
     await invoke("swarm_create_task", { id: activeId, title, detail, parentTaskId });
     await load(activeId);
   }, [activeId, load]);
+  const deleteTask = useCallback(async (taskId: string): Promise<void> => {
+    if (!activeId) return;
+    await invoke("swarm_delete_task", { id: activeId, taskId });
+    await load(activeId);
+  }, [activeId, load]);
+  const deleteSwarm = useCallback(async (): Promise<void> => {
+    const id = activeRef.current;
+    if (!id) return;
+    await invoke("swarm_delete", { id });
+    const list = await invoke<SwarmSnapshot[]>("swarm_list");
+    setSwarms(list);
+    const next = list[0] ?? null;
+    setSnapshot(next);
+    setMainView(emptyView(next?.main.items ?? []));
+    setWorkerViews({});
+    setActiveId(next?.id ?? "");
+  }, []);
   const start = useCallback(async (): Promise<void> => {
     if (activeId) await invoke("swarm_start", { id: activeId });
   }, [activeId]);
@@ -224,5 +241,5 @@ export function useSwarm() {
     if (activeId) await load(activeId);
   }, [activeId, load]);
 
-  return { swarms, activeId, setActiveId, snapshot, mainView, workerViews, mainRunning, create, configure, createTask, start, end, stop, sendMain, cancelMain, reload };
+  return { swarms, activeId, setActiveId, snapshot, mainView, workerViews, mainRunning, create, configure, createTask, deleteTask, deleteSwarm, start, end, stop, sendMain, cancelMain, reload };
 }
