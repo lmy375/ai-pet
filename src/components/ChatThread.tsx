@@ -270,80 +270,95 @@ function ActivityBlock({
   }
   const active = running && !streamingText.trim();
 
+  const entryRow = (entry: ActivityEntry) =>
+    entry.kind === "thought" ? (
+      <ReasoningRow text={entry.text} streaming={entry.streaming} />
+    ) : entry.kind === "text" ? (
+      <div className="px-3 py-2">
+        {entry.images?.map((url, k) => (
+          <img key={k} src={url} alt="" className="mb-1.5 max-w-full rounded-lg object-contain" />
+        ))}
+        {entry.content.trim() && <Markdown text={entry.content} />}
+      </div>
+    ) : (
+      <ToolCallBlock
+        grouped
+        name={entry.name}
+        arguments={entry.arguments}
+        result={entry.result}
+        isRunning={entry.isRunning}
+      />
+    );
+
+  // A single thought/tool call is already one glanceable row — folding it would
+  // hide the content behind a summary that says the same thing.
+  const single = body.length === 1 ? body[0] : undefined;
+
   return (
     <div className="min-w-0">
       {name && <div className="mb-1 px-0.5 text-meta font-medium text-ink-soft">{name}</div>}
-      <div className="my-0.5 max-w-[85%] overflow-hidden rounded-field border border-line bg-surface-soft text-body">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-hover"
-        >
-          {/* Elapsed time leads and carries the emphasis; the activity glyphs
-              and counts sit beside it in a quieter tone. */}
-          {elapsed && (
-            <span className="shrink-0 text-body font-semibold text-accent tabular-nums">
-              {t("chat.activity.duration", { duration: elapsed })}
-            </span>
-          )}
-          <span className="flex shrink-0 items-center gap-2.5 text-ink-faint">
-            {thoughts > 0 && (
-              <span
-                className="flex items-center gap-1"
-                title={t("chat.activity.thoughts", { count: thoughts })}
-                aria-label={t("chat.activity.thoughts", { count: thoughts })}
-              >
-                <LightbulbIcon className="h-3.5 w-3.5" />
-                <span className="text-note font-medium tabular-nums">{thoughts}</span>
-              </span>
-            )}
-            {tools > 0 && (
-              <span
-                className="flex items-center gap-1"
-                title={t("chat.activity.tools", { count: tools })}
-                aria-label={t("chat.activity.tools", { count: tools })}
-              >
-                <WrenchIcon className="h-3.5 w-3.5" />
-                <span className="text-note font-medium tabular-nums">{tools}</span>
-              </span>
-            )}
-          </span>
-          {active && (
-            <span className="flex min-w-0 flex-1 items-center gap-1.5 text-note">
-              {latest?.icon}
-              <span className="activity-shimmer min-w-0 truncate">
-                {latest?.text || t("chat.activity.working")}
-              </span>
-            </span>
-          )}
-          {running && <SpinnerIcon className="ml-auto h-3.5 w-3.5 shrink-0 animate-spin text-ink-faint" />}
-          <ExpandChevron expanded={expanded} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-        </button>
-        {expanded &&
-          body.map((entry) => (
-            <div key={entry.key} className="border-t border-line/70">
-              {entry.kind === "thought" ? (
-                <ReasoningRow text={entry.text} streaming={entry.streaming} />
-              ) : entry.kind === "text" ? (
-                <div className="px-3 py-2">
-                  {entry.images?.map((url, k) => (
-                    <img key={k} src={url} alt="" className="mb-1.5 max-w-full rounded-lg object-contain" />
-                  ))}
-                  {entry.content.trim() && <Markdown text={entry.content} />}
-                </div>
-              ) : (
-                <ToolCallBlock
-                  grouped
-                  name={entry.name}
-                  arguments={entry.arguments}
-                  result={entry.result}
-                  isRunning={entry.isRunning}
-                />
+      {single ? (
+        <div className="my-0.5 max-w-[85%] overflow-hidden rounded-field border border-line bg-surface-soft text-body">
+          {entryRow(single)}
+        </div>
+      ) : (
+        body.length > 0 && (
+          <div className="my-0.5 max-w-[85%] overflow-hidden rounded-field border border-line bg-surface-soft text-body">
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-hover"
+            >
+              {/* Elapsed time leads and carries the emphasis; the activity glyphs
+                  and counts sit beside it in a quieter tone. */}
+              {elapsed && (
+                <span className="shrink-0 text-body font-semibold text-accent tabular-nums">
+                  {t("chat.activity.duration", { duration: elapsed })}
+                </span>
               )}
-            </div>
-          ))}
-      </div>
+              <span className="flex shrink-0 items-center gap-2.5 text-ink-faint">
+                {thoughts > 0 && (
+                  <span
+                    className="flex items-center gap-1"
+                    title={t("chat.activity.thoughts", { count: thoughts })}
+                    aria-label={t("chat.activity.thoughts", { count: thoughts })}
+                  >
+                    <LightbulbIcon className="h-3.5 w-3.5" />
+                    <span className="text-note font-medium tabular-nums">{thoughts}</span>
+                  </span>
+                )}
+                {tools > 0 && (
+                  <span
+                    className="flex items-center gap-1"
+                    title={t("chat.activity.tools", { count: tools })}
+                    aria-label={t("chat.activity.tools", { count: tools })}
+                  >
+                    <WrenchIcon className="h-3.5 w-3.5" />
+                    <span className="text-note font-medium tabular-nums">{tools}</span>
+                  </span>
+                )}
+              </span>
+              {active && (
+                <span className="flex min-w-0 flex-1 items-center gap-1.5 text-note">
+                  {latest?.icon}
+                  <span className="activity-shimmer min-w-0 truncate">
+                    {latest?.text || t("chat.activity.working")}
+                  </span>
+                </span>
+              )}
+              {running && <SpinnerIcon className="ml-auto h-3.5 w-3.5 shrink-0 animate-spin text-ink-faint" />}
+              <ExpandChevron expanded={expanded} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+            </button>
+            {expanded &&
+              body.map((entry) => (
+                <div key={entry.key} className="border-t border-line/70">
+                  {entryRow(entry)}
+                </div>
+              ))}
+          </div>
+        )
+      )}
       {output && (
         <div className="mt-2">
           <MessageBubble
