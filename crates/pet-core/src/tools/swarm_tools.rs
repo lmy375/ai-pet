@@ -1,4 +1,20 @@
+use crate::settings::AppSettings;
 use crate::tools::{required_str, tool_error, Tool, ToolContext};
+
+/// An invalid agent reference must tell the model which ids it may use, or it
+/// has no way to recover from the error.
+fn unknown_agent_error(settings: &Option<AppSettings>, agent_id: &str) -> String {
+    let available: Vec<&str> = settings
+        .as_ref()
+        .map(|s| s.agents.iter().map(|a| a.id.as_str()).collect())
+        .unwrap_or_default();
+    let available = if available.is_empty() {
+        "(none)".to_string()
+    } else {
+        available.join(", ")
+    };
+    format!("unknown agent_id {agent_id}; available agents: {available}")
+}
 
 pub struct SwarmUpdateTaskTool;
 impl Tool for SwarmUpdateTaskTool {
@@ -180,6 +196,101 @@ async fn swarm_delete_task_impl(arguments: &str, ctx: &ToolContext) -> String {
     drop(state);
     crate::swarm::persist_session(&session, snapshot).await;
     serde_json::json!({"status":"deleted","task_id":task_id}).to_string()
+}
+
+pub struct SwarmUpdateConfigTool;
+impl Tool for SwarmUpdateConfigTool {
+    fn name(&self) -> &str {
+        "swarm_update_config"
+    }
+    fn definition(&self) -> serde_json::Value {
+        serde_json::json!({"type":"function","function":{"name":"swarm_update_config","description":"Update the current project's settings. Every field is optional; only the fields you send are changed, and calling with no fields returns the current settings. pool replaces the whole Worker roster as [{agent_id, count}]. Changes to pool take effect the next time the project starts; prompt and title changes apply to subsequent turns and tasks.","parameters":{"type":"object","properties":{"title":{"type":"string"},"main_agent_id":{"type":"string"},"pool":{"type":"array","items":{"type":"object","properties":{"agent_id":{"type":"string"},"count":{"type":"integer","minimum":0}},"required":["agent_id","count"]}},"shared_prompt":{"type":"string"},"orchestrator_prompt":{"type":"string"},"worker_prompt":{"type":"string"}}}}})
+    }
+    crate::impl_execute!(swarm_update_config_impl);
+}
+async fn swarm_update_config_impl(arguments: &str, ctx: &ToolContext) -> String {
+    let args = super::parse_args(arguments);
+    let Some(session) = ctx.swarm.clone() else {
+        return tool_error("swarm unavailable");
+    };
+    if ctx.swarm_worker_id.is_some() {
+        return tool_error("only the Orchestrator can update project settings");
+    }
+    let title = args["title"].as_str().map(|t| t.trim().to_string());
+    if let Some(title) = &title {
+        if title.is_empty() {
+            return tool_error("title cannot be empty");
+        }
+    }
+    let settings = crate::settings::get_settings().ok();
+    let main_agent_id = args["main_agent_id"].as_str().map(str::to_string);
+    if let Some(agent_id) = &main_agent_id {
+        if settings.as_ref().and_then(|s| s.agent(agent_id)).is_none() {
+            return tool_error(unknown_agent_error(&settings, agent_id));
+        }
+    }
+    let pool = match args.get("pool").filter(|value| !value.is_null()) {
+        None => None,
+        Some(value) => {
+            let Some(items) = value.as_array() else {
+                return tool_error("pool must be an array of {agent_id, count}");
+            };
+            let mut pool = Vec::with_capacity(items.len());
+            for item in items {
+                let agent_id = item["agent_id"].as_str().unwrap_or("").trim().to_string();
+                let Some(count) = item["count"].as_u64() else {
+                    return tool_error("pool entries need an integer count");
+                };
+                let count = count.min(u32::MAX as u64) as u32;
+                if agent_id.is_empty() {
+                    return tool_error("pool entries need a non-empty agent_id");
+                }
+                if settings.as_ref().and_then(|s| s.agent(&agent_id)).is_none() {
+                    return tool_error(unknown_agent_error(&settings, &agent_id));
+                }
+                if count > 0 {
+                    pool.push(crate::swarm::WorkerProfile { agent_id, count });
+                }
+            }
+            Some(pool)
+        }
+    };
+    let shared_prompt = args["shared_prompt"].as_str().map(str::to_string);
+    let orchestrator_prompt = args["orchestrator_prompt"].as_str().map(str::to_string);
+    let worker_prompt = args["worker_prompt"].as_str().map(str::to_string);
+
+    let mut state = session.state.lock().await;
+    if let Some(title) = title {
+        state.title = title;
+    }
+    if let Some(agent_id) = main_agent_id {
+        state.main_agent_id = agent_id;
+    }
+    if let Some(pool) = pool {
+        state.pool = pool;
+    }
+    if let Some(prompt) = shared_prompt {
+        state.shared_prompt = prompt;
+    }
+    if let Some(prompt) = orchestrator_prompt {
+        state.orchestrator_prompt = prompt;
+    }
+    if let Some(prompt) = worker_prompt {
+        state.worker_prompt = prompt;
+    }
+    state.updated_at = crate::common::iso_now();
+    let snapshot = state.clone();
+    drop(state);
+    let config = serde_json::json!({
+        "title": &snapshot.title,
+        "main_agent_id": &snapshot.main_agent_id,
+        "pool": &snapshot.pool,
+        "shared_prompt": &snapshot.shared_prompt,
+        "orchestrator_prompt": &snapshot.orchestrator_prompt,
+        "worker_prompt": &snapshot.worker_prompt,
+    });
+    crate::swarm::persist_session(&session, snapshot).await;
+    serde_json::json!({ "status": "updated", "config": config }).to_string()
 }
 
 pub struct SwarmGetSummaryTool;

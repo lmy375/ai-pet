@@ -10,7 +10,7 @@ use super::screenshot_tool::ScreenshotTool;
 use super::shell_tools::{BashTool, CheckShellStatusTool, WriteStdinTool};
 use super::swarm_tools::{
     SwarmCompleteTaskTool, SwarmCreateTaskTool, SwarmDeleteTaskTool, SwarmGetSummaryTool,
-    SwarmUpdateTaskTool,
+    SwarmUpdateConfigTool, SwarmUpdateTaskTool,
 };
 use super::tool::Tool;
 use super::web_search_tool::WebSearchTool;
@@ -119,6 +119,7 @@ fn builtins() -> Vec<(Box<dyn Tool>, ToolScope)> {
         (Box::new(SwarmCompleteTaskTool), ToolScope::SwarmWorker),
         (Box::new(SwarmCreateTaskTool), ToolScope::Swarm),
         (Box::new(SwarmDeleteTaskTool), ToolScope::SwarmOrchestrator),
+        (Box::new(SwarmUpdateConfigTool), ToolScope::SwarmOrchestrator),
         (Box::new(SwarmGetSummaryTool), ToolScope::Swarm),
     ]
 }
@@ -349,6 +350,7 @@ mod tests {
         assert!(tool_names(&swarm).contains(&"swarm_get_summary".to_string()));
         // Deleting tasks is the Orchestrator's call; Workers only run them.
         assert!(tool_names(&swarm).contains(&"swarm_delete_task".to_string()));
+        assert!(tool_names(&swarm).contains(&"swarm_update_config".to_string()));
         let worker = ToolRegistry::new(
             vec![],
             ToolPolicy {
@@ -358,6 +360,7 @@ mod tests {
             },
         );
         assert!(!tool_names(&worker).contains(&"swarm_delete_task".to_string()));
+        assert!(!tool_names(&worker).contains(&"swarm_update_config".to_string()));
     }
 
     #[tokio::test]
