@@ -141,9 +141,6 @@ pub struct SwarmSession {
     workers: Mutex<HashMap<String, LiveWorker>>,
     pub main_cancel: Mutex<Option<CancellationToken>>,
     pub events: Arc<dyn SwarmEvents>,
-    pub mcp_store: McpStore,
-    pub log_store: LogStore,
-    pub shell_store: ShellStore,
     /// Set when the swarm is deleted. In-flight Workers and the Orchestrator
     /// still hold this session, so every persistence path checks it before
     /// writing a snapshot back to disk.
@@ -291,9 +288,6 @@ impl SwarmRuntime {
             workers: Mutex::new(HashMap::new()),
             main_cancel: Mutex::new(None),
             events: self.events.clone(),
-            mcp_store: self.mcp_store.clone(),
-            log_store: self.log_store.clone(),
-            shell_store: self.shell_store.clone(),
             deleted: AtomicBool::new(false),
         });
         self.sessions
@@ -339,9 +333,6 @@ impl SwarmRuntime {
             workers: Mutex::new(HashMap::new()),
             main_cancel: Mutex::new(None),
             events: self.events.clone(),
-            mcp_store: self.mcp_store.clone(),
-            log_store: self.log_store.clone(),
-            shell_store: self.shell_store.clone(),
             deleted: AtomicBool::new(false),
         });
         self.sessions.lock().await.insert(id, session);
@@ -459,32 +450,6 @@ impl SwarmRuntime {
         Ok(())
     }
 
-    pub async fn summary(self: &Arc<Self>, id: &str) -> Result<Value, String> {
-        let state = self.session(id).await?.state.lock().await.clone();
-        let pending = state
-            .tasks
-            .iter()
-            .filter(|t| t.status == SwarmTaskStatus::Pending)
-            .count();
-        let running = state
-            .tasks
-            .iter()
-            .filter(|t| t.status == SwarmTaskStatus::Running)
-            .count();
-        let completed = state
-            .tasks
-            .iter()
-            .filter(|t| t.status == SwarmTaskStatus::Completed)
-            .count();
-        Ok(serde_json::json!({
-            "status": state.status,
-            "pending": pending,
-            "running": running,
-            "completed": completed,
-            "total": state.tasks.len(),
-        }))
-    }
-
     pub async fn claim_task(
         self: &Arc<Self>,
         id: &str,
@@ -508,33 +473,6 @@ impl SwarmRuntime {
         state.updated_at = now();
         persist_state(&session, &state);
         Ok(Some(copy))
-    }
-
-    pub async fn update_task(
-        self: &Arc<Self>,
-        id: &str,
-        task_id: &str,
-        worker_id: &str,
-        progress: u8,
-        summary: String,
-    ) -> Result<(), String> {
-        let session = self.session(id).await?;
-        let mut state = session.state.lock().await;
-        let task = state
-            .tasks
-            .iter_mut()
-            .find(|t| t.id == task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        if task.claimed_by.as_deref() != Some(worker_id) || task.status != SwarmTaskStatus::Running
-        {
-            return Err("Worker 没有该任务的锁".to_string());
-        }
-        task.progress = progress.min(100);
-        task.progress_summary = summary;
-        task.updated_at = now();
-        state.updated_at = now();
-        persist_state(&session, &state);
-        Ok(())
     }
 
     pub async fn complete_task(
@@ -1029,19 +967,5 @@ impl ChatEventSink for SwarmSink {
 impl SwarmSession {
     fn is_deleted(&self) -> bool {
         self.deleted.load(Ordering::SeqCst)
-    }
-
-    pub async fn task_for_worker(
-        &self,
-        task_id: &str,
-        worker_id: &str,
-    ) -> Result<SwarmTask, String> {
-        let state = self.state.lock().await;
-        state
-            .tasks
-            .iter()
-            .find(|t| t.id == task_id && t.claimed_by.as_deref() == Some(worker_id))
-            .cloned()
-            .ok_or_else(|| "任务不存在或不属于当前 Worker".to_string())
     }
 }
