@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use pet_core::chat::StreamEvent;
 use pet_core::group::{GroupEvents, GroupMessage};
+use pet_core::item::ChatItem;
 use pet_core::turn::{TurnEvents, TurnNotice, TurnSnapshot};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -94,7 +95,7 @@ impl GroupEvents for TuiGroupEvents {
         }
     }
 
-    fn injected(&self, _group_id: &str, _agent_id: &str, _items: &[serde_json::Value]) {}
+    fn injected(&self, _group_id: &str, _agent_id: &str, _items: &[ChatItem]) {}
 
     fn agent_done(&self, group_id: &str, agent_id: &str) {
         if self.active(group_id) {

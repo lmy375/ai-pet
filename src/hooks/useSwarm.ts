@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { newItemId, type ChatItem, type ToolCall } from "./useChat";
+import type { ChatItem } from "./useChat";
+import { applyStream, emptyView, type StreamEvent, type StreamView } from "./streamView";
 
 export type SwarmStatus = "idle" | "running" | "draining" | "stopped" | "completed";
 export type SwarmTaskStatus = "pending" | "running" | "completed";
@@ -60,57 +61,8 @@ export interface SwarmSnapshot {
   updated_at: string;
 }
 
-export interface AgentView {
-  items: ChatItem[];
-  toolCalls: ToolCall[];
-  streaming: string;
-  reasoning: string;
-  running: boolean;
-}
-
-type StreamEvent =
-  | { event: "chunk"; data: { text: string } }
-  | { event: "reasoning"; data: { text: string } }
-  | { event: "toolStart"; data: { name: string; arguments: string } }
-  | { event: "toolResult"; data: { name: string; result: string } }
-  | { event: "image"; data: { dataUrl: string } }
-  | { event: "usage"; data: Record<string, number> }
-  | { event: "done"; data: Record<string, never> }
-  | { event: "error"; data: { message: string } };
-
-function emptyView(items: ChatItem[] = []): AgentView {
-  return { items, toolCalls: [], streaming: "", reasoning: "", running: false };
-}
-
-function applyStream(view: AgentView, event: StreamEvent): AgentView {
-  const flushTools = (v: AgentView): AgentView => v.toolCalls.length === 0 ? v : {
-    ...v,
-    items: [...v.items, { id: newItemId(), type: "tool", content: "", toolCalls: v.toolCalls, ts: Date.now() }],
-    toolCalls: [],
-  };
-  const commitText = (v: AgentView): AgentView => !v.streaming.trim() && !v.reasoning.trim() ? v : {
-    ...v,
-    items: [...v.items, { id: newItemId(), type: "assistant", content: v.streaming, reasoning: v.reasoning || undefined, ts: Date.now() }],
-    streaming: "",
-    reasoning: "",
-  };
-  switch (event.event) {
-    case "chunk": { const v = flushTools(view); return { ...v, streaming: v.streaming + event.data.text, running: true }; }
-    case "reasoning": return { ...view, reasoning: view.reasoning + event.data.text, running: true };
-    case "toolStart": { const v = commitText(view); return { ...v, toolCalls: [...v.toolCalls, { name: event.data.name, arguments: event.data.arguments, isRunning: true }], running: true }; }
-    case "toolResult": {
-      let matched = false;
-      return { ...view, toolCalls: view.toolCalls.map((tc) => {
-        if (!matched && tc.name === event.data.name && tc.isRunning) { matched = true; return { ...tc, result: event.data.result, isRunning: false }; }
-        return tc;
-      }) };
-    }
-    case "image": { const v = flushTools(view); return { ...v, items: [...v.items, { id: newItemId(), type: "assistant", content: "", images: [event.data.dataUrl], ts: Date.now() }] }; }
-    case "done": return { ...commitText(flushTools(view)), running: false };
-    case "error": return { ...flushTools(view), items: [...flushTools(view).items, { id: newItemId(), type: "error", content: event.data.message, ts: Date.now() }], streaming: "", reasoning: "", running: false };
-    default: return view;
-  }
-}
+/** Same shape and fold as the chat window — see `streamView.ts`. */
+export type AgentView = StreamView;
 
 interface WorkerStreamPayload { swarmId: string; workerId: string; event: StreamEvent }
 interface MainStreamPayload { swarmId: string; event: StreamEvent }

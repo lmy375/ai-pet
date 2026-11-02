@@ -228,86 +228,73 @@ pub struct LlmMeta {
     pub preview: String,
 }
 
-const PREVIEW_CHARS: usize = 100;
-
-/// The newest user message's text, for the list row. Images and other non-text
-/// parts are skipped — a base64 data URL is neither readable nor small.
-fn preview_of(messages: &[serde_json::Value]) -> String {
-    for msg in messages.iter().rev() {
-        if msg.get("role").and_then(|r| r.as_str()) != Some("User") {
-            continue;
-        }
-        let text = match msg.get("content") {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Array(parts)) => parts
-                .iter()
-                .filter_map(|p| p.get("Text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join(" "),
-            _ => String::new(),
-        };
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        return text.chars().take(PREVIEW_CHARS).collect();
-    }
-    String::new()
+/// Everything that goes into the log index for one round.
+pub struct LlmLogMeta<'a> {
+    pub session: &'a LogSession,
+    pub model: &'a str,
+    pub rounds: &'a [RoundStat],
+    /// First line of the newest user message, for the collapsed row.
+    pub preview: &'a str,
+    pub request_time: &'a str,
 }
 
-/// Write the atomically-replaceable body file and append this round's metadata.
+/// The full request/response body. Written only on the first and last rounds:
+/// each round's request is a superset of the previous one, so the last body
+/// already holds every message, and rewriting the whole conversation on every
+/// tool round made disk writes quadratic in the number of rounds.
+pub struct LlmLogBody<'a> {
+    pub messages: &'a [serde_json::Value],
+    pub response_text: &'a str,
+    pub reasoning: &'a str,
+    pub tool_calls: &'a [serde_json::Value],
+    pub first_token_time: Option<&'a str>,
+    pub done_time: &'a str,
+}
+
+/// Write the atomically-replaceable body file (when `body` is present) and
+/// append this round's metadata.
 ///
 /// Body first, index second: an index line always has a body to open, whereas
 /// the reverse order would leave a row that 404s. A crash between the two only
 /// leaves an orphan body, which the next compaction sweeps up.
-#[allow(clippy::too_many_arguments)]
-pub fn write_llm_log(
-    session: &LogSession,
-    model: &str,
-    rounds: &[RoundStat],
-    messages: &[serde_json::Value],
-    response_text: &str,
-    reasoning: &str,
-    tool_calls: &[serde_json::Value],
-    request_time: &str,
-    first_token_time: Option<&str>,
-    done_time: &str,
-) {
-    let meta = LlmMeta {
-        id: session.id.clone(),
-        kind: session.kind,
-        label: session.label.clone(),
-        model: model.to_string(),
-        request_time: request_time.to_string(),
-        rounds: rounds.to_vec(),
-        preview: preview_of(messages),
+pub fn write_llm_log(meta: LlmLogMeta<'_>, body: Option<LlmLogBody<'_>>) {
+    let stored_meta = LlmMeta {
+        id: meta.session.id.clone(),
+        kind: meta.session.kind,
+        label: meta.session.label.clone(),
+        model: meta.model.to_string(),
+        request_time: meta.request_time.to_string(),
+        rounds: meta.rounds.to_vec(),
+        preview: meta.preview.to_string(),
     };
-
-    let body = serde_json::json!({
-        "meta": meta,
-        "first_token_time": first_token_time,
-        "done_time": done_time,
-        "messages": messages,
-        "response": {
-            "text": response_text,
-            // Chain-of-thought from a reasoning model; null for models without one
-            // so the body doesn't carry an empty string per round.
-            "reasoning": if reasoning.is_empty() { serde_json::Value::Null } else { serde_json::json!(reasoning) },
-            "tool_calls": tool_calls,
-        }
-    });
 
     let dir = llm_log_dir();
     if fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let path = dir.join(format!("{}.json", session.id));
-    let tmp = dir.join(format!("{}.json.tmp", session.id));
-    if fs::write(&tmp, body.to_string()).is_ok() {
-        let _ = fs::rename(&tmp, &path);
+
+    if let Some(body) = body {
+        let json = serde_json::json!({
+            "meta": stored_meta,
+            "first_token_time": body.first_token_time,
+            "done_time": body.done_time,
+            "messages": body.messages,
+            "response": {
+                "text": body.response_text,
+                // Chain-of-thought from a reasoning model; null for models without one
+                // so the body doesn't carry an empty string per round.
+                "reasoning": if body.reasoning.is_empty() { serde_json::Value::Null } else { serde_json::json!(body.reasoning) },
+                "tool_calls": body.tool_calls,
+            }
+        });
+        let path = dir.join(format!("{}.json", meta.session.id));
+        let tmp = dir.join(format!("{}.json.tmp", meta.session.id));
+        if fs::write(&tmp, json.to_string()).is_ok() {
+            let _ = fs::rename(&tmp, &path);
+        }
     }
 
-    if let Ok(line) = serde_json::to_string(&meta) {
+    if let Ok(line) = serde_json::to_string(&stored_meta) {
         append_to_file(&llm_index_path(), &line);
     }
     maybe_compact();
@@ -479,29 +466,4 @@ mod tests {
         assert_eq!(ids(&kept), vec!["s1", "c1"]);
     }
 
-    #[test]
-    fn preview_reads_the_newest_user_text_part() {
-        // Messages are serialized genai `ChatMessage`s: content is an array of
-        // externally-tagged parts, and only `Text` is renderable here.
-        let msgs = vec![
-            serde_json::json!({ "role": "User", "content": [{ "Text": "first" }] }),
-            serde_json::json!({ "role": "Assistant", "content": [{ "Text": "reply" }] }),
-            serde_json::json!({ "role": "User", "content": [{ "Text": "second" }] }),
-        ];
-        assert_eq!(preview_of(&msgs), "second");
-    }
-
-    #[test]
-    fn preview_skips_an_image_only_turn() {
-        // A screenshot round appends a user message carrying only a Binary part.
-        // Falling through to the previous text beats showing an empty row.
-        let msgs = vec![
-            serde_json::json!({ "role": "User", "content": [{ "Text": "look at this" }] }),
-            serde_json::json!({
-                "role": "User",
-                "content": [{ "Binary": { "content_type": "image/png", "source": { "Base64": "iVBOR" } } }]
-            }),
-        ];
-        assert_eq!(preview_of(&msgs), "look at this");
-    }
 }

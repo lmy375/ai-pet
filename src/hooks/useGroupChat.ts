@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { newItemId, type ChatItem, type ToolCall } from "./useChat";
+import type { ChatItem } from "./useChat";
+import { applyStream, emptyView, type StreamEvent, type StreamView } from "./streamView";
 
 /** One line in the shared group transcript (mirrors backend `GroupMessage`). */
 export interface GroupMessage {
@@ -23,14 +24,9 @@ export interface GroupSummary {
   updated_at: number;
 }
 
-/** Live + committed display state for one agent's session (Agent sub-tab). */
-export interface AgentView {
-  items: ChatItem[];
-  toolCalls: ToolCall[]; // in-progress (not yet flushed) tool calls
-  streaming: string; // in-progress assistant text
-  reasoning: string; // in-progress chain-of-thought
-  running: boolean;
-}
+/** Live + committed display state for one agent's session (Agent sub-tab).
+ *  Same shape and fold as the chat window — see `streamView.ts`. */
+export type AgentView = StreamView;
 
 /** Backend `GroupState` snapshot from `group_load`. */
 interface GroupStateSnapshot {
@@ -41,108 +37,6 @@ interface GroupStateSnapshot {
   members: string[];
   agents: Record<string, { items?: ChatItem[] }>;
   paused: boolean;
-}
-
-/** A `group-stream` event payload: a chat StreamEvent tagged with the room + agent. */
-type StreamEvent =
-  | { event: "chunk"; data: { text: string } }
-  | { event: "reasoning"; data: { text: string } }
-  | { event: "toolStart"; data: { name: string; arguments: string } }
-  | { event: "toolResult"; data: { name: string; result: string } }
-  | { event: "image"; data: { dataUrl: string } }
-  | { event: "usage"; data: Record<string, number> }
-  | { event: "done"; data: Record<string, never> }
-  | { event: "error"; data: { message: string } };
-
-function emptyView(items: ChatItem[] = []): AgentView {
-  return { items, toolCalls: [], streaming: "", reasoning: "", running: false };
-}
-
-/** Apply one StreamEvent to an agent's view — the exact reducer `useChat` runs,
- *  per-agent and without session persistence (the backend persists items). */
-function applyStream(view: AgentView, ev: StreamEvent): AgentView {
-  const ts = Date.now();
-  const flushTools = (v: AgentView): AgentView =>
-    v.toolCalls.length === 0
-      ? v
-      : {
-          ...v,
-          items: [...v.items, { id: newItemId(), type: "tool", content: "", toolCalls: v.toolCalls, ts }],
-          toolCalls: [],
-        };
-  const commitText = (v: AgentView): AgentView =>
-    !v.streaming.trim() && !v.reasoning.trim()
-      ? { ...v, streaming: "", reasoning: "" }
-      : {
-          ...v,
-          items: [
-            ...v.items,
-            {
-              id: newItemId(),
-              type: "assistant",
-              content: v.streaming,
-              reasoning: v.reasoning || undefined,
-              ts,
-            },
-          ],
-          streaming: "",
-          reasoning: "",
-        };
-
-  switch (ev.event) {
-    case "chunk": {
-      const v = flushTools(view);
-      return { ...v, running: true, streaming: v.streaming + ev.data.text };
-    }
-    case "reasoning": {
-      // A new round's thinking starts only after the previous round's tool
-      // calls returned — same boundary the main chat's reducer uses.
-      const v = flushTools(view);
-      return { ...v, running: true, reasoning: v.reasoning + ev.data.text };
-    }
-    case "toolStart": {
-      const v = commitText(view);
-      return {
-        ...v,
-        running: true,
-        toolCalls: [...v.toolCalls, { name: ev.data.name, arguments: ev.data.arguments, isRunning: true }],
-      };
-    }
-    case "toolResult": {
-      let matched = false;
-      const toolCalls = view.toolCalls.map((tc) => {
-        if (!matched && tc.name === ev.data.name && tc.isRunning) {
-          matched = true;
-          return { ...tc, result: ev.data.result, isRunning: false };
-        }
-        return tc;
-      });
-      return { ...view, toolCalls };
-    }
-    case "image": {
-      const v = flushTools(view);
-      return {
-        ...v,
-        items: [...v.items, { id: newItemId(), type: "assistant", content: "", images: [ev.data.dataUrl], ts }],
-      };
-    }
-    case "done": {
-      const v = commitText(flushTools(view));
-      return { ...v, running: false };
-    }
-    case "error": {
-      const v = flushTools(view);
-      return {
-        ...v,
-        items: [...v.items, { id: newItemId(), type: "error", content: ev.data.message, ts }],
-        streaming: "",
-        reasoning: "",
-        running: false,
-      };
-    }
-    default:
-      return view;
-  }
 }
 
 // --- Single, app-lifetime listener registration -----------------------------

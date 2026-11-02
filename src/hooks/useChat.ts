@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTauriEvent } from "./useTauriEvent";
+import { applyStream, emptyView, newItemId, type StreamEvent, type StreamView, type Usage } from "./streamView";
+
+export { newItemId } from "./streamView";
 
 /** Sentinel title for a not-yet-named session. Stored verbatim on disk (so old
  *  sessions keep matching); translate it at display time, never compare against
@@ -12,17 +15,9 @@ export interface ToolCall {
   name: string;
   arguments: string;
   result?: string;
-  isRunning: boolean;
-}
-
-// Stable, collision-free id for a chat item this window creates before the
-// backend's copy arrives (the optimistic user bubble, the in-progress turn's
-// items). Never key/select by array index — it shifts when items are inserted
-// or removed and ends up deleting the wrong rows.
-let chatItemSeq = 0;
-export function newItemId(): string {
-  chatItemSeq += 1;
-  return `it-${Date.now().toString(36)}-${chatItemSeq.toString(36)}`;
+  /** Live view only: persisted tool calls have always finished, so the backend
+   *  no longer stores this flag. */
+  isRunning?: boolean;
 }
 
 export interface ChatItem {
@@ -55,8 +50,6 @@ interface SessionIndex {
   sessions: SessionMeta[];
 }
 
-type Usage = { used: number; total: number };
-
 /** A session as the backend renders it for a window: the display transcript
  *  only. The LLM conversation stays in the backend and is never sent here. */
 interface SessionView {
@@ -68,139 +61,55 @@ interface SessionView {
   context_usage?: Usage | null;
 }
 
-type StreamEvent =
-  | { event: "chunk"; data: { text: string } }
-  | { event: "reasoning"; data: { text: string } }
-  | { event: "toolStart"; data: { name: string; arguments: string } }
-  | { event: "toolResult"; data: { name: string; result: string } }
-  | { event: "image"; data: { dataUrl: string } }
-  | { event: "usage"; data: { promptTokens: number; totalTokens: number; contextWindow: number } }
-  | { event: "done"; data: Record<string, never> }
-  | { event: "error"; data: { message: string } };
-
 /** Turn activity from the backend (`turn` event, camelCase via serde). One
  *  stream for every session; this hook keeps what concerns its own. */
+type TurnOrigin =
+  | { type: "user"; text: string }
+  | { type: "completion"; label: string };
+
 type TurnNotice =
-  | { kind: "started"; sessionId: string; turnId: string; startedAt: number }
+  | { kind: "started"; sessionId: string; turnId: string; origin: TurnOrigin; startedAt: number }
   | { kind: "stream"; sessionId: string; turnId: string; seq: number; event: StreamEvent }
   | { kind: "finished"; sessionId: string; turnId: string };
 
-type StreamNotice = Extract<TurnNotice, { kind: "stream" }>;
-
-/** Everything a running turn has streamed so far (`attach_turn`). */
+/** Everything a running turn has produced (`attach_turn`): the backend's own
+ *  committed items, the still-streaming tail, and the turn's opening origin. */
 interface TurnSnapshot {
   turnId: string;
+  origin: TurnOrigin;
   startedAt: number;
   seq: number;
-  events: StreamEvent[];
-}
-
-/**
- * What the turn in progress has produced so far, folded from its stream
- * events: items already final within the turn (text before a tool call, tool
- * rows, images), plus the text / thinking / tool calls still streaming. Pure
- * data, so a late joiner replays the backend's snapshot through the same
- * reducer and lands on the identical view.
- */
-interface TurnView {
   items: ChatItem[];
   response: string;
   reasoning: string;
   toolCalls: ToolCall[];
   usage: Usage | null;
-  /** Tokens this turn has burned so far: every round's own total added up (a
-   *  tool loop re-sends the conversation each round, so that IS the cost).
-   *  Distinct from `usage`, which is the latest round's context occupancy. */
   spent: number;
 }
 
-const EMPTY_VIEW: TurnView = { items: [], response: "", reasoning: "", toolCalls: [], usage: null, spent: 0 };
-
-function flushToolCalls(v: TurnView): TurnView {
-  if (v.toolCalls.length === 0) return v;
-  return {
-    ...v,
-    items: [...v.items, { id: newItemId(), type: "tool", content: "", toolCalls: v.toolCalls, ts: Date.now() }],
-    toolCalls: [],
-  };
-}
-
-/** Commit the streaming text + thinking as one assistant item (none if both empty). */
-function commitText(v: TurnView): TurnView {
-  if (!v.response.trim() && !v.reasoning.trim()) return { ...v, response: "", reasoning: "" };
-  return {
-    ...v,
-    items: [
-      ...v.items,
-      { id: newItemId(), type: "assistant", content: v.response, reasoning: v.reasoning || undefined, ts: Date.now() },
-    ],
-    response: "",
-    reasoning: "",
-  };
-}
-
-/** Mirrors the backend's `ItemBuilder`, which shapes what gets persisted, so
- *  the live view and the reloaded transcript agree. */
-function reduceTurn(v: TurnView, e: StreamEvent): TurnView {
-  switch (e.event) {
-    case "chunk": {
-      const f = flushToolCalls(v);
-      return { ...f, response: f.response + e.data.text };
-    }
-    case "reasoning": {
-      // A new round's thinking starts only after the previous round's tool
-      // calls have all returned, so this is the round boundary: close their
-      // group here. Without it a reasoning-only agent (no text chunks) keeps
-      // every round's calls in one buffer and flushes them as one item after
-      // all the thinking, at `done`.
-      const f = flushToolCalls(v);
-      return { ...f, reasoning: f.reasoning + e.data.text };
-    }
-    case "toolStart": {
-      // Text/thinking streamed before the call stays with the round it came from.
-      const c = commitText(v);
-      return { ...c, toolCalls: [...c.toolCalls, { name: e.data.name, arguments: e.data.arguments, isRunning: true }] };
-    }
-    case "toolResult": {
-      // Results arrive in call order; attach to the FIRST still-running call of
-      // that name so two parallel same-named calls don't both take the first result.
-      let matched = false;
-      return {
-        ...v,
-        toolCalls: v.toolCalls.map((tc) => {
-          if (!matched && tc.name === e.data.name && tc.isRunning) {
-            matched = true;
-            return { ...tc, result: e.data.result, isRunning: false };
-          }
-          return tc;
-        }),
-      };
-    }
-    case "image": {
-      const f = flushToolCalls(v);
-      return {
-        ...f,
-        items: [...f.items, { id: newItemId(), type: "assistant", content: "", images: [e.data.dataUrl], ts: Date.now() }],
-      };
-    }
-    case "usage":
-      return {
-        ...v,
-        usage: { used: e.data.totalTokens, total: e.data.contextWindow },
-        spent: v.spent + e.data.totalTokens,
-      };
-    case "done":
-      return commitText(flushToolCalls(v));
-    case "error": {
-      const f = flushToolCalls(v);
-      return {
-        ...f,
-        response: "",
-        reasoning: "",
-        items: [...f.items, { id: newItemId(), type: "error", content: e.data.message, ts: Date.now() }],
-      };
-    }
+/** The opening line a turn started elsewhere renders: the user's message, or
+ *  the background-task notification line. */
+function openingItem(origin: TurnOrigin): ChatItem {
+  if (origin.type === "user") {
+    return { id: newItemId(), type: "user", content: origin.text, ts: Date.now() };
   }
+  return {
+    id: newItemId(),
+    type: "notification",
+    content: `后台任务完成：${origin.label}`,
+    label: origin.label,
+    ts: Date.now(),
+  };
+}
+
+/** True when the persisted transcript already carries this turn's opening line
+ *  (a reload usually lands before or during `attach`). */
+function hasOpeningItem(items: ChatItem[], origin: TurnOrigin): boolean {
+  return items.some((i) =>
+    origin.type === "user"
+      ? i.type === "user" && i.content === origin.text
+      : i.type === "notification" && i.label === origin.label,
+  );
 }
 
 /** The turn this window is following: id, last applied `seq`, and its view. */
@@ -210,7 +119,7 @@ interface TurnState {
    *  window that re-attaches mid-turn shows the real elapsed time, not zero. */
   startedAt: number;
   seq: number;
-  view: TurnView;
+  view: StreamView;
 }
 
 /**
@@ -260,16 +169,33 @@ export function useChat() {
   // Sessions with a turn in flight, for the session rail.
   const [running, setRunning] = useState<string[]>([]);
 
-  // Catch-up bookkeeping. While an `attach_turn` is in flight, live stream
-  // notices are parked in `backlog` and applied on top of the snapshot; `gen`
+  // Catch-up bookkeeping. While an `attach_turn` is in flight, this window
+  // can't apply stream events (it has no view yet), so it remembers the highest
+  // `seq` it saw and re-attaches if the snapshot turned out to be older. `gen`
   // invalidates a snapshot that arrives after the session or turn moved on.
   const syncGenRef = useRef(0);
   const syncingRef = useRef(false);
-  const backlogRef = useRef<StreamNotice[]>([]);
+  const pendingSeqRef = useRef<{ turnId: string; seq: number } | null>(null);
+  // Id of an opening bubble synthesized because the persisted copy hadn't
+  // loaded yet; dropped as soon as the real item arrives.
+  const originEchoRef = useRef<string | null>(null);
+  // Reading through a function keeps TypeScript from narrowing the ref to the
+  // value it had at the last synchronous assignment (it changes during `await`).
+  const pendingNow = () => pendingSeqRef.current;
+
+  // Echo a turn's opening line into `view` unless the persisted transcript
+  // already has it, remembering the synthetic id so the later reload can drop it.
+  const echoOrigin = (origin: TurnOrigin, view: StreamView) => {
+    if (hasOpeningItem(itemsRef.current, origin)) return;
+    const item = openingItem(origin);
+    originEchoRef.current = item.id;
+    view.items = [item, ...view.items];
+  };
   const resetSync = () => {
     syncGenRef.current += 1;
     syncingRef.current = false;
-    backlogRef.current = [];
+    pendingSeqRef.current = null;
+    originEchoRef.current = null;
   };
 
   const refreshSessionList = async () => {
@@ -291,35 +217,46 @@ export function useChat() {
     }
   };
 
-  // Join the turn running in `id` (if any) from wherever it is: replay the
-  // backend's snapshot, then whatever streamed while we were fetching it.
+  // Join the turn running in `id` (if any) from wherever it is. The snapshot is
+  // the backend's own view, so no event replay is needed; if events arrived
+  // while the call was in flight, retry once or twice to catch up.
   const attach = async (id: string) => {
     resetSync();
     const gen = syncGenRef.current;
     syncingRef.current = true;
     let snap: TurnSnapshot | null = null;
-    try {
-      snap = await invoke<TurnSnapshot | null>("attach_turn", { sessionId: id });
-    } catch (e) {
-      console.error("Failed to attach to turn:", e);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      pendingSeqRef.current = null;
+      try {
+        snap = await invoke<TurnSnapshot | null>("attach_turn", { sessionId: id });
+      } catch (e) {
+        console.error("Failed to attach to turn:", e);
+        snap = null;
+      }
+      if (gen !== syncGenRef.current || id !== sessionIdRef.current) return; // superseded
+      if (!snap) break;
+      const pending = pendingNow();
+      if (!pending || pending.turnId !== snap.turnId || pending.seq <= snap.seq) break;
     }
-    if (gen !== syncGenRef.current || id !== sessionIdRef.current) return; // superseded
     syncingRef.current = false;
-    const backlog = backlogRef.current;
-    backlogRef.current = [];
+    pendingSeqRef.current = null;
     if (!snap) {
       setTurn(null);
       return;
     }
-    let view = snap.events.reduce(reduceTurn, EMPTY_VIEW);
-    let seq = snap.seq;
-    for (const n of backlog) {
-      if (n.turnId === snap.turnId && n.seq > seq) {
-        view = reduceTurn(view, n.event);
-        seq = n.seq;
-      }
-    }
-    setTurn({ id: snap.turnId, startedAt: snap.startedAt, seq, view });
+    const view: StreamView = {
+      items: snap.items,
+      streaming: snap.response,
+      reasoning: snap.reasoning,
+      toolCalls: snap.toolCalls,
+      usage: snap.usage ?? null,
+      spent: snap.spent,
+      running: true,
+    };
+    // A turn started in another window has no optimistic bubble here; echo its
+    // opening line unless the persisted transcript already carries it.
+    echoOrigin(snap.origin, view);
+    setTurn({ id: snap.turnId, startedAt: snap.startedAt, seq: snap.seq, view });
   };
 
   // Re-read the persisted transcript of the session being shown (the backend
@@ -330,6 +267,12 @@ export function useChat() {
       if (id !== sessionIdRef.current) return;
       setItems(view.items || []);
       setContextUsage(view.context_usage ?? null);
+      const echo = originEchoRef.current;
+      if (echo) {
+        originEchoRef.current = null;
+        const t = turnRef.current;
+        if (t) setTurn({ ...t, view: { ...t.view, items: t.view.items.filter((i) => i.id !== echo) } });
+      }
     } catch (e) {
       console.error("Failed to reload session:", e);
     }
@@ -346,6 +289,12 @@ export function useChat() {
       setSessionId(view.id);
       setItems(view.items || []);
       setContextUsage(view.context_usage ?? null);
+      const echo = originEchoRef.current;
+      if (echo) {
+        originEchoRef.current = null;
+        const t = turnRef.current;
+        if (t) setTurn({ ...t, view: { ...t.view, items: t.view.items.filter((i) => i.id !== echo) } });
+      }
       await attach(view.id);
       return view;
     } catch (e) {
@@ -472,7 +421,7 @@ export function useChat() {
         turn: { text: content, images: images ?? [] },
       });
       // `started` usually lands first; either way the turn is now followed.
-      if (!turnRef.current) setTurn({ id: turnId, startedAt: Date.now(), seq: 0, view: EMPTY_VIEW });
+      if (!turnRef.current) setTurn({ id: turnId, startedAt: Date.now(), seq: 0, view: emptyView() });
     } catch (err) {
       // The turn never started (another window is mid-turn here, unreadable
       // file): nothing was persisted, so replace the bubble with the reason.
@@ -539,7 +488,11 @@ export function useChat() {
     if (n.sessionId !== sessionIdRef.current) return;
     if (n.kind === "started") {
       resetSync();
-      setTurn({ id: n.turnId, startedAt: n.startedAt, seq: 0, view: EMPTY_VIEW });
+      const view = emptyView();
+      // This window may not have the opening bubble yet (the persistence reload
+      // is async); show it immediately, deduped by content/label.
+      echoOrigin(n.origin, view);
+      setTurn({ id: n.turnId, startedAt: n.startedAt, seq: 0, view });
       reloadItems(n.sessionId); // the turn's opening item(s) are already persisted
       return;
     }
@@ -548,16 +501,18 @@ export function useChat() {
       return;
     }
     if (syncingRef.current) {
-      backlogRef.current.push(n);
+      const pending = pendingSeqRef.current;
+      if (!pending || pending.turnId !== n.turnId || n.seq > pending.seq) {
+        pendingSeqRef.current = { turnId: n.turnId, seq: n.seq };
+      }
       return;
     }
     const t = turnRef.current;
     if (!t || t.id !== n.turnId || n.seq !== t.seq + 1) {
       attach(n.sessionId);
-      backlogRef.current.push(n);
       return;
     }
-    setTurn({ ...t, seq: n.seq, view: reduceTurn(t.view, n.event) });
+    setTurn({ ...t, seq: n.seq, view: applyStream(t.view, n.event) });
   });
 
   // A heartbeat's `chat` tool inserts a pet message into the active session on
@@ -604,7 +559,7 @@ export function useChat() {
   return {
     items: visibleItems,
     isLoading: turn !== null,
-    currentResponse: turn?.view.response ?? "",
+    currentResponse: turn?.view.streaming ?? "",
     currentReasoning: turn?.view.reasoning ?? "",
     currentToolCalls: turn?.view.toolCalls ?? [],
     loaded,

@@ -70,10 +70,6 @@ impl PromptKey {
         }
     }
 
-    pub fn from_key(key: &str) -> Option<Self> {
-        PromptKey::ALL.into_iter().find(|k| k.key() == key)
-    }
-
     /// The built-in text, compiled into the binary.
     pub fn default_text(self) -> &'static str {
         match self {
@@ -266,13 +262,6 @@ pub fn tool_descriptions() -> BTreeMap<String, String> {
         }
     }
     out
-}
-
-/// One tool's overridden description, or `None` when it uses the built-in one.
-pub fn tool_description(name: &str) -> Option<String> {
-    let content = tool_path(name).ok().and_then(|p| std::fs::read_to_string(p).ok())?;
-    let content = normalize(&content);
-    (!content.is_empty()).then_some(content)
 }
 
 pub fn save_tool_description(name: &str, content: &str) -> Result<(), String> {

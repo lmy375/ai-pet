@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::item::ChatItem;
+
 fn sessions_dir() -> Result<PathBuf, String> {
     let dir = crate::common::config_dir()?.join("sessions");
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
@@ -47,7 +49,7 @@ pub struct Session {
     pub created_at: String,
     pub updated_at: String,
     pub messages: Vec<serde_json::Value>,
-    pub items: Vec<serde_json::Value>,
+    pub items: Vec<ChatItem>,
     #[serde(default)]
     pub context_usage: Option<ContextUsage>,
 }
@@ -75,76 +77,15 @@ fn write_index(index: &SessionIndex) -> Result<(), String> {
     write_json_pretty(&index_path()?, index, "index")
 }
 
-// --- Display-transcript ("ChatItem") constructors ---
-//
-// The `items` array is shaped by the frontend (see `ChatItem` in useChat.ts) and
-// round-tripped here as opaque JSON. These build the two shapes the backend
-// itself authors (the Telegram path and the `chat` tool), so the field names
-// ("type"/"content"/"images") live in one place instead of being hand-written at
-// each call site and silently drifting from the TS union.
-
-/// A stable per-item id. Every producer stamps one at creation: display items
-/// are addressed by id (React keys, multi-select, `prune_session`), so an item
-/// that reaches disk without one can't be referred to at all.
-pub fn item_id() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-
-/// Epoch milliseconds, the display timestamp carried by every item.
-pub fn item_ts() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
-/// A `user` display item. `images` are data URLs shown alongside the text.
-pub fn user_item(content: &str, images: &[String]) -> serde_json::Value {
-    serde_json::json!({
-        "id": item_id(),
-        "ts": item_ts(),
-        "type": "user",
-        "content": content,
-        "images": images,
-    })
-}
-
-/// An `assistant` display item carrying `images` (e.g. a screenshot the pet
-/// produced). Pass `&[]` for a plain text bubble.
-pub fn assistant_item(content: &str, images: &[String]) -> serde_json::Value {
-    let mut item = serde_json::json!({
-        "id": item_id(),
-        "ts": item_ts(),
-        "type": "assistant",
-        "content": content,
-    });
-    if !images.is_empty() {
-        item["images"] = serde_json::json!(images);
-    }
-    item
-}
-
 /// Sentinel title of a not-yet-named session, stored verbatim; interfaces
 /// translate it at display time.
 pub const DEFAULT_SESSION_TITLE: &str = "新会话";
 
-/// The `notification` display item that opens a background-task resumption
-/// turn: a system line naming the task, expandable to its full result. `label`
-/// is kept structured so the GUI can localize the line; `content` is the plain
-/// rendering for interfaces that show items as text (the CLI's history replay).
-pub fn notification_item(label: &str, detail: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": item_id(),
-        "ts": item_ts(),
-        "type": "notification",
-        "content": format!("后台任务完成：{label}"),
-        "label": label,
-        "detail": detail,
-    })
-}
-
 /// True if `result` is the inline `{task_id, status: "running"}` JSON a tool
 /// returns when its work went to the background as `task_id`.
-fn result_is_for_task(result: &serde_json::Value, task_id: &str) -> bool {
+fn result_is_for_task(result: &Option<String>, task_id: &str) -> bool {
     result
-        .as_str()
+        .as_deref()
         .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
         .is_some_and(|v| v["task_id"] == task_id)
 }
@@ -153,20 +94,17 @@ fn result_is_for_task(result: &serde_json::Value, task_id: &str) -> bool {
 /// launched `task_id` with the task's final result, so the rendered tool block
 /// flips from running to finished when the completion turn is injected.
 pub fn apply_completion_to_items(
-    mut items: Vec<serde_json::Value>,
+    mut items: Vec<ChatItem>,
     task_id: &str,
     result: &str,
-) -> Vec<serde_json::Value> {
+) -> Vec<ChatItem> {
     for item in items.iter_mut() {
-        if item["type"] != "tool" {
+        let ChatItem::Tool { tool_calls, .. } = item else {
             continue;
-        }
-        if let Some(calls) = item["toolCalls"].as_array_mut() {
-            for tc in calls.iter_mut() {
-                if result_is_for_task(&tc["result"], task_id) {
-                    tc["result"] = serde_json::json!(result);
-                    tc["isRunning"] = serde_json::json!(false);
-                }
+        };
+        for tc in tool_calls.iter_mut() {
+            if result_is_for_task(&tc.result, task_id) {
+                tc.result = Some(result.to_string());
             }
         }
     }
@@ -176,12 +114,13 @@ pub fn apply_completion_to_items(
 /// Derive a session title from its display items: the first non-empty `user`
 /// item's text, truncated to 20 Unicode scalar values with an ellipsis. Returns
 /// `None` when there's no usable user text, so callers pick their own fallback.
-pub fn derive_title(items: &[serde_json::Value]) -> Option<String> {
+pub fn derive_title(items: &[ChatItem]) -> Option<String> {
     items
         .iter()
-        .find(|i| i["type"] == "user")
-        .and_then(|i| i["content"].as_str())
-        .filter(|c| !c.is_empty())
+        .find_map(|i| match i {
+            ChatItem::User { content, .. } if !content.is_empty() => Some(content),
+            _ => None,
+        })
         .map(|c| {
             let t: String = c.chars().take(20).collect();
             if c.chars().count() > 20 {
@@ -195,7 +134,7 @@ pub fn derive_title(items: &[serde_json::Value]) -> Option<String> {
 /// A `{ "role": "system", "content": <SOUL.md> }` message — the first message
 /// of every new session, seeded with the given agent's SOUL. The seed is only
 /// the initial system message; every chat turn rebuilds it via
-/// `prepend_system_messages`, so it's effectively cosmetic.
+/// `SystemPrompt::Chat`, so it's effectively cosmetic.
 pub fn soul_system_message(agent_id: &str) -> serde_json::Value {
     let soul = super::memory::read_soul(agent_id);
     crate::llm::store_message(&genai::chat::ChatMessage::system(soul))
@@ -254,7 +193,7 @@ pub struct SessionView {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
-    pub items: Vec<serde_json::Value>,
+    pub items: Vec<ChatItem>,
     pub context_usage: Option<ContextUsage>,
 }
 
@@ -357,7 +296,7 @@ pub fn create_session() -> Result<Session, String> {
 /// `tool` message (which a chat-completions API rejects — a `tool` message must
 /// follow the assistant message that requested it). Any leading system messages
 /// are dropped as a side effect, which is fine: the heartbeat re-inserts its own
-/// system messages via `prepend_heartbeat_system_messages`.
+/// system messages via `SystemPrompt::Heartbeat`.
 pub fn recent_turns(messages: &[serde_json::Value], n: usize) -> Vec<serde_json::Value> {
     if n == 0 {
         return vec![];
@@ -374,6 +313,28 @@ pub fn recent_turns(messages: &[serde_json::Value], n: usize) -> Vec<serde_json:
         len => user_indices[len - n],
     };
     messages[start..].to_vec()
+}
+
+/// Keep only the last `max_turns` conversation turns, starting at a `user`
+/// message so a tool response is never orphaned. Every run that caps its
+/// context uses this, so the rule can't drift between interfaces.
+pub fn trim_for_context(messages: &mut Vec<genai::chat::ChatMessage>, max_turns: usize) {
+    if max_turns == 0 {
+        messages.clear();
+        return;
+    }
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == genai::chat::ChatRole::User)
+        .map(|(i, _)| i)
+        .collect();
+    let start = match user_indices.len() {
+        0 => return,
+        len if len <= max_turns => user_indices[0],
+        len => user_indices[len - max_turns],
+    };
+    messages.drain(..start);
 }
 
 pub fn delete_session(id: String) -> Result<(), String> {
@@ -483,20 +444,14 @@ mod tests {
 /// If the structures don't line up (a hand-edited session), items are removed
 /// and messages left untouched: a stale context beats a corrupted one.
 pub fn prune_session(
-    items: &[serde_json::Value],
+    items: &[ChatItem],
     messages: &[serde_json::Value],
     selected: &std::collections::HashSet<String>,
-) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    let item_type = |it: &serde_json::Value| it["type"].as_str().unwrap_or("").to_string();
-    let opens_turn = |it: &serde_json::Value| matches!(item_type(it).as_str(), "user" | "notification");
-    let bears_assistant_message = |it: &serde_json::Value| {
-        item_type(it) == "assistant" && !it["content"].as_str().unwrap_or("").trim().is_empty()
-    };
-    let is_selected =
-        |it: &serde_json::Value| it["id"].as_str().is_some_and(|id| selected.contains(id));
+) -> (Vec<ChatItem>, Vec<serde_json::Value>) {
+    let is_selected = |it: &ChatItem| selected.contains(it.id());
+    let bears_assistant_message = |it: &ChatItem| it.assistant_text().is_some();
 
-    let kept_items: Vec<serde_json::Value> =
-        items.iter().filter(|it| !is_selected(it)).cloned().collect();
+    let kept_items: Vec<ChatItem> = items.iter().filter(|it| !is_selected(it)).cloned().collect();
 
     // Message turn blocks: [start, end) index ranges, each opened by a `User`.
     let mut blocks: Vec<(usize, usize)> = Vec::new();
@@ -512,7 +467,7 @@ pub fn prune_session(
     // Item turn blocks, in the same order.
     let mut item_blocks: Vec<Vec<usize>> = Vec::new();
     for (i, it) in items.iter().enumerate() {
-        if opens_turn(it) {
+        if it.opens_turn() {
             item_blocks.push(vec![i]);
         } else if let Some(block) = item_blocks.last_mut() {
             block.push(i);
@@ -592,8 +547,11 @@ mod prune_tests {
             vec![ToolResponse::new(id, "out")],
         )))
     }
-    fn item(id: &str, ty: &str, content: &str) -> serde_json::Value {
-        serde_json::json!({ "id": id, "type": ty, "content": content })
+    fn item(id: &str, ty: &str, content: &str) -> ChatItem {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "ts": 0, "type": ty, "content": content, "toolCalls": []
+        }))
+        .unwrap()
     }
     fn sel(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|s| s.to_string()).collect()
@@ -605,7 +563,7 @@ mod prune_tests {
     /// A tool-using turn followed by a plain one — the shape the old
     /// frontend-side pairing could not represent at all, since it assumed
     /// messages held nothing but user/assistant text.
-    fn fixture() -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    fn fixture() -> (Vec<ChatItem>, Vec<serde_json::Value>) {
         let items = vec![
             item("i1", "user", "q1"),
             item("i2", "tool", ""),
@@ -667,22 +625,23 @@ mod prune_tests {
         let running = |task: &str| {
             serde_json::json!({ "task_id": task, "status": "running" }).to_string()
         };
-        let items = vec![
-            serde_json::json!({ "id": "i1", "type": "tool", "content": "", "toolCalls": [
-                { "name": "bash", "arguments": "{}", "result": running("t-1"), "isRunning": true },
-                { "name": "bash", "arguments": "{}", "result": running("t-2"), "isRunning": true },
-            ]}),
+        let items: Vec<ChatItem> = serde_json::from_value(serde_json::json!([
+            { "id": "i1", "ts": 0, "type": "tool", "content": "", "toolCalls": [
+                { "name": "bash", "arguments": "{}", "result": running("t-1") },
+                { "name": "bash", "arguments": "{}", "result": running("t-2") },
+            ]},
             // A plain (non-JSON) result must not be touched, nor parsed as one.
-            serde_json::json!({ "id": "i2", "type": "tool", "content": "", "toolCalls": [
+            { "id": "i2", "ts": 0, "type": "tool", "content": "", "toolCalls": [
                 { "name": "bash", "arguments": "{}", "result": "ok" },
-            ]}),
-        ];
+            ]},
+        ]))
+        .unwrap();
         let out = apply_completion_to_items(items, "t-2", "exit 0");
-        let calls = out[0]["toolCalls"].as_array().unwrap();
-        assert_eq!(calls[0]["result"], running("t-1"), "other task keeps its placeholder");
-        assert_eq!(calls[1]["result"], "exit 0");
-        assert_eq!(calls[1]["isRunning"], false);
-        assert_eq!(out[1]["toolCalls"][0]["result"], "ok");
+        let ChatItem::Tool { tool_calls, .. } = &out[0] else { panic!() };
+        assert_eq!(tool_calls[0].result.as_deref(), Some(running("t-1").as_str()), "other task keeps its placeholder");
+        assert_eq!(tool_calls[1].result.as_deref(), Some("exit 0"));
+        let ChatItem::Tool { tool_calls, .. } = &out[1] else { panic!() };
+        assert_eq!(tool_calls[0].result.as_deref(), Some("ok"));
     }
 
     #[test]

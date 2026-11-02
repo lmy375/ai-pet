@@ -1,5 +1,5 @@
-use crate::chat::{run_agent_loop, ImageCollectingSink};
-use crate::prompt;
+use crate::chat::{run_agent, AgentRun, ImageCollectingSink, UserTurn};
+use crate::system_prompt::SystemPrompt;
 use crate::shell::{run_or_background, TaskKind};
 use crate::tools::{required_str, tool_error, Tool, ToolContext};
 
@@ -74,24 +74,30 @@ async fn spawn_subagent_impl(arguments: &str, ctx: &ToolContext) -> String {
     };
     ctx.log(&format!("spawn_subagent (bg={}): {}", run_in_background, label));
 
-    // Build the sub-agent's own conversation: its task as the user message,
-    // fronted by the worker-focused system prompt (not the pet persona).
-    let mut conv = vec![crate::llm::store_message(&crate::llm::user_message(
-        &prompt_text,
-        &[],
-    ))];
-    prompt::prepend_subagent_system_messages(&mut conv);
-
-    // Owned copies so the work can outlive this call when backgrounded. Runs
-    // silently — the sub-agent's internal tool calls don't stream into the
-    // parent chat; only its final text comes back (inline or via notification).
+    // The sub-agent's own conversation is just its task, fronted by the
+    // worker-focused system prompt (not the pet persona). Owned copies so the
+    // work can outlive this call when backgrounded. Runs silently — the
+    // sub-agent's internal tool calls don't stream into the parent chat; only
+    // its final text comes back (inline or via notification).
     let config = ctx.config.clone();
     let mcp = ctx.mcp_store.clone();
     let child = ctx.child();
+    let turn = UserTurn::text(prompt_text.clone());
     let work = async move {
         let sink = ImageCollectingSink::new();
-        match run_agent_loop(conv, &sink, &config, &mcp, &child).await {
-            Ok((text, _conv)) => (Some(0), text),
+        let run = run_agent(AgentRun {
+            conv: Vec::new(),
+            turn: Some(turn),
+            prompt: SystemPrompt::Subagent,
+            sink: &sink,
+            config: &config,
+            mcp_store: &mcp,
+            ctx: &child,
+            max_turns: None,
+        })
+        .await;
+        match run {
+            Ok(outcome) => (Some(0), outcome.text),
             Err(e) => (Some(1), tool_error(format!("sub-agent failed: {}", e))),
         }
     };

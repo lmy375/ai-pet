@@ -5,6 +5,7 @@
 //! Calling it appends a pet message to the currently-active session on disk,
 //! fires a native system notification, and tells the active window to refresh.
 
+use crate::item::ChatItem;
 use crate::session;
 use crate::tools::{tool_error, Tool, ToolContext};
 
@@ -64,13 +65,10 @@ async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     // Append a pet message to BOTH the raw LLM messages (so the owner's next turn
     // sees what the pet said) and the rendered items (so the UI shows it).
-    let ts = chrono::Local::now().timestamp_millis();
     sess.messages.push(crate::llm::store_message(
         &genai::chat::ChatMessage::assistant(message.clone()),
     ));
-    let mut item = session::assistant_item(&message, &[]);
-    item["ts"] = serde_json::json!(ts);
-    sess.items.push(item);
+    sess.items.push(ChatItem::assistant(&message, None, &[]));
     sess.updated_at = crate::common::iso_now();
     sess.created_at = String::new(); // preserved by save_session
 

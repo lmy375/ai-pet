@@ -18,11 +18,12 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::chat::{run_agent_loop, ChatEventSink, ItemBuilder, StreamEvent, UserTurn};
+use crate::chat::{run_agent, AgentRun, ChatEventSink, StreamEvent, UserTurn};
 use crate::config::AiConfig;
 use crate::logging::{LogSession, LogStore};
 use crate::mcp::McpStore;
-use crate::prompt;
+use crate::item::{ChatItem, ItemBuilder};
+use crate::system_prompt::SystemPrompt;
 use crate::shell::ShellStore;
 use crate::tools::ToolContext;
 
@@ -90,7 +91,7 @@ pub struct SwarmConversation {
     #[serde(default)]
     pub messages: Vec<Value>,
     #[serde(default)]
-    pub items: Vec<Value>,
+    pub items: Vec<ChatItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,7 +101,7 @@ pub struct SwarmWorkerRecord {
     pub task_id: Option<String>,
     pub status: String,
     #[serde(default)]
-    pub items: Vec<Value>,
+    pub items: Vec<ChatItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -686,7 +687,7 @@ impl SwarmRuntime {
         state
             .main
             .items
-            .push(crate::session::user_item(&turn.text, &turn.images));
+            .push(ChatItem::user(&turn.text, &turn.images));
         let prior = state.main.messages.clone();
         state.updated_at = now();
         persist_state(&session, &state);
@@ -845,19 +846,8 @@ async fn run_worker_task(
             return;
         }
     };
-    let mut conv = vec![crate::llm::store_message(&crate::llm::user_message(
-        &format!(
-            "项目：{}\n\n任务标题：{}\n\n任务详情：{}",
-            project_name, task.title, task.detail
-        ),
-        &[],
-    ))];
-    prompt::prepend_swarm_worker_system_messages(
-        &mut conv,
-        &project_name,
-        &shared_prompt,
-        &worker_prompt,
-    );
+    let conv = Vec::new();
+    let turn = UserTurn::text(format!("任务标题：{}\n\n任务详情：{}", task.title, task.detail));
     let mut ctx = ToolContext::new(
         runtime.log_store.clone(),
         runtime.shell_store.clone(),
@@ -875,14 +865,28 @@ async fn run_worker_task(
     ctx.swarm_worker_id = Some(worker_id.to_string());
     ctx.log_session = LogSession::swarm_worker(&id, worker_id);
     let sink = SwarmSink::worker(session.events.clone(), id.clone(), run_id.clone());
-    let result = run_agent_loop(conv, &sink, &config, &runtime.mcp_store, &ctx).await;
+    let result = run_agent(AgentRun {
+        conv,
+        turn: Some(turn),
+        prompt: SystemPrompt::SwarmWorker {
+            project: &project_name,
+            shared: &shared_prompt,
+            role: &worker_prompt,
+        },
+        sink: &sink,
+        config: &config,
+        mcp_store: &runtime.mcp_store,
+        ctx: &ctx,
+        max_turns: None,
+    })
+    .await;
     if session.is_deleted() {
         return;
     }
     if cancel.is_cancelled() {
         runtime.requeue_task(&id, &task.id, worker_id, "任务被用户停止，等待重新执行").await;
     } else {
-        let final_text = result.as_ref().map(|(text, _)| text.clone()).unwrap_or_else(|e| e.clone());
+        let final_text = result.as_ref().map(|o| o.text.clone()).unwrap_or_else(|e| e.clone());
         let outcome = if result.is_ok() { "success" } else { "failed" };
         let _ = runtime.complete_task(&id, &task.id, worker_id, final_text, outcome.to_string()).await;
     }
@@ -929,18 +933,7 @@ async fn run_main(
         *session.main_cancel.lock().await = None;
         return;
     };
-    let mut conv = prior;
-    conv.push(crate::llm::store_message(&crate::llm::user_message(
-        &turn.text,
-        &turn.images,
-    )));
-    prompt::prepend_system_messages(&mut conv, &config.agent_id);
-    prompt::prepend_swarm_orchestrator_system_messages(
-        &mut conv,
-        &project_name,
-        &shared_prompt,
-        &orchestrator_prompt,
-    );
+    let conv = prior;
     let mut ctx = ToolContext::new(
         runtime.log_store.clone(),
         runtime.shell_store.clone(),
@@ -955,7 +948,22 @@ async fn run_main(
     ctx.swarm = Some(session.clone());
     ctx.log_session = LogSession::swarm_main(&id);
     let sink = SwarmSink::main(session.events.clone(), id.clone());
-    let result = run_agent_loop(conv, &sink, &config, &runtime.mcp_store, &ctx).await;
+    let result = run_agent(AgentRun {
+        conv,
+        turn: Some(turn),
+        prompt: SystemPrompt::SwarmOrchestrator {
+            agent_id: &config.agent_id,
+            project: &project_name,
+            shared: &shared_prompt,
+            role: &orchestrator_prompt,
+        },
+        sink: &sink,
+        config: &config,
+        mcp_store: &runtime.mcp_store,
+        ctx: &ctx,
+        max_turns: None,
+    })
+    .await;
     if session.is_deleted() {
         *session.main_cancel.lock().await = None;
         return;
@@ -963,11 +971,8 @@ async fn run_main(
     let items = sink.take_items();
     let mut state = session.state.lock().await;
     state.main.items.extend(items);
-    if let Ok((_, messages)) = result {
-        state.main.messages = messages
-            .into_iter()
-            .skip_while(crate::llm::is_system_message)
-            .collect();
+    if let Ok(outcome) = result {
+        state.main.messages = outcome.messages;
     }
     state.updated_at = now();
     persist_state(&session, &state);
@@ -999,67 +1004,25 @@ impl SwarmSink {
             items: std::sync::Mutex::new(ItemBuilder::default()),
         }
     }
-    fn emit(&self, event: StreamEvent) {
+    fn route(&self, event: StreamEvent) {
         if let Some(worker_id) = &self.worker_id {
             self.events.worker_stream(&self.swarm_id, worker_id, &event);
         } else {
             self.events.main_stream(&self.swarm_id, &event);
         }
     }
-    fn take_items(&self) -> Vec<Value> {
+    fn take_items(&self) -> Vec<ChatItem> {
         self.items.lock().unwrap().take_items()
     }
 }
 
 impl ChatEventSink for SwarmSink {
-    fn send_chunk(&self, text: &str) {
-        self.items.lock().unwrap().chunk(text);
-        self.emit(StreamEvent::Chunk {
-            text: text.to_string(),
-        });
+    fn items(&self) -> Option<&std::sync::Mutex<ItemBuilder>> {
+        Some(&self.items)
     }
-    fn send_reasoning(&self, text: &str) {
-        self.items.lock().unwrap().reasoning(text);
-        self.emit(StreamEvent::Reasoning {
-            text: text.to_string(),
-        });
-    }
-    fn send_tool_start(&self, name: &str, arguments: &str) {
-        self.items.lock().unwrap().tool_start(name, arguments);
-        self.emit(StreamEvent::ToolStart {
-            name: name.to_string(),
-            arguments: arguments.to_string(),
-        });
-    }
-    fn send_tool_result(&self, name: &str, result: &str) {
-        self.items.lock().unwrap().tool_result(name, result);
-        self.emit(StreamEvent::ToolResult {
-            name: name.to_string(),
-            result: result.to_string(),
-        });
-    }
-    fn send_image(&self, data_url: &str) {
-        self.items.lock().unwrap().image(data_url);
-        self.emit(StreamEvent::Image {
-            data_url: data_url.to_string(),
-        });
-    }
-    fn send_usage(&self, prompt_tokens: u64, total_tokens: u64, context_window: u32) {
-        self.emit(StreamEvent::Usage {
-            prompt_tokens,
-            total_tokens,
-            context_window,
-        });
-    }
-    fn send_done(&self) {
-        self.items.lock().unwrap().done();
-        self.emit(StreamEvent::Done {});
-    }
-    fn send_error(&self, message: &str) {
-        self.items.lock().unwrap().error(message);
-        self.emit(StreamEvent::Error {
-            message: message.to_string(),
-        });
+
+    fn emit(&self, event: StreamEvent) {
+        self.route(event);
     }
 }
 

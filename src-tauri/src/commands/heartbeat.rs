@@ -1,17 +1,17 @@
 //! Scheduled heartbeat: a background loop that periodically wakes the pet up to
-//! run one silent AI session (see `HEARTBEAT.md` and `prompt::prepend_heartbeat
-//! _system_messages`). Each run is tracked as a `TaskKind::Heartbeat` task so it
+//! run one silent AI session (see `HEARTBEAT.md` and `SystemPrompt::Heartbeat`).
+//! Each run is tracked as a `TaskKind::Heartbeat` task so it
 //! shows up in the panel, but it does NOT inject into the main chat — the only
 //! way a heartbeat reaches the owner is the `chat` tool.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use pet_core::chat::{run_agent_loop, ImageCollectingSink};
+use pet_core::chat::{run_agent, AgentRun, ImageCollectingSink};
 use pet_core::logging::LogStore;
 use pet_core::settings::{get_settings, AgentConfig};
 use pet_core::shell::{run_or_background, ShellStore, TaskKind};
-use pet_core::prompt;
+use pet_core::system_prompt::{SystemPrompt, format_interval_label};
 use pet_core::session;
 use pet_core::config::AiConfig;
 use pet_core::mcp::McpStore;
@@ -100,14 +100,13 @@ async fn run_one_heartbeat(
         }
     };
 
-    let label_cadence = prompt::format_interval_label(agent.heartbeat_interval);
+    let label_cadence = format_interval_label(agent.heartbeat_interval);
     let user_msg = "（系统定时心跳触发）现在自动醒来，结合最近的聊天上下文，按 HEARTBEAT.md 检查并执行需要的定时任务。";
     // Fork the (global, shared) active session's recent history so the heartbeat
     // is aware of what the owner has been talking about, then append the wake-up
     // trigger as the current turn. The heartbeat never writes this conversation
     // back — only the `chat` tool reaches the main session — so it can't disturb it.
-    let mut conv = build_heartbeat_conv(agent.heartbeat_context_turns, user_msg);
-    prompt::prepend_heartbeat_system_messages(&mut conv, &agent.id, &label_cadence);
+    let conv = build_heartbeat_conv(agent.heartbeat_context_turns, user_msg);
 
     // Registration context: provides the shared store + a `heartbeat` session id
     // that matches no real conversation, and notifier = None so the heartbeat's
@@ -145,10 +144,22 @@ async fn run_one_heartbeat(
 
     let work_config = config.clone();
     let work_mcp = mcp_store.clone();
+    let agent_id = agent.id.clone();
     let work = async move {
         let sink = ImageCollectingSink::new();
-        match run_agent_loop(conv, &sink, &work_config, &work_mcp, &work_ctx).await {
-            Ok((text, _conv)) => (Some(0), text),
+        let run = run_agent(AgentRun {
+            conv,
+            turn: None,
+            prompt: SystemPrompt::Heartbeat { agent_id: &agent_id, interval_label: &label_cadence },
+            sink: &sink,
+            config: &work_config,
+            mcp_store: &work_mcp,
+            ctx: &work_ctx,
+            max_turns: None,
+        })
+        .await;
+        match run {
+            Ok(outcome) => (Some(0), outcome.text),
             Err(e) => (Some(1), pet_core::tools::tool_error(format!("heartbeat failed: {}", e))),
         }
     };

@@ -22,7 +22,7 @@ pub struct ToolInfo {
 }
 
 /// List the tools available to a normal panel chat turn for `agent_id` (built-in
-/// + the MCP servers that agent references). Mirrors how `run_agent_loop` builds
+/// + the MCP servers that agent references). Mirrors how `run_agent` builds
 /// its registry: depth 0 (so `spawn_subagent` is offered) and not a heartbeat (so
 /// no `chat` tool). Tools the owner switched off are absent here too.
 #[tauri::command]

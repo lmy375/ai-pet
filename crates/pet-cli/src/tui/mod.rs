@@ -13,6 +13,7 @@ pub mod wrap;
 use std::collections::HashMap;
 
 use pet_core::chat::StreamEvent;
+use pet_core::item::ChatItem;
 use pet_core::session;
 use pet_core::settings::get_settings;
 use pet_core::skills::Skill;
@@ -347,54 +348,51 @@ impl TuiApp {
             return;
         }
         let Ok(sess) = session::load_session(index.active_id) else { return };
-        let name = self.agent_name();
-        let items = &sess.items;
-        let start = items.len().saturating_sub(limit);
-        for item in &items[start..] {
-            match item["type"].as_str().unwrap_or("") {
-                "user" => self.push(Entry::User {
-                    text: item["content"].as_str().unwrap_or("").to_string(),
-                }),
-                "assistant" => {
-                    let text = item["content"].as_str().unwrap_or("").to_string();
-                    let reasoning = item["reasoning"].as_str().unwrap_or("").to_string();
-                    // Image-only bubbles carry neither and have nothing to show
-                    // here; a reasoning-only item (thought, then a tool call
-                    // with no preamble) still renders its collapsed thinking.
-                    if text.is_empty() && reasoning.is_empty() {
-                        continue;
-                    }
-                    self.push(Entry::Assistant {
-                        name: name.clone(),
-                        text,
-                        reasoning,
-                        streaming: false,
-                        reasoning_expanded: false,
-                    });
+        let start = sess.items.len().saturating_sub(limit);
+        for item in &sess.items[start..] {
+            self.push_item(item);
+        }
+    }
+
+    /// Render one persisted display item as a transcript entry.
+    fn push_item(&mut self, item: &ChatItem) {
+        match item {
+            ChatItem::User { content, .. } => self.push(Entry::User { text: content.clone() }),
+            ChatItem::Assistant { content, reasoning, .. } => {
+                let reasoning = reasoning.clone().unwrap_or_default();
+                // Image-only bubbles carry neither and have nothing to show
+                // here; a reasoning-only item (thought, then a tool call with no
+                // preamble) still renders its collapsed thinking.
+                if content.is_empty() && reasoning.is_empty() {
+                    return;
                 }
-                "tool" => {
-                    let calls = item["toolCalls"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .map(|tc| ToolCall {
-                                    name: tc["name"].as_str().unwrap_or("").to_string(),
-                                    args: tc["arguments"].as_str().unwrap_or("").to_string(),
-                                    result: tc["result"].as_str().map(|s| s.to_string()),
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    self.push(Entry::Tool { owner: None, calls, expanded: false, open: false });
-                }
-                "error" => self.push(Entry::Error {
-                    text: item["content"].as_str().unwrap_or("").to_string(),
-                }),
-                "notification" => self.push(Entry::Notice {
-                    text: item["content"].as_str().unwrap_or("").to_string(),
-                }),
-                _ => {}
+                let name = self.agent_name();
+                self.push(Entry::Assistant {
+                    name,
+                    text: content.clone(),
+                    reasoning,
+                    streaming: false,
+                    reasoning_expanded: false,
+                });
             }
+            ChatItem::Tool { tool_calls, .. } => {
+                let calls = tool_calls
+                    .iter()
+                    .map(|tc| ToolCall {
+                        name: tc.name.clone(),
+                        args: tc.arguments.clone(),
+                        result: tc.result.clone(),
+                    })
+                    .collect();
+                self.push(Entry::Tool { owner: None, calls, expanded: false, open: false });
+            }
+            ChatItem::Error { content, .. } => {
+                self.push(Entry::Error { text: content.clone() })
+            }
+            ChatItem::Notification { content, .. } => {
+                self.push(Entry::Notice { text: content.clone() })
+            }
+            ChatItem::Group { .. } => {}
         }
     }
 
@@ -824,11 +822,34 @@ impl TuiApp {
     }
 
     /// Catch up with a turn already running in the viewed session (startup or
-    /// session switch): echo its opening line, then replay what has streamed.
+    /// session switch): echo its opening line, render what has been committed,
+    /// then show the still-streaming tail.
     fn apply_snapshot(&mut self, snap: TurnSnapshot) {
-        self.open_turn(snap.origin);
-        for ev in snap.events {
-            self.apply_stream(ev);
+        let TurnSnapshot { origin, tail, usage, .. } = snap;
+        self.open_turn(origin);
+        for item in &tail.items {
+            self.push_item(item);
+        }
+        if !tail.reasoning.is_empty() {
+            self.apply_stream(StreamEvent::Reasoning { text: tail.reasoning.clone() });
+        }
+        for call in &tail.tool_calls {
+            self.apply_stream(StreamEvent::ToolStart {
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            });
+            if let Some(result) = &call.result {
+                self.apply_stream(StreamEvent::ToolResult {
+                    name: call.name.clone(),
+                    result: result.clone(),
+                });
+            }
+        }
+        if !tail.response.is_empty() {
+            self.apply_stream(StreamEvent::Chunk { text: tail.response });
+        }
+        if let Some(u) = usage {
+            self.context_usage = Some((u.used, u.total));
         }
     }
 

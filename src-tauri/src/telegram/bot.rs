@@ -6,8 +6,10 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, InputFile, Me};
 use tokio::sync::Mutex as TokioMutex;
 
-use pet_core::chat::{run_chat_pipeline, ImageCollectingSink, UserTurn};
+use pet_core::chat::{run_agent, AgentRun, ImageCollectingSink, UserTurn};
 use pet_core::logging::LogStore;
+use pet_core::item::ChatItem;
+use pet_core::system_prompt::SystemPrompt;
 use pet_core::session;
 use pet_core::settings::TelegramConfig;
 use pet_core::shell::ShellStore;
@@ -36,11 +38,13 @@ struct HandlerState {
     /// independent of `session_messages` — exactly like the panel. Tool-produced
     /// images (e.g. `screenshot`) live here as their own bubbles but never enter
     /// `session_messages`, so they show in history without bloating model context.
-    session_items: TokioMutex<Vec<serde_json::Value>>,
+    session_items: TokioMutex<Vec<ChatItem>>,
     session_id: String,
 }
 
-const MAX_CONTEXT_MESSAGES: usize = 50;
+/// How many conversation turns of context a Telegram message keeps. Trimming is
+/// by turn (never mid tool round), matching every other agent run.
+const MAX_CONTEXT_TURNS: usize = 25;
 const TELEGRAM_MSG_LIMIT: usize = 4096;
 
 impl TelegramBot {
@@ -106,7 +110,7 @@ impl TelegramBot {
 /// create one (seeded with that agent's SOUL system message) if it doesn't exist.
 fn load_or_create_session(
     agent_id: &str,
-) -> (String, Vec<serde_json::Value>, Vec<serde_json::Value>) {
+) -> (String, Vec<serde_json::Value>, Vec<ChatItem>) {
     let session_id = format!("telegram-{}", agent_id);
     match session::load_session(session_id.clone()) {
         Ok(s) => (s.id, s.messages, s.items),
@@ -178,21 +182,11 @@ async fn handle_message(
         .session_items
         .lock()
         .await
-        .push(session::user_item(&text, &image_urls));
+        .push(ChatItem::user(&text, &image_urls));
 
     let turn = UserTurn { text: text.clone(), images: image_urls.clone() };
 
-    // Trim to the most recent window of context. The system message isn't in
-    // here — the pipeline rebuilds it each turn — so this is a plain tail.
-    let prior_messages = {
-        let session_msgs = state.session_messages.lock().await;
-        let msgs = &*session_msgs;
-        if msgs.len() > MAX_CONTEXT_MESSAGES {
-            msgs[msgs.len() - MAX_CONTEXT_MESSAGES..].to_vec()
-        } else {
-            msgs.clone()
-        }
-    };
+    let prior_messages = state.session_messages.lock().await.clone();
 
     // Run the LLM pipeline. The sink collects any images a tool surfaces (e.g.
     // `screenshot`) so we can send them back as photos after the text reply.
@@ -219,8 +213,17 @@ async fn handle_message(
                 None,
                 false,
             );
-            match run_chat_pipeline(prior_messages, turn, &sink, &config, &state.mcp_store, &ctx)
-                .await
+            match run_agent(AgentRun {
+                conv: prior_messages,
+                turn: Some(turn),
+                prompt: SystemPrompt::Chat { agent_id: &state.agent_id },
+                sink: &sink,
+                config: &config,
+                mcp_store: &state.mcp_store,
+                ctx: &ctx,
+                max_turns: Some(MAX_CONTEXT_TURNS),
+            })
+            .await
             {
                 Ok(outcome) => {
                     // Keep the model-facing transcript exactly as returned, so
@@ -244,12 +247,12 @@ async fn handle_message(
         // come from the pet, not the user — and never enter `session_msgs` (the
         // model already saw them in-loop).
         for url in &reply_images {
-            items.push(session::assistant_item("", std::slice::from_ref(url)));
+            items.push(ChatItem::assistant("", None, std::slice::from_ref(url)));
         }
         // An empty final text means the response was carried entirely by images;
         // skip the empty assistant bubble (matches the panel's behavior).
         if !reply_text.is_empty() {
-            items.push(session::assistant_item(&reply_text, &[]));
+            items.push(ChatItem::assistant(&reply_text, None, &[]));
         }
 
         // Title from the first user item's text (fall back to "Telegram").

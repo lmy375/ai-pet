@@ -4,11 +4,12 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
 use pet_core::chat::StreamEvent;
 use pet_core::group::{GroupEvents, GroupMessage, GroupRuntime, GroupState, GroupSummary};
+use pet_core::item::ChatItem;
 use pet_core::logging::LogStore;
 use pet_core::mcp::McpStore;
 use pet_core::shell::ShellStore;
@@ -36,7 +37,7 @@ impl GroupEvents for TauriGroupEvents {
         );
     }
 
-    fn injected(&self, group_id: &str, agent_id: &str, items: &[Value]) {
+    fn injected(&self, group_id: &str, agent_id: &str, items: &[ChatItem]) {
         let _ = self.app.emit(
             "group-injected",
             json!({ "groupId": group_id, "agentId": agent_id, "items": items }),

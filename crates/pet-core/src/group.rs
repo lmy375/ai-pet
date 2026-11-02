@@ -31,17 +31,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 
-use crate::chat::{run_agent_loop, ChatEventSink, ItemBuilder, StreamEvent};
+use crate::chat::{run_agent, AgentRun as ChatAgentRun, ChatEventSink, StreamEvent};
+use crate::common::now_ms;
 use crate::config::AiConfig;
 use crate::group_public::{Piece, PublicFilter};
+use crate::item::{ChatItem, ItemBuilder};
 use crate::logging::LogStore;
 use crate::mcp::McpStore;
-use crate::prompt;
-use crate::session;
+use crate::system_prompt::SystemPrompt;
 use crate::settings::get_settings;
 use crate::shell::ShellStore;
 use crate::tools::ToolContext;
@@ -68,9 +69,9 @@ pub struct GroupAgentState {
     /// Running LLM context (NO system messages — those are rebuilt each run).
     #[serde(default)]
     pub messages: Vec<Value>,
-    /// Display items (ChatItem JSON) for the Agent sub-tab.
+    /// Display items for the Agent sub-tab.
     #[serde(default)]
-    pub items: Vec<Value>,
+    pub items: Vec<ChatItem>,
     /// How far into `transcript` this agent has already consumed.
     #[serde(default)]
     pub consumed_upto: usize,
@@ -129,7 +130,7 @@ pub trait GroupEvents: Send + Sync {
     fn stream(&self, group_id: &str, agent_id: &str, event: &StreamEvent);
     /// Group lines injected into an agent's private context before a run
     /// (display items for the Agent sub-tab; injection isn't a sink event).
-    fn injected(&self, group_id: &str, agent_id: &str, items: &[Value]);
+    fn injected(&self, group_id: &str, agent_id: &str, items: &[ChatItem]);
     /// An agent's worker finished one run (clears its "running" indicator, even
     /// on transport-error paths where the sink emitted neither done nor error).
     fn agent_done(&self, group_id: &str, agent_id: &str);
@@ -537,10 +538,6 @@ fn remove_state(id: &str) -> Result<(), String> {
     }
 }
 
-fn now_ms() -> i64 {
-    chrono::Local::now().timestamp_millis()
-}
-
 /// Does `agent_id` have unconsumed messages authored by someone else?
 fn has_pending(s: &GroupState, agent_id: &str, tlen: usize) -> bool {
     let consumed = s.agents.get(agent_id).map(|a| a.consumed_upto).unwrap_or(0);
@@ -589,7 +586,7 @@ struct AgentRun {
     messages: Vec<Value>,
     /// Display items for the messages injected this run, so the Agent sub-tab can
     /// render the incoming group lines live (injection isn't a sink event).
-    injected_items: Vec<Value>,
+    injected_items: Vec<ChatItem>,
 }
 
 /// The tag name the model sees for one speaker, e.g. `<chat-小宠-message>`.
@@ -613,16 +610,14 @@ fn injected_line(m: &GroupMessage) -> String {
 
 /// The display item for an injected line. It carries the sender explicitly —
 /// the Agent sub-tab renders it as a chat message instead of raw tag text.
-fn injected_item(m: &GroupMessage) -> Value {
-    json!({
-        "id": session::item_id(),
-        "ts": m.ts,
-        "type": "group",
-        "content": m.content,
-        "senderKind": m.speaker_kind,
-        "senderId": m.agent_id,
-        "senderName": m.name,
-    })
+fn injected_item(m: &GroupMessage) -> ChatItem {
+    ChatItem::group(
+        &m.content,
+        &m.speaker_kind,
+        m.agent_id.clone(),
+        &m.name,
+        m.ts,
+    )
 }
 
 /// Coalesce ALL of the agent's pending (unconsumed, non-self) messages into its
@@ -733,14 +728,7 @@ async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
     // starts reasoning (injection isn't a sink event).
     session.events.injected(&group_id, &run.agent_id, &run.injected_items);
 
-    let mut conv = run.messages.clone();
-    prompt::prepend_group_system_messages(
-        &mut conv,
-        &run.agent_id,
-        &run.group_title,
-        &run.group_topic,
-        &run.group_members,
-    );
+    let conv = run.messages.clone();
 
     let mut ctx = ToolContext::new(
         LogStore(session.log_store.0.clone()),
@@ -775,7 +763,22 @@ async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
         public_tx,
     );
 
-    let result = run_agent_loop(conv, &sink, &run.config, &session.mcp_store, &ctx).await;
+    let result = run_agent(ChatAgentRun {
+        conv,
+        turn: None,
+        prompt: SystemPrompt::Group {
+            agent_id: &run.agent_id,
+            title: &run.group_title,
+            topic: &run.group_topic,
+            members: &run.group_members,
+        },
+        sink: &sink,
+        config: &run.config,
+        mcp_store: &session.mcp_store,
+        ctx: &ctx,
+        max_turns: None,
+    })
+    .await;
     let items = sink.take_items();
     // Closing the sender lets the poster finish, then wait for every block it
     // still holds before persisting this run's display items.
@@ -786,13 +789,7 @@ async fn run_one_agent(session: &Arc<GroupSession>, run: AgentRun) {
         let mut s = session.state.lock().await;
         if let Some(st) = s.agents.get_mut(&run.agent_id) {
             match result {
-                Ok((_text, full_conv)) => {
-                    // Drop the (fresh-each-run) leading system messages before storing.
-                    st.messages = full_conv
-                        .into_iter()
-                        .skip_while(crate::llm::is_system_message)
-                        .collect();
-                }
+                Ok(outcome) => st.messages = outcome.messages,
                 Err(e) => {
                     eprintln!("group agent {} failed: {}", run.agent_id, e);
                 }
@@ -900,41 +897,28 @@ impl GroupSink {
     }
 
     /// Take the accumulated display items (after the run finishes).
-    fn take_items(&self) -> Vec<Value> {
+    fn take_items(&self) -> Vec<ChatItem> {
         self.items.lock().unwrap().take_items()
     }
 }
 
 impl ChatEventSink for GroupSink {
+    fn items(&self) -> Option<&std::sync::Mutex<ItemBuilder>> {
+        Some(&self.items)
+    }
+
+    fn emit(&self, event: StreamEvent) {
+        self.events.stream(&self.group_id, &self.agent_id, &event);
+    }
+
+    /// Text goes through the `<public>` filter first, so only complete room
+    /// blocks are posted while the private sub-tab keeps the full text.
     fn send_chunk(&self, text: &str) {
         let pieces = self.public.lock().unwrap().filter.push(text);
         self.handle_pieces(pieces);
     }
 
-    fn send_reasoning(&self, text: &str) {
-        // Persist the chain-of-thought on the assistant item (same as the main
-        // chat's sink) so the Agent sub-tab can render it after a reload, and
-        // forward it live.
-        self.items.lock().unwrap().reasoning(text);
-        self.emit(StreamEvent::Reasoning { text: text.to_string() });
-    }
-
-    fn send_tool_start(&self, name: &str, arguments: &str) {
-        self.items.lock().unwrap().tool_start(name, arguments);
-        self.emit(StreamEvent::ToolStart { name: name.to_string(), arguments: arguments.to_string() });
-    }
-
-    fn send_tool_result(&self, name: &str, result: &str) {
-        self.items.lock().unwrap().tool_result(name, result);
-        self.emit(StreamEvent::ToolResult { name: name.to_string(), result: result.to_string() });
-    }
-
-    fn send_image(&self, data_url: &str) {
-        self.items.lock().unwrap().image(data_url);
-        self.emit(StreamEvent::Image { data_url: data_url.to_string() });
-    }
-
-    fn send_usage(&self, _prompt_tokens: u64, _total_tokens: u64, _context_window: u32) {
+    fn send_usage(&self, _total_tokens: u64, _context_window: u32) {
         // The group view has no per-agent context ring; ignore.
     }
 
@@ -945,11 +929,6 @@ impl ChatEventSink for GroupSink {
         self.handle_pieces(pieces);
         self.items.lock().unwrap().done();
         self.emit(StreamEvent::Done {});
-    }
-
-    fn send_error(&self, message: &str) {
-        self.items.lock().unwrap().error(message);
-        self.emit(StreamEvent::Error { message: message.to_string() });
     }
 }
 
@@ -974,7 +953,7 @@ mod tests {
             }
         }
 
-        fn injected(&self, _group_id: &str, _agent_id: &str, _items: &[Value]) {}
+        fn injected(&self, _group_id: &str, _agent_id: &str, _items: &[ChatItem]) {}
 
         fn agent_done(&self, _group_id: &str, _agent_id: &str) {}
     }
@@ -1016,13 +995,16 @@ mod tests {
             content: "晚上好".into(),
             ts: 42,
         };
-        let item = injected_item(&agent);
-        assert_eq!(item["type"], "group");
-        assert_eq!(item["content"], "晚上好");
-        assert_eq!(item["senderKind"], "agent");
-        assert_eq!(item["senderId"], "owen");
-        assert_eq!(item["senderName"], "小宠");
-        assert_eq!(item["ts"], 42);
+        let ChatItem::Group { content, sender_kind, sender_id, sender_name, ts, .. } =
+            injected_item(&agent)
+        else {
+            panic!("expected a group item")
+        };
+        assert_eq!(content, "晚上好");
+        assert_eq!(sender_kind, "agent");
+        assert_eq!(sender_id.as_deref(), Some("owen"));
+        assert_eq!(sender_name, "小宠");
+        assert_eq!(ts, 42);
     }
 
     /// The room gets complete `<public>` blocks only, in generation order —
@@ -1064,8 +1046,11 @@ mod tests {
 
         let items = sink.take_items();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["content"], "answer");
-        assert_eq!(items[0]["reasoning"], "let me think");
+        let ChatItem::Assistant { content, reasoning, .. } = &items[0] else {
+            panic!("expected an assistant item")
+        };
+        assert_eq!(content, "answer");
+        assert_eq!(reasoning.as_deref(), Some("let me think"));
     }
 }
 
