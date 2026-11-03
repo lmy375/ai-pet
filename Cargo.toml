@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/pet-core",
     "crates/pet-cli",
+    "crates/ax-computer-use",
 
     "src-tauri",
 ]

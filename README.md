@@ -80,6 +80,7 @@ pnpm tauri dev          # run the desktop GUI in development
 pnpm tauri build        # build a release bundle
 
 cargo run -p pet-cli    # terminal UI (shares the GUI's config & sessions)
+cargo run -p ax-computer-use -- list-apps   # optional macOS Accessibility CLI (axcu)
 ```
 
 On first launch the pet window appears. Open the panel, go to **Settings**, and
@@ -176,6 +177,7 @@ pnpm tauri dev          # 开发运行桌面 GUI
 pnpm tauri build        # 打包发布版
 
 cargo run -p pet-cli    # 终端界面（与 GUI 共享配置和会话）
+cargo run -p ax-computer-use -- list-apps   # 可选的 macOS Accessibility CLI（axcu）
 ```
 
 首次启动会出现宠物窗口。打开面板进入 **设置**，填入你的 API base、key 和模型。

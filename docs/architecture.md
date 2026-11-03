@@ -1,11 +1,12 @@
 # 架构：一套核心，两套界面
 
-Cargo workspace，三个成员：
+Cargo workspace，四个成员：
 
 ```
-crates/pet-core     引擎（无任何 UI 依赖）
-src-tauri           桌面 GUI（Tauri 2 + React）
-crates/pet-cli      终端 TUI（ratatui）
+crates/pet-core          引擎（无任何 UI 依赖）
+src-tauri                桌面 GUI（Tauri 2 + React）
+crates/pet-cli           终端 TUI（ratatui）
+crates/ax-computer-use   可选的 macOS Accessibility CLI（axcu，独立于引擎）
 ```
 
 ## pet-core
