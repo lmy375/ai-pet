@@ -6,8 +6,9 @@ import { CodeBlock } from "../ui/CodeBlock";
 import { RefreshIcon, ClockIcon, ChevronRight, CloseIcon } from "../Icons";
 import { IconActionButton } from "../ui/IconButton";
 import { useI18n } from "../../i18n";
-import { formatIsoTime } from "../../utils/format";
+import { formatDuration, formatIsoTime } from "../../utils/format";
 import { usePolling } from "../../hooks/usePolling";
+import { ask } from "@tauri-apps/plugin-dialog";
 
 interface TaskListItem {
   taskId: string;
@@ -17,7 +18,6 @@ interface TaskListItem {
   returnCode: number | null;
   elapsedMs: number;
   startedAt: string;
-  sessionId: string;
 }
 
 interface TaskDetail {
@@ -35,13 +35,6 @@ const KIND_COLOR: Record<string, BadgeColor> = {
   heartbeat: "sky",
 };
 
-function fmtDuration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m${s % 60}s`;
-  return `${Math.floor(m / 60)}h${m % 60}m`;
-}
 
 function TaskRow({
   task,
@@ -87,7 +80,7 @@ function TaskRow({
           </div>
           <div className="mt-1 flex items-center gap-1 text-meta text-ink-faint">
             <ClockIcon className="h-3 w-3" />
-            {fmtDuration(task.elapsedMs)}
+            {formatDuration(task.elapsedMs)}
             <span>·</span>
             {formatIsoTime(task.startedAt)}
           </div>
@@ -194,7 +187,7 @@ export function TaskDrawer({ onClose }: { onClose: () => void }) {
 
   const kill = useCallback(
     async (taskId: string) => {
-      if (!window.confirm(t("tasks.confirmKill"))) return;
+      if (!(await ask(t("tasks.confirmKill")))) return;
       setKilling((s) => new Set(s).add(taskId));
       try {
         await invoke("kill_task", { taskId });

@@ -90,14 +90,14 @@ pub fn spawn_refresh_tools(ctx: SubmitCtx) {
     tokio::spawn(async move {
         let Ok(settings) = get_settings() else { return };
         let Some(agent) = settings.active_agent_config() else { return };
-        let mcp_defs = ctx.cli.mcp_store.read().await.definitions(&agent.mcp);
+        let gate =
+            pet_core::tools::RunGate::interactive(!settings.search_api_key.trim().is_empty());
         let registry = pet_core::tools::ToolRegistry::new(
-            mcp_defs,
-            pet_core::tools::ToolPolicy {
-                include_web_search: !settings.search_api_key.trim().is_empty(),
-                ..pet_core::tools::ToolPolicy::from_config()
-            },
-        );
+            &ctx.cli.stores.mcp,
+            &agent.mcp,
+            pet_core::tools::ToolPolicy::for_gate(gate),
+        )
+        .await;
         let n = registry.definitions().as_array().map(|a| a.len()).unwrap_or(0);
         ctx.send(AppEvent::ToolsCount(n));
     });

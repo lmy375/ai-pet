@@ -18,11 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pet_core::chat::{StreamEvent, UserTurn};
-use pet_core::group::GroupRuntime;
-use pet_core::logging::{log_dir, LogStore};
+use pet_core::logging::log_dir;
 use pet_core::settings::get_settings;
-use pet_core::shell::{load_persisted_tasks, pending_notify_count, ShellStore};
-use pet_core::turn::{TurnNotice, TurnOrigin, TurnRunner};
+use pet_core::shell::pending_notify_count;
+use pet_core::stores::EngineStores;
+use pet_core::turn::{TurnNotice, TurnOrigin};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use ratatui::crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -101,30 +101,20 @@ fn main() {
 async fn async_main(oneshot: Option<String>) -> i32 {
     let _ = std::fs::create_dir_all(log_dir());
     if let Ok(settings) = get_settings() {
-        for agent in &settings.agents {
-            let _ = pet_core::memory::ensure_memory_files(&agent.id);
-            let _ = pet_core::heartbeat_file::ensure_heartbeat_file(&agent.id);
-        }
+        pet_core::settings::ensure_agent_files(&settings);
     }
 
     // Everything (terminal input, turn activity, group activity) flows through
     // this one channel into the UI loop.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
 
-    let log_store = LogStore(Arc::new(Mutex::new(Vec::new())));
-    let shell_store = ShellStore(Arc::new(Mutex::new(load_persisted_tasks())));
-    let mcp_store = pet_core::mcp::new_mcp_store();
+    let stores = EngineStores::detached();
     let cli = Arc::new(CliApp {
-        turns: TurnRunner::new(
+        turns: stores.turn(
             Arc::new(CliTurnEvents(tx.clone())),
-            LogStore(log_store.0.clone()),
-            ShellStore(shell_store.0.clone()),
-            mcp_store.clone(),
             tokio::runtime::Handle::current(),
         ),
-        log_store,
-        shell_store,
-        mcp_store,
+        stores,
     });
 
     // One-shot mode: plain streaming to stdout, then exit — but not before the
@@ -139,12 +129,10 @@ async fn async_main(oneshot: Option<String>) -> i32 {
     // The CLI shows one room at a time; `group_id` is the cursor shared with the
     // event sink so only that room's activity reaches the TUI.
     let group_id = Arc::new(Mutex::new(String::new()));
-    let group_rt = Arc::new(GroupRuntime::new(
-        Arc::new(TuiGroupEvents { tx: tx.clone(), group_id: group_id.clone() }),
-        cli.mcp_store.clone(),
-        LogStore(cli.log_store.0.clone()),
-        ShellStore(cli.shell_store.0.clone()),
-    ));
+    let group_rt = Arc::new(cli.stores.group(Arc::new(TuiGroupEvents {
+        tx: tx.clone(),
+        group_id: group_id.clone(),
+    })));
 
     let mut terminal = ratatui::init();
     // Plain terminals send Shift+Enter as a bare CR, indistinguishable from
@@ -201,7 +189,7 @@ async fn async_main(oneshot: Option<String>) -> i32 {
                 Action::Submit(line) => commands::spawn_submit(ctx.clone(), app.mode, line),
                 Action::SyncTurn => sync_turn(&cli, &tx),
                 Action::OpenTasks => {
-                    let tasks = pet_core::shell::list_tasks(&cli.shell_store);
+                    let tasks = pet_core::shell::list_tasks(&cli.stores.shell);
                     let _ = if tasks.is_empty() {
                         tx.send(AppEvent::Notice("没有后台任务".to_string()))
                     } else {
@@ -246,7 +234,7 @@ fn sync_turn(cli: &CliApp, tx: &UnboundedSender<AppEvent>) {
 
 /// Nothing running, nothing queued, and no task left that will notify.
 fn quiescent(cli: &CliApp) -> bool {
-    cli.turns.is_idle() && pending_notify_count(&cli.shell_store) == 0
+    cli.turns.is_idle() && pending_notify_count(&cli.stores.shell) == 0
 }
 
 /// `-p` mode: send one message, print its reply, then stay until every
@@ -290,7 +278,7 @@ async fn run_oneshot(cli: &Arc<CliApp>, rx: &mut UnboundedReceiver<AppEvent>, ms
                         "{}✗ 等待后台任务超过 {}ms，放弃（还有 {} 个在跑；PET_ONESHOT_WAIT_MS 可调，0 为无上限）{}",
                         ui::RED,
                         wait_ms,
-                        pending_notify_count(&cli.shell_store),
+                        pending_notify_count(&cli.stores.shell),
                         ui::RESET
                     );
                     return 1;
@@ -328,7 +316,7 @@ async fn run_oneshot(cli: &Arc<CliApp>, rx: &mut UnboundedReceiver<AppEvent>, ms
                         return code;
                     }
                 }
-                let pending = pending_notify_count(&cli.shell_store);
+                let pending = pending_notify_count(&cli.stores.shell);
                 if !waiting_notice && pending > 0 {
                     waiting_notice = true;
                     println!("{}… 等待 {} 个后台任务完成{}", ui::DIM, pending, ui::RESET);

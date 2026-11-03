@@ -1,43 +1,44 @@
 use base64::Engine;
 
-use crate::tools::{required_str, tool_error, Tool, ToolContext};
+use crate::tools::{parse_args, tool_error, Tool, ToolContext, ToolSpec};
 
 pub struct ReadImageTool;
 
-impl Tool for ReadImageTool {
-    fn name(&self) -> &str {
-        "read_image"
-    }
+#[derive(serde::Deserialize)]
+struct ReadImageArgs {
+    file_path: String,
+}
 
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "read_image",
-                "description": "Load an image from a local file path and attach it so you can actually SEE it. Use this to look at an image the user points you at, or one you produced (a photo, a chart, a saved screenshot). The image is shown to you on the next turn; this result carries only its metadata (format and size). Supports png, jpeg, gif and webp.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path to the image file"
-                        }
-                    },
-                    "required": ["file_path"]
-                }
-            }
-        })
+impl Tool for ReadImageTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "read_image",
+            description: "Load an image from a local file path and attach it so you can actually SEE it. Use this to look at an image the user points you at, or one you produced (a photo, a chart, a saved screenshot). The image is shown to you on the next turn; this result carries only its metadata (format and size). Supports png, jpeg, gif and webp.",
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the image file"
+                    }
+                },
+                "required": ["file_path"]
+            }),
+        }
     }
 
     crate::impl_execute!(read_image_impl);
 }
 
 async fn read_image_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args = super::parse_args(arguments);
-    let file_path = match required_str(&args, "file_path") {
-        Ok(v) => v,
+    let args: ReadImageArgs = match parse_args(arguments) {
+        Ok(args) => args,
         Err(e) => return e,
     };
+    let file_path = args.file_path;
+    if file_path.is_empty() {
+        return tool_error("missing 'file_path' parameter");
+    }
 
     let bytes = match std::fs::read(&file_path) {
         Ok(b) => b,

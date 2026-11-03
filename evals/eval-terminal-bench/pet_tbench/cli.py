@@ -1,23 +1,13 @@
 """eval-terminal-bench —— 用 Terminal-Bench 测 pet-cli 的终端任务能力。
 
-Terminal-Bench 2.0 是 89 道 Harbor 格式的真实终端任务（编译、修 bug、数据处理、
-运维…），每题一个 Docker 环境，跑完在同一容器里执行 tests/test.sh 判分。
-这个入口把两件杂事串起来，然后把控制权交给 Harbor：
+入口把任务库钉到 Harbor 注册表用的 commit（不经 Hub，避免公司 MITM 代理下 TLS 被拒），
+然后把控制权交给 harbor：
+    uv run --project evals/eval-terminal-bench eval-terminal-bench --n-tasks 1   # 冒烟
+    uv run --project evals/eval-terminal-bench eval-terminal-bench --only <name>
+    uv run --project evals/eval-terminal-bench eval-terminal-bench               # 全部 89 题（很重）
 
-1. 把 terminal-bench-2 任务库 clone 到 vendor/（gitignored），checkout 到 Harbor 注册表
-   里 terminal-bench@2.0 钉的那个 commit——等价于注册表数据集，但不经 Harbor Hub
-   （公司 MITM 代理下 Hub 的 TLS 会被拒；git 走系统信任链没问题）；
-2. 用 clux/muslrust 把 pet-cli 静态编译成 linux/amd64 二进制（缺了才编）；
-3. ``harbor run -p vendor/terminal-bench-2 -a pet_tbench.agent:PetCliAgent``。
-
-    uv run --project evals/eval-terminal-bench eval-terminal-bench --n-tasks 1     # 冒烟
-    uv run --project evals/eval-terminal-bench eval-terminal-bench --only <task-name>
-    uv run --project evals/eval-terminal-bench eval-terminal-bench                 # 全部 89 题（很重）
-    uv run --project evals/eval-terminal-bench eval-terminal-bench --dataset terminal-bench@4.0.0  # 走 Hub
-
-模型默认取主人真实 config.yaml 里当前 Agent 的（与 pet-eval 同规则），
-PET_API_BASE / PET_API_KEY / PET_MODEL 可覆盖。需要本机 Docker。
-结果落在 evals/eval-terminal-bench/runs/<job>/。
+模型默认取主人真实 config.yaml 里当前 Agent 的，PET_API_BASE / PET_API_KEY / PET_MODEL
+可覆盖。需要本机 Docker；结果落在 runs/<job>/。
 """
 
 from __future__ import annotations
@@ -28,8 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pet_eval_common.binary import ensure_linux_binary
-from pet_eval_common.model import mask_key, resolve_model
+from pet_eval_common.host import launch
 
 HERE = Path(__file__).resolve().parents[1]  # evals/eval-terminal-bench
 REPO = HERE.parents[1]
@@ -74,15 +63,8 @@ def main() -> None:
     parser.add_argument("--timeout-multiplier", type=float, help="任务超时倍率（同时告知 agent，预算随之放大）")
     parser.add_argument("--model", help="覆盖模型（默认用 config.yaml 当前 Agent 的）")
     parser.add_argument("--rebuild", action="store_true", help="强制重编 Linux pet-cli")
-    parser.add_argument(
-        "harbor_args", nargs="*", help="其余参数原样传给 harbor run（放在 -- 之后）"
-    )
+    parser.add_argument("harbor_args", nargs="*", help="其余参数原样传给 harbor run（放在 -- 之后）")
     args = parser.parse_args()
-
-    model = resolve_model()
-    if args.model:
-        model["PET_MODEL"] = args.model
-    binary = ensure_linux_binary(args.rebuild)
 
     if args.dataset:
         source_args = ["-d", args.dataset]
@@ -92,40 +74,44 @@ def main() -> None:
             raise SystemExit(f"任务路径不存在：{path}")
         source_args = ["-p", str(path)]
 
-    cmd = [
-        "harbor", "run",
-        *source_args,
-        "-a", "pet_tbench.agent:PetCliAgent",
-        "-o", str(RUNS),
-        "-m", model["PET_MODEL"],
-        "--ak", f"binary={binary}",
-    ]
-    # agent 类在 harbor 进程里读 env（含 --ae 注入的），容器里的 pet-cli 读 config.yaml
-    for key, value in model.items():
-        cmd += ["--ae", f"{key}={value}"]
+    extra_args: list[str] = []
     for key in OPTIONAL_ENV:
         if value := os.environ.get(key):
-            cmd += ["--ae", f"{key}={value}"]
+            extra_args += ["--ae", f"{key}={value}"]
     for name in args.only or []:
-        cmd += ["-i", name]
+        extra_args += ["-i", name]
     for name in args.exclude or []:
-        cmd += ["-x", name]
+        extra_args += ["-x", name]
     if args.n_tasks:
-        cmd += ["-l", str(args.n_tasks)]
+        extra_args += ["-l", str(args.n_tasks)]
     if args.attempts:
-        cmd += ["-k", str(args.attempts)]
+        extra_args += ["-k", str(args.attempts)]
     if args.concurrency:
-        cmd += ["-n", str(args.concurrency)]
+        extra_args += ["-n", str(args.concurrency)]
     if args.timeout_multiplier:
-        cmd += [
+        extra_args += [
             "--timeout-multiplier", str(args.timeout_multiplier),
             "--ak", f"timeout_multiplier={args.timeout_multiplier}",
         ]
-    cmd += args.harbor_args
+    extra_args += args.harbor_args
 
-    print(f"$ {mask_key(cmd)}\n")
-    # 不往 posthog 报 job 统计（MITM 代理下还会白等 TLS 失败）
-    done = subprocess.run(cmd, env={**os.environ, **model, "HARBOR_TELEMETRY": "0"})
-    print(f"\n结果在 {RUNS}/<job>/（result.json、<trial>/verifier/reward.txt、agent/pet-cli.txt、agent/llm.log）")
-    print(f"看轨迹：uv run --project {HERE.relative_to(REPO)} harbor view {RUNS}/<job>")
-    sys.exit(done.returncode)
+    sys.exit(
+        launch(
+            ["harbor", "run", *source_args, "-a", "pet_tbench.agent:PetCliAgent", "-o", str(RUNS)],
+            model_override=args.model,
+            rebuild=args.rebuild,
+            model_hint=(
+                "PET_API_BASE / PET_API_KEY / PET_MODEL"
+                "（宿主 env 或 harbor run --ae；model 也可用 --model 传）"
+            ),
+            extra_args=extra_args,
+            # 不往 posthog 报 job 统计（MITM 代理下还会白等 TLS 失败）
+            env={"HARBOR_TELEMETRY": "0"},
+
+            summary=(
+                f"结果在 {RUNS}/<job>/"
+                "（result.json、<trial>/verifier/reward.txt、agent/pet-cli.txt、agent/llm.log）"
+            ),
+            view_command=f"{HERE.relative_to(REPO)} harbor view {RUNS}/<job>",
+        )
+    )

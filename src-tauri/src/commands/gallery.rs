@@ -56,6 +56,6 @@ pub fn list_gallery_media(dir: String) -> Result<Vec<MediaItem>, String> {
             kind: kind.to_string(),
         });
     }
-    items.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    items.sort_by_key(|a| a.path.to_lowercase());
     Ok(items)
 }

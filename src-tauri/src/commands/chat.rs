@@ -13,9 +13,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 use pet_core::chat::UserTurn;
-use pet_core::logging::LogStore;
-use pet_core::mcp::McpStore;
-use pet_core::shell::ShellStore;
+use pet_core::stores::EngineStores;
 use pet_core::tools::ChatHook;
 use pet_core::turn::{TurnEvents, TurnNotice, TurnRunner, TurnSnapshot};
 
@@ -38,15 +36,10 @@ impl TurnEvents for TauriTurnEvents {
 
 /// Build the managed runner. Called once in `lib.rs` setup (the event sink
 /// needs the app handle).
-pub fn new_turn_store(
-    app: AppHandle,
-    mcp_store: McpStore,
-    log_store: LogStore,
-    shell_store: ShellStore,
-) -> TurnStore {
+pub fn new_turn_store(app: AppHandle, stores: EngineStores) -> TurnStore {
     let events = Arc::new(TauriTurnEvents { app });
     let rt = tauri::async_runtime::handle().inner().clone();
-    TurnStore(TurnRunner::new(events, log_store, shell_store, mcp_store, rt))
+    TurnStore(stores.turn(events, rt))
 }
 
 /// Start a turn with the owner's input. Returns the turn id; the reply arrives

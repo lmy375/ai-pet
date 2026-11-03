@@ -79,7 +79,7 @@ export function PromptsCard({ notify, fail }: Props) {
 
   const openDir = async () => {
     try {
-      await invoke("open_prompts_dir");
+      await invoke("open_dir", { kind: "prompts" });
     } catch (e: any) {
       fail(t("settings.prompts.openDirFailed", { error: e }));
     }

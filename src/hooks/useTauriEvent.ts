@@ -1,25 +1,14 @@
-import { useEffect } from "react";
-import { listen, type EventCallback } from "@tauri-apps/api/event";
+import type { EventCallback } from "@tauri-apps/api/event";
+import { useEvent } from "../lib/events";
 
 /**
- * Subscribe to a Tauri event for the component's lifetime, handling the async
- * `listen()` → store-unlisten → cleanup dance so callers only write the handler.
+ * Subscribe to a Tauri event for the component's lifetime, passing the raw Tauri
+ * event object to `handler` (kept for the existing call sites).
  *
- * The handler is captured once on mount (the listener is registered with no
- * deps), so it must be self-contained — read mutable values through refs, not
- * closure variables. This deliberately mirrors the always-registered listeners
- * it replaces: it does NOT use a `cancelled`/self-cancel flag (that pattern
- * previously caused a zero-notification regression for background-task
- * completions — see CLAUDE.md). Idempotency is the handler's job, e.g. the
- * `turn` listener ignoring a stream event whose `seq` it has already applied.
+ * Delegates to `useEvent`, so the listener is registered once per event name and
+ * the handler is always the latest render's — it no longer has to be
+ * self-contained.
  */
 export function useTauriEvent<T>(name: string, handler: EventCallback<T>) {
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<T>(name, handler).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEvent<T>(name, (payload) => handler({ event: name, id: 0, payload }));
 }

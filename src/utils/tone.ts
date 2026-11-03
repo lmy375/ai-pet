@@ -1,5 +1,5 @@
 /** Shared status colors (text + dot) for connected/error/idle indicators. */
-export type Tone = "success" | "error" | "muted";
+type Tone = "success" | "error" | "muted";
 
 const text: Record<Tone, string> = {
   success: "text-green-600",

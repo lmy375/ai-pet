@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { useEvent } from "../lib/events";
 import type { ChatItem } from "./useChat";
 import { applyStream, emptyView, type StreamEvent, type StreamView } from "./streamView";
 
@@ -55,7 +55,7 @@ export interface SwarmSnapshot {
   worker_prompt: string;
   status: SwarmStatus;
   tasks: SwarmTask[];
-  main: { messages: unknown[]; items: ChatItem[] };
+  main: { items: ChatItem[] };
   workers: SwarmWorkerRecord[];
   created_at: string;
   updated_at: string;
@@ -68,25 +68,6 @@ interface WorkerStreamPayload { swarmId: string; workerId: string; event: Stream
 interface MainStreamPayload { swarmId: string; event: StreamEvent }
 interface WorkerStatusPayload { swarmId: string; workerId: string; status: string }
 
-interface Handlers {
-  state: (snapshot: SwarmSnapshot) => void;
-  mainStream: (payload: MainStreamPayload) => void;
-  mainDone: (payload: { swarmId: string }) => void;
-  workerStream: (payload: WorkerStreamPayload) => void;
-  workerStatus: (payload: WorkerStatusPayload) => void;
-}
-
-let handlers: Handlers | null = null;
-let listenersStarted = false;
-function ensureListeners() {
-  if (listenersStarted) return;
-  listenersStarted = true;
-  listen<SwarmSnapshot>("swarm-state", (e) => handlers?.state(e.payload));
-  listen<MainStreamPayload>("swarm-main-stream", (e) => handlers?.mainStream(e.payload));
-  listen<{ swarmId: string }>("swarm-main-done", (e) => handlers?.mainDone(e.payload));
-  listen<WorkerStreamPayload>("swarm-worker-stream", (e) => handlers?.workerStream(e.payload));
-  listen<WorkerStatusPayload>("swarm-worker-status", (e) => handlers?.workerStatus(e.payload));
-}
 
 export function useSwarm() {
   const [swarms, setSwarms] = useState<SwarmSnapshot[]>([]);
@@ -127,19 +108,28 @@ export function useSwarm() {
     setWorkerViews(views);
   }, []);
 
-  useEffect(() => { ensureListeners(); loadList().catch(console.error); }, [loadList]);
+  useEffect(() => { loadList().catch(console.error); }, [loadList]);
   useEffect(() => { if (activeId) load(activeId).catch(console.error); }, [activeId, load]);
-  useEffect(() => {
-    const next: Handlers = {
-      state: applySnapshot,
-      mainStream: ({ swarmId, event }) => { if (swarmId !== activeRef.current) return; setMainRunning(true); setMainView((v) => applyStream(v, event)); },
-      mainDone: ({ swarmId }) => { if (swarmId !== activeRef.current) return; setMainRunning(false); load(swarmId).catch(console.error); },
-      workerStream: ({ swarmId, workerId, event }) => { if (swarmId !== activeRef.current) return; setWorkerViews((prev) => ({ ...prev, [workerId]: applyStream(prev[workerId] ?? emptyView(), event) })); },
-      workerStatus: ({ swarmId, workerId, status }) => { if (swarmId !== activeRef.current) return; setWorkerViews((prev) => ({ ...prev, [workerId]: { ...(prev[workerId] ?? emptyView()), running: status === "running" } })); },
-    };
-    handlers = next;
-    return () => { if (handlers === next) handlers = null; };
-  }, [applySnapshot, load]);
+
+  useEvent<SwarmSnapshot>("swarm-state", applySnapshot);
+  useEvent<MainStreamPayload>("swarm-main-stream", ({ swarmId, event }) => {
+    if (swarmId !== activeRef.current) return;
+    setMainRunning(true);
+    setMainView((v) => applyStream(v, event));
+  });
+  useEvent<{ swarmId: string }>("swarm-main-done", ({ swarmId }) => {
+    if (swarmId !== activeRef.current) return;
+    setMainRunning(false);
+    load(swarmId).catch(console.error);
+  });
+  useEvent<WorkerStreamPayload>("swarm-worker-stream", ({ swarmId, workerId, event }) => {
+    if (swarmId !== activeRef.current) return;
+    setWorkerViews((prev) => ({ ...prev, [workerId]: applyStream(prev[workerId] ?? emptyView(), event) }));
+  });
+  useEvent<WorkerStatusPayload>("swarm-worker-status", ({ swarmId, workerId, status }) => {
+    if (swarmId !== activeRef.current) return;
+    setWorkerViews((prev) => ({ ...prev, [workerId]: { ...(prev[workerId] ?? emptyView()), running: status === "running" } }));
+  });
 
   const create = useCallback(async (title: string, mainAgentId: string) => {
     const created = await invoke<SwarmSnapshot>("swarm_create", { title, mainAgentId });
@@ -189,9 +179,5 @@ export function useSwarm() {
   const cancelMain = useCallback(async (): Promise<void> => {
     if (activeId) await invoke("swarm_cancel_main", { id: activeId });
   }, [activeId]);
-  const reload = useCallback(async (): Promise<void> => {
-    if (activeId) await load(activeId);
-  }, [activeId, load]);
-
-  return { swarms, activeId, setActiveId, snapshot, mainView, workerViews, mainRunning, create, configure, createTask, deleteTask, deleteSwarm, start, end, stop, sendMain, cancelMain, reload };
+  return { swarms, activeId, setActiveId, snapshot, mainView, workerViews, mainRunning, create, configure, createTask, deleteTask, deleteSwarm, start, end, stop, sendMain, cancelMain };
 }

@@ -54,12 +54,5 @@ pub fn prune_session_items(
     if turns.0.is_running(&id) {
         return Err("Wait for the running reply to finish before deleting messages".to_string());
     }
-    let mut sess = session::load_session(id)?;
-    let selected: std::collections::HashSet<String> = item_ids.into_iter().collect();
-    let (items, messages) = session::prune_session(&sess.items, &sess.messages, &selected);
-    sess.items = items;
-    sess.messages = messages;
-    sess.updated_at = pet_core::common::iso_now();
-    session::save_session(sess.clone())?;
-    Ok(SessionView::from(sess))
+    session::prune_and_save(&id, &item_ids)
 }

@@ -15,7 +15,7 @@ import { parseJsonish } from "./format";
 
 type IconComponent = (props: { className?: string }) => React.ReactElement;
 
-export interface ToolDisplay {
+interface ToolDisplay {
   Icon: IconComponent;
   label: string; // action name, e.g. "Bash" | "Read" — falls back to raw name
   summary?: string; // key inline info (command / file name / task id)

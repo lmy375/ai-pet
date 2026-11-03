@@ -78,9 +78,10 @@ impl Entry {
         }
     }
 
-    /// Unwrapped styled lines. `selected` highlights the header row.
-    pub fn lines(&self, selected: bool) -> Vec<Line<'static>> {
-        let mut out = match self {
+    /// Unwrapped styled lines. Selection highlighting is applied by
+    /// `TuiApp::visible_lines` to the cached, wrapped copy.
+    pub fn lines(&self) -> Vec<Line<'static>> {
+        let out = match self {
             Entry::User { text } => {
                 let mut lines = Vec::new();
                 for (i, part) in text.lines().enumerate() {
@@ -129,7 +130,7 @@ impl Entry {
             Entry::Tool { owner, calls, expanded, .. } => {
                 let arrow = if *expanded { "▾" } else { "▸" };
                 let done = calls.iter().filter(|c| c.result.is_some()).count();
-                let status = if done == calls.len() { String::new() } else { format!(" · 运行中") };
+                let status = if done == calls.len() { String::new() } else { " · 运行中".to_string() };
                 let mut header = vec![Span::styled(
                     format!("{arrow} 工具调用 ×{}{status}", calls.len()),
                     Style::default().fg(Color::Yellow),
@@ -195,13 +196,7 @@ impl Entry {
             ))],
         };
 
-        if selected {
-            if let Some(first) = out.first_mut() {
-                for span in &mut first.spans {
-                    span.style = span.style.add_modifier(Modifier::REVERSED);
-                }
-            }
-        }
+
         out
     }
 }
@@ -243,14 +238,14 @@ mod tests {
             expanded: false,
             open: false,
         };
-        let collapsed = texts(&e.lines(false));
+        let collapsed = texts(&e.lines());
         // Header + one summary line; the result body is hidden.
         assert_eq!(collapsed.len(), 2);
         assert!(collapsed[1].contains("bash("));
         assert!(!collapsed.iter().any(|t| t.contains("file_a")));
 
         e.toggle();
-        let expanded = texts(&e.lines(false));
+        let expanded = texts(&e.lines());
         assert!(expanded.iter().any(|t| t.contains("file_a")));
         assert!(expanded.iter().any(|t| t.contains("── 结果 ──")));
     }
@@ -265,24 +260,17 @@ mod tests {
             reasoning_expanded: false,
         };
         assert!(e.toggleable());
-        let collapsed = texts(&e.lines(false));
+        let collapsed = texts(&e.lines());
         assert!(collapsed.iter().any(|t| t.contains("▸ 思考过程")));
         assert!(!collapsed.iter().any(|t| t.contains("第一步")));
 
         e.toggle();
-        let expanded = texts(&e.lines(false));
+        let expanded = texts(&e.lines());
         assert!(expanded.iter().any(|t| t.contains("第一步")));
     }
 
     #[test]
-    fn selected_entry_reverses_its_header_row() {
-        let e = Entry::Tool { owner: None, calls: vec![call(None)], expanded: false, open: true };
-        let lines = e.lines(true);
-        assert!(lines[0].spans.iter().all(|s| s.style.add_modifier.contains(Modifier::REVERSED)));
-        assert!(lines[1].spans.iter().all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)));
-    }
 
-    #[test]
     fn assistant_body_renders_markdown() {
         let e = Entry::Assistant {
             name: "宠".into(),
@@ -291,7 +279,7 @@ mod tests {
             streaming: false,
             reasoning_expanded: false,
         };
-        let lines = e.lines(false);
+        let lines = e.lines();
         let body = &lines[1];
         let bold = body.spans.iter().find(|s| s.content == "加粗").unwrap();
         assert!(bold.style.add_modifier.contains(Modifier::BOLD));

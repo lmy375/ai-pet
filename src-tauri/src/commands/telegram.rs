@@ -1,10 +1,11 @@
 use serde::Serialize;
+use std::sync::Arc;
 use tauri::State;
 
 use pet_core::logging::LogStore;
 use pet_core::settings::get_settings;
-use pet_core::shell::ShellStore;
-use pet_core::mcp::McpStore;
+use pet_core::turn::TurnRunner;
+use crate::commands::chat::TurnStore;
 use crate::telegram::bot::TelegramBot;
 use crate::telegram::TelegramStore;
 
@@ -19,9 +20,8 @@ pub struct TelegramStatus {
 /// `reconnect_telegram` command. Errors per agent are logged, not fatal.
 pub async fn restart_all_bots(
     telegram_store: &TelegramStore,
-    mcp_store: McpStore,
+    turns: Arc<TurnRunner>,
     log_store: LogStore,
-    shell_store: ShellStore,
 ) {
     {
         let mut guard = telegram_store.lock().await;
@@ -43,9 +43,8 @@ pub async fn restart_all_bots(
         match TelegramBot::start(
             agent.id.clone(),
             tg.clone(),
-            mcp_store.clone(),
-            LogStore(log_store.0.clone()),
-            ShellStore(shell_store.0.clone()),
+            turns.clone(),
+            log_store.clone(),
         )
         .await
         {
@@ -73,15 +72,13 @@ pub async fn get_telegram_status(
 #[tauri::command]
 pub async fn reconnect_telegram(
     telegram_store: State<'_, TelegramStore>,
-    mcp_store: State<'_, McpStore>,
+    turns: State<'_, TurnStore>,
     log_store: State<'_, LogStore>,
-    shell_store: State<'_, ShellStore>,
 ) -> Result<(), String> {
     restart_all_bots(
         telegram_store.inner(),
-        mcp_store.inner().clone(),
-        LogStore(log_store.0.clone()),
-        ShellStore(shell_store.0.clone()),
+        turns.0.clone(),
+        log_store.inner().clone(),
     )
     .await;
     Ok(())

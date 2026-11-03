@@ -34,17 +34,6 @@ pub fn list_skills() -> SkillsInfo {
     }
 }
 
-/// Reveal the skills directory, creating it first so the button also works
-/// before the owner has added any skill. Mirrors `open_config_dir`.
-#[tauri::command]
-pub fn open_skills_dir(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    let dir = skills::ensure_skills_dir()?;
-    app.opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| format!("Failed to open skills dir: {}", e))
-}
-
 /// Expand a `/skill:<slug> [task]` line into the message actually sent to the
 /// model. `None` when the line isn't a skill command or no skill matches, in
 /// which case the caller sends the text as typed. Keeping this in the engine is

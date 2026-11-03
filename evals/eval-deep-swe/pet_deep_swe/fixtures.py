@@ -6,6 +6,8 @@
 HEAD——所以 SOUL 里显式授权并要求 commit。
 """
 
+from pet_eval_common.host import memory_baseline
+
 SOUL = """你是一个软件工程 agent，正在一个隔离容器里独立完成一个真实的编程任务。
 
 - 任务说明会一次性给你，没人会回复追问——自己做决定，用工具把事情做完。
@@ -29,24 +31,4 @@ SOUL = """你是一个软件工程 agent，正在一个隔离容器里独立完�
 - 复刻已有输出格式时复用原实现的代码路径，不要重写一份"等价"逻辑。
 """
 
-USER = """# 关于主人
-
-（DeepSWE 评测：无主人信息。专注完成任务本身。）
-"""
-
-MEMORY = """# 我的记忆
-
-（DeepSWE 评测基线：刻意留空。）
-"""
-
-HEARTBEAT = """# 定时任务
-
-（DeepSWE 评测基线：无任务。）
-"""
-
-MEMORY_FILES = {
-    "SOUL.md": SOUL,
-    "USER.md": USER,
-    "MEMORY.md": MEMORY,
-    "HEARTBEAT.md": HEARTBEAT,
-}
+MEMORY_FILES = memory_baseline("DeepSWE", SOUL)

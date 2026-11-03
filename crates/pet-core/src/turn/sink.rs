@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{TurnNotice, TurnOrigin, TurnRunner};
+use super::{TurnEvents, TurnNotice, TurnOrigin, TurnRunner};
 use crate::chat::{ChatEventSink, StreamEvent};
 use crate::item::{ChatItem, ItemBuilder};
 use crate::session::ContextUsage;
@@ -24,16 +24,31 @@ pub(super) struct LiveTurn {
     pub(super) started_at: i64,
     pub(super) cancel: CancellationToken,
     pub(super) state: Mutex<LiveState>,
+    /// Extra per-turn listener (Telegram). Gets the same notices the global
+    /// listener sees, for this turn only.
+    observer: Option<Arc<dyn TurnEvents>>,
 }
 
 impl LiveTurn {
-    pub(super) fn new(turn_id: String, origin: TurnOrigin, started_at: i64) -> Self {
+    pub(super) fn new(
+        turn_id: String,
+        origin: TurnOrigin,
+        started_at: i64,
+        observer: Option<Arc<dyn TurnEvents>>,
+    ) -> Self {
         Self {
             turn_id,
             origin,
             started_at,
             cancel: CancellationToken::new(),
             state: Mutex::new(LiveState::default()),
+            observer,
+        }
+    }
+
+    pub(super) fn notify_observer(&self, notice: &TurnNotice) {
+        if let Some(o) = &self.observer {
+            o.notice(notice);
         }
     }
 }
@@ -93,12 +108,14 @@ impl ChatEventSink for TurnSink {
             st.seq += 1;
             st.seq
         };
-        self.runner.events.notice(&TurnNotice::Stream {
+        let notice = TurnNotice::Stream {
             session_id: self.session_id.clone(),
             turn_id: self.live.turn_id.clone(),
             seq,
             event,
-        });
+        };
+        self.runner.events.notice(&notice);
+        self.live.notify_observer(&notice);
     }
 }
 

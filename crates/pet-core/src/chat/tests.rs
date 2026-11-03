@@ -1,4 +1,4 @@
-    use std::collections::HashMap;
+
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@
     use crate::config::AiConfig;
     use crate::logging::LogStore;
     use crate::shell::ShellStore;
-    use crate::tools::{Tool, ToolContext, ToolRegistry};
+    use crate::tools::{Tool, ToolContext, ToolRegistry, ToolSpec, ToolStores};
 
     struct BarrierTool {
         name: &'static str,
@@ -27,12 +27,8 @@
     }
 
     impl Tool for BarrierTool {
-        fn name(&self) -> &str {
-            self.name
-        }
-
-        fn definition(&self) -> serde_json::Value {
-            serde_json::json!({})
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: self.name, description: "", schema: serde_json::json!({}) }
         }
 
         fn execute<'a>(
@@ -50,12 +46,8 @@
     }
 
     impl Tool for ImageTool {
-        fn name(&self) -> &str {
-            self.name
-        }
-
-        fn definition(&self) -> serde_json::Value {
-            serde_json::json!({})
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: self.name, description: "", schema: serde_json::json!({}) }
         }
 
         fn execute<'a>(
@@ -101,15 +93,14 @@
             mcp_servers: Vec::new(),
             reasoning: String::new(),
         };
-        let ctx = ToolContext::new(
-            LogStore(Arc::new(Mutex::new(Vec::new()))),
-            ShellStore(Arc::new(Mutex::new(HashMap::new()))),
+        let ctx = ToolContext::for_session(
+            ToolStores::new(
+                LogStore(Arc::new(Mutex::new(Vec::new()))),
+                ShellStore::new(),
+                crate::mcp::new_mcp_store(),
+            ),
             config.clone(),
-            crate::mcp::new_mcp_store(),
-            "test-session".to_string(),
-            None,
-            None,
-            false,
+            "test-session",
         );
         (config, ctx)
     }
@@ -124,13 +115,12 @@
             Box::new(BarrierTool { name: "second", barrier }),
         ]);
         let calls = vec![tool_call("call-1", "first"), tool_call("call-2", "second")];
-        let (config, ctx) = test_context();
-        let mcp_store = ctx.mcp_store.clone();
+        let (_config, ctx) = test_context();
         let sink = ImageCollectingSink::new();
 
         let outputs = tokio::time::timeout(
             Duration::from_secs(2),
-            execute_tool_calls(&calls, &sink, &config, &mcp_store, &registry, &ctx),
+            execute_tool_calls(&calls, &sink, &registry, &ctx),
         )
         .await
         .expect("tool calls did not reach the barrier concurrently");
@@ -158,11 +148,10 @@
             }),
         ]);
         let calls = vec![tool_call("call-1", "first"), tool_call("call-2", "second")];
-        let (config, ctx) = test_context();
-        let mcp_store = ctx.mcp_store.clone();
+        let (_config, ctx) = test_context();
         let sink = ImageCollectingSink::new();
 
-        let outputs = execute_tool_calls(&calls, &sink, &config, &mcp_store, &registry, &ctx).await;
+        let outputs = execute_tool_calls(&calls, &sink, &registry, &ctx).await;
 
         assert_eq!(outputs, vec!["first", "second"]);
         assert_eq!(ctx.take_images(), vec!["data:first", "data:second"]);

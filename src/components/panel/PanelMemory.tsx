@@ -6,6 +6,7 @@ import { StatusText } from "../ui/StatusText";
 import { SettingsSection, SettingsRow } from "../ui/settings";
 import { ExternalLinkIcon } from "../Icons";
 import { useI18n, type TKey } from "../../i18n";
+import { useStatusMessage } from "../../hooks/useStatusMessage";
 
 /**
  * Per-agent memory editor: view and edit one agent's always-present markdown
@@ -24,17 +25,15 @@ type FieldKey = "soul" | "user" | "memory" | "heartbeat";
 interface FieldDef {
   key: FieldKey;
   titleKey: TKey;
-  getCmd: string;
-  saveCmd: string;
   rows: number;
   placeholderKey: TKey;
 }
 
 const FIELDS: FieldDef[] = [
-  { key: "soul", titleKey: "memory.soul.title", getCmd: "get_soul", saveCmd: "save_soul", rows: 6, placeholderKey: "memory.soul.placeholder" },
-  { key: "user", titleKey: "memory.user.title", getCmd: "get_user", saveCmd: "save_user", rows: 10, placeholderKey: "memory.user.placeholder" },
-  { key: "memory", titleKey: "memory.memory.title", getCmd: "get_memory", saveCmd: "save_memory", rows: 10, placeholderKey: "memory.memory.placeholder" },
-  { key: "heartbeat", titleKey: "memory.heartbeat.title", getCmd: "get_heartbeat", saveCmd: "save_heartbeat", rows: 8, placeholderKey: "memory.heartbeat.placeholder" },
+  { key: "soul", titleKey: "memory.soul.title", rows: 6, placeholderKey: "memory.soul.placeholder" },
+  { key: "user", titleKey: "memory.user.title", rows: 10, placeholderKey: "memory.user.placeholder" },
+  { key: "memory", titleKey: "memory.memory.title", rows: 10, placeholderKey: "memory.memory.placeholder" },
+  { key: "heartbeat", titleKey: "memory.heartbeat.title", rows: 8, placeholderKey: "memory.heartbeat.placeholder" },
 ];
 
 const EMPTY: Record<FieldKey, string> = { soul: "", user: "", memory: "", heartbeat: "" };
@@ -43,13 +42,13 @@ export function AgentMemory({ agentId }: { agentId: string }) {
   const { t } = useI18n();
   const [values, setValues] = useState<Record<FieldKey, string>>(EMPTY);
   const [loaded, setLoaded] = useState(false);
-  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const status = useStatusMessage();
   // Last on-disk content we loaded or saved, per field. The dirty check and
   // focus-refresh both compare against this baseline.
   const baseline = useRef<Record<FieldKey, string>>({ ...EMPTY });
 
   useEffect(() => {
-    Promise.all(FIELDS.map((f) => invoke<string>(f.getCmd, { agentId })))
+    Promise.all(FIELDS.map((f) => invoke<string>("get_memory_file", { agentId, kind: f.key })))
       .then((contents) => {
         const next = { ...EMPTY };
         FIELDS.forEach((f, i) => (next[f.key] = contents[i]));
@@ -58,7 +57,7 @@ export function AgentMemory({ agentId }: { agentId: string }) {
         setLoaded(true);
       })
       .catch((e) => {
-        setMessage({ text: t("common.loadFailed", { error: e }), ok: false });
+        status.fail(t("common.loadFailed", { error: e }));
         setLoaded(true);
       });
   }, [agentId]);
@@ -68,11 +67,11 @@ export function AgentMemory({ agentId }: { agentId: string }) {
   const saveField = async (f: FieldDef, value: string) => {
     if (value === baseline.current[f.key]) return;
     try {
-      await invoke(f.saveCmd, { agentId, content: value });
+      await invoke("save_memory_file", { agentId, kind: f.key, content: value });
       baseline.current[f.key] = value;
-      setMessage({ text: t("common.saved"), ok: true });
+      status.ok(t("common.saved"));
     } catch (e: any) {
-      setMessage({ text: t("common.saveFailed", { error: e }), ok: false });
+      status.fail(t("common.saveFailed", { error: e }));
     }
   };
 
@@ -81,7 +80,7 @@ export function AgentMemory({ agentId }: { agentId: string }) {
   // the fresh content so they don't edit and then overwrite a stale version.
   const refreshField = async (f: FieldDef) => {
     try {
-      const fresh = await invoke<string>(f.getCmd, { agentId });
+      const fresh = await invoke<string>("get_memory_file", { agentId, kind: f.key });
       setValues((prev) => {
         const unchangedOnDisk = fresh === baseline.current[f.key];
         const noLocalEdits = prev[f.key] === baseline.current[f.key];
@@ -98,9 +97,9 @@ export function AgentMemory({ agentId }: { agentId: string }) {
 
   const openMemoryDir = async () => {
     try {
-      await invoke("open_memory_dir", { agentId });
+      await invoke("open_dir", { kind: "memory", agentId });
     } catch (e: any) {
-      setMessage({ text: t("memory.openDirFailed", { error: e }), ok: false });
+      status.fail(t("memory.openDirFailed", { error: e }));
     }
   };
 
@@ -134,8 +133,8 @@ export function AgentMemory({ agentId }: { agentId: string }) {
         ))}
       </SettingsSection>
 
-      {message && (
-        <StatusText ok={message.ok} className="text-note">{message.text}</StatusText>
+      {status.message && (
+        <StatusText ok={status.message.ok} className="text-note">{status.message.text}</StatusText>
       )}
     </>
   );

@@ -4,7 +4,9 @@ use genai::{ModelIden, ServiceTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::SystemTime;
 
 /// One MCP server, defined once globally (`mcp_servers` in config.yaml) and
 /// referenced by name from `AgentConfig::mcp`. The connection pool only starts
@@ -365,13 +367,24 @@ impl AppSettings {
         names.dedup();
         names
     }
+
+    /// The (name, config) pairs the MCP pool should be running: enabled and
+    /// referenced by some agent. Shared by the GUI's boot/reconnect paths and
+    /// the per-server sync command, so the two can't disagree about "in use".
+    pub fn referenced_server_configs(&self) -> Vec<(&str, &McpServerConfig)> {
+        self.referenced_mcp_servers()
+            .into_iter()
+            .filter_map(|name| self.mcp_servers.get_key_value(&name))
+            .map(|(name, config)| (name.as_str(), config))
+            .collect()
+    }
 }
 
 /// The active agent's id (resolved like `active_agent_config`), or "owen"
 /// when settings can't be read. Used by memory/session paths that need an agent
 /// even outside a chat turn.
 pub fn active_agent_id() -> String {
-    get_settings()
+    snapshot()
         .ok()
         .and_then(|s| s.active_agent_config().map(|a| a.id.clone()))
         .unwrap_or_else(default_agent_id)
@@ -381,7 +394,7 @@ pub fn active_agent_id() -> String {
 /// settings can't be read or the id is unknown. Used to tell the agent its own
 /// name in the system prompt.
 pub fn agent_name(id: &str) -> String {
-    get_settings()
+    snapshot()
         .ok()
         .and_then(|s| s.agent(id).map(|a| a.name.clone()))
         .unwrap_or_else(default_agent_name)
@@ -535,108 +548,187 @@ pub fn ensure_config_dir() -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
-pub fn get_settings() -> Result<AppSettings, String> {
+/// The parsed `config.yaml` plus the file stamp it was parsed from.
+struct CachedSettings {
+    stamp: FileStamp,
+    settings: Arc<AppSettings>,
+}
+
+/// Cheap "has the file changed" marker. `len` catches same-timestamp rewrites
+/// (filesystems with coarse mtime); a deletion/creation flips it too.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+static SETTINGS_CACHE: OnceLock<RwLock<Option<CachedSettings>>> = OnceLock::new();
+
+fn settings_cache() -> &'static RwLock<Option<CachedSettings>> {
+    SETTINGS_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+fn file_stamp(path: &Path) -> FileStamp {
+    match fs::metadata(path) {
+        Ok(meta) => FileStamp { modified: meta.modified().ok(), len: meta.len() },
+        // No file yet: first run, defaults.
+        Err(_) => FileStamp { modified: None, len: 0 },
+    }
+}
+
+/// Drop the cache after a write so the next read parses the new file. External
+/// edits are caught by the stamp comparison in `snapshot`.
+fn invalidate_cache() {
+    *settings_cache().write().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn load_settings(path: &Path) -> Result<AppSettings, String> {
+    // No file yet = first run: the built-in defaults. Anything else (unreadable
+    // or unparsable) is a real error — silently resetting would wipe the user's
+    // models and API keys on the next save.
+    match crate::store::read_text(path)? {
+        Some(content) => serde_yaml::from_str(&content)
+            .map_err(|e| format!("Failed to parse config: {}", e)),
+        None => Ok(AppSettings::default()),
+    }
+}
+
+/// The config every reader shares: parsed once and reused until `config.yaml`
+/// changes. Turns, tools, prompts and the UIs all read the same object, so a
+/// single chat turn no longer parses the file three or four times.
+pub fn snapshot() -> Result<Arc<AppSettings>, String> {
     let path = config_path()?;
-    let settings = if path.exists() {
-        let content = fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        serde_yaml::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?
-    } else {
-        AppSettings::default()
-    };
-    // Every read of the config funnels through here — startup, each turn, and
-    // each settings write — so the logger picks up a changed limit without any
-    // wiring of its own. It's two relaxed atomic stores.
+    let stamp = file_stamp(&path);
+
+    if let Some(cached) = settings_cache().read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if cached.stamp == stamp {
+            return Ok(cached.settings.clone());
+        }
+    }
+
+    let settings = Arc::new(load_settings(&path)?);
+    // Log limits ride along with the config. Applying them here (a parse is
+    // rare — first read, or an external edit) and in `save_settings` keeps
+    // `app.log` capped without re-configuring on every read.
     crate::logging::configure(settings.app_log_max_mb, settings.llm_log_keep_per_kind);
+    let mut cache = settings_cache().write().unwrap_or_else(|e| e.into_inner());
+    *cache = Some(CachedSettings { stamp, settings: settings.clone() });
     Ok(settings)
 }
 
+/// An owned copy of the shared config, for callers that need to hand it around
+/// (most just want [`snapshot`], which avoids the clone).
+pub fn get_settings() -> Result<AppSettings, String> {
+    snapshot().map(|s| (*s).clone())
+}
+
 /// Create the memory dir + mandatory files for every configured agent. Called
-/// after any settings write so a newly-added agent gets its `memory/<id>/`.
-fn ensure_agent_dirs(settings: &AppSettings) {
+/// after any settings write so a newly-added agent gets its `memory/<id>/`,
+/// and by both interfaces at startup. A failure is reported but doesn't undo
+/// the saved config; the next turn falls back to the built-in memory defaults.
+pub fn ensure_agent_files(settings: &AppSettings) {
     for agent in &settings.agents {
-        let _ = crate::memory::ensure_memory_files(&agent.id);
-        let _ = crate::heartbeat_file::ensure_heartbeat_file(&agent.id);
+        if let Err(e) = crate::memory::ensure_memory_files(&agent.id) {
+            eprintln!("{e}");
+        }
+        if let Err(e) = crate::heartbeat_file::ensure_heartbeat_file(&agent.id) {
+            eprintln!("{e}");
+        }
     }
 }
 
 /// Write raw YAML text to config.yaml, creating the parent dir if needed.
 fn write_config_file(yaml: &str) -> Result<(), String> {
-    crate::common::write_text(&config_path()?, yaml)
-}
-
-/// Serialize `settings`, write it to config.yaml, then ensure every agent's
-/// memory dirs exist. Interface layers that keep in-memory copies (the two GUI
-/// windows) must broadcast their own change notification after calling any of
-/// the settings-mutating functions below (the Tauri layer emits
-/// `settings-changed`; the CLI reloads per turn and needs nothing).
-pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
-    let yaml = serde_yaml::to_string(settings)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    write_config_file(&yaml)?;
-    ensure_agent_dirs(settings);
+    crate::store::write_text(&config_path()?, yaml)?;
+    invalidate_cache();
     Ok(())
 }
 
-/// Switch the active agent (the one answering the chat) without rewriting the
-/// whole settings object. Chat history is global, so this only changes who
-/// responds next.
+fn write_settings_file(settings: &AppSettings) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(settings)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    write_config_file(&yaml)
+}
+
+/// The one way to change a few settings: read the current file, let the caller
+/// mutate it (validation lives in the closure, so a failed check writes
+/// nothing), then save atomically and ensure every agent's dirs.
+///
+/// Interface layers that keep an in-memory copy (the two GUI windows) must
+/// broadcast their own change notification *after* this returns `Ok` (the
+/// Tauri layer emits `settings-changed`; the CLI reads the snapshot).
+pub fn update<R>(f: impl FnOnce(&mut AppSettings) -> Result<R, String>) -> Result<R, String> {
+    let mut settings = get_settings()?;
+    let result = f(&mut settings)?;
+    save_settings(&settings)?;
+    Ok(result)
+}
+
+/// Read-modify-write for window / floating-ball offsets: no `settings-changed`
+/// broadcast and no agent-dir work — a drag shouldn't reload every window.
+pub fn update_ui_state(f: impl FnOnce(&mut AppSettings)) -> Result<(), String> {
+    let mut settings = get_settings()?;
+    f(&mut settings);
+    write_settings_file(&settings)
+}
+
+/// Serialize `settings`, write it to config.yaml, then ensure every agent's
+/// memory dirs exist.
+pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
+    write_settings_file(settings)?;
+    ensure_agent_files(settings);
+    crate::logging::configure(settings.app_log_max_mb, settings.llm_log_keep_per_kind);
+    Ok(())
+}
+
+/// Switch the active agent (the one answering the chat). Chat history is
+/// global, so this only changes who responds next.
 pub fn set_active_agent(id: &str) -> Result<(), String> {
-    let mut settings = get_settings()?;
-    if settings.agent(id).is_none() {
-        return Err(format!("Unknown agent: {}", id));
-    }
-    settings.active_agent = id.to_string();
-    save_settings(&settings)
+    update(|s| {
+        if s.agent(id).is_none() {
+            return Err(format!("Unknown agent: {}", id));
+        }
+        s.active_agent = id.to_string();
+        Ok(())
+    })
 }
 
-/// Point one agent at a different entry of the global model pool, without
-/// rewriting the whole settings object — used by the in-chat model switcher.
+/// Point one agent at a different entry of the global model pool — used by the
+/// in-chat model switcher.
 pub fn set_agent_model(id: &str, model: &str) -> Result<(), String> {
-    let mut settings = get_settings()?;
-    if !settings.models.contains_key(model) {
-        return Err(format!("Unknown model: {}", model));
-    }
-    let agent = settings
-        .agents
-        .iter_mut()
-        .find(|a| a.id == id)
-        .ok_or_else(|| format!("Unknown agent: {}", id))?;
-    agent.model = model.to_string();
-    save_settings(&settings)
+    update(|s| {
+        if !s.models.contains_key(model) {
+            return Err(format!("Unknown model: {}", model));
+        }
+        let agent = s
+            .agents
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or_else(|| format!("Unknown agent: {}", id))?;
+        agent.model = model.to_string();
+        Ok(())
+    })
 }
 
-/// Persist only the pet-window position into config.yaml (read-modify-write).
-/// Unlike `save_settings` this does NOT emit `settings-changed` — a window move
-/// shouldn't make every window reload its settings.
+/// Persist only the pet-window position; see [`update_ui_state`] for why this
+/// doesn't broadcast.
 pub fn set_window_position(x: i32, y: i32) -> Result<(), String> {
-    let mut settings = get_settings()?;
-    settings.window = Some(WindowPosition { x, y });
-    let yaml = serde_yaml::to_string(&settings)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    write_config_file(&yaml)
+    update_ui_state(|s| s.window = Some(WindowPosition { x, y }))
 }
 
-/// Persist only the floating-ball position into config.yaml (read-modify-write).
-/// Same no-broadcast rule as `set_window_position`: a ball drag shouldn't make
-/// every window reload its settings.
+/// Persist only the floating-ball position; same no-broadcast rule.
 pub fn set_ball_position(x: i32, y: i32) -> Result<(), String> {
-    let mut settings = get_settings()?;
-    settings.ball = Some(WindowPosition { x, y });
-    let yaml = serde_yaml::to_string(&settings)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    write_config_file(&yaml)
+    update_ui_state(|s| s.ball = Some(WindowPosition { x, y }))
 }
 
 pub fn get_config_raw() -> Result<String, String> {
     let path = config_path()?;
-    if !path.exists() {
-        let default_settings = AppSettings::default();
-        return serde_yaml::to_string(&default_settings)
-            .map_err(|e| format!("Failed to serialize default config: {}", e));
+    match crate::store::read_text(&path)? {
+        Some(content) => Ok(content),
+        // Nothing written yet: hand the editor the defaults it would save.
+        None => serde_yaml::to_string(&AppSettings::default())
+            .map_err(|e| format!("Failed to serialize default config: {}", e)),
     }
-    fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read config: {}", e))
 }
 
 pub fn save_config_raw(content: &str) -> Result<(), String> {
@@ -645,7 +737,8 @@ pub fn save_config_raw(content: &str) -> Result<(), String> {
     let settings: AppSettings = serde_yaml::from_str(content)
         .map_err(|e| format!("YAML 解析失败: {}", e))?;
     write_config_file(content)?;
-    ensure_agent_dirs(&settings);
+    ensure_agent_files(&settings);
+    crate::logging::configure(settings.app_log_max_mb, settings.llm_log_keep_per_kind);
     Ok(())
 }
 

@@ -1,20 +1,13 @@
 """pet-eval —— 宠物到底有没有把事做完，以及是不是按交代的方式做的。
 
-一条用例就是一个 YAML：一句 prompt、workspace 的初始状态、以及做完之后必须成立
-的事——磁盘上的文件、用了或没用哪些工具、花了几轮。跑法是拿真的 `pet-cli -p` 打
-一次单轮对话（同一个引擎、同一套系统提示词、同一批工具），只不过 PET_CONFIG_DIR
-指向一个一次性目录；跑完从沙箱的 llm.log 还原轨迹再做断言。
+一条用例就是一个 YAML：prompt、workspace 初始状态、做完之后必须成立的事（磁盘文件、
+工具轨迹、轮数）。跑法是真的 ``pet-cli -p`` 打一轮，PET_CONFIG_DIR 指向一次性目录，
+跑完从沙箱的 llm.log 还原轨迹再做断言。
 
-这里不评风格和语气：Stage 1 的每条期望都是关于磁盘或轨迹的事实，所以用例变红就
-一定意味着行为变了。
+    uv run --project evals/eval-private pet-eval --repeat 3
+    uv run --project evals/eval-private pet-eval --only edit --model GPT-5.5
 
-    uv run --project evals/eval-private pet-eval                    # 全部用例，当前 Agent 的模型
-    uv run --project evals/eval-private pet-eval --only edit        # 只跑一条
-    uv run --project evals/eval-private pet-eval --repeat 3         # 看方差，按 k/n 汇报
-    uv run --project evals/eval-private pet-eval --model GPT-5.5    # 同一批用例换个模型
-
-注意：用例会在这台机器上真的执行工具，bash 也在内。prompt 指向沙箱 workspace，
-但模型有可能乱走——把一次运行当成在本地跑任何一个 agent 来对待。
+注意：用例会在这台机器上真的执行工具（含 bash），把一次运行当成在本地跑 agent。
 """
 
 from __future__ import annotations
@@ -28,7 +21,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import yaml
+from pet_eval_common.model import resolve_model
 from pydantic import BaseModel, Field, computed_field
 
 from . import checks, sandbox, trace
@@ -44,41 +37,16 @@ if not sys.stdout.isatty():
     GREEN = RED = YELLOW = DIM = RESET = ""
 
 
-def _active_model(root: Path) -> dict:
-    """主人真实配置里，当前 Agent 引用的那条模型（models 池中的一项）。"""
-    config = root / "config.yaml"
-    if not config.exists():
-        return {}
-    settings = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
-    agents = settings.get("agents") or []
-    active = settings.get("active_agent")
-    agent = next((a for a in agents if a.get("id") == active), agents[0] if agents else {})
-    return (settings.get("models") or {}).get(agent.get("model", "")) or {}
-
-
-def resolve_model(env: EvalSettings, override: str | None) -> ModelSpec:
-    """默认跑主人实际在用的那个 Agent 的模型，env 和 --model 可以覆盖。
-
-    多个状态根里取第一个配了 api_key 的（安装版的默认配置往往是空壳）。
-    """
-    found = [_active_model(root) for root in env.real_config_dirs()]
-    cfg = next((m for m in found if m.get("api_key")), next((m for m in found if m), {}))
-
-    api_base = env.api_base or cfg.get("api_base", "")
-    model = override or env.model or cfg.get("model", "")
-    if not api_base or not model:
-        raise SystemExit(
-            "没有可用的模型配置：先在 GUI 里配好模型，"
-            "或设 PET_EVAL_API_BASE / PET_EVAL_MODEL"
-        )
-    return ModelSpec(
-        provider=env.provider or cfg.get("provider") or "openai",
-        api_base=api_base,
-        api_key=env.api_key or cfg.get("api_key", ""),
-        model=model,
-        context_window=cfg.get("context_window", 200_000),
-        reasoning=env.reasoning or cfg.get("reasoning", ""),
+def resolve_spec(env: EvalSettings, override: str | None) -> ModelSpec:
+    """默认跑主人实际在用的那个 Agent 的模型，PET_EVAL_* 和 --model 可以覆盖。"""
+    merged = resolve_model(
+        env.model_env(),
+        model_override=override,
+        config_dir=env.config_dir,
+        xdg_config_home=env.xdg_config_home,
+        hint="PET_EVAL_API_BASE / PET_EVAL_MODEL",
     )
+    return ModelSpec(**merged)
 
 
 def resolve_binary(env: EvalSettings) -> Path:
@@ -220,7 +188,7 @@ def main() -> None:
         raise SystemExit(f"{args.cases} 下没有匹配的用例")
 
     env = EvalSettings()
-    model = resolve_model(env, args.model)
+    model = resolve_spec(env, args.model)
     binary = resolve_binary(env)
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     sandbox_root = Path(tempfile.gettempdir()) / "pet-eval" / stamp

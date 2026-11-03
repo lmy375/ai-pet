@@ -18,6 +18,14 @@ pub fn new_mcp_store() -> McpStore {
     Arc::new(RwLock::new(McpHub::new()))
 }
 
+/// One MCP tool as offered to an agent: the OpenAI definition plus the server
+/// that advertised it, which is where a call to it must be routed.
+#[derive(Debug, Clone)]
+pub struct McpToolDefinition {
+    pub server: String,
+    pub definition: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct McpServerStatus {
     pub name: String,
@@ -189,9 +197,10 @@ impl McpHub {
     }
 
     /// Tool definitions offered to one agent: the union of the servers it lists,
-    /// in that order. A tool name served by two of them resolves to the first —
-    /// the same server `call_tool` will route to.
-    pub fn definitions(&self, servers: &[String]) -> Vec<serde_json::Value> {
+    /// in that order, each tagged with the server it came from so dispatch can
+    /// go straight back to that server. A tool name served by two of them
+    /// resolves to the first — the same server `call_tool` will route to.
+    pub fn definitions(&self, servers: &[String]) -> Vec<McpToolDefinition> {
         let mut seen: Vec<&str> = Vec::new();
         let mut defs = Vec::new();
         for name in servers {
@@ -201,7 +210,10 @@ impl McpHub {
                     continue;
                 }
                 seen.push(tool);
-                defs.push(def.clone());
+                defs.push(McpToolDefinition {
+                    server: name.clone(),
+                    definition: def.clone(),
+                });
             }
         }
         defs

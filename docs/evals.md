@@ -23,14 +23,17 @@ uv run --project evals/eval-private pet-eval --model GPT-5.5    # 同一批用�
 
 `PET_CONFIG_DIR`（[common.rs](../crates/pet-core/src/common.rs)）能把整个磁盘状态根
 换掉，评测就靠它隔离：每条用例一个临时目录，自带 config.yaml、记忆、会话和
-`logs/llm.log`，跑完留在 `/tmp/pet-eval/<时间戳>/` 里供事后翻查。
+`logs/llm.log`（引擎每轮追加一行，见下），跑完留在 `/tmp/pet-eval/<时间戳>/` 里供事后翻查。
 用例可以随便改写 MEMORY.md、删文件，碰不到你真正的宠物。
 
 记忆基线来自 `evals/eval-private/fixtures/memory/`（人设刻意中性、USER/MEMORY 刻意留空），
 所以「有没有往 MEMORY.md 里乱塞东西」是可判定的，也不会把你真实的 SOUL.md 拖进来。
 沙箱里的 `skills_dir` 指向空目录，`search_api_key` 留空——工具集在每台机器上一致。
 
-轨迹不用额外埋点：`llm.log` 每轮一行 JSON，工具调用和轮数直接从里面还原。
+轨迹不用额外埋点：`logs/llm.log` 每轮一行 JSON，评测只读其中的 `session_id`（子代理带
+`:sub:`，不计入主会话轮数）和 `response.tool_calls`（genai 的 `fn_name` / `fn_arguments`），
+工具调用和轮数直接从里面还原。按会话分的 `logs/llm-log/index.jsonl` + `<id>.json` 是
+GUI 日志面板的数据源，评测不读。
 
 ## 写一条用例
 
@@ -107,7 +110,7 @@ uv run --project evals/eval-terminal-bench eval-terminal-bench --attempts 3     
 ```
 
 结果在 `evals/eval-terminal-bench/runs/<job>/`（`result.json`；每题 `verifier/reward.txt`、
-`agent/pet-cli.txt`、`agent/llm.log`）。Harbor 只要 agent 阶段抛异常（含它自己的超时）
+`agent/pet-cli.txt`、从容器 `{PET_CONFIG_DIR}/logs/llm.log` 拷出的 `agent/llm.log`）。Harbor 只要 agent 阶段抛异常（含它自己的超时）
 就跳过 verifier 判 0 分，所以 agent 的 wrapper 永远 exit 0，并从任务 `task.toml` 读
 `[agent] timeout_sec` 给 pet-cli 一个略小的预算（`timeout` + `PET_ONESHOT_WAIT_MS`）。
 这里的 SOUL 不授权 commit——verifier 看的是磁盘最终状态，不是 git。

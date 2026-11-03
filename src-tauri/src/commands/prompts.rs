@@ -52,14 +52,3 @@ pub fn reset_prompt(key: PromptKey) -> Result<PromptInfo, String> {
     prompts::reset(key)?;
     Ok(info(key))
 }
-
-/// Reveal `<config>/prompts/`, creating it first so the button works before
-/// anything has been overridden. Mirrors `open_skills_dir`.
-#[tauri::command]
-pub fn open_prompts_dir(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    let dir = prompts::ensure_prompts_dir()?;
-    app.opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| format!("Failed to open prompts dir: {e}"))
-}

@@ -43,7 +43,7 @@ pub const GROUP_COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "/quit", desc: "退出", arg: None },
 ];
 
-pub fn commands(mode: Mode) -> &'static [CommandSpec] {
+fn commands(mode: Mode) -> &'static [CommandSpec] {
     match mode {
         Mode::Chat => CHAT_COMMANDS,
         Mode::Group => GROUP_COMMANDS,

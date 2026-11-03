@@ -28,10 +28,17 @@ export interface ModelConfig {
   reasoning: string;
 }
 
-export interface TelegramConfig {
+interface TelegramConfig {
   bot_token: string;
   allowed_username: string;
   enabled: boolean;
+}
+
+/** Saved pet-window / floating-ball top-left position, in physical pixels.
+ *  Written by the backend on window move (not from this UI). */
+export interface WindowPosition {
+  x: number;
+  y: number;
 }
 
 /** One configurable agent: a persona/memory plus references into the global pools. */
@@ -49,7 +56,7 @@ export interface AgentConfig {
 }
 
 /** Tool names the owner switched off. Descriptions live in `<config>/prompts/`. */
-export interface ToolSettings {
+interface ToolSettings {
   disabled: string[];
 }
 
@@ -79,6 +86,16 @@ export interface AppSettings {
   /** Id of the agent that answers the desktop chat window. */
   active_agent: string;
   agents: AgentConfig[];
+  /** Size cap for `logs/app.log`, in MB. Past it the file is truncated. */
+  app_log_max_mb: number;
+  /** How many LLM-log conversations to keep per kind (chat/group/heartbeat). */
+  llm_log_keep_per_kind: number;
+  /** Saved pet-window position. `null` = never moved. The backend omits the
+   *  field entirely until then (`skip_serializing_if`), so a fresh
+   *  `get_settings` may also leave it undefined; both mean "not saved yet". */
+  window: WindowPosition | null;
+  /** Saved floating-ball position, same rules as `window`. */
+  ball: WindowPosition | null;
 }
 
 /** One skill discovered under the skills dir (from the `list_skills` command). */
@@ -147,6 +164,12 @@ export const EMPTY_SETTINGS: AppSettings = {
   tools: { disabled: [] },
   active_agent: "",
   agents: [],
+  // Defaults mirror pet-core `settings.rs` (`default_app_log_max_mb` /
+  // `default_llm_log_keep`); positions stay unset until a window is moved.
+  app_log_max_mb: 10,
+  llm_log_keep_per_kind: 100,
+  window: null,
+  ball: null,
 };
 
 export function useSettings() {

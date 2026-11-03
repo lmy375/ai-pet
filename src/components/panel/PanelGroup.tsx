@@ -8,9 +8,13 @@ import { MessageBubble } from "../ui/MessageBubble";
 import { Markdown } from "../ui/Markdown";
 import { Segmented } from "../ui/Segmented";
 import { Button } from "../ui/Button";
+import { Modal } from "../ui/Modal";
+import { StatusText } from "../ui/StatusText";
 import { IconActionButton } from "../ui/IconButton";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
+import { useStatusMessage } from "../../hooks/useStatusMessage";
+import { ask } from "@tauri-apps/plugin-dialog";
 import {
   AgentIcon,
   CheckIcon,
@@ -150,29 +154,29 @@ function GroupDialog({
   const [topic, setTopic] = useState(group?.topic ?? "");
   const [members, setMembers] = useState<string[]>(group?.members ?? []);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const status = useStatusMessage();
 
   const submit = async () => {
     if (!title.trim() || busy) return;
     setBusy(true);
-    setError("");
+    status.clear();
     try {
       await onSubmit(title.trim(), topic.trim(), members);
     } catch (e) {
-      setError(String(e));
+      status.fail(String(e));
       setBusy(false);
     }
   };
 
   const remove = async () => {
     if (!group || !onDelete || busy) return;
-    if (!window.confirm(t("group.confirmDelete", { title: group.title }))) return;
+    if (!(await ask(t("group.confirmDelete", { title: group.title })))) return;
     setBusy(true);
-    setError("");
+    status.clear();
     try {
       await onDelete();
     } catch (e) {
-      setError(String(e));
+      status.fail(String(e));
       setBusy(false);
     }
   };
@@ -182,89 +186,91 @@ function GroupDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 px-4">
-      <div className="w-full max-w-[480px] rounded-card border border-line bg-surface p-5 shadow-pop">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-title font-semibold text-ink">
-            {mode === "create" ? t("group.create") : t("group.settings")}
-          </div>
+    <Modal
+      maxWidth={480}
+      onClose={onClose}
+      title={
+        <>
+          <div>{mode === "create" ? t("group.create") : t("group.settings")}</div>
           <IconActionButton aria-label={t("common.cancel")} title={t("common.cancel")} onClick={onClose} disabled={busy}>
             <CloseIcon className="h-4 w-4" />
           </IconActionButton>
-        </div>
-        <div className="mt-1 text-note text-ink-soft">
-          {mode === "create" ? t("group.createHint") : t("group.settingsHint")}
-        </div>
-
-        <label className="mt-4 block text-note font-medium text-ink">{t("group.name")}</label>
-        <input
-          autoFocus
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
-          placeholder={t("group.namePlaceholder")}
-          className="mt-1 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
-        />
-
-        <label className="mt-3 block text-note font-medium text-ink">{t("group.topic")}</label>
-        <textarea
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          placeholder={t("group.topicPlaceholder")}
-          rows={2}
-          className="mt-1 w-full resize-none rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
-        />
-
-        <div className="mt-4 flex items-center gap-1.5 text-note font-medium text-ink">
-          <AgentIcon className="h-4 w-4 text-ink-soft" />
-          {t("group.members")}
-        </div>
-        <div className="mt-1 max-h-[240px] overflow-y-auto rounded-field border border-line bg-surface-soft p-1">
-          {agents.length === 0 && (
-            <div className="px-2 py-2 text-note text-ink-faint">{t("group.noAgents")}</div>
-          )}
-          {agents.map((agent) => {
-            const checked = members.includes(agent.id);
-            return (
-              <button
-                key={agent.id}
-                type="button"
-                onClick={() => toggle(agent.id)}
-                className="flex w-full items-center gap-2 rounded-field px-2 py-1.5 text-left text-body text-ink transition-colors hover:bg-hover"
-              >
-                <span
-                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                    checked ? "border-accent bg-accent text-white" : "border-line bg-surface"
-                  }`}
-                >
-                  {checked && <CheckIcon className="h-3 w-3" />}
-                </span>
-                <span className="truncate">{agent.name}</span>
-              </button>
-            );
-          })}
-        </div>
-
-        {error && <div className="mt-3 text-note text-red-500">{error}</div>}
-
-        <div className="mt-5 flex items-center gap-2">
+        </>
+      }
+      footer={
+        <>
           {mode === "edit" && onDelete && (
-            <Button variant="danger" size="sm" onClick={remove} disabled={busy}>
+            <Button variant="danger" size="sm" className="mr-auto" onClick={remove} disabled={busy}>
               <TrashIcon className="h-4 w-4" />
               {t("group.delete")}
             </Button>
           )}
-          <div className="ml-auto flex gap-2">
-            <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-              {t("common.cancel")}
-            </Button>
-            <Button size="sm" onClick={submit} disabled={!title.trim() || busy}>
-              {mode === "create" ? t("common.create") : t("common.save")}
-            </Button>
-          </div>
-        </div>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+            {t("common.cancel")}
+          </Button>
+          <Button size="sm" onClick={submit} disabled={!title.trim() || busy}>
+            {mode === "create" ? t("common.create") : t("common.save")}
+          </Button>
+        </>
+      }
+    >
+      <div className="mt-1 text-note text-ink-soft">
+        {mode === "create" ? t("group.createHint") : t("group.settingsHint")}
       </div>
-    </div>
+
+      <label className="mt-4 block text-note font-medium text-ink">{t("group.name")}</label>
+      <input
+        autoFocus
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+        placeholder={t("group.namePlaceholder")}
+        className="mt-1 w-full rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
+      />
+
+      <label className="mt-3 block text-note font-medium text-ink">{t("group.topic")}</label>
+      <textarea
+        value={topic}
+        onChange={(e) => setTopic(e.target.value)}
+        placeholder={t("group.topicPlaceholder")}
+        rows={2}
+        className="mt-1 w-full resize-none rounded-field border border-line bg-surface-soft px-3 py-2 text-body text-ink outline-none focus:border-accent"
+      />
+
+      <div className="mt-4 flex items-center gap-1.5 text-note font-medium text-ink">
+        <AgentIcon className="h-4 w-4 text-ink-soft" />
+        {t("group.members")}
+      </div>
+      <div className="mt-1 max-h-[240px] overflow-y-auto rounded-field border border-line bg-surface-soft p-1">
+        {agents.length === 0 && (
+          <div className="px-2 py-2 text-note text-ink-faint">{t("group.noAgents")}</div>
+        )}
+        {agents.map((agent) => {
+          const checked = members.includes(agent.id);
+          return (
+            <button
+              key={agent.id}
+              type="button"
+              onClick={() => toggle(agent.id)}
+              className="flex w-full items-center gap-2 rounded-field px-2 py-1.5 text-left text-body text-ink transition-colors hover:bg-hover"
+            >
+              <span
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                  checked ? "border-accent bg-accent text-white" : "border-line bg-surface"
+                }`}
+              >
+                {checked && <CheckIcon className="h-3 w-3" />}
+              </span>
+              <span className="truncate">{agent.name}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {status.message && (
+        <StatusText ok={status.message.ok} className="mt-3 text-note">{status.message.text}</StatusText>
+      )}
+    </Modal>
   );
 }
 

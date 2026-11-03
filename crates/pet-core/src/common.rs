@@ -35,22 +35,9 @@ pub fn config_dir() -> Result<PathBuf, String> {
     Ok(dir.join(ROOT_DIR_NAME))
 }
 
-/// Ensure the parent directory of `path` exists, creating it (and any missing
-/// ancestors) if needed. No-op when `path` has no parent.
-pub fn ensure_parent_dir(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
-    }
-    Ok(())
-}
-
-/// Write `content` to `path`, creating parent dirs first. Error messages name
-/// the file (its last path segment) so failures are easy to pinpoint.
+/// Atomically write `content` to `path`, creating parent dirs first.
 pub fn write_text(path: &Path, content: &str) -> Result<(), String> {
-    ensure_parent_dir(path)?;
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    std::fs::write(path, content).map_err(|e| format!("Failed to write {name}: {e}"))
+    crate::store::write_text(path, content)
 }
 
 /// Read `path` as a UTF-8 string, falling back to `default` if it can't be read

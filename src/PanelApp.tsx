@@ -53,9 +53,11 @@ export function PanelApp() {
         </nav>
 
         <div className="flex w-24 shrink-0 justify-end">
-          <IconActionButton onClick={openDebugWindow} title={t("panel.openDebug")}>
-            <BugIcon className="h-[18px] w-[18px]" />
-          </IconActionButton>
+          {import.meta.env.DEV && (
+            <IconActionButton onClick={openDebugWindow} title={t("panel.openDebug")}>
+              <BugIcon className="h-[18px] w-[18px]" />
+            </IconActionButton>
+          )}
         </div>
       </header>
 

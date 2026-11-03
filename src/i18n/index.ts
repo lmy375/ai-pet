@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { subscribe as subscribeEvent } from "../lib/events";
 import zhJson from "./locales/zh.json";
 import enJson from "./locales/en.json";
 
@@ -44,7 +44,7 @@ function subscribe(cb: () => void) {
   if (!started) {
     started = true;
     loadLang();
-    listen("settings-changed", loadLang);
+    subscribeEvent("settings-changed", loadLang);
   }
   listeners.add(cb);
   return () => listeners.delete(cb);

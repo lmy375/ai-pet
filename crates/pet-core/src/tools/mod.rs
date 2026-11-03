@@ -10,6 +10,9 @@ pub mod screenshot_tool;
 pub mod swarm_tools;
 pub mod web_search_tool;
 
-pub use context::{ChatHook, ToolContext};
-pub use registry::{builtin_catalog, BuiltinTool, ToolPolicy, ToolRegistry, ToolScope};
-pub use tool::{parse_args, required_str, tool_error, Tool};
+pub use context::{ChatHook, ToolContext, ToolStores};
+pub use registry::{
+    builtin_catalog, catalog_for_ui, BuiltinTool, RunGate, RunKind, SwarmRole, ToolCatalogEntry,
+    ToolPolicy, ToolRegistry, ToolScope,
+};
+pub use tool::{parse_args, tool_error, Tool, ToolSpec};

@@ -238,7 +238,7 @@ export function Live2DCharacter({ modelPath, corePath }: Props) {
     // The WebGL context can be dropped while the pet is auto-hidden (the window
     // slides offscreen / gets occluded). Without handling this the canvas comes
     // back blank after the pet collapses and re-expands. Listeners live on the
-    // canvas (not the app) so they survive teardown/rebuild. See CLAUDE.md.
+    // canvas (not the app) so they survive teardown/rebuild.
     const onContextLost = (e: Event) => {
       e.preventDefault(); // required so 'webglcontextrestored' will fire
       console.warn("Live2D WebGL context lost — will rebuild on restore");

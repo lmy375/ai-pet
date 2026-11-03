@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 enum Block {
     Paragraph,
     Heading,
-    CodeBlock,
+    Code,
     List,
     Item,
     Quote,
@@ -60,7 +60,7 @@ impl Renderer {
         if self.in_block(Block::Heading) {
             s = s.fg(Color::Cyan).add_modifier(Modifier::BOLD);
         }
-        if self.in_block(Block::CodeBlock) {
+        if self.in_block(Block::Code) {
             s = s.fg(Color::Green);
         }
         if self.in_block(Block::Quote) {
@@ -138,7 +138,7 @@ impl Renderer {
                     }
                     Tag::CodeBlock(_) => {
                         self.blank_before_block();
-                        Block::CodeBlock
+                        Block::Code
                     }
                     Tag::List(start) => {
                         if self.lists.is_empty() {
@@ -192,7 +192,7 @@ impl Renderer {
                         self.lists.pop();
                         self.flush();
                     }
-                    Some(Block::Paragraph | Block::Heading | Block::CodeBlock | Block::Item | Block::Quote) => {
+                    Some(Block::Paragraph | Block::Heading | Block::Code | Block::Item | Block::Quote) => {
                         self.flush();
                     }
                     _ => {}
@@ -200,7 +200,7 @@ impl Renderer {
             }
             MdEvent::Text(t) => {
                 let style = self.style();
-                if self.in_block(Block::CodeBlock) {
+                if self.in_block(Block::Code) {
                     // Code renders verbatim (no markers), indented two cells.
                     for part in t.split('\n') {
                         if part.is_empty() && t.ends_with('\n') {

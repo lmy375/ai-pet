@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use super::registry::RunKind;
 use crate::config::AiConfig;
 use crate::logging::{write_log, LogSession, LogStore};
 use crate::mcp::McpStore;
@@ -13,6 +14,22 @@ use crate::shell::{ShellStore, TaskNotifier};
 /// by the Tauri layer; `None` for interfaces without a resident UI.
 pub trait ChatHook: Send + Sync {
     fn on_chat_inserted(&self, session_id: &str, message: &str);
+}
+
+/// The long-lived stores every tool call shares. Grouped so a `ToolContext` can
+/// be built from one argument instead of three positional ones — the other
+/// fields are per-run and belong on the builder below.
+#[derive(Clone)]
+pub struct ToolStores {
+    pub log: LogStore,
+    pub shell: ShellStore,
+    pub mcp: McpStore,
+}
+
+impl ToolStores {
+    pub fn new(log: LogStore, shell: ShellStore, mcp: McpStore) -> Self {
+        Self { log, shell, mcp }
+    }
 }
 
 /// Shared context passed to all tools during execution.
@@ -31,6 +48,9 @@ pub struct ToolContext {
     pub config: AiConfig,
     pub mcp_store: McpStore,
     pub depth: usize,
+    /// What kind of run this is. Replaces the old `is_heartbeat` flag and feeds
+    /// `RunGate`, which decides which tools this run may be offered.
+    pub kind: RunKind,
     pub session_id: String,
     /// Which conversation this run's LLM requests are logged under. For the main
     /// chat it is the session itself, so successive turns overwrite one log file
@@ -43,9 +63,6 @@ pub struct ToolContext {
     /// UI hook for the `chat` tool (notification + conversation refresh),
     /// present only for UI-backed heartbeat runs. `None` for non-UI callers.
     pub chat_hook: Option<Arc<dyn ChatHook>>,
-    /// True only for scheduled heartbeat sessions. Gates the `chat` tool (offered
-    /// only to heartbeats) — see `ToolRegistry::new`.
-    pub is_heartbeat: bool,
     /// The swarm this run belongs to. Main-agent and worker runs both receive
     /// this handle; workers additionally set `swarm_task_id` and
     /// `swarm_worker_id`, which gates claim/update/complete operations.
@@ -66,34 +83,62 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        log_store: LogStore,
-        shell_store: ShellStore,
-        config: AiConfig,
-        mcp_store: McpStore,
-        session_id: String,
-        notifier: Option<Arc<dyn TaskNotifier>>,
-        chat_hook: Option<Arc<dyn ChatHook>>,
-        is_heartbeat: bool,
-    ) -> Self {
+    /// The common case: one conversation's run and nothing optional set. Callers
+    /// add the parts they need with the `with_*` methods below.
+    pub fn for_session(stores: ToolStores, config: AiConfig, session_id: impl Into<String>) -> Self {
+        let session_id = session_id.into();
         Self {
-            shell_store,
-            log_store,
+            shell_store: stores.shell,
+            log_store: stores.log,
             config,
-            mcp_store,
+            mcp_store: stores.mcp,
             depth: 0,
+            kind: RunKind::Interactive,
             log_session: LogSession::chat(session_id.clone()),
             session_id,
-            notifier,
-            chat_hook,
-            is_heartbeat,
+            notifier: None,
+            chat_hook: None,
             swarm: None,
             swarm_task_id: None,
             swarm_worker_id: None,
             pending_images: Arc::new(std::sync::Mutex::new(Vec::new())),
             cancel: CancellationToken::new(),
         }
+    }
+
+    pub fn with_notifier(mut self, notifier: Option<Arc<dyn TaskNotifier>>) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    pub fn with_chat_hook(mut self, chat_hook: Option<Arc<dyn ChatHook>>) -> Self {
+        self.chat_hook = chat_hook;
+        self
+    }
+
+    pub fn with_depth(mut self, depth: usize) -> Self {
+        self.depth = depth;
+        self
+    }
+
+    pub fn with_kind(mut self, kind: RunKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn with_log_session(mut self, log_session: LogSession) -> Self {
+        self.log_session = log_session;
+        self
+    }
+
+    pub fn with_swarm(mut self, swarm: Option<Arc<crate::swarm::SwarmSession>>) -> Self {
+        self.swarm = swarm;
+        self
+    }
+
+    pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
+        self.cancel = cancel;
+        self
     }
 
     /// A context for a nested sub-agent: same stores/config/session, one level
@@ -103,20 +148,20 @@ impl ToolContext {
     /// parent's `run_or_background`, which still holds the parent notifier.
     pub fn child(&self) -> Self {
         Self {
-            shell_store: ShellStore(self.shell_store.0.clone()),
-            log_store: LogStore(self.log_store.0.clone()),
+            shell_store: self.shell_store.clone(),
+            log_store: self.log_store.clone(),
             config: self.config.clone(),
             mcp_store: self.mcp_store.clone(),
             depth: self.depth + 1,
+            kind: RunKind::Interactive,
             session_id: self.session_id.clone(),
             // Independent conversation: own log entry so it neither evicts nor
             // merges with the parent's LLM-log row.
             log_session: LogSession::sub(&self.session_id),
             notifier: None,
             // Sub-agents never speak to the owner directly; drop the chat hook
-            // and the heartbeat flag so the `chat` tool is unavailable to them.
+            // and the heartbeat kind so the `chat` tool is unavailable to them.
             chat_hook: None,
-            is_heartbeat: false,
             swarm: None,
             swarm_task_id: None,
             swarm_worker_id: None,
@@ -135,16 +180,16 @@ impl ToolContext {
     /// agent loop can merge them in tool-call order instead of completion order.
     pub(crate) fn for_tool_call(&self) -> Self {
         Self {
-            shell_store: ShellStore(self.shell_store.0.clone()),
-            log_store: LogStore(self.log_store.0.clone()),
+            shell_store: self.shell_store.clone(),
+            log_store: self.log_store.clone(),
             config: self.config.clone(),
             mcp_store: self.mcp_store.clone(),
             depth: self.depth,
+            kind: self.kind,
             session_id: self.session_id.clone(),
             log_session: self.log_session.clone(),
             notifier: self.notifier.clone(),
             chat_hook: self.chat_hook.clone(),
-            is_heartbeat: self.is_heartbeat,
             swarm: self.swarm.clone(),
             swarm_task_id: self.swarm_task_id.clone(),
             swarm_worker_id: self.swarm_worker_id.clone(),

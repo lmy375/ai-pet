@@ -7,7 +7,7 @@
 //! offered to the model (see `ToolRegistry::new`), so `execute` only has to
 //! defend against an empty key, not present the model a tool that always fails.
 
-use crate::tools::{required_str, tool_error, Tool, ToolContext};
+use crate::tools::{parse_args, tool_error, Tool, ToolContext, ToolSpec};
 
 /// Tavily's search endpoint.
 const TAVILY_URL: &str = "https://api.tavily.com/search";
@@ -19,35 +19,34 @@ const MAX_RESULTS: u64 = 10;
 
 pub struct WebSearchTool;
 
-impl Tool for WebSearchTool {
-    fn name(&self) -> &str {
-        "web_search"
-    }
+#[derive(serde::Deserialize)]
+struct WebSearchArgs {
+    query: String,
+    max_results: Option<u64>,
+}
 
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the live internet and get back a ranked list of results (title, URL, and a content snippet), sometimes with a direct answer. Use this whenever you need current information or facts that may be newer than your training data — news, prices, release versions, documentation, whether something exists, etc. The snippets are often enough to answer; cite the URLs when you do.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query, as you'd type it into a search engine."
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "How many results to return (1-10). Defaults to 5.",
-                            "minimum": 1,
-                            "maximum": 10
-                        }
+impl Tool for WebSearchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "web_search",
+            description: "Search the live internet and get back a ranked list of results (title, URL, and a content snippet), sometimes with a direct answer. Use this whenever you need current information or facts that may be newer than your training data — news, prices, release versions, documentation, whether something exists, etc. The snippets are often enough to answer; cite the URLs when you do.",
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query, as you'd type it into a search engine."
                     },
-                    "required": ["query"]
-                }
-            }
-        })
+                    "max_results": {
+                        "type": "integer",
+                        "description": "How many results to return (1-10). Defaults to 5.",
+                        "minimum": 1,
+                        "maximum": 10
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
     }
 
     crate::impl_execute!(web_search_impl);
@@ -60,16 +59,16 @@ async fn web_search_impl(arguments: &str, ctx: &ToolContext) -> String {
         return tool_error("web search is not configured (no Tavily API key)");
     }
 
-    let args = super::parse_args(arguments);
-    let query = match required_str(&args, "query") {
-        Ok(v) => v.trim().to_string(),
+    let args: WebSearchArgs = match parse_args(arguments) {
+        Ok(args) => args,
         Err(e) => return e,
     };
+    let query = args.query.trim().to_string();
     if query.is_empty() {
         return tool_error("missing 'query' parameter");
     }
-    let max = args["max_results"]
-        .as_u64()
+    let max = args
+        .max_results
         .map(|n| n.clamp(1, MAX_RESULTS))
         .unwrap_or(DEFAULT_RESULTS);
 

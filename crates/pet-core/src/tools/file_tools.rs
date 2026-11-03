@@ -1,4 +1,4 @@
-use crate::tools::{required_str, tool_error, Tool, ToolContext};
+use crate::tools::{parse_args, tool_error, Tool, ToolContext, ToolSpec};
 
 const MAX_LINE_DISPLAY: usize = 2000;
 
@@ -6,48 +6,51 @@ const MAX_LINE_DISPLAY: usize = 2000;
 
 pub struct ReadFileTool;
 
-impl Tool for ReadFileTool {
-    fn name(&self) -> &str {
-        "read_file"
-    }
+#[derive(serde::Deserialize)]
+struct ReadFileArgs {
+    file_path: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+}
 
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Read the contents of a text file. Returns content with line numbers in cat -n format (line_number + tab + content).\n\nUsage:\n- By default reads up to 2000 lines from the beginning of the file.\n- Use offset (1-based line number) and limit to read specific portions of large files.\n- Auto-detects binary files and returns an error instead of garbled content.\n- Always prefer this tool over running cat/head/tail in bash.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path to the file to read"
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Line number to start reading from (1-based). Defaults to 1."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of lines to read. Defaults to 2000."
-                        }
+impl Tool for ReadFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "read_file",
+            description: "Read the contents of a text file. Returns content with line numbers in cat -n format (line_number + tab + content).\n\nUsage:\n- By default reads up to 2000 lines from the beginning of the file.\n- Use offset (1-based line number) and limit to read specific portions of large files.\n- Auto-detects binary files and returns an error instead of garbled content.\n- Always prefer this tool over running cat/head/tail in bash.",
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file to read"
                     },
-                    "required": ["file_path"]
-                }
-            }
-        })
+                    "offset": {
+                        "type": "integer",
+                        "description": "Line number to start reading from (1-based). Defaults to 1."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to read. Defaults to 2000."
+                    }
+                },
+                "required": ["file_path"]
+            }),
+        }
     }
 
     crate::impl_execute!(read_file_impl);
 }
 
 async fn read_file_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args = super::parse_args(arguments);
-    let file_path = match required_str(&args, "file_path") {
-        Ok(v) => v,
+    let args: ReadFileArgs = match parse_args(arguments) {
+        Ok(args) => args,
         Err(e) => return e,
     };
+    let file_path = args.file_path;
+    if file_path.is_empty() {
+        return tool_error("missing 'file_path' parameter");
+    }
     if !ctx.swarm_worker_path_allowed(&file_path) {
         return tool_error("swarm workers cannot access long-term memory files");
     }
@@ -78,8 +81,8 @@ async fn read_file_impl(arguments: &str, ctx: &ToolContext) -> String {
         Err(e) => return tool_error(format!("file is not valid UTF-8: {}", e)),
     };
 
-    let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
-    let limit = args["limit"].as_u64().unwrap_or(MAX_LINE_DISPLAY as u64) as usize;
+    let offset = args.offset.unwrap_or(1).max(1) as usize;
+    let limit = args.limit.unwrap_or(MAX_LINE_DISPLAY as u64) as usize;
 
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
@@ -123,52 +126,50 @@ async fn read_file_impl(arguments: &str, ctx: &ToolContext) -> String {
 
 pub struct WriteFileTool;
 
-impl Tool for WriteFileTool {
-    fn name(&self) -> &str {
-        "write_file"
-    }
+#[derive(serde::Deserialize)]
+struct WriteFileArgs {
+    file_path: String,
+    /// May legitimately be "", so it is required as a string but not non-empty.
+    content: String,
+}
 
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": "Create a new file or completely overwrite an existing file with the given content. Parent directories are created automatically.\n\nIMPORTANT:\n- This tool OVERWRITES the entire file. For modifying existing files, prefer edit_file — it only changes the specific part you need.\n- Only use write_file to create new files or for complete rewrites.\n- Always prefer this over running echo/cat heredoc in bash to create files.\n- Do NOT proactively create documentation files (README, *.md) — only create them when the user explicitly asks.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path to the file to write"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The content to write to the file"
-                        }
+impl Tool for WriteFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "write_file",
+            description: "Create a new file or completely overwrite an existing file with the given content. Parent directories are created automatically.\n\nIMPORTANT:\n- This tool OVERWRITES the entire file. For modifying existing files, prefer edit_file — it only changes the specific part you need.\n- Only use write_file to create new files or for complete rewrites.\n- Always prefer this over running echo/cat heredoc in bash to create files.\n- Do NOT proactively create documentation files (README, *.md) — only create them when the user explicitly asks.",
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file to write"
                     },
-                    "required": ["file_path", "content"]
-                }
-            }
-        })
+                    "content": {
+                        "type": "string",
+                        "description": "The content to write to the file"
+                    }
+                },
+                "required": ["file_path", "content"]
+            }),
+        }
     }
 
     crate::impl_execute!(write_file_impl);
 }
 
 async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args = super::parse_args(arguments);
-    let file_path = match required_str(&args, "file_path") {
-        Ok(v) => v,
+    let args: WriteFileArgs = match parse_args(arguments) {
+        Ok(args) => args,
         Err(e) => return e,
     };
+    let WriteFileArgs { file_path, content } = args;
+    if file_path.is_empty() {
+        return tool_error("missing 'file_path' parameter");
+    }
     if !ctx.swarm_worker_path_allowed(&file_path) {
         return tool_error("swarm workers cannot access long-term memory files");
     }
-    // `content` may legitimately be "", so require a string rather than non-empty.
-    if !args.get("content").is_some_and(|v| v.is_string()) {
-        return tool_error("missing 'content' parameter");
-    }
-    let content = args["content"].as_str().unwrap_or("").to_string();
 
     // Create parent directories
     if let Some(parent) = std::path::Path::new(&file_path).parent() {
@@ -198,58 +199,62 @@ async fn write_file_impl(arguments: &str, ctx: &ToolContext) -> String {
 
 pub struct EditFileTool;
 
-impl Tool for EditFileTool {
-    fn name(&self) -> &str {
-        "edit_file"
-    }
+#[derive(serde::Deserialize)]
+struct EditFileArgs {
+    file_path: String,
+    old_string: String,
+    /// Required on purpose: a missing replacement used to default to "" and
+    /// delete the matched text instead of failing the call.
+    new_string: String,
+    #[serde(default)]
+    replace_all: bool,
+}
 
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": "Make an exact string replacement in a file. This is the preferred tool for modifying existing files — it only sends the diff rather than rewriting the entire file.\n\nRules:\n- old_string must match EXACTLY, including whitespace, indentation, and line breaks.\n- The edit FAILS if old_string is not unique in the file (appears more than once). Provide more surrounding context to make it unique, or set replace_all: true.\n- Use replace_all: true for renaming variables/strings across the file.\n- Always read_file first before editing to ensure you have the correct content to match.\n- Prefer this tool over sed/awk in bash for all file modifications.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path to the file to edit"
-                        },
-                        "old_string": {
-                            "type": "string",
-                            "description": "The exact string to find and replace"
-                        },
-                        "new_string": {
-                            "type": "string",
-                            "description": "The replacement string"
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "If true, replace all occurrences. If false (default), old_string must appear exactly once."
-                        }
+impl Tool for EditFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "edit_file",
+            description: "Make an exact string replacement in a file. This is the preferred tool for modifying existing files — it only sends the diff rather than rewriting the entire file.\n\nRules:\n- old_string must match EXACTLY, including whitespace, indentation, and line breaks.\n- The edit FAILS if old_string is not unique in the file (appears more than once). Provide more surrounding context to make it unique, or set replace_all: true.\n- Use replace_all: true for renaming variables/strings across the file.\n- Always read_file first before editing to ensure you have the correct content to match.\n- Prefer this tool over sed/awk in bash for all file modifications.",
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file to edit"
                     },
-                    "required": ["file_path", "old_string", "new_string"]
-                }
-            }
-        })
+                    "old_string": {
+                        "type": "string",
+                        "description": "The exact string to find and replace"
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "The replacement string"
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "If true, replace all occurrences. If false (default), old_string must appear exactly once."
+                    }
+                },
+                "required": ["file_path", "old_string", "new_string"]
+            }),
+        }
     }
 
     crate::impl_execute!(edit_file_impl);
 }
 
 async fn edit_file_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args = super::parse_args(arguments);
-    let file_path = match required_str(&args, "file_path") {
-        Ok(v) => v,
+    let args: EditFileArgs = match parse_args(arguments) {
+        Ok(args) => args,
         Err(e) => return e,
     };
+    let EditFileArgs { file_path, old_string, new_string, replace_all } = args;
+    if file_path.is_empty() {
+        return tool_error("missing 'file_path' parameter");
+    }
     if !ctx.swarm_worker_path_allowed(&file_path) {
         return tool_error("swarm workers cannot access long-term memory files");
     }
-    let old_string = args["old_string"].as_str().unwrap_or("").to_string();
-    let new_string = args["new_string"].as_str().unwrap_or("").to_string();
-    let replace_all = args["replace_all"].as_bool().unwrap_or(false);
 
     if old_string.is_empty() {
         return tool_error("old_string must not be empty");

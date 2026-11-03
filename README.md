@@ -87,6 +87,16 @@ fill in your API base, key, and model. Configuration is written to
 `config.yaml` — see [docs/configuration.md](docs/configuration.md) for every
 field and where the data lives.
 
+## Development
+
+Run the full check suite before committing:
+
+```bash
+pnpm verify             # tsc --noEmit + cargo check + cargo test + clippy -D warnings
+```
+
+CI runs the same command on every push to `main` and on pull requests.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — one engine crate, two interfaces
@@ -171,6 +181,16 @@ cargo run -p pet-cli    # 终端界面（与 GUI 共享配置和会话）
 首次启动会出现宠物窗口。打开面板进入 **设置**，填入你的 API base、key 和模型。
 配置写入 `config.yaml` —— 每个字段和数据存放位置见
 [docs/configuration.md](docs/configuration.md)。
+
+## 开发
+
+提交前跑完整检查：
+
+```bash
+pnpm verify             # tsc --noEmit + cargo check + cargo test + clippy -D warnings
+```
+
+CI 在每次 push 到 `main` 和 pull request 时跑同一条命令。
 
 ## 文档
 

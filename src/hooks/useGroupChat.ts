@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { useEvent } from "../lib/events";
 import type { ChatItem } from "./useChat";
 import { applyStream, emptyView, type StreamEvent, type StreamView } from "./streamView";
 
@@ -39,40 +39,6 @@ interface GroupStateSnapshot {
   paused: boolean;
 }
 
-// --- Single, app-lifetime listener registration -----------------------------
-//
-// `listen()` resolves async, so registering it inside a React effect leaks a
-// second listener under StrictMode (mount→unmount→remount) and Vite HMR — every
-// event then fires twice, which interleaves duplicate stream chunks and doubles
-// items. Streaming events have no per-event id to dedup on, so instead we
-// register each Tauri listener exactly ONCE at module scope (the same pattern
-// `i18n/index.ts` uses) and dispatch to whichever hook instance is live. One
-// listener → one delivery, no matter how many times the component remounts.
-
-interface GroupHandlers {
-  onMessage: (p: { groupId: string; message: GroupMessage }) => void;
-  onInjected: (p: { groupId: string; agentId: string; items: ChatItem[] }) => void;
-  onStream: (p: { groupId: string; agentId: string; event: StreamEvent }) => void;
-  onAgentDone: (p: { groupId: string; agentId: string }) => void;
-  onPaused: (p: { groupId: string }) => void;
-  onResumed: (p: { groupId: string }) => void;
-  onReset: (p: { groupId: string }) => void;
-}
-
-let liveHandlers: GroupHandlers | null = null;
-let listenersStarted = false;
-
-function ensureListeners() {
-  if (listenersStarted) return;
-  listenersStarted = true;
-  listen<{ groupId: string; message: GroupMessage }>("group-message", (e) => liveHandlers?.onMessage(e.payload));
-  listen<{ groupId: string; agentId: string; items: ChatItem[] }>("group-injected", (e) => liveHandlers?.onInjected(e.payload));
-  listen<{ groupId: string; agentId: string; event: StreamEvent }>("group-stream", (e) => liveHandlers?.onStream(e.payload));
-  listen<{ groupId: string; agentId: string }>("group-agent-done", (e) => liveHandlers?.onAgentDone(e.payload));
-  listen<{ groupId: string }>("group-paused", (e) => liveHandlers?.onPaused(e.payload));
-  listen<{ groupId: string }>("group-resumed", (e) => liveHandlers?.onResumed(e.payload));
-  listen<{ groupId: string }>("group-reset", (e) => liveHandlers?.onReset(e.payload));
-}
 
 /** Drives the group-chat page: the room list, the active room's shared
  *  transcript, per-agent live sessions, membership and pause state. */
@@ -186,15 +152,16 @@ export function useGroupChat() {
   }, []);
 
   useEffect(() => {
-    ensureListeners();
-    const handlers: GroupHandlers = { onMessage, onInjected, onStream, onAgentDone, onPaused, onResumed, onReset };
-    liveHandlers = handlers;
     loadList().finally(() => setReady(true));
-    return () => {
-      // Only clear if we're still the live instance (avoid a remount race).
-      if (liveHandlers === handlers) liveHandlers = null;
-    };
-  }, [onMessage, onInjected, onStream, onAgentDone, onPaused, onResumed, onReset, loadList]);
+  }, [loadList]);
+
+  useEvent<{ groupId: string; message: GroupMessage }>("group-message", onMessage);
+  useEvent<{ groupId: string; agentId: string; items: ChatItem[] }>("group-injected", onInjected);
+  useEvent<{ groupId: string; agentId: string; event: StreamEvent }>("group-stream", onStream);
+  useEvent<{ groupId: string; agentId: string }>("group-agent-done", onAgentDone);
+  useEvent<{ groupId: string }>("group-paused", onPaused);
+  useEvent<{ groupId: string }>("group-resumed", onResumed);
+  useEvent<{ groupId: string }>("group-reset", onReset);
 
   useEffect(() => {
     if (!activeId) {

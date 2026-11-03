@@ -11,29 +11,24 @@
 //! the main files. Nothing is ever auto-expired — forgetting is the pet's own
 //! deliberate act. Each agent has its own isolated memory directory.
 
-use std::fs;
 use std::path::PathBuf;
-
-/// The base `memory/` directory (parent of all per-agent dirs).
-fn memory_root() -> Result<PathBuf, String> {
-    Ok(crate::common::config_dir()?.join("memory"))
-}
 
 /// This agent's memory directory: `<config>/memory/<agent_id>/`.
 pub fn memory_dir(agent_id: &str) -> Result<PathBuf, String> {
-    Ok(memory_root()?.join(agent_id))
+    Ok(crate::store::data_dir("memory")?.join(agent_id))
 }
 
-fn soul_path(agent_id: &str) -> Result<PathBuf, String> {
-    Ok(memory_dir(agent_id)?.join("SOUL.md"))
+/// One of the agent's memory files (`SOUL.md`, `USER.md`, `MEMORY.md`, …).
+fn file(agent_id: &str, name: &str) -> Result<PathBuf, String> {
+    Ok(memory_dir(agent_id)?.join(name))
 }
 
 pub fn user_path(agent_id: &str) -> Result<PathBuf, String> {
-    Ok(memory_dir(agent_id)?.join("USER.md"))
+    file(agent_id, "USER.md")
 }
 
 pub fn memory_path(agent_id: &str) -> Result<PathBuf, String> {
-    Ok(memory_dir(agent_id)?.join("MEMORY.md"))
+    file(agent_id, "MEMORY.md")
 }
 
 const DEFAULT_SOUL: &str =
@@ -46,13 +41,14 @@ const DEFAULT_MEMORY: &str = "# 我的记忆\n\n（这里是你自己的长期�
 /// Create the agent's memory dir and the three mandatory files (with defaults)
 /// if missing. Idempotent.
 pub fn ensure_memory_files(agent_id: &str) -> Result<(), String> {
-    for (path, default) in [
-        (soul_path(agent_id)?, DEFAULT_SOUL),
-        (user_path(agent_id)?, DEFAULT_USER),
-        (memory_path(agent_id)?, DEFAULT_MEMORY),
+    for (name, default) in [
+        ("SOUL.md", DEFAULT_SOUL),
+        ("USER.md", DEFAULT_USER),
+        ("MEMORY.md", DEFAULT_MEMORY),
     ] {
+        let path = file(agent_id, name)?;
         if !path.exists() {
-            crate::common::write_text(&path, default)?;
+            crate::store::write_text(&path, default)?;
         }
     }
     Ok(())
@@ -61,7 +57,7 @@ pub fn ensure_memory_files(agent_id: &str) -> Result<(), String> {
 /// The SOUL content (persona) for an agent, used to seed new sessions and the
 /// system prompt. Returns the default if the file is missing.
 pub fn read_soul(agent_id: &str) -> String {
-    read_or_default(soul_path(agent_id), DEFAULT_SOUL)
+    read_or_default(file(agent_id, "SOUL.md"), DEFAULT_SOUL)
 }
 
 /// The USER.md content (facts/preferences about the owner) for an agent.
@@ -74,49 +70,53 @@ pub fn read_memory(agent_id: &str) -> String {
     read_or_default(memory_path(agent_id), DEFAULT_MEMORY)
 }
 
+/// Prompt assembly can't fail on a memory file: missing is the first-run
+/// default, and an unreadable file is reported but must not break the turn.
 fn read_or_default(path: Result<PathBuf, String>, default: &str) -> String {
     match path {
         Ok(p) => crate::common::read_or(&p, default),
-        Err(_) => default.to_string(),
+        Err(e) => {
+            eprintln!("{e}");
+            default.to_string()
+        }
     }
 }
 
 /// Read one of the agent's memory files, seeding defaults first so it always
 /// returns content.
-fn get_file(agent_id: &str, path: Result<PathBuf, String>) -> Result<String, String> {
+fn get_file(agent_id: &str, name: &str) -> Result<String, String> {
     ensure_memory_files(agent_id)?;
-    let path = path?;
-    fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))
+    let path = file(agent_id, name)?;
+    crate::store::read_text(&path)?
+        .ok_or_else(|| format!("Failed to read {}: file missing", path.display()))
 }
 
 pub fn get_soul(agent_id: String) -> Result<String, String> {
-    get_file(&agent_id, soul_path(&agent_id))
+    get_file(&agent_id, "SOUL.md")
 }
 
 pub fn save_soul(agent_id: String, content: String) -> Result<(), String> {
-    crate::common::write_text(&soul_path(&agent_id)?, &content)
+    crate::store::write_text(&file(&agent_id, "SOUL.md")?, &content)
 }
 
 pub fn get_user(agent_id: String) -> Result<String, String> {
-    get_file(&agent_id, user_path(&agent_id))
+    get_file(&agent_id, "USER.md")
 }
 
 pub fn save_user(agent_id: String, content: String) -> Result<(), String> {
-    crate::common::write_text(&user_path(&agent_id)?, &content)
+    crate::store::write_text(&file(&agent_id, "USER.md")?, &content)
 }
 
 pub fn get_memory(agent_id: String) -> Result<String, String> {
-    get_file(&agent_id, memory_path(&agent_id))
+    get_file(&agent_id, "MEMORY.md")
 }
 
 pub fn save_memory(agent_id: String, content: String) -> Result<(), String> {
-    crate::common::write_text(&memory_path(&agent_id)?, &content)
+    crate::store::write_text(&file(&agent_id, "MEMORY.md")?, &content)
 }
 
 /// Ensure the agent's memory dir exists and return its path — for "open in file
 /// manager" UI affordances, which live in the interface layer.
 pub fn ensure_memory_dir(agent_id: &str) -> Result<PathBuf, String> {
-    let dir = memory_dir(agent_id)?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create memory dir: {e}"))?;
-    Ok(dir)
+    memory_dir(agent_id)
 }

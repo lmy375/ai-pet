@@ -7,41 +7,42 @@
 
 use crate::item::ChatItem;
 use crate::session;
-use crate::tools::{tool_error, Tool, ToolContext};
+use crate::tools::{parse_args, tool_error, Tool, ToolContext, ToolSpec};
 
 pub struct ChatTool;
 
-impl Tool for ChatTool {
-    fn name(&self) -> &str {
-        "chat"
-    }
+#[derive(serde::Deserialize)]
+struct ChatArgs {
+    message: String,
+}
 
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "chat",
-                "description": "Send a message to the owner in their main chat conversation, as the pet. Use this when a heartbeat needs to reach the owner — a reminder, a heads-up, or just proactively saying something. The message is inserted into the active conversation AND a system notification pops up, so the owner sees it even if the app isn't focused. This is the ONLY way a heartbeat reaches the owner; a normal reply is invisible to them. Keep it short and in the pet's voice. Don't call it when there's nothing worth interrupting the owner for.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "The message to send to the owner, in the pet's voice."
-                        }
-                    },
-                    "required": ["message"]
-                }
-            }
-        })
+impl Tool for ChatTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "chat",
+            description: "Send a message to the owner in their main chat conversation, as the pet. Use this when a heartbeat needs to reach the owner — a reminder, a heads-up, or just proactively saying something. The message is inserted into the active conversation AND a system notification pops up, so the owner sees it even if the app isn't focused. This is the ONLY way a heartbeat reaches the owner; a normal reply is invisible to them. Keep it short and in the pet's voice. Don't call it when there's nothing worth interrupting the owner for.",
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "The message to send to the owner, in the pet's voice."
+                    }
+                },
+                "required": ["message"]
+            }),
+        }
     }
 
     crate::impl_execute!(chat_impl);
 }
 
 async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
-    let args = super::parse_args(arguments);
-    let message = args["message"].as_str().unwrap_or("").trim().to_string();
+    let args: ChatArgs = match parse_args(arguments) {
+        Ok(args) => args,
+        Err(e) => return e,
+    };
+    let message = args.message.trim().to_string();
     if message.is_empty() {
         return tool_error("missing 'message' parameter");
     }
@@ -65,10 +66,10 @@ async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
 
     // Append a pet message to BOTH the raw LLM messages (so the owner's next turn
     // sees what the pet said) and the rendered items (so the UI shows it).
-    sess.messages.push(crate::llm::store_message(
+    sess.conv.messages.push(crate::llm::store_message(
         &genai::chat::ChatMessage::assistant(message.clone()),
     ));
-    sess.items.push(ChatItem::assistant(&message, None, &[]));
+    sess.conv.items.push(ChatItem::assistant(&message, None, &[]));
     sess.updated_at = crate::common::iso_now();
     sess.created_at = String::new(); // preserved by save_session
 

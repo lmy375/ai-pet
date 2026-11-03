@@ -1,3 +1,3 @@
 mod manager;
 
-pub use manager::{new_mcp_store, McpHub, McpServerStatus, McpStore};
+pub use manager::{new_mcp_store, McpHub, McpServerStatus, McpStore, McpToolDefinition};

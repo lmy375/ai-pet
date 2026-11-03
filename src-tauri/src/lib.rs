@@ -1,10 +1,114 @@
 mod commands;
 mod telegram;
 
-use pet_core::logging::{log_dir, LogStore};
-use pet_core::shell::ShellStore;
-use std::sync::Arc;
+use pet_core::logging::log_dir;
+use pet_core::stores::EngineStores;
 use tauri::Manager;
+
+/// The stores every core runtime shares, plus the GUI-only Telegram one.
+/// Built once and moved into `setup`, which derives each runtime from the
+/// engine stores instead of re-reading `app.state::<T>()` for the same three.
+#[derive(Clone)]
+struct CoreStores {
+    engine: EngineStores,
+    telegram: telegram::TelegramStore,
+}
+
+impl CoreStores {
+    fn new() -> Self {
+        Self {
+            engine: EngineStores::buffered(),
+            telegram: telegram::new_telegram_store(),
+        }
+    }
+}
+
+/// Install the app menu, appending the devtools toggle to the View submenu.
+fn app_setup_menu(app: &tauri::App) {
+    if let Err(e) = install_menu(app.handle()) {
+        eprintln!("Failed to set app menu: {e}");
+    }
+}
+
+fn install_menu(handle: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
+    let menu = Menu::default(handle)?;
+    let devtools = MenuItem::with_id(
+        handle,
+        "toggle-devtools",
+        "Toggle Web Console",
+        true,
+        Some("CmdOrCtrl+Shift+I"),
+    )?;
+    let items = menu.items()?;
+    for item in &items {
+        if let MenuItemKind::Submenu(sub) = item {
+            if sub.text()?.as_str() == "View" {
+                sub.append(&PredefinedMenuItem::separator(handle)?)?;
+                sub.append(&devtools)?;
+                break;
+            }
+        }
+    }
+    handle.set_menu(menu)?;
+    Ok(())
+}
+
+/// Restore the pet window to its last position (it starts hidden so it's
+/// positioned before appearing, avoiding a center flash) and keep every
+/// window on a visible monitor.
+fn app_setup_windows(handle: &tauri::AppHandle) {
+    commands::window::restore_main_window(handle);
+    commands::window::start_visibility_watch(handle.clone());
+}
+
+/// Build and manage the three runtimes (their event sinks need the app
+/// handle), then start the background work that uses them: MCP servers,
+/// Telegram bots and the scheduled-heartbeat loop.
+fn app_setup_background(app: &tauri::App, core: &CoreStores) {
+    let turns = commands::chat::new_turn_store(app.handle().clone(), core.engine.clone());
+    let turn_runner = turns.0.clone();
+    app.manage(turns);
+    app.manage(commands::group::new_group_store(
+        app.handle().clone(),
+        core.engine.clone(),
+    ));
+    app.manage(commands::swarm::new_swarm_store(
+        app.handle().clone(),
+        core.engine.clone(),
+    ));
+
+    let background = core.clone();
+    tauri::async_runtime::spawn(async move {
+        let settings = pet_core::settings::get_settings().unwrap_or_default();
+
+        // Connect every enabled MCP server some agent references — one
+        // process per server, shared by all of them. A server switched off,
+        // or referenced by nobody, isn't started.
+        let servers = settings.referenced_server_configs();
+        if !servers.is_empty() {
+            background.engine.mcp.write().await.ensure(&servers).await;
+            eprintln!("MCP servers initialized");
+        }
+
+        // Start a Telegram bot for every agent with telegram enabled.
+        commands::telegram::restart_all_bots(
+            &background.telegram,
+            turn_runner,
+            background.engine.log.clone(),
+        )
+        .await;
+    });
+
+    // The scheduled-heartbeat loop checks settings each tick, so it's a no-op
+    // until the owner enables it in Settings.
+    commands::heartbeat::start_scheduler(
+        app.handle().clone(),
+        core.engine.log.clone(),
+        core.engine.shell.clone(),
+        core.engine.mcp.clone(),
+    );
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,22 +118,20 @@ pub fn run() {
     // Ensure each configured agent's memory dir + mandatory files exist
     // (`memory/<id>/{SOUL,USER,MEMORY,HEARTBEAT}.md`).
     if let Ok(settings) = pet_core::settings::get_settings() {
-        for agent in &settings.agents {
-            let _ = pet_core::memory::ensure_memory_files(&agent.id);
-            let _ = pet_core::heartbeat_file::ensure_heartbeat_file(&agent.id);
-        }
+        pet_core::settings::ensure_agent_files(&settings);
     }
 
+    let core = CoreStores::new();
+    let setup_core = core.clone();
+    let engine = core.engine.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(LogStore(Arc::new(std::sync::Mutex::new(Vec::new()))))
-        .manage(ShellStore(Arc::new(std::sync::Mutex::new(
-            pet_core::shell::load_persisted_tasks(),
-        ))))
-        .manage(pet_core::mcp::new_mcp_store())
-        .manage(telegram::new_telegram_store())
+        .manage(engine.log)
+        .manage(engine.shell)
+        .manage(engine.mcp)
+        .manage(core.telegram)
         .manage(commands::window::ActiveWindow(std::sync::Mutex::new(
             "main".to_string(),
         )))
@@ -53,103 +155,10 @@ pub fn run() {
                 }
             }
         })
-        .setup(|app| {
-            if let Err(e) = (|| -> tauri::Result<()> {
-                use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
-                let handle = app.handle();
-                let menu = Menu::default(handle)?;
-                let devtools = MenuItem::with_id(
-                    handle,
-                    "toggle-devtools",
-                    "Toggle Web Console",
-                    true,
-                    Some("CmdOrCtrl+Shift+I"),
-                )?;
-                let items = menu.items()?;
-                for item in &items {
-                    if let MenuItemKind::Submenu(sub) = item {
-                        if sub.text()?.as_str() == "View" {
-                            sub.append(&PredefinedMenuItem::separator(handle)?)?;
-                            sub.append(&devtools)?;
-                            break;
-                        }
-                    }
-                }
-                handle.set_menu(menu)?;
-                Ok(())
-            })() {
-                eprintln!("Failed to set app menu: {e}");
-            }
-
-            // Restore the pet window to its last position (and show it — it starts
-            // hidden so it's positioned before appearing, avoiding a center flash).
-            commands::window::restore_main_window(app.handle());
-            commands::window::start_visibility_watch(app.handle().clone());
-
-            // The turn runner and group runtime need event sinks bound to the
-            // app handle, so they're built (and managed) here rather than
-            // before the builder.
-            app.manage(commands::chat::new_turn_store(
-                app.handle().clone(),
-                app.state::<pet_core::mcp::McpStore>().inner().clone(),
-                app.state::<LogStore>().inner().clone(),
-                app.state::<ShellStore>().inner().clone(),
-            ));
-            app.manage(commands::group::new_group_store(
-                app.handle().clone(),
-                app.state::<pet_core::mcp::McpStore>().inner().clone(),
-                app.state::<LogStore>().inner().clone(),
-                app.state::<ShellStore>().inner().clone(),
-            ));
-            app.manage(commands::swarm::new_swarm_store(
-                app.handle().clone(),
-                app.state::<pet_core::mcp::McpStore>().inner().clone(),
-                app.state::<LogStore>().inner().clone(),
-                app.state::<ShellStore>().inner().clone(),
-            ));
-
-            // Initialize MCP servers from config on app start
-            let mcp_store = app.state::<pet_core::mcp::McpStore>().inner().clone();
-            let telegram_store = app.state::<telegram::TelegramStore>().inner().clone();
-            let log_store = app.state::<LogStore>().inner().clone();
-            let shell_store = app.state::<ShellStore>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                let settings = pet_core::settings::get_settings().unwrap_or_default();
-
-                // Connect every enabled MCP server some agent references — one
-                // process per server, shared by all of them. A server switched
-                // off, or referenced by nobody, isn't started.
-                {
-                    let names = settings.referenced_mcp_servers();
-                    let servers: Vec<_> = names
-                        .iter()
-                        .filter_map(|n| settings.mcp_servers.get_key_value(n))
-                        .map(|(n, c)| (n.as_str(), c))
-                        .collect();
-                    if !servers.is_empty() {
-                        mcp_store.write().await.ensure(&servers).await;
-                        eprintln!("MCP servers initialized");
-                    }
-                }
-
-                // Start a Telegram bot for every agent with telegram enabled.
-                commands::telegram::restart_all_bots(
-                    &telegram_store,
-                    mcp_store.clone(),
-                    log_store,
-                    shell_store,
-                )
-                .await;
-            });
-
-            // Start the scheduled-heartbeat loop (it checks settings each tick, so
-            // it's a no-op until the owner enables it in Settings).
-            commands::heartbeat::start_scheduler(
-                app.handle().clone(),
-                app.state::<LogStore>().inner().clone(),
-                app.state::<ShellStore>().inner().clone(),
-                app.state::<pet_core::mcp::McpStore>().inner().clone(),
-            );
+        .setup(move |app| {
+            app_setup_menu(app);
+            app_setup_windows(app.handle());
+            app_setup_background(app, &setup_core);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -166,19 +175,11 @@ pub fn run() {
             commands::settings::new_agent,
             commands::settings::new_model,
             commands::settings::new_mcp_server,
-            commands::memory::get_soul,
-            commands::memory::save_soul,
-            commands::memory::get_user,
-            commands::memory::save_user,
-            commands::memory::get_memory,
-            commands::memory::save_memory,
-            commands::memory::open_memory_dir,
-            commands::heartbeat_file::get_heartbeat,
-            commands::heartbeat_file::save_heartbeat,
-            commands::settings::open_config_dir,
+            commands::memory::get_memory_file,
+            commands::memory::save_memory_file,
+            commands::open::open_dir,
             commands::settings::default_live2d_dir,
             commands::settings::download_example_live2d,
-            commands::settings::open_path,
             commands::settings::list_models,
             commands::settings::list_providers,
             commands::settings::test_model,
@@ -187,17 +188,16 @@ pub fn run() {
             commands::workdir::set_workdir,
             commands::gallery::list_gallery_media,
             commands::skills::list_skills,
-            commands::skills::open_skills_dir,
             commands::skills::expand_skill_command,
             commands::prompts::list_prompts,
             commands::prompts::save_prompt,
             commands::prompts::reset_prompt,
-            commands::prompts::open_prompts_dir,
             commands::tools::list_tools,
             commands::tools::set_tool_enabled,
             commands::tools::save_tool_description,
             commands::tools::reset_tool_description,
             commands::window::open_panel,
+            #[cfg(debug_assertions)]
             commands::window::open_debug,
             commands::window::open_devtools,
             commands::window::keep_window_visible,
@@ -252,15 +252,12 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         #[cfg(target_os = "macos")]
-        match event {
-            tauri::RunEvent::Reopen { .. } => {
-                // Dock click or Finder relaunch of an already-running app. The
-                // panel keeps the screen while it exists; otherwise recover the
-                // pet. A hidden pet plus an off-screen ball looks like a dead
-                // process, and `has_visible_windows` cannot express that.
-                commands::window::present_foreground(app_handle);
-            }
-            _ => {}
+        if let tauri::RunEvent::Reopen { .. } = event {
+            // Dock click or Finder relaunch of an already-running app. The
+            // panel keeps the screen while it exists; otherwise recover the
+            // pet. A hidden pet plus an off-screen ball looks like a dead
+            // process, and `has_visible_windows` cannot express that.
+            commands::window::present_foreground(app_handle);
         }
         #[cfg(not(target_os = "macos"))]
         let _ = (app_handle, event);

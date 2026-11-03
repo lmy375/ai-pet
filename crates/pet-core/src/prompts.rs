@@ -137,22 +137,27 @@ impl PromptKey {
 
 /// `<config>/prompts/` — where overrides live.
 pub fn prompts_dir() -> Result<PathBuf, String> {
-    Ok(crate::common::config_dir()?.join("prompts"))
+    crate::store::data_dir("prompts")
 }
 
 /// Create the overrides dir and return it — for the "open in file manager"
 /// button, which should work before anything has been overridden.
 pub fn ensure_prompts_dir() -> Result<PathBuf, String> {
-    let dir = prompts_dir()?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create prompts dir: {e}"))?;
-    Ok(dir)
+    prompts_dir()
 }
 
 /// The text to use for `key`: the override if there is one, else the built-in.
 /// Read fresh on every turn, like the memory files — editing a prompt takes
-/// effect on the very next message, with no restart.
+/// effect on the very next message, with no restart. An unreadable override is
+/// reported and falls back to the built-in rather than failing the turn.
 pub fn text(key: PromptKey) -> String {
-    let overridden = key.path().ok().and_then(|p| std::fs::read_to_string(p).ok());
+    let overridden = key.path().ok().and_then(|p| match crate::store::read_text(&p) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("{e}");
+            None
+        }
+    });
     normalize(overridden.as_deref().unwrap_or_else(|| key.default_text()))
 }
 
@@ -170,7 +175,7 @@ pub fn save(key: PromptKey, content: &str) -> Result<(), String> {
     if !missing.is_empty() {
         return Err(format!("缺少必需的变量：{}", missing.join("、")));
     }
-    crate::common::write_text(&key.path()?, content)
+    crate::store::write_text(&key.path()?, content)
 }
 
 /// Drop the override, going back to the built-in text.
@@ -215,11 +220,6 @@ pub fn render(template: &str, vars: &[(&str, &str)]) -> String {
 
 // ---- tool description overrides ----
 
-/// `<config>/prompts/tools/` — one `<tool name>.md` per overridden description.
-fn tools_dir() -> Result<PathBuf, String> {
-    Ok(prompts_dir()?.join("tools"))
-}
-
 /// The override path for a tool. The name is used verbatim as a file name and
 /// MCP servers choose their own tool names, so anything that isn't a plain
 /// identifier is refused rather than escaping the directory.
@@ -233,28 +233,41 @@ fn tool_path(name: &str) -> Result<PathBuf, String> {
     if !safe {
         return Err(format!("工具名不能作为文件名：{name}"));
     }
-    Ok(tools_dir()?.join(format!("{name}.md")))
+    Ok(prompts_dir()?.join("tools").join(format!("{name}.md")))
 }
 
 /// Every overridden tool description, keyed by tool name. One `read_dir` — the
 /// registry needs the whole map anyway, and most runs find no directory at all.
+/// A missing directory is the normal state; an IO failure is reported and the
+/// registry falls back to the built-in descriptions.
 pub fn tool_descriptions() -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let Ok(entries) = tools_dir().and_then(|d| {
-        std::fs::read_dir(d).map_err(|e| e.to_string())
-    }) else {
-        return out;
+    let dir = prompts_dir().map(|d| d.join("tools"));
+    let entries = match dir.and_then(|d| {
+        std::fs::read_dir(d).map_err(|e| format!("Failed to read tool descriptions: {e}"))
+    }) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("{e}");
+            return out;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        let (Some(name), Ok(content)) = (
-            path.file_stem().and_then(|n| n.to_str()),
-            std::fs::read_to_string(&path),
-        ) else {
+        let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
             continue;
+        };
+        let content = match crate::store::read_text(&path) {
+            Ok(Some(content)) => content,
+            // Removed between `read_dir` and the read; nothing to override.
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("{e}");
+                continue;
+            }
         };
         let content = normalize(&content);
         if !content.is_empty() {
@@ -268,7 +281,7 @@ pub fn save_tool_description(name: &str, content: &str) -> Result<(), String> {
     if content.trim().is_empty() {
         return Err("描述不能为空".to_string());
     }
-    crate::common::write_text(&tool_path(name)?, content)
+    crate::store::write_text(&tool_path(name)?, content)
 }
 
 pub fn reset_tool_description(name: &str) -> Result<(), String> {

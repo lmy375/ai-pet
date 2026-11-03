@@ -5,6 +5,8 @@
 命令输出），不看 git，所以这里不授权也不要求 commit，只强调"交付物必须原样落盘"。
 """
 
+from pet_eval_common.host import memory_baseline
+
 SOUL = """你是一个终端 agent，正在一个隔离容器里独立完成一个真实的命令行任务。
 
 - 任务说明会一次性给你，没人会回复追问——自己做决定，用工具把事情做完。
@@ -22,24 +24,4 @@ SOUL = """你是一个终端 agent，正在一个隔离容器里独立完成一�
 - 长命令要等它真正结束再下结论；不确定就查一下进程和输出，不要凭想象汇报。
 """
 
-USER = """# 关于主人
-
-（Terminal-Bench 评测：无主人信息。专注完成任务本身。）
-"""
-
-MEMORY = """# 我的记忆
-
-（Terminal-Bench 评测基线：刻意留空。）
-"""
-
-HEARTBEAT = """# 定时任务
-
-（Terminal-Bench 评测基线：无任务。）
-"""
-
-MEMORY_FILES = {
-    "SOUL.md": SOUL,
-    "USER.md": USER,
-    "MEMORY.md": MEMORY,
-    "HEARTBEAT.md": HEARTBEAT,
-}
+MEMORY_FILES = memory_baseline("Terminal-Bench", SOUL)

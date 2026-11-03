@@ -95,7 +95,7 @@ function App() {
   // offscreen (which leaves a blank canvas when it reappears) we unmount the
   // canvas entirely while hidden and remount it once the window is shown again.
   // Visibility is driven by the backend (main-hidden / main-shown) instead of
-  // the focus event, which doesn't reliably fire on hide. See CLAUDE.md.
+  // the focus event, which doesn't reliably fire on hide.
   const [windowVisible, setWindowVisible] = useState(true);
   // One-shot pop-in replayed whenever the window reappears — from the ball or
   // from the panel closing — so the pet eases back in instead of blinking.

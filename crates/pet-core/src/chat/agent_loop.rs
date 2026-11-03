@@ -6,7 +6,7 @@ use super::ChatEventSink;
 use crate::config::AiConfig;
 use crate::logging::{write_llm_log, LlmLogBody, LlmLogMeta, RoundStat};
 use crate::mcp::McpStore;
-use crate::tools::{ToolContext, ToolPolicy, ToolRegistry};
+use crate::tools::{RunGate, ToolContext, ToolPolicy, ToolRegistry};
 
 /// The tool-calling loop over an already-assembled message list (system prompt
 /// included). Returns the final assistant text and the full conversation.
@@ -18,25 +18,13 @@ pub(super) async fn run_agent_loop(
     mcp_store: &McpStore,
     ctx: &ToolContext,
 ) -> Result<(String, Vec<ChatMessage>), String> {
-    // Get MCP tool definitions for this agent (the servers it references in the
-    // global pool — connections themselves are shared between agents).
-    let mcp_defs = mcp_store.read().await.definitions(&config.mcp_servers);
-    // Context gates: sub-agents (depth > 0) don't get the spawn tool, so they
-    // can't recurse; `chat` is offered only to heartbeat sessions; `web_search`
-    // only when a Tavily key is configured. `from_config` adds the owner's own
-    // layer on top (tools switched off, descriptions rewritten), which can only
-    // subtract from these.
-    let registry = ToolRegistry::new(
-        mcp_defs,
-        ToolPolicy {
-            depth: ctx.depth,
-            include_chat: ctx.is_heartbeat,
-            include_web_search: !config.search_api_key.trim().is_empty(),
-            include_swarm: ctx.swarm.is_some(),
-            include_swarm_worker: ctx.swarm_task_id.is_some() && ctx.swarm_worker_id.is_some(),
-            ..ToolPolicy::from_config()
-        },
-    );
+    // The run gate carries the whole context: kind (chat / heartbeat / group /
+    // swarm), sub-agent depth and whether a Tavily key is configured. The owner's
+    // own layer (tools switched off, descriptions rewritten) is applied by
+    // `for_gate` on top and can only subtract from the gate.
+    let gate = RunGate::from_context(ctx, !config.search_api_key.trim().is_empty());
+    let registry =
+        ToolRegistry::new(mcp_store, &config.mcp_servers, ToolPolicy::for_gate(gate)).await;
     let client = crate::llm::client();
     let options = crate::llm::chat_options(config);
     let tools = crate::llm::tools_from_definitions(&registry.definitions());
@@ -74,17 +62,17 @@ pub(super) async fn run_agent_loop(
         // Only the first and final rounds write the whole request body: each
         // round's request is a superset of the previous one, so the final body
         // already holds every message.
-        let body = if round == 0 || result.tool_calls.is_empty() {
-            let stored: Vec<Value> = messages.iter().map(crate::llm::store_message).collect();
-            let tool_calls: Vec<Value> = result
-                .tool_calls
-                .iter()
-                .map(|tc| serde_json::to_value(tc).unwrap_or(Value::Null))
-                .collect();
-            Some((stored, tool_calls))
+        let body_messages: Option<Vec<Value>> = if round == 0 || result.tool_calls.is_empty() {
+            Some(messages.iter().map(crate::llm::store_message).collect())
         } else {
             None
         };
+        // Every round's calls go to the one-line `llm.log` the evals parse.
+        let tool_calls: Vec<Value> = result
+            .tool_calls
+            .iter()
+            .map(|tc| serde_json::to_value(tc).unwrap_or(Value::Null))
+            .collect();
         write_llm_log(
             LlmLogMeta {
                 session: &ctx.log_session,
@@ -92,12 +80,12 @@ pub(super) async fn run_agent_loop(
                 rounds: &round_stats,
                 preview,
                 request_time: &result.request_time,
-            },
-            body.as_ref().map(|(stored, tool_calls)| LlmLogBody {
-                messages: stored,
                 response_text: &result.text,
                 reasoning: &result.reasoning,
-                tool_calls,
+                tool_calls: &tool_calls,
+            },
+            body_messages.as_deref().map(|messages| LlmLogBody {
+                messages,
                 first_token_time: result.first_token_time.as_deref(),
                 done_time: &result.done_time,
             }),
@@ -141,8 +129,7 @@ pub(super) async fn run_agent_loop(
 
         // Run every call from this assistant turn concurrently. Result order is
         // preserved below so the UI and provider transcript stay deterministic.
-        let outputs =
-            execute_tool_calls(&result.tool_calls, sink, config, mcp_store, &registry, ctx).await;
+        let outputs = execute_tool_calls(&result.tool_calls, sink, &registry, ctx).await;
         for (tc, output) in result.tool_calls.iter().zip(outputs) {
             // `fn_name` is carried alongside `call_id` because Gemini correlates
             // tool responses by function name, not by id.
@@ -180,8 +167,6 @@ pub(super) async fn run_agent_loop(
 pub(super) async fn execute_tool_calls(
     tool_calls: &[ToolCall],
     sink: &dyn ChatEventSink,
-    config: &AiConfig,
-    mcp_store: &McpStore,
     registry: &ToolRegistry,
     ctx: &ToolContext,
 ) -> Vec<String> {
@@ -193,29 +178,14 @@ pub(super) async fn execute_tool_calls(
         } else {
             tc.fn_arguments.to_string()
         };
-        let arguments_for_mcp = tc.fn_arguments.clone();
         let call_ctx = ctx.for_tool_call();
 
         sink.send_tool_start(&name, &arguments);
 
         async move {
-            let execute = async {
-                if registry.is_mcp_tool(&name) {
-                    // Read locks let different MCP calls run concurrently while
-                    // still excluding reconnect/shutdown mutations.
-                    call_ctx.log(&format!("MCP tool call: {}({})", name, arguments));
-                    let hub = mcp_store.read().await;
-                    match hub
-                        .call_tool(&config.mcp_servers, &name, arguments_for_mcp)
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(error) => crate::tools::tool_error(error),
-                    }
-                } else {
-                    registry.execute(&name, &arguments, &call_ctx).await
-                }
-            };
+            // The registry routes built-ins to their impl and MCP tools to the
+            // server that advertised them.
+            let execute = registry.execute(&name, &arguments, &call_ctx);
             // Cancellation reaches every in-flight call at once. Each call still
             // returns a tool response, since providers reject dangling calls.
             let output = tokio::select! {

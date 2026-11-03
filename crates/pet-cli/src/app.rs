@@ -7,17 +7,13 @@
 
 use std::sync::Arc;
 
-use pet_core::logging::LogStore;
-use pet_core::mcp::McpStore;
 use pet_core::session;
 use pet_core::settings::{get_settings, AgentConfig};
-use pet_core::shell::ShellStore;
+use pet_core::stores::EngineStores;
 use pet_core::turn::TurnRunner;
 
 pub struct CliApp {
-    pub log_store: LogStore,
-    pub shell_store: ShellStore,
-    pub mcp_store: McpStore,
+    pub stores: EngineStores,
     /// Runs and persists every chat turn (and injects background-task
     /// completions); the TUI / one-shot printer only observe its events.
     pub turns: Arc<TurnRunner>,
@@ -34,7 +30,7 @@ impl CliApp {
         if servers.is_empty() {
             return None;
         }
-        let mut hub = self.mcp_store.write().await;
+        let mut hub = self.stores.mcp.write().await;
         hub.ensure(&servers).await;
         let mut lines = vec![format!("{} 的 MCP 服务器：", agent.name)];
         for s in hub.statuses().iter().filter(|s| agent.mcp.contains(&s.name)) {
@@ -46,7 +42,7 @@ impl CliApp {
 
     /// Best-effort shutdown of every running MCP server (child processes).
     pub async fn shutdown_mcp(&self) {
-        self.mcp_store.write().await.shutdown().await;
+        self.stores.mcp.write().await.shutdown().await;
     }
 
     /// The active session's id, creating a session if there is none (or the

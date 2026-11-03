@@ -23,3 +23,4 @@ rmcp = { version = "1.2", features = [
 ] }
 base64 = "0.22"
 genai = "0.6.5"
+zip = { version = "2", default-features = false, features = ["deflate"] }

@@ -5,11 +5,9 @@ use std::sync::Arc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
-use pet_core::chat::{StreamEvent, UserTurn};
-use pet_core::logging::LogStore;
-use pet_core::mcp::McpStore;
-use pet_core::shell::ShellStore;
-use pet_core::swarm::{SwarmConfig, SwarmEvents, SwarmRuntime, SwarmSnapshot};
+use pet_core::chat::UserTurn;
+use pet_core::stores::EngineStores;
+use pet_core::swarm::{SwarmConfig, SwarmEvent, SwarmEvents, SwarmRuntime, SwarmSnapshot};
 
 pub struct SwarmStore(pub Arc<SwarmRuntime>);
 
@@ -18,53 +16,50 @@ struct TauriSwarmEvents {
 }
 
 impl SwarmEvents for TauriSwarmEvents {
-    fn snapshot(&self, state: &SwarmSnapshot) {
-        let _ = self.app.emit("swarm-state", state.clone());
-    }
-
-    fn main_stream(&self, swarm_id: &str, event: &StreamEvent) {
-        let _ = self.app.emit(
-            "swarm-main-stream",
-            json!({ "swarmId": swarm_id, "event": event }),
-        );
-    }
-
-    fn main_done(&self, swarm_id: &str) {
-        let _ = self
-            .app
-            .emit("swarm-main-done", json!({ "swarmId": swarm_id }));
-    }
-
-    fn worker_stream(&self, swarm_id: &str, worker_id: &str, event: &StreamEvent) {
-        let _ = self.app.emit(
-            "swarm-worker-stream",
-            json!({ "swarmId": swarm_id, "workerId": worker_id, "event": event }),
-        );
-    }
-
-    fn worker_status(&self, swarm_id: &str, worker_id: &str, status: &str) {
-        let _ = self.app.emit(
-            "swarm-worker-status",
-            json!({ "swarmId": swarm_id, "workerId": worker_id, "status": status }),
-        );
+    fn event(&self, event: SwarmEvent<'_>) {
+        match event {
+            SwarmEvent::Snapshot(state) => {
+                let _ = self.app.emit("swarm-state", state);
+            }
+            SwarmEvent::MainStream { swarm_id, event } => {
+                let _ = self.app.emit(
+                    "swarm-main-stream",
+                    json!({ "swarmId": swarm_id, "event": event }),
+                );
+            }
+            SwarmEvent::MainDone { swarm_id } => {
+                let _ = self
+                    .app
+                    .emit("swarm-main-done", json!({ "swarmId": swarm_id }));
+            }
+            SwarmEvent::WorkerStream {
+                swarm_id,
+                worker_id,
+                event,
+            } => {
+                let _ = self.app.emit(
+                    "swarm-worker-stream",
+                    json!({ "swarmId": swarm_id, "workerId": worker_id, "event": event }),
+                );
+            }
+            SwarmEvent::WorkerStatus {
+                swarm_id,
+                worker_id,
+                status,
+            } => {
+                let _ = self.app.emit(
+                    "swarm-worker-status",
+                    json!({ "swarmId": swarm_id, "workerId": worker_id, "status": status }),
+                );
+            }
+        }
     }
 }
 
-pub fn new_swarm_store(
-    app: AppHandle,
-    mcp_store: McpStore,
-    log_store: LogStore,
-    shell_store: ShellStore,
-) -> SwarmStore {
+pub fn new_swarm_store(app: AppHandle, stores: EngineStores) -> SwarmStore {
     let events = Arc::new(TauriSwarmEvents { app });
     let rt = tauri::async_runtime::handle().inner().clone();
-    SwarmStore(SwarmRuntime::new(
-        events,
-        mcp_store,
-        log_store,
-        shell_store,
-        rt,
-    ))
+    SwarmStore(stores.swarm(events, rt))
 }
 
 #[tauri::command]

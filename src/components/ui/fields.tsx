@@ -4,7 +4,7 @@ import type {
   InputHTMLAttributes,
   KeyboardEvent,
   TextareaHTMLAttributes,
-  ReactNode,
+
 } from "react";
 import { CheckIcon, ChevronDownIcon } from "../Icons";
 
@@ -12,11 +12,6 @@ import { CheckIcon, ChevronDownIcon } from "../Icons";
 export const inputClass =
   "w-full rounded-field border border-line bg-surface px-3 py-2 text-body text-ink outline-none transition-colors focus:border-accent placeholder:text-ink-faint disabled:bg-surface-soft disabled:text-ink-faint";
 
-export const labelClass = "mb-1 block text-note font-medium text-ink-soft";
-
-export function Label({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <label className={`${labelClass} ${className}`}>{children}</label>;
-}
 
 export function TextInput({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={`${inputClass} ${className}`} {...rest} />;

@@ -47,6 +47,16 @@ impl AiConfig {
         Self::build(&settings, agent)
     }
 
+    /// Build the config for a named agent, regardless of which one is active.
+    /// Per-agent interfaces (Telegram) address their agent by id.
+    pub fn from_agent_id(agent_id: &str) -> Result<Self, String> {
+        let settings = get_settings()?;
+        let agent = settings
+            .agent(agent_id)
+            .ok_or_else(|| format!("Agent \"{agent_id}\" no longer exists"))?;
+        Self::build(&settings, agent)
+    }
+
     /// Resolve an agent's `model` reference against the global pool. This is the
     /// single place that resolution happens — everything downstream sees the
     /// flattened result and never knows the pool exists.

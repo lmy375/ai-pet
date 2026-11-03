@@ -10,9 +10,7 @@ use tauri::{AppHandle, Emitter, State};
 use pet_core::chat::StreamEvent;
 use pet_core::group::{GroupEvents, GroupMessage, GroupRuntime, GroupState, GroupSummary};
 use pet_core::item::ChatItem;
-use pet_core::logging::LogStore;
-use pet_core::mcp::McpStore;
-use pet_core::shell::ShellStore;
+use pet_core::stores::EngineStores;
 
 /// Tauri-managed handle to the group runtime.
 pub struct GroupStore(pub Arc<GroupRuntime>);
@@ -54,14 +52,9 @@ impl GroupEvents for TauriGroupEvents {
 
 /// Build the managed store. Called once in `lib.rs` setup (the event sink needs
 /// the app handle).
-pub fn new_group_store(
-    app: AppHandle,
-    mcp_store: McpStore,
-    log_store: LogStore,
-    shell_store: ShellStore,
-) -> GroupStore {
+pub fn new_group_store(app: AppHandle, stores: EngineStores) -> GroupStore {
     let events = Arc::new(TauriGroupEvents { app });
-    GroupStore(Arc::new(GroupRuntime::new(events, mcp_store, log_store, shell_store)))
+    GroupStore(Arc::new(stores.group(events)))
 }
 
 #[tauri::command]

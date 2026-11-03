@@ -21,10 +21,6 @@ tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
 dirs = "6"
-chrono = "0.4"
-uuid = { version = "1", features = ["v4"] }
 teloxide = { version = "0.13", features = ["macros"] }
 base64 = "0.22"
-zip = { version = "2", default-features = false, features = ["deflate"] }

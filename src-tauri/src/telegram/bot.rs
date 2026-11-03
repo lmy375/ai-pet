@@ -1,21 +1,16 @@
 use base64::Engine;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use teloxide::dispatching::ShutdownToken;
 use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{ChatAction, InputFile, Me};
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::mpsc;
 
-use pet_core::chat::{run_agent, AgentRun, ImageCollectingSink, UserTurn};
-use pet_core::logging::LogStore;
-use pet_core::item::ChatItem;
-use pet_core::system_prompt::SystemPrompt;
+use pet_core::chat::{StreamEvent, UserTurn};
+use pet_core::logging::{write_log, LogStore};
 use pet_core::session;
 use pet_core::settings::TelegramConfig;
-use pet_core::shell::ShellStore;
-use pet_core::config::AiConfig;
-use pet_core::mcp::McpStore;
-use pet_core::tools::ToolContext;
+use pet_core::turn::{TurnEvents, TurnNotice, TurnRunner};
 
 /// A running Telegram bot instance.
 pub struct TelegramBot {
@@ -24,54 +19,37 @@ pub struct TelegramBot {
 
 /// Persistent state shared across message handlers.
 struct HandlerState {
-    /// Which agent this bot belongs to — used to load the right model config,
-    /// persona/memory and MCP set on each message.
+    /// Which agent this bot belongs to — turns are resolved for this agent,
+    /// regardless of which one is active in the GUI.
     agent_id: String,
     allowed_username: String,
-    mcp_store: McpStore,
-    log_store: LogStore,
-    shell_store: ShellStore,
-    /// Messages for the dedicated Telegram session (kept in memory for fast access).
-    /// This is the model-facing transcript (role/content), persisted as `messages`.
-    session_messages: TokioMutex<Vec<serde_json::Value>>,
-    /// The display transcript (ChatItem shape), persisted as `items` and kept
-    /// independent of `session_messages` — exactly like the panel. Tool-produced
-    /// images (e.g. `screenshot`) live here as their own bubbles but never enter
-    /// `session_messages`, so they show in history without bloating model context.
-    session_items: TokioMutex<Vec<ChatItem>>,
+    /// The dedicated `telegram-<agent_id>` session, rewritten through the same
+    /// runner the GUI uses so both interfaces serialize on one file.
     session_id: String,
+    turns: Arc<TurnRunner>,
+    log_store: LogStore,
 }
 
-/// How many conversation turns of context a Telegram message keeps. Trimming is
-/// by turn (never mid tool round), matching every other agent run.
-const MAX_CONTEXT_TURNS: usize = 25;
 const TELEGRAM_MSG_LIMIT: usize = 4096;
 
 impl TelegramBot {
     pub async fn start(
         agent_id: String,
         config: TelegramConfig,
-        mcp_store: McpStore,
+        turns: Arc<TurnRunner>,
         log_store: LogStore,
-        shell_store: ShellStore,
     ) -> Result<Self, String> {
         let bot = Bot::new(&config.bot_token);
 
         // Verify bot token by calling getMe
         let _me: Me = bot.get_me().await.map_err(|e| format!("Telegram bot auth failed: {}", e))?;
 
-        // Load or create this agent's dedicated Telegram session.
-        let (session_id, messages, items) = load_or_create_session(&agent_id);
-
         let state = Arc::new(HandlerState {
+            session_id: ensure_session(&agent_id)?,
             agent_id,
             allowed_username: config.allowed_username.trim_start_matches('@').to_lowercase(),
-            mcp_store,
+            turns,
             log_store,
-            shell_store,
-            session_messages: TokioMutex::new(messages),
-            session_items: TokioMutex::new(items),
-            session_id,
         });
 
         // Handle every message; `handle_message` extracts text/caption + photos
@@ -106,18 +84,15 @@ impl TelegramBot {
     }
 }
 
-/// Load this agent's dedicated Telegram session (`telegram-<agent_id>`), or
-/// create one (seeded with that agent's SOUL system message) if it doesn't exist.
-fn load_or_create_session(
-    agent_id: &str,
-) -> (String, Vec<serde_json::Value>, Vec<ChatItem>) {
+/// This agent's dedicated Telegram session, created (seeded with its SOUL
+/// system message) when missing. Only the id is resolved here: every turn's
+/// transcript and persistence go through the shared [`TurnRunner`].
+fn ensure_session(agent_id: &str) -> Result<String, String> {
     let session_id = format!("telegram-{}", agent_id);
     match session::load_session(session_id.clone()) {
-        Ok(s) => (s.id, s.messages, s.items),
-        Err(_) => match session::new_seeded_session(agent_id, session_id.clone(), "Telegram".to_string()) {
-            Ok(s) => (s.id, s.messages, s.items),
-            Err(_) => (session_id, vec![session::soul_system_message(agent_id)], vec![]),
-        },
+        Ok(s) => Ok(s.id),
+        Err(_) => session::new_seeded_session(agent_id, session_id, "Telegram".to_string())
+            .map(|s| s.id),
     }
 }
 
@@ -157,7 +132,7 @@ async fn handle_message(
             match download_photo_as_data_url(&bot, &largest.file.id).await {
                 Ok(url) => image_urls.push(url),
                 Err(e) => {
-                    pet_core::logging::write_log(
+                    write_log(
                         &state.log_store.0,
                         &format!("Telegram: photo download failed: {}", e),
                     );
@@ -177,122 +152,60 @@ async fn handle_message(
     // Send typing indicator
     let _ = bot.send_chat_action(msg.chat.id, ChatAction::Typing).await;
 
-    // Mirror the user turn into the display transcript (ChatItem shape).
-    state
-        .session_items
-        .lock()
-        .await
-        .push(ChatItem::user(&text, &image_urls));
+    let turn = UserTurn { text, images: image_urls };
 
-    let turn = UserTurn { text: text.clone(), images: image_urls.clone() };
-
-    let prior_messages = state.session_messages.lock().await.clone();
-
-    // Run the LLM pipeline. The sink collects any images a tool surfaces (e.g.
-    // `screenshot`) so we can send them back as photos after the text reply.
-    let sink = ImageCollectingSink::new();
-    // Resolve this bot's agent config fresh each message so edits take effect.
-    let agent_config = pet_core::settings::get_settings()
-        .ok()
-        .and_then(|s| s.agent(&state.agent_id).cloned());
-    let resolved = match agent_config {
-        Some(a) => AiConfig::from_agent(&a),
-        None => Err(format!("Agent \"{}\" no longer exists", state.agent_id)),
-    };
-    let reply_text = match resolved {
-        Ok(config) => {
-            // Telegram has no UI window, so background-task completions can't be
-            // auto-pushed there (notifier = None); tasks still run and are checkable.
-            let ctx = ToolContext::new(
-                state.log_store.clone(),
-                state.shell_store.clone(),
-                config.clone(),
-                state.mcp_store.clone(),
-                String::new(),
-                None,
-                None,
-                false,
-            );
-            match run_agent(AgentRun {
-                conv: prior_messages,
-                turn: Some(turn),
-                prompt: SystemPrompt::Chat { agent_id: &state.agent_id },
-                sink: &sink,
-                config: &config,
-                mcp_store: &state.mcp_store,
-                ctx: &ctx,
-                max_turns: Some(MAX_CONTEXT_TURNS),
-            })
-            .await
-            {
-                Ok(outcome) => {
-                    // Keep the model-facing transcript exactly as returned, so
-                    // tool rounds stay in context for the next message.
-                    *state.session_messages.lock().await = outcome.messages;
-                    outcome.text
-                }
-                Err(e) => format!("Error: {}", e),
-            }
-        }
-        Err(e) => format!("Config error: {}", e),
-    };
-    let reply_images = sink.take_images();
-
-    // Append the assistant turn to both transcripts, then persist.
+    // The runner owns the turn: it persists the user item up front, streams the
+    // reply to the sink, and reloads/appends/persists the session when done.
+    let (wake_tx, mut wake_rx) = mpsc::unbounded_channel();
+    let sink = Arc::new(TelegramSink::new(wake_tx));
+    if let Err(e) = state
+        .turns
+        .send_for_agent(&state.session_id, &state.agent_id, sink.clone(), turn)
     {
-        let session_msgs = state.session_messages.lock().await;
-
-        let mut items = state.session_items.lock().await;
-        // Tool-produced images (screenshots) render as assistant bubbles — they
-        // come from the pet, not the user — and never enter `session_msgs` (the
-        // model already saw them in-loop).
-        for url in &reply_images {
-            items.push(ChatItem::assistant("", None, std::slice::from_ref(url)));
-        }
-        // An empty final text means the response was carried entirely by images;
-        // skip the empty assistant bubble (matches the panel's behavior).
-        if !reply_text.is_empty() {
-            items.push(ChatItem::assistant(&reply_text, None, &[]));
-        }
-
-        // Title from the first user item's text (fall back to "Telegram").
-        let title = session::derive_title(&items).unwrap_or_else(|| "Telegram".to_string());
-
-        let s = session::Session {
-            id: state.session_id.clone(),
-            title,
-            created_at: String::new(), // preserved by backend
-            updated_at: pet_core::common::iso_now(),
-            messages: session_msgs.clone(),
-            items: items.clone(),
-            // Telegram sessions aren't shown by the panel's context ring.
-            context_usage: None,
-        };
-        let _ = session::save_session(s);
+        bot.send_message(msg.chat.id, format!("Error: {}", e)).await?;
+        return Ok(());
     }
 
-    // Send the text reply (split if it exceeds Telegram's per-message limit).
-    // Skip if empty and we have images — the photos carry the response.
-    if !reply_text.is_empty() {
-        if reply_text.len() <= TELEGRAM_MSG_LIMIT {
-            bot.send_message(msg.chat.id, &reply_text).await?;
-        } else {
-            for chunk in split_message(&reply_text, TELEGRAM_MSG_LIMIT) {
-                bot.send_message(msg.chat.id, chunk).await?;
-            }
+    // Wait for the turn to finish; the sink has folded the whole stream.
+    while !sink.is_done() {
+        if wake_rx.recv().await.is_none() {
+            break;
         }
-    } else if reply_images.is_empty() {
+    }
+    let reply = sink.take();
+
+    if !reply.reasoning.is_empty() {
+        // Thinking is kept in the session's items but never sent to chat —
+        // Telegram has no collapsed "thinking" block.
+        write_log(
+            &state.log_store.0,
+            &format!(
+                "Telegram: {} chars of reasoning not sent",
+                reply.reasoning.chars().count()
+            ),
+        );
+    }
+
+    // Text reply first (split if it exceeds Telegram's per-message limit).
+    // Skip if empty and we have images — the photos carry the response.
+    if let Some(err) = reply.error {
+        bot.send_message(msg.chat.id, format!("Error: {}", err)).await?;
+    } else if !reply.text.is_empty() {
+        for chunk in split_message(&reply.text, TELEGRAM_MSG_LIMIT) {
+            bot.send_message(msg.chat.id, chunk).await?;
+        }
+    } else if reply.images.is_empty() {
         bot.send_message(msg.chat.id, "(no response)").await?;
     }
 
     // Send any images the pipeline produced as photos.
-    for data_url in &reply_images {
+    for data_url in &reply.images {
         match data_url_to_bytes(data_url) {
             Some(bytes) => {
                 bot.send_photo(msg.chat.id, InputFile::memory(bytes)).await?;
             }
             None => {
-                pet_core::logging::write_log(
+                write_log(
                     &state.log_store.0,
                     "Telegram: failed to decode outgoing image data URL",
                 );
@@ -301,6 +214,61 @@ async fn handle_message(
     }
 
     Ok(())
+}
+
+/// Everything one turn streamed, folded into a single Telegram reply.
+#[derive(Default)]
+struct TelegramReply {
+    /// Accumulated answer chunks, sent when the turn finishes.
+    text: String,
+    /// Accumulated chain-of-thought. Kept for parity with the panel's fold, but
+    /// never sent to chat.
+    reasoning: String,
+    /// Data URLs of images a tool produced, sent after the answer.
+    images: Vec<String>,
+    error: Option<String>,
+    done: bool,
+}
+
+/// Folds one turn's notices for the Telegram handler. Messages aren't streamed
+/// (no edit-per-chunk): chunks are accumulated and sent once at `done`.
+struct TelegramSink {
+    reply: Mutex<TelegramReply>,
+    wake: mpsc::UnboundedSender<()>,
+}
+
+impl TelegramSink {
+    fn new(wake: mpsc::UnboundedSender<()>) -> Self {
+        Self { reply: Mutex::new(TelegramReply::default()), wake }
+    }
+
+    fn is_done(&self) -> bool {
+        self.reply.lock().unwrap().done
+    }
+
+    fn take(&self) -> TelegramReply {
+        std::mem::take(&mut *self.reply.lock().unwrap())
+    }
+}
+
+impl TurnEvents for TelegramSink {
+    fn notice(&self, notice: &TurnNotice) {
+        {
+            let mut reply = self.reply.lock().unwrap();
+            match notice {
+                TurnNotice::Stream { event, .. } => match event {
+                    StreamEvent::Chunk { text } => reply.text.push_str(text),
+                    StreamEvent::Reasoning { text } => reply.reasoning.push_str(text),
+                    StreamEvent::Image { data_url } => reply.images.push(data_url.clone()),
+                    StreamEvent::Error { message } => reply.error = Some(message.clone()),
+                    _ => {}
+                },
+                TurnNotice::Finished { .. } => reply.done = true,
+                TurnNotice::Started { .. } => {}
+            }
+        }
+        let _ = self.wake.send(());
+    }
 }
 
 /// Fetch a Telegram file by id and inline it as a base64 `data:` URL. Telegram

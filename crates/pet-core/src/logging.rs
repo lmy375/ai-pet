@@ -11,6 +11,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone)]
 pub struct LogStore(pub Arc<Mutex<Vec<String>>>);
 
+/// Buffer backing [`LogStore::detached`]. Identified by pointer in `write_log`
+/// so writers skip the in-memory tail and only append to `app.log`.
+static DETACHED_BUFFER: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+
+impl LogStore {
+    /// A store that only appends to `app.log` and keeps no in-memory copy.
+    /// For processes that never read the buffer back (the CLI).
+    pub fn detached() -> Self {
+        Self(DETACHED_BUFFER.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone())
+    }
+}
+
 /// Return the log directory: `<config dir>/logs/`. Same root as `config.yaml`,
 /// `sessions/` and `memory/` (see `common::config_dir`) — logs used to live at
 /// `~/.config/pet/logs` instead, which meant the app's state was split across
@@ -40,8 +52,9 @@ const DEFAULT_LLM_LOG_KEEP: usize = 100;
 static APP_LOG_MAX_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_APP_LOG_MAX_MB * 1024 * 1024);
 static LLM_LOG_KEEP_PER_KIND: AtomicUsize = AtomicUsize::new(DEFAULT_LLM_LOG_KEEP);
 
-/// Apply the user's log limits. Called at startup and again whenever settings
-/// are saved, so a change takes effect without a restart.
+/// Apply the user's log limits. Called when the settings snapshot is (re)parsed
+/// — startup, an external config edit — and after every save, so a change takes
+/// effect without a restart. Never on a plain settings read.
 pub fn configure(app_log_max_mb: u64, llm_log_keep_per_kind: usize) {
     APP_LOG_MAX_BYTES.store(app_log_max_mb.max(1) * 1024 * 1024, Ordering::Relaxed);
     LLM_LOG_KEEP_PER_KIND.store(llm_log_keep_per_kind.max(1), Ordering::Relaxed);
@@ -95,8 +108,8 @@ pub fn write_log(store: &Arc<Mutex<Vec<String>>>, message: &str) {
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
     let line = format!("[{}] {}", ts, message);
 
-    // In-memory
-    {
+    // In-memory, unless this is the detached store (never read back by CLI).
+    if !DETACHED_BUFFER.get().is_some_and(|buffer| Arc::ptr_eq(buffer, store)) {
         let mut logs = store.lock().unwrap();
         logs.push(line.clone());
         if logs.len() > 500 {
@@ -236,23 +249,40 @@ pub struct LlmLogMeta<'a> {
     /// First line of the newest user message, for the collapsed row.
     pub preview: &'a str,
     pub request_time: &'a str,
+    /// This round's response. Every round appends it to the one-line `llm.log`
+    /// (the format the evals parse); the first and final rounds also store it
+    /// in the body file.
+    pub response_text: &'a str,
+    pub reasoning: &'a str,
+    pub tool_calls: &'a [serde_json::Value],
 }
 
 /// The full request/response body. Written only on the first and last rounds:
 /// each round's request is a superset of the previous one, so the last body
-/// already holds every message, and rewriting the whole conversation on every
-/// tool round made disk writes quadratic in the number of rounds.
+/// already holds every message. The metadata lives only in `index.jsonl` (that
+/// is where the UI reads it), so the body carries no second copy of it.
 pub struct LlmLogBody<'a> {
     pub messages: &'a [serde_json::Value],
-    pub response_text: &'a str,
-    pub reasoning: &'a str,
-    pub tool_calls: &'a [serde_json::Value],
     pub first_token_time: Option<&'a str>,
     pub done_time: &'a str,
 }
 
-/// Write the atomically-replaceable body file (when `body` is present) and
-/// append this round's metadata.
+/// `session_id` in the one-line `llm.log` format the evals parse: a plain chat
+/// keeps its session id verbatim, a sub-agent is `{parent}:sub:{id}`, and the
+/// independent run types get their own prefix.
+fn line_session_id(session: &LogSession) -> String {
+    match session.kind {
+        LogKind::Chat => session.id.clone(),
+        LogKind::Sub => format!("{}:sub:{}", session.label, session.id),
+        LogKind::Group => format!("group:{}", session.label),
+        LogKind::Heartbeat => format!("heartbeat:{}", session.id),
+        LogKind::Swarm => format!("swarm:{}", session.label),
+    }
+}
+
+/// Write the atomically-replaceable body file (when `body` is present), append
+/// this round's metadata to the index, and append this round's response to
+/// `llm.log`.
 ///
 /// Body first, index second: an index line always has a body to open, whereas
 /// the reverse order would leave a row that 404s. A crash between the two only
@@ -275,28 +305,45 @@ pub fn write_llm_log(meta: LlmLogMeta<'_>, body: Option<LlmLogBody<'_>>) {
 
     if let Some(body) = body {
         let json = serde_json::json!({
-            "meta": stored_meta,
+
             "first_token_time": body.first_token_time,
             "done_time": body.done_time,
             "messages": body.messages,
             "response": {
-                "text": body.response_text,
+                "text": meta.response_text,
                 // Chain-of-thought from a reasoning model; null for models without one
                 // so the body doesn't carry an empty string per round.
-                "reasoning": if body.reasoning.is_empty() { serde_json::Value::Null } else { serde_json::json!(body.reasoning) },
-                "tool_calls": body.tool_calls,
+                "reasoning": if meta.reasoning.is_empty() { serde_json::Value::Null } else { serde_json::json!(meta.reasoning) },
+                "tool_calls": meta.tool_calls,
             }
         });
         let path = dir.join(format!("{}.json", meta.session.id));
-        let tmp = dir.join(format!("{}.json.tmp", meta.session.id));
-        if fs::write(&tmp, json.to_string()).is_ok() {
-            let _ = fs::rename(&tmp, &path);
+        // Logs may swallow a write failure (see the module rule): losing one
+        // body only breaks one Debug entry, and the next round rewrites it.
+        if let Err(e) = crate::store::write_atomic(&path, json.to_string()) {
+            eprintln!("Failed to write LLM log body {}: {e}", path.display());
         }
     }
 
+    // The metadata's only serialization: the body no longer embeds a copy.
     if let Ok(line) = serde_json::to_string(&stored_meta) {
         append_to_file(&llm_index_path(), &line);
     }
+
+    // One line per round for the evals (`pet-eval-common` / `eval-private` /
+    // the two Docker harnesses): they read `session_id` (":sub:" marks a
+    // sub-agent) and `response.tool_calls` (genai's `fn_name` / `fn_arguments`).
+    let line = serde_json::json!({
+        "session_id": line_session_id(meta.session),
+        "round": meta.rounds.last().map(|r| r.round).unwrap_or(0),
+        "request_time": meta.request_time,
+        "response": {
+            "text": meta.response_text,
+            "reasoning": if meta.reasoning.is_empty() { serde_json::Value::Null } else { serde_json::json!(meta.reasoning) },
+            "tool_calls": meta.tool_calls,
+        }
+    });
+    append_to_file(&log_dir().join("llm.log"), &line.to_string());
     maybe_compact();
 }
 
@@ -305,9 +352,15 @@ pub fn write_llm_log(meta: LlmLogMeta<'_>, body: Option<LlmLogBody<'_>>) {
 /// (the CLI and the GUI, plus heartbeat / group / sub-agent runs inside one
 /// process) only ever need an atomic append — deduping is the reader's job.
 fn load_index() -> Vec<LlmMeta> {
-    let content = match fs::read_to_string(llm_index_path()) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    // Logs are best-effort: a missing (first run) or unreadable index is an
+    // empty list, not an error the UI could act on.
+    let content = match crate::store::read_text(&llm_index_path()) {
+        Ok(Some(content)) => content,
+        Ok(None) => return Vec::new(),
+        Err(e) => {
+            eprintln!("{e}");
+            return Vec::new();
+        }
     };
     let mut by_id: HashMap<String, LlmMeta> = HashMap::new();
     for line in content.lines() {
@@ -332,7 +385,14 @@ pub fn read_llm_entry(id: &str) -> Option<serde_json::Value> {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         return None;
     }
-    let raw = fs::read_to_string(llm_log_dir().join(format!("{}.json", id))).ok()?;
+    let raw = match crate::store::read_text(&llm_log_dir().join(format!("{}.json", id))) {
+        Ok(Some(raw)) => raw,
+        Ok(None) => return None,
+        Err(e) => {
+            eprintln!("{e}");
+            return None;
+        }
+    };
     serde_json::from_str(&raw).ok()
 }
 
@@ -412,9 +472,8 @@ pub fn compact_llm_logs() {
         .filter_map(|m| serde_json::to_string(m).ok())
         .map(|l| l + "\n")
         .collect();
-    let tmp = dir.join("index.jsonl.tmp");
-    if fs::write(&tmp, body).is_ok() {
-        let _ = fs::rename(&tmp, llm_index_path());
+    if let Err(e) = crate::store::write_atomic(&llm_index_path(), body) {
+        eprintln!("Failed to rewrite LLM log index: {e}");
     }
 }
 
@@ -436,6 +495,15 @@ mod tests {
 
     fn ids(metas: &[LlmMeta]) -> Vec<&str> {
         metas.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    #[test]
+    fn evals_line_marks_sub_agent_sessions() {
+        // The evals count a round only when `session_id` has no ":sub:", so the
+        // sub-agent form must keep the parent id and the marker.
+        assert_eq!(line_session_id(&LogSession::chat("s1".to_string())), "s1");
+        let sub = LogSession::sub("s1");
+        assert!(line_session_id(&sub).starts_with("s1:sub:"));
     }
 
     #[test]

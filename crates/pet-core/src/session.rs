@@ -1,22 +1,14 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::item::ChatItem;
 
-fn sessions_dir() -> Result<PathBuf, String> {
-    let dir = crate::common::config_dir()?.join("sessions");
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
-    Ok(dir)
-}
-
-fn index_path() -> Result<PathBuf, String> {
-    Ok(sessions_dir()?.join("index.json"))
-}
-
-fn session_path(id: &str) -> Result<PathBuf, String> {
-    Ok(sessions_dir()?.join(format!("{id}.json")))
+/// The file holding one session record (`index.json`, `<id>.json`).
+fn file(name: &str) -> Result<PathBuf, String> {
+    Ok(crate::store::data_dir("sessions")?.join(name))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +19,7 @@ pub struct SessionMeta {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionIndex {
     pub active_id: String,
     pub sessions: Vec<SessionMeta>,
@@ -42,39 +34,36 @@ pub struct ContextUsage {
     pub total: u64,
 }
 
+/// The two parallel tracks an agent conversation keeps: the model-facing
+/// `messages` and the display-facing `items`. Owners flatten it into their own
+/// struct so both keys stay at the top level of the disk JSON.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Conversation {
+    #[serde(default)]
+    pub messages: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub items: Vec<ChatItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
-    pub messages: Vec<serde_json::Value>,
-    pub items: Vec<ChatItem>,
+    #[serde(flatten)]
+    pub conv: Conversation,
     #[serde(default)]
     pub context_usage: Option<ContextUsage>,
 }
 
-fn read_index() -> SessionIndex {
-    index_path()
-        .ok()
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or(SessionIndex {
-            active_id: String::new(),
-            sessions: vec![],
-        })
-}
-
-/// Serialize `value` as pretty JSON and write it to `path`. `what` names the
-/// thing in error messages (e.g. "index", "session").
-fn write_json_pretty<T: Serialize>(path: &PathBuf, value: &T, what: &str) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize {what}: {e}"))?;
-    fs::write(path, json).map_err(|e| format!("Failed to write {what}: {e}"))
+fn read_index() -> Result<SessionIndex, String> {
+    let path = file("index.json")?;
+    Ok(crate::store::read_json(&path)?.unwrap_or_default())
 }
 
 fn write_index(index: &SessionIndex) -> Result<(), String> {
-    write_json_pretty(&index_path()?, index, "index")
+    crate::store::write_json(&file("index.json")?, index)
 }
 
 /// Sentinel title of a not-yet-named session, stored verbatim; interfaces
@@ -131,6 +120,121 @@ pub fn derive_title(items: &[ChatItem]) -> Option<String> {
         })
 }
 
+/// Remove selected display items and the LLM messages behind them.
+///
+/// `items` and `messages` share no ids and aren't index-aligned, but they're
+/// built in the same chronological order, so they're matched structurally:
+///
+/// - Messages split into *turn blocks*: a `User` message plus everything up to
+///   the next one (its assistant replies, tool calls and tool results).
+/// - The k-th block pairs with the k-th turn-opening item (`user` /
+///   `notification`).
+/// - Inside a block, assistant messages carrying text pair in order with that
+///   block's non-empty `assistant` items.
+///
+/// Deleting a turn-opening item drops its whole block, so a tool result can
+/// never be left without the call that produced it. Deleting an assistant item
+/// drops only that message. Items with no message of their own — tool rows,
+/// errors, image-only assistant bubbles — disappear from the transcript and
+/// leave the context alone.
+///
+/// If the structures don't line up (a hand-edited session), items are removed
+/// and messages left untouched: a stale context beats a corrupted one.
+pub fn prune_session(
+    items: &[ChatItem],
+    messages: &[serde_json::Value],
+    selected: &HashSet<String>,
+) -> (Vec<ChatItem>, Vec<serde_json::Value>) {
+    let is_selected = |it: &ChatItem| selected.contains(it.id());
+    let bears_assistant_message = |it: &ChatItem| it.assistant_text().is_some();
+
+    let kept_items: Vec<ChatItem> = items.iter().filter(|it| !is_selected(it)).cloned().collect();
+
+    // Message turn blocks: [start, end) index ranges, each opened by a `User`.
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        if crate::llm::is_user_message(m) {
+            if let Some(last) = blocks.last_mut() {
+                last.1 = i;
+            }
+            blocks.push((i, messages.len()));
+        }
+    }
+
+    // Item turn blocks, in the same order.
+    let mut item_blocks: Vec<Vec<usize>> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        if it.opens_turn() {
+            item_blocks.push(vec![i]);
+        } else if let Some(block) = item_blocks.last_mut() {
+            block.push(i);
+        }
+    }
+
+    // Anything before the first user message (a system seed) is never paired.
+    let leading = blocks.first().map(|(s, _)| *s).unwrap_or(messages.len());
+    if item_blocks.len() != blocks.len() {
+        return (kept_items, messages.to_vec());
+    }
+
+    let mut drop: HashSet<usize> = HashSet::new();
+    for (block_idx, item_idxs) in item_blocks.iter().enumerate() {
+        let (start, end) = blocks[block_idx];
+        if is_selected(&items[item_idxs[0]]) {
+            drop.extend(start..end);
+            continue;
+        }
+        // Assistant messages with text, in order, within this block.
+        let text_msgs: Vec<usize> = (start..end)
+            .filter(|&j| {
+                crate::llm::load_messages(&messages[j..=j])
+                    .first()
+                    .is_some_and(|m| {
+                        m.role == genai::chat::ChatRole::Assistant
+                            && m.content.texts().iter().any(|t| !t.trim().is_empty())
+                    })
+            })
+            .collect();
+        let text_items: Vec<usize> = item_idxs
+            .iter()
+            .copied()
+            .filter(|&i| bears_assistant_message(&items[i]))
+            .collect();
+        if text_items.len() != text_msgs.len() {
+            return (kept_items, messages.to_vec());
+        }
+        for (k, &item_idx) in text_items.iter().enumerate() {
+            if is_selected(&items[item_idx]) {
+                drop.insert(text_msgs[k]);
+            }
+        }
+    }
+
+    let kept_messages = messages
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| *j < leading || !drop.contains(j))
+        .map(|(_, m)| m.clone())
+        .collect();
+    (kept_items, kept_messages)
+}
+
+/// Prune selected items from a session and persist the result, refreshing
+/// `updated_at`. Returns the session as interfaces render it.
+///
+/// The caller must ensure no turn is running in the session: a finishing turn
+/// appends to both arrays and would race this edit.
+pub fn prune_and_save(session_id: &str, item_ids: &[String]) -> Result<SessionView, String> {
+    let mut sess = load_session(session_id.to_string())?;
+    let selected: HashSet<String> = item_ids.iter().cloned().collect();
+    let (items, messages) = prune_session(&sess.conv.items, &sess.conv.messages, &selected);
+    sess.conv.items = items;
+    sess.conv.messages = messages;
+    sess.updated_at = crate::common::iso_now();
+    save_session(sess.clone())?;
+    Ok(SessionView::from(sess))
+}
+
 /// A `{ "role": "system", "content": <SOUL.md> }` message — the first message
 /// of every new session, seeded with the given agent's SOUL. The seed is only
 /// the initial system message; every chat turn rebuilds it via
@@ -149,8 +253,10 @@ pub fn new_seeded_session(agent_id: &str, id: String, title: String) -> Result<S
         title,
         created_at: now.clone(),
         updated_at: now,
-        messages: vec![soul_system_message(agent_id)],
-        items: vec![],
+        conv: Conversation {
+            messages: vec![soul_system_message(agent_id)],
+            items: vec![],
+        },
         context_usage: None,
     };
     save_session(session.clone())?;
@@ -158,7 +264,16 @@ pub fn new_seeded_session(agent_id: &str, id: String, title: String) -> Result<S
 }
 
 pub fn list_sessions() -> SessionIndex {
-    read_index()
+    // Interfaces call this on every refresh and can't surface an error, so a
+    // damaged index is logged and read as empty. It is never written from here,
+    // leaving the file intact for recovery.
+    match read_index() {
+        Ok(index) => index,
+        Err(e) => {
+            eprintln!("{e}");
+            SessionIndex::default()
+        }
+    }
 }
 
 /// Mark `id` as the active session in the shared index, without rewriting the
@@ -168,7 +283,7 @@ pub fn list_sessions() -> SessionIndex {
 /// persist the choice here so the other window's focus-reload converges on it
 /// instead of reverting to whatever was last saved (the newest session).
 pub fn set_active_session(id: String) -> Result<(), String> {
-    let mut index = read_index();
+    let mut index = read_index()?;
     if !index.sessions.iter().any(|m| m.id == id) {
         return Err(format!("Unknown session {id}"));
     }
@@ -177,10 +292,8 @@ pub fn set_active_session(id: String) -> Result<(), String> {
 }
 
 pub fn load_session(id: String) -> Result<Session, String> {
-    let path = session_path(&id)?;
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read session {id}: {e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse session {id}: {e}"))
+    let path = file(&format!("{id}.json"))?;
+    crate::store::read_json(&path)?.ok_or_else(|| format!("Unknown session {id}"))
 }
 
 /// A session as an interface renders it: the display transcript and its
@@ -204,7 +317,7 @@ impl From<Session> for SessionView {
             title: s.title,
             created_at: s.created_at,
             updated_at: s.updated_at,
-            items: s.items,
+            items: s.conv.items,
             context_usage: s.context_usage,
         }
     }
@@ -220,14 +333,16 @@ pub fn load_session_view(id: String) -> Result<SessionView, String> {
 /// never yank the windows over to it. Only `set_active_session` /
 /// `create_session` — user actions — move the pointer.
 pub fn save_session(mut session: Session) -> Result<(), String> {
-    let path = session_path(&session.id)?;
+    let path = file(&format!("{}.json", session.id))?;
 
     // Preserve created_at (and last-known usage) from the existing file when the
     // caller didn't supply them — e.g. a turn whose provider omitted usage, or a
-    // Telegram save, shouldn't blank out a previously-recorded occupancy.
+    // Telegram save, shouldn't blank out a previously-recorded occupancy. A
+    // damaged old file is reported but never blocks the save: the in-memory
+    // session is newer and is about to replace it.
     if session.created_at.is_empty() || session.context_usage.is_none() {
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(existing) = serde_json::from_str::<Session>(&content) {
+        match crate::store::read_json::<Session>(&path) {
+            Ok(Some(existing)) => {
                 if session.created_at.is_empty() {
                     session.created_at = existing.created_at;
                 }
@@ -235,14 +350,16 @@ pub fn save_session(mut session: Session) -> Result<(), String> {
                     session.context_usage = existing.context_usage;
                 }
             }
+            Ok(None) => {}
+            Err(e) => eprintln!("{e}"),
         }
     }
 
     // Write session file
-    write_json_pretty(&path, &session, "session")?;
+    crate::store::write_json(&path, &session)?;
 
     // Update index
-    let mut index = read_index();
+    let mut index = read_index()?;
     if let Some(meta) = index.sessions.iter_mut().find(|m| m.id == session.id) {
         meta.title = session.title.clone();
         meta.updated_at = session.updated_at.clone();
@@ -265,15 +382,13 @@ pub fn rename_session(id: String, title: String) -> Result<(), String> {
         return Err("Title cannot be empty".to_string());
     }
 
-    let path = session_path(&id)?;
-    if let Ok(content) = fs::read_to_string(&path) {
-        if let Ok(mut session) = serde_json::from_str::<Session>(&content) {
-            session.title = title.clone();
-            write_json_pretty(&path, &session, "session")?;
-        }
+    let path = file(&format!("{id}.json"))?;
+    if let Some(mut session) = crate::store::read_json::<Session>(&path)? {
+        session.title = title.clone();
+        crate::store::write_json(&path, &session)?;
     }
 
-    let mut index = read_index();
+    let mut index = read_index()?;
     if let Some(meta) = index.sessions.iter_mut().find(|m| m.id == id) {
         meta.title = title;
         write_index(&index)?;
@@ -339,13 +454,15 @@ pub fn trim_for_context(messages: &mut Vec<genai::chat::ChatMessage>, max_turns:
 
 pub fn delete_session(id: String) -> Result<(), String> {
     // Remove file
-    let path = session_path(&id)?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| format!("Failed to delete session file: {e}"))?;
+    let path = file(&format!("{id}.json"))?;
+    match fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed to delete session file: {e}")),
     }
 
     // Update index
-    let mut index = read_index();
+    let mut index = read_index()?;
     index.sessions.retain(|m| m.id != id);
     if index.active_id == id {
         index.active_id = index
@@ -414,6 +531,37 @@ mod tests {
     }
 
     #[test]
+    fn disk_format_session_json_keeps_messages_and_items_at_top_level() {
+        // A session file exactly as the previous struct wrote it: `messages`
+        // and `items` sit next to the metadata, not under a `conv` object.
+        let disk = r#"{
+            "id": "s-1",
+            "title": "hello",
+            "created_at": "2026-10-19T14:31:56.452",
+            "updated_at": "2026-10-26T17:36:48.761",
+            "messages": [
+                { "content": [{ "Text": "hello" }], "options": null, "role": "User" }
+            ],
+            "items": [
+                { "id": "i1", "ts": 1, "type": "user", "content": "hello", "images": [] }
+            ],
+            "context_usage": { "used": 12, "total": 200000 }
+        }"#;
+
+        let s: Session = serde_json::from_str(disk).expect("old session files must parse");
+        assert_eq!(s.conv.messages.len(), 1);
+        assert_eq!(s.conv.items.len(), 1);
+        assert_eq!(s.conv.items[0].id(), "i1");
+        assert_eq!(s.context_usage.as_ref().map(|u| u.used), Some(12));
+
+        // Serializing back must not nest them under `conv`.
+        let written = serde_json::to_value(&s).unwrap();
+        assert_eq!(written["messages"][0]["role"], "User");
+        assert_eq!(written["items"][0]["type"], "user");
+        assert!(written.get("conv").is_none());
+    }
+
+    #[test]
     fn recent_turns_edge_cases() {
         assert!(recent_turns(&[], 3).is_empty());
         // Zero turns means no history, regardless of what's there.
@@ -421,112 +569,36 @@ mod tests {
         // No user message → nothing to anchor a turn on.
         assert!(recent_turns(&[system("x")], 3).is_empty());
     }
-}
 
-/// Remove selected display items and the LLM messages behind them.
-///
-/// `items` and `messages` share no ids and aren't index-aligned, but they're
-/// built in the same chronological order, so they're matched structurally:
-///
-/// - Messages split into *turn blocks*: a `User` message plus everything up to
-///   the next one (its assistant replies, tool calls and tool results).
-/// - The k-th block pairs with the k-th turn-opening item (`user` /
-///   `notification`).
-/// - Inside a block, assistant messages carrying text pair in order with that
-///   block's non-empty `assistant` items.
-///
-/// Deleting a turn-opening item drops its whole block, so a tool result can
-/// never be left without the call that produced it. Deleting an assistant item
-/// drops only that message. Items with no message of their own — tool rows,
-/// errors, image-only assistant bubbles — disappear from the transcript and
-/// leave the context alone.
-///
-/// If the structures don't line up (a hand-edited session), items are removed
-/// and messages left untouched: a stale context beats a corrupted one.
-pub fn prune_session(
-    items: &[ChatItem],
-    messages: &[serde_json::Value],
-    selected: &std::collections::HashSet<String>,
-) -> (Vec<ChatItem>, Vec<serde_json::Value>) {
-    let is_selected = |it: &ChatItem| selected.contains(it.id());
-    let bears_assistant_message = |it: &ChatItem| it.assistant_text().is_some();
+    // --- prune_session -----------------------------------------------------
 
-    let kept_items: Vec<ChatItem> = items.iter().filter(|it| !is_selected(it)).cloned().collect();
-
-    // Message turn blocks: [start, end) index ranges, each opened by a `User`.
-    let mut blocks: Vec<(usize, usize)> = Vec::new();
-    for (i, m) in messages.iter().enumerate() {
-        if crate::llm::is_user_message(m) {
-            if let Some(last) = blocks.last_mut() {
-                last.1 = i;
-            }
-            blocks.push((i, messages.len()));
+    fn user_item(id: &str, content: &str) -> ChatItem {
+        ChatItem::User {
+            id: id.into(),
+            ts: 0,
+            content: content.into(),
+            images: vec![],
         }
     }
 
-    // Item turn blocks, in the same order.
-    let mut item_blocks: Vec<Vec<usize>> = Vec::new();
-    for (i, it) in items.iter().enumerate() {
-        if it.opens_turn() {
-            item_blocks.push(vec![i]);
-        } else if let Some(block) = item_blocks.last_mut() {
-            block.push(i);
+    fn assistant_item(id: &str, content: &str) -> ChatItem {
+        ChatItem::Assistant {
+            id: id.into(),
+            ts: 0,
+            content: content.into(),
+            reasoning: None,
+            images: vec![],
         }
     }
 
-    // Anything before the first user message (a system seed) is never paired.
-    let leading = blocks.first().map(|(s, _)| *s).unwrap_or(messages.len());
-    if item_blocks.len() != blocks.len() {
-        return (kept_items, messages.to_vec());
-    }
-
-    let mut drop: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    for (block_idx, item_idxs) in item_blocks.iter().enumerate() {
-        let (start, end) = blocks[block_idx];
-        if is_selected(&items[item_idxs[0]]) {
-            drop.extend(start..end);
-            continue;
-        }
-        // Assistant messages with text, in order, within this block.
-        let text_msgs: Vec<usize> = (start..end)
-            .filter(|&j| {
-                crate::llm::load_messages(&messages[j..=j])
-                    .first()
-                    .is_some_and(|m| {
-                        m.role == genai::chat::ChatRole::Assistant
-                            && m.content.texts().iter().any(|t| !t.trim().is_empty())
-                    })
-            })
-            .collect();
-        let text_items: Vec<usize> = item_idxs
-            .iter()
-            .copied()
-            .filter(|&i| bears_assistant_message(&items[i]))
-            .collect();
-        if text_items.len() != text_msgs.len() {
-            return (kept_items, messages.to_vec());
-        }
-        for (k, &item_idx) in text_items.iter().enumerate() {
-            if is_selected(&items[item_idx]) {
-                drop.insert(text_msgs[k]);
-            }
+    fn tool_item(id: &str, tool_calls: Vec<crate::item::ToolCallRecord>) -> ChatItem {
+        ChatItem::Tool {
+            id: id.into(),
+            ts: 0,
+            content: String::new(),
+            tool_calls,
         }
     }
-
-    let kept_messages = messages
-        .iter()
-        .enumerate()
-        .filter(|(j, _)| *j < leading || !drop.contains(j))
-        .map(|(_, m)| m.clone())
-        .collect();
-    (kept_items, kept_messages)
-}
-
-#[cfg(test)]
-mod prune_tests {
-    use super::*;
-    use genai::chat::{ChatMessage, MessageContent, ToolCall, ToolResponse};
-    use std::collections::HashSet;
 
     fn msg_user(t: &str) -> serde_json::Value {
         crate::llm::store_message(&ChatMessage::user(t))
@@ -535,7 +607,7 @@ mod prune_tests {
         crate::llm::store_message(&ChatMessage::assistant(t))
     }
     fn msg_tool_call(id: &str) -> serde_json::Value {
-        crate::llm::store_message(&ChatMessage::from(vec![ToolCall {
+        crate::llm::store_message(&ChatMessage::from(vec![genai::chat::ToolCall {
             call_id: id.to_string(),
             fn_name: "bash".to_string(),
             fn_arguments: serde_json::json!({}),
@@ -543,21 +615,14 @@ mod prune_tests {
         }]))
     }
     fn msg_tool_result(id: &str) -> serde_json::Value {
-        crate::llm::store_message(&ChatMessage::tool(MessageContent::from_tool_responses(
-            vec![ToolResponse::new(id, "out")],
-        )))
-    }
-    fn item(id: &str, ty: &str, content: &str) -> ChatItem {
-        serde_json::from_value(serde_json::json!({
-            "id": id, "ts": 0, "type": ty, "content": content, "toolCalls": []
-        }))
-        .unwrap()
+        crate::llm::store_message(&ChatMessage::tool(
+            genai::chat::MessageContent::from_tool_responses(vec![genai::chat::ToolResponse::new(
+                id, "out",
+            )]),
+        ))
     }
     fn sel(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|s| s.to_string()).collect()
-    }
-    fn roles(msgs: &[serde_json::Value]) -> Vec<String> {
-        msgs.iter().map(|m| m["role"].as_str().unwrap_or("").to_string()).collect()
     }
 
     /// A tool-using turn followed by a plain one — the shape the old
@@ -565,11 +630,11 @@ mod prune_tests {
     /// messages held nothing but user/assistant text.
     fn fixture() -> (Vec<ChatItem>, Vec<serde_json::Value>) {
         let items = vec![
-            item("i1", "user", "q1"),
-            item("i2", "tool", ""),
-            item("i3", "assistant", "a1"),
-            item("i4", "user", "q2"),
-            item("i5", "assistant", "a2"),
+            user_item("i1", "q1"),
+            tool_item("i2", vec![]),
+            assistant_item("i3", "a1"),
+            user_item("i4", "q2"),
+            assistant_item("i5", "a2"),
         ];
         let messages = vec![
             msg_user("q1"),
@@ -610,7 +675,7 @@ mod prune_tests {
 
     #[test]
     fn a_system_seed_is_never_pruned() {
-        let items = vec![item("i1", "user", "q1"), item("i2", "assistant", "a1")];
+        let items = vec![user_item("i1", "q1"), assistant_item("i2", "a1")];
         let messages = vec![
             crate::llm::store_message(&ChatMessage::system("soul")),
             msg_user("q1"),
@@ -622,23 +687,25 @@ mod prune_tests {
 
     #[test]
     fn completion_flips_only_the_tool_call_that_launched_the_task() {
-        let running = |task: &str| {
-            serde_json::json!({ "task_id": task, "status": "running" }).to_string()
+        let running =
+            |task: &str| serde_json::json!({ "task_id": task, "status": "running" }).to_string();
+        let call = |result: &str| crate::item::ToolCallRecord {
+            name: "bash".into(),
+            arguments: "{}".into(),
+            result: Some(result.to_string()),
         };
-        let items: Vec<ChatItem> = serde_json::from_value(serde_json::json!([
-            { "id": "i1", "ts": 0, "type": "tool", "content": "", "toolCalls": [
-                { "name": "bash", "arguments": "{}", "result": running("t-1") },
-                { "name": "bash", "arguments": "{}", "result": running("t-2") },
-            ]},
+        let items = vec![
+            tool_item("i1", vec![call(&running("t-1")), call(&running("t-2"))]),
             // A plain (non-JSON) result must not be touched, nor parsed as one.
-            { "id": "i2", "ts": 0, "type": "tool", "content": "", "toolCalls": [
-                { "name": "bash", "arguments": "{}", "result": "ok" },
-            ]},
-        ]))
-        .unwrap();
+            tool_item("i2", vec![call("ok")]),
+        ];
         let out = apply_completion_to_items(items, "t-2", "exit 0");
         let ChatItem::Tool { tool_calls, .. } = &out[0] else { panic!() };
-        assert_eq!(tool_calls[0].result.as_deref(), Some(running("t-1").as_str()), "other task keeps its placeholder");
+        assert_eq!(
+            tool_calls[0].result.as_deref(),
+            Some(running("t-1").as_str()),
+            "other task keeps its placeholder"
+        );
         assert_eq!(tool_calls[1].result.as_deref(), Some("exit 0"));
         let ChatItem::Tool { tool_calls, .. } = &out[1] else { panic!() };
         assert_eq!(tool_calls[0].result.as_deref(), Some("ok"));
@@ -647,7 +714,7 @@ mod prune_tests {
     #[test]
     fn structural_mismatch_leaves_the_context_untouched() {
         // Items claim two turns, messages hold one — a hand-edited session.
-        let items = vec![item("i1", "user", "q1"), item("i2", "user", "q2")];
+        let items = vec![user_item("i1", "q1"), user_item("i2", "q2")];
         let messages = vec![msg_user("q1"), msg_assistant("a1")];
         let (new_items, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
         assert_eq!(new_items.len(), 1);

@@ -1,4 +1,9 @@
 .*
+# `.*` above also excludes the directory itself, and git cannot re-include a
+# file whose parent directory is excluded. Re-include the ones we track first,
+# or the nested `!` rules below never take effect.
+!/.github/
+!/.vscode/
 
 # Logs
 logs

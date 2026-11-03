@@ -1,5 +1,5 @@
 use pet_core::mcp::{McpServerStatus, McpStore};
-use pet_core::settings::{get_settings, AppSettings, McpServerConfig};
+use pet_core::settings::get_settings;
 use tauri::State;
 
 /// Connection status of every MCP server in the global pool. The settings UI
@@ -16,7 +16,7 @@ pub async fn get_mcp_status(mcp_store: State<'_, McpStore>) -> Result<Vec<McpSer
 #[tauri::command]
 pub async fn reconnect_mcp(mcp_store: State<'_, McpStore>) -> Result<Vec<McpServerStatus>, String> {
     let settings = get_settings()?;
-    let servers = referenced(&settings);
+    let servers = settings.referenced_server_configs();
     let mut hub = mcp_store.write().await;
     hub.reconnect(&servers).await;
     Ok(hub.statuses())
@@ -32,24 +32,14 @@ pub async fn sync_mcp_server(
     mcp_store: State<'_, McpStore>,
 ) -> Result<Vec<McpServerStatus>, String> {
     let settings = get_settings()?;
-    let wanted = referenced(&settings)
+    let wanted = settings
+        .referenced_server_configs()
         .into_iter()
-        .find(|(n, _)| *n == name)
-        .map(|(n, c)| (n, c));
+        .find(|(n, _)| *n == name);
     let mut hub = mcp_store.write().await;
     match wanted {
         Some(server) => hub.ensure(&[server]).await,
         None => hub.disconnect(&name).await,
     }
     Ok(hub.statuses())
-}
-
-/// The (name, config) pairs the pool should be running: enabled and referenced.
-fn referenced(settings: &AppSettings) -> Vec<(&str, &McpServerConfig)> {
-    settings
-        .referenced_mcp_servers()
-        .into_iter()
-        .filter_map(|n| settings.mcp_servers.get_key_value(&n))
-        .map(|(n, c)| (n.as_str(), c))
-        .collect()
 }

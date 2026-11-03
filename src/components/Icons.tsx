@@ -20,23 +20,6 @@ export function GearIcon({ className }: IconProps) {
   );
 }
 
-export function SendIcon({ className }: IconProps) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="m22 2-7 20-4-9-9-4Z" />
-      <path d="M22 2 11 13" />
-    </svg>
-  );
-}
 
 /* Generic stroked icon wrapper to keep all icons visually consistent. */
 function Stroke({ className, children }: IconProps & { children: React.ReactNode }) {

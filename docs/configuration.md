@@ -18,8 +18,8 @@
 | `prompts/tools/<工具名>.md` | 改过的工具描述（同上，没改过就没有） |
 | `~/.agents/skills/<技能名>/SKILL.md` | 技能手册（默认目录，所有 Agent 共享，见 [skills.md](skills.md)） |
 | `sessions/` | 各会话历史（含每个 Agent 的 Telegram 会话 `telegram-<agent id>`） |
-| `group/state.json` | 群聊转录与各成员私有上下文 |
-| `logs/` | `app.log` / `llm.log` / 后台任务历史 `tasks.json` |
+| `groups/<room id>.json` | 群聊房间的公共转录与各成员私有上下文 |
+| `logs/` | `app.log` / 每轮一行 JSON 的 `llm.log` / 按会话分的 `llm-log/`（`index.jsonl` + `<会话 id>.json`）/ 后台任务历史 `tasks.json` |
 | `/tmp/pet/shell/` | bash 任务的 stdout/stderr |
 
 打包出来的 app 和 `cargo build --release` 的 pet-cli 用 `pet/`；debug 构建

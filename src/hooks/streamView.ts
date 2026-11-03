@@ -1,4 +1,4 @@
-import type { ChatItem, ToolCall } from "./useChat";
+import type { ChatItem, ToolCall } from "../types/chat";
 
 /** One event from an agent run (mirrors the backend's `StreamEvent`, camelCase
  *  via serde). The same shape arrives from chat turns, group agents and swarm

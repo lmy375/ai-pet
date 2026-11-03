@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, ModelConfig } from "../../../hooks/useSettings";
 import { newModel } from "../../../hooks/useSettings";
 import { Button } from "../../ui/Button";
@@ -12,7 +11,8 @@ import { SearchSelect } from "../../ui/SearchSelect";
 import { StatusText } from "../../ui/StatusText";
 import { CopyIcon, TrashIcon } from "../../Icons";
 import { useI18n } from "../../../i18n";
-import { renameKey, uniqueName } from "./pool";
+import { useModelPool } from "./useModelPool";
+import { useModelProbe } from "./useModelProbe";
 
 // Common model context windows, offered as one-tap presets next to the free
 // numeric input (gpt-4o ~128K, Claude ~200K, Gemini ~1M).
@@ -25,14 +25,6 @@ const CONTEXT_PRESETS: { label: string; value: number }[] = [
 
 /** Effort keywords genai understands; anything else in `reasoning` is a token budget. */
 const REASONING_KEYWORDS = ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-type ProviderOptions = {
-  options: { id: string; label: string }[];
-  /** What a request would actually use — equals `provider`, or genai's inference when it's empty. */
-  resolved: string;
-  /** Whether this protocol can express a numeric thinking budget. */
-  renders_budget: boolean;
-};
 
 interface Props {
   settings: AppSettings;
@@ -51,145 +43,17 @@ interface Props {
  */
 export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
   const { t } = useI18n();
-  const names = Object.keys(settings.models);
-  const [selected, setSelected] = useState<string | null>(names[0] ?? null);
-  const [nameDraft, setNameDraft] = useState(selected ?? "");
-  const [models, setModels] = useState<string[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
-  const [modelsError, setModelsError] = useState<string | null>(null);
-  const [providerOptions, setProviderOptions] = useState<ProviderOptions | null>(null);
+  const pool = useModelPool({ settings, onDraft, onCommit, notify });
+  const { names, selected, select, nameDraft, setNameDraft, config, update, add, rename, remove, usedBy } = pool;
+  const probe = useModelProbe(selected, config);
+  const { models, loadingModels, modelsError, providerOptions, testing, testResult, setTestResult, loadModels, handleTest } = probe;
+
   // Default values live on the Rust side; fetch the template once for the
   // "add" fallback and the placeholders (no local copy that could drift).
   const [tpl, setTpl] = useState<ModelConfig | null>(null);
   useEffect(() => {
     newModel().then(setTpl).catch((e) => console.error("Failed to load model template:", e));
   }, []);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
-
-  const config: ModelConfig | undefined = selected ? settings.models[selected] : undefined;
-
-  // Follow the pool when the selected entry disappears (deleted, or the whole
-  // config was reloaded from the raw YAML tab).
-  useEffect(() => {
-    if (selected && settings.models[selected]) return;
-    const next = names[0] ?? null;
-    setSelected(next);
-    setNameDraft(next ?? "");
-  }, [names.join("\n")]);
-
-  // Fetch the endpoint's model list when the selected entry changes. Failures
-  // leave the list empty; the configured id stays selectable via the fallback
-  // option below, so a copied entry never silently loses its model.
-  useEffect(() => {
-    setTestResult(null);
-    if (config?.api_base.trim()) loadModels(config.api_base, config.api_key, config.provider, config.model);
-    else { setModels([]); setModelsError(null); }
-  }, [selected]);
-
-  // Keep the protocol list — and what "Auto" resolves to for this model — in
-  // sync. Resolution depends on the model name, so this re-runs when it changes.
-  useEffect(() => {
-    invoke<ProviderOptions>("list_providers", {
-      model: config?.model ?? "",
-      provider: config?.provider ?? "",
-    })
-      .then(setProviderOptions)
-      .catch(() => setProviderOptions(null));
-  }, [config?.model, config?.provider]);
-
-  const loadModels = async (apiBase: string, apiKey: string, provider: string, model: string) => {
-    if (!apiBase.trim()) return;
-    setLoadingModels(true);
-    setModelsError(null);
-    try {
-      // The provider decides which protocol the listing speaks — an Anthropic or
-      // Gemini endpoint has no OpenAI-style /models route.
-      setModels(await invoke<string[]>("list_models", { apiBase, apiKey, provider, model }));
-    } catch (e: any) {
-      setModels([]);
-      setModelsError(String(e));
-    } finally {
-      setLoadingModels(false);
-    }
-  };
-
-  /* ---------- Pool edits ---------- */
-
-  const withPool = (pool: Record<string, ModelConfig>): AppSettings => ({ ...settings, models: pool });
-
-  const update = (updates: Partial<ModelConfig>, commit: boolean) => {
-    if (!selected || !config) return;
-    const next = withPool({ ...settings.models, [selected]: { ...config, ...updates } });
-    (commit ? onCommit : onDraft)(next);
-  };
-
-  const add = async (from?: ModelConfig) => {
-    const name = uniqueName(from ? `${selected} copy` : t("settings.models.newName"), names);
-    onCommit(withPool({ ...settings.models, [name]: from ?? (await newModel()) }));
-    setSelected(name);
-    setNameDraft(name);
-  };
-
-  // Renaming the pool key re-points every agent that used the old name in the
-  // same write — one edit, not a compatibility layer that reads both.
-  const rename = (next: string) => {
-    const name = next.trim();
-    if (!selected || !name || name === selected) { setNameDraft(selected ?? ""); return; }
-    if (settings.models[name]) { setNameDraft(selected); return; }
-    onCommit({
-      ...settings,
-      models: renameKey(settings.models, selected, name),
-      agents: settings.agents.map((a) => (a.model === selected ? { ...a, model: name } : a)),
-    });
-    setSelected(name);
-    setNameDraft(name);
-  };
-
-  const usedBy = selected ? settings.agents.filter((a) => a.model === selected) : [];
-
-  // Delete always goes through: the agents using this model are re-pointed at
-  // whatever is left in the pool (and told so). Blocking the button instead left
-  // it looking broken — WebKit shows no tooltip on a disabled control, so the
-  // click just did nothing.
-  const remove = () => {
-    if (!selected) return;
-    const { [selected]: _, ...rest } = settings.models;
-    const fallback = Object.keys(rest)[0] ?? "";
-    onCommit({
-      ...settings,
-      models: rest,
-      agents: settings.agents.map((a) => (a.model === selected ? { ...a, model: fallback } : a)),
-    });
-    if (usedBy.length === 0) return;
-    const agents = usedBy.map((a) => a.name).join("、");
-    // Deleting the last model leaves them with nothing to switch to — say that
-    // rather than reporting a move to "".
-    notify(
-      fallback
-        ? t("settings.models.repointed", { agents, model: fallback })
-        : t("settings.models.repointedNone", { agents })
-    );
-  };
-
-  const handleTest = async () => {
-    if (!config) return;
-    setTesting(true);
-    setTestResult(null);
-    try {
-      await invoke("test_model", {
-        apiBase: config.api_base,
-        apiKey: config.api_key,
-        model: config.model,
-        provider: config.provider,
-      });
-      setTestResult({ ok: true, text: t("settings.llm.testOk") });
-    } catch (e: any) {
-      setTestResult({ ok: false, text: t("settings.llm.testFailed", { error: e }) });
-    } finally {
-      setTesting(false);
-    }
-  };
 
   // Keep the configured id selectable even when the endpoint listing is absent
   // or stale, so opening this card can never blank out a working model.
@@ -201,7 +65,7 @@ export function ModelsCard({ settings, onDraft, onCommit, notify }: Props) {
         <ChipTabs
           items={names.map((name) => ({ name }))}
           selected={selected}
-          onSelect={(name) => { setSelected(name); setNameDraft(name); }}
+          onSelect={select}
           onAdd={() => add()}
           addTitle={t("settings.models.add")}
         />

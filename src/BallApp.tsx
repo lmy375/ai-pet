@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { useWindowPositionSave } from "./hooks/useWindowPositionSave";
 
-const SAVE_DEBOUNCE = 500; // ms idle after a drag before persisting ball position
 const DRAG_THRESHOLD = 5; // px of travel before a press becomes a drag
 
 // The floating ball the pet collapses into: a small always-on-top circle with
@@ -13,40 +13,9 @@ export function BallApp() {
   const press = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
 
-  useEffect(() => {
-    const win = getCurrentWindow();
-    let saveTimer: ReturnType<typeof setTimeout> | null = null;
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-
-    // Remember where the user dragged the ball so the next collapse reappears
-    // there (debounced like the pet window's own position save).
-    const setup = async () => {
-      const off = await win.onMoved(() => {
-        invoke("keep_window_visible").catch((e) =>
-          console.error("Failed to keep ball on screen:", e),
-        );
-        if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => {
-          invoke("save_ball_position").catch((e) =>
-            console.error("Failed to save ball position:", e),
-          );
-        }, SAVE_DEBOUNCE);
-      });
-      if (cancelled) {
-        off();
-        return;
-      }
-      unlisten = off;
-    };
-    setup();
-
-    return () => {
-      cancelled = true;
-      if (saveTimer) clearTimeout(saveTimer);
-      unlisten?.();
-    };
-  }, []);
+  // Remember where the user dragged the ball so the next collapse reappears
+  // there (debounced like the pet window's own position save).
+  useWindowPositionSave("save_ball_position", true);
 
   // Press-and-move drags via the native window drag; a press released without
   // moving counts as a click and expands the pet. We can't call startDragging

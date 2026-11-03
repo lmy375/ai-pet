@@ -16,7 +16,7 @@
     "build:all": "pnpm app:build && pnpm cli:build",
     "check": "tsc --noEmit && cargo check --workspace",
     "test": "cargo test --workspace",
-    "lint": "cargo clippy --workspace --all-targets",
+    "lint": "cargo clippy --workspace --all-targets -- -D warnings",
     "verify": "pnpm check && pnpm test && pnpm lint"
   },
   "dependencies": {

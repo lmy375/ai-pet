@@ -2,7 +2,7 @@ use base64::Engine;
 use std::path::Path;
 use std::process::Command;
 
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{parse_args, Tool, ToolContext, ToolSpec};
 
 /// Cap the long edge of the captured image. 1568px is Anthropic's recommended
 /// max for vision input — beyond it the model downscales anyway, so resizing
@@ -31,29 +31,27 @@ const WINDOW_IDS_JXA: &str = r#"function run(argv){
 
 pub struct ScreenshotTool;
 
-impl Tool for ScreenshotTool {
-    fn name(&self) -> &str {
-        "screenshot"
-    }
+#[derive(serde::Deserialize)]
+struct ScreenshotArgs {
+    app: Option<String>,
+}
 
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "screenshot",
-                "description": "Capture the user's screen and attach it for you to look at. Use this when you need to see what's on the user's display — what app/page they're on, an error on screen, a layout they're describing, etc. By default captures the whole main screen. Pass `app` to capture just one application's window (e.g. the user asks you to look at their WeChat / Chrome). The image is shown to you on the next turn.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "app": {
-                            "type": "string",
-                            "description": "Optional. Capture only this application's window instead of the whole screen. Case-insensitive substring of the app name, e.g. \"WeChat\", \"微信\", \"Chrome\". The app must be running with a visible (non-minimized) window. Omit to capture the entire main screen."
-                        }
-                    },
-                    "required": []
-                }
-            }
-        })
+impl Tool for ScreenshotTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "screenshot",
+            description: "Capture the user's screen and attach it for you to look at. Use this when you need to see what's on the user's display — what app/page they're on, an error on screen, a layout they're describing, etc. By default captures the whole main screen. Pass `app` to capture just one application's window (e.g. the user asks you to look at their WeChat / Chrome). The image is shown to you on the next turn.",
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "app": {
+                        "type": "string",
+                        "description": "Optional. Capture only this application's window instead of the whole screen. Case-insensitive substring of the app name, e.g. \"WeChat\", \"微信\", \"Chrome\". The app must be running with a visible (non-minimized) window. Omit to capture the entire main screen."
+                    }
+                },
+                "required": []
+            }),
+        }
     }
 
     crate::impl_execute!(screenshot_impl);
@@ -61,10 +59,11 @@ impl Tool for ScreenshotTool {
 
 async fn screenshot_impl(arguments: &str, ctx: &ToolContext) -> String {
     // Optional `app` arg: capture just that application's window.
-    let app = serde_json::from_str::<serde_json::Value>(arguments)
-        .ok()
-        .and_then(|v| v["app"].as_str().map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty());
+    let args: ScreenshotArgs = match parse_args(arguments) {
+        Ok(args) => args,
+        Err(e) => return e,
+    };
+    let app = args.app.map(|app| app.trim().to_string()).filter(|app| !app.is_empty());
 
     let tmp_dir = std::env::temp_dir();
     let id = uuid::Uuid::new_v4().to_string();

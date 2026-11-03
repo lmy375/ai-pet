@@ -16,13 +16,14 @@ crates/pet-cli      终端 TUI（ratatui）
 可被主人覆盖，见 [configuration.md](configuration.md#提示词与工具)）、后台任务
 （bash / 子代理 / 心跳）、多 Agent 群聊编排器。**pet-core 里不允许出现 `use tauri`。**
 
-界面通过四个 trait 接入：
+界面通过五个 trait 接入：
 
 | trait | 作用 | GUI 实现 | CLI 实现 |
 | --- | --- | --- | --- |
 | `turn::TurnEvents` | 聊天轮次活动（开始 / 流事件 / 结束），全会话一条流 | `turn` 全局事件 → 各窗口按会话过滤 | channel → TUI 按会话过滤 |
-| `chat::ChatEventSink` | 单 Agent 运行的流式事件（心跳、群聊 Agent 用；聊天轮次由 runner 自带的 sink 处理） | — | — |
+| `chat::ChatEventSink` | 单 Agent 运行的流式事件；聊天轮次（`turn::TurnSink`）、群聊（`group::GroupSink`）、swarm（`swarm::SwarmSink`）、心跳（`ImageCollectingSink`）各自实现 | — | — |
 | `group::GroupEvents` | 群聊活动（消息 / 各 Agent 流 / 完成） | `group-*` 全局事件 | channel → 群聊视图 |
+| `swarm::SwarmEvents` | swarm 活动（快照 / 主 Agent 流 / 各 Worker 流与状态） | `swarm-*` 全局事件 | — |
 | `tools::ChatHook` | 心跳 `chat` 工具的 UI 副作用（系统通知 + 刷新会话） | 通知插件 + `chat-inserted` | 无（CLI 不跑心跳） |
 
 `shell::TaskNotifier`（后台任务完成）由 `TurnRunner` 自己实现：完成结果写进
@@ -31,7 +32,8 @@ crates/pet-cli      终端 TUI（ratatui）
 **轮次归后端所有。** 界面只做两件事：`send` 发起一轮，`attach` 随时接上正在
 进行的一轮（回放已产生的事件）。所以切页、刷新、关窗都不会中断或丢失回复，
 多个会话可以并行各跑一轮。`chat::ItemBuilder` 把流事件折成前端的 ChatItem
-JSON，runner、群聊编排器共用；前端用同构的 reducer 渲染进行中的一轮，保证
+JSON，聊天轮次（`turn::TurnSink`）、群聊（`group::GroupSink`）与 swarm
+（`swarm::SwarmSink`）共用；前端用同构的 reducer 渲染进行中的一轮，保证
 落盘内容与实时渲染一致。
 
 ## 两套界面
@@ -41,8 +43,26 @@ JSON，runner、群聊编排器共用；前端用同构的 reducer 渲染进行�
 - **pet-cli**：事件驱动 TUI。终端按键、流事件、群聊事件、任务完成统一进一个
   `AppEvent` channel，单循环消费；引擎调用全部在后台 task。详见 [cli.md](cli.md)。
 
-两者共享磁盘状态（`config.yaml`、`sessions/`、`memory/`、`group/state.json`、
-技能目录）；轮次都经由 `TurnRunner`（它在追加前从磁盘重载会话），可同时运行。
+两者共享磁盘状态（`config.yaml`、`sessions/`、`memory/`、`groups/`、`swarms/`、
+`prompts/`、`logs/`、技能目录）；轮次都经由 `TurnRunner`（它在追加前从磁盘重载会话），
+可同时运行。
+
+### 磁盘布局（配置目录下）
+
+| 路径 | 内容 |
+| --- | --- |
+| `sessions/<会话 id>.json`、`sessions/index.json` | 聊天会话（消息 + 展示 items）与会话列表 / `active_id` |
+| `memory/<agent id>/` | `SOUL.md` / `USER.md` / `MEMORY.md` / `HEARTBEAT.md` |
+| `groups/<room id>.json` | 一个群聊房间：标题与 topic、公共转录、成员列表、各成员的私有上下文与展示 items |
+| `swarms/<swarm id>.json` | 一个 swarm 的快照：任务队列、主 Agent 与各 Worker 的对话 |
+| `prompts/<prompt key>.md`、`prompts/tools/<工具名>.md` | 主人改过的系统提示词 / 工具描述；没改过就没有文件 |
+| `logs/app.log` | 应用日志（活动尾部；超过 `app_log_max_mb` 时清空重写） |
+| `logs/llm.log` | 每轮 LLM 请求一行 JSON（`session_id` + `response.tool_calls`，评测读这个） |
+| `logs/llm-log/index.jsonl`、`logs/llm-log/<会话 id>.json` | 会话列表用的元数据索引 + 每次请求的完整 body（按 kind 各保留 `llm_log_keep_per_kind` 条） |
+| `logs/tasks.json` | 后台任务历史 |
+
+`logs/llm-log/` 在第一次写 LLM 日志时按需创建；`logs/llm.log` 与它并存，逐轮追加，
+是 [评测](evals.md) 读的轨迹。`groups/`、`swarms/`、`prompts/` 也都由各自模块按需创建。
 
 ## 加新功能的规则
 

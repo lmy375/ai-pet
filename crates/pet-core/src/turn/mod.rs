@@ -23,12 +23,12 @@ use serde::Serialize;
 use crate::chat::{run_agent, AgentRun, ChatEventSink, ChatOutcome, StreamEvent, UserTurn};
 use crate::config::AiConfig;
 use crate::item::{ChatItem, ItemTail};
-use crate::logging::{write_log, LogStore};
-use crate::mcp::McpStore;
+use crate::logging::write_log;
 use crate::system_prompt::SystemPrompt;
 use crate::session::{self, ContextUsage, Session, DEFAULT_SESSION_TITLE};
-use crate::shell::{ShellStore, TaskCompletion, TaskNotifier};
-use crate::tools::ToolContext;
+use crate::shell::{TaskCompletion, TaskNotifier};
+use crate::stores::EngineStores;
+use crate::tools::{ToolContext, ToolStores};
 
 mod sink;
 
@@ -100,9 +100,7 @@ pub struct TurnSnapshot {
 
 pub struct TurnRunner {
     pub(super) events: Arc<dyn TurnEvents>,
-    log_store: LogStore,
-    shell_store: ShellStore,
-    mcp_store: McpStore,
+    stores: EngineStores,
     /// Where turns run. Captured at construction so a turn can be started from
     /// any thread (a background waiter delivering a completion, a sync command).
     rt: tokio::runtime::Handle,
@@ -116,16 +114,12 @@ pub struct TurnRunner {
 impl TurnRunner {
     pub fn new(
         events: Arc<dyn TurnEvents>,
-        log_store: LogStore,
-        shell_store: ShellStore,
-        mcp_store: McpStore,
+        stores: EngineStores,
         rt: tokio::runtime::Handle,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             events,
-            log_store,
-            shell_store,
-            mcp_store,
+            stores,
             rt,
             live: Mutex::new(HashMap::new()),
             queued: Mutex::new(HashMap::new()),
@@ -134,13 +128,36 @@ impl TurnRunner {
     }
 
     fn log(&self, msg: &str) {
-        write_log(&self.log_store.0, msg);
+        write_log(&self.stores.log.0, msg);
     }
 
     /// Start a turn in `session_id` with the owner's input. The user item is
     /// persisted before this returns, so any interface reloading the session
     /// sees it immediately. Fails if the session already has a turn running.
     pub fn send(&self, session_id: &str, turn: UserTurn) -> Result<String, String> {
+        self.send_with(session_id, None, None, turn)
+    }
+
+    /// Start a turn as a specific agent, with a per-turn observer for its
+    /// notices. Telegram bots use this: they serve one agent regardless of
+    /// which one is active in the GUI, and need the stream to reply in chat.
+    pub fn send_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        observer: Arc<dyn TurnEvents>,
+        turn: UserTurn,
+    ) -> Result<String, String> {
+        self.send_with(session_id, Some(agent_id.to_string()), Some(observer), turn)
+    }
+
+    fn send_with(
+        &self,
+        session_id: &str,
+        agent_id: Option<String>,
+        observer: Option<Arc<dyn TurnEvents>>,
+        turn: UserTurn,
+    ) -> Result<String, String> {
         // Load before locking: the read is the slow part, and a concurrent
         // `send` for the same session is caught by the busy check below.
         let mut sess = session::load_session(session_id.to_string())?;
@@ -148,9 +165,9 @@ impl TurnRunner {
         if live.contains_key(session_id) {
             return Err("A turn is already running in this session".to_string());
         }
-        sess.items.push(ChatItem::user(&turn.text, &turn.images));
+        sess.conv.items.push(ChatItem::user(&turn.text, &turn.images));
         let origin = TurnOrigin::User { text: turn.text.clone() };
-        self.start(&mut live, sess, turn, origin)
+        self.start(&mut live, sess, turn, origin, agent_id, observer)
     }
 
     /// Inject a finished background task into the session that spawned it and
@@ -193,10 +210,10 @@ impl TurnRunner {
         let label = if c.label.is_empty() { c.kind.clone() } else { c.label.clone() };
         // Flip the originating tool call from "running in background" to its
         // result, then open the resumption turn with a notification line.
-        sess.items = session::apply_completion_to_items(sess.items, &c.task_id, &c.result);
-        sess.items.push(ChatItem::notification(&label, &c.result));
+        sess.conv.items = session::apply_completion_to_items(sess.conv.items, &c.task_id, &c.result);
+        sess.conv.items.push(ChatItem::notification(&label, &c.result));
         let turn = UserTurn::text(format!("[后台任务完成] {}：\n{}", label, c.result));
-        if let Err(e) = self.start(live, sess, turn, TurnOrigin::Completion { label }) {
+        if let Err(e) = self.start(live, sess, turn, TurnOrigin::Completion { label }, None, None) {
             self.log(&format!("completion turn for task {} failed to start: {e}", c.task_id));
         }
     }
@@ -209,30 +226,36 @@ impl TurnRunner {
         mut sess: Session,
         turn: UserTurn,
         origin: TurnOrigin,
+        agent_id: Option<String>,
+        observer: Option<Arc<dyn TurnEvents>>,
     ) -> Result<String, String> {
         if sess.title == DEFAULT_SESSION_TITLE {
-            if let Some(t) = session::derive_title(&sess.items) {
+            if let Some(t) = session::derive_title(&sess.conv.items) {
                 sess.title = t;
             }
         }
         sess.updated_at = crate::common::iso_now();
         let session_id = sess.id.clone();
-        let prior_messages = sess.messages.clone();
+        let prior_messages = sess.conv.messages.clone();
         session::save_session(sess)?;
 
         let turn_id = uuid::Uuid::new_v4().to_string();
         let started_at = crate::common::now_ms();
-        let lt = Arc::new(LiveTurn::new(turn_id.clone(), origin.clone(), started_at));
+        let lt = Arc::new(LiveTurn::new(turn_id.clone(), origin.clone(), started_at, observer));
         live.insert(session_id.clone(), lt.clone());
-        self.events.notice(&TurnNotice::Started {
+        let notice = TurnNotice::Started {
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             origin,
             started_at,
-        });
+        };
+        self.events.notice(&notice);
+        lt.notify_observer(&notice);
 
         let me = self.me.upgrade().ok_or_else(|| "turn runner is shutting down".to_string())?;
-        self.rt.spawn(async move { me.run(session_id, lt, prior_messages, turn).await });
+        self.rt.spawn(async move {
+            me.run(session_id, lt, prior_messages, turn, agent_id).await
+        });
         Ok(turn_id)
     }
 
@@ -242,35 +265,47 @@ impl TurnRunner {
         lt: Arc<LiveTurn>,
         prior_messages: Vec<serde_json::Value>,
         turn: UserTurn,
+        agent_id: Option<String>,
     ) {
         let sink = TurnSink::new(self.clone(), session_id.clone(), lt.clone());
         // Config errors (no agent, no key) surface in the transcript like any
         // other failure, instead of failing `send` where only one window sees it.
-        let outcome = match AiConfig::from_settings() {
+        // Per-agent turns (Telegram) resolve their own agent, not the active one.
+        let config = match &agent_id {
+            Some(id) => AiConfig::from_agent_id(id),
+            None => AiConfig::from_settings(),
+        };
+        let outcome = match config {
             Err(e) => {
                 sink.send_error(&e);
                 Err(e)
             }
             Ok(config) => {
-                let notifier: Arc<dyn TaskNotifier> = self.clone();
-                let mut ctx = ToolContext::new(
-                    LogStore(self.log_store.0.clone()),
-                    ShellStore(self.shell_store.0.clone()),
+                // Only UI-owned turns resume after a background task; a Telegram
+                // bot has no window to push the completion to.
+                let notifier: Option<Arc<dyn TaskNotifier>> = if agent_id.is_none() {
+                    Some(self.clone() as Arc<dyn TaskNotifier>)
+                } else {
+                    None
+                };
+                let ctx = ToolContext::for_session(
+                    ToolStores::new(
+                        self.stores.log.clone(),
+                        self.stores.shell.clone(),
+                        self.stores.mcp.clone(),
+                    ),
                     config.clone(),
-                    self.mcp_store.clone(),
                     session_id.clone(),
-                    Some(notifier),
-                    None, // chat turns aren't heartbeats; no chat hook
-                    false,
-                );
-                ctx.cancel = lt.cancel.clone();
+                )
+                .with_notifier(notifier)
+                .with_cancel(lt.cancel.clone());
                 let result = run_agent(AgentRun {
                     conv: prior_messages,
                     turn: Some(turn),
                     prompt: SystemPrompt::Chat { agent_id: &config.agent_id },
                     sink: &sink,
                     config: &config,
-                    mcp_store: &self.mcp_store,
+                    mcp_store: &self.stores.mcp,
                     ctx: &ctx,
                     max_turns: None,
                 })
@@ -306,9 +341,9 @@ impl TurnRunner {
         // failed turn it is left as it was, so the failure isn't in context.
         match session::load_session(session_id.to_string()) {
             Ok(mut sess) => {
-                sess.items.extend(items);
+                sess.conv.items.extend(items);
                 if let Ok(o) = &outcome {
-                    sess.messages = o.messages.clone();
+                    sess.conv.messages = o.messages.clone();
                 }
                 if let Some(u) = usage {
                     sess.context_usage = Some(u);
@@ -327,10 +362,12 @@ impl TurnRunner {
                 live.remove(session_id);
             }
         }
-        self.events.notice(&TurnNotice::Finished {
+        let notice = TurnNotice::Finished {
             session_id: session_id.to_string(),
             turn_id: lt.turn_id.clone(),
-        });
+        };
+        self.events.notice(&notice);
+        lt.notify_observer(&notice);
 
         let next = self.queued.lock().unwrap().get_mut(session_id).and_then(|q| q.pop_front());
         if let Some(c) = next {
