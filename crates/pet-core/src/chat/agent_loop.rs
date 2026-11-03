@@ -10,8 +10,11 @@ use crate::tools::{RunGate, ToolContext, ToolPolicy, ToolRegistry};
 
 /// The tool-calling loop over an already-assembled message list (system prompt
 /// included). Returns the final assistant text and the full conversation.
+/// `message_offset` counts the leading system messages that the caller strips
+/// before persisting, so item ranges address the stored array.
 pub(super) async fn run_agent_loop(
     mut messages: Vec<ChatMessage>,
+    message_offset: usize,
     preview: &str,
     sink: &dyn ChatEventSink,
     config: &AiConfig,
@@ -36,6 +39,12 @@ pub(super) async fn run_agent_loop(
     let mut round_stats: Vec<RoundStat> = Vec::new();
     loop {
         ctx.log(&format!("LLM round {} ({} messages)", round, messages.len()));
+
+        // The assistant message this round will append starts here; items
+        // produced from its stream record that index directly.
+        if let Some(items) = sink.items() {
+            items.lock().unwrap().begin_round(messages.len() - message_offset);
+        }
 
         let chat_req = ChatRequest::new(messages.clone()).with_tools(tools.clone());
 

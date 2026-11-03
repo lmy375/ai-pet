@@ -22,8 +22,63 @@ pub struct ToolCallRecord {
     pub result: Option<String>,
 }
 
+/// The slice of the model-facing conversation an item stands for. `start` is
+/// the message index and `len` the number of messages; together they are the
+/// item's only link to the conversation arrays, so pruning never has to guess
+/// a structure. Every item carries the field and `None` means "this item owns
+/// no message" (a preamble, a reasoning-only bubble, an error line).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageRange {
+    pub start: usize,
+    pub len: usize,
+}
+
+/// The on-disk `messagesRange` slot. A bare `Option` would make serde treat a
+/// missing field as `None`, silently accepting files written before ranges
+/// existed; this wrapper only becomes `None` for an explicit JSON `null`.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MessageRangeSlot(Option<MessageRange>);
+
+impl MessageRangeSlot {
+    fn none() -> Self {
+        Self(None)
+    }
+}
+
+impl From<Option<MessageRange>> for MessageRangeSlot {
+    fn from(range: Option<MessageRange>) -> Self {
+        Self(range)
+    }
+}
+
+impl Serialize for MessageRangeSlot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MessageRangeSlot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Present(MessageRange),
+            Absent(()),
+        }
+        Ok(Self(match Wire::deserialize(deserializer)? {
+            Wire::Present(range) => Some(range),
+            Wire::Absent(()) => None,
+        }))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ChatItem {
     User {
         id: String,
@@ -31,6 +86,7 @@ pub enum ChatItem {
         content: String,
         #[serde(default)]
         images: Vec<String>,
+        messages_range: MessageRangeSlot,
     },
     Assistant {
         id: String,
@@ -42,6 +98,7 @@ pub enum ChatItem {
         reasoning: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<String>,
+        messages_range: MessageRangeSlot,
     },
     Tool {
         id: String,
@@ -49,11 +106,13 @@ pub enum ChatItem {
         /// Always empty; kept so every bubble has a `content` field to render.
         content: String,
         tool_calls: Vec<ToolCallRecord>,
+        messages_range: MessageRangeSlot,
     },
     Error {
         id: String,
         ts: i64,
         content: String,
+        messages_range: MessageRangeSlot,
     },
     /// The line that opens a background-task resumption turn.
     Notification {
@@ -62,6 +121,7 @@ pub enum ChatItem {
         content: String,
         label: String,
         detail: String,
+        messages_range: MessageRangeSlot,
     },
     /// A group line injected into an agent's private context.
     Group {
@@ -74,6 +134,7 @@ pub enum ChatItem {
         sender_id: Option<String>,
         #[serde(default)]
         sender_name: String,
+        messages_range: MessageRangeSlot,
     },
 }
 
@@ -91,6 +152,7 @@ impl ChatItem {
             ts: crate::common::now_ms(),
             content: content.into(),
             images: images.to_vec(),
+            messages_range: MessageRangeSlot::none(),
         }
     }
 
@@ -105,6 +167,7 @@ impl ChatItem {
             content: content.into(),
             reasoning: reasoning.filter(|r| !r.is_empty()),
             images: images.to_vec(),
+            messages_range: MessageRangeSlot::none(),
         }
     }
 
@@ -114,6 +177,7 @@ impl ChatItem {
             ts: crate::common::now_ms(),
             content: String::new(),
             tool_calls,
+            messages_range: MessageRangeSlot::none(),
         }
     }
 
@@ -122,6 +186,7 @@ impl ChatItem {
             id: new_id(),
             ts: crate::common::now_ms(),
             content: message.into(),
+            messages_range: MessageRangeSlot::none(),
         }
     }
 
@@ -132,6 +197,7 @@ impl ChatItem {
             content: format!("后台任务完成：{label}"),
             label: label.to_string(),
             detail: detail.to_string(),
+            messages_range: MessageRangeSlot::none(),
         }
     }
 
@@ -149,6 +215,7 @@ impl ChatItem {
             sender_kind: sender_kind.into(),
             sender_id,
             sender_name: sender_name.into(),
+            messages_range: MessageRangeSlot::none(),
         }
     }
 
@@ -163,9 +230,38 @@ impl ChatItem {
         }
     }
 
-    /// True for items that open a conversation turn (`user` / `notification`).
+    /// The model messages this item stands for, if any. See [`MessageRange`].
+    pub fn messages_range(&self) -> Option<MessageRange> {
+        match self {
+            Self::User { messages_range, .. }
+            | Self::Assistant { messages_range, .. }
+            | Self::Tool { messages_range, .. }
+            | Self::Error { messages_range, .. }
+            | Self::Notification { messages_range, .. }
+            | Self::Group { messages_range, .. } => messages_range.0,
+        }
+    }
+
+    /// Set the message range. Crate-internal: producers write it when they
+    /// create the item, and pruning shifts it after a delete.
+    pub(crate) fn set_messages_range(&mut self, range: Option<MessageRange>) {
+        match self {
+            Self::User { messages_range, .. }
+            | Self::Assistant { messages_range, .. }
+            | Self::Tool { messages_range, .. }
+            | Self::Error { messages_range, .. }
+            | Self::Notification { messages_range, .. }
+            | Self::Group { messages_range, .. } => *messages_range = range.into(),
+        }
+    }
+
+    /// True for items that open a conversation turn (`user` / `notification` /
+    /// `group` — a group line is injected as a user message too).
     pub fn opens_turn(&self) -> bool {
-        matches!(self, Self::User { .. } | Self::Notification { .. })
+        matches!(
+            self,
+            Self::User { .. } | Self::Notification { .. } | Self::Group { .. }
+        )
     }
 
     /// The assistant's text, when this item carries a model-authored message.
@@ -203,18 +299,46 @@ pub struct ItemBuilder {
     tool_calls: Vec<ToolCallRecord>,
     /// Committed display items.
     items: Vec<ChatItem>,
+    /// Index of this round's assistant message in the conversation. `None`
+    /// until [`ItemBuilder::begin_round`] is called, and then the range of
+    /// every item produced from here on points straight at the message that
+    /// produced it — no structural guessing at save time.
+    round_start: Option<usize>,
+    /// Number of tool calls in this round, needed to place the image follow-up
+    /// that sits after their `tool` messages.
+    round_calls: usize,
+    /// Whether this round's image message has already been claimed by an item
+    /// (several image bubbles share one `user` message).
+    image_claimed: bool,
 }
 
 impl ItemBuilder {
+    /// The current round's assistant message starts at `message_start`. Must be
+    /// called before streaming the round, right where the messages array is
+    /// about to grow by that message.
+    pub fn begin_round(&mut self, message_start: usize) {
+        // A round that ended without tool results still owns a row; settle it
+        // against the previous round before moving the cursor.
+        self.flush_tool_calls();
+        self.round_start = Some(message_start);
+        self.round_calls = 0;
+        self.image_claimed = false;
+    }
+
     fn flush_tool_calls(&mut self) {
         if self.tool_calls.is_empty() {
             return;
         }
+        let count = self.tool_calls.len();
         let calls = std::mem::take(&mut self.tool_calls);
-        self.items.push(ChatItem::tool(calls));
+        let mut item = ChatItem::tool(calls);
+        if let Some(start) = self.round_start {
+            item.set_messages_range(Some(MessageRange { start, len: 1 + count }));
+        }
+        self.items.push(item);
     }
 
-    fn commit_text(&mut self) {
+    fn commit_text(&mut self, owns_message: bool) {
         let text = std::mem::take(&mut self.accumulated);
         let reasoning = std::mem::take(&mut self.reasoning);
         // A round that produced only thinking still becomes an item: the model
@@ -224,8 +348,14 @@ impl ItemBuilder {
         if text.trim().is_empty() && reasoning.trim().is_empty() {
             return;
         }
-        self.items
-            .push(ChatItem::assistant(text, Some(reasoning).filter(|r| !r.is_empty()), &[]));
+        let mut item =
+            ChatItem::assistant(text.clone(), Some(reasoning).filter(|r| !r.is_empty()), &[]);
+        if owns_message && !text.is_empty() {
+            if let Some(start) = self.round_start {
+                item.set_messages_range(Some(MessageRange { start, len: 1 }));
+            }
+        }
+        self.items.push(item);
     }
 
     pub fn chunk(&mut self, text: &str) {
@@ -244,7 +374,8 @@ impl ItemBuilder {
 
     pub fn tool_start(&mut self, name: &str, arguments: &str) {
         // Commit any assistant text streamed before this tool call.
-        self.commit_text();
+        self.commit_text(false);
+        self.round_calls += 1;
         self.tool_calls.push(ToolCallRecord {
             name: name.to_string(),
             arguments: arguments.to_string(),
@@ -261,16 +392,31 @@ impl ItemBuilder {
         {
             tc.result = Some(result.to_string());
         }
+        // Settle the row as soon as every call has its result: the next round
+        // moves the cursor, and the row must keep this round's index.
+        if self.tool_calls.iter().all(|tc| tc.result.is_some()) {
+            self.flush_tool_calls();
+        }
     }
 
     pub fn image(&mut self, data_url: &str) {
         self.flush_tool_calls();
-        self.items.push(ChatItem::assistant("", None, &[data_url.to_string()]));
+        let mut item = ChatItem::assistant("", None, &[data_url.to_string()]);
+        if let Some(start) = self.round_start {
+            if !self.image_claimed {
+                self.image_claimed = true;
+                item.set_messages_range(Some(MessageRange {
+                    start: start + 1 + self.round_calls,
+                    len: 1,
+                }));
+            }
+        }
+        self.items.push(item);
     }
 
     pub fn done(&mut self) {
         self.flush_tool_calls();
-        self.commit_text();
+        self.commit_text(true);
     }
 
     pub fn error(&mut self, message: &str) {
@@ -309,11 +455,13 @@ mod tests {
             ts: 1,
             content: "hi".into(),
             images: vec!["data:x".into()],
+            messages_range: Some(MessageRange { start: 0, len: 2 }).into(),
         };
         assert_eq!(
             value(user),
             serde_json::json!({
-                "id": "i1", "ts": 1, "type": "user", "content": "hi", "images": ["data:x"]
+                "id": "i1", "ts": 1, "type": "user", "content": "hi", "images": ["data:x"],
+                "messagesRange": { "start": 0, "len": 2 }
             })
         );
 
@@ -323,12 +471,13 @@ mod tests {
             content: "hello".into(),
             reasoning: Some("thinking".into()),
             images: vec![],
+            messages_range: MessageRangeSlot::none(),
         };
         assert_eq!(
             value(assistant),
             serde_json::json!({
                 "id": "i2", "ts": 2, "type": "assistant", "content": "hello",
-                "reasoning": "thinking"
+                "reasoning": "thinking", "messagesRange": null
             })
         );
 
@@ -341,12 +490,14 @@ mod tests {
                 arguments: "{}".into(),
                 result: Some("ok".into()),
             }],
+            messages_range: Some(MessageRange { start: 1, len: 2 }).into(),
         };
         assert_eq!(
             value(tool),
             serde_json::json!({
                 "id": "i3", "ts": 3, "type": "tool", "content": "",
-                "toolCalls": [{ "name": "bash", "arguments": "{}", "result": "ok" }]
+                "toolCalls": [{ "name": "bash", "arguments": "{}", "result": "ok" }],
+                "messagesRange": { "start": 1, "len": 2 }
             })
         );
 
@@ -357,14 +508,26 @@ mod tests {
             sender_kind: "agent".into(),
             sender_id: Some("a1".into()),
             sender_name: "小宠".into(),
+            messages_range: MessageRangeSlot::none(),
         };
         assert_eq!(
             value(group),
             serde_json::json!({
                 "id": "i4", "ts": 4, "type": "group", "content": "line",
-                "senderKind": "agent", "senderId": "a1", "senderName": "小宠"
+                "senderKind": "agent", "senderId": "a1", "senderName": "小宠",
+                "messagesRange": null
             })
         );
+    }
+
+    /// Dropping the field is a format change, not something to paper over: an
+    /// old file has no message ranges, so it must fail loudly and be recreated.
+    #[test]
+    fn an_item_without_messages_range_is_rejected() {
+        let old = serde_json::json!({
+            "id": "i1", "ts": 1, "type": "user", "content": "hi", "images": []
+        });
+        assert!(serde_json::from_value::<ChatItem>(old).is_err());
     }
 
     /// Old files carry the constant `isRunning: false`; it is ignored on read
@@ -373,10 +536,13 @@ mod tests {
     fn stored_tool_calls_deserialize_without_the_retired_running_flag() {
         let v = serde_json::json!({
             "id": "i1", "ts": 1, "type": "tool", "content": "",
-            "toolCalls": [{ "name": "bash", "arguments": "{}", "isRunning": false, "result": "ok" }]
+            "toolCalls": [{ "name": "bash", "arguments": "{}", "isRunning": false, "result": "ok" }],
+            "messagesRange": null
         });
         let item: ChatItem = serde_json::from_value(v).unwrap();
-        let ChatItem::Tool { tool_calls, .. } = &item else { panic!() };
+        let ChatItem::Tool { tool_calls, .. } = &item else {
+            panic!()
+        };
         assert_eq!(tool_calls[0].result.as_deref(), Some("ok"));
         assert!(serde_json::to_value(&item).unwrap()["toolCalls"][0]
             .get("isRunning")
@@ -432,6 +598,70 @@ mod tests {
         assert!(matches!(&items[0], ChatItem::Assistant { reasoning: Some(r), .. } if r == "round one"));
         assert!(matches!(&items[2], ChatItem::Assistant { reasoning: Some(r), .. } if r == "round two"));
         assert!(matches!(&items[4], ChatItem::Assistant { content, .. } if content == "answer"));
+    }
+
+    /// A plain round writes the index of the assistant message it produced.
+    #[test]
+    fn a_round_records_the_index_of_its_assistant_message() {
+        let mut b = ItemBuilder::default();
+        b.begin_round(2);
+        b.chunk("hi");
+        b.done();
+        let items = b.take_items();
+        assert_eq!(items[0].messages_range(), Some(MessageRange { start: 2, len: 1 }));
+    }
+
+    /// The tool row owns its assistant call plus every result; the preamble in
+    /// front of it is display-only. The next round moves the cursor.
+    #[test]
+    fn each_round_records_its_own_message_range() {
+        let mut b = ItemBuilder::default();
+        b.begin_round(1);
+        b.reasoning("think");
+        b.tool_start("bash", "{}");
+        b.tool_start("read", "{}");
+        b.tool_result("bash", "ok");
+        b.tool_result("read", "ok");
+        b.done();
+        b.begin_round(4);
+        b.chunk("done");
+        b.done();
+
+        let items = b.take_items();
+        assert_eq!(items[0].messages_range(), None, "preamble is display-only");
+        assert_eq!(items[1].messages_range(), Some(MessageRange { start: 1, len: 3 }));
+        assert_eq!(items[2].messages_range(), Some(MessageRange { start: 4, len: 1 }));
+    }
+
+    /// The image follow-up is one `user` message behind the tool results; only
+    /// the first bubble of a multi-image round can own it.
+    #[test]
+    fn an_image_bubble_records_the_follow_up_message() {
+        let mut b = ItemBuilder::default();
+        b.begin_round(1);
+        b.reasoning("look");
+        b.tool_start("screenshot", "{}");
+        b.tool_result("screenshot", "ok");
+        b.image("data:a");
+        b.image("data:b");
+        b.done();
+
+        let items = b.take_items();
+        assert_eq!(items[1].messages_range(), Some(MessageRange { start: 1, len: 2 }));
+        assert_eq!(items[2].messages_range(), Some(MessageRange { start: 3, len: 1 }));
+        assert_eq!(items[3].messages_range(), None);
+    }
+
+    /// A final round with thinking but no text appends no message, so its
+    /// bubble owns nothing.
+    #[test]
+    fn a_reasoning_only_final_round_owns_no_message() {
+        let mut b = ItemBuilder::default();
+        b.begin_round(5);
+        b.reasoning("only thinking");
+        b.done();
+        let items = b.take_items();
+        assert_eq!(items[0].messages_range(), None);
     }
 
     #[test]

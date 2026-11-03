@@ -1062,7 +1062,7 @@ mod tests {
                         { "content": [{ "Text": "<chat-主人-message>Hello</chat-主人-message>" }], "options": null, "role": "User" }
                     ],
                     "items": [
-                        { "id": "i1", "ts": 1, "type": "group", "content": "Hello", "senderKind": "human", "senderName": "主人" }
+                        { "id": "i1", "ts": 1, "type": "group", "content": "Hello", "senderKind": "human", "senderName": "主人", "messagesRange": null }
                     ],
                     "consumed_upto": 1
                 }

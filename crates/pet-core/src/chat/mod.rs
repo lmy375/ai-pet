@@ -231,9 +231,16 @@ pub async fn run_agent(run: AgentRun<'_>) -> Result<ChatOutcome, String> {
     // from the current memory files on every run, so edits the pet makes to
     // USER.md / MEMORY.md take effect immediately.
     prompt.prepend(&mut messages);
+    // The leading system block is rebuilt per run and stripped before the
+    // conversation is stored, so item ranges must ignore it.
+    let system_prefix = messages
+        .iter()
+        .take_while(|m| m.role == ChatRole::System)
+        .count();
 
     let preview = crate::llm::preview(&messages);
-    let (text, messages) = run_agent_loop(messages, &preview, sink, config, mcp_store, ctx).await?;
+    let (text, messages) =
+        run_agent_loop(messages, system_prefix, &preview, sink, config, mcp_store, ctx).await?;
 
     // Drop the leading system block before handing the conversation back. It is
     // rebuilt from the memory files on every run, so storing it would stack up

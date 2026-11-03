@@ -22,7 +22,7 @@ use serde::Serialize;
 
 use crate::chat::{run_agent, AgentRun, ChatEventSink, ChatOutcome, StreamEvent, UserTurn};
 use crate::config::AiConfig;
-use crate::item::{ChatItem, ItemTail};
+use crate::item::{ChatItem, ItemTail, MessageRange};
 use crate::logging::write_log;
 use crate::system_prompt::SystemPrompt;
 use crate::session::{self, ContextUsage, Session, DEFAULT_SESSION_TITLE};
@@ -165,7 +165,12 @@ impl TurnRunner {
         if live.contains_key(session_id) {
             return Err("A turn is already running in this session".to_string());
         }
-        sess.conv.items.push(ChatItem::user(&turn.text, &turn.images));
+        let mut item = ChatItem::user(&turn.text, &turn.images);
+        item.set_messages_range(Some(MessageRange {
+            start: session::stored_message_count(&sess.conv.messages),
+            len: 1,
+        }));
+        sess.conv.items.push(item);
         let origin = TurnOrigin::User { text: turn.text.clone() };
         self.start(&mut live, sess, turn, origin, agent_id, observer)
     }
@@ -211,7 +216,12 @@ impl TurnRunner {
         // Flip the originating tool call from "running in background" to its
         // result, then open the resumption turn with a notification line.
         sess.conv.items = session::apply_completion_to_items(sess.conv.items, &c.task_id, &c.result);
-        sess.conv.items.push(ChatItem::notification(&label, &c.result));
+        let mut item = ChatItem::notification(&label, &c.result);
+        item.set_messages_range(Some(MessageRange {
+            start: session::stored_message_count(&sess.conv.messages),
+            len: 1,
+        }));
+        sess.conv.items.push(item);
         let turn = UserTurn::text(format!("[后台任务完成] {}：\n{}", label, c.result));
         if let Err(e) = self.start(live, sess, turn, TurnOrigin::Completion { label }, None, None) {
             self.log(&format!("completion turn for task {} failed to start: {e}", c.task_id));
@@ -333,7 +343,7 @@ impl TurnRunner {
         sink: TurnSink,
         outcome: Result<ChatOutcome, String>,
     ) {
-        let (items, usage) = sink.take();
+        let (mut items, usage) = sink.take();
         // Reload rather than reuse the snapshot taken at start: the display
         // transcript is appended to (never rewritten), so anything another
         // writer added meanwhile — the heartbeat's `chat` tool, say — survives.
@@ -341,6 +351,16 @@ impl TurnRunner {
         // failed turn it is left as it was, so the failure isn't in context.
         match session::load_session(session_id.to_string()) {
             Ok(mut sess) => {
+                // A failed turn never wrote its messages, so this round's
+                // ranges would address messages that do not exist.
+                if outcome.is_err() {
+                    for item in items.iter_mut() {
+                        item.set_messages_range(None);
+                    }
+                    if let Some(opener) = sess.conv.items.iter_mut().rev().find(|i| i.opens_turn()) {
+                        opener.set_messages_range(None);
+                    }
+                }
                 sess.conv.items.extend(items);
                 if let Ok(o) = &outcome {
                     sess.conv.messages = o.messages.clone();

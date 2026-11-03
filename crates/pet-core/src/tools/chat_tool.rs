@@ -5,7 +5,7 @@
 //! Calling it appends a pet message to the currently-active session on disk,
 //! fires a native system notification, and tells the active window to refresh.
 
-use crate::item::ChatItem;
+use crate::item::{ChatItem, MessageRange};
 use crate::session;
 use crate::tools::{parse_args, tool_error, Tool, ToolContext, ToolSpec};
 
@@ -69,7 +69,12 @@ async fn chat_impl(arguments: &str, ctx: &ToolContext) -> String {
     sess.conv.messages.push(crate::llm::store_message(
         &genai::chat::ChatMessage::assistant(message.clone()),
     ));
-    sess.conv.items.push(ChatItem::assistant(&message, None, &[]));
+    let mut item = ChatItem::assistant(&message, None, &[]);
+    item.set_messages_range(Some(MessageRange {
+        start: crate::session::stored_message_count(&sess.conv.messages) - 1,
+        len: 1,
+    }));
+    sess.conv.items.push(item);
     sess.updated_at = crate::common::iso_now();
     sess.created_at = String::new(); // preserved by save_session
 

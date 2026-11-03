@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::item::ChatItem;
+use crate::item::{ChatItem, MessageRange};
 
 /// The file holding one session record (`index.json`, `<id>.json`).
 fn file(name: &str) -> Result<PathBuf, String> {
@@ -120,100 +120,126 @@ pub fn derive_title(items: &[ChatItem]) -> Option<String> {
         })
 }
 
-/// Remove selected display items and the LLM messages behind them.
+/// Where a message appended now will sit once the conversation is stored.
+/// Leading system seeds are rebuilt on every run and stripped before saving,
+/// so item ranges count from after them.
+pub(crate) fn stored_message_count(messages: &[serde_json::Value]) -> usize {
+    messages
+        .iter()
+        .skip_while(|m| m["role"] == "System")
+        .count()
+}
+
+/// Recompute each turn-opening item's span. An opener owns its whole block, so
+/// its range runs from its own first message to the next opener's first message
+/// (or the end of the conversation). Producers write every other item's range
+/// when they create it; only this block span is not known until the turn ends.
+fn refresh_opener_ranges(items: &mut [ChatItem], message_count: usize) {
+    let starts: Vec<(usize, usize)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| it.opens_turn())
+        .filter_map(|(i, it)| it.messages_range().map(|r| (i, r.start)))
+        .collect();
+    for (k, &(idx, start)) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).map(|&(_, s)| s).unwrap_or(message_count);
+        items[idx].set_messages_range(Some(MessageRange { start, len: end.saturating_sub(start) }));
+    }
+}
+
+fn item_blocks(items: &[ChatItem]) -> Vec<Vec<usize>> {
+    let mut blocks: Vec<Vec<usize>> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if item.opens_turn() {
+            blocks.push(vec![i]);
+        } else if let Some(block) = blocks.last_mut() {
+            block.push(i);
+        }
+    }
+    blocks
+}
+
+/// Remove selected display items and the model messages they point at.
 ///
-/// `items` and `messages` share no ids and aren't index-aligned, but they're
-/// built in the same chronological order, so they're matched structurally:
+/// Each item carries an explicit [`MessageRange`] into `messages`, so pruning
+/// is index arithmetic: the kept items are everything unselected, and the
+/// messages to drop are the selected items' ranges. An item without a range
+/// (an error line) disappears from the transcript alone.
 ///
-/// - Messages split into *turn blocks*: a `User` message plus everything up to
-///   the next one (its assistant replies, tool calls and tool results).
-/// - The k-th block pairs with the k-th turn-opening item (`user` /
-///   `notification`).
-/// - Inside a block, assistant messages carrying text pair in order with that
-///   block's non-empty `assistant` items.
+/// A tool row's preamble bubbles go with it: they are the same round's display
+/// fragments and would otherwise outlive the message they introduced.
 ///
-/// Deleting a turn-opening item drops its whole block, so a tool result can
-/// never be left without the call that produced it. Deleting an assistant item
-/// drops only that message. Items with no message of their own — tool rows,
-/// errors, image-only assistant bubbles — disappear from the transcript and
-/// leave the context alone.
-///
-/// If the structures don't line up (a hand-edited session), items are removed
-/// and messages left untouched: a stale context beats a corrupted one.
+/// If any range runs past the end of `messages` (a corrupt file), the messages
+/// are returned untouched — a stale context beats one with holes.
 pub fn prune_session(
     items: &[ChatItem],
     messages: &[serde_json::Value],
     selected: &HashSet<String>,
 ) -> (Vec<ChatItem>, Vec<serde_json::Value>) {
-    let is_selected = |it: &ChatItem| selected.contains(it.id());
-    let bears_assistant_message = |it: &ChatItem| it.assistant_text().is_some();
-
-    let kept_items: Vec<ChatItem> = items.iter().filter(|it| !is_selected(it)).cloned().collect();
-
-    // Message turn blocks: [start, end) index ranges, each opened by a `User`.
-    let mut blocks: Vec<(usize, usize)> = Vec::new();
-    for (i, m) in messages.iter().enumerate() {
-        if crate::llm::is_user_message(m) {
-            if let Some(last) = blocks.last_mut() {
-                last.1 = i;
-            }
-            blocks.push((i, messages.len()));
-        }
-    }
-
-    // Item turn blocks, in the same order.
-    let mut item_blocks: Vec<Vec<usize>> = Vec::new();
-    for (i, it) in items.iter().enumerate() {
-        if it.opens_turn() {
-            item_blocks.push(vec![i]);
-        } else if let Some(block) = item_blocks.last_mut() {
-            block.push(i);
-        }
-    }
-
-    // Anything before the first user message (a system seed) is never paired.
-    let leading = blocks.first().map(|(s, _)| *s).unwrap_or(messages.len());
-    if item_blocks.len() != blocks.len() {
-        return (kept_items, messages.to_vec());
-    }
-
-    let mut drop: HashSet<usize> = HashSet::new();
-    for (block_idx, item_idxs) in item_blocks.iter().enumerate() {
-        let (start, end) = blocks[block_idx];
-        if is_selected(&items[item_idxs[0]]) {
-            drop.extend(start..end);
+    let mut removed = selected.clone();
+    for block in item_blocks(items) {
+        // Removing the opener removes the whole turn from the transcript too.
+        if selected.contains(items[block[0]].id()) {
+            removed.extend(block.iter().map(|&i| items[i].id().to_string()));
             continue;
         }
-        // Assistant messages with text, in order, within this block.
-        let text_msgs: Vec<usize> = (start..end)
-            .filter(|&j| {
-                crate::llm::load_messages(&messages[j..=j])
-                    .first()
-                    .is_some_and(|m| {
-                        m.role == genai::chat::ChatRole::Assistant
-                            && m.content.texts().iter().any(|t| !t.trim().is_empty())
-                    })
-            })
-            .collect();
-        let text_items: Vec<usize> = item_idxs
-            .iter()
-            .copied()
-            .filter(|&i| bears_assistant_message(&items[i]))
-            .collect();
-        if text_items.len() != text_msgs.len() {
-            return (kept_items, messages.to_vec());
-        }
-        for (k, &item_idx) in text_items.iter().enumerate() {
-            if is_selected(&items[item_idx]) {
-                drop.insert(text_msgs[k]);
+        for (k, &idx) in block.iter().enumerate() {
+            if !matches!(items[idx], ChatItem::Tool { .. }) || !selected.contains(items[idx].id()) {
+                continue;
+            }
+            for &prev in block[..k].iter().rev() {
+                if !matches!(items[prev], ChatItem::Assistant { .. }) {
+                    break;
+                }
+                removed.insert(items[prev].id().to_string());
             }
         }
     }
+
+    let kept: Vec<ChatItem> = items
+        .iter()
+        .filter(|it| !removed.contains(it.id()))
+        .cloned()
+        .collect();
+
+    let mut drop: HashSet<usize> = HashSet::new();
+    for item in items.iter().filter(|it| selected.contains(it.id())) {
+        let Some(range) = item.messages_range() else {
+            continue;
+        };
+        if range.start.saturating_add(range.len) > messages.len() {
+            return (kept, messages.to_vec());
+        }
+        drop.extend(range.start..range.start + range.len);
+    }
+
+    // Shift the surviving ranges by the messages dropped before them. An
+    // opener's length is recomputed on save; a leaf whose own span was cut
+    // loses its link rather than pointing at the wrong messages.
+    let kept_items = kept
+        .into_iter()
+        .map(|mut item| {
+            if let Some(range) = item.messages_range() {
+                let removed_before = (0..range.start).filter(|j| drop.contains(j)).count();
+                let start = range.start - removed_before;
+                let intact = (range.start..range.start + range.len).all(|j| !drop.contains(&j));
+                let range = if item.opens_turn() {
+                    Some(MessageRange { start, len: 0 })
+                } else if intact {
+                    Some(MessageRange { start, len: range.len })
+                } else {
+                    None
+                };
+                item.set_messages_range(range);
+            }
+            item
+        })
+        .collect();
 
     let kept_messages = messages
         .iter()
         .enumerate()
-        .filter(|(j, _)| *j < leading || !drop.contains(j))
+        .filter(|(j, _)| !drop.contains(j))
         .map(|(_, m)| m.clone())
         .collect();
     (kept_items, kept_messages)
@@ -333,6 +359,11 @@ pub fn load_session_view(id: String) -> Result<SessionView, String> {
 /// never yank the windows over to it. Only `set_active_session` /
 /// `create_session` — user actions — move the pointer.
 pub fn save_session(mut session: Session) -> Result<(), String> {
+    refresh_opener_ranges(
+        &mut session.conv.items,
+        stored_message_count(&session.conv.messages),
+    );
+
     let path = file(&format!("{}.json", session.id))?;
 
     // Preserve created_at (and last-known usage) from the existing file when the
@@ -490,9 +521,9 @@ mod tests {
     }
     fn tool_result(call_id: &str, out: &str) -> serde_json::Value {
         crate::llm::store_message(&ChatMessage::tool(
-            genai::chat::MessageContent::from_tool_responses(vec![
-                genai::chat::ToolResponse::new(call_id, out),
-            ]),
+            genai::chat::MessageContent::from_tool_responses(vec![genai::chat::ToolResponse::new(
+                call_id, out,
+            )]),
         ))
     }
 
@@ -543,7 +574,8 @@ mod tests {
                 { "content": [{ "Text": "hello" }], "options": null, "role": "User" }
             ],
             "items": [
-                { "id": "i1", "ts": 1, "type": "user", "content": "hello", "images": [] }
+                { "id": "i1", "ts": 1, "type": "user", "content": "hello", "images": [],
+                  "messagesRange": { "start": 0, "len": 1 } }
             ],
             "context_usage": { "used": 12, "total": 200000 }
         }"#;
@@ -552,6 +584,7 @@ mod tests {
         assert_eq!(s.conv.messages.len(), 1);
         assert_eq!(s.conv.items.len(), 1);
         assert_eq!(s.conv.items[0].id(), "i1");
+        assert_eq!(s.conv.items[0].messages_range(), range(0, 1));
         assert_eq!(s.context_usage.as_ref().map(|u| u.used), Some(12));
 
         // Serializing back must not nest them under `conv`.
@@ -570,33 +603,52 @@ mod tests {
         assert!(recent_turns(&[system("x")], 3).is_empty());
     }
 
-    // --- prune_session -----------------------------------------------------
+    // --- message ranges ----------------------------------------------------
 
-    fn user_item(id: &str, content: &str) -> ChatItem {
+    fn user_item(id: &str, content: &str, range: Option<MessageRange>) -> ChatItem {
         ChatItem::User {
             id: id.into(),
             ts: 0,
             content: content.into(),
             images: vec![],
+            messages_range: range.into(),
         }
     }
 
-    fn assistant_item(id: &str, content: &str) -> ChatItem {
+    fn assistant_item(id: &str, content: &str, range: Option<MessageRange>) -> ChatItem {
         ChatItem::Assistant {
             id: id.into(),
             ts: 0,
             content: content.into(),
             reasoning: None,
             images: vec![],
+            messages_range: range.into(),
         }
     }
 
-    fn tool_item(id: &str, tool_calls: Vec<crate::item::ToolCallRecord>) -> ChatItem {
+    fn tool_item(
+        id: &str,
+        tool_calls: Vec<crate::item::ToolCallRecord>,
+        range: Option<MessageRange>,
+    ) -> ChatItem {
         ChatItem::Tool {
             id: id.into(),
             ts: 0,
             content: String::new(),
             tool_calls,
+            messages_range: range.into(),
+        }
+    }
+
+    fn group_item(id: &str, content: &str, range: Option<MessageRange>) -> ChatItem {
+        ChatItem::Group {
+            id: id.into(),
+            ts: 0,
+            content: content.into(),
+            sender_kind: "agent".into(),
+            sender_id: Some("a1".into()),
+            sender_name: "小宠".into(),
+            messages_range: range.into(),
         }
     }
 
@@ -606,14 +658,6 @@ mod tests {
     fn msg_assistant(t: &str) -> serde_json::Value {
         crate::llm::store_message(&ChatMessage::assistant(t))
     }
-    fn msg_tool_call(id: &str) -> serde_json::Value {
-        crate::llm::store_message(&ChatMessage::from(vec![genai::chat::ToolCall {
-            call_id: id.to_string(),
-            fn_name: "bash".to_string(),
-            fn_arguments: serde_json::json!({}),
-            thought_signatures: None,
-        }]))
-    }
     fn msg_tool_result(id: &str) -> serde_json::Value {
         crate::llm::store_message(&ChatMessage::tool(
             genai::chat::MessageContent::from_tool_responses(vec![genai::chat::ToolResponse::new(
@@ -621,68 +665,163 @@ mod tests {
             )]),
         ))
     }
+    fn call(name: &str) -> crate::item::ToolCallRecord {
+        crate::item::ToolCallRecord {
+            name: name.into(),
+            arguments: "{}".into(),
+            result: Some("ok".into()),
+        }
+    }
     fn sel(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|s| s.to_string()).collect()
     }
+    fn range(start: usize, len: usize) -> Option<MessageRange> {
+        Some(MessageRange { start, len })
+    }
 
-    /// A tool-using turn followed by a plain one — the shape the old
-    /// frontend-side pairing could not represent at all, since it assumed
-    /// messages held nothing but user/assistant text.
-    fn fixture() -> (Vec<ChatItem>, Vec<serde_json::Value>) {
+    /// Deleting the opener drops every message the turn produced.
+    #[test]
+    fn pruning_an_opener_drops_its_whole_block() {
         let items = vec![
-            user_item("i1", "q1"),
-            tool_item("i2", vec![]),
-            assistant_item("i3", "a1"),
-            user_item("i4", "q2"),
-            assistant_item("i5", "a2"),
+            user_item("u1", "q1", range(0, 4)),
+            tool_item("t1", vec![call("bash")], range(1, 2)),
+            assistant_item("a1", "a1", range(3, 1)),
+            user_item("u2", "q2", range(4, 2)),
+            assistant_item("a2", "a2", range(5, 1)),
         ];
         let messages = vec![
             msg_user("q1"),
-            msg_tool_call("c1"),
+            msg_assistant("calls"),
             msg_tool_result("c1"),
             msg_assistant("a1"),
             msg_user("q2"),
             msg_assistant("a2"),
         ];
-        (items, messages)
+        let (mut kept_items, kept) = prune_session(&items, &messages, &sel(&["u1"]));
+        refresh_opener_ranges(&mut kept_items, kept.len());
+        assert_eq!(roles(&kept), vec!["User", "Assistant"]);
+        assert_eq!(kept_items.len(), 2);
+        // The surviving opener and its leaf must point at the shifted messages.
+        assert_eq!(kept_items[0].messages_range(), range(0, 2));
+        assert_eq!(kept_items[1].messages_range(), range(1, 1));
     }
 
+    /// Deleting a leaf drops only its own message.
     #[test]
-    fn deleting_a_user_item_drops_its_whole_turn_including_the_tool_round() {
-        let (items, messages) = fixture();
-        let (new_items, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
-        assert_eq!(new_items.len(), 4);
-        // The tool call and its result go with the turn — leaving a Tool message
-        // whose originating call was deleted is rejected by every provider.
-        assert_eq!(roles(&new_msgs), vec!["User", "Assistant"]);
-    }
-
-    #[test]
-    fn deleting_an_assistant_item_drops_only_that_message() {
-        let (items, messages) = fixture();
-        let (_, new_msgs) = prune_session(&items, &messages, &sel(&["i3"]));
-        // The tool round it followed is still a valid, self-contained exchange.
-        assert_eq!(roles(&new_msgs), vec!["User", "Assistant", "Tool", "User", "Assistant"]);
-    }
-
-    #[test]
-    fn deleting_a_tool_item_touches_no_message() {
-        let (items, messages) = fixture();
-        let (new_items, new_msgs) = prune_session(&items, &messages, &sel(&["i2"]));
-        assert_eq!(new_items.len(), 4);
-        assert_eq!(new_msgs.len(), messages.len());
-    }
-
-    #[test]
-    fn a_system_seed_is_never_pruned() {
-        let items = vec![user_item("i1", "q1"), assistant_item("i2", "a1")];
-        let messages = vec![
-            crate::llm::store_message(&ChatMessage::system("soul")),
-            msg_user("q1"),
-            msg_assistant("a1"),
+    fn pruning_a_leaf_drops_only_its_messages() {
+        let items = vec![
+            user_item("u1", "q", range(0, 2)),
+            assistant_item("a1", "a", range(1, 1)),
         ];
-        let (_, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
-        assert_eq!(roles(&new_msgs), vec!["System"]);
+        let messages = vec![msg_user("q"), msg_assistant("a")];
+        let (mut kept_items, kept) = prune_session(&items, &messages, &sel(&["a1"]));
+        refresh_opener_ranges(&mut kept_items, kept.len());
+        assert_eq!(roles(&kept), vec!["User"]);
+        assert_eq!(kept_items[0].messages_range(), range(0, 1));
+    }
+
+    /// A tool row's display-only preamble goes with the round it introduced.
+    #[test]
+    fn pruning_a_tool_row_takes_its_preamble_and_round() {
+        let items = vec![
+            user_item("u1", "q", range(0, 3)),
+            assistant_item("a1", "let me check", None),
+            tool_item("t1", vec![call("bash"), call("read")], range(1, 3)),
+            assistant_item("a2", "done", range(4, 1)),
+            user_item("u2", "q2", range(5, 1)),
+        ];
+        let messages = vec![
+            msg_user("q"),
+            msg_assistant("calls"),
+            msg_tool_result("c1"),
+            msg_tool_result("c2"),
+            msg_assistant("done"),
+            msg_user("q2"),
+        ];
+        let (mut kept_items, kept) = prune_session(&items, &messages, &sel(&["t1"]));
+        refresh_opener_ranges(&mut kept_items, kept.len());
+        assert_eq!(roles(&kept), vec!["User", "Assistant", "User"]);
+        assert_eq!(kept_items.len(), 3, "the preamble goes with its tool row");
+        assert_eq!(kept_items[0].messages_range(), range(0, 2));
+        assert_eq!(kept_items[1].messages_range(), range(1, 1));
+        assert_eq!(kept_items[2].messages_range(), range(2, 1));
+    }
+
+    /// An error line owns no message: deleting it leaves the context alone.
+    #[test]
+    fn pruning_an_error_line_keeps_the_messages() {
+        let items = vec![user_item("u1", "q", range(0, 1)), ChatItem::error("boom")];
+        let messages = vec![msg_user("q")];
+        let (kept_items, kept) = prune_session(&items, &messages, &sel(&["boom-id"]));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept_items.len(), 2);
+    }
+
+    #[test]
+    fn pruning_a_group_line_drops_the_injected_turn() {
+        let items = vec![
+            group_item("g1", "line", range(0, 2)),
+            assistant_item("a1", "reply", range(1, 1)),
+        ];
+        let messages = vec![msg_user("line"), msg_assistant("reply")];
+        let (kept_items, kept) = prune_session(&items, &messages, &sel(&["g1"]));
+        assert!(kept.is_empty());
+        assert!(kept_items.is_empty());
+    }
+
+    #[test]
+    fn an_out_of_bounds_range_keeps_the_messages_untouched() {
+        let items = vec![user_item("u1", "q1", range(5, 5))];
+        let messages = vec![msg_user("q1"), msg_assistant("a1")];
+        let (kept_items, kept) = prune_session(&items, &messages, &sel(&["u1"]));
+        assert!(kept_items.is_empty());
+        assert_eq!(kept, messages);
+    }
+
+    /// Only openers need a re-count on save; their span runs to the next
+    /// opener's first message, or the end of the conversation.
+    #[test]
+    fn saving_recomputes_each_openers_span() {
+        let mut items = vec![
+            user_item("u1", "q1", range(1, 0)),
+            assistant_item("a1", "a1", range(2, 1)),
+            user_item("u2", "q2", range(4, 0)),
+            assistant_item("a2", "a2", range(5, 1)),
+        ];
+        refresh_opener_ranges(&mut items, 6);
+        assert_eq!(items[0].messages_range(), range(1, 3));
+        assert_eq!(items[2].messages_range(), range(4, 2));
+        assert_eq!(
+            items[1].messages_range(),
+            range(2, 1),
+            "leaves keep the range their producer wrote"
+        );
+    }
+
+    /// A session whose turn opened but produced no message yet still saves: the
+    /// opener spans zero messages instead of inventing one.
+    #[test]
+    fn an_open_turn_with_no_messages_gets_an_empty_span() {
+        let mut items = vec![user_item("u1", "q1", range(3, 0))];
+        refresh_opener_ranges(&mut items, 3);
+        assert_eq!(items[0].messages_range(), range(3, 0));
+    }
+
+    /// The field is part of the on-disk format: an old session without it is
+    /// rejected instead of being given invented ranges.
+    #[test]
+    fn an_old_session_file_without_message_ranges_is_rejected() {
+        let disk = r#"{
+            "id": "s-1",
+            "title": "hello",
+            "created_at": "2026-10-19T14:31:56.452",
+            "updated_at": "2026-10-26T17:36:48.761",
+            "messages": [],
+            "items": [
+                { "id": "i1", "ts": 1, "type": "user", "content": "hello", "images": [] }
+            ]
+        }"#;
+        assert!(serde_json::from_str::<Session>(disk).is_err());
     }
 
     #[test]
@@ -695,29 +834,23 @@ mod tests {
             result: Some(result.to_string()),
         };
         let items = vec![
-            tool_item("i1", vec![call(&running("t-1")), call(&running("t-2"))]),
+            tool_item("i1", vec![call(&running("t-1")), call(&running("t-2"))], None),
             // A plain (non-JSON) result must not be touched, nor parsed as one.
-            tool_item("i2", vec![call("ok")]),
+            tool_item("i2", vec![call("ok")], None),
         ];
         let out = apply_completion_to_items(items, "t-2", "exit 0");
-        let ChatItem::Tool { tool_calls, .. } = &out[0] else { panic!() };
+        let ChatItem::Tool { tool_calls, .. } = &out[0] else {
+            panic!()
+        };
         assert_eq!(
             tool_calls[0].result.as_deref(),
             Some(running("t-1").as_str()),
             "other task keeps its placeholder"
         );
         assert_eq!(tool_calls[1].result.as_deref(), Some("exit 0"));
-        let ChatItem::Tool { tool_calls, .. } = &out[1] else { panic!() };
+        let ChatItem::Tool { tool_calls, .. } = &out[1] else {
+            panic!()
+        };
         assert_eq!(tool_calls[0].result.as_deref(), Some("ok"));
-    }
-
-    #[test]
-    fn structural_mismatch_leaves_the_context_untouched() {
-        // Items claim two turns, messages hold one — a hand-edited session.
-        let items = vec![user_item("i1", "q1"), user_item("i2", "q2")];
-        let messages = vec![msg_user("q1"), msg_assistant("a1")];
-        let (new_items, new_msgs) = prune_session(&items, &messages, &sel(&["i1"]));
-        assert_eq!(new_items.len(), 1);
-        assert_eq!(new_msgs, messages, "messages must survive an unreliable mapping");
     }
 }
